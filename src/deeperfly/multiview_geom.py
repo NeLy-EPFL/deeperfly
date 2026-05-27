@@ -60,15 +60,14 @@ def rvecs2rmats(rvecs: np.ndarray):
     Parameters
     ----------
     rvecs : np.ndarray
-        Rotation vectors of shape (*dims, 3).
+        Rotation vectors of shape (..., 3).
     Returns
     -------
     np.ndarray
-        Rotation matrices of shape (*dims, 3, 3).
+        Rotation matrices of shape (..., 3, 3).
     """
     theta = np.linalg.norm(rvecs, axis=-1, keepdims=True)  # (..., 1)
-    safe_denom = np.where(theta > 0, theta, 1.0)  # (..., 1)
-    k = rvecs / safe_denom  # (..., 3)
+    k = rvecs / np.where(theta > 0, theta, 1.0)  # (..., 3)
     K = np.zeros((*rvecs.shape[:-1], 3, 3))  # (..., 3, 3)
     K[..., 0, 1] = -k[..., 2]
     K[..., 0, 2] = k[..., 1]
@@ -78,6 +77,32 @@ def rvecs2rmats(rvecs: np.ndarray):
     K[..., 2, 1] = k[..., 0]
     return (
         np.sin(theta[..., None]) * K
-        + (1 - np.cos(theta[..., None])) * np.einsum("...ij,...jk->...ik", K, K)
+        + (1 - np.cos(theta[..., None])) * (K @ K)
         + np.eye(3)
     )
+
+
+def rmats2rvecs(rmats: np.ndarray):
+    """Convert rotation matrices to rotation vectors.
+
+    Parameters
+    ----------
+    rmats : np.ndarray
+        Rotation matrices of shape (..., 3, 3).
+    Returns
+    -------
+    np.ndarray
+        Rotation vectors of shape (..., 3).
+    """
+    rho = np.stack(
+        (
+            rmats[..., 2, 1] - rmats[..., 1, 2],
+            rmats[..., 0, 2] - rmats[..., 2, 0],
+            rmats[..., 1, 0] - rmats[..., 0, 1],
+        ),
+        axis=-1,
+    )  # (..., 3)
+    s = np.linalg.norm(rho, axis=-1) / 2  # (...,)
+    c = (np.trace(rmats, axis1=-2, axis2=-1) - 1) / 2  # (...,)
+    theta = np.arctan2(s, c)  # (...,)
+    return rho * (0.5 / np.sinc(theta / np.pi))[..., None]
