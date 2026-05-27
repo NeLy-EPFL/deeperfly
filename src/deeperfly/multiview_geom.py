@@ -47,3 +47,22 @@ def triangulate_dlt(pmats: np.ndarray, pts2d: np.ndarray) -> np.ndarray:
     result = pts3dh[..., :3] / pts3dh[..., 3:]  # (*dims, 3)
     result[valid.sum(axis=-1) < 2] = np.nan
     return result
+
+
+def rvecs2rmats(rvecs: np.ndarray):
+    """Convert rotation vectors to rotation matrices."""
+    theta = np.linalg.norm(rvecs, axis=-1, keepdims=True)  # (..., 1)
+    safe_denom = np.where(theta > 0, theta, 1.0)  # (..., 1)
+    k = rvecs / safe_denom  # (..., 3)
+    K = np.zeros((*rvecs.shape[:-1], 3, 3))  # (..., 3, 3)
+    K[..., 0, 1] = -k[..., 2]
+    K[..., 0, 2] = k[..., 1]
+    K[..., 1, 2] = -k[..., 0]
+    K[..., 1, 0] = k[..., 2]
+    K[..., 2, 0] = -k[..., 1]
+    K[..., 2, 1] = k[..., 0]
+    return (
+        np.sin(theta[..., None]) * K
+        + (1 - np.cos(theta[..., None])) * np.einsum("...ij,...jk->...ik", K, K)
+        + np.eye(3)
+    )
