@@ -106,3 +106,84 @@ def rmats2rvecs(rmats: np.ndarray):
     c = (np.trace(rmats, axis1=-2, axis2=-1) - 1) / 2  # (...,)
     theta = np.arctan2(s, c)  # (...,)
     return rho * (0.5 / np.sinc(theta / np.pi))[..., None]
+
+
+def distort(pts2d: np.ndarray, dists: np.ndarray):
+    """Distort 2D points
+
+    Parameters
+    ----------
+    pts2d : np.ndarray
+        2D points of shape (views, ..., 2).
+    dists : np.ndarray
+        Distortion coefficients of shape (views, {0...12}).
+
+    Returns
+    -------
+    np.ndarray
+        Distorted 2D points of shape (views, ..., 2).
+
+    """
+    n_params = dists.shape[-1]
+
+    if n_params == 0:
+        return pts2d
+
+    # k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4
+    dists = dists.T  # (K, views)
+    pts2d = pts2d.T  # (2, ..., views)
+    x = pts2d[0]  # (..., views)
+    y = pts2d[1]  # (..., views)
+    x2 = x * x  # (..., views)
+    y2 = y * y  # (..., views)
+    r2 = x2 + y2  # (..., views)
+    r2 = x2 + y2  # (..., views)
+
+    # k1
+    mult = 1.0 + dists[0] * r2
+    add = None
+
+    if n_params >= 2:
+        r4 = r2 * r2
+        # k2
+        mult = mult + dists[1] * r4
+        if n_params >= 3:
+            xy = x * y
+            # p1
+            add = (2 * dists[2] * xy, dists[2] * (r2 + 2 * y2))
+            if n_params >= 4:
+                # p2
+                add = (add[0] + dists[3] * (r2 + 2 * x2), add[1] + 2 * dists[3] * xy)
+                if n_params >= 5:
+                    r6 = r4 * r2
+                    # k3
+                    mult = mult + dists[4] * r6
+                    if n_params >= 6:
+                        # k4
+                        den = 1.0 + dists[5] * r2
+                        if n_params >= 7:
+                            # k5
+                            den = den + dists[6] * r4
+                            if n_params >= 8:
+                                # k6
+                                den = den + dists[7] * r6
+                                if n_params >= 9:
+                                    # s1
+                                    add = (add[0] + dists[8] * r2, add[1])
+                                    if n_params >= 10:
+                                        # s2
+                                        add = (add[0] + dists[9] * r4, add[1])
+                                        if n_params >= 11:
+                                            # s3
+                                            add = (add[0], add[1] + dists[10] * r2)
+                                            if n_params >= 12:
+                                                # s4
+                                                add = (add[0], add[1] + dists[11] * r4)
+                        mult = mult / den
+
+    pts2d_dist = pts2d * mult
+
+    if add is not None:
+        pts2d_dist = pts2d_dist + add
+
+    return pts2d_dist.T
