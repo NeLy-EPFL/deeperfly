@@ -36,7 +36,14 @@ def triangulate_dlt(pmats: np.ndarray, pts2d: np.ndarray) -> np.ndarray:
     np.ndarray
         Triangulated 3D points of shape (*dims, 3).
     """
-    amat = np.einsum("v...i,vj->...vij", pts2d, pmats[:, 2]) - pmats[:, :2]
-    amat = amat.reshape((*amat.shape[:-3], -1, 4))
-    pts3dh = np.linalg.svd(amat)[-1][..., -1, :]
-    return pts3dh[..., :3] / pts3dh[..., 3:]
+    amat = (
+        np.einsum("v...i,vj->...vij", pts2d, pmats[:, 2]) - pmats[:, :2]
+    )  # (*dims, views, 2, 4)
+    # Zero out rows from NaN views — zero rows are ignored by SVD least-squares
+    valid = np.moveaxis(np.isfinite(pts2d).all(axis=-1), 0, -1)  # (*dims, views)
+    amat[~valid] = 0
+    amat = amat.reshape((*amat.shape[:-3], -1, 4))  # (*dims, views*2, 4)
+    pts3dh = np.linalg.svd(amat)[-1][..., -1, :]  # (*dims, 4)
+    result = pts3dh[..., :3] / pts3dh[..., 3:]  # (*dims, 3)
+    result[valid.sum(axis=-1) < 2] = np.nan
+    return result
