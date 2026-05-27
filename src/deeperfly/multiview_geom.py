@@ -15,10 +15,12 @@ def project(pmats: np.ndarray, pts3d: np.ndarray) -> np.ndarray:
     np.ndarray
         2D projected points of shape (*dims1, *dims2, 2).
     """
-    output_shape = pmats.shape[:-2] + pts3d.shape[:-1] + (2,)
-    pts3dh = np.concatenate((pts3d, np.ones((*pts3d.shape[:-1], 1))), axis=-1)
-    pts2dh = np.einsum("ijk,...k->i...j", pmats.reshape((-1, 3, 4)), pts3dh)
-    pts2d = pts2dh[..., :2] / pts2dh[..., 2:]
+    output_shape = (*pmats.shape[:-2], *pts3d.shape[:-1], 2)
+    pmats_flat = pmats.reshape(-1, 3, 4)  # (C, 3, 4)
+    pts_flat = pts3d.reshape(-1, 3).T  # (3, N)
+    # (C, 3, 3) @ (3, N) + (C, 3, 1)  →  (C, 3, N)
+    pts2dh = pmats_flat[:, :, :3] @ pts_flat + pmats_flat[:, :, 3:]
+    pts2d = (pts2dh[:, :2] / pts2dh[:, 2:]).transpose(0, 2, 1)  # (C, N, 2)
     return pts2d.reshape(output_shape)
 
 
