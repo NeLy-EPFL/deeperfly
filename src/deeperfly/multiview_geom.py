@@ -50,7 +50,17 @@ def triangulate_dlt(pmats: np.ndarray, pts2d: np.ndarray) -> np.ndarray:
 
 
 def rvecs2rmats(rvecs: np.ndarray):
-    """Convert rotation vectors to rotation matrices."""
+    """Convert rotation vectors to rotation matrices.
+
+    Parameters
+    ----------
+    rvecs : np.ndarray
+        Rotation vectors of shape (*dims, 3).
+    Returns
+    -------
+    np.ndarray
+        Rotation matrices of shape (*dims, 3, 3).
+    """
     theta = np.linalg.norm(rvecs, axis=-1, keepdims=True)  # (..., 1)
     safe_denom = np.where(theta > 0, theta, 1.0)  # (..., 1)
     k = rvecs / safe_denom  # (..., 3)
