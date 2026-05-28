@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from deeperfly.jax.geometry import (
+from deeperfly.geometry import (
     _NEAR_PI_SIN_THRESH,
     _SMALL_THETA_SQ,
     distort,

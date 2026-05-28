@@ -13,9 +13,9 @@ import jax
 import numpy as np
 from scipy.linalg import expm
 
-from deeperfly import ba_state
-from deeperfly.jax import bundle_adjustment as ba_jax
-from deeperfly.np import geometry as mvg
+from deeperfly.bundle_adjustment import init
+from deeperfly.bundle_adjustment import core as ba_jax
+from deeperfly import geometry as mvg
 
 jax.config.update("jax_enable_x64", True)
 
@@ -44,12 +44,14 @@ def setup(n_pts=100, seed=0):
     rmats_gt = np.array([get_rmat(t) for t in azimuths])
     tvecs_gt = np.array([[0, 0, f_mm]] * len(rmats_gt), dtype=float)
     pts3d_gt = np.random.default_rng(seed).uniform(-0.5, 0.5, size=(n_pts, 3))
-    rvecs_gt = mvg.rmat_to_rvec(rmats_gt)
+    rvecs_gt = np.asarray(mvg.rmat_to_rvec(rmats_gt))
     dist_gt = np.array((), dtype=float)
-    pts2d_gt = mvg.project_full(pts3d_gt, rvecs_gt, tvecs_gt, intr_gt, dist_gt)
+    pts2d_gt = np.asarray(
+        mvg.project_full(pts3d_gt, rvecs_gt, tvecs_gt, intr_gt, dist_gt)
+    )
     rmats0 = np.array([small_rotation(0.05, i) @ R for i, R in enumerate(rmats_gt)])
     tvecs0 = tvecs_gt + np.random.default_rng(0).normal(scale=5, size=tvecs_gt.shape)
-    rvecs0 = mvg.rmat_to_rvec(rmats0)
+    rvecs0 = np.asarray(mvg.rmat_to_rvec(rmats0))
     return rvecs0, tvecs0, intr_gt, dist_gt, pts2d_gt
 
 
@@ -90,7 +92,7 @@ def time_it(fn, warmup=1, repeat=3):
 def main():
     for n_pts in [100, 500, 2000]:
         rvecs0, tvecs0, intr_gt, dist_gt, pts2d_gt = setup(n_pts=n_pts)
-        args = ba_state.prep_args(pts2d_gt, rvecs0, tvecs0, intr_gt, dist_gt)
+        args = init.prep_args(pts2d_gt, rvecs0, tvecs0, intr_gt, dist_gt)
         n_views = len(rvecs0)
         n_obs = int(np.isfinite(pts2d_gt).all(axis=-1).sum())
         n_free = int((~args[1]).sum())
