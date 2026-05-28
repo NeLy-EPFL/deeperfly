@@ -11,7 +11,7 @@ Two solvers are provided:
   normal equations, or a dense QR factorisation as the linear solver.
 
 The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
-``pts2d``) matches :mod:`deeperfly.bundle_adjustment`; build it with that
+``pts2d``) is defined in :mod:`deeperfly.ba_state`; build it with that
 module's :func:`prep_args`.
 """
 
@@ -26,7 +26,7 @@ from jaxtyping import Array, Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
-from .multiview_geom_jax import project_one
+from .geometry import project_one
 
 jax.config.update("jax_enable_x64", True)
 
@@ -62,7 +62,7 @@ def bundle_adjust(
     Parameters
     ----------
     values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
-        See :class:`deeperfly.bundle_adjustment.BAState`.
+        See :class:`deeperfly.ba_state.BAState`.
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`.
 
@@ -236,7 +236,7 @@ def bundle_adjust_optx(
     Parameters
     ----------
     values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
-        See :class:`deeperfly.bundle_adjustment.BAState`.
+        See :class:`deeperfly.ba_state.BAState`.
     rtol, atol, max_steps, verbose
         Optimistix LM termination criteria.
     linear_solver

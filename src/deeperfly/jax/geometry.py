@@ -1,6 +1,6 @@
 """Multi-view geometry primitives (JAX).
 
-JAX equivalents of :mod:`deeperfly.multiview_geom`. See that module for
+JAX equivalents of :mod:`deeperfly.np.geometry`. See that module for
 conventions and the derivations of the rotation-conversion numerics. All
 functions here are JIT- and grad-friendly.
 
@@ -17,7 +17,7 @@ from jaxtyping import Array, Float
 
 jax.config.update("jax_enable_x64", True)
 
-# See multiview_geom.py for the meaning of these thresholds.
+# See deeperfly.np.geometry for the meaning of these thresholds.
 _SMALL_THETA_SQ = 1e-8
 _NEAR_PI_SIN_THRESH = 1e-5
 
@@ -27,7 +27,7 @@ def intr_to_kmat(
 ) -> Float[Array, "*batch 3 3"]:
     """Build 3x3 camera intrinsic matrices from packed intrinsics.
 
-    See :func:`deeperfly.multiview_geom.intr_to_kmat`.
+    See :func:`deeperfly.np.geometry.intr_to_kmat`.
     """
     kmat = jnp.zeros((*intr.shape[:-1], 3, 3))
     kmat = kmat.at[..., 0, 0].set(intr[..., 0])
@@ -42,7 +42,7 @@ def rvec_to_rmat(
 ) -> Float[Array, "*batch 3 3"]:
     """Convert axis-angle rotation vectors to rotation matrices (Rodrigues).
 
-    See :func:`deeperfly.multiview_geom.rvec_to_rmat`.
+    See :func:`deeperfly.np.geometry.rvec_to_rmat`.
     """
     theta_sq = jnp.einsum("...i,...i->...", rvec, rvec)
     theta = jnp.sqrt(theta_sq)
@@ -78,7 +78,7 @@ def rmat_to_rvec(
 ) -> Float[Array, "*batch 3"]:
     """Convert rotation matrices to axis-angle rotation vectors.
 
-    See :func:`deeperfly.multiview_geom.rmat_to_rvec`.
+    See :func:`deeperfly.np.geometry.rmat_to_rvec`.
     """
     r00, r01, r02 = rmat[..., 0, 0], rmat[..., 0, 1], rmat[..., 0, 2]
     r10, r11, r12 = rmat[..., 1, 0], rmat[..., 1, 1], rmat[..., 1, 2]
@@ -115,7 +115,7 @@ def project(
 ) -> Float[Array, "*cams *pts 2"]:
     """Project 3D world points to 2D image points using 3x4 projection matrices.
 
-    See :func:`deeperfly.multiview_geom.project`.
+    See :func:`deeperfly.np.geometry.project`.
     """
     output_shape = (*pmats.shape[:-2], *pts3d.shape[:-1], 2)
     pmats_flat = pmats.reshape(-1, 3, 4)
@@ -131,7 +131,7 @@ def triangulate_dlt(
 ) -> Float[Array, "*pts 3"]:
     """Triangulate 3D points by direct linear transformation (DLT).
 
-    See :func:`deeperfly.multiview_geom.triangulate_dlt`.
+    See :func:`deeperfly.np.geometry.triangulate_dlt`.
     """
     a = jnp.einsum("v...i,vj->...vij", pts2d, pmats[:, 2]) - pmats[:, :2]
     valid = jnp.moveaxis(jnp.isfinite(pts2d).all(axis=-1), 0, -1)
@@ -149,7 +149,7 @@ def distort(
 ) -> Float[Array, "V *pts 2"]:
     """Apply OpenCV-style radial + tangential + thin-prism distortion.
 
-    See :func:`deeperfly.multiview_geom.distort`.
+    See :func:`deeperfly.np.geometry.distort`.
     """
     n = dists.shape[-1]
     if n == 0:
@@ -207,7 +207,7 @@ def project_full(
 ) -> Float[Array, "V *pts 2"]:
     """Project 3D world points through full camera models.
 
-    See :func:`deeperfly.multiview_geom.project_full`.
+    See :func:`deeperfly.np.geometry.project_full`.
     """
     pts_dims = pts3d.shape[:-1]
     rmats = rvec_to_rmat(rvecs)
