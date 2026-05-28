@@ -1,147 +1,135 @@
+"""Bundle adjustment with JAX-accelerated residuals and Jacobians.
+
+Two solvers are provided:
+
+- :func:`bundle_adjust` wraps :func:`scipy.optimize.least_squares` (TRF +
+  LSMR). The per-observation residual and its Jacobian are computed via
+  :func:`jax.vmap` + :func:`jax.jacfwd` on :func:`project_one`, then re-assembled
+  into a sparse SciPy matrix using the precomputed sparsity pattern.
+- :func:`bundle_adjust_optx` runs :mod:`optimistix` Levenberg--Marquardt
+  entirely inside JAX, using either matrix-free LSMR, matrix-free CG on the
+  normal equations, or a dense QR factorisation as the linear solver.
+
+The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
+``pts2d``) matches :mod:`deeperfly.bundle_adjustment`; build it with that
+module's :func:`prep_args`.
+"""
+
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
 import optimistix as optx
-from scipy.optimize import least_squares
+from jaxtyping import Array, Bool, Float, Int
+from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
-from .multiview_geom import intr2kmat, rvec2mat, triangulate_dlt
+
 from .multiview_geom_jax import project_one
 
 jax.config.update("jax_enable_x64", True)
 
 
-def initialize_pts3d(
-    pts2d: np.ndarray,
-    rvecs: np.ndarray,
-    tvecs: np.ndarray,
-    intrs: np.ndarray,
-):
-    kmat = intr2kmat(intrs)
-    rtmat = np.concatenate((rvec2mat(rvecs), tvecs[..., None]), axis=-1)
-    return triangulate_dlt(kmat @ rtmat, pts2d)
-
-
-def prep_args(
-    rvecs: np.ndarray,
-    tvecs: np.ndarray,
-    intrs: np.ndarray,
-    dists: np.ndarray,
-    pts2d: np.ndarray,
-):
-    pts3d = initialize_pts3d(pts2d, rvecs, tvecs, intrs)
-    arrs = [rvecs, tvecs, intrs, dists, pts3d]
-    values = np.concatenate([a.ravel() for a in arrs])
-    size_cumsum = [0, *np.cumsum([a.size for a in arrs])]
-    fixed = np.zeros_like(values, dtype=bool)
-    fixed[size_cumsum[2] : size_cumsum[4]] = True  # fix intrinsics and distortions
-    rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx = (
-        np.arange(a.size).reshape(a.shape) + size_cumsum[i] for i, a in enumerate(arrs)
-    )
-    intrs_idx = np.stack(
-        (intrs_idx,) * len(rvecs), axis=0
-    )  # broadcast intrinsics to all cameras
-    dists_idx = np.stack(
-        (dists_idx,) * len(rvecs), axis=0
-    )  # broadcast distortions to all cameras
-    return values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
-
-
+# Per-observation projection and its Jacobian w.r.t. all five parameter groups
+# (pt3d, rvec, tvec, intr, dist). The Jacobian tuple is returned in the order
+# of project_one's arguments and we keep cols_per_obs aligned with it below.
 _project_per_obs = jax.jit(jax.vmap(project_one))
 _jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def bundle_adjust(
-    values: np.ndarray,
-    fixed: np.ndarray,
-    rvecs_idx: np.ndarray,
-    tvecs_idx: np.ndarray,
-    intrs_idx: np.ndarray,
-    dists_idx: np.ndarray,
-    pts3d_idx: np.ndarray,
-    pts2d: np.ndarray,
-    loss="linear",
-    f_scale=1.0,
-    max_nfev=1000,
+    values: Float[np.ndarray, "n_params"],
+    fixed: Bool[np.ndarray, "n_params"],
+    rvecs_idx: Int[np.ndarray, "V 3"],
+    tvecs_idx: Int[np.ndarray, "V 3"],
+    intrs_idx: Int[np.ndarray, "V P"],
+    dists_idx: Int[np.ndarray, "V K"],
+    pts3d_idx: Int[np.ndarray, "N 3"],
+    pts2d: Float[np.ndarray, "V N 2"],
+    loss: str = "linear",
+    f_scale: float = 1.0,
+    max_nfev: int = 1000,
     **kwargs,
-):
-    """Bundle adjustment
+) -> tuple[
+    OptimizeResult, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+]:
+    """Bundle adjustment with a JAX-computed analytic Jacobian.
+
+    Drop-in replacement for :func:`deeperfly.bundle_adjustment.bundle_adjust`:
+    same packed-state interface, same return shape.
 
     Parameters
     ----------
-    values : np.ndarray
-        1D array containing values of parameters
-    fixed : np.ndarray
-        Boolean mask indicating which values are fixed (not optimized)
-    rvecs_idx : np.ndarray
-        Indices of rotation vectors in `values` (i.e., values[rvecs_idx] gives the rotation vectors)
-    tvecs_idx : np.ndarray
-        Indices of translation vectors in `values` (i.e., values[tvecs_idx] gives the translation vectors)
-    intrs_idx : np.ndarray
-        Indices of intrinsic parameters in `values` (i.e., values[intrs_idx] gives the intrinsic parameters)
-    dists_idx : np.ndarray
-        Indices of distortion parameters in `values` (i.e., values[dists_idx] gives the distortion parameters)
-    pts3d_idx : np.ndarray
-        Indices of 3D points in `values` (i.e., values[pts3d_idx] gives the 3D points)
-    pts2d : np.ndarray
-        2D points (observations)
+    values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
+        See :class:`deeperfly.bundle_adjustment.BAState`.
+    loss, f_scale, max_nfev, **kwargs
+        Forwarded to :func:`scipy.optimize.least_squares`.
 
+    Returns
+    -------
+    ``(result, (rvecs, tvecs, intrs, dists, pts3d))``.
     """
-
-    def get_lr_idx(idx):
-        l_idx = ~fixed[idx]
-        r_idx = np.cumsum(~fixed)[idx][l_idx] - 1
-        return l_idx, r_idx
-
-    obs_v, obs_n = np.where(np.isfinite(pts2d).all(axis=-1))
-    pts2d_obs = pts2d[obs_v, obs_n]
-    n_obs = len(obs_v)
+    obs_view, obs_pt = np.where(np.isfinite(pts2d).all(axis=-1))
+    pts2d_observed = pts2d[obs_view, obs_pt]
+    n_obs = len(obs_view)
     n_free = int((~fixed).sum())
 
-    x = values[~fixed]
+    x0 = values[~fixed]
     rvecs = values[rvecs_idx]
     tvecs = values[tvecs_idx]
     intrs = values[intrs_idx]
     dists = values[dists_idx]
     pts3d = values[pts3d_idx]
-    rvecs_idx_l, rvecs_idx_r = get_lr_idx(rvecs_idx)
-    tvecs_idx_l, tvecs_idx_r = get_lr_idx(tvecs_idx)
-    intrs_idx_l, intrs_idx_r = get_lr_idx(intrs_idx)
-    dists_idx_l, dists_idx_r = get_lr_idx(dists_idx)
-    pts3d_idx_l, pts3d_idx_r = get_lr_idx(pts3d_idx)
+
+    free_cumsum = np.cumsum(~fixed)
+
+    def free_assign(idx):
+        assign_mask = ~fixed[idx]
+        source_idx = free_cumsum[idx][assign_mask] - 1
+        return assign_mask, source_idx
+
+    rvecs_assign = free_assign(rvecs_idx)
+    tvecs_assign = free_assign(tvecs_idx)
+    intrs_assign = free_assign(intrs_idx)
+    dists_assign = free_assign(dists_idx)
+    pts3d_assign = free_assign(pts3d_idx)
 
     def unpack(x):
-        rvecs[rvecs_idx_l] = x[rvecs_idx_r]
-        tvecs[tvecs_idx_l] = x[tvecs_idx_r]
-        intrs[intrs_idx_l] = x[intrs_idx_r]
-        dists[dists_idx_l] = x[dists_idx_r]
-        pts3d[pts3d_idx_l] = x[pts3d_idx_r]
+        rvecs[rvecs_assign[0]] = x[rvecs_assign[1]]
+        tvecs[tvecs_assign[0]] = x[tvecs_assign[1]]
+        intrs[intrs_assign[0]] = x[intrs_assign[1]]
+        dists[dists_assign[0]] = x[dists_assign[1]]
+        pts3d[pts3d_assign[0]] = x[pts3d_assign[1]]
         return rvecs, tvecs, intrs, dists, pts3d
+
+    def _project_obs(rvecs, tvecs, intrs, dists, pts3d):
+        return _project_per_obs(
+            jnp.asarray(pts3d[obs_pt]),
+            jnp.asarray(rvecs[obs_view]),
+            jnp.asarray(tvecs[obs_view]),
+            jnp.asarray(intrs[obs_view]),
+            jnp.asarray(dists[obs_view]),
+        )
 
     def residuals(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
-        p2ds_proj = _project_per_obs(
-            jnp.asarray(rvecs[obs_v]),
-            jnp.asarray(tvecs[obs_v]),
-            jnp.asarray(intrs[obs_v]),
-            jnp.asarray(dists[obs_v]),
-            jnp.asarray(pts3d[obs_n]),
-        )
-        return (np.asarray(p2ds_proj) - pts2d_obs).ravel()
+        pts2d_predicted = _project_obs(rvecs, tvecs, intrs, dists, pts3d)
+        return (np.asarray(pts2d_predicted) - pts2d_observed).ravel()
 
-    # Precompute the (row, col) coordinates of nonzero Jacobian entries. Each
-    # observation contributes a dense (2, total_cols_per_obs) block whose
-    # columns come from the rvec/tvec/intr/dist/pt3d slots it touches. Fixed
-    # parameters are dropped via the `valid` mask.
+    # Sparsity pattern. Each observation's two residual rows depend on:
+    # the 3D point's slot plus its view's rvec / tvec / intr / dist slots.
+    # The column order MUST match the order of the Jacobian tuple returned
+    # by ``_jac_per_obs`` (which is the order of project_one's arguments).
     free_idx_map = np.full(values.size, -1, dtype=np.int64)
     free_idx_map[~fixed] = np.arange(n_free)
     cols_per_obs = np.concatenate(
         [
-            rvecs_idx[obs_v],
-            tvecs_idx[obs_v],
-            intrs_idx[obs_v],
-            dists_idx[obs_v],
-            pts3d_idx[obs_n],
+            pts3d_idx[obs_pt],
+            rvecs_idx[obs_view],
+            tvecs_idx[obs_view],
+            intrs_idx[obs_view],
+            dists_idx[obs_view],
         ],
         axis=1,
     )
@@ -150,31 +138,27 @@ def bundle_adjust(
     cols_nz = free_cols_per_obs[valid]
     obs_idx = np.broadcast_to(np.arange(n_obs)[:, None], cols_per_obs.shape)
     rows_x = 2 * obs_idx[valid]
-    rows_y = rows_x + 1
-    rows_combined = np.concatenate([rows_x, rows_y])
-    cols_combined = np.concatenate([cols_nz, cols_nz])
+    rows = np.concatenate([rows_x, rows_x + 1])
+    cols = np.concatenate([cols_nz, cols_nz])
 
     def jac(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
-        J_blocks = _jac_per_obs(
-            jnp.asarray(rvecs[obs_v]),
-            jnp.asarray(tvecs[obs_v]),
-            jnp.asarray(intrs[obs_v]),
-            jnp.asarray(dists[obs_v]),
-            jnp.asarray(pts3d[obs_n]),
+        jac_blocks = _jac_per_obs(
+            jnp.asarray(pts3d[obs_pt]),
+            jnp.asarray(rvecs[obs_view]),
+            jnp.asarray(tvecs[obs_view]),
+            jnp.asarray(intrs[obs_view]),
+            jnp.asarray(dists[obs_view]),
         )
-        # tuple of 5 arrays, each (n_obs, 2, *param_dim); concat along last axis
-        # to match `cols_per_obs` column ordering.
-        J = np.concatenate([np.asarray(jb) for jb in J_blocks], axis=-1)
-        data = np.concatenate([J[:, 0, :][valid], J[:, 1, :][valid]])
-        return csr_matrix(
-            (data, (rows_combined, cols_combined)),
-            shape=(2 * n_obs, n_free),
-        )
+        # Each block is (n_obs, 2, *param_dim); concatenate along the last
+        # axis to align with cols_per_obs above.
+        jac_full = np.concatenate([np.asarray(j) for j in jac_blocks], axis=-1)
+        data = np.concatenate([jac_full[:, 0, :][valid], jac_full[:, 1, :][valid]])
+        return csr_matrix((data, (rows, cols)), shape=(2 * n_obs, n_free))
 
-    res = least_squares(
+    result = least_squares(
         residuals,
-        x,
+        x0,
         jac=jac,
         method="trf",
         tr_solver="lsmr",
@@ -183,14 +167,21 @@ def bundle_adjust(
         max_nfev=max_nfev,
         **kwargs,
     )
-    return res, unpack(res.x)
+    return result, unpack(result.x)
+
+
+# -- Optimistix solver (pure-JAX Levenberg--Marquardt) -----------------------
 
 
 _project_per_obs_vmap = jax.vmap(project_one)
 
 
-def _optx_residuals(x, args):
-    """Pure-JAX residuals for Optimistix. Module-level so JAX caches the trace."""
+def _optx_residuals(x: Float[Array, "n_free"], args: tuple) -> Float[Array, "2*n_obs"]:
+    """Pure-JAX reprojection residuals for Optimistix.
+
+    Module-level (rather than a closure) so JAX's trace cache is reused
+    across repeated calls with the same shapes.
+    """
     (
         values,
         free_idx,
@@ -199,9 +190,9 @@ def _optx_residuals(x, args):
         intrs_idx,
         dists_idx,
         pts3d_idx,
-        obs_v,
-        obs_n,
-        pts2d_obs,
+        obs_view,
+        obs_pt,
+        pts2d_observed,
     ) = args
     full = values.at[free_idx].set(x)
     rvecs = full[rvecs_idx]
@@ -209,21 +200,25 @@ def _optx_residuals(x, args):
     intrs = full[intrs_idx]
     dists = full[dists_idx]
     pts3d = full[pts3d_idx]
-    p2d = _project_per_obs_vmap(
-        rvecs[obs_v], tvecs[obs_v], intrs[obs_v], dists[obs_v], pts3d[obs_n]
+    pts2d_predicted = _project_per_obs_vmap(
+        pts3d[obs_pt],
+        rvecs[obs_view],
+        tvecs[obs_view],
+        intrs[obs_view],
+        dists[obs_view],
     )
-    return (p2d - pts2d_obs).ravel()
+    return (pts2d_predicted - pts2d_observed).ravel()
 
 
 def bundle_adjust_optx(
-    values: np.ndarray,
-    fixed: np.ndarray,
-    rvecs_idx: np.ndarray,
-    tvecs_idx: np.ndarray,
-    intrs_idx: np.ndarray,
-    dists_idx: np.ndarray,
-    pts3d_idx: np.ndarray,
-    pts2d: np.ndarray,
+    values: Float[np.ndarray, "n_params"],
+    fixed: Bool[np.ndarray, "n_params"],
+    rvecs_idx: Int[np.ndarray, "V 3"],
+    tvecs_idx: Int[np.ndarray, "V 3"],
+    intrs_idx: Int[np.ndarray, "V P"],
+    dists_idx: Int[np.ndarray, "V K"],
+    pts3d_idx: Int[np.ndarray, "N 3"],
+    pts2d: Float[np.ndarray, "V N 2"],
     rtol: float = 1e-8,
     atol: float = 1e-8,
     max_steps: int = 1000,
@@ -231,49 +226,66 @@ def bundle_adjust_optx(
     lsmr_rtol: float = 1e-6,
     lsmr_atol: float = 1e-6,
     verbose: bool = False,
-):
+) -> tuple[
+    optx.Solution, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+]:
     """Bundle adjustment via Optimistix Levenberg--Marquardt.
 
-    Same `prep_args` interface as `bundle_adjust`.
+    Same packed-state interface as :func:`bundle_adjust`.
 
-    `linear_solver`:
+    Parameters
+    ----------
+    values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
+        See :class:`deeperfly.bundle_adjustment.BAState`.
+    rtol, atol, max_steps, verbose
+        Optimistix LM termination criteria.
+    linear_solver
+        Linear solver used at each LM step:
+
         - ``"lsmr"`` (default): matrix-free LSMR via JVPs (sparsity-friendly).
         - ``"normal_cg"``: matrix-free CG on the normal equations.
-        - ``"qr"``: materialised dense QR (Optimistix default).
+        - ``"qr"``: dense QR factorisation (Optimistix default).
+    lsmr_rtol, lsmr_atol
+        Tolerances for LSMR / NormalCG (ignored for QR).
+
+    Returns
+    -------
+    ``(solution, (rvecs, tvecs, intrs, dists, pts3d))`` where ``solution`` is
+    the Optimistix solution object.
     """
-    obs_v_np, obs_n_np = np.where(np.isfinite(pts2d).all(axis=-1))
-    free_idx_np = np.where(~fixed)[0]
+    obs_view, obs_pt = np.where(np.isfinite(pts2d).all(axis=-1))
+    free_idx = np.where(~fixed)[0]
 
     args = (
         jnp.asarray(values),
-        jnp.asarray(free_idx_np),
+        jnp.asarray(free_idx),
         jnp.asarray(rvecs_idx),
         jnp.asarray(tvecs_idx),
         jnp.asarray(intrs_idx),
         jnp.asarray(dists_idx),
         jnp.asarray(pts3d_idx),
-        jnp.asarray(obs_v_np),
-        jnp.asarray(obs_n_np),
-        jnp.asarray(pts2d[obs_v_np, obs_n_np]),
+        jnp.asarray(obs_view),
+        jnp.asarray(obs_pt),
+        jnp.asarray(pts2d[obs_view, obs_pt]),
     )
 
     if linear_solver == "lsmr":
-        lin = lx.LSMR(rtol=lsmr_rtol, atol=lsmr_atol)
+        linear = lx.LSMR(rtol=lsmr_rtol, atol=lsmr_atol)
     elif linear_solver == "normal_cg":
-        lin = lx.NormalCG(rtol=lsmr_rtol, atol=lsmr_atol)
+        linear = lx.NormalCG(rtol=lsmr_rtol, atol=lsmr_atol)
     elif linear_solver == "qr":
-        lin = lx.QR()
+        linear = lx.QR()
     else:
-        raise ValueError(f"unknown linear_solver: {linear_solver}")
+        raise ValueError(f"unknown linear_solver: {linear_solver!r}")
 
     solver = optx.LevenbergMarquardt(
         rtol=rtol,
         atol=atol,
-        linear_solver=lin,
+        linear_solver=linear,
         verbose=verbose,
     )
     x0 = args[0][args[1]]
-    sol = optx.least_squares(
+    solution = optx.least_squares(
         _optx_residuals,
         solver,
         x0,
@@ -282,8 +294,9 @@ def bundle_adjust_optx(
         throw=False,
     )
 
-    full_opt = args[0].at[args[1]].set(sol.value)
-    out = tuple(
-        np.asarray(full_opt[ix]) for ix in (args[2], args[3], args[4], args[5], args[6])
+    full_opt = args[0].at[args[1]].set(solution.value)
+    unpacked = tuple(
+        np.asarray(full_opt[idx])
+        for idx in (args[2], args[3], args[4], args[5], args[6])
     )
-    return sol, out
+    return solution, unpacked
