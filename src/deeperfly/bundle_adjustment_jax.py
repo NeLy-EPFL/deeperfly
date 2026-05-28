@@ -1,9 +1,12 @@
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
+import optimistix as optx
 from scipy.optimize import least_squares
 from scipy.sparse import csr_matrix
 from .multiview_geom import intr2kmat, rvec2mat, triangulate_dlt
+from .multiview_geom_jax import project_one
 
 jax.config.update("jax_enable_x64", True)
 
@@ -44,86 +47,8 @@ def prep_args(
     return values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
 
 
-def _rvec2mat_one(rvec):
-    theta2 = jnp.dot(rvec, rvec)
-    theta = jnp.sqrt(theta2)
-    small = theta2 < 1e-8
-    a = jnp.where(
-        small,
-        1 - theta2 / 6 + theta2**2 / 120,
-        jnp.sin(theta) / jnp.where(small, 1.0, theta),
-    )
-    b = jnp.where(
-        small,
-        0.5 - theta2 / 24 + theta2**2 / 720,
-        (1 - jnp.cos(theta)) / jnp.where(small, 1.0, theta2),
-    )
-    rx, ry, rz = rvec[0], rvec[1], rvec[2]
-    W = jnp.array(
-        [
-            [0.0, -rz, ry],
-            [rz, 0.0, -rx],
-            [-ry, rx, 0.0],
-        ]
-    )
-    vvt = jnp.outer(rvec, rvec)
-    return (1 - b * theta2) * jnp.eye(3) + a * W + b * vvt
-
-
-def _distort_one(xy, dist):
-    n = dist.shape[-1]
-    if n == 0:
-        return xy
-    x, y = xy[0], xy[1]
-    x2, y2 = x * x, y * y
-    r2 = x2 + y2
-    mult = 1.0 + dist[0] * r2
-    add_x = jnp.zeros(())
-    add_y = jnp.zeros(())
-    if n >= 2:
-        r4 = r2 * r2
-        mult = mult + dist[1] * r4
-    if n >= 3:
-        xy_prod = x * y
-        add_x = 2 * dist[2] * xy_prod
-        add_y = dist[2] * (r2 + 2 * y2)
-    if n >= 4:
-        add_x = add_x + dist[3] * (r2 + 2 * x2)
-        add_y = add_y + 2 * dist[3] * xy_prod
-    if n >= 5:
-        r6 = r4 * r2
-        mult = mult + dist[4] * r6
-    if n >= 6:
-        den = 1.0 + dist[5] * r2
-        if n >= 7:
-            den = den + dist[6] * r4
-        if n >= 8:
-            den = den + dist[7] * r6
-        mult = mult / den
-    if n >= 9:
-        add_x = add_x + dist[8] * r2
-    if n >= 10:
-        add_x = add_x + dist[9] * r4
-    if n >= 11:
-        add_y = add_y + dist[10] * r2
-    if n >= 12:
-        add_y = add_y + dist[11] * r4
-    return jnp.stack([x * mult + add_x, y * mult + add_y])
-
-
-def _project_one(rvec, tvec, intr, dist, pt3d):
-    """Project a single 3D point through a single camera. Returns shape (2,)."""
-    R = _rvec2mat_one(rvec)
-    p_cam = R @ pt3d + tvec
-    xy = p_cam[:2] / p_cam[2]
-    xy = _distort_one(xy, dist)
-    fx, fy = intr[0], intr[-3]
-    cx, cy = intr[-2], intr[-1]
-    return jnp.stack([fx * xy[0] + cx, fy * xy[1] + cy])
-
-
-_project_per_obs = jax.jit(jax.vmap(_project_one))
-_jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(_project_one, argnums=(0, 1, 2, 3, 4))))
+_project_per_obs = jax.jit(jax.vmap(project_one))
+_jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def bundle_adjust(
@@ -259,3 +184,106 @@ def bundle_adjust(
         **kwargs,
     )
     return res, unpack(res.x)
+
+
+_project_per_obs_vmap = jax.vmap(project_one)
+
+
+def _optx_residuals(x, args):
+    """Pure-JAX residuals for Optimistix. Module-level so JAX caches the trace."""
+    (
+        values,
+        free_idx,
+        rvecs_idx,
+        tvecs_idx,
+        intrs_idx,
+        dists_idx,
+        pts3d_idx,
+        obs_v,
+        obs_n,
+        pts2d_obs,
+    ) = args
+    full = values.at[free_idx].set(x)
+    rvecs = full[rvecs_idx]
+    tvecs = full[tvecs_idx]
+    intrs = full[intrs_idx]
+    dists = full[dists_idx]
+    pts3d = full[pts3d_idx]
+    p2d = _project_per_obs_vmap(
+        rvecs[obs_v], tvecs[obs_v], intrs[obs_v], dists[obs_v], pts3d[obs_n]
+    )
+    return (p2d - pts2d_obs).ravel()
+
+
+def bundle_adjust_optx(
+    values: np.ndarray,
+    fixed: np.ndarray,
+    rvecs_idx: np.ndarray,
+    tvecs_idx: np.ndarray,
+    intrs_idx: np.ndarray,
+    dists_idx: np.ndarray,
+    pts3d_idx: np.ndarray,
+    pts2d: np.ndarray,
+    rtol: float = 1e-8,
+    atol: float = 1e-8,
+    max_steps: int = 1000,
+    linear_solver: str = "lsmr",
+    lsmr_rtol: float = 1e-6,
+    lsmr_atol: float = 1e-6,
+    verbose: bool = False,
+):
+    """Bundle adjustment via Optimistix Levenberg--Marquardt.
+
+    Same `prep_args` interface as `bundle_adjust`.
+
+    `linear_solver`:
+        - ``"lsmr"`` (default): matrix-free LSMR via JVPs (sparsity-friendly).
+        - ``"normal_cg"``: matrix-free CG on the normal equations.
+        - ``"qr"``: materialised dense QR (Optimistix default).
+    """
+    obs_v_np, obs_n_np = np.where(np.isfinite(pts2d).all(axis=-1))
+    free_idx_np = np.where(~fixed)[0]
+
+    args = (
+        jnp.asarray(values),
+        jnp.asarray(free_idx_np),
+        jnp.asarray(rvecs_idx),
+        jnp.asarray(tvecs_idx),
+        jnp.asarray(intrs_idx),
+        jnp.asarray(dists_idx),
+        jnp.asarray(pts3d_idx),
+        jnp.asarray(obs_v_np),
+        jnp.asarray(obs_n_np),
+        jnp.asarray(pts2d[obs_v_np, obs_n_np]),
+    )
+
+    if linear_solver == "lsmr":
+        lin = lx.LSMR(rtol=lsmr_rtol, atol=lsmr_atol)
+    elif linear_solver == "normal_cg":
+        lin = lx.NormalCG(rtol=lsmr_rtol, atol=lsmr_atol)
+    elif linear_solver == "qr":
+        lin = lx.QR()
+    else:
+        raise ValueError(f"unknown linear_solver: {linear_solver}")
+
+    solver = optx.LevenbergMarquardt(
+        rtol=rtol,
+        atol=atol,
+        linear_solver=lin,
+        verbose=verbose,
+    )
+    x0 = args[0][args[1]]
+    sol = optx.least_squares(
+        _optx_residuals,
+        solver,
+        x0,
+        args=args,
+        max_steps=max_steps,
+        throw=False,
+    )
+
+    full_opt = args[0].at[args[1]].set(sol.value)
+    out = tuple(
+        np.asarray(full_opt[ix]) for ix in (args[2], args[3], args[4], args[5], args[6])
+    )
+    return sol, out
