@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Bool, Float, Int
+from jaxtyping import Array, Bool, Float, Int
 
 from ..geometry import intr_to_kmat, rvec_to_rmat, triangulate_dlt
 
@@ -30,34 +31,41 @@ class BAState(NamedTuple):
     ``pts3d`` arrays. ``pts2d`` is the observation tensor.
     """
 
-    values: Float[np.ndarray, "n_params"]
-    fixed: Bool[np.ndarray, "n_params"]
-    rvecs_idx: Int[np.ndarray, "V 3"]
-    tvecs_idx: Int[np.ndarray, "V 3"]
-    intrs_idx: Int[np.ndarray, "V P"]
-    dists_idx: Int[np.ndarray, "V K"]
-    pts3d_idx: Int[np.ndarray, "N 3"]
-    pts2d: Float[np.ndarray, "V N 2"]
+    values: Float[Array, "n_params"]
+    fixed: Bool[Array, "n_params"]
+    rvecs_idx: Int[Array, "V 3"]
+    tvecs_idx: Int[Array, "V 3"]
+    intrs_idx: Int[Array, "V P"]
+    dists_idx: Int[Array, "V K"]
+    pts3d_idx: Int[Array, "N 3"]
+    pts2d: Float[Array, "V N 2"]
 
 
 def initialize_pts3d(
-    pts2d: Float[np.ndarray, "V *pts 2"],
-    rvecs: Float[np.ndarray, "V 3"],
-    tvecs: Float[np.ndarray, "V 3"],
-    intrs: Float[np.ndarray, "V P"] | Float[np.ndarray, "P"],
-) -> Float[np.ndarray, "*pts 3"]:
+    pts2d: Float[Array, "V *pts 2"],
+    rvecs: Float[Array, "V 3"],
+    tvecs: Float[Array, "V 3"],
+    intrs: Float[Array, "V P"] | Float[Array, "P"],
+) -> Float[Array, "*pts 3"]:
     """Triangulate initial 3D points from 2D observations and camera poses."""
-    kmat = np.asarray(intr_to_kmat(intrs))
-    rtmat = np.concatenate((np.asarray(rvec_to_rmat(rvecs)), tvecs[..., None]), axis=-1)
-    return np.asarray(triangulate_dlt(pts2d, kmat @ rtmat))
+    kmat = intr_to_kmat(intrs)
+    rtmat = jnp.concatenate(
+        (jnp.asarray(rvec_to_rmat(rvecs)), tvecs[..., None]), axis=-1
+    )
+    return triangulate_dlt(pts2d, kmat @ rtmat)
 
 
 def prep_args(
-    pts2d: Float[np.ndarray, "V N 2"],
-    rvecs: Float[np.ndarray, "V 3"],
-    tvecs: Float[np.ndarray, "V 3"],
-    intrs: Float[np.ndarray, "V P"] | Float[np.ndarray, "P"],
-    dists: Float[np.ndarray, "V K"] | Float[np.ndarray, "K"],
+    pts2d: Float[Array, "cams pts 2"],
+    rvecs: Float[Array, "cams 3"],
+    tvecs: Float[Array, "cams 3"],
+    intrs: Float[Array, "cams P"] | Float[Array, "P"],
+    dists: Float[Array, "cams K"] | Float[Array, "K"] | None = None,
+    pts3d: Float[Array, "N 3"] | None = None,
+    fix_rvecs: Bool[Array, "cams"] | Bool[Array, "cams 3"] | int | bool = False,
+    fix_tvecs: Bool[Array, "cams"] | Bool[Array, "cams 3"] | int | bool = False,
+    fix_intrs: Bool[Array, "cams"] | Bool[Array, "cams P"] | int | bool = True,
+    fix_dists: Bool[Array, "cams"] | Bool[Array, "cams K"] | int | bool = True,
 ) -> BAState:
     """Build a :class:`BAState` from observations and initial camera parameters.
 
@@ -76,25 +84,74 @@ def prep_args(
     intrs, dists
         Initial intrinsics / distortion of shape ``(V, P)`` and ``(V, K)`` respectively,
         or ``(P,)`` and ``(K,)`` respectively if shared across views.
+    fix_rvecs, fix_tvecs, fix_intrs, fix_dists
+        Which parameters to hold constant. Accepts:
+
+        - ``bool``: fix all (or none) of this parameter group.
+        - ``int``: fix the parameters of camera at that index (e.g.
+          ``fix_rvecs=0`` and ``fix_tvecs=0`` anchors camera 0).
+        - ``Bool[Array, "cams"]``: fix per-camera (broadcast across the
+          parameter dim).
+        - ``Bool[Array, "cams P"]`` / ``Bool[Array, "P"]``: a full mask matching
+          the underlying parameter array.
 
     Returns
     -------
     A :class:`BAState` ready to splat into ``bundle_adjust``.
     """
-    pts3d = initialize_pts3d(pts2d, rvecs, tvecs, intrs)
+    if pts3d is None:
+        pts3d = initialize_pts3d(pts2d, rvecs, tvecs, intrs)
+    if dists is None:
+        dists = jnp.zeros((0,))
+
+    n_views = len(rvecs)
+    rvecs = np.asarray(rvecs)
+    tvecs = np.asarray(tvecs)
+    intrs = np.asarray(intrs)
+    dists = np.asarray(dists)
+    pts3d = np.asarray(pts3d)
+    pts2d = np.asarray(pts2d)
+
     arrs = [rvecs, tvecs, intrs, dists, pts3d]
     values = np.concatenate([a.ravel() for a in arrs])
-    size_cumsum = [0, *np.cumsum([a.size for a in arrs])]
-    fixed = np.zeros_like(values, dtype=bool)
-    # Fix intrinsics and distortions by default.
-    fixed[size_cumsum[2] : size_cumsum[4]] = True
-    rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx = (
-        np.arange(a.size).reshape(a.shape) + size_cumsum[i] for i, a in enumerate(arrs)
-    )
-    # Broadcast shared intrinsics / distortions to all V cameras.
-    n_views = len(rvecs)
-    intrs_idx = np.stack((intrs_idx,) * n_views, axis=0)
-    dists_idx = np.stack((dists_idx,) * n_views, axis=0)
+    offsets = np.cumsum([0, *(a.size for a in arrs)])
+
+    rvecs_idx = np.arange(rvecs.size).reshape(rvecs.shape) + offsets[0]
+    tvecs_idx = np.arange(tvecs.size).reshape(tvecs.shape) + offsets[1]
+    intrs_idx = np.arange(intrs.size).reshape(intrs.shape) + offsets[2]
+    dists_idx = np.arange(dists.size).reshape(dists.shape) + offsets[3]
+    pts3d_idx = np.arange(pts3d.size).reshape(pts3d.shape) + offsets[4]
+
+    if intrs_idx.ndim == 1:
+        intrs_idx = np.broadcast_to(intrs_idx, (n_views, *intrs_idx.shape))
+    if dists_idx.ndim == 1:
+        dists_idx = np.broadcast_to(dists_idx, (n_views, *dists_idx.shape))
+
+    fixed = np.zeros(values.size, dtype=bool)
+    fixed[offsets[0] : offsets[1]] = _expand_fix(fix_rvecs, rvecs).ravel()
+    fixed[offsets[1] : offsets[2]] = _expand_fix(fix_tvecs, tvecs).ravel()
+    fixed[offsets[2] : offsets[3]] = _expand_fix(fix_intrs, intrs).ravel()
+    fixed[offsets[3] : offsets[4]] = _expand_fix(fix_dists, dists).ravel()
+
     return BAState(
         values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
+    )
+
+
+def _expand_fix(fix, arr: np.ndarray) -> np.ndarray:
+    """Expand a ``fix_*`` spec to a bool mask matching ``arr.shape``."""
+    # isinstance(True, int) is True, so check bool first.
+    if isinstance(fix, bool):
+        return np.full(arr.shape, fix, dtype=bool)
+    if isinstance(fix, int):
+        mask = np.zeros(arr.shape, dtype=bool)
+        mask[fix] = True
+        return mask
+    fix = np.asarray(fix, dtype=bool)
+    if fix.shape == arr.shape:
+        return fix
+    if fix.ndim == 1 and arr.ndim > 1 and fix.shape[0] == arr.shape[0]:
+        return np.broadcast_to(fix[:, None], arr.shape)
+    raise ValueError(
+        f"fix mask shape {fix.shape} incompatible with parameter shape {arr.shape}"
     )
