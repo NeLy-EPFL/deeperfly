@@ -11,7 +11,6 @@ import numpy as np
 from deeperfly.np.geometry import (
     distort,
     intr_to_kmat,
-    project,
     rmat_to_rvec,
     rvec_to_rmat,
     triangulate_dlt,
@@ -137,7 +136,7 @@ kmats = intr_to_kmat(intrs)
 rtmats = np.concatenate((rmats, tvecs[..., None]), axis=-1)
 pmats = kmats @ rtmats  # (V, 3, 4)
 pts3d = rng.normal(size=(N, 3)) + np.array([0.0, 0.0, 5.0])
-pts2d = project(pts3d, pmats)  # (V, N, 2)
+pts2d = project_pmat(pts3d, pmats)  # (V, N, 2)
 dists = rng.normal(size=(V, 5)) * 0.01
 
 pmats_j, pts3d_j = jnp.asarray(pmats), jnp.asarray(pts3d)
@@ -180,7 +179,7 @@ def bench_jax_with_transfer(fn, *args):
 cases = [
     (
         "project",
-        lambda: project(pts3d, pmats),
+        lambda: project_pmat(pts3d, pmats),
         lambda: project_jit(pts3d_j, pmats_j),
         (pts3d, pmats),
     ),
@@ -238,7 +237,7 @@ for name, np_fn, jax_fn, np_args in cases:
 print()
 print("Max abs diff (numpy vs jax):")
 print(
-    f"  project:         {np.max(np.abs(project(pts3d, pmats) - np.asarray(project_jit(pts3d_j, pmats_j)))):.2e}"
+    f"  project:         {np.max(np.abs(project_pmat(pts3d, pmats) - np.asarray(project_jit(pts3d_j, pmats_j)))):.2e}"
 )
 print(
     f"  triangulate_dlt: {np.nanmax(np.abs(triangulate_dlt(pts2d, pmats) - np.asarray(triangulate_dlt_jit(pts2d_j, pmats_j)))):.2e}"

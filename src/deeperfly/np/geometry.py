@@ -32,22 +32,16 @@ _NEAR_PI_SIN_THRESH = 1e-5
 
 
 def intr_to_kmat(
-    intr: Float[np.ndarray, "*batch P"],
+    intr: Float[np.ndarray, "*batch 3"] | Float[np.ndarray, "*batch 4"],
 ) -> Float[np.ndarray, "*batch 3 3"]:
     """Build 3x3 camera intrinsic matrices from packed intrinsic parameters.
-
-    The packing is ``[fx, ..., fy, cx, cy]``: ``intr[..., 0]`` is ``fx``,
-    ``intr[..., -3]`` is ``fy``, and ``intr[..., -2:]`` is ``(cx, cy)``. This
-    covers the common formats
-
-    - ``[f, cx, cy]`` (shape ``(..., 3)``, shared focal length),
-    - ``[fx, fy, cx, cy]`` (shape ``(..., 4)``),
-    - ``[fx, s, fy, cx, cy]`` (shape ``(..., 5)``; the skew ``s`` is ignored).
 
     Parameters
     ----------
     intr
-        Packed intrinsic parameters of shape ``(..., 3-5)``.
+        Packed intrinsic parameters of shape ``(..., 3)`` or ``(..., 4)``
+        with the last dimensions corresponding to [fx, cx, cy] or
+        [fx, fy, cx, cy], respectively.
 
     Returns
     -------
@@ -166,7 +160,7 @@ def rmat_to_rvec(
     return np.where(near_pi[..., None], rvec_degenerate, rvec)
 
 
-def project(
+def project_pmat(
     pts3d: Float[np.ndarray, "*pts 3"],
     pmats: Float[np.ndarray, "*cams 3 4"],
 ) -> Float[np.ndarray, "*cams *pts 2"]:

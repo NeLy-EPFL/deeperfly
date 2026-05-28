@@ -119,7 +119,7 @@ def main():
         pts3d_opt = full_opt[p3_i]
         obs_v, obs_n = np.where(np.isfinite(pts2d).all(axis=-1))
         proj = np.asarray(
-            jax.vmap(ba_jax.project_one)(
+            jax.vmap(ba_jax.project_full_one)(
                 pts3d_opt[obs_n],
                 rvecs_opt[obs_v],
                 tvecs_opt[obs_v],

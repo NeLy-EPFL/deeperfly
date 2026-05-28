@@ -26,7 +26,7 @@ from jaxtyping import Array, Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
-from .geometry import project_one
+from .geometry import project_full_one
 
 jax.config.update("jax_enable_x64", True)
 
@@ -34,8 +34,8 @@ jax.config.update("jax_enable_x64", True)
 # Per-observation projection and its Jacobian w.r.t. all five parameter groups
 # (pt3d, rvec, tvec, intr, dist). The Jacobian tuple is returned in the order
 # of project_one's arguments and we keep cols_per_obs aligned with it below.
-_project_per_obs = jax.jit(jax.vmap(project_one))
-_jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_one, argnums=(0, 1, 2, 3, 4))))
+_project_per_obs = jax.jit(jax.vmap(project_full_one))
+_jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def bundle_adjust(
@@ -173,7 +173,7 @@ def bundle_adjust(
 # -- Optimistix solver (pure-JAX Levenberg--Marquardt) -----------------------
 
 
-_project_per_obs_vmap = jax.vmap(project_one)
+_project_per_obs_vmap = jax.vmap(project_full_one)
 
 
 def _optx_residuals(x: Float[Array, "n_free"], args: tuple) -> Float[Array, "2*n_obs"]:
