@@ -60,7 +60,7 @@ def cost_from_residuals(r):
 
 
 def run_scipy(args, max_nfev=1000):
-    res, _ = ba_jax.bundle_adjust(*args, max_nfev=max_nfev)
+    res, _ = ba_jax.bundle_adjust_scipy(*args, max_nfev=max_nfev)
     return res
 
 
