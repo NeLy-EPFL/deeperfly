@@ -6,8 +6,8 @@
   into a sparse SciPy matrix using the precomputed sparsity pattern.
 
   The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
-``pts2d``) is defined in :mod:`deeperfly.ba_state`; build it with that
-module's :func:`prep_args`.
+``pts2d``) is defined in :mod:`deeperfly.bundle_adjustment.state`; build it with
+that module's :func:`build_state`.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ _project_per_obs = jax.jit(jax.vmap(project_full_one))
 _jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
-def bundle_adjust_scipy(
+def bundle_adjust(
     values: Float[np.ndarray, "n_params"],
     fixed: Bool[np.ndarray, "n_params"],
     rvecs_idx: Int[np.ndarray, "V 3"],
@@ -57,13 +57,13 @@ def bundle_adjust_scipy(
 ) -> tuple[OptimizeResult, BASolution]:
     """Bundle adjustment with a JAX-computed analytic Jacobian.
 
-    Drop-in replacement for :func:`deeperfly.bundle_adjustment.bundle_adjust`:
-    same packed-state interface, same return shape.
+    Low-level solver over the packed state. For the config-driven, camera-aware
+    entry point see :func:`deeperfly.bundle_adjustment.bundle_adjust`.
 
     Parameters
     ----------
     values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
-        See :class:`deeperfly.ba_state.BAState`.
+        See :class:`deeperfly.bundle_adjustment.state.BAState`.
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`.
 

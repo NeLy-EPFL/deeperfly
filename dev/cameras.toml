@@ -1,0 +1,42 @@
+# Example rig: an array of cameras orbiting an object near the world origin.
+# `[camera_defaults]` is merged into every camera; per-camera keys override it.
+
+[camera_defaults]
+focal_length_px = [22388.125, 22388.125]    # scalar is also allowed when fx == fy
+principal_point_px = [511.5, 255.5]
+distortion_coefficients = []
+look_at = [0.0, 0.0, 0.0]
+distance = 107.463
+elevation_deg = 0.0
+roll_deg = 0.0
+
+[cameras.rh]
+azimuth_deg = -120
+[cameras.rm]
+azimuth_deg = -90
+[cameras.rf]
+azimuth_deg = -45
+[cameras.f]
+azimuth_deg = 0
+[cameras.lf]
+azimuth_deg = 45
+[cameras.lm]
+azimuth_deg = 90
+[cameras.lh]
+azimuth_deg = 120
+
+[bundle_adjustment]
+solver = "scipy.least_squares"
+fixed = [
+    "*.intr",     # keep all intrinsics fixed
+    "f.rvec",     # anchor the front camera's orientation ...
+    "f.tvec",     # ... and position (fixes the world gauge)
+    "rm.tvec[2]",
+]
+shared = [
+    ["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"],
+]
+
+[bundle_adjustment.scipy.least_squares]   # forwarded to scipy.optimize.least_squares
+max_nfev = 2000
+loss = "linear"
