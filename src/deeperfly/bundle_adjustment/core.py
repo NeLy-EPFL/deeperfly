@@ -44,6 +44,16 @@ _project_per_obs = jax.jit(jax.vmap(project_full_one))
 _jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
+def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
+    """Euclidean distance between two 3D points (per-bone primitive)."""
+    return jnp.linalg.norm(pi - pj)
+
+
+# Bone length and its Jacobian w.r.t. each endpoint, vmapped over bones.
+_bone_len_per = jax.jit(jax.vmap(_bone_length_one))
+_bone_jac_per = jax.jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
+
+
 def bundle_adjust(
     values: Float[np.ndarray, "n_params"],
     fixed: Bool[np.ndarray, "n_params"],
@@ -56,6 +66,10 @@ def bundle_adjust(
     loss: str = "linear",
     f_scale: float = 1.0,
     max_nfev: int = 1000,
+    weights: Float[np.ndarray, "V N"] | None = None,
+    bone_pairs: Int[np.ndarray, "B 2"] | None = None,
+    bone_targets: Float[np.ndarray, "B"] | None = None,
+    bone_weight: float = 1.0,
     **kwargs,
 ) -> tuple[OptimizeResult, BASolution]:
     """Bundle adjustment with a JAX-computed analytic Jacobian.
@@ -68,7 +82,21 @@ def bundle_adjust(
     values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
         See :class:`deeperfly.bundle_adjustment.state.BAState`.
     loss, f_scale, max_nfev, **kwargs
-        Forwarded to :func:`scipy.optimize.least_squares`.
+        Forwarded to :func:`scipy.optimize.least_squares`. Use ``loss="huber"``
+        with ``f_scale`` set to a pixel threshold for robust calibration.
+    weights
+        Optional per-observation weights of shape ``(V, N)``. Each reprojection
+        residual is scaled by ``sqrt(weight)`` (so the cost is ``weight``
+        times the squared pixel error) -- pass detector confidences here.
+    bone_pairs
+        Optional ``(B, 2)`` point-index pairs adding a soft bone-length prior:
+        for each pair a residual ``bone_weight * (||p_i - p_j|| - target)`` is
+        appended. Indices refer to rows of the points array (``pts3d_idx``).
+    bone_targets
+        Target lengths of shape ``(B,)`` for ``bone_pairs`` (required when
+        ``bone_pairs`` is given).
+    bone_weight
+        Scalar weight on the bone-length residuals.
 
     Returns
     -------
@@ -78,6 +106,22 @@ def bundle_adjust(
     pts2d_observed = pts2d[obs_view, obs_pt]
     n_obs = len(obs_view)
     n_free = int((~fixed).sum())
+
+    if weights is None:
+        sqrt_w = np.ones(n_obs)
+    else:
+        sqrt_w = np.sqrt(np.asarray(weights, dtype=float)[obs_view, obs_pt])
+
+    use_bones = bone_pairs is not None and len(bone_pairs) > 0
+    if use_bones:
+        if bone_targets is None:
+            raise ValueError("bone_targets is required when bone_pairs is given")
+        bone_pairs = np.asarray(bone_pairs)
+        bone_targets = np.asarray(bone_targets, dtype=float)
+        bone_i, bone_j = bone_pairs[:, 0], bone_pairs[:, 1]
+        n_bones = len(bone_pairs)
+    else:
+        n_bones = 0
 
     x0 = values[~fixed]
     rvecs = values[rvecs_idx]
@@ -116,10 +160,21 @@ def bundle_adjust(
             jnp.asarray(dists[obs_view]),
         )
 
+    n_resid = 2 * n_obs + n_bones
+
     def residuals(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
         pts2d_predicted = _project_obs(rvecs, tvecs, intrs, dists, pts3d)
-        return (np.asarray(pts2d_predicted) - pts2d_observed).ravel()
+        reproj = (
+            (np.asarray(pts2d_predicted) - pts2d_observed) * sqrt_w[:, None]
+        ).ravel()
+        if not use_bones:
+            return reproj
+        lengths = np.asarray(
+            _bone_len_per(jnp.asarray(pts3d[bone_i]), jnp.asarray(pts3d[bone_j]))
+        )
+        bone_resid = bone_weight * (lengths - bone_targets)
+        return np.concatenate([reproj, bone_resid])
 
     # Sparsity pattern. Each observation's two residual rows depend on:
     # the 3D point's slot plus its view's rvec / tvec / intr / dist slots.
@@ -145,6 +200,22 @@ def bundle_adjust(
     rows = np.concatenate([rows_x, rows_x + 1])
     cols = np.concatenate([cols_nz, cols_nz])
 
+    # Bone-length sparsity. Each bone row b depends only on the 3 coordinate
+    # slots of its two endpoints; its row index sits after the reprojection rows.
+    if use_bones:
+        bone_cols = np.concatenate(
+            [pts3d_idx[bone_i], pts3d_idx[bone_j]], axis=1
+        )  # (B,6)
+        free_bone_cols = free_idx_map[bone_cols]
+        bone_valid = free_bone_cols >= 0
+        bone_rows_all = np.broadcast_to(
+            (2 * n_obs + np.arange(n_bones))[:, None], bone_cols.shape
+        )
+        bone_rows = bone_rows_all[bone_valid]
+        bone_cols_nz = free_bone_cols[bone_valid]
+        rows = np.concatenate([rows, bone_rows])
+        cols = np.concatenate([cols, bone_cols_nz])
+
     def jac(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
         jac_blocks = _jac_per_obs(
@@ -155,10 +226,19 @@ def bundle_adjust(
             jnp.asarray(dists[obs_view]),
         )
         # Each block is (n_obs, 2, *param_dim); concatenate along the last
-        # axis to align with cols_per_obs above.
+        # axis to align with cols_per_obs above. Weight rows by sqrt(weight).
         jac_full = np.concatenate([np.asarray(j) for j in jac_blocks], axis=-1)
+        jac_full = jac_full * sqrt_w[:, None, None]
         data = np.concatenate([jac_full[:, 0, :][valid], jac_full[:, 1, :][valid]])
-        return csr_matrix((data, (rows, cols)), shape=(2 * n_obs, n_free))
+        if use_bones:
+            dpi, dpj = _bone_jac_per(
+                jnp.asarray(pts3d[bone_i]), jnp.asarray(pts3d[bone_j])
+            )
+            bone_jac = bone_weight * np.concatenate(
+                [np.asarray(dpi), np.asarray(dpj)], axis=1
+            )  # (B, 6)
+            data = np.concatenate([data, bone_jac[bone_valid]])
+        return csr_matrix((data, (rows, cols)), shape=(n_resid, n_free))
 
     result = least_squares(
         residuals,

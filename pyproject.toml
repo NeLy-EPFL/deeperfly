@@ -12,10 +12,27 @@ dependencies = [
     "jaxtyping>=0.3.10",
     "numpy>=2.4.6",
     "scipy>=1.14",
+    "h5py>=3.11",
+    "equinox>=0.11",
+    "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.10",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+]
+# Only needed to convert the original PyTorch DeepFly2D weights to the native
+# JAX checkpoint, or to run the PyTorch detector as a fallback backend. Never
+# required for normal (JAX) inference.
+torch = [
+    "torch>=2.2",
+    "torchvision>=0.17",
 ]
 
 [project.scripts]
-deeperfly = "deeperfly:main"
+deeperfly = "deeperfly.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.16,<0.12.0"]
@@ -29,6 +46,8 @@ dev = [
 test = [
     "opencv-python-headless>=4.13.0.92",  # reference implementation cross-checks
     "pytest>=9.0.3",
+    "imageio>=2.34",          # video read/write smoke tests
+    "imageio-ffmpeg>=0.5",
 ]
 
 [tool.pytest.ini_options]

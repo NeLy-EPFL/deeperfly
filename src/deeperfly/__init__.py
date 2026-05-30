@@ -13,19 +13,23 @@ Public surface:
 
 from __future__ import annotations
 
-from . import geometry
+from . import correction, geometry, pipeline, triangulate
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
+from .io import PoseResult
+from .pipeline import run_from_points2d
+from .skeleton import Skeleton
 
 __all__ = [
     "geometry",
+    "triangulate",
+    "correction",
+    "pipeline",
     "Camera",
     "CameraGroup",
+    "Skeleton",
+    "PoseResult",
     "bundle_adjust",
     "bundle_adjust_from_config",
-    "main",
+    "run_from_points2d",
 ]
-
-
-def main() -> None:
-    print("Hello from deeperfly!")
