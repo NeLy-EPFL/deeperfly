@@ -5,7 +5,7 @@ it is at least as fast as PyTorch on the target GPU; otherwise wrap PyTorch
 behind the same ``predict_heatmaps`` / ``heatmap_to_points`` interface. Run on
 the GPU you intend to deploy on:
 
-    uv run --extra torch python dev/bench_pose2d.py --batch 7 --frames 8
+    uv run python dev/bench_pose2d.py --batch 7 --frames 8
 
 Reports images/second for both backends at the given batch shape (the JAX side
 is timed after JIT warmup; the PyTorch side under inference_mode).
@@ -33,8 +33,7 @@ def time_it(fn, *, warmup=2, repeat=10):
 
 def bench_jax(n_images, h=256, w=512):
     import equinox as eqx
-    from deeperfly.pose2d.model import HourglassNet
-    from deeperfly.pose2d.inference import predict_heatmaps
+    from deeperfly.pose2d.backends.jax import HourglassNet, predict_heatmaps
 
     model = HourglassNet.deepfly2d(key=jax.random.PRNGKey(0))
     x = jax.random.normal(
@@ -63,7 +62,7 @@ def bench_torch(n_images, h=256, w=512):
             "torch not installed; skipping PyTorch benchmark (install the 'torch' extra)"
         )
         return None
-    from deeperfly.pose2d import torch_backend
+    from deeperfly.pose2d.backends import torch as torch_backend
 
     device = torch_backend.device()
     model = torch_backend.HourglassNet().eval().to(device)

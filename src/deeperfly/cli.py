@@ -21,17 +21,15 @@ from .pipeline import run_from_points2d
 
 def _load_detector(checkpoint: str | None, backend: str):
     """Load the JAX detector (native .eqx) or the PyTorch detector (.tar)."""
+    from .pose2d import backends
+
     if backend == "torch":
-        from .pose2d import torch_backend
         from .pose2d.download import download_torch_weights
 
         path = checkpoint or download_torch_weights()
-        return torch_backend.load_model(path)
-
-    import jax
+        return backends.load_detector("torch", path)
 
     from .pose2d.download import jax_weights_path
-    from .pose2d.weights import load_checkpoint
 
     path = checkpoint or jax_weights_path()
     if not Path(path).exists():
@@ -39,7 +37,7 @@ def _load_detector(checkpoint: str | None, backend: str):
             f"no JAX checkpoint at {path}. Run 'deeperfly download-weights' and "
             "'deeperfly convert-weights' first, pass --checkpoint, or use --backend torch."
         )
-    return load_checkpoint(path, key=jax.random.PRNGKey(0))
+    return backends.load_detector("jax", path)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -90,14 +88,14 @@ def _cmd_download_weights(args: argparse.Namespace) -> None:
 def _cmd_convert_weights(args: argparse.Namespace) -> None:
     import jax
 
-    from .pose2d.download import download_torch_weights, jax_weights_path
-    from .pose2d.model import HourglassNet
-    from .pose2d.weights import (
+    from .pose2d.backends import infer_num_stacks
+    from .pose2d.backends.jax import (
+        HourglassNet,
         convert_state_dict,
-        infer_num_stacks,
         save_checkpoint,
-        state_dict_from_torch_checkpoint,
     )
+    from .pose2d.backends.torch import state_dict_from_torch_checkpoint
+    from .pose2d.download import download_torch_weights, jax_weights_path
 
     src = args.pth or download_torch_weights()
     sd = state_dict_from_torch_checkpoint(src)

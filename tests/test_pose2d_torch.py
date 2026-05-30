@@ -1,11 +1,11 @@
-"""Numerical equivalence of the JAX hourglass against the PyTorch backend.
+"""Numerical equivalence of the JAX backend against the PyTorch backend.
 
-Skipped unless ``torch`` is installed (the ``torch`` extra). The PyTorch
-reference is ``deeperfly.pose2d.torch_backend`` (a faithful copy of DeepFly2D's
+Skipped unless ``torch`` is installed. The PyTorch reference is
+``deeperfly.pose2d.backends.torch`` (a faithful copy of DeepFly2D's
 ``df2d/model.py``); its random-initialised weights are converted with
-:func:`deeperfly.pose2d.weights.convert_state_dict` and the two forward passes
-must agree. This guards the architecture port and the conversion key-map, and
-confirms :func:`deeperfly.pose2d.inference.detect` works with both backends.
+:func:`deeperfly.pose2d.backends.jax.convert_state_dict` and the two forward
+passes must agree. This guards the architecture port and the conversion key-map,
+and confirms :func:`deeperfly.pose2d.inference.detect` works with both backends.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from deeperfly.pose2d import inference, torch_backend  # noqa: E402
-from deeperfly.pose2d.model import HourglassNet  # noqa: E402
-from deeperfly.pose2d.weights import convert_state_dict  # noqa: E402
+from deeperfly.pose2d import inference  # noqa: E402
+from deeperfly.pose2d.backends import jax as jax_backend  # noqa: E402
+from deeperfly.pose2d.backends import torch as torch_backend  # noqa: E402
 
 
 def _matched_models(num_stacks: int = 2):
@@ -28,8 +28,11 @@ def _matched_models(num_stacks: int = 2):
     torch.manual_seed(0)
     ref = torch_backend.HourglassNet(num_stacks=num_stacks).eval()
     state = {k: v.detach().numpy() for k, v in ref.state_dict().items()}
-    model = convert_state_dict(
-        state, HourglassNet.deepfly2d(key=jax.random.PRNGKey(0), num_stacks=num_stacks)
+    model = jax_backend.convert_state_dict(
+        state,
+        jax_backend.HourglassNet.deepfly2d(
+            key=jax.random.PRNGKey(0), num_stacks=num_stacks
+        ),
     )
     return ref, model
 

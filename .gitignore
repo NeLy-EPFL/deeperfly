@@ -13,3 +13,10 @@ wheels/
 # Virtual environments
 .venv
 *.jpg
+
+# Pipeline outputs (do not commit binary artifacts)
+results/
+results_/
+*.h5
+*.mp4
+*.png

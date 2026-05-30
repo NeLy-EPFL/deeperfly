@@ -10,15 +10,16 @@ correction → visualization.**
 The computer-vision core follows OpenCV's conventions (Rodrigues rotations,
 `projectPoints` distortion, DLT triangulation) and is cross-checked against
 OpenCV in the test suite. Everything geometric is JAX (JIT- and autodiff-
-friendly); the 2D detector ships two co-equal backends behind one interface — a
-JAX (Equinox) port of DeepFly2D's stacked hourglass and the original PyTorch
-network — selectable with `--backend {jax,torch}`.
+friendly); the 2D detector ships two interchangeable backends behind one
+interface — a JAX (Equinox) port of DeepFly2D's stacked hourglass (the default,
+and faster on GPU) and the original PyTorch network — selectable with
+`--backend {jax,torch}`.
 
 ## Pipeline
 
 | Stage | Module | Notes |
 | --- | --- | --- |
-| 2D pose | `pose2d/` | Equinox stacked hourglass (+ PyTorch backend); the original weights convert directly. |
+| 2D pose | `pose2d/` (`backends/{jax,torch}/`) | Stacked hourglass in two backends behind one interface; JAX (Equinox) is the default, PyTorch runs the original weights directly. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
 | Triangulation | `triangulate.py` / `pipeline.reconstruct` | NaN-aware DLT + greedy reprojection-outlier rejection. |
 | Correction | `correction.py` | Procrustes alignment (per side) + One-Euro / Gaussian smoothing. |
@@ -63,12 +64,14 @@ synthetic end-to-end run (no weights required).
 
 ## 2D detector backends
 
-The detector has two co-equal backends — JAX/Equinox and PyTorch — installed by
-default and selectable with `--backend {jax,torch}`. The PyTorch backend runs
-the published `sh8` weights directly; the JAX backend runs the same weights once
+The detector has two interchangeable backends behind one interface, under
+`pose2d/backends/{jax,torch}/` — each exposing the same `HourglassNet` /
+`load_model` / `predict_heatmaps`. Both are installed by default and selectable
+with `--backend {jax,torch}`. The PyTorch backend runs the published `sh8`
+weights directly; the JAX backend (the default) runs the same weights once
 `convert-weights` has produced the native checkpoint, and is validated to match
-PyTorch to within `1e-4` (see `tests/test_pose2d_torch.py`). Benchmark them on
-your GPU and pick the faster one:
+the PyTorch reference numerically (see `tests/test_pose2d_torch.py`). JAX is the
+faster backend on GPU — benchmark them on your own hardware:
 
 ```bash
 uv run python dev/bench_pose2d.py --batch 7 --frames 8

@@ -1,8 +1,8 @@
-"""Tests for the JAX 2D pose detector (no torch required).
+"""Tests for the JAX 2D pose detector backend (no torch required).
 
 Architecture/shape, weight-conversion mechanics (via a torch-free round trip),
 heatmap decoding and the single-side -> full-skeleton assembly are all checked
-here. Numerical equivalence against the original PyTorch network lives in
+here. Numerical equivalence against the original PyTorch backend lives in
 ``test_pose2d_torch.py`` (skipped when torch is absent).
 """
 
@@ -13,9 +13,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from deeperfly.pose2d import inference
-from deeperfly.pose2d.model import HourglassNet
-from deeperfly.pose2d import weights
+from deeperfly.pose2d import backends, inference
+from deeperfly.pose2d.backends.jax import HourglassNet, weights
 
 
 @pytest.fixture
@@ -38,13 +37,13 @@ def test_forward_shapes(model):
 
 def test_deepfly2d_default_is_sh8():
     # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
-    # convert-weights / load_checkpoint build a matching architecture.
+    # convert-weights / load_model build a matching architecture.
     assert HourglassNet.deepfly2d(key=jax.random.PRNGKey(0)).num_stacks == 8
 
 
 def test_batched_inference(model):
     inputs = jax.random.normal(jax.random.PRNGKey(2), (3, 3, 256, 512))
-    hm = inference.predict_heatmaps(model, inputs)
+    hm = backends.predict_heatmaps(model, inputs)
     assert hm.shape == (3, 19, 64, 128)
 
 
@@ -64,7 +63,7 @@ def test_conversion_roundtrip_is_exact(model):
 
 def test_infer_num_stacks_counts_score_heads(model):
     sd = weights.export_state_dict(model)
-    assert weights.infer_num_stacks(sd) == 2
+    assert backends.infer_num_stacks(sd) == 2
     # num_batches_tracked counters are ignored, not treated as unused keys.
     sd["bn1.num_batches_tracked"] = np.zeros((), dtype=np.int64)
     weights.convert_state_dict(
@@ -89,7 +88,7 @@ def test_conversion_unused_key_raises(model):
 def test_checkpoint_save_load(model, tmp_path):
     path = tmp_path / "model.eqx"
     weights.save_checkpoint(model, path)
-    loaded = weights.load_checkpoint(path, key=jax.random.PRNGKey(7), num_stacks=2)
+    loaded = weights.load_model(path, key=jax.random.PRNGKey(7), num_stacks=2)
     x = jax.random.normal(jax.random.PRNGKey(4), (3, 256, 512))
     np.testing.assert_array_equal(
         np.asarray(model.heatmaps(x)), np.asarray(loaded.heatmaps(x))

@@ -1,17 +1,17 @@
-"""Stacked-hourglass 2D pose network in JAX (Equinox).
+"""Stacked-hourglass 2D pose network in JAX (Equinox) -- the default backend.
 
 A faithful port of DeepFly2D's ``HourglassNet`` (Newell et al. 2016, as used in
 NeLy-EPFL/DeepFly2D ``df2d/model.py``) so the original PyTorch weights can be
-converted and run in JAX. Modules are plain Equinox PyTrees; batch norm is
-folded into a parameter-only :class:`FrozenBatchNorm` (inference only), so the
-whole network is a static PyTree that ``jax.jit`` / ``jax.vmap`` straight over a
-batch of camera images.
+converted (see :mod:`.weights`) and run in JAX. Modules are plain Equinox
+PyTrees; batch norm is folded into a parameter-only :class:`FrozenBatchNorm`
+(inference only), so the whole network is a static PyTree that ``jax.jit`` /
+``jax.vmap`` straight over a batch of camera images.
 
 Each module operates on a single ``(C, H, W)`` image (no batch axis); vectorise
-with :func:`jax.vmap`. The network returns one heatmap stack per hourglass; the
-last is the prediction. The canonical fly config is
-:meth:`HourglassNet.deepfly2d` (8 stacks, 1 block, 19 classes, 128 features),
-matching the published ``sh8`` checkpoint.
+with :func:`jax.vmap` -- :func:`predict_heatmaps` does exactly that, jitted. The
+network returns one heatmap stack per hourglass; the last is the prediction. The
+canonical fly config is :meth:`HourglassNet.deepfly2d` (8 stacks, 1 block, 19
+classes, 128 features), matching the published ``sh8`` checkpoint.
 """
 
 from __future__ import annotations
@@ -250,3 +250,11 @@ class HourglassNet(eqx.Module):
     def heatmaps(self, image: Float[Array, "3 H W"]) -> Float[Array, "J Hh Wh"]:
         """Convenience: the final-stack heatmaps only."""
         return self(image)[-1]
+
+
+@eqx.filter_jit
+def predict_heatmaps(
+    model: HourglassNet, inputs: Float[Array, "N 3 Hh Ww"]
+) -> Float[Array, "N J Hh4 Ww4"]:
+    """Final-stack heatmaps for a batch of preprocessed images (vmapped, jitted)."""
+    return jax.vmap(model.heatmaps)(jnp.asarray(inputs))

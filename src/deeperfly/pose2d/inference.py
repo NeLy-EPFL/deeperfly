@@ -1,10 +1,14 @@
-"""Run the JAX hourglass detector and turn heatmaps into skeleton 2D points.
+"""Backend-agnostic orchestration: run the detector and assemble 2D skeletons.
 
-Pipeline for one recording:
+This layer is shared by both backends (:mod:`deeperfly.pose2d.backends`) -- it
+preprocesses images, decodes heatmaps and scatters per-camera detections into the
+full skeleton, dispatching the actual forward pass to whichever backend owns the
+model. Pipeline for one recording:
 
 1. :func:`preprocess` each camera image (mirror-flip the far-side cameras,
    resize to 256x512, subtract the training mean) -- matching DeepFly2D.
-2. :func:`predict_heatmaps` (vmapped, jitted) -> per-joint heatmaps.
+2. :func:`deeperfly.pose2d.backends.predict_heatmaps` (dispatched, batched) ->
+   per-joint heatmaps as NumPy.
 3. :func:`heatmap_to_points` -> normalised peak locations + confidence.
 4. :func:`assemble_skeleton` -- place each camera's 19 single-side joints into
    the 38-point skeleton (right cameras -> indices 0..18, mirrored left cameras
@@ -16,13 +20,10 @@ per-side ordering, so the mapping is a direct slice.
 
 from __future__ import annotations
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
-
-from .model import HourglassNet
 
 IMG_SIZE = (256, 512)  # (H, W) network input
 MEAN = 0.22  # DeepFly2D subtracts this scalar from the [0, 1] image
@@ -58,14 +59,6 @@ def preprocess(
     return jnp.transpose(img, (2, 0, 1)) - mean
 
 
-@eqx.filter_jit
-def predict_heatmaps(
-    model: HourglassNet, inputs: Float[Array, "N 3 Hh Ww"]
-) -> Float[Array, "N J Hh4 Ww4"]:
-    """Final-stack heatmaps for a batch of preprocessed images (vmapped)."""
-    return jax.vmap(model.heatmaps)(inputs)
-
-
 def heatmap_to_points(
     heatmaps: Float[Array, "*batch J Hh Ww"],
 ) -> tuple[Float[Array, "*batch J 2"], Float[Array, "*batch J"]]:
@@ -74,6 +67,7 @@ def heatmap_to_points(
     Matches DeepFly2D's ``heatmap2points`` (first global argmax, normalised by
     heatmap size), but returns ``(x, y)`` ordering for the geometry layer.
     """
+    heatmaps = jnp.asarray(heatmaps)
     hh, ww = heatmaps.shape[-2:]
     flat = heatmaps.reshape(*heatmaps.shape[:-2], hh * ww)
     idx = jnp.argmax(flat, axis=-1)
@@ -148,20 +142,6 @@ def fly_camera_layout(camera_names: list[str]) -> tuple[list[str], list[bool]]:
     return sides, flips
 
 
-def _backend_predict(model, inputs: Float[np.ndarray, "N 3 Hh Ww"]) -> np.ndarray:
-    """Run either the JAX or the PyTorch detector, returning numpy heatmaps.
-
-    Dispatches on the model type so :func:`detect` is backend-agnostic -- the
-    two implementations are kept side by side until the GPU benchmark decides
-    which to ship (see ``dev/bench_pose2d.py``).
-    """
-    if isinstance(model, HourglassNet):
-        return np.asarray(predict_heatmaps(model, jnp.asarray(inputs)))
-    from . import torch_backend  # optional torch extra, imported on demand
-
-    return torch_backend.predict_heatmaps(model, inputs)
-
-
 def detect(
     model,
     images: list[Float[np.ndarray, "H W 3"]],
@@ -170,13 +150,16 @@ def detect(
 ) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
     """Detect one multi-camera frame -> ``(V, 38, 2)`` pixels and ``(V, 38)`` conf.
 
-    ``model`` is either a JAX :class:`HourglassNet` or a PyTorch detector from
-    :mod:`deeperfly.pose2d.torch_backend`.
+    ``model`` is a detector from either backend (:mod:`deeperfly.pose2d.backends`):
+    :func:`~deeperfly.pose2d.backends.predict_heatmaps` dispatches on its type, so
+    this function is identical for the JAX and PyTorch paths.
     """
+    from . import backends  # lazy: dispatch never imports the unused framework
+
     inputs = np.stack(
         [np.asarray(preprocess(images[v], flip=flips[v])) for v in range(len(images))]
     )
-    points_norm, conf = heatmap_to_points(jnp.asarray(_backend_predict(model, inputs)))
+    points_norm, conf = heatmap_to_points(backends.predict_heatmaps(model, inputs))
     image_size = [(np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images]
     return assemble_skeleton(
         np.asarray(points_norm), np.asarray(conf), sides, flips, image_size
@@ -184,7 +167,7 @@ def detect(
 
 
 def detect_sequence(
-    model: HourglassNet,
+    model,
     frames: Float[np.ndarray, "V T H W 3"],
     sides: list[str],
     flips: list[bool],

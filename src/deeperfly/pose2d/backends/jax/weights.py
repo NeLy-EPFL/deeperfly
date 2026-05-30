@@ -1,11 +1,14 @@
-"""Convert the original PyTorch DeepFly2D weights into the Equinox model.
+"""Weight I/O for the JAX backend: native checkpoints and the PyTorch bridge.
 
-The Equinox :class:`~deeperfly.pose2d.model.HourglassNet` mirrors the PyTorch
-module names one-to-one, so conversion is a key-by-key copy with two shape
-fixups: convolution kernels share PyTorch's ``(out, in, kh, kw)`` layout (no
-transpose), but Equinox conv biases are ``(out, 1, 1)`` and BatchNorm running
-statistics map onto :class:`FrozenBatchNorm`. The result is serialised with
-Equinox's native format so runtime never imports torch.
+The Equinox :class:`~deeperfly.pose2d.backends.jax.model.HourglassNet` mirrors
+the PyTorch module names one-to-one, so converting the original DeepFly2D weights
+is a key-by-key copy with two shape fixups: convolution kernels share PyTorch's
+``(out, in, kh, kw)`` layout (no transpose), but Equinox conv biases are
+``(out, 1, 1)`` and BatchNorm running statistics map onto :class:`FrozenBatchNorm`.
+:func:`convert_state_dict` produces a model that :func:`save_checkpoint` serialises
+with Equinox's native format, so the runtime (:func:`load_model`) never imports
+torch. Reading the original ``.tar`` lives in the torch backend
+(:func:`deeperfly.pose2d.backends.torch.weights.state_dict_from_torch_checkpoint`).
 """
 
 from __future__ import annotations
@@ -80,22 +83,6 @@ def _leaf_keys(prefix: str, kind: str) -> list[str]:
     ]
 
 
-def infer_num_stacks(state_dict: dict[str, np.ndarray]) -> int:
-    """Number of hourglass stacks in a ``state_dict`` (counts ``score.{i}.weight``).
-
-    The published checkpoint is ``sh8`` (8 stacks); deriving the count from the
-    weights keeps :func:`convert_state_dict` robust to other stack depths.
-    """
-    n = 0
-    while f"score.{n}.weight" in state_dict:
-        n += 1
-    if n == 0:
-        raise KeyError(
-            "no 'score.{i}.weight' keys found; not a HourglassNet state_dict"
-        )
-    return n
-
-
 def convert_state_dict(
     state_dict: dict[str, np.ndarray], model: HourglassNet
 ) -> HourglassNet:
@@ -106,7 +93,7 @@ def convert_state_dict(
     ``num_batches_tracked`` BatchNorm counters have no inference-time analogue in
     :class:`FrozenBatchNorm` and are dropped. Raises if a needed key is missing
     or if any remaining key goes unused. ``model.num_stacks`` must match the
-    checkpoint (see :func:`infer_num_stacks`).
+    checkpoint (see :func:`deeperfly.pose2d.backends.infer_num_stacks`).
     """
     sd = {
         k: np.asarray(v)
@@ -158,36 +145,30 @@ def export_state_dict(model: HourglassNet) -> dict[str, np.ndarray]:
     return sd
 
 
-def state_dict_from_torch_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
-    """Load a DeepFly2D ``.tar`` checkpoint into a native ``HourglassNet`` state-dict.
-
-    Strips Lightning/DataParallel ``module.`` / ``model.`` prefixes and returns
-    plain NumPy arrays. Requires the optional ``torch`` extra.
-    """
-    import torch  # optional dependency, only for conversion
-
-    raw = torch.load(path, map_location="cpu", weights_only=True)
-    sd = raw["state_dict"] if "state_dict" in raw else raw
-    out: dict[str, np.ndarray] = {}
-    for k, v in sd.items():
-        k = k[len("module.") :] if k.startswith("module.") else k
-        k = k[len("model.") :] if k.startswith("model.") else k
-        out[k] = v.detach().cpu().numpy()
-    return out
-
-
 def save_checkpoint(model: HourglassNet, path: str | Path) -> None:
     """Serialise a converted model with Equinox's native format."""
     eqx.tree_serialise_leaves(str(path), model)
 
 
-def load_checkpoint(
-    path: str | Path, *, key, num_stacks: int = HourglassNet.DEFAULT_NUM_STACKS
+def load_model(
+    checkpoint: str | Path | None = None,
+    *,
+    key=None,
+    num_stacks: int = HourglassNet.DEFAULT_NUM_STACKS,
 ) -> HourglassNet:
-    """Load a serialised DeepFly2D model (no torch needed).
+    """Build the JAX detector and (optionally) load a native ``.eqx`` checkpoint.
 
-    ``num_stacks`` must match the architecture the checkpoint was saved from
-    (default 8, the published ``sh8`` config).
+    With ``checkpoint=None`` a freshly initialised model is returned. ``key``
+    seeds that initialisation; it is irrelevant when loading (the leaves are
+    overwritten) and defaults to a fixed seed. ``num_stacks`` must match the
+    architecture the checkpoint was saved from (default 8, the published ``sh8``
+    config). No torch is needed.
     """
-    skeleton = HourglassNet.deepfly2d(key=key, num_stacks=num_stacks)
-    return eqx.tree_deserialise_leaves(str(path), skeleton)
+    import jax
+
+    if key is None:
+        key = jax.random.PRNGKey(0)
+    model = HourglassNet.deepfly2d(key=key, num_stacks=num_stacks)
+    if checkpoint is None:
+        return model
+    return eqx.tree_deserialise_leaves(str(checkpoint), model)

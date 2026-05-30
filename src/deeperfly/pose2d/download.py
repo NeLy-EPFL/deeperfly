@@ -49,6 +49,11 @@ def download_torch_weights(*, force: bool = False, sha256: str | None = None) ->
     return dest
 
 
+def torch_weights_path() -> Path:
+    """Expected path of the original PyTorch ``.tar`` checkpoint in the cache."""
+    return cache_dir() / TORCH_WEIGHTS_NAME
+
+
 def jax_weights_path() -> Path:
     """Expected path of the converted native JAX checkpoint in the cache."""
     return cache_dir() / JAX_WEIGHTS_NAME
