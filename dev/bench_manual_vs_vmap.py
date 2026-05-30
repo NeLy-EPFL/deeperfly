@@ -1,7 +1,7 @@
 """Benchmark manual batched JAX impls vs vmap of *_one siblings.
 
 Compares ``rvec_to_rmat``, ``rmat_to_rvec``, ``distort``, ``project_full``
-in ``deeperfly.jax.geometry`` against equivalent ``vmap``-of-``*_one``
+in ``deeperfly.geometry`` against equivalent ``vmap``-of-``*_one``
 versions, under ``jax.jit``, at the typical BA shape (V=7, N=2000).
 
 The library functions are now themselves built via ``vmap``, so the

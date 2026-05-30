@@ -5,6 +5,10 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+
+# Notebooks
+.ipynb_checkpoints/
 
 # Virtual environments
 .venv

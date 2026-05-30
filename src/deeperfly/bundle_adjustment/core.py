@@ -1,9 +1,10 @@
 """Bundle adjustment with JAX-accelerated residuals and Jacobians.
 
-- :func:`bundle_adjust_scipy` wraps :func:`scipy.optimize.least_squares` (TRF +
+- :func:`bundle_adjust` wraps :func:`scipy.optimize.least_squares` (TRF +
   LSMR). The per-observation residual and its Jacobian are computed via
-  :func:`jax.vmap` + :func:`jax.jacfwd` on :func:`project_one`, then re-assembled
-  into a sparse SciPy matrix using the precomputed sparsity pattern.
+  :func:`jax.vmap` + :func:`jax.jacfwd` on
+  :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
+  SciPy matrix using the precomputed sparsity pattern.
 
   The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
 ``pts2d``) is defined in :mod:`deeperfly.bundle_adjustment.state`; build it with
@@ -27,6 +28,8 @@ jax.config.update("jax_enable_x64", True)
 
 
 class BASolution(NamedTuple):
+    """Optimised parameters unpacked back into per-camera arrays plus points."""
+
     rvecs: np.ndarray
     tvecs: np.ndarray
     intrs: np.ndarray
@@ -36,7 +39,7 @@ class BASolution(NamedTuple):
 
 # Per-observation projection and its Jacobian w.r.t. all five parameter groups
 # (pt3d, rvec, tvec, intr, dist). The Jacobian tuple is returned in the order
-# of project_one's arguments and we keep cols_per_obs aligned with it below.
+# of project_full_one's arguments and we keep cols_per_obs aligned with it below.
 _project_per_obs = jax.jit(jax.vmap(project_full_one))
 _jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
@@ -121,7 +124,7 @@ def bundle_adjust(
     # Sparsity pattern. Each observation's two residual rows depend on:
     # the 3D point's slot plus its view's rvec / tvec / intr / dist slots.
     # The column order MUST match the order of the Jacobian tuple returned
-    # by ``_jac_per_obs`` (which is the order of project_one's arguments).
+    # by ``_jac_per_obs`` (the order of project_full_one's arguments).
     free_idx_map = np.full(values.size, -1, dtype=np.int64)
     free_idx_map[~fixed] = np.arange(n_free)
     cols_per_obs = np.concatenate(

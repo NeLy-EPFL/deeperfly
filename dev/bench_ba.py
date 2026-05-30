@@ -1,6 +1,6 @@
 """Benchmark bundle adjustment via scipy.optimize.least_squares (TRF + LSMR).
 
-Mirrors the setup in dev/test_ba.ipynb: 7 cameras around the origin, random 3D
+Mirrors the setup in examples/bundle_adjustment.ipynb: 7 cameras around the origin, random 3D
 points, no distortion, all points visible in all views. The Jacobian for this
 problem is highly sparse (each obs touches one camera and one point).
 
