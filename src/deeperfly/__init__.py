@@ -13,7 +13,7 @@ Public surface:
 
 from __future__ import annotations
 
-from . import correction, geometry, pipeline, triangulate
+from . import correction, geometry, pictorial, pipeline, triangulate
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
 from .io import PoseResult
@@ -25,6 +25,7 @@ __all__ = [
     "triangulate",
     "correction",
     "pipeline",
+    "pictorial",
     "Camera",
     "CameraGroup",
     "Skeleton",

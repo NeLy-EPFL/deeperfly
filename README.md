@@ -21,7 +21,8 @@ and faster on GPU) and the original PyTorch network — selectable with
 | --- | --- | --- |
 | 2D pose | `pose2d/` (`backends/{jax,torch}/`) | Stacked hourglass in two backends behind one interface; JAX (Equinox) is the default, PyTorch runs the original weights directly. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
-| Triangulation | `triangulate.py` / `pipeline.reconstruct` | NaN-aware DLT + greedy reprojection-outlier rejection. |
+| Triangulation | `triangulate.py` / `pipeline.reconstruct` | NaN-aware DLT + greedy reprojection-outlier rejection (default). |
+| PS correction | `pictorial.py` | Optional DeepFly3D-style pictorial structures: multi-view candidate selection + bone-length priors (`--correct pictorial`). |
 | Correction | `correction.py` | Procrustes alignment (per side) + One-Euro / Gaussian smoothing. |
 | Visualization | `viz.py`, `video.py` | matplotlib 2D overlays, 3D skeleton, MP4 export. |
 | Result I/O | `io.py` | Self-contained HDF5 `PoseResult`. |
@@ -55,12 +56,32 @@ End to end from images/video via the CLI:
 deeperfly download-weights          # fetch original PyTorch weights (sh8)
 deeperfly convert-weights           # -> native JAX checkpoint (skip if using --backend torch)
 deeperfly run --in recording/ --config cameras.toml --out fly.h5 [--backend jax|torch]
+deeperfly run --in recording/ --config cameras.toml --out fly.h5 --correct pictorial
 deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d [--bg white|black]
 ```
 
 See [`examples/bundle_adjustment.ipynb`](examples/bundle_adjustment.ipynb) for the
 BA walkthrough and [`examples/pipeline_demo.py`](examples/pipeline_demo.py) for a
 synthetic end-to-end run (no weights required).
+
+## 3D correction: reproject vs pictorial structures
+
+Each view is detected independently; the two views only meet *geometrically*,
+and there are two ways to do that (`run_from_points2d(..., correct=...)` or
+`deeperfly run --correct ...`):
+
+- **`reproject`** (default) — triangulate the arg-max detections and greedily drop
+  the worst-reprojecting view per offending point. Fast, and it *vetoes* a bad
+  per-view detection.
+- **`pictorial`** — DeepFly3D-style pictorial structures over the detector's top-K
+  candidate peaks (`pictorial.py`): per joint it builds multi-view-consistent 3D
+  hypotheses, then picks one per joint by exact dynamic programming along each
+  limb (the fly's legs/stripes are simple chains) under bone-length priors, with
+  an optional temporal term (`--ps-temporal`). It can *recover* a joint when the
+  arg-max landed on the wrong heatmap peak (occlusion, crossing legs, L/R
+  confusion) instead of merely dropping it. It needs the full-heatmap detect path
+  (so it is slower) and is strictly opt-in; on clean recordings it matches
+  `reproject`, earning its keep on the hard frames.
 
 ## 2D detector backends
 

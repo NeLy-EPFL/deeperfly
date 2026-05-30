@@ -181,3 +181,48 @@ def detect_sequence(
             model, [frames[v][t] for v in range(n_views)], sides, flips
         )
     return pts, conf
+
+
+def detect_candidates_sequence(
+    model,
+    frames: Float[np.ndarray, "V T H W 3"],
+    sides: list[str],
+    flips: list[bool],
+    *,
+    k: int = 5,
+):
+    """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
+
+    Runs the detector via the full-heatmap path (not the fused arg-max fast path)
+    so the same forward yields the single-peak ``(pts2d, conf)`` -- used by
+    calibration and the reproject reconstructor -- and a
+    :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
+    (view, joint), consumed by the pictorial-structures corrector. Returns
+    ``(pts2d (V, T, 38, 2), conf (V, T, 38), candidates)``.
+    """
+    from .. import pictorial
+    from . import backends
+
+    n_views, n_frames = len(frames), len(frames[0])
+    n_pts = 2 * N_SIDE_JOINTS
+    pts = np.empty((n_views, n_frames, n_pts, 2))
+    conf = np.empty((n_views, n_frames, n_pts))
+    cand_xy = np.empty((n_views, n_frames, n_pts, k, 2))
+    cand_score = np.empty((n_views, n_frames, n_pts, k))
+    for t in range(n_frames):
+        images = [frames[v][t] for v in range(n_views)]
+        inputs = np.stack(
+            [np.asarray(preprocess(images[v], flip=flips[v])) for v in range(n_views)]
+        )
+        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))  # (V,J,Hh,Ww)
+        image_size = [
+            (np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images
+        ]
+        points_norm, c = heatmap_to_points(heatmaps)
+        pts[:, t], conf[:, t] = assemble_skeleton(
+            np.asarray(points_norm), np.asarray(c), sides, flips, image_size
+        )
+        cand_xy[:, t], cand_score[:, t] = pictorial.extract_candidates(
+            heatmaps, sides, flips, image_size, k=k
+        )
+    return pts, conf, pictorial.Candidates(xy=cand_xy, score=cand_score)

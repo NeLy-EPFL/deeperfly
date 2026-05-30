@@ -23,6 +23,7 @@ import numpy as np
 from jaxtyping import Float
 from scipy.optimize import OptimizeResult
 
+from . import pictorial
 from .cameras import CameraGroup
 from .correction import align_to_template, smooth_gaussian, smooth_one_euro
 from .io import PoseResult
@@ -47,14 +48,12 @@ def _bone_prior(
 
     The targets are the median bone length across frames from an initial
     triangulation -- a soft, robust length prior. ``pts2d`` has ``F`` frames;
-    the returned pairs index into the flattened ``F * N`` point axis.
+    the returned pairs index into the flattened ``F * N`` point axis. The per-bone
+    target estimation is shared with the pictorial-structures corrector via
+    :func:`deeperfly.pictorial.bone_length_targets`.
     """
     n_frames, n_pts = pts2d.shape[1], pts2d.shape[2]
-    pts3d0 = triangulate(cameras, pts2d)  # (F, N, 3)
-    i, j = skeleton.bone_index_pairs()
-    lengths = np.linalg.norm(pts3d0[:, i] - pts3d0[:, j], axis=-1)  # (F, B)
-    with np.errstate(invalid="ignore"):
-        targets = np.nanmedian(lengths, axis=0)  # (B,)
+    i, j, targets = pictorial.bone_length_targets(cameras, pts2d, skeleton)
     offsets = (np.arange(n_frames) * n_pts)[:, None]
     pairs = np.stack([(offsets + i).ravel(), (offsets + j).ravel()], axis=1)
     return pairs, np.tile(targets, n_frames)
@@ -163,6 +162,9 @@ def run_from_points2d(
     *,
     do_calibrate: bool = True,
     calibrate_kwargs: dict | None = None,
+    correct: str = "reproject",
+    candidates: pictorial.Candidates | None = None,
+    ps_kwargs: dict | None = None,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
     template: Float[np.ndarray, "N 3"] | None = None,
@@ -174,8 +176,17 @@ def run_from_points2d(
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
     Steps: apply skeleton visibility -> (optional) calibrate cameras ->
-    triangulate + outlier rejection -> (optional) Procrustes alignment to a
-    template -> (optional) temporal smoothing.
+    reconstruct 3D -> (optional) Procrustes alignment to a template -> (optional)
+    temporal smoothing.
+
+    ``correct`` selects the 2D->3D reconstruction:
+
+    * ``"reproject"`` (default) -- triangulate the arg-max detections and greedily
+      reject reprojection outliers (:func:`reconstruct`).
+    * ``"pictorial"`` -- DeepFly3D-style pictorial-structures correction over the
+      detector's top-K candidate peaks (:func:`deeperfly.pictorial.reconstruct`),
+      which requires ``candidates`` and accepts ``ps_kwargs`` (e.g. ``temporal``,
+      ``lam``, ``max_hyp``). Calibration still uses the arg-max ``pts2d``.
 
     ``smooth`` is ``None``, ``"gaussian"`` or ``"one_euro"``; ``smooth_kwargs``
     is forwarded to the corresponding :mod:`deeperfly.correction` function
@@ -189,12 +200,21 @@ def run_from_points2d(
             cameras, pts2d, conf, skeleton, **(calibrate_kwargs or {})
         )
 
-    pts3d, pts2d, reproj = reconstruct(
-        cameras,
-        pts2d,
-        reproj_threshold=reproj_threshold,
-        max_drops=max_drops,
-    )
+    if correct == "pictorial":
+        if candidates is None:
+            raise ValueError("correct='pictorial' requires candidates=...")
+        pts3d, pts2d, reproj = pictorial.reconstruct(
+            cameras, skeleton, candidates, pts2d, **(ps_kwargs or {})
+        )
+    elif correct == "reproject":
+        pts3d, pts2d, reproj = reconstruct(
+            cameras,
+            pts2d,
+            reproj_threshold=reproj_threshold,
+            max_drops=max_drops,
+        )
+    else:
+        raise ValueError(f"unknown correct mode {correct!r} (reproject|pictorial)")
 
     if template is not None:
         pts3d = align_to_template(pts3d, template, skeleton)
@@ -216,5 +236,5 @@ def run_from_points2d(
         pts3d=pts3d,
         pts3d_smoothed=pts3d_smoothed,
         reproj_error=reproj,
-        meta={"fps": fps, **(meta or {})},
+        meta={"fps": fps, "correct": correct, **(meta or {})},
     )

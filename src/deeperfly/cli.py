@@ -61,13 +61,22 @@ def _cmd_run(args: argparse.Namespace) -> None:
         frames.append(video.read_frames(src, backend=args.video_backend))
 
     sides, flips = inference.fly_camera_layout(cameras.names)
-    pts2d, conf = inference.detect_sequence(model, frames, sides, flips)
+    candidates = None
+    if args.correct == "pictorial":
+        pts2d, conf, candidates = inference.detect_candidates_sequence(
+            model, frames, sides, flips, k=args.ps_k
+        )
+    else:
+        pts2d, conf = inference.detect_sequence(model, frames, sides, flips)
     result = run_from_points2d(
         cameras,
         skeleton,
         pts2d,
         conf,
         do_calibrate=not args.no_calibrate,
+        correct=args.correct,
+        candidates=candidates,
+        ps_kwargs={"temporal": args.ps_temporal, "lam": args.ps_lambda},
         smooth=args.smooth,
         fps=args.fps,
     )
@@ -182,6 +191,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint", help="detector weights (.eqx for jax, .tar for torch)"
     )
     pr.add_argument("--no-calibrate", action="store_true")
+    pr.add_argument(
+        "--correct",
+        choices=["reproject", "pictorial"],
+        default="reproject",
+        help="2D->3D: reprojection-outlier rejection (default) or DeepFly3D-style "
+        "pictorial structures (multi-view candidate selection + bone priors)",
+    )
+    pr.add_argument(
+        "--ps-k", type=int, default=5, help="candidate peaks per joint (pictorial)"
+    )
+    pr.add_argument(
+        "--ps-temporal",
+        action="store_true",
+        help="add a temporal-consistency term (pictorial)",
+    )
+    pr.add_argument(
+        "--ps-lambda",
+        type=float,
+        default=1.0,
+        help="bone-length prior weight (pictorial)",
+    )
     pr.add_argument("--smooth", choices=["gaussian", "one_euro"], default=None)
     pr.add_argument("--fps", type=float, default=100.0)
     pr.set_defaults(func=_cmd_run)

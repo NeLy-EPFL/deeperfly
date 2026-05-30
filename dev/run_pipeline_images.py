@@ -127,6 +127,61 @@ def build_detector(model, backend: str, sides, flips):
     return detect_jax
 
 
+def detect_pictorial(model, sides, flips, frame_ids, load_stack, *, k, workers):
+    """Stream detection keeping the top-K candidate peaks per joint (PS path).
+
+    Pictorial structures needs the full heatmaps (to read off secondary peaks), so
+    this deliberately uses the un-fused detect path -- ``backends.predict_heatmaps``
+    per frame -- instead of the on-GPU arg-max fast path. Returns the arg-max
+    ``(pts2d, conf)`` (for calibration) and a :class:`deeperfly.pictorial.Candidates`.
+    """
+    from deeperfly import pictorial
+    from deeperfly.pose2d import backends
+
+    n_views, n_t = len(sides), len(frame_ids)
+    n_pts = 2 * inference.N_SIDE_JOINTS
+    pts2d = np.full((n_views, n_t, n_pts, 2), np.nan)
+    conf = np.zeros((n_views, n_t, n_pts))
+    cand_xy = np.full((n_views, n_t, n_pts, k, 2), np.nan)
+    cand_score = np.zeros((n_views, n_t, n_pts, k))
+
+    def detect_frame(stack):
+        images = [stack[v] for v in range(n_views)]
+        inputs = np.stack(
+            [
+                np.asarray(inference.preprocess(im, flip=fl))
+                for im, fl in zip(images, flips)
+            ]
+        )
+        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))
+        image_size = [(im.shape[1], im.shape[0]) for im in images]
+        pnorm, c = inference.heatmap_to_points(heatmaps)
+        p2, cf = inference.assemble_skeleton(
+            np.asarray(pnorm), np.asarray(c), sides, flips, image_size
+        )
+        cxy, csc = pictorial.extract_candidates(heatmaps, sides, flips, image_size, k=k)
+        return p2, cf, cxy, csc
+
+    depth = workers + 1
+    report = 100
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        inflight = deque(pool.submit(load_stack, fid) for fid in frame_ids[:depth])
+        for t in range(n_t):
+            stack = inflight.popleft().result()
+            nxt = t + depth
+            if nxt < n_t:
+                inflight.append(pool.submit(load_stack, frame_ids[nxt]))
+            pts2d[:, t], conf[:, t], cand_xy[:, t], cand_score[:, t] = detect_frame(
+                stack
+            )
+            if t + 1 >= report or t == n_t - 1:
+                dt = time.perf_counter() - t0
+                print(f"  detected {t + 1}/{n_t} frames  ({(t + 1) / dt:.1f} frame/s)")
+                report += 100
+    return pts2d, conf, pictorial.Candidates(xy=cand_xy, score=cand_score)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--images", default="data/images")
@@ -146,6 +201,16 @@ def main() -> None:
     )
     ap.add_argument("--smooth", choices=["gaussian", "one_euro"], default="one_euro")
     ap.add_argument("--fps", type=float, default=100.0)
+    ap.add_argument(
+        "--correct",
+        choices=["reproject", "pictorial"],
+        default="reproject",
+        help="2D->3D: reprojection-outlier rejection (fast, default) or DeepFly3D-"
+        "style pictorial structures (slower; uses the full-heatmap detect path)",
+    )
+    ap.add_argument("--ps-k", type=int, default=5, help="candidate peaks/joint (PS)")
+    ap.add_argument("--ps-temporal", action="store_true", help="PS temporal term")
+    ap.add_argument("--ps-lambda", type=float, default=1.0, help="PS bone-prior weight")
     args = ap.parse_args()
 
     root = Path(args.images)
@@ -177,22 +242,7 @@ def main() -> None:
     skeleton = Skeleton.fly()
     sides, flips = inference.fly_camera_layout(CAMERA_NAMES)
     model = load_detector(args.backend, args.checkpoint)
-    detect_batch = build_detector(model, args.backend, sides, flips)
-
-    # GPU batch (synchronized frames per forward). 'auto' fits VRAM; for this
-    # 8-stack net throughput plateaus at a small batch on a fast GPU, so sizing is
-    # mainly to fit smaller GPUs (and avoid OOM) -- see backends.auto_batch_size.
-    if args.batch == "auto":
-        vram = backends.gpu_memory_bytes()
-        batch = max(1, backends.auto_batch_size(inference.IMG_SIZE) // n_views)
-        where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
-        print(
-            f"batch: {batch} frame(s)/forward ({batch * n_views} imgs, auto, {where})"
-        )
-    else:
-        batch = max(1, int(args.batch))
-        print(f"batch: {batch} frame(s)/forward ({batch * n_views} imgs)")
-    batch = min(batch, n_t)  # never batch more frames than we have
+    n_pts = skeleton.n_points
 
     def load_stack(fid: int) -> np.ndarray:
         """The synchronized cameras for one frame as a single (V, H, W[, C]) array."""
@@ -200,41 +250,74 @@ def main() -> None:
             [iio.imread(root / f"camera_{c}_img_{fid:06d}.jpg") for c in range(n_views)]
         )
 
-    # Stream detection: per-frame decode is prefetched on worker threads (so it
-    # overlaps the GPU forward), frames are grouped into batches of `batch`, and
-    # each group's 38-point 2D poses come back.
-    n_pts = skeleton.n_points
-    pts2d = np.full((n_views, n_t, n_pts, 2), np.nan)
-    conf = np.zeros((n_views, n_t, n_pts))
-    warm = np.stack([load_stack(fid) for fid in frame_ids[:batch]])
-    detect_batch(warm)  # warm up the JIT at the steady batch size before timing
-    depth = args.workers + batch
-    report = 100  # print progress roughly every 100 frames
+    candidates = None
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        inflight = deque(pool.submit(load_stack, fid) for fid in frame_ids[:depth])
-        buf: list[np.ndarray] = []
-        for t in range(n_t):
-            buf.append(inflight.popleft().result())
-            nxt = t + depth
-            if nxt < n_t:
-                inflight.append(pool.submit(load_stack, frame_ids[nxt]))
-            if len(buf) == batch or t == n_t - 1:
-                k = len(buf)
-                base = t + 1 - k
-                # Pad a short final group up to `batch` so the JIT shape never
-                # changes (one compile total); keep only the real `k` results.
-                group = buf + [buf[-1]] * (batch - k)
-                pf, cf = detect_batch(np.stack(group))  # (batch,V,38,2),(batch,V,38)
-                pts2d[:, base : base + k] = pf[:k].transpose(1, 0, 2, 3)
-                conf[:, base : base + k] = cf[:k].transpose(1, 0, 2)
-                buf = []
-                if t + 1 >= report or t == n_t - 1:
-                    dt = time.perf_counter() - t0
-                    print(
-                        f"  detected {t + 1}/{n_t} frames  ({(t + 1) / dt:.1f} frame/s)"
-                    )
-                    report += 100
+    if args.correct == "pictorial":
+        # Accuracy mode: stream the full-heatmap detector and keep top-K candidates.
+        print(f"pictorial structures: keeping {args.ps_k} candidates/joint")
+        pts2d, conf, candidates = detect_pictorial(
+            model,
+            sides,
+            flips,
+            frame_ids,
+            load_stack,
+            k=args.ps_k,
+            workers=args.workers,
+        )
+    else:
+        detect_batch = build_detector(model, args.backend, sides, flips)
+
+        # GPU batch (synchronized frames per forward). 'auto' fits VRAM; for this
+        # 8-stack net throughput plateaus at a small batch on a fast GPU, so sizing
+        # is mainly to fit smaller GPUs (avoid OOM) -- see backends.auto_batch_size.
+        if args.batch == "auto":
+            vram = backends.gpu_memory_bytes()
+            batch = max(1, backends.auto_batch_size(inference.IMG_SIZE) // n_views)
+            where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
+            print(
+                f"batch: {batch} frame(s)/forward ({batch * n_views} imgs, auto, {where})"
+            )
+        else:
+            batch = max(1, int(args.batch))
+            print(f"batch: {batch} frame(s)/forward ({batch * n_views} imgs)")
+        batch = min(batch, n_t)  # never batch more frames than we have
+
+        # Stream detection: per-frame decode is prefetched on worker threads (so it
+        # overlaps the GPU forward), frames are grouped into batches of `batch`, and
+        # each group's 38-point 2D poses come back.
+        pts2d = np.full((n_views, n_t, n_pts, 2), np.nan)
+        conf = np.zeros((n_views, n_t, n_pts))
+        warm = np.stack([load_stack(fid) for fid in frame_ids[:batch]])
+        detect_batch(warm)  # warm up the JIT at the steady batch size before timing
+        depth = args.workers + batch
+        report = 100  # print progress roughly every 100 frames
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            inflight = deque(pool.submit(load_stack, fid) for fid in frame_ids[:depth])
+            buf: list[np.ndarray] = []
+            for t in range(n_t):
+                buf.append(inflight.popleft().result())
+                nxt = t + depth
+                if nxt < n_t:
+                    inflight.append(pool.submit(load_stack, frame_ids[nxt]))
+                if len(buf) == batch or t == n_t - 1:
+                    k = len(buf)
+                    base = t + 1 - k
+                    # Pad a short final group up to `batch` so the JIT shape never
+                    # changes (one compile total); keep only the real `k` results.
+                    group = buf + [buf[-1]] * (batch - k)
+                    pf, cf = detect_batch(
+                        np.stack(group)
+                    )  # (batch,V,38,2),(batch,V,38)
+                    pts2d[:, base : base + k] = pf[:k].transpose(1, 0, 2, 3)
+                    conf[:, base : base + k] = cf[:k].transpose(1, 0, 2)
+                    buf = []
+                    if t + 1 >= report or t == n_t - 1:
+                        dt = time.perf_counter() - t0
+                        print(
+                            f"  detected {t + 1}/{n_t} frames  ({(t + 1) / dt:.1f} frame/s)"
+                        )
+                        report += 100
 
     print(f"2D detection done in {time.perf_counter() - t0:.1f}s; calibrating + 3D ...")
     result = run_from_points2d(
@@ -244,9 +327,17 @@ def main() -> None:
         conf,
         do_calibrate=True,
         calibrate_kwargs=calibrate_kwargs,
+        correct=args.correct,
+        candidates=candidates,
+        ps_kwargs={"temporal": args.ps_temporal, "lam": args.ps_lambda},
         smooth=args.smooth,
         fps=args.fps,
-        meta={"source": str(root), "backend": args.backend, "n_frames_input": n_t},
+        meta={
+            "source": str(root),
+            "backend": args.backend,
+            "correct": args.correct,
+            "n_frames_input": n_t,
+        },
     )
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
