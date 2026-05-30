@@ -12,17 +12,86 @@ from __future__ import annotations
 import matplotlib
 
 matplotlib.use("Agg", force=False)  # default to a headless backend
+import matplotlib.colors as mcolors  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from jaxtyping import Float  # noqa: E402
 
 from .skeleton import Skeleton  # noqa: E402
 
+#: Per-leg colours: left = blues, right = reds, lightening front -> hind.
+LEG_PALETTE: dict[str, str] = {
+    "LF_leg": "#0f7399",
+    "LM_leg": "#1a8daf",
+    "LH_leg": "#75becb",
+    "RF_leg": "#ba1e31",
+    "RM_leg": "#c9564f",
+    "RH_leg": "#d58579",
+}
+#: Muted side tint for non-leg limbs (antennae, stripes) by their L/R prefix.
+_SIDE_TINT: dict[str, str] = {"L": "#5b8f9c", "R": "#b07c77"}
 
-def limb_colors(skeleton: Skeleton) -> np.ndarray:
-    """A stable RGBA colour per tracked point, coloured by its limb."""
+#: Background presets: figure/axes face colour and the matching foreground
+#: (spines, ticks, labels, 3D panes) so plots read on white or black.
+BACKGROUNDS: dict[str, dict[str, str]] = {
+    "white": {"face": "white", "fg": "black"},
+    "black": {"face": "black", "fg": "white"},
+}
+
+
+def limb_colors(
+    skeleton: Skeleton, *, palette: dict[str, str] | None = None
+) -> np.ndarray:
+    """A stable RGBA colour per tracked point, coloured by its limb.
+
+    Legs use :data:`LEG_PALETTE` (left blue / right red, lightening to the hind
+    leg); antennae and stripes take a muted tint of their side; any other limb
+    falls back to ``tab10`` so non-fly skeletons stay distinguishable.
+    """
+    palette = LEG_PALETTE if palette is None else palette
     cmap = plt.get_cmap("tab10")
-    return np.array([cmap((lid % 10) / 10.0) for lid in skeleton.limb_id])
+    colors = []
+    for n in range(skeleton.n_points):
+        lid = int(skeleton.limb_id[n])
+        name = skeleton.limb_names[lid] if lid < len(skeleton.limb_names) else ""
+        if name in palette:
+            colors.append(mcolors.to_rgba(palette[name]))
+        elif name[:1] in _SIDE_TINT:
+            colors.append(mcolors.to_rgba(_SIDE_TINT[name[0]]))
+        else:
+            colors.append(cmap((lid % 10) / 10.0))
+    return np.array(colors)
+
+
+def apply_background(ax: plt.Axes, background: str = "white") -> plt.Axes:
+    """Style ``ax`` (and its figure) for a ``"white"`` or ``"black"`` background.
+
+    Sets the figure and axes face colours and recolours spines / ticks / labels
+    (and the panes + grid for 3D axes) to a contrasting foreground. Re-apply after
+    ``ax.clear()`` -- the plotting helpers below do this for you.
+    """
+    try:
+        theme = BACKGROUNDS[background]
+    except KeyError:
+        raise ValueError(
+            f"background must be one of {sorted(BACKGROUNDS)}; got {background!r}"
+        ) from None
+    face, fg = theme["face"], theme["fg"]
+    ax.get_figure().set_facecolor(face)
+    ax.set_facecolor(face)
+    if hasattr(ax, "zaxis"):  # 3D
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis.set_pane_color(mcolors.to_rgba(face))
+            axis.line.set_color(fg)
+            axis.label.set_color(fg)
+        ax.tick_params(colors=fg)
+        ax.grid(color=fg, alpha=0.15)
+    else:
+        for spine in ax.spines.values():
+            spine.set_color(fg)
+        ax.tick_params(colors=fg)
+        ax.title.set_color(fg)
+    return ax
 
 
 def plot_skeleton_2d(
@@ -33,14 +102,17 @@ def plot_skeleton_2d(
     conf: Float[np.ndarray, "N"] | None = None,
     ax: plt.Axes | None = None,
     point_size: float = 12.0,
+    background: str = "white",
 ) -> plt.Axes:
     """Draw one camera's 2D joints + bones, optionally over its image.
 
     ``pts2d`` is a single frame/camera ``(N, 2)`` in pixels; NaN joints (and the
-    bones touching them) are skipped.
+    bones touching them) are skipped. ``background`` is ``"white"`` or ``"black"``
+    (matters around the image margins, and fully when ``image`` is ``None``).
     """
     if ax is None:
         _, ax = plt.subplots()
+    apply_background(ax, background)
     if image is not None:
         ax.imshow(np.asarray(image))
     pts2d = np.asarray(pts2d, dtype=float)
@@ -73,11 +145,16 @@ def plot_skeleton_3d(
     elev: float = 20.0,
     azim: float = -60.0,
     draw_bones3d: bool = True,
+    background: str = "white",
 ) -> plt.Axes:
-    """Draw a 3D skeleton (bones + cross-body bones) into a 3D axis."""
+    """Draw a 3D skeleton (bones + cross-body bones) into a 3D axis.
+
+    ``background`` is ``"white"`` or ``"black"`` (sets the panes, grid and labels).
+    """
     if ax is None:
         fig = plt.figure()
         ax = fig.add_subplot(projection="3d")
+    apply_background(ax, background)
     pts3d = np.asarray(pts3d, dtype=float)
     colors = limb_colors(skeleton)
 
@@ -100,6 +177,7 @@ def overlay_grid(
     images: list[Float[np.ndarray, "H W 3"]] | None = None,
     camera_names: list[str] | None = None,
     ncols: int = 4,
+    background: str = "white",
 ) -> plt.Figure:
     """A montage of every camera's 2D overlay for a single frame."""
     n_views = pts2d.shape[0]
@@ -107,13 +185,15 @@ def overlay_grid(
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(3 * ncols, 2 * nrows), squeeze=False
     )
+    fig.set_facecolor(BACKGROUNDS.get(background, BACKGROUNDS["white"])["face"])
     for v in range(nrows * ncols):
         ax = axes[v // ncols][v % ncols]
         if v >= n_views:
+            apply_background(ax, background)
             ax.axis("off")
             continue
         img = None if images is None else images[v]
-        plot_skeleton_2d(pts2d[v], skeleton, image=img, ax=ax)
+        plot_skeleton_2d(pts2d[v], skeleton, image=img, ax=ax, background=background)
         if camera_names is not None:
             ax.set_title(camera_names[v], fontsize=8)
         ax.set_xticks([])

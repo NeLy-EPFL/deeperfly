@@ -61,6 +61,20 @@ def test_conversion_roundtrip_is_exact(model):
     )
 
 
+def test_auto_batch_size_fits_vram_and_clamps(monkeypatch):
+    # No GPU -> the minimum batch.
+    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: None)
+    assert backends.auto_batch_size(min_batch=3) == 3
+    # Plenty of VRAM -> capped at max_batch.
+    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: 80 * 1024**3)
+    assert backends.auto_batch_size((256, 512), max_batch=16) == 16
+    # Fixed VRAM: larger images need more memory per image -> a smaller batch.
+    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: 2 * 1024**3)
+    small_img = backends.auto_batch_size((128, 128), max_batch=64)
+    big_img = backends.auto_batch_size((512, 512), max_batch=64)
+    assert 1 <= big_img <= small_img
+
+
 def test_infer_num_stacks_counts_score_heads(model):
     sd = weights.export_state_dict(model)
     assert backends.infer_num_stacks(sd) == 2

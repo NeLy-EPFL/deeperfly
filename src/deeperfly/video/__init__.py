@@ -31,13 +31,15 @@ from .base import (
     to_jax,
     to_numpy,
 )
-from .io import read_images, read_video, write_mp4
+from .io import list_image_files, read_frames, read_images, read_video, write_mp4
 
 _LAZY = {"figure_to_array", "render_pose3d_video", "render_overlay_video"}
 
 __all__ = [
     "read_video",
     "read_images",
+    "read_frames",
+    "list_image_files",
     "write_mp4",
     "to_numpy",
     "to_jax",

@@ -58,11 +58,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         src = next((h for h in hits if h.exists()), None)
         if src is None:
             raise SystemExit(f"no video/dir for camera {name!r} under {root}")
-        frames.append(
-            video.read_video(src, backend=args.video_backend)
-            if src.is_file()
-            else video.read_images(src)
-        )
+        frames.append(video.read_frames(src, backend=args.video_backend))
 
     sides, flips = inference.fly_camera_layout(cameras.names)
     pts2d, conf = inference.detect_sequence(model, frames, sides, flips)
@@ -132,17 +128,18 @@ def _cmd_visualize(args: argparse.Namespace) -> None:
 
     result = PoseResult.load(args.input)
     if args.mode == "3d":
-        video.render_pose3d_video(result, args.output, fps=args.fps)
+        video.render_pose3d_video(result, args.output, fps=args.fps, background=args.bg)
     else:
         if args.images is None:
             raise SystemExit("2d overlay needs --images <video|dir>")
-        frames = (
-            video.read_video(args.images)
-            if Path(args.images).is_file()
-            else video.read_images(args.images)
-        )
+        frames = video.read_frames(args.images)
         video.render_overlay_video(
-            result, frames, args.output, camera=args.camera, fps=args.fps
+            result,
+            frames,
+            args.output,
+            camera=args.camera,
+            fps=args.fps,
+            background=args.bg,
         )
     print(f"wrote {args.output}")
 
@@ -216,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--images", help="video/dir of frames (2d mode)")
     pv.add_argument("--camera", type=int, default=0)
     pv.add_argument("--fps", type=float, default=30.0)
+    pv.add_argument("--bg", choices=["white", "black"], default="white")
     pv.set_defaults(func=_cmd_visualize)
 
     pi = sub.add_parser("info", help="print a summary of a result file")

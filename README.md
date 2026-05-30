@@ -55,7 +55,7 @@ End to end from images/video via the CLI:
 deeperfly download-weights          # fetch original PyTorch weights (sh8)
 deeperfly convert-weights           # -> native JAX checkpoint (skip if using --backend torch)
 deeperfly run --in recording/ --config cameras.toml --out fly.h5 [--backend jax|torch]
-deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d
+deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d [--bg white|black]
 ```
 
 See [`examples/bundle_adjustment.ipynb`](examples/bundle_adjustment.ipynb) for the
@@ -111,6 +111,23 @@ those frames, others decode up to `max(indices)` and gather. `deeperfly run`
 takes `--video-backend`. NVIDIA DALI ships from NVIDIA's package index (e.g.
 `nvidia-dali-cuda120`), so it's not a pip extra but is used automatically when
 importable.
+
+### Image sequences (jpg / png / …)
+
+A folder or glob of frames is read by `read_images`, which decodes in parallel
+across threads (so throughput scales with cores), broadcasts grayscale to RGB and
+supports the same `indices` / `start:stop:step` selection. `read_frames` is the
+unified entry point — it routes a video file to `read_video` and an image
+directory to `read_images` — so the pipeline accepts either input. With
+`device="cuda"` JPEGs are decoded on the GPU (torchvision nvJPEG) straight into a
+device tensor for `to_jax`:
+
+```python
+frames = video.read_images("frames/", workers=8)            # parallel CPU decode
+frames = video.read_images("frames/", indices=[0, 10, 20])  # subset
+frames = video.read_images("frames/", device="cuda")        # nvJPEG -> GPU tensor
+frames = video.read_frames(path)                            # video file *or* image dir
+```
 
 ### GPU frames → JAX (zero-copy)
 

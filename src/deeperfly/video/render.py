@@ -31,9 +31,14 @@ def render_pose3d_video(
     use_smoothed: bool = True,
     elev: float = 20.0,
     azim: float = -60.0,
+    background: str = "white",
     backend: str = "auto",
 ) -> None:
-    """Render the triangulated 3D skeleton over time to an MP4."""
+    """Render the triangulated 3D skeleton over time to an MP4.
+
+    ``background`` is ``"white"`` or ``"black"``; legs follow
+    :data:`deeperfly.viz.LEG_PALETTE` (left blue / right red).
+    """
     import matplotlib.pyplot as plt
 
     from .. import viz
@@ -53,7 +58,14 @@ def render_pose3d_video(
     ax = fig.add_subplot(projection="3d")
     for t in range(pts3d.shape[0]):
         ax.clear()
-        viz.plot_skeleton_3d(pts3d[t], result.skeleton, ax=ax, elev=elev, azim=azim)
+        viz.plot_skeleton_3d(
+            pts3d[t],
+            result.skeleton,
+            ax=ax,
+            elev=elev,
+            azim=azim,
+            background=background,
+        )
         ax.set_xlim(lo[0], hi[0])
         ax.set_ylim(lo[1], hi[1])
         ax.set_zlim(lo[2], hi[2])
@@ -69,9 +81,14 @@ def render_overlay_video(
     *,
     camera: int = 0,
     fps: float = 30.0,
+    background: str = "white",
     backend: str = "auto",
 ) -> None:
-    """Render one camera's 2D pose overlay across frames to an MP4."""
+    """Render one camera's 2D pose overlay across frames to an MP4.
+
+    ``background`` (``"white"`` / ``"black"``) colours the margins around the
+    frame; legs follow :data:`deeperfly.viz.LEG_PALETTE`.
+    """
     import matplotlib.pyplot as plt
 
     from .. import viz
@@ -82,7 +99,12 @@ def render_overlay_video(
         ax.clear()
         conf = None if result.conf is None else result.conf[camera, t]
         viz.plot_skeleton_2d(
-            result.pts2d[camera, t], result.skeleton, image=images[t], conf=conf, ax=ax
+            result.pts2d[camera, t],
+            result.skeleton,
+            image=images[t],
+            conf=conf,
+            ax=ax,
+            background=background,
         )
         ax.set_xticks([])
         ax.set_yticks([])

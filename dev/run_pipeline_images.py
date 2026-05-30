@@ -58,31 +58,47 @@ def load_detector(backend: str, checkpoint: str | None):
     return backends.load_detector(backend, checkpoint or default)
 
 
-def build_frame_detector(model, backend: str, sides, flips):
-    """Return ``detect(stack) -> (pts (V,38,2) px, conf (V,38))`` for one frame.
+def build_detector(model, backend: str, sides, flips):
+    """Return ``detect(batch) -> (pts (K,V,38,2) px, conf (K,V,38))``.
 
-    ``stack`` is the synchronized cameras as a single ``(V, H, W)`` uint8 array
-    (grayscale, as in this rig). The JAX backend fuses preprocess + forward +
-    arg-max into one jitted vmap so only uint8 goes up and only peaks come down;
-    it is numerically identical to :func:`inference.detect` (same ops, same
-    float32). The torch backend reuses :func:`inference.detect` per frame.
+    ``batch`` is ``K`` synchronized frames as ``(K, V, H, W)`` uint8 (grayscale,
+    as in this rig). The JAX backend fuses preprocess + forward + arg-max over all
+    ``K*V`` images in one jitted vmap, so only uint8 goes up and only the peaks
+    come down. At ``K=1`` this is bit-identical to :func:`inference.detect`; at
+    larger ``K`` the batched conv uses different kernels, so results match only at
+    the float32 level (~1e-5 in confidence) -- enough to flip the arg-max on the
+    rare near-tie joint (~0.05%), which is harmless here (those points are
+    low-confidence and get dropped by reprojection-outlier rejection downstream).
+    ``K`` sets the GPU batch (see ``--batch``); the jit recompiles once per
+    distinct ``K`` (steady chunk + smaller final remainder = two compiles). The
+    torch backend reuses :func:`inference.detect` per frame.
     """
+    n_views = len(sides)
+
     if backend != "jax":
-        return lambda stack: inference.detect(
-            model, [stack[v] for v in range(stack.shape[0])], sides, flips
-        )
+
+        def detect_torch(batch):
+            k = batch.shape[0]
+            pts = np.empty((k, n_views, 38, 2))
+            conf = np.empty((k, n_views, 38))
+            for i in range(k):
+                pts[i], conf[i] = inference.detect(
+                    model, [batch[i, v] for v in range(n_views)], sides, flips
+                )
+            return pts, conf
+
+        return detect_torch
 
     import equinox as eqx
     import jax
     import jax.numpy as jnp
 
-    flips_arr = jnp.asarray(flips)
     out_h, out_w = inference.IMG_SIZE
     mean = inference.MEAN
 
     @eqx.filter_jit
-    def _peaks(m, stack_u8, fl):
-        def one(img, flip):  # img: (H, W) uint8 grayscale, flip: bool
+    def _peaks(m, imgs_u8, fl):  # imgs_u8: (N, H, W) uint8; fl: (N,) bool
+        def one(img, flip):
             x = img.astype(jnp.float32) / 255.0
             x = jnp.stack([x, x, x], axis=-1)  # grayscale -> 3 channels
             x = jnp.where(flip, x[:, ::-1, :], x)  # mirror far-side cameras
@@ -95,16 +111,20 @@ def build_frame_detector(model, backend: str, sides, flips):
             pts = jnp.stack([(idx % w) / w, (idx // w) / h], axis=-1)
             return pts, jnp.max(flat, axis=-1)
 
-        return jax.vmap(one)(stack_u8, fl)
+        return jax.vmap(one)(imgs_u8, fl)
 
-    def detect(stack):
-        pts_norm, conf = _peaks(model, jnp.asarray(stack), flips_arr)
-        image_size = [(stack.shape[2], stack.shape[1])] * stack.shape[0]
-        return inference.assemble_skeleton(
-            np.asarray(pts_norm), np.asarray(conf), sides, flips, image_size
+    def detect_jax(batch):
+        k, v, h, w = batch.shape
+        flat = batch.reshape(k * v, h, w)  # frame-major: image = i*V + cam
+        fl = jnp.asarray(flips * k)
+        pts_norm, conf = _peaks(model, jnp.asarray(flat), fl)
+        image_size = [(w, h)] * (k * v)
+        pts, cf = inference.assemble_skeleton(
+            np.asarray(pts_norm), np.asarray(conf), sides * k, flips * k, image_size
         )
+        return pts.reshape(k, v, 38, 2), cf.reshape(k, v, 38)
 
-    return detect
+    return detect_jax
 
 
 def main() -> None:
@@ -118,6 +138,11 @@ def main() -> None:
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument(
         "--workers", type=int, default=4, help="prefetch threads for image decode"
+    )
+    ap.add_argument(
+        "--batch",
+        default="auto",
+        help="synchronized frames per GPU forward ('auto' sizes it to VRAM)",
     )
     ap.add_argument("--smooth", choices=["gaussian", "one_euro"], default="one_euro")
     ap.add_argument("--fps", type=float, default=100.0)
@@ -148,40 +173,68 @@ def main() -> None:
     ba = cfg.get("bundle_adjustment", {})
     calibrate_kwargs = {"fixed": ba.get("fixed", []), "shared": ba.get("shared", [])}
 
+    n_views = len(CAMERA_NAMES)
     skeleton = Skeleton.fly()
     sides, flips = inference.fly_camera_layout(CAMERA_NAMES)
     model = load_detector(args.backend, args.checkpoint)
-    detect_frame = build_frame_detector(model, args.backend, sides, flips)
+    detect_batch = build_detector(model, args.backend, sides, flips)
+
+    # GPU batch (synchronized frames per forward). 'auto' fits VRAM; for this
+    # 8-stack net throughput plateaus at a small batch on a fast GPU, so sizing is
+    # mainly to fit smaller GPUs (and avoid OOM) -- see backends.auto_batch_size.
+    if args.batch == "auto":
+        vram = backends.gpu_memory_bytes()
+        batch = max(1, backends.auto_batch_size(inference.IMG_SIZE) // n_views)
+        where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
+        print(
+            f"batch: {batch} frame(s)/forward ({batch * n_views} imgs, auto, {where})"
+        )
+    else:
+        batch = max(1, int(args.batch))
+        print(f"batch: {batch} frame(s)/forward ({batch * n_views} imgs)")
+    batch = min(batch, n_t)  # never batch more frames than we have
 
     def load_stack(fid: int) -> np.ndarray:
         """The synchronized cameras for one frame as a single (V, H, W[, C]) array."""
         return np.stack(
-            [
-                iio.imread(root / f"camera_{c}_img_{fid:06d}.jpg")
-                for c in range(len(CAMERA_NAMES))
-            ]
+            [iio.imread(root / f"camera_{c}_img_{fid:06d}.jpg") for c in range(n_views)]
         )
 
-    # Stream detection: decode is prefetched on worker threads (overlapping the
-    # GPU forward), one synchronized frame in, its 38-point 2D pose out.
+    # Stream detection: per-frame decode is prefetched on worker threads (so it
+    # overlaps the GPU forward), frames are grouped into batches of `batch`, and
+    # each group's 38-point 2D poses come back.
     n_pts = skeleton.n_points
-    pts2d = np.full((len(CAMERA_NAMES), n_t, n_pts, 2), np.nan)
-    conf = np.zeros((len(CAMERA_NAMES), n_t, n_pts))
-    detect_frame(load_stack(frame_ids[0]))  # warm up the JIT before timing
+    pts2d = np.full((n_views, n_t, n_pts, 2), np.nan)
+    conf = np.zeros((n_views, n_t, n_pts))
+    warm = np.stack([load_stack(fid) for fid in frame_ids[:batch]])
+    detect_batch(warm)  # warm up the JIT at the steady batch size before timing
+    depth = args.workers + batch
+    report = 100  # print progress roughly every 100 frames
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        inflight = deque(
-            pool.submit(load_stack, fid) for fid in frame_ids[: args.workers + 1]
-        )
+        inflight = deque(pool.submit(load_stack, fid) for fid in frame_ids[:depth])
+        buf: list[np.ndarray] = []
         for t in range(n_t):
-            stack = inflight.popleft().result()
-            nxt = t + args.workers + 1
+            buf.append(inflight.popleft().result())
+            nxt = t + depth
             if nxt < n_t:
                 inflight.append(pool.submit(load_stack, frame_ids[nxt]))
-            pts2d[:, t], conf[:, t] = detect_frame(stack)
-            if (t + 1) % 100 == 0 or t + 1 == n_t:
-                dt = time.perf_counter() - t0
-                print(f"  detected {t + 1}/{n_t} frames  ({(t + 1) / dt:.1f} frame/s)")
+            if len(buf) == batch or t == n_t - 1:
+                k = len(buf)
+                base = t + 1 - k
+                # Pad a short final group up to `batch` so the JIT shape never
+                # changes (one compile total); keep only the real `k` results.
+                group = buf + [buf[-1]] * (batch - k)
+                pf, cf = detect_batch(np.stack(group))  # (batch,V,38,2),(batch,V,38)
+                pts2d[:, base : base + k] = pf[:k].transpose(1, 0, 2, 3)
+                conf[:, base : base + k] = cf[:k].transpose(1, 0, 2)
+                buf = []
+                if t + 1 >= report or t == n_t - 1:
+                    dt = time.perf_counter() - t0
+                    print(
+                        f"  detected {t + 1}/{n_t} frames  ({(t + 1) / dt:.1f} frame/s)"
+                    )
+                    report += 100
 
     print(f"2D detection done in {time.perf_counter() - t0:.1f}s; calibrating + 3D ...")
     result = run_from_points2d(

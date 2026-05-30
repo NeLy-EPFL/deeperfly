@@ -196,3 +196,78 @@ def test_non_uint8_frames_are_clipped(tmp_path):
     path = tmp_path / "float.mp4"
     video.write_mp4(frames, path, fps=10)  # must not raise on float input
     assert video.read_video(path).dtype == np.uint8
+
+
+# -- image-sequence reading (read_images / read_frames) ----------------------
+
+
+def _write_images(tmp_path, frames, *, ext="png", name="f"):
+    import imageio.v3 as iio
+
+    for i, fr in enumerate(frames):
+        iio.imwrite(tmp_path / f"{name}_{i:03d}.{ext}", fr)
+    return tmp_path
+
+
+def test_read_images_parallel_rgb(tmp_path):
+    frames = _gradient_clip(6, 40, 50)
+    _write_images(tmp_path, frames, ext="png")
+    out = video.read_images(tmp_path)
+    assert out.shape == (6, 40, 50, 3) and out.dtype == np.uint8
+    np.testing.assert_array_equal(out, frames)  # PNG is lossless
+    # worker count must not change the result
+    np.testing.assert_array_equal(video.read_images(tmp_path, workers=1), out)
+
+
+def test_read_images_grayscale_broadcasts_to_rgb(tmp_path):
+    # A grayscale (H, W) PNG must broadcast to 3 equal channels, NOT slice width.
+    gray = (np.arange(20 * 30).reshape(20, 30) % 255).astype(np.uint8)
+    _write_images(tmp_path, gray[None], ext="png", name="g")
+    out = video.read_images(tmp_path)
+    assert out.shape == (1, 20, 30, 3)
+    np.testing.assert_array_equal(out[0, ..., 0], out[0, ..., 2])
+    np.testing.assert_array_equal(out[0, ..., 0], gray)
+
+
+def test_read_images_indices_and_slice(tmp_path):
+    frames = _indexed_clip(10, 16, 16)
+    _write_images(tmp_path, frames, ext="png")
+    np.testing.assert_array_equal(
+        video.read_images(tmp_path, indices=[0, 3, 7]), frames[[0, 3, 7]]
+    )
+    np.testing.assert_array_equal(
+        video.read_images(tmp_path, start=1, stop=9, step=2), frames[1:9:2]
+    )
+
+
+def test_read_frames_dispatches_dir_vs_video(tmp_path):
+    frames = _indexed_clip(6, 32, 32)
+    _write_images(tmp_path, frames, ext="png")
+    from_dir = video.read_frames(tmp_path)
+    assert from_dir.shape == (6, 32, 32, 3)
+    np.testing.assert_array_equal(from_dir, frames)
+    mp4 = _write_clip(tmp_path, frames, name="clip.mp4")
+    assert video.read_frames(mp4).shape[0] == 6  # routed to read_video
+
+
+def test_read_images_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        video.read_images(tmp_path / "empty")
+
+
+@pytest.mark.skipif(
+    not __import__("torch").cuda.is_available(), reason="needs CUDA for GPU decode"
+)
+def test_read_images_gpu_decode(tmp_path):
+    import torch
+
+    frames = _indexed_clip(5, 32, 48)  # solid greys: nvJPEG == libjpeg exactly
+    _write_images(tmp_path, frames, ext="jpg")
+    out = video.read_images(tmp_path, device="cuda")
+    assert isinstance(out, torch.Tensor) and out.is_cuda
+    assert tuple(out.shape) == (5, 32, 48, 3) and out.dtype == torch.uint8
+    # solid frames survive JPEG, so identity is preserved per frame
+    means = out.float().mean((1, 2, 3)).cpu().numpy()
+    assert np.all(np.diff(means) > 0)
+    x = video.to_jax(out)  # GPU tensor -> jax.Array (zero-copy path)
+    assert x.shape == (5, 32, 48, 3)

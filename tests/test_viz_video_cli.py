@@ -62,6 +62,30 @@ def test_overlay_grid_runs(result):
     assert len(fig.axes) >= result.n_views
 
 
+def test_leg_palette_colors(fly):
+    import matplotlib.colors as mc
+
+    colors = viz.limb_colors(fly)
+    for joint, hexc in viz.LEG_PALETTE.items():
+        # each leg's joints take that leg's colour
+        idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == joint]
+        assert idx, joint
+        for i in idx:
+            np.testing.assert_allclose(colors[i], mc.to_rgba(hexc))
+
+
+def test_background_modes(result):
+    import matplotlib.colors as mc
+
+    for bg, face in (("white", "#ffffff"), ("black", "#000000")):
+        ax = viz.plot_skeleton_3d(result.pts3d[0], result.skeleton, background=bg)
+        assert mc.to_hex(ax.get_figure().get_facecolor()) == face
+        ax2 = viz.plot_skeleton_2d(result.pts2d[0, 0], result.skeleton, background=bg)
+        assert mc.to_hex(ax2.get_figure().get_facecolor()) == face
+    with pytest.raises(ValueError, match="background must be one of"):
+        viz.plot_skeleton_3d(result.pts3d[0], result.skeleton, background="navy")
+
+
 # -- video -------------------------------------------------------------------
 
 
