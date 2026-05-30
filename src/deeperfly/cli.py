@@ -59,7 +59,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
         if src is None:
             raise SystemExit(f"no video/dir for camera {name!r} under {root}")
         frames.append(
-            video.read_video(src) if src.is_file() else video.read_images(src)
+            video.read_video(src, backend=args.video_backend)
+            if src.is_file()
+            else video.read_images(src)
         )
 
     sides, flips = inference.fly_camera_layout(cameras.names)
@@ -173,6 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--config", required=True, help="camera rig TOML")
     pr.add_argument("--out", dest="output", required=True)
     pr.add_argument("--backend", choices=["jax", "torch"], default="jax")
+    pr.add_argument(
+        "--video-backend",
+        default="auto",
+        help="frame reader: auto|imageio|opencv|pyav|decord|video_reader_rs|"
+        "torchcodec|pynvvideocodec|dali",
+    )
     pr.add_argument(
         "--checkpoint", help="detector weights (.eqx for jax, .tar for torch)"
     )
