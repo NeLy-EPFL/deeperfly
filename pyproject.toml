@@ -30,6 +30,24 @@ torch = [
     "torch>=2.2",
     "torchvision>=0.17",
 ]
+# Optional video read/write backends (deeperfly.video). Each is selectable via
+# `backend=...`; install the one(s) you want. NVIDIA DALI is intentionally not
+# listed -- it ships from NVIDIA's package index (e.g. nvidia-dali-cuda120), not
+# PyPI -- but `backend="dali"` is used automatically when it is importable.
+opencv = ["opencv-python-headless>=4.10"]
+pyav = ["av>=12"]
+decord = ["decord>=0.6"]              # random-access reader (Linux/Windows wheels)
+video-reader-rs = ["video-reader-rs>=0.4"]  # fast Rust/FFmpeg reader with get_batch
+# torchcodec decodes (optionally on GPU/NVDEC) into torch tensors; needs torch.
+torchcodec = [
+    "torchcodec>=0.1",
+    "torch>=2.2",
+]
+# NVIDIA NVDEC bindings; GPU-only, hands frames to torch/JAX via DLPack.
+pynvvideocodec = [
+    "PyNvVideoCodec>=1.0",
+    "torch>=2.2",
+]
 
 [project.scripts]
 deeperfly = "deeperfly.cli:main"
@@ -44,10 +62,11 @@ dev = [
     "matplotlib>=3.10.9",  # examples / notebooks only
 ]
 test = [
-    "opencv-python-headless>=4.13.0.92",  # reference implementation cross-checks
+    "opencv-python-headless>=4.13.0.92",  # reference cross-checks + opencv video backend
     "pytest>=9.0.3",
     "imageio>=2.34",          # video read/write smoke tests
     "imageio-ffmpeg>=0.5",
+    "av>=12",                 # exercise the pyav video backend
 ]
 
 [tool.pytest.ini_options]

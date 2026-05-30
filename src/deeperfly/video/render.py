@@ -1,57 +1,19 @@
-"""Frame I/O and MP4 rendering (requires the ``viz`` extra).
+"""Render :class:`~deeperfly.io.PoseResult` reconstructions to MP4.
 
-Reads input frames from a video file or a directory/glob of images, writes MP4s
-via imageio-ffmpeg, and renders a 3D-skeleton movie (and 2D overlay movies) from
-a :class:`~deeperfly.io.PoseResult`.
+Separated from the frame-I/O layer so that pure video read/write does not pull
+in matplotlib. These functions import matplotlib (and :mod:`deeperfly.viz`)
+lazily, and require the ``viz`` extra.
 """
 
 from __future__ import annotations
 
-import glob
 from pathlib import Path
 
-import imageio.v2 as imageio
 import numpy as np
 from jaxtyping import Float
 
-from .io import PoseResult
-from . import viz
-
-_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
-
-
-def read_video(path: str | Path) -> Float[np.ndarray, "T H W 3"]:
-    """Read all frames of a video file into a ``(T, H, W, 3)`` uint8 array."""
-    with imageio.get_reader(str(path)) as reader:
-        return np.stack([np.asarray(frame)[..., :3] for frame in reader])
-
-
-def read_images(pattern: str | Path) -> Float[np.ndarray, "T H W 3"]:
-    """Read a directory (or glob) of images, sorted by name, into ``(T, H, W, 3)``."""
-    p = Path(pattern)
-    if p.is_dir():
-        files = sorted(f for f in p.iterdir() if f.suffix.lower() in _IMAGE_EXTS)
-    else:
-        files = sorted(Path(f) for f in glob.glob(str(pattern)))
-    if not files:
-        raise FileNotFoundError(f"no images matched {pattern!r}")
-    return np.stack([np.asarray(imageio.imread(f))[..., :3] for f in files])
-
-
-def write_mp4(
-    frames: Float[np.ndarray, "T H W 3"],
-    path: str | Path,
-    fps: float = 30.0,
-) -> None:
-    """Write ``(T, H, W, 3)`` uint8 frames to an MP4 (H.264)."""
-    frames = np.asarray(frames)
-    if frames.dtype != np.uint8:
-        frames = np.clip(frames, 0, 255).astype(np.uint8)
-    with imageio.get_writer(
-        str(path), fps=fps, codec="libx264", macro_block_size=None
-    ) as w:
-        for frame in frames:
-            w.append_data(frame)
+from ..io import PoseResult
+from .io import write_mp4
 
 
 def figure_to_array(fig) -> Float[np.ndarray, "H W 3"]:
@@ -69,9 +31,12 @@ def render_pose3d_video(
     use_smoothed: bool = True,
     elev: float = 20.0,
     azim: float = -60.0,
+    backend: str = "auto",
 ) -> None:
     """Render the triangulated 3D skeleton over time to an MP4."""
     import matplotlib.pyplot as plt
+
+    from .. import viz
 
     pts3d = (
         result.pts3d_smoothed
@@ -94,7 +59,7 @@ def render_pose3d_video(
         ax.set_zlim(lo[2], hi[2])
         frames.append(figure_to_array(fig))
     plt.close(fig)
-    write_mp4(np.stack(frames), path, fps=fps)
+    write_mp4(np.stack(frames), path, fps=fps, backend=backend)
 
 
 def render_overlay_video(
@@ -104,9 +69,12 @@ def render_overlay_video(
     *,
     camera: int = 0,
     fps: float = 30.0,
+    backend: str = "auto",
 ) -> None:
     """Render one camera's 2D pose overlay across frames to an MP4."""
     import matplotlib.pyplot as plt
+
+    from .. import viz
 
     frames = []
     fig, ax = plt.subplots(figsize=(images.shape[2] / 100, images.shape[1] / 100))
@@ -120,4 +88,4 @@ def render_overlay_video(
         ax.set_yticks([])
         frames.append(figure_to_array(fig))
     plt.close(fig)
-    write_mp4(np.stack(frames), path, fps=fps)
+    write_mp4(np.stack(frames), path, fps=fps, backend=backend)

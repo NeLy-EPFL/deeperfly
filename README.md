@@ -72,6 +72,59 @@ faster one:
 uv run --extra torch python dev/bench_pose2d.py --batch 7 --frames 8
 ```
 
+## Video I/O backends
+
+`deeperfly.video` reads and writes frames through a pluggable backend registry,
+so you can pick where decoding happens and what the frames live in:
+
+| Backend | Read | Write | Seek | Frames | Install |
+| --- | :-: | :-: | :-: | --- | --- |
+| `imageio` (default) | ✓ | ✓ | – | NumPy (CPU) | `viz` extra |
+| `opencv` | ✓ | ✓ | ✓ | NumPy (CPU) | `opencv` extra |
+| `pyav` | ✓ | ✓ | ✓ | NumPy (CPU) | `pyav` extra |
+| `decord` | ✓ | – | ✓ | NumPy / `torch` (CPU/**CUDA**) | `decord` extra |
+| `video_reader_rs` | ✓ | – | ✓ | NumPy (CPU) | `video-reader-rs` extra |
+| `torchcodec` | ✓ | – | ✓ | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` extra |
+| `pynvvideocodec` | ✓ | – | ✓ | `torch.Tensor` (**CUDA**) | `pynvvideocodec` extra |
+| `dali` | ✓ | – | – | `torch.Tensor` / NumPy (**CUDA**) | NVIDIA index |
+
+```python
+from deeperfly import video
+
+frames = video.read_video("clip.mp4")                              # NumPy, CPU
+frames = video.read_video("clip.mp4", backend="pyav")              # frame-accurate
+frames = video.read_video("clip.mp4", indices=[0, 50, 120])        # random access
+frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")  # GPU
+video.write_mp4(frames, "out.mp4", fps=30, backend="opencv")
+video.available_read_backends()       # what's installed here
+```
+
+`backend="auto"` picks the first installed backend (CPU: imageio → pyav →
+opencv → decord → video_reader_rs; GPU: torchcodec → decord → pynvvideocodec →
+dali). Pass `indices=[...]` for random access: seek-capable backends fetch just
+those frames, others decode up to `max(indices)` and gather. `deeperfly run`
+takes `--video-backend`. NVIDIA DALI ships from NVIDIA's package index (e.g.
+`nvidia-dali-cuda120`), so it's not a pip extra but is used automatically when
+importable.
+
+### GPU frames → JAX (zero-copy)
+
+The detector runs in JAX, so when you decode onto the GPU you want the frames in
+a JAX array *without* a host round-trip. `video.to_jax` does this via DLPack —
+on a shared GPU, JAX wraps the **same** device buffer the decoder produced:
+
+```python
+frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")  # torch, GPU
+x = video.to_jax(frames)              # jax.Array on the GPU, zero-copy
+# keep `frames` alive until JAX has consumed `x`
+```
+
+Notes: both sides must share the same CUDA device; modern JAX/torch handle the
+DLPack stream synchronization. `video.to_jax` also accepts NumPy (host copy onto
+JAX's default device) and decord/DALI GPU tensors. `video.to_numpy` is the
+host-side counterpart. Since `pose2d.preprocess` already resizes/normalizes with
+`jax.image.resize`, a `to_jax` array feeds straight in and stays on the GPU.
+
 ## Development
 
 ```bash
@@ -81,4 +134,5 @@ uv run --group test --extra torch pytest   # also run the PyTorch-equivalence te
 ```
 
 Optional extras: `viz` (matplotlib + imageio for plotting/video), `torch`
-(weight conversion + PyTorch detector backend).
+(weight conversion + PyTorch detector backend), `opencv` / `pyav` / `torchcodec`
+(extra video read/write backends).
