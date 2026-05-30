@@ -10,9 +10,9 @@ correction → visualization.**
 The computer-vision core follows OpenCV's conventions (Rodrigues rotations,
 `projectPoints` distortion, DLT triangulation) and is cross-checked against
 OpenCV in the test suite. Everything geometric is JAX (JIT- and autodiff-
-friendly); the 2D detector is a JAX (Equinox) port of DeepFly2D's stacked
-hourglass, with the original PyTorch network kept alongside as an alternate
-backend for benchmarking.
+friendly); the 2D detector ships two co-equal backends behind one interface — a
+JAX (Equinox) port of DeepFly2D's stacked hourglass and the original PyTorch
+network — selectable with `--backend {jax,torch}`.
 
 ## Pipeline
 
@@ -51,8 +51,8 @@ result.save("fly.h5")
 End to end from images/video via the CLI:
 
 ```bash
-deeperfly download-weights          # fetch original PyTorch weights
-deeperfly convert-weights           # -> native JAX checkpoint (needs the 'torch' extra)
+deeperfly download-weights          # fetch original PyTorch weights (sh8)
+deeperfly convert-weights           # -> native JAX checkpoint (skip if using --backend torch)
 deeperfly run --in recording/ --config cameras.toml --out fly.h5 [--backend jax|torch]
 deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d
 ```
@@ -63,22 +63,23 @@ synthetic end-to-end run (no weights required).
 
 ## 2D detector backends
 
-The JAX hourglass is validated to match the original PyTorch network to within
-`1e-4` (see `tests/test_pose2d_torch.py`). Both backends share the same
-interface, selectable at inference; benchmark them on your GPU and pick the
-faster one:
+The detector has two co-equal backends — JAX/Equinox and PyTorch — installed by
+default and selectable with `--backend {jax,torch}`. The PyTorch backend runs
+the published `sh8` weights directly; the JAX backend runs the same weights once
+`convert-weights` has produced the native checkpoint, and is validated to match
+PyTorch to within `1e-4` (see `tests/test_pose2d_torch.py`). Benchmark them on
+your GPU and pick the faster one:
 
 ```bash
-uv run --extra torch python dev/bench_pose2d.py --batch 7 --frames 8
+uv run python dev/bench_pose2d.py --batch 7 --frames 8
 ```
 
 ## Development
 
 ```bash
 uv sync --group test                 # install with test dependencies
-uv run --group test pytest           # run the suite
-uv run --group test --extra torch pytest   # also run the PyTorch-equivalence tests
+uv run --group test pytest           # run the suite (incl. PyTorch-equivalence tests)
 ```
 
-Optional extras: `viz` (matplotlib + imageio for plotting/video), `torch`
-(weight conversion + PyTorch detector backend).
+Optional extras: `viz` (matplotlib + imageio for plotting/video). PyTorch is a
+core dependency (the second detector backend), so no extra is needed for it.

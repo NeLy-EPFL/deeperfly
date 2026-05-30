@@ -8,13 +8,17 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "jax>=0.10.1",
+    "jax[cuda13]>=0.10.1",
     "jaxtyping>=0.3.10",
     "numpy>=2.4.6",
     "scipy>=1.14",
     "h5py>=3.11",
     "equinox>=0.11",
     "platformdirs>=4.0",
+    # The 2D detector ships two co-equal backends (JAX/Equinox and PyTorch); both
+    # are installed by default. torch also converts the original DeepFly2D weights.
+    "torch>=2.2",
+    "torchvision>=0.17",
 ]
 
 [project.optional-dependencies]
@@ -22,13 +26,6 @@ viz = [
     "matplotlib>=3.10",
     "imageio>=2.34",
     "imageio-ffmpeg>=0.5",
-]
-# Only needed to convert the original PyTorch DeepFly2D weights to the native
-# JAX checkpoint, or to run the PyTorch detector as a fallback backend. Never
-# required for normal (JAX) inference.
-torch = [
-    "torch>=2.2",
-    "torchvision>=0.17",
 ]
 
 [project.scripts]

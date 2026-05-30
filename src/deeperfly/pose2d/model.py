@@ -10,7 +10,8 @@ batch of camera images.
 Each module operates on a single ``(C, H, W)`` image (no batch axis); vectorise
 with :func:`jax.vmap`. The network returns one heatmap stack per hourglass; the
 last is the prediction. The canonical fly config is
-:meth:`HourglassNet.deepfly2d` (2 stacks, 1 block, 19 classes, 128 features).
+:meth:`HourglassNet.deepfly2d` (8 stacks, 1 block, 19 classes, 128 features),
+matching the published ``sh8`` checkpoint.
 """
 
 from __future__ import annotations
@@ -209,11 +210,17 @@ class HourglassNet(eqx.Module):
                     eqx.nn.Conv2d(num_classes, ch, 1, use_bias=True, key=next(keys))
                 )
 
+    DEFAULT_NUM_STACKS = 8  # the shipped DeepFly2D weights are "sh8" (8 stacks)
+
     @classmethod
-    def deepfly2d(cls, *, key) -> HourglassNet:
-        """The canonical DeepFly2D configuration (2 stacks, 1 block, 19 joints)."""
+    def deepfly2d(cls, *, key, num_stacks: int = DEFAULT_NUM_STACKS) -> HourglassNet:
+        """The canonical DeepFly2D configuration (8 stacks, 1 block, 19 joints).
+
+        ``num_stacks`` defaults to 8 to match the published ``sh8`` checkpoint;
+        pass a smaller value for fast tests/benchmarks of the architecture.
+        """
         model = cls(
-            num_stacks=2,
+            num_stacks=num_stacks,
             num_blocks=1,
             num_classes=19,
             inplanes=64,

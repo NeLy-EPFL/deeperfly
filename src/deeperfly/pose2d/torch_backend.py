@@ -1,12 +1,12 @@
-"""PyTorch backend for the 2D detector (optional ``torch`` extra).
+"""PyTorch backend for the 2D detector -- a co-equal alternative to the JAX path.
 
 A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original ``.tar`` weights can be run directly, with no
 conversion. It exposes the same contract as the JAX path -- stacked
 ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps out -- so
 :func:`deeperfly.pose2d.inference.detect` works with either backend and the two
-can be benchmarked head to head. Kept alongside the JAX model until the GPU
-speed comparison decides which to ship.
+can be benchmarked head to head. Both backends are first-class and installed by
+default; pick one with ``--backend {jax,torch}``.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class HourglassNet(nn.Module):
     def __init__(
         self,
         block=Bottleneck,
-        num_stacks=2,
+        num_stacks=8,  # the published DeepFly2D weights are "sh8" (8 stacks)
         num_blocks=1,
         num_classes=19,
         inplanes=64,
@@ -172,15 +172,19 @@ def device() -> str:
 def load_model(
     checkpoint: str | Path | None = None, *, dev: str | None = None
 ) -> HourglassNet:
-    """Build the DeepFly2D net and (optionally) load the original ``.tar`` weights."""
-    from .weights import state_dict_from_torch_checkpoint
+    """Build the DeepFly2D net and (optionally) load the original ``.tar`` weights.
 
-    model = HourglassNet().eval()
-    if checkpoint is not None:
-        sd = state_dict_from_torch_checkpoint(checkpoint)
-        model.load_state_dict(
-            {k: torch.as_tensor(v) for k, v in sd.items()}, strict=True
-        )
+    The number of stacks is taken from the checkpoint (the published weights are
+    ``sh8`` = 8 stacks), so the architecture always matches before the strict
+    load.
+    """
+    from .weights import infer_num_stacks, state_dict_from_torch_checkpoint
+
+    if checkpoint is None:
+        return HourglassNet().eval().to(dev or device())
+    sd = state_dict_from_torch_checkpoint(checkpoint)
+    model = HourglassNet(num_stacks=infer_num_stacks(sd)).eval()
+    model.load_state_dict({k: torch.as_tensor(v) for k, v in sd.items()}, strict=True)
     return model.to(dev or device())
 
 

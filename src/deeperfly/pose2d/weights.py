@@ -80,16 +80,39 @@ def _leaf_keys(prefix: str, kind: str) -> list[str]:
     ]
 
 
+def infer_num_stacks(state_dict: dict[str, np.ndarray]) -> int:
+    """Number of hourglass stacks in a ``state_dict`` (counts ``score.{i}.weight``).
+
+    The published checkpoint is ``sh8`` (8 stacks); deriving the count from the
+    weights keeps :func:`convert_state_dict` robust to other stack depths.
+    """
+    n = 0
+    while f"score.{n}.weight" in state_dict:
+        n += 1
+    if n == 0:
+        raise KeyError(
+            "no 'score.{i}.weight' keys found; not a HourglassNet state_dict"
+        )
+    return n
+
+
 def convert_state_dict(
     state_dict: dict[str, np.ndarray], model: HourglassNet
 ) -> HourglassNet:
     """Return ``model`` with weights filled from a HourglassNet ``state_dict``.
 
     ``state_dict`` keys are the native ``HourglassNet`` names (e.g.
-    ``conv1.weight``, ``layer1.0.bn1.running_mean``). Raises if a needed key is
-    missing or if any provided key goes unused.
+    ``conv1.weight``, ``layer1.0.bn1.running_mean``). PyTorch's
+    ``num_batches_tracked`` BatchNorm counters have no inference-time analogue in
+    :class:`FrozenBatchNorm` and are dropped. Raises if a needed key is missing
+    or if any remaining key goes unused. ``model.num_stacks`` must match the
+    checkpoint (see :func:`infer_num_stacks`).
     """
-    sd = {k: np.asarray(v) for k, v in state_dict.items()}
+    sd = {
+        k: np.asarray(v)
+        for k, v in state_dict.items()
+        if not k.endswith("num_batches_tracked")
+    }
     used: set[str] = set()
     values = []
     for module, prefix, kind in _param_modules(model):
@@ -158,7 +181,13 @@ def save_checkpoint(model: HourglassNet, path: str | Path) -> None:
     eqx.tree_serialise_leaves(str(path), model)
 
 
-def load_checkpoint(path: str | Path, *, key) -> HourglassNet:
-    """Load a serialised DeepFly2D model (no torch needed)."""
-    skeleton = HourglassNet.deepfly2d(key=key)
+def load_checkpoint(
+    path: str | Path, *, key, num_stacks: int = HourglassNet.DEFAULT_NUM_STACKS
+) -> HourglassNet:
+    """Load a serialised DeepFly2D model (no torch needed).
+
+    ``num_stacks`` must match the architecture the checkpoint was saved from
+    (default 8, the published ``sh8`` config).
+    """
+    skeleton = HourglassNet.deepfly2d(key=key, num_stacks=num_stacks)
     return eqx.tree_deserialise_leaves(str(path), skeleton)

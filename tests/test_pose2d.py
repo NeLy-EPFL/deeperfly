@@ -20,7 +20,9 @@ from deeperfly.pose2d import weights
 
 @pytest.fixture
 def model() -> HourglassNet:
-    return HourglassNet.deepfly2d(key=jax.random.PRNGKey(0))
+    # A small 2-stack model keeps these mechanics tests fast; the published
+    # config is 8 stacks (see test_deepfly2d_default_is_sh8).
+    return HourglassNet.deepfly2d(key=jax.random.PRNGKey(0), num_stacks=2)
 
 
 # -- model -------------------------------------------------------------------
@@ -32,6 +34,12 @@ def test_forward_shapes(model):
     assert len(outs) == 2  # one heatmap stack per hourglass
     assert outs[-1].shape == (19, 64, 128)
     assert model.heatmaps(x).shape == (19, 64, 128)
+
+
+def test_deepfly2d_default_is_sh8():
+    # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
+    # convert-weights / load_checkpoint build a matching architecture.
+    assert HourglassNet.deepfly2d(key=jax.random.PRNGKey(0)).num_stacks == 8
 
 
 def test_batched_inference(model):
@@ -46,11 +54,21 @@ def test_batched_inference(model):
 def test_conversion_roundtrip_is_exact(model):
     sd = weights.export_state_dict(model)
     converted = weights.convert_state_dict(
-        sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(9))
+        sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(9), num_stacks=2)
     )
     x = jax.random.normal(jax.random.PRNGKey(3), (3, 256, 512))
     np.testing.assert_array_equal(
         np.asarray(model.heatmaps(x)), np.asarray(converted.heatmaps(x))
+    )
+
+
+def test_infer_num_stacks_counts_score_heads(model):
+    sd = weights.export_state_dict(model)
+    assert weights.infer_num_stacks(sd) == 2
+    # num_batches_tracked counters are ignored, not treated as unused keys.
+    sd["bn1.num_batches_tracked"] = np.zeros((), dtype=np.int64)
+    weights.convert_state_dict(
+        sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(5), num_stacks=2)
     )
 
 
@@ -71,7 +89,7 @@ def test_conversion_unused_key_raises(model):
 def test_checkpoint_save_load(model, tmp_path):
     path = tmp_path / "model.eqx"
     weights.save_checkpoint(model, path)
-    loaded = weights.load_checkpoint(path, key=jax.random.PRNGKey(7))
+    loaded = weights.load_checkpoint(path, key=jax.random.PRNGKey(7), num_stacks=2)
     x = jax.random.normal(jax.random.PRNGKey(4), (3, 256, 512))
     np.testing.assert_array_equal(
         np.asarray(model.heatmaps(x)), np.asarray(loaded.heatmaps(x))

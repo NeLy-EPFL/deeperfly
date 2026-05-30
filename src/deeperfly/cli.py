@@ -94,16 +94,19 @@ def _cmd_convert_weights(args: argparse.Namespace) -> None:
     from .pose2d.model import HourglassNet
     from .pose2d.weights import (
         convert_state_dict,
+        infer_num_stacks,
         save_checkpoint,
         state_dict_from_torch_checkpoint,
     )
 
     src = args.pth or download_torch_weights()
     sd = state_dict_from_torch_checkpoint(src)
-    model = convert_state_dict(sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(0)))
+    num_stacks = infer_num_stacks(sd)
+    skeleton = HourglassNet.deepfly2d(key=jax.random.PRNGKey(0), num_stacks=num_stacks)
+    model = convert_state_dict(sd, skeleton)
     out = args.output or jax_weights_path()
     save_checkpoint(model, out)
-    print(f"converted {src} -> {out}")
+    print(f"converted {src} -> {out}  ({num_stacks} stacks)")
 
 
 def _cmd_pose3d(args: argparse.Namespace) -> None:

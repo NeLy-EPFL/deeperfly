@@ -8,9 +8,13 @@
 - :mod:`~deeperfly.pose2d.inference` -- ``preprocess``, ``predict_heatmaps``,
   ``heatmap_to_points``, ``assemble_skeleton``.
 - :mod:`~deeperfly.pose2d.download` -- fetch/cache pretrained weights.
+- :mod:`~deeperfly.pose2d.torch_backend` -- the co-equal PyTorch detector
+  (runs the original ``.tar`` weights directly).
 
-Importing this package needs only JAX + Equinox; torch is required solely to
-convert the original ``.tar`` checkpoint (the ``torch`` extra).
+The detector ships two co-equal backends behind one interface: the JAX/Equinox
+:class:`HourglassNet` and the PyTorch :mod:`torch_backend`. Either runs the
+published ``sh8`` weights; :func:`~deeperfly.pose2d.inference.detect` dispatches
+on the model type, so calibration/triangulation downstream are identical.
 """
 
 from __future__ import annotations
