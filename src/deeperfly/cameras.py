@@ -168,13 +168,30 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     return rvec, tvec
 
 
-def _parse_intrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve a spec dict to packed ``intr = [fx, fy, cx, cy]`` and ``dist``."""
+def _parse_intrinsics(
+    spec: dict, image_size: tuple[int, int] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve a spec dict to packed ``intr = [fx, fy, cx, cy]`` and ``dist``.
+
+    ``principal_point_px`` is optional: when the spec omits it, the principal
+    point is placed at the image center ``((w - 1) / 2, (h - 1) / 2)`` using
+    ``image_size`` (a ``(height, width)`` pair, as in a NumPy image array). It
+    is an error to omit both.
+    """
     try:
         focal = np.atleast_1d(np.asarray(spec["focal_length_px"], dtype=float))
-        cx, cy = (float(v) for v in spec["principal_point_px"])
     except KeyError as exc:
         raise ValueError(f"camera spec missing intrinsic {exc}") from exc
+    if "principal_point_px" in spec:
+        cx, cy = (float(v) for v in spec["principal_point_px"])
+    elif image_size is not None:
+        height, width = image_size
+        cx, cy = (width - 1) / 2, (height - 1) / 2
+    else:
+        raise ValueError(
+            "camera spec missing intrinsic 'principal_point_px' and no image "
+            "size is available to infer it from"
+        )
     if focal.size == 1:
         fx = fy = float(focal[0])
     elif focal.size == 2:
@@ -202,10 +219,19 @@ class Camera:
     name: str | None = None
 
     @classmethod
-    def from_spec(cls, spec: dict, name: str | None = None) -> Camera:
-        """Build a camera from a config dict (see :func:`resolve_extrinsics`)."""
+    def from_spec(
+        cls,
+        spec: dict,
+        name: str | None = None,
+        image_size: tuple[int, int] | None = None,
+    ) -> Camera:
+        """Build a camera from a config dict (see :func:`resolve_extrinsics`).
+
+        ``image_size`` is an optional ``(height, width)`` pair used to infer the
+        principal point (image center) when the spec omits ``principal_point_px``.
+        """
         rvec, tvec = resolve_extrinsics(spec)
-        intr, dist = _parse_intrinsics(spec)
+        intr, dist = _parse_intrinsics(spec, image_size=image_size)
         return cls(rvec=rvec, tvec=tvec, intr=intr, dist=dist, name=name)
 
     @property
@@ -257,19 +283,30 @@ class CameraGroup:
     # -- construction --------------------------------------------------------
 
     @classmethod
-    def from_config(cls, config: dict | str | Path) -> CameraGroup:
+    def from_config(
+        cls,
+        config: dict | str | Path,
+        image_sizes: dict[str, tuple[int, int]] | None = None,
+    ) -> CameraGroup:
         """Build a group from a config dict or a path to a TOML file.
 
         Reads ``[camera_defaults]`` and ``[cameras.<name>]``; per-camera keys
         override the defaults. Any ``[bundle_adjustment]`` section is ignored
         here -- this class is bundle-adjustment-unaware.
+
+        ``image_sizes`` maps a camera name to its ``(height, width)`` and is
+        used to infer that camera's principal point (image center) when neither
+        the camera spec nor ``[camera_defaults]`` specifies ``principal_point_px``.
         """
         if not isinstance(config, dict):
             with open(config, "rb") as f:
                 config = tomllib.load(f)
         defaults = config.get("camera_defaults", {})
+        image_sizes = image_sizes or {}
         cameras = {
-            name: Camera.from_spec({**defaults, **spec}, name=name)
+            name: Camera.from_spec(
+                {**defaults, **spec}, name=name, image_size=image_sizes.get(name)
+            )
             for name, spec in config.get("cameras", {}).items()
         }
         if not cameras:

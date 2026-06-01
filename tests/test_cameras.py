@@ -164,6 +164,36 @@ def test_parse_intrinsics_scalar_focal():
     assert cam.intr.tolist() == [700.0, 700.0, 10.0, 20.0]
 
 
+def test_from_spec_infers_principal_point_from_image_size():
+    # No principal_point_px -> image center ((w-1)/2, (h-1)/2) from (height, width).
+    cam = Camera.from_spec(
+        {"rvec": [0, 0, 0], "tvec": [0, 0, 1], "focal_length_px": 700.0},
+        image_size=(HEIGHT, WIDTH),
+    )
+    assert cam.intr.tolist() == [700.0, 700.0, (WIDTH - 1) / 2, (HEIGHT - 1) / 2]
+
+
+def test_from_spec_explicit_principal_point_overrides_image_size():
+    # An explicit principal point wins even when an image size is available.
+    cam = Camera.from_spec(
+        {
+            "rvec": [0, 0, 0],
+            "tvec": [0, 0, 1],
+            "focal_length_px": 700.0,
+            "principal_point_px": [10.0, 20.0],
+        },
+        image_size=(HEIGHT, WIDTH),
+    )
+    assert cam.intr.tolist() == [700.0, 700.0, 10.0, 20.0]
+
+
+def test_from_spec_missing_principal_point_without_image_size_raises():
+    with pytest.raises(ValueError, match="principal_point_px"):
+        Camera.from_spec(
+            {"rvec": [0, 0, 0], "tvec": [0, 0, 1], "focal_length_px": 700.0}
+        )
+
+
 # -- CameraGroup -------------------------------------------------------------
 
 
@@ -202,6 +232,34 @@ def test_group_from_config_toml_file(tmp_path):
 def test_group_empty_config_raises():
     with pytest.raises(ValueError, match="no cameras"):
         CameraGroup.from_config({"cameras": {}})
+
+
+def test_group_from_config_infers_principal_point_per_view():
+    # Defaults omit principal_point_px; each view's center comes from image_sizes.
+    config = {
+        "camera_defaults": {"focal_length_px": 800.0},
+        "cameras": {
+            "left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]},
+            "right": {"rvec": [0, 0, 0], "tvec": [1.0, 0, 5.0]},
+        },
+    }
+    image_sizes = {"left": (512, 1024), "right": (480, 640)}
+    group = CameraGroup.from_config(config, image_sizes=image_sizes)
+    assert np.allclose(
+        group["left"].intr, [800.0, 800.0, (1024 - 1) / 2, (512 - 1) / 2]
+    )
+    assert np.allclose(
+        group["right"].intr, [800.0, 800.0, (640 - 1) / 2, (480 - 1) / 2]
+    )
+
+
+def test_group_from_config_missing_principal_point_no_sizes_raises():
+    config = {
+        "camera_defaults": {"focal_length_px": 800.0},
+        "cameras": {"left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]}},
+    }
+    with pytest.raises(ValueError, match="principal_point_px"):
+        CameraGroup.from_config(config)
 
 
 def test_group_project_triangulate_roundtrip(config, rng):

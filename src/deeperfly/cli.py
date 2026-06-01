@@ -10,6 +10,7 @@ usable as a library: ``run`` (detect 2D -> calibrate -> 3D from images/video),
 from __future__ import annotations
 
 import argparse
+import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -45,20 +46,27 @@ def _cmd_run(args: argparse.Namespace) -> None:
     from .pose2d import inference
     from .skeleton import Skeleton
 
-    cameras = CameraGroup.from_config(args.config)
-    skeleton = Skeleton.fly()
-    model = _load_detector(args.checkpoint, args.backend)
+    with open(args.config, "rb") as f:
+        config = tomllib.load(f)
 
     # Read per-camera frames named after the camera (e.g. camera_rh.mp4 or a
     # subdirectory of images per camera name).
     root = Path(args.input)
-    frames = []
-    for name in cameras.names:
+    frames, image_sizes = [], {}
+    for name in config.get("cameras", {}):
         hits = list(root.glob(f"*{name}.mp4")) + [root / name]
         src = next((h for h in hits if h.exists()), None)
         if src is None:
             raise SystemExit(f"no video/dir for camera {name!r} under {root}")
-        frames.append(video.read_frames(src, backend=args.video_backend))
+        view = video.read_frames(src, backend=args.video_backend)
+        frames.append(view)
+        image_sizes[name] = tuple(view.shape[1:3])  # (height, width)
+
+    # Build cameras after reading frames so any camera without an explicit
+    # principal point falls back to its view's image center.
+    cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
+    skeleton = Skeleton.fly()
+    model = _load_detector(args.checkpoint, args.backend)
 
     sides, flips = inference.fly_camera_layout(cameras.names)
     candidates = None
