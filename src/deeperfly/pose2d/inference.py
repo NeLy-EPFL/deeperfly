@@ -25,6 +25,8 @@ per-side ordering, so the mapping is a direct slice.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -425,12 +427,19 @@ def detect_sequence(
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
+    progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ) -> tuple[Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]]:
-    """Detect a multi-camera sequence -> ``(V, T, 38, 2)`` pixels and ``(V, T, 38)`` conf."""
+    """Detect a multi-camera sequence -> ``(V, T, 38, 2)`` pixels and ``(V, T, 38)`` conf.
+
+    ``progress`` optionally wraps the per-frame iterator (e.g. ``tqdm``) so callers
+    can show a progress bar; it defaults to the identity, keeping the library
+    UI-free.
+    """
     n_views, n_frames = len(frames), len(frames[0])
     pts = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS, 2))
     conf = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS))
-    for t in range(n_frames):
+    steps = progress(range(n_frames)) if progress is not None else range(n_frames)
+    for t in steps:
         pts[:, t], conf[:, t] = detect(
             model,
             [frames[v][t] for v in range(n_views)],
@@ -451,6 +460,7 @@ def detect_candidates_sequence(
     k: int = 5,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
+    progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ):
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
 
@@ -473,7 +483,8 @@ def detect_candidates_sequence(
     conf = np.empty((n_views, n_frames, n_pts))
     cand_xy = np.empty((n_views, n_frames, n_pts, k, 2))
     cand_score = np.empty((n_views, n_frames, n_pts, k))
-    for t in range(n_frames):
+    steps = progress(range(n_frames)) if progress is not None else range(n_frames)
+    for t in steps:
         images = [frames[v][t] for v in range(n_views)]
         inputs = np.stack(
             [

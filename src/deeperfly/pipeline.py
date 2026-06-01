@@ -255,7 +255,7 @@ def run_from_points2d(
     alignment to a template -> (optional) temporal smoothing.
 
     ``merge_stripes`` (default ``True``) fuses the left/right abdominal stripe
-    markers into shared ``Stripe0/1/2`` points (:meth:`Skeleton.merge_lr_stripes`),
+    markers into shared ``stripe0/1/2`` points (:meth:`Skeleton.merge_lr_stripes`),
     so each is triangulated from all four cameras that see either side and the
     result carries 35 instead of 38 points. The returned :class:`PoseResult`
     then uses the merged skeleton and point layout throughout.

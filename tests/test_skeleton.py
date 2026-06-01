@@ -119,7 +119,7 @@ def test_points_in_category_unknown_raises(fly):
 def test_merge_lr_stripes_structure(fly):
     merged, remap = fly.merge_lr_stripes()
     assert merged.n_points == 35  # 38 - 3 left stripe duplicates
-    assert merged.joint_names[16:19] == ("Stripe0", "Stripe1", "Stripe2")
+    assert merged.joint_names[16:19] == ("stripe0", "stripe1", "stripe2")
     # The left stripes (35..37) collapse onto the right ones (16..18); every
     # other point keeps its index.
     np.testing.assert_array_equal(remap[:35], np.arange(35))

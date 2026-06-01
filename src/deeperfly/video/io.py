@@ -8,6 +8,7 @@ installed one); ``device`` lets GPU-capable readers keep frames on the device.
 from __future__ import annotations
 
 import glob
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,6 +17,8 @@ import numpy as np
 from jaxtyping import Float
 
 from .base import is_gpu_device, select_reader, select_writer, to_numpy
+
+log = logging.getLogger("deeperfly.video")
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp")
 _JPEG_EXTS = (".jpg", ".jpeg")
@@ -55,7 +58,17 @@ def read_video(
     frames = reader.read(
         path, device=device, start=start, stop=stop, step=step, indices=indices
     )
-    return frames if is_gpu_device(device) else to_numpy(frames)
+    out = frames if is_gpu_device(device) else to_numpy(frames)
+    log.info(
+        "read video %s via '%s' backend -> %d frames %dx%d (device=%s)",
+        Path(path).name,
+        reader.name,
+        out.shape[0],
+        out.shape[1],
+        out.shape[2],
+        device,
+    )
+    return out
 
 
 def list_image_files(pattern: str | Path) -> list[Path]:
@@ -158,9 +171,20 @@ def read_images(
     files = _subset(list_image_files(pattern), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")
-    if is_gpu_device(device):
-        return _read_images_gpu(files, device, workers)
-    return _read_images_cpu(files, workers)
+    out = (
+        _read_images_gpu(files, device, workers)
+        if is_gpu_device(device)
+        else _read_images_cpu(files, workers)
+    )
+    log.info(
+        "read %d images (imageio) -> %d frames %dx%d (device=%s)",
+        len(files),
+        out.shape[0],
+        out.shape[1],
+        out.shape[2],
+        device,
+    )
+    return out
 
 
 def read_frames(
@@ -223,4 +247,13 @@ def write_mp4(
     frames = to_numpy(frames)
     if frames.dtype != np.uint8:
         frames = np.clip(frames, 0, 255).astype(np.uint8)
+    log.info(
+        "writing %s via '%s' backend: %d frames %dx%d @ %g fps",
+        Path(path).name,
+        writer.name,
+        frames.shape[0],
+        frames.shape[1],
+        frames.shape[2],
+        fps,
+    )
     writer.write(frames, path, fps=fps, codec=codec, **kwargs)

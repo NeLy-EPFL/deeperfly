@@ -12,6 +12,9 @@ import numpy as np
 import pytest
 
 from deeperfly import geometry as geom
+from deeperfly.cameras import CameraGroup
+from deeperfly.io import PoseResult
+from deeperfly.skeleton import Skeleton
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -48,3 +51,30 @@ def rig():
         "intrs": intrs,
         "dists": dists,
     }
+
+
+@pytest.fixture
+def cameras(rig) -> CameraGroup:
+    return CameraGroup.from_arrays(
+        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
+    )
+
+
+@pytest.fixture
+def fly() -> Skeleton:
+    return Skeleton.fly()
+
+
+@pytest.fixture
+def result(cameras, fly, rng) -> PoseResult:
+    """A small synthetic 7-camera fly result with 2D + 3D points."""
+    pts3d = rng.uniform(-1.5, 1.5, size=(6, 38, 3))
+    pts2d = np.array(cameras.project(pts3d))
+    return PoseResult(
+        cameras=cameras,
+        skeleton=fly,
+        pts2d=pts2d,
+        conf=rng.uniform(0, 1, size=pts2d.shape[:3]),
+        pts3d=pts3d,
+        reproj_error=np.zeros(pts2d.shape[:3]),
+    )

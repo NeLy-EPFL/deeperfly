@@ -23,6 +23,8 @@ dependencies = [
     "h5py>=3.11",
     "equinox>=0.11",
     "platformdirs>=4.0",
+    # Progress bars for the CLI's detector loop (auto-disabled off a TTY / under -q).
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]

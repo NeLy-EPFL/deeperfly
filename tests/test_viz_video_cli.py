@@ -9,35 +9,10 @@ import numpy as np
 import pytest
 
 from deeperfly import cli, video, viz
-from deeperfly.cameras import CameraGroup
 from deeperfly.io import PoseResult
-from deeperfly.skeleton import Skeleton
 
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
-
-
-@pytest.fixture
-def result(cameras, fly, rng):
-    pts3d = rng.uniform(-1.5, 1.5, size=(6, 38, 3))
-    pts2d = np.array(cameras.project(pts3d))
-    return PoseResult(
-        cameras=cameras,
-        skeleton=fly,
-        pts2d=pts2d,
-        conf=rng.uniform(0, 1, size=pts2d.shape[:3]),
-        pts3d=pts3d,
-        reproj_error=np.zeros(pts2d.shape[:3]),
-    )
+# `cameras`, `fly` and `result` fixtures live in conftest.py (shared with
+# test_cli_run.py).
 
 
 # -- viz ---------------------------------------------------------------------
@@ -119,48 +94,82 @@ def test_render_pose3d_video(result, tmp_path):
 # -- cli ---------------------------------------------------------------------
 
 
-def test_cli_pose3d_and_info(result, tmp_path, capsys):
-    in_path = tmp_path / "in.h5"
-    out_path = tmp_path / "out.h5"
-    # store only 2D so pose3d has to triangulate.
+def _seed_2d(result, outdir):
+    """Pre-seed a 2D-only poses.h5 in ``outdir`` so a run resumes at pose3d."""
+    outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        in_path
+        outdir / "poses.h5"
     )
-    # pose3d options live in an optional config; disable calibration here.
+
+
+def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
+    outdir = tmp_path / "out"
+    _seed_2d(result, outdir)
+    # pose3d options live in the config; disable calibration here.
     cfg = tmp_path / "cfg.toml"
     cfg.write_text("[pipeline]\ncalibrate = false\n")
 
-    cli.main(["pose3d", "--in", str(in_path), "--out", str(out_path), str(cfg)])
-    out = PoseResult.load(out_path)
+    # `run` resumes from the cached 2D (start = pose3d); --until pose3d skips video.
+    cli.main(
+        [
+            "run",
+            str(cfg),
+            "-i",
+            str(tmp_path / "rec"),
+            "-o",
+            str(outdir),
+            "--until",
+            "pose3d",
+            "-q",
+        ]
+    )
+    out = PoseResult.load(outdir / "poses.h5")
     assert out.pts3d is not None
     assert out.pts3d.shape == (result.n_frames, 35, 3)  # L/R stripes merged by default
 
-    cli.main(["info", "--in", str(out_path)])
+    cli.main(["info", "--in", str(outdir / "poses.h5")])
     printed = capsys.readouterr().out
     assert "skeleton: drosophila  (35 points)" in printed
     assert "has 3D:   True" in printed
 
-    # [pipeline].merge_stripes = false keeps the full 38-point layout.
+    # [pipeline].merge_stripes = false keeps the full 38-point layout. A fresh
+    # output dir (re-seeded with 2D) avoids the now-cached 3D result above.
+    outdir2 = tmp_path / "out2"
+    _seed_2d(result, outdir2)
     cfg.write_text("[pipeline]\ncalibrate = false\nmerge_stripes = false\n")
-    cli.main(["pose3d", "--in", str(in_path), "--out", str(out_path), str(cfg)])
-    assert PoseResult.load(out_path).pts3d.shape == (result.n_frames, 38, 3)
-
-
-def test_cli_visualize_3d(result, tmp_path):
-    in_path = tmp_path / "res.h5"
-    mp4 = tmp_path / "vid.mp4"
-    result.save(in_path)
     cli.main(
         [
-            "visualize",
-            "--in",
-            str(in_path),
-            "--out",
-            str(mp4),
-            "--mode",
-            "3d",
-            "--fps",
-            "5",
+            "run",
+            str(cfg),
+            "-i",
+            str(tmp_path / "rec"),
+            "-o",
+            str(outdir2),
+            "--until",
+            "pose3d",
+            "-q",
         ]
     )
-    assert video.read_video(mp4).shape[0] == result.n_frames
+    assert PoseResult.load(outdir2 / "poses.h5").pts3d.shape == (result.n_frames, 38, 3)
+
+
+def test_cli_run_visualize_only(result, tmp_path):
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text("")
+    result.save(outdir / "poses.h5")  # full result (has 3D) -> auto-resume to visualize
+    cli.main(
+        [
+            "run",
+            str(cfg),
+            "-i",
+            str(tmp_path / "rec"),
+            "-o",
+            str(outdir),
+            "--fps",
+            "5",
+            "-q",
+        ]
+    )
+    assert video.read_video(outdir / "pose3d.mp4").shape[0] == result.n_frames

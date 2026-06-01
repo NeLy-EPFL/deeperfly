@@ -78,10 +78,7 @@ video_backend = "auto"   # frame reader: auto|imageio|opencv|pyav|decord|...
 calibrate = true         # refine the cameras with bundle adjustment (see below)
 merge_stripes = true     # fuse the left/right abdominal stripes into shared
                          # points before triangulation (38 -> 35 points)
-correct = "reproject"    # reproject (outlier rejection) | pictorial (top-K).
-                         # pictorial needs the detect stage's candidate peaks, so
-                         # it is unavailable when resuming `run` from a stored 2D
-                         # result (it falls back to reproject there).
+correct = "reproject"    # reproject (outlier rejection) | pictorial (top-K)
 smooth = "none"          # none | gaussian | one_euro
 fps = 100.0
 

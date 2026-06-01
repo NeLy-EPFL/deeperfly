@@ -184,11 +184,11 @@ class Skeleton:
         ``r_stripe*`` and ``l_stripe*`` track the same physical markers on the
         abdomen but are stored as separate points seen by disjoint camera sets.
         This returns ``(merged_skeleton, remap)`` where the two stripe sets are
-        collapsed into single prefix-stripped points (``Stripe0/1/2``) so they
+        collapsed into single prefix-stripped points (``stripe0/1/2``) so they
         can be triangulated from every camera that sees either side, and
         ``remap`` maps each old point index to its new index.
 
-        Only stripes are merged (matched by ``"Stripe"`` in the joint name);
+        Only stripes are merged (matched by ``"stripe"`` in the joint name);
         antennae and legs are untouched. If there is nothing to merge (e.g. an
         already-merged or non-fly skeleton) the skeleton is returned unchanged
         with an identity ``remap``, so the operation is idempotent.
@@ -268,8 +268,8 @@ def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:
 
 
 def _strip_side_prefix(name: str) -> str:
-    """Drop a leading ``L_`` / ``R_`` body-side prefix from a name."""
-    return name[2:] if name[:2] in ("L_", "R_") else name
+    """Drop a leading ``l_`` / ``r_`` body-side prefix from a name (case-insensitive)."""
+    return name[2:] if name[:2].lower() in ("l_", "r_") else name
 
 
 def _unique_edges(edges: Int[np.ndarray, "E 2"]) -> Int[np.ndarray, "E2 2"]:

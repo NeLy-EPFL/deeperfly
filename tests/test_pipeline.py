@@ -248,7 +248,7 @@ def test_run_merges_stripes_end_to_end(cameras, fly, rng):
 
     result = run_from_points2d(cameras, fly, pts2d, conf, do_calibrate=False)
     assert result.skeleton.n_points == 35
-    assert result.skeleton.joint_names[16:19] == ("Stripe0", "Stripe1", "Stripe2")
+    assert result.skeleton.joint_names[16:19] == ("stripe0", "stripe1", "stripe2")
     assert result.pts3d.shape == (12, 35, 3)
     # The merged stripes recover the shared 3D truth and are fully triangulated.
     np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-4)

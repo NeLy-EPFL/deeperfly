@@ -53,17 +53,35 @@ result.save("fly.h5")
 End to end from images/video via the CLI:
 
 ```bash
-deeperfly download-weights          # fetch original PyTorch weights (sh8)
-deeperfly convert-weights           # -> native JAX checkpoint (skip for the torch backend)
 deeperfly init config.toml          # write a config to edit (cameras, inputs, pipeline, skeleton)
-deeperfly run config.toml -i recording/ -o fly.h5
-deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d [--bg white|black]
+deeperfly run config.toml -i recording/                          # -> recording/deeperfly_outputs/ (2D -> 3D -> video)
+deeperfly run config.toml -i recording/ -o out/ --until detect   # 2D only, cached in out/
+deeperfly run config.toml -i recording/ -o out/                  # re-run: reuse cached 2D, continue to 3D + video
+deeperfly run config.toml -i recording/ -o out/ --overwrite      # recompute everything
+deeperfly info --in out/poses.h5
 ```
+
+`deeperfly run` is the whole pipeline as one linear sequence of stages —
+`detect` (2D) → `pose3d` (calibrate + triangulate + correct + smooth) →
+`visualize`. By default it runs all three. `-i` is the recording; `-o` is an
+output **directory** (default `<input>/deeperfly_outputs`) that collects the
+result `poses.h5`, the rendered videos and a copy of the config. Each run reuses
+whatever is already cached there and computes only what is missing, so prior work
+is never recomputed: a fresh directory starts at `detect`, a cached 2D-only
+`poses.h5` resumes at `pose3d`, and one that already has 3D just gets visualized.
+`--overwrite` ignores the cache and recomputes everything; `--until <stage>` stops
+early (e.g. `--until detect` writes a 2D-only result; `--until pose3d` skips the
+video). Detector weights are downloaded and converted to the native JAX
+checkpoint **automatically on first use** — nothing to pre-fetch (the `torch`
+backend skips the conversion entirely). Add `-v`/`-vv` for progress logging
+(`-v` also reports the resolved video backend, image sizes and detector batch) or
+`-q` to quiet it.
 
 A single `config.toml` (made by `deeperfly init`) carries everything a run needs:
 the camera rig, the input filename→camera map, the 2D detector, the pipeline
-options, bundle adjustment, and the skeleton — so `run` itself is just
-`config -i <recording> -o <out.h5>`. The `[inputs]` section maps each camera to
+options, bundle adjustment, and the skeleton — so a full `run` is just
+`config -i <recording>` (outputs default to `<recording>/deeperfly_outputs/`).
+The `[inputs]` section maps each camera to
 the filename prefix of its frames under `-i` (e.g. `rh = "camera_0"` finds
 `camera_0.mp4` or the image sequence `camera_0_img_*.jpg`); knobs like the
 detector backend, `correct = "reproject" | "pictorial"`, stripe merging, the
@@ -100,9 +118,10 @@ The detector has two interchangeable backends behind one interface, under
 `pose2d/backends/{jax,torch}/` — each exposing the same `HourglassNet` /
 `load_model` / `predict_heatmaps`. Both are installed by default and selectable
 with `[detector].backend`. The PyTorch backend runs the published `sh8`
-weights directly; the JAX backend (the default) runs the same weights once
-`convert-weights` has produced the native checkpoint, and is validated to match
-the PyTorch reference numerically (see `tests/test_pose2d_torch.py`). JAX is the
+weights directly; the JAX backend (the default) runs the same weights from a
+native checkpoint that `deeperfly run` downloads and converts automatically on
+first use, and is validated to match the PyTorch reference numerically (see
+`tests/test_pose2d_torch.py`). JAX is the
 faster backend on GPU — benchmark them on your own hardware:
 
 ```bash
