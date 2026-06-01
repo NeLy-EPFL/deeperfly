@@ -88,6 +88,34 @@ def test_extract_candidates_flip_and_side_mapping():
     assert np.isnan(xy[0, :19]).all()  # right side untouched by a left camera
 
 
+def test_extract_candidates_front_camera_both_sides():
+    # The front camera is two passes on one physical view: a right pass and a
+    # flipped left pass. Candidates from both must land on the same output row,
+    # filling indices 0..18 (right) and 19..37 (left).
+    j, hh, ww = 19, 16, 32
+    hm = np.zeros((2, j, hh, ww))  # two passes (right, left) for view 0
+    hm[0, 3, 6, 20] = 1.0  # right pass, channel 3
+    hm[1, 5, 4, 10] = 1.0  # left pass, channel 5
+    w, h = 320, 160
+    xy, score = pictorial.extract_candidates(
+        hm,
+        sides=["right", "left"],
+        flips=[False, True],
+        image_size=[(w, h)],
+        k=2,
+        views=[0, 0],
+        n_views=1,
+    )
+    assert xy.shape == (1, 38, 2, 2) and score.shape == (1, 38, 2)
+    # Right pass -> index 3, un-flipped x.
+    np.testing.assert_allclose(xy[0, 3, 0], [(20 / ww) * w, (6 / hh) * h], atol=1e-6)
+    # Left pass -> index 19 + 5, x flipped: (1 - 10/ww) * w.
+    np.testing.assert_allclose(
+        xy[0, 24, 0], [(1 - 10 / ww) * w, (4 / hh) * h], atol=1e-6
+    )
+    assert score[0, 3, 0] == 1.0 and score[0, 24, 0] == 1.0
+
+
 # -- skeleton chains ---------------------------------------------------------
 
 

@@ -5,14 +5,19 @@ preprocesses images, decodes heatmaps and scatters per-camera detections into th
 full skeleton, dispatching the actual forward pass to whichever backend owns the
 model. Pipeline for one recording:
 
-1. :func:`preprocess` each camera image (mirror-flip the far-side cameras,
-   resize to 256x512, subtract the training mean) -- matching DeepFly2D.
-2. :func:`deeperfly.pose2d.backends.predict_heatmaps` (dispatched, batched) ->
+1. :func:`expand_passes` -- turn the per-camera ``(side, flip)`` layout into a
+   flat list of forward *passes*. A side-camera is one pass; the **front camera
+   is two passes** (un-flipped -> right legs, mirror-flipped -> left legs) that
+   share one physical view, so the front image bridges the two body sides.
+2. :func:`preprocess` each pass (mirror-flip where required, resize to 256x512,
+   subtract the training mean) -- matching DeepFly2D.
+3. :func:`deeperfly.pose2d.backends.predict_heatmaps` (dispatched, batched) ->
    per-joint heatmaps as NumPy.
-3. :func:`heatmap_to_points` -> normalized sub-pixel peak locations + confidence.
-4. :func:`assemble_skeleton` -- place each camera's 19 single-side joints into
-   the 38-point skeleton (right cameras -> indices 0..18, mirrored left cameras
-   -> 19..37 with the x flip undone) and scale to original-image pixels.
+4. :func:`heatmap_to_points` -> normalized sub-pixel peak locations + confidence.
+5. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
+   38-point skeleton (right pass -> indices 0..18, mirrored left pass -> 19..37
+   with the x flip undone) and scale to original-image pixels. The front camera's
+   two passes fill *both* halves of its row, so it observes left and right joints.
 
 The single-side ordering of the 19 detector channels matches the skeleton's
 per-side ordering, so the mapping is a direct slice.
@@ -256,49 +261,92 @@ def heatmap_to_points(
     return points.reshape(*lead, 2), conf.reshape(*lead)
 
 
+def expand_passes(
+    sides: list[str], flips: list[bool]
+) -> tuple[list[int], list[str], list[bool]]:
+    """Expand a per-camera ``(side, flip)`` layout into per-*pass* lists.
+
+    A *pass* is one detector forward run. Most cameras are a single pass; a camera
+    whose side is ``"both"`` (the front camera) becomes **two** passes that share
+    its physical view index: ``("right", flip=False)`` populating skeleton indices
+    ``0..18`` and ``("left", flip=True)`` -- the mirror-flipped image -- populating
+    ``19..37``. So the one front image yields detections for both body sides,
+    making it the cross-side bridge the rig calibration relies on.
+
+    Returns ``(views, pass_sides, pass_flips)`` -- the physical view index, side
+    and flip for each pass, ready for :func:`assemble_skeleton` (``views=...``).
+    """
+    views: list[int] = []
+    pass_sides: list[str] = []
+    pass_flips: list[bool] = []
+    for v, (side, flip) in enumerate(zip(sides, flips)):
+        if side == "both":
+            views += [v, v]
+            pass_sides += ["right", "left"]
+            pass_flips += [False, True]
+        else:
+            views.append(v)
+            pass_sides.append(side)
+            pass_flips.append(flip)
+    return views, pass_sides, pass_flips
+
+
 def assemble_skeleton(
-    points_norm: Float[np.ndarray, "V J2 2"],
-    conf: Float[np.ndarray, "V J2"],
+    points_norm: Float[np.ndarray, "P J2 2"],
+    conf: Float[np.ndarray, "P J2"],
     sides: list[str],
     flips: list[bool],
     image_size: list[tuple[int, int]],
     *,
+    views: list[int] | None = None,
+    n_views: int | None = None,
     n_points: int = 38,
 ) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
-    """Scatter per-camera single-side detections into the full skeleton (pixels).
+    """Scatter per-*pass* single-side detections into the full skeleton (pixels).
 
     Parameters
     ----------
     points_norm, conf
-        Per-camera detector output: ``(V, 19, 2)`` normalized ``(x, y)`` and
-        ``(V, 19)`` confidence.
+        Per-pass detector output: ``(P, 19, 2)`` normalized ``(x, y)`` and
+        ``(P, 19)`` confidence (``P`` passes, see :func:`expand_passes`).
     sides
-        ``"right"`` or ``"left"`` per camera -- which half of the skeleton the
-        19 channels populate (right -> 0..18, left -> 19..37).
+        ``"right"`` or ``"left"`` per pass -- which half of the skeleton the 19
+        channels populate (right -> 0..18, left -> 19..37).
     flips
-        Whether each camera's image was mirror-flipped in :func:`preprocess`
+        Whether each pass's image was mirror-flipped in :func:`preprocess`
         (the x coordinate is then undone as ``1 - x``).
     image_size
-        ``(W, H)`` original pixel size per camera to scale normalized coords.
+        ``(W, H)`` original pixel size per *physical view* to scale normalized
+        coords (indexed by ``views``).
+    views
+        Physical view index per pass (default: identity, one pass per view). Two
+        passes may share a view -- that is how the front camera fills both halves.
+    n_views
+        Number of physical views in the output (default: ``max(views) + 1``).
     """
     points_norm = np.asarray(points_norm, dtype=float)
     conf = np.asarray(conf, dtype=float)
-    n_views = len(sides)
+    n_passes = len(sides)
+    if views is None:
+        views = list(range(n_passes))
+    if n_views is None:
+        n_views = (max(views) + 1) if views else 0
     pts = np.full((n_views, n_points, 2), np.nan)
     cout = np.zeros((n_views, n_points))
-    for v in range(n_views):
-        p = points_norm[v].copy()
-        if flips[v]:
+    for i in range(n_passes):
+        v = views[i]
+        p = points_norm[i].copy()
+        if flips[i]:
             p[:, 0] = 1.0 - p[:, 0]
         w, h = image_size[v]
         p = p * np.array([w, h])
         sl = (
             slice(0, N_SIDE_JOINTS)
-            if sides[v] == "right"
+            if sides[i] == "right"
             else slice(N_SIDE_JOINTS, 2 * N_SIDE_JOINTS)
         )
         pts[v, sl] = p
-        cout[v, sl] = conf[v]
+        cout[v, sl] = conf[i]
     return pts, cout
 
 
@@ -306,15 +354,22 @@ def fly_camera_layout(camera_names: list[str]) -> tuple[list[str], list[bool]]:
     """Default ``(sides, flips)`` for the canonical 7-camera fly rig.
 
     Left cameras (names starting ``l``) image the left side and are mirror-
-    flipped so the fly faces the trained orientation; right and front cameras
-    image the right side un-flipped. The front camera's single-side assignment
-    is approximate -- override for rigs where it should feed the other side.
+    flipped so the fly faces the trained orientation; right cameras image the
+    right side un-flipped. The **front camera** (name starting ``f``) gets side
+    ``"both"``: :func:`expand_passes` runs it twice (un-flipped -> right legs,
+    flipped -> left legs) so it observes joints on both sides and bridges them in
+    one world frame. Override for rigs whose front camera should feed a single
+    side only.
     """
     sides, flips = [], []
     for name in camera_names:
-        if name.lower().startswith("l"):
+        n = name.lower()
+        if n.startswith("l"):
             sides.append("left")
             flips.append(True)
+        elif n.startswith("f"):
+            sides.append("both")
+            flips.append(False)  # ignored: expand_passes sets both passes' flips
         else:
             sides.append("right")
             flips.append(False)
@@ -335,19 +390,30 @@ def detect(
     ``model`` is a detector from either backend (:mod:`deeperfly.pose2d.backends`):
     :func:`~deeperfly.pose2d.backends.predict_heatmaps` dispatches on its type, so
     this function is identical for the JAX and PyTorch paths. ``method`` / ``radius``
-    pick the heatmap decode (see :func:`heatmap_to_points`).
+    pick the heatmap decode (see :func:`heatmap_to_points`). A ``"both"`` camera is
+    run twice (:func:`expand_passes`) so the front image fills both body sides.
     """
     from . import backends  # lazy: dispatch never imports the unused framework
 
+    views, pass_sides, pass_flips = expand_passes(sides, flips)
     inputs = np.stack(
-        [np.asarray(preprocess(images[v], flip=flips[v])) for v in range(len(images))]
+        [
+            np.asarray(preprocess(images[views[i]], flip=pass_flips[i]))
+            for i in range(len(views))
+        ]
     )
     points_norm, conf = heatmap_to_points(
         backends.predict_heatmaps(model, inputs), method=method, radius=radius
     )
     image_size = [(np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images]
     return assemble_skeleton(
-        np.asarray(points_norm), np.asarray(conf), sides, flips, image_size
+        np.asarray(points_norm),
+        np.asarray(conf),
+        pass_sides,
+        pass_flips,
+        image_size,
+        views=views,
+        n_views=len(images),
     )
 
 
@@ -392,7 +458,9 @@ def detect_candidates_sequence(
     so the same forward yields the single-peak ``(pts2d, conf)`` -- used by
     calibration and the reproject reconstructor -- and a
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
-    (view, joint), consumed by the pictorial-structures corrector. Returns
+    (view, joint), consumed by the pictorial-structures corrector. The front
+    camera is run as two passes (:func:`expand_passes`), so both its arg-max pose
+    and its candidates cover both body sides. Returns
     ``(pts2d (V, T, 38, 2), conf (V, T, 38), candidates)``.
     """
     from .. import pictorial
@@ -400,6 +468,7 @@ def detect_candidates_sequence(
 
     n_views, n_frames = len(frames), len(frames[0])
     n_pts = 2 * N_SIDE_JOINTS
+    views, pass_sides, pass_flips = expand_passes(sides, flips)
     pts = np.empty((n_views, n_frames, n_pts, 2))
     conf = np.empty((n_views, n_frames, n_pts))
     cand_xy = np.empty((n_views, n_frames, n_pts, k, 2))
@@ -407,17 +476,34 @@ def detect_candidates_sequence(
     for t in range(n_frames):
         images = [frames[v][t] for v in range(n_views)]
         inputs = np.stack(
-            [np.asarray(preprocess(images[v], flip=flips[v])) for v in range(n_views)]
+            [
+                np.asarray(preprocess(images[views[i]], flip=pass_flips[i]))
+                for i in range(len(views))
+            ]
         )
-        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))  # (V,J,Hh,Ww)
+        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))  # (P,J,Hh,Ww)
         image_size = [
             (np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images
         ]
         points_norm, c = heatmap_to_points(heatmaps, method=method, radius=radius)
         pts[:, t], conf[:, t] = assemble_skeleton(
-            np.asarray(points_norm), np.asarray(c), sides, flips, image_size
+            np.asarray(points_norm),
+            np.asarray(c),
+            pass_sides,
+            pass_flips,
+            image_size,
+            views=views,
+            n_views=n_views,
         )
         cand_xy[:, t], cand_score[:, t] = pictorial.extract_candidates(
-            heatmaps, sides, flips, image_size, k=k, method=method, radius=radius
+            heatmaps,
+            pass_sides,
+            pass_flips,
+            image_size,
+            k=k,
+            views=views,
+            n_views=n_views,
+            method=method,
+            radius=radius,
         )
     return pts, conf, pictorial.Candidates(xy=cand_xy, score=cand_score)

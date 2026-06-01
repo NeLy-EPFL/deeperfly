@@ -133,40 +133,52 @@ def peak_candidates(
 
 
 def extract_candidates(
-    heatmaps: Float[np.ndarray, "V J Hh Ww"],
+    heatmaps: Float[np.ndarray, "P J Hh Ww"],
     sides: list[str],
     flips: list[bool],
     image_size: list[tuple[int, int]],
     *,
     k: int = DEFAULT_K,
+    views: list[int] | None = None,
+    n_views: int | None = None,
     n_points: int = 38,
     n_side_joints: int = 19,
     **peak_kwargs,
 ) -> tuple[Float[np.ndarray, "V N K 2"], Float[np.ndarray, "V N K"]]:
-    """Scatter per-view top-K single-side peaks into the full skeleton (pixels).
+    """Scatter per-*pass* top-K single-side peaks into the full skeleton (pixels).
 
     The candidate analog of :func:`deeperfly.pose2d.inference.assemble_skeleton`:
     extracts K peaks per detector channel, undoes the mirror flip (``x -> 1 - x``),
-    scales to original pixels, and places a right camera's 19 channels into skeleton
-    indices ``0..18`` and a left camera's into ``19..37``.
+    scales to original pixels, and places a right pass's 19 channels into skeleton
+    indices ``0..18`` and a left pass's into ``19..37``.
+
+    ``heatmaps`` is one stack per *pass* (see
+    :func:`deeperfly.pose2d.inference.expand_passes`); ``views`` gives the physical
+    view index per pass (default identity), so the front camera's two passes write
+    both halves of its row. ``image_size`` is indexed by physical view.
     """
-    xy_norm, score = peak_candidates(heatmaps, k, **peak_kwargs)  # (V, J, K, 2/.)
-    v = len(sides)
-    cand_xy = np.full((v, n_points, k, 2), np.nan)
-    cand_score = np.zeros((v, n_points, k))
-    for i in range(v):
+    xy_norm, score = peak_candidates(heatmaps, k, **peak_kwargs)  # (P, J, K, 2/.)
+    n_passes = len(sides)
+    if views is None:
+        views = list(range(n_passes))
+    if n_views is None:
+        n_views = (max(views) + 1) if views else 0
+    cand_xy = np.full((n_views, n_points, k, 2), np.nan)
+    cand_score = np.zeros((n_views, n_points, k))
+    for i in range(n_passes):
+        v = views[i]
         p = xy_norm[i].copy()  # (J, K, 2)
         if flips[i]:
             p[..., 0] = 1.0 - p[..., 0]
-        w, h = image_size[i]
+        w, h = image_size[v]
         p = p * np.array([w, h])
         sl = (
             slice(0, n_side_joints)
             if sides[i] == "right"
             else slice(n_side_joints, 2 * n_side_joints)
         )
-        cand_xy[i, sl] = p
-        cand_score[i, sl] = score[i]
+        cand_xy[v, sl] = p
+        cand_score[v, sl] = score[i]
     return cand_xy, cand_score
 
 

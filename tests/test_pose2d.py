@@ -209,10 +209,50 @@ def test_assemble_skeleton_places_and_flips():
     np.testing.assert_allclose(cout[1, 19:], 0.7)
 
 
+def test_assemble_skeleton_front_camera_both_sides():
+    # The front camera runs as two passes sharing physical view 1: a right pass
+    # (indices 0..18) and a flipped left pass (19..37). Both must land on row 1.
+    points = np.stack(
+        [
+            np.full((19, 2), [0.5, 0.25]),  # right side-camera (view 0)
+            np.full((19, 2), [0.6, 0.1]),  # front, right pass (view 1)
+            np.full((19, 2), [0.3, 0.4]),  # front, left pass (view 1, flipped)
+        ]
+    )
+    conf = np.stack([np.full(19, 0.9), np.full(19, 0.8), np.full(19, 0.7)])
+    pts, cout = inference.assemble_skeleton(
+        points,
+        conf,
+        sides=["right", "right", "left"],
+        flips=[False, False, True],
+        image_size=[(100, 200), (100, 200)],
+        views=[0, 1, 1],
+        n_views=2,
+    )
+    assert pts.shape == (2, 38, 2)
+    # Front camera (row 1) carries BOTH halves: right pass un-flipped ...
+    np.testing.assert_allclose(pts[1, 0], [60.0, 20.0])
+    # ... and left pass with the x flip undone (1 - 0.3 = 0.7).
+    np.testing.assert_allclose(pts[1, 19], [70.0, 80.0])
+    assert np.isfinite(pts[1]).all()  # no NaNs left on the bridging view
+    np.testing.assert_allclose(cout[1, :19], 0.8)
+    np.testing.assert_allclose(cout[1, 19:], 0.7)
+
+
+def test_expand_passes_front_runs_twice():
+    sides = ["right", "both", "left"]
+    flips = [False, False, True]
+    views, pass_sides, pass_flips = inference.expand_passes(sides, flips)
+    assert views == [0, 1, 1, 2]  # the "both" view yields two passes
+    assert pass_sides == ["right", "right", "left", "left"]
+    assert pass_flips == [False, False, True, True]
+
+
 def test_fly_camera_layout():
     names = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     sides, flips = inference.fly_camera_layout(names)
-    assert sides == ["right", "right", "right", "right", "left", "left", "left"]
+    # The front camera ("f") is "both": expand_passes runs it un-flipped + flipped.
+    assert sides == ["right", "right", "right", "both", "left", "left", "left"]
     assert flips == [False, False, False, False, True, True, True]
 
 
@@ -224,8 +264,11 @@ def test_detect_sequence_shapes_and_sides(model):
     pts, conf = inference.detect_sequence(model, frames, sides, flips)
     assert pts.shape == (7, 2, 38, 2)
     assert conf.shape == (7, 2, 38)
-    # right cameras populate the right half (0..18), left cameras the left half.
+    # Right cameras populate the right half (0..18), left cameras the left half.
     assert not np.isnan(pts[0, :, :19]).any()
     assert np.isnan(pts[0, :, 19:]).all()
     assert not np.isnan(pts[4, :, 19:]).any()
     assert np.isnan(pts[4, :, :19]).all()
+    # The front camera (index 3) bridges: it fills BOTH halves.
+    assert not np.isnan(pts[3, :, :19]).any()
+    assert not np.isnan(pts[3, :, 19:]).any()

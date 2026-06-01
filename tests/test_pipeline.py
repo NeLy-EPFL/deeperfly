@@ -106,6 +106,81 @@ def test_calibrate_recovers_perturbed_rig(rig, cameras, fly, rng):
     assert result.cost < 1e-4
 
 
+def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
+    """The front camera, seeing both body sides, is what co-registers the two
+    camera clusters in bundle adjustment.
+
+    With realistic per-side visibility the right cameras observe only right
+    joints and the left cameras only left joints -- disjoint sets. The relative
+    pose between the two clusters is then unobservable *unless* some camera sees
+    both sides. The front camera does (it runs as two passes), so a wrong
+    left-vs-right relative pose is correctable only when its cross-side
+    observations are present.
+    """
+    from deeperfly import geometry as geom
+    from deeperfly.triangulate import apply_visibility
+
+    names = rig["names"]
+    pts3d = fly_motion(rng, n_frames=16)
+    pts2d_full = np.array(cameras.project(pts3d))  # every camera sees everything
+    conf = np.ones(pts2d_full.shape[:3])
+
+    # Perturb the three left cameras: rotate the whole cluster ~8 deg about the
+    # world +z axis -- a wrong left-vs-right relative pose for BA to recover.
+    a = np.deg2rad(8.0)
+    Rd = np.array(
+        [[np.cos(a), -np.sin(a), 0.0], [np.sin(a), np.cos(a), 0.0], [0, 0, 1]]
+    )
+    rvecs, tvecs = rig["rvecs"].copy(), rig["tvecs"].copy()
+    for nm in ("lf", "lm", "lh"):
+        i = names.index(nm)
+        R = np.asarray(geom.rvec_to_rmat(rig["rvecs"][i]))
+        center = -R.T @ rig["tvecs"][i]
+        Rp = R @ Rd.T
+        rvecs[i] = np.asarray(geom.rmat_to_rvec(Rp))
+        tvecs[i] = -Rp @ (Rd @ center)
+    perturbed = CameraGroup.from_arrays(names, rvecs, tvecs, rig["intrs"], rig["dists"])
+
+    # Free only the left cameras; anchor everyone else and all intrinsics.
+    fixed = ["*.intr", "*.dist"]
+    for nm in ("rh", "rm", "rf", "f"):
+        fixed += [f"{nm}.rvec", f"{nm}.tvec"]
+
+    def left_orientation_error(group) -> float:
+        errs = []
+        for nm in ("lf", "lm", "lh"):
+            rt = np.asarray(geom.rvec_to_rmat(cameras[nm].rvec))
+            rr = np.asarray(geom.rvec_to_rmat(group[nm].rvec))
+            cos = (np.trace(rt @ rr.T) - 1) / 2
+            errs.append(np.degrees(np.arccos(np.clip(cos, -1, 1))))
+        return float(np.mean(errs))
+
+    def run(front_sees_both: bool) -> float:
+        pts2d = apply_visibility(pts2d_full.copy(), fly, names)
+        if not front_sees_both:  # drop the front camera's left-side observations
+            fi = names.index("f")
+            for j in fly.left_idx:
+                pts2d[fi, :, j] = np.nan
+        opt, _ = calibrate(
+            perturbed,
+            pts2d,
+            conf,
+            fly,
+            fixed=fixed,
+            bone_prior=False,
+            max_frames=16,
+            max_nfev=300,
+        )
+        return left_orientation_error(opt)
+
+    err_both = run(front_sees_both=True)
+    err_right_only = run(front_sees_both=False)
+    # The bridge lets BA pull the left cluster back to truth; without it the two
+    # sides stay misaligned (the ~8 deg error is left largely uncorrected).
+    assert err_both < 0.5
+    assert err_right_only > 1.0
+
+
 # -- full pipeline -----------------------------------------------------------
 
 

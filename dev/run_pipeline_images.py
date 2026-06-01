@@ -127,14 +127,32 @@ def build_detector(model, backend: str, sides, flips, *, method="weighted", radi
 
         return jax.vmap(one)(imgs_u8, fl)
 
+    # Expand the per-camera layout into passes once (the front camera -> two
+    # passes, so it covers both body sides); `views` maps each pass back to its
+    # physical camera. p passes/frame (p = V + 1 for the canonical fly rig).
+    pass_views, pass_sides, pass_flips = inference.expand_passes(sides, flips)
+    p = len(pass_views)
+
     def detect_jax(batch):
         k, v, h, w = batch.shape
-        flat = batch.reshape(k * v, h, w)  # frame-major: image = i*V + cam
-        fl = jnp.asarray(flips * k)
-        pts_norm, conf = _peaks(model, jnp.asarray(flat), fl)
+        # Per frame, the p passes pick cameras `pass_views` (front appears twice);
+        # frame-major image index = frame*p + pass.
+        imgs = batch[:, pass_views, :, :].reshape(k * p, h, w)
+        fl = jnp.asarray(pass_flips * k)
+        pts_norm, conf = _peaks(model, jnp.asarray(imgs), fl)
         image_size = [(w, h)] * (k * v)
+        # Scatter every frame's passes into its own V-camera block: frame i, pass
+        # j -> output row i*V + pass_views[j] (so the front camera's two passes
+        # land on the same row, filling both halves).
+        global_views = [i * v + pass_views[j] for i in range(k) for j in range(p)]
         pts, cf = inference.assemble_skeleton(
-            np.asarray(pts_norm), np.asarray(conf), sides * k, flips * k, image_size
+            np.asarray(pts_norm),
+            np.asarray(conf),
+            pass_sides * k,
+            pass_flips * k,
+            image_size,
+            views=global_views,
+            n_views=k * v,
         )
         return pts.reshape(k, v, 38, 2), cf.reshape(k, v, 38)
 
@@ -168,6 +186,9 @@ def detect_pictorial(
 
     n_views, n_t = len(sides), len(frame_ids)
     n_pts = 2 * inference.N_SIDE_JOINTS
+    # Expand to passes: the front camera runs twice (un-flipped -> right legs,
+    # flipped -> left legs), so it observes both body sides.
+    pass_views, pass_sides, pass_flips = inference.expand_passes(sides, flips)
     pts2d = np.full((n_views, n_t, n_pts, 2), np.nan)
     conf = np.zeros((n_views, n_t, n_pts))
     cand_xy = np.full((n_views, n_t, n_pts, k, 2), np.nan)
@@ -177,18 +198,32 @@ def detect_pictorial(
         images = [stack[v] for v in range(n_views)]
         inputs = np.stack(
             [
-                np.asarray(inference.preprocess(im, flip=fl))
-                for im, fl in zip(images, flips)
+                np.asarray(inference.preprocess(images[vw], flip=fl))
+                for vw, fl in zip(pass_views, pass_flips)
             ]
         )
         heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))
         image_size = [(im.shape[1], im.shape[0]) for im in images]
         pnorm, c = inference.heatmap_to_points(heatmaps, method=method, radius=radius)
         p2, cf = inference.assemble_skeleton(
-            np.asarray(pnorm), np.asarray(c), sides, flips, image_size
+            np.asarray(pnorm),
+            np.asarray(c),
+            pass_sides,
+            pass_flips,
+            image_size,
+            views=pass_views,
+            n_views=n_views,
         )
         cxy, csc = pictorial.extract_candidates(
-            heatmaps, sides, flips, image_size, k=k, method=method, radius=radius
+            heatmaps,
+            pass_sides,
+            pass_flips,
+            image_size,
+            k=k,
+            views=pass_views,
+            n_views=n_views,
+            method=method,
+            radius=radius,
         )
         return p2, cf, cxy, csc
 

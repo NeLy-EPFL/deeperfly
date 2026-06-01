@@ -35,6 +35,7 @@ from .inference import (
     assemble_skeleton,
     detect,
     detect_sequence,
+    expand_passes,
     fly_camera_layout,
     heatmap_to_points,
     preprocess,
@@ -55,5 +56,6 @@ __all__ = [
     "assemble_skeleton",
     "detect",
     "detect_sequence",
+    "expand_passes",
     "fly_camera_layout",
 ]
