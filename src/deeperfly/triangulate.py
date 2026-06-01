@@ -16,6 +16,8 @@ All functions use the **view-leading** layout shared with the geometry module:
 
 from __future__ import annotations
 
+from itertools import combinations
+
 import numpy as np
 from jaxtyping import Bool, Float, Int
 
@@ -125,3 +127,80 @@ def reprojection_error(
     """
     proj = cameras.project(np.asarray(pts3d))  # (V, *pts, 2)
     return np.linalg.norm(proj - np.asarray(pts2d), axis=-1)
+
+
+def triangulate_ransac(
+    cameras: CameraGroup,
+    pts2d: Float[np.ndarray, "V *pts 2"],
+    *,
+    threshold: float = 15.0,
+    min_inliers: int = 2,
+) -> tuple[Float[np.ndarray, "*pts 3"], Bool[np.ndarray, "V *pts"]]:
+    """Robustly triangulate 3D points, rejecting gross 2D outliers (RANSAC).
+
+    Plain DLT (:func:`triangulate`) is a least-squares fit, so a single badly
+    mislocated 2D detection drags the whole estimate -- and inflates *every*
+    view's reprojection error, hiding which view was actually wrong. RANSAC
+    instead searches for the largest set of mutually consistent views.
+
+    Two views are the minimal set needed to triangulate, and the rigs deeperfly
+    targets have only a handful of cameras, so rather than sampling randomly this
+    **exhaustively enumerates all** ``C(V, 2)`` two-view hypotheses -- the
+    deterministic limit of RANSAC. For each pair it triangulates a candidate
+    point and counts how many views reproject within ``threshold`` pixels
+    (NaN/unobserved views never count). The pair with the largest consensus wins
+    (ties broken by smaller total inlier error), and the point is re-triangulated
+    from *all* its inlier views. Points with fewer than ``min_inliers`` agreeing
+    views -- including those seen by fewer than two cameras -- come back ``NaN``.
+
+    Operates per point over any leading layout (``(V, N, 2)``, ``(V, T, N, 2)``,
+    ...); each point gets its own consensus and inlier set.
+
+    Parameters
+    ----------
+    threshold
+        Inlier reprojection-error cutoff in pixels. Tune to the detector noise
+        and rig scale (the greedy :func:`deeperfly.pipeline.reconstruct` uses a
+        looser 40 px to *drop* outliers rather than gate inliers).
+    min_inliers
+        Minimum agreeing views required to accept a point (>= 2).
+
+    Returns
+    -------
+    ``(pts3d, inliers)`` with ``pts3d`` of shape ``(*pts, 3)`` and ``inliers`` a
+    boolean ``(V, *pts)`` mask of the views kept for each point. Outliers can be
+    NaN'd out of the originals with ``np.where(inliers[..., None], pts2d, np.nan)``.
+    """
+    if min_inliers < 2:
+        raise ValueError(f"min_inliers must be >= 2, got {min_inliers}")
+    pts2d = np.asarray(pts2d, dtype=float)
+    n_views = pts2d.shape[0]
+    pts_shape = pts2d.shape[1:-1]
+
+    # Running argmax over hypotheses: keep the best consensus seen so far.
+    best_score = np.full(pts_shape, -np.inf)
+    best_inliers = np.zeros((n_views, *pts_shape), dtype=bool)
+    # Score = inlier count, minus a sub-unit penalty so ties break toward the
+    # tighter fit without ever overriding a strictly larger consensus.
+    err_scale = n_views * threshold + 1e-9
+
+    for i, j in combinations(range(n_views), 2):
+        sel = np.zeros(n_views, dtype=bool)
+        sel[[i, j]] = True
+        sel = sel.reshape((n_views, *([1] * (pts2d.ndim - 1))))
+        masked = np.where(sel, pts2d, np.nan)
+        cand = triangulate(cameras, masked)  # (*pts, 3); NaN if pair can't see it
+        err = reprojection_error(cameras, cand, pts2d)  # (V, *pts)
+        inl = err < threshold  # NaN (unobserved / un-triangulated) -> False
+        count = inl.sum(axis=0)  # (*pts)
+        inlier_err = np.where(inl, err, 0.0).sum(axis=0)  # (*pts)
+        score = count - inlier_err / err_scale
+        take = score > best_score
+        best_score = np.where(take, score, best_score)
+        best_inliers = np.where(take[None], inl, best_inliers)
+
+    refit = np.where(best_inliers[..., None], pts2d, np.nan)
+    pts3d = triangulate(cameras, refit)
+    accept = best_inliers.sum(axis=0) >= min_inliers  # (*pts)
+    pts3d = np.where(accept[..., None], pts3d, np.nan)
+    return pts3d, best_inliers

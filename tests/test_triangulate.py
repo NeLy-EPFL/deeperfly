@@ -13,6 +13,7 @@ from deeperfly.triangulate import (
     merge_sources,
     reprojection_error,
     triangulate,
+    triangulate_ransac,
 )
 from helpers import CAMERA_NAMES
 
@@ -142,3 +143,84 @@ def test_merged_stripe_triangulates_from_four_cameras(cameras, fly, rng):
     # The merged stripes recover the shared 3D point from all four side cameras.
     np.testing.assert_allclose(recovered[16:19], pts3d[16:19], atol=1e-6)
     assert np.isfinite(recovered).all()
+
+
+# -- RANSAC -----------------------------------------------------------------
+
+
+def test_ransac_matches_dlt_when_clean(cameras, rng):
+    # With no outliers RANSAC recovers the truth and trusts every view.
+    pts3d = _fly_cloud(rng)
+    pts2d = np.asarray(cameras.project(pts3d))
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=1.0)
+    np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
+    assert inliers.shape == (len(cameras), pts3d.shape[0])
+    assert inliers.all()
+
+
+def test_ransac_rejects_gross_outlier(cameras, rng):
+    # A single mislocated detection drags plain DLT but not RANSAC.
+    pts3d = _fly_cloud(rng, n=6)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[2, 0] += 300.0  # shift one view of point 0 far off
+
+    dlt = triangulate(cameras, pts2d)
+    assert np.linalg.norm(dlt[0] - pts3d[0]) > 0.1  # corrupted
+
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=5.0)
+    np.testing.assert_allclose(recovered[0], pts3d[0], atol=1e-6)
+    assert not inliers[2, 0]  # the bad view was flagged
+    assert inliers[:, 0].sum() == len(cameras) - 1
+    # Untouched points keep all their views and match the truth.
+    assert inliers[:, 1:].all()
+    np.testing.assert_allclose(recovered[1:], pts3d[1:], atol=1e-6)
+
+
+def test_ransac_unobserved_views_are_not_inliers(cameras, rng):
+    pts3d = _fly_cloud(rng, n=4)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0, 0] = np.nan  # camera 0 does not see point 0
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=1.0)
+    assert not inliers[0, 0]
+    assert inliers[1:, 0].all()
+    np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
+
+
+def test_ransac_too_few_views_is_nan(cameras, rng):
+    pts3d = _fly_cloud(rng, n=4)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[1:, 0] = np.nan  # point 0 seen by a single camera
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=1.0)
+    assert np.isnan(recovered[0]).all()
+    assert not np.isnan(recovered[1:]).any()
+
+
+def test_ransac_min_inliers_gate(cameras, rng):
+    # Point 0 has only two clean views; the rest are gross outliers.
+    pts3d = _fly_cloud(rng, n=3)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[2:, 0] += rng.uniform(200, 400, size=(len(cameras) - 2, 2))
+
+    ok, inliers = triangulate_ransac(cameras, pts2d, threshold=5.0, min_inliers=2)
+    np.testing.assert_allclose(ok[0], pts3d[0], atol=1e-6)
+    assert inliers[:, 0].sum() == 2
+
+    # Demanding three agreeing views rejects point 0 but keeps the clean ones.
+    gated, _ = triangulate_ransac(cameras, pts2d, threshold=5.0, min_inliers=3)
+    assert np.isnan(gated[0]).all()
+    assert not np.isnan(gated[1:]).any()
+
+
+def test_ransac_sequence_layout(cameras, rng):
+    pts3d = rng.normal(scale=2.0, size=(4, 38, 3))
+    pts2d = np.asarray(cameras.project(pts3d))
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=1.0)
+    assert recovered.shape == (4, 38, 3)
+    assert inliers.shape == (len(cameras), 4, 38)
+    np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
+
+
+def test_ransac_min_inliers_below_two_raises(cameras, rng):
+    pts2d = np.asarray(cameras.project(_fly_cloud(rng, n=2)))
+    with pytest.raises(ValueError, match="min_inliers"):
+        triangulate_ransac(cameras, pts2d, min_inliers=1)
