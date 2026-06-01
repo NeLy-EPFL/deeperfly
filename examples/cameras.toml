@@ -3,8 +3,12 @@
 
 [camera_defaults]
 focal_length_px = [22388.125, 22388.125]    # scalar is also allowed when fx == fy
-principal_point_px = [511.5, 255.5]   # optional; omit to auto-detect each view's image center ((w-1)/2, (h-1)/2)
-distortion_coefficients = []
+
+# optional; omit to auto-detect each view's image center ((w-1)/2, (h-1)/2)
+# needs to be specified if the principal point is not at the image center
+# principal_point_px = [479.5, 239.5]
+
+distortion_coefficients = []  # empty means no distortion
 look_at = [0.0, 0.0, 0.0]
 distance = 107.463
 elevation_deg = 0.0

@@ -1,7 +1,7 @@
 # Drosophila skeleton for the DeepFly3D 7-camera setup.
 #
 # 38 tracked points = 19 per side (R = 0..18, L = 19..37). Each side has three
-# legs of 5 joints (BodyCoxa, CoxaFemur, FemurTibia, TibiaTarsus, TarsusTip),
+# legs of 5 joints (ThoraxCoxa, CoxaTrochanter, FemurTibia, TibiaTarsus, Claw),
 # one antenna, and three abdominal stripe markers. `limb_id` assigns each point
 # to one of 10 limbs; `bones` are the within-leg + within-stripe 2D edges;
 # `bones3d` links the two antennae across the body. Definitions transcribed from
@@ -11,13 +11,13 @@
 name = "drosophila"
 
 joint_names = [
-    "RF_BodyCoxa", "RF_CoxaFemur", "RF_FemurTibia", "RF_TibiaTarsus", "RF_TarsusTip",
-    "RM_BodyCoxa", "RM_CoxaFemur", "RM_FemurTibia", "RM_TibiaTarsus", "RM_TarsusTip",
-    "RH_BodyCoxa", "RH_CoxaFemur", "RH_FemurTibia", "RH_TibiaTarsus", "RH_TarsusTip",
+    "RF_ThoraxCoxa", "RF_CoxaTrochanter", "RF_FemurTibia", "RF_TibiaTarsus", "RF_Claw",
+    "RM_ThoraxCoxa", "RM_CoxaTrochanter", "RM_FemurTibia", "RM_TibiaTarsus", "RM_Claw",
+    "RH_ThoraxCoxa", "RH_CoxaTrochanter", "RH_FemurTibia", "RH_TibiaTarsus", "RH_Claw",
     "R_Antenna", "R_Stripe0", "R_Stripe1", "R_Stripe2",
-    "LF_BodyCoxa", "LF_CoxaFemur", "LF_FemurTibia", "LF_TibiaTarsus", "LF_TarsusTip",
-    "LM_BodyCoxa", "LM_CoxaFemur", "LM_FemurTibia", "LM_TibiaTarsus", "LM_TarsusTip",
-    "LH_BodyCoxa", "LH_CoxaFemur", "LH_FemurTibia", "LH_TibiaTarsus", "LH_TarsusTip",
+    "LF_ThoraxCoxa", "LF_CoxaTrochanter", "LF_FemurTibia", "LF_TibiaTarsus", "LF_Claw",
+    "LM_ThoraxCoxa", "LM_CoxaTrochanter", "LM_FemurTibia", "LM_TibiaTarsus", "LM_Claw",
+    "LH_ThoraxCoxa", "LH_CoxaTrochanter", "LH_FemurTibia", "LH_TibiaTarsus", "LH_Claw",
     "L_Antenna", "L_Stripe0", "L_Stripe1", "L_Stripe2",
 ]
 

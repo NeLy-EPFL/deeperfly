@@ -114,7 +114,7 @@ def plot_skeleton_2d(
         _, ax = plt.subplots()
     apply_background(ax, background)
     if image is not None:
-        ax.imshow(np.asarray(image))
+        ax.imshow(np.asarray(image), cmap="gray")
     pts2d = np.asarray(pts2d, dtype=float)
     colors = limb_colors(skeleton)
 
