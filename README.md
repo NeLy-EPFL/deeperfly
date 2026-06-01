@@ -12,8 +12,8 @@ The computer-vision core follows OpenCV's conventions (Rodrigues rotations,
 OpenCV in the test suite. Everything geometric is JAX (JIT- and autodiff-
 friendly); the 2D detector ships two interchangeable backends behind one
 interface — a JAX (Equinox) port of DeepFly2D's stacked hourglass (the default,
-and faster on GPU) and the original PyTorch network — selectable with
-`--backend {jax,torch}`.
+and faster on GPU) and the original PyTorch network — selectable with the
+config's `[detector].backend = "jax" | "torch"`.
 
 ## Pipeline
 
@@ -22,7 +22,7 @@ and faster on GPU) and the original PyTorch network — selectable with
 | 2D pose | `pose2d/` (`backends/{jax,torch}/`) | Stacked hourglass in two backends behind one interface; JAX (Equinox) is the default, PyTorch runs the original weights directly. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
 | Triangulation | `triangulate.py` / `pipeline.reconstruct` | NaN-aware DLT + greedy reprojection-outlier rejection (default). |
-| PS correction | `pictorial.py` | Optional DeepFly3D-style pictorial structures: multi-view candidate selection + bone-length priors (`--correct pictorial`). |
+| PS correction | `pictorial.py` | Optional DeepFly3D-style pictorial structures: multi-view candidate selection + bone-length priors (`[pipeline].correct = "pictorial"`). |
 | Correction | `correction.py` | Procrustes alignment (per side) + One-Euro / Gaussian smoothing. |
 | Visualization | `viz.py`, `video.py` | matplotlib 2D overlays, 3D skeleton, MP4 export. |
 | Result I/O | `io.py` | Self-contained HDF5 `PoseResult`. |
@@ -54,11 +54,22 @@ End to end from images/video via the CLI:
 
 ```bash
 deeperfly download-weights          # fetch original PyTorch weights (sh8)
-deeperfly convert-weights           # -> native JAX checkpoint (skip if using --backend torch)
-deeperfly run --in recording/ --config cameras.toml --out fly.h5 [--backend jax|torch]
-deeperfly run --in recording/ --config cameras.toml --out fly.h5 --correct pictorial
+deeperfly convert-weights           # -> native JAX checkpoint (skip for the torch backend)
+deeperfly init config.toml          # write a config to edit (cameras, inputs, pipeline, skeleton)
+deeperfly run config.toml -i recording/ -o fly.h5
 deeperfly visualize --in fly.h5 --out fly_3d.mp4 --mode 3d [--bg white|black]
 ```
+
+A single `config.toml` (made by `deeperfly init`) carries everything a run needs:
+the camera rig, the input filename→camera map, the 2D detector, the pipeline
+options, bundle adjustment, and the skeleton — so `run` itself is just
+`config -i <recording> -o <out.h5>`. The `[inputs]` section maps each camera to
+the filename prefix of its frames under `-i` (e.g. `rh = "camera_0"` finds
+`camera_0.mp4` or the image sequence `camera_0_img_*.jpg`); knobs like the
+detector backend, `correct = "reproject" | "pictorial"`, stripe merging, the
+bundle-adjustment keypoints, and smoothing all live in the config too. Sections
+are independently usable: `CameraGroup.from_config` reads only the cameras,
+`Skeleton.from_config` only `[skeleton]`.
 
 See [`examples/bundle_adjustment.ipynb`](examples/bundle_adjustment.ipynb) for the
 BA walkthrough and [`examples/pipeline_demo.py`](examples/pipeline_demo.py) for a
@@ -68,7 +79,7 @@ synthetic end-to-end run (no weights required).
 
 Each view is detected independently; the two views only meet *geometrically*,
 and there are two ways to do that (`run_from_points2d(..., correct=...)` or
-`deeperfly run --correct ...`):
+`[pipeline].correct` in the config):
 
 - **`reproject`** (default) — triangulate the arg-max detections and greedily drop
   the worst-reprojecting view per offending point. Fast, and it *vetoes* a bad
@@ -77,7 +88,7 @@ and there are two ways to do that (`run_from_points2d(..., correct=...)` or
   candidate peaks (`pictorial.py`): per joint it builds multi-view-consistent 3D
   hypotheses, then picks one per joint by exact dynamic programming along each
   limb (the fly's legs/stripes are simple chains) under bone-length priors, with
-  an optional temporal term (`--ps-temporal`). It can *recover* a joint when the
+  an optional temporal term (`[pipeline.pictorial].temporal`). It can *recover* a joint when the
   arg-max landed on the wrong heatmap peak (occlusion, crossing legs, L/R
   confusion) instead of merely dropping it. It needs the full-heatmap detect path
   (so it is slower) and is strictly opt-in; on clean recordings it matches
@@ -88,7 +99,7 @@ and there are two ways to do that (`run_from_points2d(..., correct=...)` or
 The detector has two interchangeable backends behind one interface, under
 `pose2d/backends/{jax,torch}/` — each exposing the same `HourglassNet` /
 `load_model` / `predict_heatmaps`. Both are installed by default and selectable
-with `--backend {jax,torch}`. The PyTorch backend runs the published `sh8`
+with `[detector].backend`. The PyTorch backend runs the published `sh8`
 weights directly; the JAX backend (the default) runs the same weights once
 `convert-weights` has produced the native checkpoint, and is validated to match
 the PyTorch reference numerically (see `tests/test_pose2d_torch.py`). JAX is the
@@ -129,7 +140,7 @@ video.available_read_backends()       # what's installed here
 opencv → decord → video_reader_rs; GPU: torchcodec → decord → pynvvideocodec →
 dali). Pass `indices=[...]` for random access: seek-capable backends fetch just
 those frames, others decode up to `max(indices)` and gather. `deeperfly run`
-takes `--video-backend`. NVIDIA DALI ships from NVIDIA's package index (e.g.
+reads the decoder from `[detector].video_backend`. NVIDIA DALI ships from NVIDIA's package index (e.g.
 `nvidia-dali-cuda120`), so it's not a pip extra but is used automatically when
 importable.
 

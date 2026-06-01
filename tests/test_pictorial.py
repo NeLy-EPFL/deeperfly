@@ -308,7 +308,10 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
     )
     assert isinstance(result, PoseResult)
     assert result.meta["correct"] == "pictorial"
-    assert result.pts3d.shape == (1, fly.n_points, 3)
+    # Stripes merge by default (38 -> 35), exercising candidate remapping in the
+    # pictorial path; the merged skeleton travels through to the result.
+    assert result.skeleton.n_points == 35
+    assert result.pts3d.shape == (1, 35, 3)
 
 
 def test_pictorial_requires_candidates(cameras, fly, rng):

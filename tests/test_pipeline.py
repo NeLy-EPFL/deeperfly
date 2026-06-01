@@ -196,6 +196,7 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
         fly,
         pts2d,
         conf,
+        merge_stripes=False,  # synthetic stripes here are not L/R-symmetric
         do_calibrate=False,
         max_drops=3,
         smooth="one_euro",
@@ -212,6 +213,48 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
     assert result.meta["source"] == "synthetic"
 
 
+def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
+    """The default legs-only BA refines the cameras from leg joints alone, so
+    gross errors on the antennae / stripes do not corrupt the calibration."""
+    pts3d = fly_motion(rng, n_frames=20)
+    pts2d = np.array(cameras.project(pts3d))
+    nonleg = np.setdiff1d(np.arange(38), fly.points_in_category("legs"))
+    pts2d[:, :, nonleg] += rng.normal(scale=200.0, size=pts2d[:, :, nonleg].shape)
+    cams0 = perturbed_cameras(rig)
+
+    opt, _ = calibrate(  # ba_keypoints defaults to ("legs",)
+        cams0,
+        pts2d,
+        skeleton=fly,
+        fixed=["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
+        bone_prior=False,
+        loss="linear",
+        max_nfev=2000,
+    )
+    # Despite the corrupted non-leg observations, the leg joints reproject almost
+    # exactly -- the cameras were recovered from the legs alone.
+    legs = fly.points_in_category("legs")
+    proj = np.asarray(opt.project(pts3d))
+    assert np.nanmax(np.abs(proj[:, :, legs] - pts2d[:, :, legs])) < 1e-2
+
+
+def test_run_merges_stripes_end_to_end(cameras, fly, rng):
+    """With merging on (the default) the L/R stripes collapse to shared points
+    triangulated from all four cameras that see either side."""
+    pts3d = fly_motion(rng, n_frames=12)
+    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
+    pts2d = np.array(cameras.project(pts3d))
+    conf = np.ones(pts2d.shape[:3])
+
+    result = run_from_points2d(cameras, fly, pts2d, conf, do_calibrate=False)
+    assert result.skeleton.n_points == 35
+    assert result.skeleton.joint_names[16:19] == ("Stripe0", "Stripe1", "Stripe2")
+    assert result.pts3d.shape == (12, 35, 3)
+    # The merged stripes recover the shared 3D truth and are fully triangulated.
+    np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-4)
+    assert np.isfinite(result.pts3d[:, 16:19]).all()
+
+
 def test_run_with_calibration(rig, cameras, fly, rng):
     pts3d = fly_motion(rng, n_frames=20)
     pts2d = np.array(cameras.project(pts3d))
@@ -221,8 +264,10 @@ def test_run_with_calibration(rig, cameras, fly, rng):
         cams0,
         fly,
         pts2d,
+        merge_stripes=False,  # keep the full 38-point layout for the comparison
         do_calibrate=True,
         calibrate_kwargs={
+            "ba_keypoints": ("legs", "antennae", "stripes"),  # calibrate on all points
             "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
             "bone_prior": False,
             "loss": "linear",
@@ -238,3 +283,33 @@ def test_run_with_calibration(rig, cameras, fly, rng):
     )
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.5)
     assert np.nanmax(result.reproj_error) < 5.0
+
+
+def test_run_merges_stripes_pictorial(cameras, fly, rng):
+    """Merging also feeds the pictorial corrector: the detector candidates are
+    remapped onto the merged 35-point layout so PS runs and recovers the shared
+    stripes."""
+    from deeperfly import pictorial
+
+    pts3d = fly_motion(rng, n_frames=6)
+    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
+    proj = np.asarray(cameras.project(pts3d))  # (V, T, 38, 2)
+    v, t = proj.shape[:2]
+    xy = np.full((v, t, 38, 2, 2), np.nan)
+    sc = np.zeros((v, t, 38, 2))
+    xy[:, :, :, 0] = proj  # the true projection is the (only) peak
+    sc[:, :, :, 0] = 0.9
+    cands = pictorial.Candidates(xy=xy, score=sc)
+
+    result = run_from_points2d(
+        cameras,
+        fly,
+        proj,
+        np.ones(proj.shape[:3]),
+        candidates=cands,
+        correct="pictorial",
+        do_calibrate=False,
+    )
+    assert result.skeleton.n_points == 35
+    assert result.pts3d.shape == (t, 35, 3)
+    np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-3)

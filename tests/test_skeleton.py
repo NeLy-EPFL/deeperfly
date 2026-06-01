@@ -90,3 +90,68 @@ def test_bad_limb_id_length_raises():
     spec = {"skeleton": {"joint_names": ["a", "b"], "limb_id": [0]}}
     with pytest.raises(ValueError, match="limb_id"):
         Skeleton.from_config(spec)
+
+
+# -- keypoint categories -----------------------------------------------------
+
+
+def test_points_in_category(fly):
+    legs = fly.points_in_category("legs")
+    assert legs.size == 30  # six 5-joint legs
+    assert set(legs) == set(fly.right_idx) | set(fly.left_idx)
+    np.testing.assert_array_equal(fly.points_in_category(["antennae"]), [15, 34])
+    np.testing.assert_array_equal(
+        fly.points_in_category(("stripes",)), [16, 17, 18, 35, 36, 37]
+    )
+    # A multi-category request is the union, and the whole set covers all points.
+    everything = fly.points_in_category(["legs", "antennae", "stripes"])
+    np.testing.assert_array_equal(everything, np.arange(fly.n_points))
+
+
+def test_points_in_category_unknown_raises(fly):
+    with pytest.raises(ValueError, match="unknown keypoint category 'wings'"):
+        fly.points_in_category(["legs", "wings"])
+
+
+# -- left/right stripe merge -------------------------------------------------
+
+
+def test_merge_lr_stripes_structure(fly):
+    merged, remap = fly.merge_lr_stripes()
+    assert merged.n_points == 35  # 38 - 3 left stripe duplicates
+    assert merged.joint_names[16:19] == ("Stripe0", "Stripe1", "Stripe2")
+    # The left stripes (35..37) collapse onto the right ones (16..18); every
+    # other point keeps its index.
+    np.testing.assert_array_equal(remap[:35], np.arange(35))
+    np.testing.assert_array_equal(remap[35:38], [16, 17, 18])
+    # The duplicated stripe chain collapses; the antenna 3D bone is untouched.
+    assert merged.bones.shape == (26, 2)
+    assert merged.bones3d.tolist() == [[15, 34]]
+    # Leg indices are unchanged (all below the dropped points).
+    np.testing.assert_array_equal(merged.left_idx, fly.left_idx)
+    np.testing.assert_array_equal(merged.right_idx, fly.right_idx)
+    # The surviving stripe limb drops its side prefix; the empty one is gone.
+    assert merged.n_limbs == 9  # the now-empty left-stripe limb is dropped
+    assert "stripe" in merged.limb_names
+    assert "R_stripe" not in merged.limb_names and "L_stripe" not in merged.limb_names
+
+
+def test_merge_lr_stripes_visibility(fly):
+    merged, _ = fly.merge_lr_stripes()
+    mask = merged.visibility_mask(CAMERA_NAMES)
+    assert mask.shape == (7, 35)
+    seers = {CAMERA_NAMES[v] for v in range(7) if mask[v, 16]}  # Stripe0
+    assert seers == {"rh", "rm", "lm", "lh"}  # all four cameras that see a side
+
+
+def test_merge_lr_stripes_idempotent(fly):
+    merged, _ = fly.merge_lr_stripes()
+    again, remap = merged.merge_lr_stripes()
+    assert again is merged  # nothing left to merge
+    np.testing.assert_array_equal(remap, np.arange(merged.n_points))
+
+
+def test_merged_points_in_category(fly):
+    merged, _ = fly.merge_lr_stripes()
+    np.testing.assert_array_equal(merged.points_in_category("stripes"), [16, 17, 18])
+    assert merged.points_in_category("legs").size == 30

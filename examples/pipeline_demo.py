@@ -42,6 +42,9 @@ def main():
         skeleton,
         pts2d,
         conf,
+        # This synthetic fly's stripes are independent random points, so keep the
+        # full 38-point layout (real runs default to merging the L/R stripes).
+        merge_stripes=False,
         do_calibrate=False,
         smooth="one_euro",
         fps=100.0,

@@ -126,16 +126,24 @@ def test_cli_pose3d_and_info(result, tmp_path, capsys):
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
         in_path
     )
+    # pose3d options live in an optional config; disable calibration here.
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text("[pipeline]\ncalibrate = false\n")
 
-    cli.main(["pose3d", "--in", str(in_path), "--out", str(out_path), "--no-calibrate"])
+    cli.main(["pose3d", "--in", str(in_path), "--out", str(out_path), str(cfg)])
     out = PoseResult.load(out_path)
     assert out.pts3d is not None
-    assert out.pts3d.shape == (result.n_frames, 38, 3)
+    assert out.pts3d.shape == (result.n_frames, 35, 3)  # L/R stripes merged by default
 
     cli.main(["info", "--in", str(out_path)])
     printed = capsys.readouterr().out
-    assert "skeleton: drosophila" in printed
+    assert "skeleton: drosophila  (35 points)" in printed
     assert "has 3D:   True" in printed
+
+    # [pipeline].merge_stripes = false keeps the full 38-point layout.
+    cfg.write_text("[pipeline]\ncalibrate = false\nmerge_stripes = false\n")
+    cli.main(["pose3d", "--in", str(in_path), "--out", str(out_path), str(cfg)])
+    assert PoseResult.load(out_path).pts3d.shape == (result.n_frames, 38, 3)
 
 
 def test_cli_visualize_3d(result, tmp_path):

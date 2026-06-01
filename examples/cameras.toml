@@ -29,8 +29,16 @@ azimuth_deg = 90
 [cameras.lh]
 azimuth_deg = 120
 
+# Pipeline geometry options for `deeperfly run` / `pose3d` (a `deeperfly init`
+# config gathers these alongside [inputs] / [detector] / [skeleton]).
+[pipeline]
+merge_stripes = true   # fuse the left/right abdominal stripes into shared points
+
 [bundle_adjustment]
 solver = "scipy.least_squares"
+# Keypoint categories that drive camera calibration (subset of
+# legs, antennae, stripes). Legs sit at sharp corners and are the most reliable.
+keypoints = ["legs"]
 fixed = [
     "*.intr",     # keep all intrinsics fixed
     "f.rvec",     # anchor the front camera's orientation ...

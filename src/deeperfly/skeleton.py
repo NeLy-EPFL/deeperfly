@@ -144,6 +144,116 @@ class Skeleton:
             edges = np.concatenate([self.bones, self.bones3d], axis=0)
         return edges[:, 0], edges[:, 1]
 
+    # -- point selection / merging -------------------------------------------
+
+    #: Maps a category name to the substring that identifies its limbs by name.
+    _CATEGORY_KEYWORD = {"legs": "leg", "antennae": "antenna", "stripes": "stripe"}
+
+    def points_in_category(
+        self, categories: str | tuple[str, ...] | list[str]
+    ) -> Int[np.ndarray, "M"]:
+        """Point indices belonging to the requested limb categories.
+
+        ``categories`` is any subset of ``{"legs", "antennae", "stripes"}``
+        (a single string is accepted too). A limb belongs to a category when its
+        name contains the category keyword (``leg`` / ``antenna`` / ``stripe``,
+        case-insensitive), so this works both before and after
+        :meth:`merge_lr_stripes` (the merged stripe limb is still named
+        ``stripe``). Raises ``ValueError`` for an unknown category.
+        """
+        if isinstance(categories, str):
+            categories = (categories,)
+        keywords = []
+        for c in categories:
+            if c not in self._CATEGORY_KEYWORD:
+                raise ValueError(
+                    f"unknown keypoint category {c!r}; "
+                    f"expected a subset of {sorted(self._CATEGORY_KEYWORD)}"
+                )
+            keywords.append(self._CATEGORY_KEYWORD[c])
+        limb_sel = [
+            i
+            for i, name in enumerate(self.limb_names)
+            if any(kw in name.lower() for kw in keywords)
+        ]
+        return np.flatnonzero(np.isin(self.limb_id, limb_sel))
+
+    def merge_lr_stripes(self) -> tuple[Skeleton, Int[np.ndarray, "N"]]:
+        """Merge left/right abdominal stripe points into shared markers.
+
+        ``R_Stripe*`` and ``L_Stripe*`` track the same physical markers on the
+        abdomen but are stored as separate points seen by disjoint camera sets.
+        This returns ``(merged_skeleton, remap)`` where the two stripe sets are
+        collapsed into single prefix-stripped points (``Stripe0/1/2``) so they
+        can be triangulated from every camera that sees either side, and
+        ``remap`` maps each old point index to its new index.
+
+        Only stripes are merged (matched by ``"Stripe"`` in the joint name);
+        antennae and legs are untouched. If there is nothing to merge (e.g. an
+        already-merged or non-fly skeleton) the skeleton is returned unchanged
+        with an identity ``remap``, so the operation is idempotent.
+        """
+        n = self.n_points
+        # Merge key: stripe points collapse by their prefix-stripped name; every
+        # other point is its own singleton (keyed by index) so it never merges.
+        keys: list = []
+        for idx, name in enumerate(self.joint_names):
+            if "stripe" in name.lower():
+                keys.append(_strip_side_prefix(name))
+            else:
+                keys.append(idx)
+
+        new_of_key: dict = {}
+        remap = np.empty(n, dtype=np.int64)
+        new_names: list[str] = []
+        rep_old: list[int] = []  # representative old index per new point
+        for old, key in enumerate(keys):
+            if key not in new_of_key:
+                new_of_key[key] = len(new_names)
+                new_names.append(
+                    _strip_side_prefix(self.joint_names[old])
+                    if isinstance(key, str)
+                    else self.joint_names[old]
+                )
+                rep_old.append(old)
+            remap[old] = new_of_key[key]
+
+        if len(new_names) == n:  # nothing merged
+            return self, np.arange(n, dtype=np.int64)
+
+        rep_old_arr = np.asarray(rep_old, dtype=np.int64)
+        # Each new point inherits its representative's limb; then compact limb
+        # ids so limbs that lost all their points (e.g. the left stripe limb) are
+        # dropped, and rename the surviving stripe limb to strip its L/R prefix.
+        rep_limb = self.limb_id[rep_old_arr]
+        used = np.unique(rep_limb)
+        limb_remap = {int(old): new for new, old in enumerate(used)}
+        new_limb_id = np.array(
+            [limb_remap[int(lid)] for lid in rep_limb], dtype=np.int64
+        )
+        new_limb_names = [
+            _strip_side_prefix(name) if "stripe" in name.lower() else name
+            for name in (self.limb_names[u] for u in used)
+        ]
+
+        new_bones = _unique_edges(remap[self.bones])
+        new_bones3d = _unique_edges(remap[self.bones3d])
+        new_visibility = {
+            cam: np.unique(remap[idx]) for cam, idx in self.visibility.items()
+        }
+        merged = Skeleton(
+            name=self.name,
+            joint_names=tuple(new_names),
+            limb_names=tuple(new_limb_names),
+            limb_id=new_limb_id,
+            bones=new_bones,
+            bones3d=new_bones3d,
+            left_idx=remap[self.left_idx] if self.left_idx.size else self.left_idx,
+            right_idx=remap[self.right_idx] if self.right_idx.size else self.right_idx,
+            visibility=new_visibility,
+        )
+        return merged, remap
+
 
 def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:
     """Validate and pack a list of index pairs into an ``(E, 2)`` int array."""
@@ -155,3 +265,18 @@ def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:
     if arr.size and (arr.min() < 0 or arr.max() >= n_points):
         raise ValueError(f"{what} reference a point index outside [0, {n_points})")
     return arr
+
+
+def _strip_side_prefix(name: str) -> str:
+    """Drop a leading ``L_`` / ``R_`` body-side prefix from a name."""
+    return name[2:] if name[:2] in ("L_", "R_") else name
+
+
+def _unique_edges(edges: Int[np.ndarray, "E 2"]) -> Int[np.ndarray, "E2 2"]:
+    """Deduplicate undirected edges (kept in first-seen order)."""
+    if edges.size == 0:
+        return edges.reshape(-1, 2)
+    seen: dict[tuple[int, int], None] = {}
+    for i, j in edges:
+        seen.setdefault((int(min(i, j)), int(max(i, j))), None)
+    return np.asarray(list(seen), dtype=np.int64).reshape(-1, 2)
