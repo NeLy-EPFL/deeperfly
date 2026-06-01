@@ -280,7 +280,7 @@ source = { editable = "." }
 dependencies = [
     { name = "equinox" },
     { name = "h5py" },
-    { name = "jax", extra = ["cuda13"] },
+    { name = "jax" },
     { name = "jaxtyping" },
     { name = "numpy" },
     { name = "platformdirs" },
@@ -290,8 +290,21 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "av" },
+    { name = "decord", marker = "sys_platform != 'darwin'" },
+    { name = "imageio" },
+    { name = "imageio-ffmpeg" },
+    { name = "matplotlib" },
+    { name = "opencv-python-headless" },
+    { name = "torchcodec" },
+    { name = "video-reader-rs", marker = "sys_platform != 'darwin'" },
+]
 decord = [
-    { name = "decord" },
+    { name = "decord", marker = "sys_platform != 'darwin'" },
+]
+gpu = [
+    { name = "jax", extra = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 opencv = [
     { name = "opencv-python-headless" },
@@ -300,13 +313,13 @@ pyav = [
     { name = "av" },
 ]
 pynvvideocodec = [
-    { name = "pynvvideocodec" },
+    { name = "pynvvideocodec", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 torchcodec = [
     { name = "torchcodec" },
 ]
 video-reader-rs = [
-    { name = "video-reader-rs" },
+    { name = "video-reader-rs", marker = "sys_platform != 'darwin'" },
 ]
 viz = [
     { name = "imageio" },
@@ -330,25 +343,32 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'pyav'", specifier = ">=12" },
-    { name = "decord", marker = "extra == 'decord'", specifier = ">=0.6" },
+    { name = "decord", marker = "sys_platform != 'darwin' and extra == 'decord'", specifier = ">=0.6" },
+    { name = "deeperfly", extras = ["decord"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["opencv"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["pyav"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["torchcodec"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["video-reader-rs"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["viz"], marker = "extra == 'all'" },
     { name = "equinox", specifier = ">=0.11" },
     { name = "h5py", specifier = ">=3.11" },
     { name = "imageio", marker = "extra == 'viz'", specifier = ">=2.34" },
     { name = "imageio-ffmpeg", marker = "extra == 'viz'", specifier = ">=0.5" },
-    { name = "jax", extras = ["cuda13"], specifier = ">=0.10.1" },
+    { name = "jax", specifier = ">=0.10.1" },
+    { name = "jax", extras = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.10.1" },
     { name = "jaxtyping", specifier = ">=0.3.10" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "opencv-python-headless", marker = "extra == 'opencv'", specifier = ">=4.10" },
     { name = "platformdirs", specifier = ">=4.0" },
-    { name = "pynvvideocodec", marker = "extra == 'pynvvideocodec'", specifier = ">=1.0" },
+    { name = "pynvvideocodec", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'pynvvideocodec'", specifier = ">=1.0" },
     { name = "scipy", specifier = ">=1.14" },
     { name = "torch", specifier = ">=2.2" },
     { name = "torchcodec", marker = "extra == 'torchcodec'", specifier = ">=0.1" },
     { name = "torchvision", specifier = ">=0.17" },
-    { name = "video-reader-rs", marker = "extra == 'video-reader-rs'", specifier = ">=0.4" },
+    { name = "video-reader-rs", marker = "sys_platform != 'darwin' and extra == 'video-reader-rs'", specifier = ">=0.4" },
 ]
-provides-extras = ["viz", "opencv", "pyav", "decord", "video-reader-rs", "torchcodec", "pynvvideocodec"]
+provides-extras = ["gpu", "viz", "opencv", "pyav", "decord", "video-reader-rs", "torchcodec", "pynvvideocodec", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -594,7 +614,6 @@ name = "jax-cuda13-pjrt"
 version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/8e/57eebc0c4d6d63bad64f7443cbc96d3e3c5535fa4992af58568ad7388cbb/jax_cuda13_pjrt-0.10.1-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:7dd9f518876857e238a9a63abc185b277e9435470cc286b92209ef79d51d03cf", size = 113795506, upload-time = "2026-05-20T14:52:06.61Z" },
     { url = "https://files.pythonhosted.org/packages/8d/74/05adf1f245de3b37518ba1e7e668cdc38ec0291313ab63fc0768089f8baa/jax_cuda13_pjrt-0.10.1-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:af8042c7697fb6faa0cc4851d4f5e0504878ea1f6b6fc067255f449016336a6f", size = 119552553, upload-time = "2026-05-20T14:52:11.087Z" },
 ]
 
@@ -606,13 +625,9 @@ dependencies = [
     { name = "jax-cuda13-pjrt" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/cf/d6d807cbbb4e61103291a34856b32766b252c96a39897bf4e0143942f030/jax_cuda13_plugin-0.10.1-cp313-cp313-manylinux_2_27_aarch64.whl", hash = "sha256:a31e7859ecebfa0680eca260ea64046d5c54c7596d734897526ebeb89d54e48b", size = 7255426, upload-time = "2026-05-20T14:52:21.663Z" },
     { url = "https://files.pythonhosted.org/packages/80/80/ec043edee9db3debf5074fe5fd0431c6fea3f94d1b9a53458b35cd30544d/jax_cuda13_plugin-0.10.1-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:9070b1af00ebc7f5d6f20aafb789058f53812afd85e237dce0f1709a52cfd0f8", size = 7306050, upload-time = "2026-05-20T14:52:23.216Z" },
-    { url = "https://files.pythonhosted.org/packages/44/94/d480e1fb807cf67c3796200dca01cbe4c75dfa82ce64460b90c944e218cf/jax_cuda13_plugin-0.10.1-cp313-cp313t-manylinux_2_27_aarch64.whl", hash = "sha256:6baea37967bd9759f5bc014d8d6291782332478f746302f46fd08a9009a23304", size = 7268591, upload-time = "2026-05-20T14:52:24.77Z" },
     { url = "https://files.pythonhosted.org/packages/3b/7f/da438722130ca56ec5b15a3318c477418088aaa818480280816e6ce6259d/jax_cuda13_plugin-0.10.1-cp313-cp313t-manylinux_2_27_x86_64.whl", hash = "sha256:699a984d67b040f6dd26bae1b9326d748c62cafee769a9050085f953b42db0e5", size = 7316498, upload-time = "2026-05-20T14:52:26.47Z" },
-    { url = "https://files.pythonhosted.org/packages/02/e7/3a0194e0e6b74bf22e7bf4bd495042204aa5eaee278823780fc3aef9acb5/jax_cuda13_plugin-0.10.1-cp314-cp314-manylinux_2_27_aarch64.whl", hash = "sha256:b836b1eb29ae3e64d435def9c74b0ced435c3584cc17a29f3ff52c549274a059", size = 7256172, upload-time = "2026-05-20T14:52:28.037Z" },
     { url = "https://files.pythonhosted.org/packages/c2/0c/63c9e91d038ee0aaef39bed13efb526ed6bf5c4ced8d5ea5dcdd88868c34/jax_cuda13_plugin-0.10.1-cp314-cp314-manylinux_2_27_x86_64.whl", hash = "sha256:a556bd9e68155c7a8a43148fcdd2b582678e2270b86ea1749b1880be0aca7d2e", size = 7306774, upload-time = "2026-05-20T14:52:30.429Z" },
-    { url = "https://files.pythonhosted.org/packages/9c/42/537fa75f685b90175c7e10239ec7ad713c759e6057c4d695719feaa1ebf2/jax_cuda13_plugin-0.10.1-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:ee4b25a4f00a696b2f45c2a3a4693aeeed4408914c3784496d747e6655172e20", size = 7269049, upload-time = "2026-05-20T14:52:32.302Z" },
     { url = "https://files.pythonhosted.org/packages/f4/c1/a40da5ef96b0d030a22f31c01e3b372e2f7527b85df592ca907d44824576/jax_cuda13_plugin-0.10.1-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:24315ca6d00c992125a5bd38471e1c3bd30c9d0f3c26286ca29fd82f29883452", size = 7317313, upload-time = "2026-05-20T14:52:33.894Z" },
 ]
 
@@ -1027,7 +1042,6 @@ name = "nvidia-cuda-crt"
 version = "13.3.33"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/32/5ea57f8cd6ad5df2173d175ac5db4e06edde40028b1b1f6c539ea4c10290/nvidia_cuda_crt-13.3.33-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c8c257393f9c9146a85d3644f352be8154843d760031f756e673222c768a4930", size = 157348, upload-time = "2026-05-26T16:28:40.446Z" },
     { url = "https://files.pythonhosted.org/packages/8d/a7/998af901511d5efdc6e42fc597d32a69f34eecf86f1591a9d230ab3ab951/nvidia_cuda_crt-13.3.33-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:01ff37600c7b880a14cab4ade763b4c10c0ff92f25cc9dca30f0881ce52693c4", size = 157350, upload-time = "2026-05-26T16:29:22.315Z" },
 ]
 
@@ -1050,7 +1064,6 @@ dependencies = [
     { name = "nvidia-nvvm" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/b6/bb07a3a63b5b7b55516366747892abbf3ee62d616684c40bb51e6cbfe956/nvidia_cuda_nvcc-13.3.33-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:8c348623b1434aebd234da9ec1f81022587ae4995d65c3dc8a7743245cc441f7", size = 39515074, upload-time = "2026-05-26T16:34:28.489Z" },
     { url = "https://files.pythonhosted.org/packages/3f/af/e1b107f034f7c133255c162b922bbad3da5be20ebf76df17662ae4bd31f6/nvidia_cuda_nvcc-13.3.33-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:53b5f1be1731574368b8be931b77b6313492266c464aef3dd3f431569ce90deb", size = 44943276, upload-time = "2026-05-26T16:35:05.912Z" },
 ]
 
@@ -1191,8 +1204,6 @@ version = "13.3.33"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/8a/f767031dcd0d24c2bbab4b696dbcf004da4f3284e5e4649fc47bc0e2bb78/nvidia_nvvm-13.3.33-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:aafaf73246b6126bc88f521e5dab1d196395ee87739d9f5b7c39c9fee0ead9c7", size = 69250604, upload-time = "2026-05-26T16:57:56.875Z" },
-    { url = "https://files.pythonhosted.org/packages/83/36/ce0d42d3a4465c858c379932f0080d29d22f04383ab79119c7c4f4cdd5ef/nvidia_nvvm-13.3.33-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:fd74a1c5ef284ba04c1ba75f886404dff953c54731a3a9c7b45e9aedaf1a226b", size = 66984524, upload-time = "2026-05-26T16:57:30.778Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/96/4de7a37803d168337ab36f81ecbc496c7c21c9b06ec68ce0ecc381af88d4/nvidia_nvvm-13.3.33-py3-none-win_amd64.whl", hash = "sha256:b1c63cf8972d8a1ff153c5ac4cc7038fe6ef705aa38415f12007b0e5e4c31b79", size = 60175824, upload-time = "2026-05-26T17:13:27.588Z" },
 ]
 
 [[package]]
@@ -1410,11 +1421,7 @@ version = "2.0.4"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/d6/8475720d4f0f8fc9e852e0092b308643b71f24d9495ba3bd03c38b16c28d/pynvvideocodec-2.0.4-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:fcb06ef6ef24ee33b8f34950696a4e01636f2d8cdb96c407cd692931d049ac3d", size = 43176124, upload-time = "2026-05-27T04:06:26.415Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/28/33d2a4d69b48823801c0b02b1bfbeac04cd9d429ee698d248e7ba946c516/pynvvideocodec-2.0.4-cp313-cp313-manylinux_2_34_aarch64.whl", hash = "sha256:51724c6a0e3623c092cccdf93c8b09cced6881f3d0c76653f6ffbec0371f29cd", size = 35754919, upload-time = "2026-05-27T04:07:09.962Z" },
-    { url = "https://files.pythonhosted.org/packages/49/8e/8c08bbffc9021db762b6ac103ce544db4e517f9816118a35db9f0c7d2a9a/pynvvideocodec-2.0.4-cp313-cp313-win_amd64.whl", hash = "sha256:8e704a2b553a35cc2de10543a232e7feddc473f3e5478996595236e3194efc5d", size = 25692569, upload-time = "2026-05-27T04:07:38.663Z" },
     { url = "https://files.pythonhosted.org/packages/a7/ce/3062bf51bc0d98a344b9ed229a40535f6f1d309fc9ffaf34719b67ed3e21/pynvvideocodec-2.0.4-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:d9ec06f47bca7b20a6e8234afaf596699c57a477be292613d676802e7e808ed2", size = 43174764, upload-time = "2026-05-27T04:08:19.02Z" },
-    { url = "https://files.pythonhosted.org/packages/be/de/27eedeaa3ee5ec3dc2e4b1a7ac2b3d15ebb04cbfa768ca03d159a8328612/pynvvideocodec-2.0.4-cp314-cp314-manylinux_2_34_aarch64.whl", hash = "sha256:834fdbef7f3fc79285b5c2a88d1f1f7cd13543a9a7f2a2786141b181d1daaac9", size = 35755640, upload-time = "2026-05-27T04:08:45.728Z" },
-    { url = "https://files.pythonhosted.org/packages/f1/9a/ff638f3203b3e49718760a68e7f573747d3d814b817d949501243405c9d0/pynvvideocodec-2.0.4-cp314-cp314-win_amd64.whl", hash = "sha256:fbe730967d5402ffca520b12fa21725cbd22a6d2c9fae882ea1d95085a400fd9", size = 25694550, upload-time = "2026-05-27T04:09:11.735Z" },
 ]
 
 [[package]]
@@ -1739,8 +1746,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/f1/7c344da93a2f7e33f7febf83d6dbf9fc7397cabf0ab1c94017c07f4076e8/video_reader_rs-0.4.3-cp313-cp313t-manylinux_2_34_x86_64.whl", hash = "sha256:1685781dcd3931f536476da8a04f9826cbc1d3b7773de7291def15f34c53bf3b", size = 29154667, upload-time = "2026-03-27T18:56:50.243Z" },
     { url = "https://files.pythonhosted.org/packages/1f/72/5ff280b58de4f626c40868a394b097909286af698dddff8a86e53df84e2c/video_reader_rs-0.4.3-cp314-cp314t-manylinux_2_34_aarch64.whl", hash = "sha256:a4ed719e031ef139b4513347e8c5fd2fdddf1e9a2c34cf57802ffee4e952074f", size = 27108019, upload-time = "2026-03-27T18:56:58.578Z" },
     { url = "https://files.pythonhosted.org/packages/00/2b/300fc342c7e8aba91502a111ea270dc7fc388a8a363660785ce3c9f7aac7/video_reader_rs-0.4.3-cp314-cp314t-manylinux_2_34_x86_64.whl", hash = "sha256:0148f3f4f2e8270e941edf5c7cca7207395d7354978f3a293ecbebdc63543902", size = 29155585, upload-time = "2026-03-27T18:57:11.404Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/b5/ca19afef3a857c6bf6aff944fb3570bff29dc889ef4ce1aa5b1c677524ef/video_reader_rs-0.4.3-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:f2d97f6dc0c67686cd7ef7a83f395e8a117c3496d448a926a5f123c1c8dd5810", size = 16275733, upload-time = "2026-03-27T18:56:52.934Z" },
-    { url = "https://files.pythonhosted.org/packages/a2/0f/4634a06538f0ad3edc4391ae59044baf9dab2e0cf1260e7e332971113eb1/video_reader_rs-0.4.3-cp39-abi3-macosx_15_0_x86_64.whl", hash = "sha256:840cc306355f080c6a578cb85f843774eb3259831673234a286ce5dbd31afd47", size = 19462555, upload-time = "2026-03-27T18:56:55.694Z" },
     { url = "https://files.pythonhosted.org/packages/a7/9b/83d675178e93a4c5fd7396b1fc1b556bd8d0f7e371822011a28603be63dd/video_reader_rs-0.4.3-cp39-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:81cfec94d5631242a3eeab746615712e0d96c3db646f9d41a36de87c5859fc75", size = 27111721, upload-time = "2026-03-27T18:57:05.586Z" },
     { url = "https://files.pythonhosted.org/packages/3d/13/7cae6e8becba0add13c4fbd0d4d3f85ab2512238251a099c0db7523abced/video_reader_rs-0.4.3-cp39-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:f79d368273e5940e5dcb0ed57bd85d07a55908302b6d0572cf945701134c91e3", size = 29157442, upload-time = "2026-03-27T18:57:08.385Z" },
     { url = "https://files.pythonhosted.org/packages/21/7d/9e1f64b5dd3a2aa5d6f4b1f4b6e31adb942669018fc5b1fcf5fd4c5188d2/video_reader_rs-0.4.3-cp39-abi3-win_amd64.whl", hash = "sha256:a1185ab0ff7fc3ccdfa2275769d1599a51109e5582cd48604c5a679bc972c4ed", size = 63017308, upload-time = "2026-03-27T18:57:15.344Z" },
