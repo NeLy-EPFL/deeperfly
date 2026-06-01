@@ -255,9 +255,23 @@ def test_read_images_missing_raises(tmp_path):
         video.read_images(tmp_path / "empty")
 
 
-@pytest.mark.skipif(
-    not __import__("torch").cuda.is_available(), reason="needs CUDA for GPU decode"
-)
+def _gpu_decode_available() -> bool:
+    """GPU decode needs a torch CUDA build *and* a JAX GPU backend.
+
+    The test decodes JPEGs to a CUDA ``torch.Tensor`` and then hands it to JAX
+    zero-copy (``to_jax``), so it must skip whenever either side lacks CUDA --
+    e.g. on a GPU box run under ``JAX_PLATFORMS=cpu``, where torch sees the GPU
+    but JAX does not.
+    """
+    try:
+        import jax
+        import torch
+    except Exception:
+        return False
+    return torch.cuda.is_available() and jax.default_backend() == "gpu"
+
+
+@pytest.mark.skipif(not _gpu_decode_available(), reason="needs torch + JAX CUDA")
 def test_read_images_gpu_decode(tmp_path):
     import torch
 

@@ -60,6 +60,9 @@ def test_detect_dispatches_to_both_backends():
 
     pts_jax, conf_jax = inference.detect(model, images, sides, flips)
     pts_torch, conf_torch = inference.detect(ref, images, sides, flips)
-    np.testing.assert_allclose(pts_jax, pts_torch, atol=1e-3, equal_nan=True)
-    # float32 accumulation floor (see test_jax_matches_pytorch).
+    # The two backends' heatmaps agree only to the float32 accumulation floor
+    # (~2e-3, see test_jax_matches_pytorch); on GPU that noise lands on a handful
+    # of sub-pixel peak coordinates, so allow a few thousandths of a pixel. Real
+    # divergence between the ports would be orders of magnitude larger.
+    np.testing.assert_allclose(pts_jax, pts_torch, atol=5e-3, equal_nan=True)
     np.testing.assert_allclose(conf_jax, conf_torch, atol=2e-3)

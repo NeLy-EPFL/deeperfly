@@ -11,6 +11,8 @@ extra here. CUDA decode requires a GPU-enabled build.
 
 from __future__ import annotations
 
+import numpy as np
+
 from ..base import ReaderBackend, device_id, is_gpu_device, register_reader
 
 
@@ -29,6 +31,30 @@ def _to_frames(batch, device):
     return batch.asnumpy()
 
 
+def _stack(frames, device):
+    if is_gpu_device(device):
+        import torch
+
+        return torch.stack(frames)
+    return np.stack(frames)
+
+
+def _decode(decord, reader, indices, device):
+    """Fetch ``indices`` (in order) as ``(N, H, W, 3)`` frames.
+
+    Some decord builds decode certain frame widths with an extra padding
+    channel, which makes the batched ``get_batch`` copy abort with a size
+    mismatch; on that error, fall back to per-frame reads. Either way the result
+    is sliced to the first three (RGB) channels.
+    """
+    indices = list(indices)
+    try:
+        return _to_frames(reader.get_batch(indices), device)[..., :3]
+    except decord.DECORDError:
+        frames = [_to_frames(reader[i], device)[..., :3] for i in indices]
+        return _stack(frames, device)
+
+
 @register_reader
 class DecordReader(ReaderBackend):
     name = "decord"
@@ -43,11 +69,11 @@ class DecordReader(ReaderBackend):
         reader = decord.VideoReader(str(path), ctx=_context(decord, device))
         n = len(reader)
         stop = n if stop is None else min(stop, n)
-        return _to_frames(reader.get_batch(list(range(start, stop, step))), device)
+        return _decode(decord, reader, range(start, stop, step), device)
 
     @classmethod
     def _read_indices(cls, path, device, indices):
         import decord
 
         reader = decord.VideoReader(str(path), ctx=_context(decord, device))
-        return _to_frames(reader.get_batch(list(indices)), device)
+        return _decode(decord, reader, indices, device)

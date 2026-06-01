@@ -26,6 +26,18 @@ class VideoReaderRsReader(ReaderBackend):
     supports_gpu = False
     supports_seek = True
 
+    @classmethod
+    def is_available(cls) -> bool:
+        # The package can be importable as a name while its bundled FFmpeg shared
+        # libraries fail to load (e.g. a missing libswresample), so the shallow
+        # find_spec check passes but any real use crashes. Probe a true import so
+        # a broken install is neither advertised nor auto-selected.
+        try:
+            import video_reader  # noqa: F401
+        except Exception:
+            return False
+        return True
+
     @staticmethod
     def _read_sequential(path, device, start, stop, step):
         require_cpu(device, "video_reader_rs")
