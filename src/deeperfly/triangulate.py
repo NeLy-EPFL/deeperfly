@@ -5,7 +5,7 @@ Thin, NumPy-facing wrappers around the geometry already provided by
 contract with the geometry layer is the **NaN convention**: a 2D observation of
 ``NaN`` means "this camera did not (or cannot) see this point". Both
 :func:`deeperfly.geometry.triangulate_dlt` and the bundle-adjustment residual
-builder already honour it, so visibility is expressed purely as NaNs -- no
+builder already honor it, so visibility is expressed purely as NaNs -- no
 separate mask array travels downstream.
 
 All functions use the **view-leading** layout shared with the geometry module:

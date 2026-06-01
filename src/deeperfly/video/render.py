@@ -86,7 +86,7 @@ def render_overlay_video(
 ) -> None:
     """Render one camera's 2D pose overlay across frames to an MP4.
 
-    ``background`` (``"white"`` / ``"black"``) colours the margins around the
+    ``background`` (``"white"`` / ``"black"``) colors the margins around the
     frame; legs follow :data:`deeperfly.viz.LEG_PALETTE`.
     """
     import matplotlib.pyplot as plt

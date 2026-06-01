@@ -40,7 +40,7 @@ def load_model(
 
     The number of stacks is taken from the checkpoint (the published weights are
     ``sh8`` = 8 stacks), so the architecture always matches before the strict
-    load. With ``checkpoint=None`` a freshly initialised model is returned.
+    load. With ``checkpoint=None`` a freshly initialized model is returned.
     """
     from .. import infer_num_stacks  # shared across backends, torch-free import
 

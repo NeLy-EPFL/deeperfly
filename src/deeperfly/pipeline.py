@@ -1,6 +1,6 @@
 """End-to-end orchestration: 2D points -> calibration -> 3D -> correction.
 
-This is the modern analogue of DeepFly3D's ``Core``. It is written as pure
+This is the modern analog of DeepFly3D's ``Core``. It is written as pure
 functions over arrays so every stage is testable in isolation and the heavy 2D
 detector stays pluggable (a callable producing ``(pts2d, conf)``):
 
@@ -79,7 +79,7 @@ def calibrate(
 
     Frames are flattened into one big point cloud; detector confidences become
     per-observation weights; a robust loss and an optional bone-length prior
-    stabilise the fit. ``fixed`` / ``shared`` anchor the gauge exactly as in
+    stabilize the fit. ``fixed`` / ``shared`` anchor the gauge exactly as in
     :func:`deeperfly.bundle_adjustment.bundle_adjust`.
 
     Returns the refined :class:`CameraGroup` and the raw scipy result.

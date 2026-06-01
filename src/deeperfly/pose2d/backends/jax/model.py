@@ -7,7 +7,7 @@ PyTrees; batch norm is folded into a parameter-only :class:`FrozenBatchNorm`
 (inference only), so the whole network is a static PyTree that ``jax.jit`` /
 ``jax.vmap`` straight over a batch of camera images.
 
-Each module operates on a single ``(C, H, W)`` image (no batch axis); vectorise
+Each module operates on a single ``(C, H, W)`` image (no batch axis); vectorize
 with :func:`jax.vmap` -- :func:`predict_heatmaps` does exactly that, jitted. The
 network returns one heatmap stack per hourglass; the last is the prediction. The
 canonical fly config is :meth:`HourglassNet.deepfly2d` (8 stacks, 1 block, 19
@@ -25,7 +25,7 @@ EXPANSION = 2  # Bottleneck channel expansion (DeepFly2D uses 2, not torchvision
 
 
 def _upsample2(x: Float[Array, "C H W"]) -> Float[Array, "C H2 W2"]:
-    """Nearest-neighbour 2x upsampling, matching ``nn.Upsample(scale_factor=2)``."""
+    """Nearest-neighbor 2x upsampling, matching ``nn.Upsample(scale_factor=2)``."""
     return jnp.repeat(jnp.repeat(x, 2, axis=1), 2, axis=2)
 
 

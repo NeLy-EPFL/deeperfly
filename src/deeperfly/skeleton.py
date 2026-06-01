@@ -5,7 +5,7 @@ ordered tracked points, their grouping into limbs, the bones (edges) connecting
 them, and -- for a known camera rig -- which points each named camera can see.
 It carries no geometry; it is consumed by triangulation (to mask unobservable
 points), bundle adjustment (bone-length priors), correction (per-side Procrustes)
-and visualisation (drawing bones).
+and visualization (drawing bones).
 
 The default fly skeleton is packaged as ``data/skeleton_fly.toml`` and mirrors
 NeLy-EPFL/DeepFly3D's ``skeleton_fly.py``: 38 points (right ``0..18``, left
@@ -135,7 +135,7 @@ class Skeleton:
     def bone_index_pairs(
         self, include_3d: bool = False
     ) -> tuple[Int[np.ndarray, "B"], Int[np.ndarray, "B"]]:
-        """Endpoint index arrays ``(i, j)`` for vectorised bone-length maths.
+        """Endpoint index arrays ``(i, j)`` for vectorized bone-length maths.
 
         With ``include_3d`` the cross-body :attr:`bones3d` edges are appended.
         """

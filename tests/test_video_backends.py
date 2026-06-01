@@ -4,7 +4,7 @@ CPU backends that are installed (imageio, opencv, pyav, decord,
 video_reader_rs) are exercised for real; GPU backends (torchcodec,
 pynvvideocodec, dali) are only checked for registration/availability since they
 need CUDA. Encoded video is lossy, so round-trips assert on frame count / shape /
-dtype and coarse colour, not pixel values.
+dtype and coarse color, not pixel values.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _gradient_clip(n=8, h=64, w=48):
 
 
 def _indexed_clip(n=12, h=32, w=32):
-    """Each frame a distinct solid grey so its identity survives compression."""
+    """Each frame a distinct solid gray so its identity survives compression."""
     vals = (np.arange(n) * 20 + 10).clip(0, 255)
     frames = np.broadcast_to(vals[:, None, None, None], (n, h, w, 3))
     return frames.astype(np.uint8)
@@ -261,7 +261,7 @@ def test_read_images_missing_raises(tmp_path):
 def test_read_images_gpu_decode(tmp_path):
     import torch
 
-    frames = _indexed_clip(5, 32, 48)  # solid greys: nvJPEG == libjpeg exactly
+    frames = _indexed_clip(5, 32, 48)  # solid grays: nvJPEG == libjpeg exactly
     _write_images(tmp_path, frames, ext="jpg")
     out = video.read_images(tmp_path, device="cuda")
     assert isinstance(out, torch.Tensor) and out.is_cuda

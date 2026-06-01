@@ -60,7 +60,7 @@ def procrustes_align(
 ) -> tuple[Float[np.ndarray, "M 3"], tuple[float, np.ndarray, np.ndarray]]:
     """Align ``source`` onto ``target`` with a similarity transform (Umeyama).
 
-    Finds ``s, R, t`` minimising ``|| s R x + t - y ||`` over the rows where both
+    Finds ``s, R, t`` minimizing ``|| s R x + t - y ||`` over the rows where both
     ``source`` and ``target`` are finite, then applies it to *every* row of
     ``source`` (NaN rows stay NaN). With ``scale=False`` the transform is rigid.
 
@@ -125,10 +125,10 @@ def smooth_gaussian(
     pts_seq: Float[np.ndarray, "T N 3"],
     sigma: float,
 ) -> Float[np.ndarray, "T N 3"]:
-    """NaN-aware Gaussian smoothing along time (axis 0) via normalised convolution.
+    """NaN-aware Gaussian smoothing along time (axis 0) via normalized convolution.
 
     Missing samples (``NaN``) are excluded from the weighted average instead of
-    poisoning their neighbours; positions that stay all-NaN within a window
+    poisoning their neighbors; positions that stay all-NaN within a window
     remain ``NaN``.
     """
     a = np.asarray(pts_seq, dtype=float)

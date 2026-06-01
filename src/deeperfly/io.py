@@ -3,7 +3,7 @@
 A :class:`PoseResult` bundles everything produced for one recording -- the
 calibrated cameras, the skeleton, the 2D detections + confidences, and the
 triangulated (and optionally smoothed) 3D points -- plus free-form metadata. It
-serialises to a single HDF5 file that fully reconstructs the cameras and
+serializes to a single HDF5 file that fully reconstructs the cameras and
 skeleton, so results are portable without the original config files.
 
 Array layout follows the view-leading convention used everywhere else:
@@ -58,7 +58,7 @@ class PoseResult:
     def n_frames(self) -> int:
         return self.pts2d.shape[1]
 
-    # -- serialisation -------------------------------------------------------
+    # -- serialization -------------------------------------------------------
 
     def save(self, path: str | Path) -> None:
         """Write the result to an HDF5 file (overwriting ``path``)."""
@@ -119,7 +119,7 @@ class PoseResult:
         )
 
 
-# -- camera (de)serialisation ------------------------------------------------
+# -- camera (de)serialization ------------------------------------------------
 
 
 def _write_cameras(g: h5py.Group, cameras: CameraGroup) -> None:
@@ -137,7 +137,7 @@ def _read_cameras(g: h5py.Group) -> CameraGroup:
     )
 
 
-# -- skeleton (de)serialisation ----------------------------------------------
+# -- skeleton (de)serialization ----------------------------------------------
 
 
 def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:

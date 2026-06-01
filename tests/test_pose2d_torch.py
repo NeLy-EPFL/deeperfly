@@ -2,7 +2,7 @@
 
 Skipped unless ``torch`` is installed. The PyTorch reference is
 ``deeperfly.pose2d.backends.torch`` (a faithful copy of DeepFly2D's
-``df2d/model.py``); its random-initialised weights are converted with
+``df2d/model.py``); its random-initialized weights are converted with
 :func:`deeperfly.pose2d.backends.jax.convert_state_dict` and the two forward
 passes must agree. This guards the architecture port and the conversion key-map,
 and confirms :func:`deeperfly.pose2d.inference.detect` works with both backends.

@@ -33,7 +33,7 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 
 # Preference order for ``backend="auto"``. Explicit names always win; "auto"
 # walks these and picks the first installed backend. CPU order keeps imageio
-# first so existing behaviour is unchanged when nothing else is installed.
+# first so existing behavior is unchanged when nothing else is installed.
 CPU_READ_ORDER = ("imageio", "pyav", "opencv", "decord", "video_reader_rs")
 GPU_READ_ORDER = ("torchcodec", "decord", "pynvvideocodec", "dali")
 WRITE_ORDER = ("imageio", "pyav", "opencv")

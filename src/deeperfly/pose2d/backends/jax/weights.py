@@ -5,7 +5,7 @@ the PyTorch module names one-to-one, so converting the original DeepFly2D weight
 is a key-by-key copy with two shape fixups: convolution kernels share PyTorch's
 ``(out, in, kh, kw)`` layout (no transpose), but Equinox conv biases are
 ``(out, 1, 1)`` and BatchNorm running statistics map onto :class:`FrozenBatchNorm`.
-:func:`convert_state_dict` produces a model that :func:`save_checkpoint` serialises
+:func:`convert_state_dict` produces a model that :func:`save_checkpoint` serializes
 with Equinox's native format, so the runtime (:func:`load_model`) never imports
 torch. Reading the original ``.tar`` lives in the torch backend
 (:func:`deeperfly.pose2d.backends.torch.weights.state_dict_from_torch_checkpoint`).
@@ -90,7 +90,7 @@ def convert_state_dict(
 
     ``state_dict`` keys are the native ``HourglassNet`` names (e.g.
     ``conv1.weight``, ``layer1.0.bn1.running_mean``). PyTorch's
-    ``num_batches_tracked`` BatchNorm counters have no inference-time analogue in
+    ``num_batches_tracked`` BatchNorm counters have no inference-time analog in
     :class:`FrozenBatchNorm` and are dropped. Raises if a needed key is missing
     or if any remaining key goes unused. ``model.num_stacks`` must match the
     checkpoint (see :func:`deeperfly.pose2d.backends.infer_num_stacks`).
@@ -146,7 +146,7 @@ def export_state_dict(model: HourglassNet) -> dict[str, np.ndarray]:
 
 
 def save_checkpoint(model: HourglassNet, path: str | Path) -> None:
-    """Serialise a converted model with Equinox's native format."""
+    """Serialize a converted model with Equinox's native format."""
     eqx.tree_serialise_leaves(str(path), model)
 
 
@@ -158,8 +158,8 @@ def load_model(
 ) -> HourglassNet:
     """Build the JAX detector and (optionally) load a native ``.eqx`` checkpoint.
 
-    With ``checkpoint=None`` a freshly initialised model is returned. ``key``
-    seeds that initialisation; it is irrelevant when loading (the leaves are
+    With ``checkpoint=None`` a freshly initialized model is returned. ``key``
+    seeds that initialization; it is irrelevant when loading (the leaves are
     overwritten) and defaults to a fixed seed. ``num_stacks`` must match the
     architecture the checkpoint was saved from (default 8, the published ``sh8``
     config). No torch is needed.

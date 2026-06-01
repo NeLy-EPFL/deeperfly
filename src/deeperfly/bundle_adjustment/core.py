@@ -28,7 +28,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 class BASolution(NamedTuple):
-    """Optimised parameters unpacked back into per-camera arrays plus points."""
+    """Optimized parameters unpacked back into per-camera arrays plus points."""
 
     rvecs: np.ndarray
     tvecs: np.ndarray

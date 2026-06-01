@@ -9,7 +9,7 @@ model. Pipeline for one recording:
    resize to 256x512, subtract the training mean) -- matching DeepFly2D.
 2. :func:`deeperfly.pose2d.backends.predict_heatmaps` (dispatched, batched) ->
    per-joint heatmaps as NumPy.
-3. :func:`heatmap_to_points` -> normalised peak locations + confidence.
+3. :func:`heatmap_to_points` -> normalized peak locations + confidence.
 4. :func:`assemble_skeleton` -- place each camera's 19 single-side joints into
    the 38-point skeleton (right cameras -> indices 0..18, mirrored left cameras
    -> 19..37 with the x flip undone) and scale to original-image pixels.
@@ -37,7 +37,7 @@ def preprocess(
     img_size: tuple[int, int] = IMG_SIZE,
     mean: float = MEAN,
 ) -> Float[Array, "3 Hh Ww"]:
-    """Image (HWC, uint8 or float[0,1]) -> normalised CHW network input.
+    """Image (HWC, uint8 or float[0,1]) -> normalized CHW network input.
 
     Mirror-side cameras are horizontally flipped so the fly faces the trained
     orientation. Uses bilinear (anti-aliased) resize; this is close to but not
@@ -62,9 +62,9 @@ def preprocess(
 def heatmap_to_points(
     heatmaps: Float[Array, "*batch J Hh Ww"],
 ) -> tuple[Float[Array, "*batch J 2"], Float[Array, "*batch J"]]:
-    """Argmax peak (normalised ``(x, y)`` in [0, 1]) and confidence per joint.
+    """Argmax peak (normalized ``(x, y)`` in [0, 1]) and confidence per joint.
 
-    Matches DeepFly2D's ``heatmap2points`` (first global argmax, normalised by
+    Matches DeepFly2D's ``heatmap2points`` (first global argmax, normalized by
     heatmap size), but returns ``(x, y)`` ordering for the geometry layer.
     """
     heatmaps = jnp.asarray(heatmaps)
@@ -91,7 +91,7 @@ def assemble_skeleton(
     Parameters
     ----------
     points_norm, conf
-        Per-camera detector output: ``(V, 19, 2)`` normalised ``(x, y)`` and
+        Per-camera detector output: ``(V, 19, 2)`` normalized ``(x, y)`` and
         ``(V, 19)`` confidence.
     sides
         ``"right"`` or ``"left"`` per camera -- which half of the skeleton the
@@ -100,7 +100,7 @@ def assemble_skeleton(
         Whether each camera's image was mirror-flipped in :func:`preprocess`
         (the x coordinate is then undone as ``1 - x``).
     image_size
-        ``(W, H)`` original pixel size per camera to scale normalised coords.
+        ``(W, H)`` original pixel size per camera to scale normalized coords.
     """
     points_norm = np.asarray(points_norm, dtype=float)
     conf = np.asarray(conf, dtype=float)

@@ -127,7 +127,7 @@ def test_smooth_gaussian_nan_aware():
     seq = np.ones((10, 1, 3))
     seq[5] = np.nan  # isolated gap
     out = smooth_gaussian(seq, sigma=1.0)
-    assert np.isfinite(out).all()  # neighbours fill the gap
+    assert np.isfinite(out).all()  # neighbors fill the gap
     np.testing.assert_allclose(out[5], 1.0, atol=1e-9)
 
 

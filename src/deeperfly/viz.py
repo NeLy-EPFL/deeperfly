@@ -1,8 +1,8 @@
-"""Headless matplotlib visualisation of 2D overlays and 3D skeletons.
+"""Headless matplotlib visualization of 2D overlays and 3D skeletons.
 
 Functions draw onto an existing ``Axes`` when given one (so callers compose
 montages / video frames) or create a figure otherwise. Bones come from the
-:class:`~deeperfly.skeleton.Skeleton`; each limb gets a stable colour and
+:class:`~deeperfly.skeleton.Skeleton`; each limb gets a stable color and
 detector confidence (when supplied) modulates joint opacity. Requires the
 ``viz`` extra (``matplotlib``); import this module only when plotting.
 """
@@ -19,7 +19,7 @@ from jaxtyping import Float  # noqa: E402
 
 from .skeleton import Skeleton  # noqa: E402
 
-#: Per-leg colours: left = blues, right = reds, lightening front -> hind.
+#: Per-leg colors: left = blues, right = reds, lightening front -> hind.
 LEG_PALETTE: dict[str, str] = {
     "LF_leg": "#0f7399",
     "LM_leg": "#1a8daf",
@@ -31,7 +31,7 @@ LEG_PALETTE: dict[str, str] = {
 #: Muted side tint for non-leg limbs (antennae, stripes) by their L/R prefix.
 _SIDE_TINT: dict[str, str] = {"L": "#5b8f9c", "R": "#b07c77"}
 
-#: Background presets: figure/axes face colour and the matching foreground
+#: Background presets: figure/axes face color and the matching foreground
 #: (spines, ticks, labels, 3D panes) so plots read on white or black.
 BACKGROUNDS: dict[str, dict[str, str]] = {
     "white": {"face": "white", "fg": "black"},
@@ -42,7 +42,7 @@ BACKGROUNDS: dict[str, dict[str, str]] = {
 def limb_colors(
     skeleton: Skeleton, *, palette: dict[str, str] | None = None
 ) -> np.ndarray:
-    """A stable RGBA colour per tracked point, coloured by its limb.
+    """A stable RGBA color per tracked point, colored by its limb.
 
     Legs use :data:`LEG_PALETTE` (left blue / right red, lightening to the hind
     leg); antennae and stripes take a muted tint of their side; any other limb
@@ -66,7 +66,7 @@ def limb_colors(
 def apply_background(ax: plt.Axes, background: str = "white") -> plt.Axes:
     """Style ``ax`` (and its figure) for a ``"white"`` or ``"black"`` background.
 
-    Sets the figure and axes face colours and recolours spines / ticks / labels
+    Sets the figure and axes face colors and recolors spines / ticks / labels
     (and the panes + grid for 3D axes) to a contrasting foreground. Re-apply after
     ``ax.clear()`` -- the plotting helpers below do this for you.
     """

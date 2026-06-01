@@ -44,7 +44,7 @@ def load_detector(backend: str = DEFAULT_BACKEND, checkpoint=None, **kwargs):
 
     Extra keyword arguments are forwarded to the backend's ``load_model`` (e.g.
     ``key`` / ``num_stacks`` for jax, ``dev`` for torch). With ``checkpoint=None``
-    each backend falls back to a freshly initialised model.
+    each backend falls back to a freshly initialized model.
     """
     return _backend(backend).load_model(checkpoint, **kwargs)
 

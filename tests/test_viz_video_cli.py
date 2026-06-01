@@ -1,4 +1,4 @@
-"""Smoke tests for the headless visualisation, video and CLI layers.
+"""Smoke tests for the headless visualization, video and CLI layers.
 
 These check that figures render and MP4s round-trip, not pixel-level output.
 """
@@ -67,7 +67,7 @@ def test_leg_palette_colors(fly):
 
     colors = viz.limb_colors(fly)
     for joint, hexc in viz.LEG_PALETTE.items():
-        # each leg's joints take that leg's colour
+        # each leg's joints take that leg's color
         idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == joint]
         assert idx, joint
         for i in idx:

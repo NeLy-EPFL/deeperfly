@@ -72,7 +72,7 @@ def test_zero_weight_equivals_dropping_observation(rig):
     rvecs0, tvecs0 = perturb(rig)
     cams0 = make_group(rig, rvecs0, tvecs0)
     fixed = ["*.intr", "f.rvec", "f.tvec"]
-    init = cloud.copy()  # identical 3D initialisation for both solves
+    init = cloud.copy()  # identical 3D initialization for both solves
 
     weights = np.ones(pts2d.shape[:2])
     weights[2, 7] = 0.0

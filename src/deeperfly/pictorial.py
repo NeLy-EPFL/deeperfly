@@ -19,7 +19,7 @@ The idea, following Gunel et al. (DeepFly3D, 2019):
    limb (:func:`_chain_dp`). The fly skeleton's 2D bones form a forest of simple
    chains (each leg a 5-joint path, each stripe a 3-marker path), so the MAP over
    the bone-length-coupled graphical model is exact -- no loopy belief
-   propagation. An optional causal temporal term penalises 3D jumps.
+   propagation. An optional causal temporal term penalizes 3D jumps.
 
 Everything is plain NumPy over a :class:`~deeperfly.cameras.CameraGroup` and
 :class:`~deeperfly.skeleton.Skeleton`, mirroring :mod:`deeperfly.triangulate` /
@@ -48,7 +48,7 @@ DEFAULT_LAMBDA = 1.0  # bone-length prior weight (relative to per-view evidence 
 DEFAULT_HUBER = 0.5  # Huber knee for the bone-length residual, in units of bone length
 DEFAULT_MU = 5.0  # temporal weight (per unit squared 3D displacement / bone-scale^2)
 DEFAULT_PEAK_THRESHOLD = 0.05  # ignore heatmap peaks weaker than this
-DEFAULT_PEAK_RADIUS = 2  # NMS neighbourhood half-width (heatmap pixels)
+DEFAULT_PEAK_RADIUS = 2  # NMS neighborhood half-width (heatmap pixels)
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,12 @@ def peak_candidates(
     radius: int = DEFAULT_PEAK_RADIUS,
     threshold: float = DEFAULT_PEAK_THRESHOLD,
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
-    """Top-``k`` local-maxima peaks per heatmap channel (normalised ``(x, y)`` + score).
+    """Top-``k`` local-maxima peaks per heatmap channel (normalized ``(x, y)`` + score).
 
-    A pixel is a peak if it is the maximum of its ``(2*radius+1)`` neighbourhood
+    A pixel is a peak if it is the maximum of its ``(2*radius+1)`` neighborhood
     and exceeds ``threshold``; the strongest ``k`` peaks are returned, ordered by
     score and padded with ``NaN`` / ``0`` when fewer than ``k`` exist. Coordinates
-    are normalised to ``[0, 1]`` like :func:`~deeperfly.pose2d.inference.heatmap_to_points`.
+    are normalized to ``[0, 1]`` like :func:`~deeperfly.pose2d.inference.heatmap_to_points`.
     """
     from scipy.ndimage import maximum_filter
 
@@ -127,7 +127,7 @@ def extract_candidates(
 ) -> tuple[Float[np.ndarray, "V N K 2"], Float[np.ndarray, "V N K"]]:
     """Scatter per-view top-K single-side peaks into the full skeleton (pixels).
 
-    The candidate analogue of :func:`deeperfly.pose2d.inference.assemble_skeleton`:
+    The candidate analog of :func:`deeperfly.pose2d.inference.assemble_skeleton`:
     extracts K peaks per detector channel, undoes the mirror flip (``x -> 1 - x``),
     scales to original pixels, and places a right camera's 19 channels into skeleton
     indices ``0..18`` and a left camera's into ``19..37``.
@@ -384,7 +384,7 @@ def _chain_dp(
 ) -> dict[int, int]:
     """Exact Viterbi over one chain: pick a hypothesis index per joint.
 
-    Minimises ``sum_j unary[j][c_j] + lam * sum_bones huber((len - target)/scale)``.
+    Minimizes ``sum_j unary[j][c_j] + lam * sum_bones huber((len - target)/scale)``.
     Joints with no hypotheses are skipped (left for the caller to NaN), splitting
     the chain into independently-solved runs. Returns ``{joint: chosen_index}``
     only for joints that had hypotheses.
@@ -466,7 +466,7 @@ def solve_frame(
         )
         kept_global[j] = keep
         pos[j] = x_all[j, keep]  # (S, 3)
-        u = -evidence[j, keep].astype(float)  # minimise -> negative evidence
+        u = -evidence[j, keep].astype(float)  # minimize -> negative evidence
         if (
             mu
             and prev_pts3d is not None

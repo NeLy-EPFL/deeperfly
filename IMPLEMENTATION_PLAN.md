@@ -48,7 +48,7 @@ correction.py          # outlier flagging, Procrustes, OneEuroFilter/Gaussian sm
 io.py                  # PoseResult HDF5 container (save/load)
 viz.py                 # matplotlib 2D overlays + 3D skeleton plots
 video.py               # read frames (video/dir), write MP4 (imageio-ffmpeg)
-pipeline.py            # orchestrator: the df3d.Core analogue (pure functions)
+pipeline.py            # orchestrator: the df3d.Core analog (pure functions)
 cli.py                 # argparse subcommands; replaces placeholder main()
 data/skeleton_fly.toml, data/template_{left,right}.npz   # packaged assets
 ```

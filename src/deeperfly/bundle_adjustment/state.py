@@ -2,7 +2,7 @@
 
 The state vector concatenates ``[rvecs, tvecs, intrs, dists, pts3d]`` flat.
 Index arrays (``rvecs_idx``, etc.) recover the original shapes; a boolean
-``fixed`` mask marks parameters held constant during optimisation.
+``fixed`` mask marks parameters held constant during optimization.
 
 Unlike a naive packing, two index entries are allowed to point at the *same*
 slot in ``values`` -- that is how parameters are *shared*. :func:`build_state`

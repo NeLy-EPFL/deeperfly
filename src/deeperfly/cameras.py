@@ -3,7 +3,7 @@
 A :class:`Camera` bundles the parameters needed to project a 3D world point to
 a 2D image point under the conventions of :mod:`deeperfly.geometry`: world to
 camera is ``R(rvec) @ X + tvec``; the camera looks down its ``+z`` row, ``+y``
-is image-down and ``+x`` image-right; the camera centre is ``-R.T @ tvec``.
+is image-down and ``+x`` image-right; the camera center is ``-R.T @ tvec``.
 
 A :class:`CameraGroup` is an ordered collection of named cameras, typically
 built from a TOML config (see :meth:`CameraGroup.from_config`). The config
@@ -39,9 +39,9 @@ from .geometry import (
 # Default world "up" used to disambiguate look-at / orbit orientations.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
 
-# Keys recognised by the extrinsic resolver, grouped by the quantity they fix.
+# Keys recognized by the extrinsic resolver, grouped by the quantity they fix.
 _ROTATION_KEYS = ("rvec", "rotation_matrix", "forward")
-_CENTRE_KEYS = ("position", "center", "centre", "eye")
+_CENTER_KEYS = ("position", "center", "eye")
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -85,7 +85,7 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     The rotation is taken from at most one explicit source -- ``rvec``,
     ``rotation_matrix``, or ``forward`` (+ optional ``up``) -- otherwise from a
     look-at orientation implied by ``look_at`` / ``azimuth_deg`` /
-    ``elevation_deg``. The camera centre is taken from at most one of an
+    ``elevation_deg``. The camera center is taken from at most one of an
     explicit ``position`` (aka ``center`` / ``eye``) or an orbit
     ``look_at + distance * dir(azimuth, elevation)``; alternatively ``tvec`` may
     be given directly. ``roll_deg`` (default 0) composes on top of any rotation
@@ -97,29 +97,29 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     """
     up = np.asarray(spec.get("up", _WORLD_UP), dtype=float)
 
-    # --- camera centre (world position) -------------------------------------
-    centre_keys = [k for k in _CENTRE_KEYS if k in spec]
+    # --- camera center (world position) -------------------------------------
+    center_keys = [k for k in _CENTER_KEYS if k in spec]
     has_orbit = "distance" in spec
     has_tvec = "tvec" in spec
-    if len(centre_keys) > 1:
-        raise ValueError(f"conflicting position keys: {centre_keys}")
-    if sum([bool(centre_keys), has_orbit, has_tvec]) > 1:
+    if len(center_keys) > 1:
+        raise ValueError(f"conflicting position keys: {center_keys}")
+    if sum([bool(center_keys), has_orbit, has_tvec]) > 1:
         given = (
-            centre_keys
+            center_keys
             + (["distance"] if has_orbit else [])
             + (["tvec"] if has_tvec else [])
         )
         raise ValueError(f"conflicting position/translation keys: {given}")
 
-    centre = None
-    if centre_keys:
-        centre = np.asarray(spec[centre_keys[0]], dtype=float)
+    center = None
+    if center_keys:
+        center = np.asarray(spec[center_keys[0]], dtype=float)
     elif has_orbit:
         look_at = np.asarray(spec.get("look_at", [0.0, 0.0, 0.0]), dtype=float)
         direction = _orbit_direction(
             spec.get("azimuth_deg", 0.0), spec.get("elevation_deg", 0.0)
         )
-        centre = look_at + float(spec["distance"]) * direction
+        center = look_at + float(spec["distance"]) * direction
 
     # --- rotation -----------------------------------------------------------
     rot_keys = [k for k in _ROTATION_KEYS if k in spec]
@@ -136,14 +136,14 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     elif rot_keys == ["forward"]:
         rmat = _look_rotation(np.asarray(spec["forward"], dtype=float), up)
     elif implies_look_at:
-        if centre is None:
+        if center is None:
             raise ValueError(
                 "look-at orientation needs a camera position; give 'distance' "
                 "(orbit) or 'position', or specify orientation directly via "
                 "'rvec' / 'rotation_matrix' / 'forward'"
             )
         target = np.asarray(spec.get("look_at", [0.0, 0.0, 0.0]), dtype=float)
-        rmat = _look_rotation(target - centre, up)
+        rmat = _look_rotation(target - center, up)
     else:
         raise ValueError(
             "no rotation source: provide one of 'rvec', 'rotation_matrix', "
@@ -158,11 +158,11 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     if has_tvec:
         tvec = np.asarray(spec["tvec"], dtype=float)
     else:
-        if centre is None:
+        if center is None:
             raise ValueError(
                 "no position source: provide 'tvec', 'position', or an orbit 'distance'"
             )
-        tvec = -rmat @ centre
+        tvec = -rmat @ center
 
     rvec = np.asarray(rmat_to_rvec(rmat), dtype=float)
     return rvec, tvec
@@ -218,7 +218,7 @@ class Camera:
 
     @property
     def position(self) -> Float[np.ndarray, "3"]:
-        """Camera centre in world coordinates, ``-R.T @ tvec``."""
+        """Camera center in world coordinates, ``-R.T @ tvec``."""
         return -self.rmat.T @ self.tvec
 
     def project(

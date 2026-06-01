@@ -225,7 +225,7 @@ def rvec_to_rmat(
 
     Implements ``R = I + a * W + b * W^2`` with ``W = skew(rvec)``,
     ``a = sin(theta) / theta`` and ``b = (1 - cos(theta)) / theta^2``. Working
-    on the unnormalised axis avoids ``0/0`` at ``theta = 0``; evaluating ``a``
+    on the unnormalized axis avoids ``0/0`` at ``theta = 0``; evaluating ``a``
     and ``b`` from their Taylor expansions for small ``theta`` sidesteps the
     catastrophic cancellation in ``1 - cos(theta)``, keeping the result
     orthogonal to machine precision even for tiny rotations. ``W^2`` is
@@ -252,7 +252,7 @@ def rmat_to_rvec(
 ) -> Float[Array, "*batch 3"]:
     """Convert rotation matrices to axis-angle rotation vectors.
 
-    Vectorised port of OpenCV's ``Rodrigues`` (matrix -> vector). The axis is
+    Vectorized port of OpenCV's ``Rodrigues`` (matrix -> vector). The axis is
     read off the antisymmetric part ``R - R^T`` in the generic case, but that
     part vanishes at ``theta = pi`` (``R`` becomes symmetric), so near
     ``theta = pi`` the axis is instead recovered from the symmetric part
@@ -344,7 +344,7 @@ def distort(
 ) -> Float[Array, "V *pts 2"]:
     """Apply OpenCV-style radial + tangential + thin-prism distortion.
 
-    For normalised image coordinates ``(x, y)`` with ``r^2 = x^2 + y^2``, the
+    For normalized image coordinates ``(x, y)`` with ``r^2 = x^2 + y^2``, the
     distortion model with up to 12 coefficients
     ``[k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4]`` is
 
@@ -361,7 +361,7 @@ def distort(
     Parameters
     ----------
     pts2d
-        Normalised 2D coordinates of shape ``(V, *pts, 2)``.
+        Normalized 2D coordinates of shape ``(V, *pts, 2)``.
     dists
         Distortion coefficients of shape ``(V, K)`` with ``K`` in
         ``{0, 1, ..., 12}``.

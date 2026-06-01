@@ -11,8 +11,8 @@ outlier rejection, optionally smooths, and writes a ``PoseResult`` HDF5.
     uv run python dev/run_pipeline_images.py --frames 200 --out results/fly.h5
 
 The example rig's principal point assumes a 1024x512 sensor; these frames are
-960x480, so the principal point is recentred to the real image centre (the
-intrinsics are otherwise the idealised example values and stay fixed in BA).
+960x480, so the principal point is recentered to the real image center (the
+intrinsics are otherwise the idealized example values and stay fixed in BA).
 
 Throughput. The 8-stack hourglass forward is the floor (~230 img/s in float32 on
 an RTX 4090, and batching past one synchronized frame does not help -- it already
@@ -23,7 +23,7 @@ saturates the GPU). Two float32-exact tricks close the gap to that floor:
   frame uploads only raw uint8 and downloads only the 19x2 peaks -- no per-image
   resize round-trips and no multi-MB heatmap transfer.
 * Image decode is prefetched on worker threads (``--workers``) so disk + JPEG
-  decode overlap the GPU compute instead of serialising in front of it.
+  decode overlap the GPU compute instead of serializing in front of it.
 
 Together these take this recording from ~19 to ~31 frame/s. (Half precision would
 roughly double the forward, but bf16/f16 shift even high-confidence peaks by
@@ -225,7 +225,7 @@ def main() -> None:
     n_t = len(frame_ids)
     print(f"{n_t} synchronized frames x {len(CAMERA_NAMES)} cameras")
 
-    # Cameras: recentre the principal point onto the real 960x480 image centre.
+    # Cameras: recenter the principal point onto the real 960x480 image center.
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
     probe = iio.imread(root / f"camera_0_img_{frame_ids[0]:06d}.jpg")

@@ -179,7 +179,7 @@ def read_frames(
     Dispatches on ``path``: a video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes
     to :func:`read_video` (``backend`` selects the decoder); a directory or glob
     of images goes to :func:`read_images` (``workers`` sets decode parallelism).
-    Both honour ``device`` (CPU NumPy or GPU tensor) and the same frame selection.
+    Both honor ``device`` (CPU NumPy or GPU tensor) and the same frame selection.
     """
     p = Path(path)
     if p.is_file() and p.suffix.lower() in _VIDEO_EXTS:

@@ -58,7 +58,7 @@ def test_peak_candidates_finds_ordered_bumps():
     hm[0] += 1.5 * np.exp(-((yy - 8) ** 2 + (xx - 40) ** 2) / 4.0)
     xy, score = pictorial.peak_candidates(hm, k=2, radius=2)
     assert score[0, 0] > score[0, 1]  # ordered by strength
-    # Strongest peak at (row=8, col=40) -> normalised (x, y).
+    # Strongest peak at (row=8, col=40) -> normalized (x, y).
     np.testing.assert_allclose(xy[0, 0], [40 / ww, 8 / hh], atol=1e-6)
     np.testing.assert_allclose(xy[0, 1], [10 / ww, 20 / hh], atol=1e-6)
 
@@ -255,7 +255,7 @@ def test_single_view_joint_is_nan(cameras, fly, rng):
         cameras, fly, cands, xy[:, :, :, 0, :], bone_max_frames=None
     )
     assert np.isnan(ps3d[0, lonely]).all()
-    assert np.isfinite(ps3d[0, 2]).all()  # neighbours unaffected
+    assert np.isfinite(ps3d[0, 2]).all()  # neighbors unaffected
 
 
 # -- pipeline integration ----------------------------------------------------

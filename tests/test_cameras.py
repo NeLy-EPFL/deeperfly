@@ -70,9 +70,9 @@ def test_resolve_rotation_matrix_and_position():
         {"rotation_matrix": rmat.tolist(), "position": [0.0, 0.0, 5.0]}
     )
     assert np.allclose(np.asarray(geom.rvec_to_rmat(rvec)), rmat, atol=1e-12)
-    # tvec encodes the world camera centre: centre == -R^T t.
-    centre = -np.asarray(geom.rvec_to_rmat(rvec)).T @ tvec
-    assert np.allclose(centre, [0.0, 0.0, 5.0], atol=1e-9)
+    # tvec encodes the world camera center: center == -R^T t.
+    center = -np.asarray(geom.rvec_to_rmat(rvec)).T @ tvec
+    assert np.allclose(center, [0.0, 0.0, 5.0], atol=1e-9)
 
 
 def test_resolve_forward_up():
@@ -129,7 +129,7 @@ def test_camera_position_roundtrip(rng):
     cam = Camera(
         rvec=rvec, tvec=tvec, intr=np.array([800.0, 800, 1, 2]), dist=np.zeros(0)
     )
-    # centre = -R^T t  =>  t = -R @ centre
+    # center = -R^T t  =>  t = -R @ center
     assert np.allclose(cam.rmat @ cam.position, -tvec, atol=1e-10)
 
 
