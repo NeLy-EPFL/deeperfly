@@ -12,7 +12,9 @@ dependencies = [
     # opt-in via the `gpu` extra below (CUDA 13 wheels exist for Linux x86-64 only).
     "jax>=0.10.1",
     # The 2D detector can be run on either of two backends (JAX/Equinox and PyTorch);
-    # torch also converts the original DeepFly2D weights.
+    # torch also converts the original DeepFly2D weights. On Apple Silicon the torch
+    # backend auto-uses the GPU via Metal (MPS) -- the only accelerated detector path
+    # on macOS, since JAX stays CPU-only there.
     "torch>=2.2",
     "torchvision>=0.17",
     "jaxtyping>=0.3.10",

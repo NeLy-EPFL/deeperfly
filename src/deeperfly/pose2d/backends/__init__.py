@@ -69,21 +69,25 @@ _REF_PIXELS = 256 * 512
 
 
 def gpu_memory_bytes(device=None) -> int | None:
-    """Total memory (bytes) of the CUDA device, or ``None`` when there is no GPU.
+    """Usable accelerator memory (bytes), or ``None`` when running on CPU.
 
-    Uses torch (a core dependency) to query the physical device, so it reports the
-    same number whichever detector backend is in use.
+    Reports the CUDA device's total memory, or -- on Apple Silicon -- Metal's
+    (MPS) recommended working-set size, since there the GPU shares the system's
+    unified memory. Uses torch (a core dependency) to query the physical device,
+    so it reports the same number whichever detector backend is in use.
     """
     try:
         import torch
 
-        if not torch.cuda.is_available():
-            return None
-        idx = 0
-        if device is not None:
-            parts = str(device).split(":")
-            idx = int(parts[1]) if len(parts) > 1 and parts[1] else 0
-        return int(torch.cuda.get_device_properties(idx).total_memory)
+        if torch.cuda.is_available():
+            idx = 0
+            if device is not None and str(device).startswith("cuda"):
+                parts = str(device).split(":")
+                idx = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+            return int(torch.cuda.get_device_properties(idx).total_memory)
+        if torch.backends.mps.is_available():
+            return int(torch.mps.recommended_max_memory())
+        return None
     except Exception:
         return None
 

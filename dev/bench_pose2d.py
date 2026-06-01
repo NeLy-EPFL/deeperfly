@@ -73,6 +73,8 @@ def bench_torch(n_images, h=256, w=512):
         out = model(x)[-1]
         if device == "cuda":
             torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
         return out
 
     dt = time_it(call)
