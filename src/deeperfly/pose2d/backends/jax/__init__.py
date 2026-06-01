@@ -13,6 +13,7 @@ from .model import (
     FrozenBatchNorm,
     HourglassNet,
     predict_heatmaps,
+    to_device,
     to_dtype,
 )
 from .weights import (
@@ -27,6 +28,7 @@ __all__ = [
     "FrozenBatchNorm",
     "Bottleneck",
     "to_dtype",
+    "to_device",
     "predict_heatmaps",
     "load_model",
     "save_checkpoint",

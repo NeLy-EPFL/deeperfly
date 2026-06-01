@@ -252,9 +252,55 @@ class HourglassNet(eqx.Module):
         return self(image)[-1]
 
 
+def _accelerator_device(device):
+    """Resolve a detector placement request to a JAX ``Device``, or ``None``.
+
+    ``None`` means "leave the model where it was built" -- so CUDA and CPU stay
+    exactly as before. ``"auto"`` selects Apple Metal (the optional ``jax-mps``
+    plugin) when it is installed and is otherwise ``None``; ``"mps"`` requires the
+    Metal backend (raises with an install hint if absent); ``"cpu"``/``None``
+    never move the model. A concrete ``jax.Device`` is returned unchanged.
+    """
+    if device is None or device == "cpu":
+        return None
+    if isinstance(device, jax.Device):
+        return device
+    if device in ("auto", "mps"):
+        try:
+            return jax.devices("mps")[0]
+        except Exception:
+            if device == "mps":
+                raise RuntimeError(
+                    "device='mps' needs the Metal backend; install it with "
+                    "`pip install 'deeperfly[mps]'` on Apple Silicon"
+                ) from None
+            return None
+    raise ValueError(f"unknown detector device {device!r}")
+
+
+def to_device(model: HourglassNet, device="auto") -> HourglassNet:
+    """Move the detector's array leaves onto ``device`` (see :func:`_accelerator_device`).
+
+    The Equinox model is a PyTree with non-array leaves (activation fns), so this
+    partitions first and only ships the arrays. ``"auto"`` uses Metal (``jax-mps``)
+    when available and is a no-op everywhere else. The model must already be
+    float32 and built on the CPU before moving to Metal -- MLX is float32-only and
+    Equinox's float64 random init can't run there (:func:`.load_model` handles this).
+    """
+    dev = _accelerator_device(device)
+    if dev is None:
+        return model
+    arrays, static = eqx.partition(model, eqx.is_array)
+    return eqx.combine(jax.device_put(arrays, dev), static)
+
+
 @eqx.filter_jit
 def predict_heatmaps(
     model: HourglassNet, inputs: Float[Array, "N 3 Hh Ww"]
 ) -> Float[Array, "N J Hh4 Ww4"]:
-    """Final-stack heatmaps for a batch of preprocessed images (vmapped, jitted)."""
+    """Final-stack heatmaps for a batch of preprocessed images (vmapped, jitted).
+
+    Runs wherever ``model``'s leaves live: with a Metal-placed model (see
+    :func:`to_device`) JAX co-locates the inputs and the forward runs on the GPU.
+    """
     return jax.vmap(model.heatmaps)(jnp.asarray(inputs))

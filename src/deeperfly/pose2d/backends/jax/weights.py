@@ -155,6 +155,7 @@ def load_model(
     *,
     key=None,
     num_stacks: int = HourglassNet.DEFAULT_NUM_STACKS,
+    device="auto",
 ) -> HourglassNet:
     """Build the JAX detector and (optionally) load a native ``.eqx`` checkpoint.
 
@@ -163,12 +164,28 @@ def load_model(
     overwritten) and defaults to a fixed seed. ``num_stacks`` must match the
     architecture the checkpoint was saved from (default 8, the published ``sh8``
     config). No torch is needed.
+
+    ``device`` places the (float32) model: ``"auto"`` (default) uses Apple Metal
+    via the optional ``jax-mps`` plugin when installed and is a no-op otherwise,
+    so CUDA/CPU are untouched; ``"mps"`` forces Metal; ``"cpu"`` keeps it on CPU.
+    See :func:`deeperfly.pose2d.backends.jax.to_device`.
     """
     import jax
 
-    if key is None:
-        key = jax.random.PRNGKey(0)
-    model = HourglassNet.deepfly2d(key=key, num_stacks=num_stacks)
-    if checkpoint is None:
-        return model
-    return eqx.tree_deserialise_leaves(str(checkpoint), model)
+    from .model import to_device
+
+    def build() -> HourglassNet:
+        k = jax.random.PRNGKey(0) if key is None else key
+        model = HourglassNet.deepfly2d(key=k, num_stacks=num_stacks)
+        if checkpoint is None:
+            return model
+        return eqx.tree_deserialise_leaves(str(checkpoint), model)
+
+    # When jax-mps makes Metal the default device, build on the CPU first: MLX is
+    # float32-only, so Equinox's float64 random weight init can't run on Metal.
+    if jax.default_backend() == "mps":
+        with jax.default_device(jax.devices("cpu")[0]):
+            model = build()
+    else:
+        model = build()
+    return to_device(model, device)

@@ -12,7 +12,9 @@ dependencies = [
     # opt-in via the `gpu` extra below (CUDA 13 wheels exist for Linux x86-64 only).
     "jax>=0.10.1",
     # The 2D detector can be run on either of two backends (JAX/Equinox and PyTorch);
-    # torch also converts the original DeepFly2D weights.
+    # torch also converts the original DeepFly2D weights. On Apple Silicon the torch
+    # backend auto-uses the GPU via Metal (MPS) -- the only accelerated detector path
+    # on macOS, since JAX stays CPU-only there.
     "torch>=2.2",
     "torchvision>=0.17",
     "jaxtyping>=0.3.10",
@@ -30,6 +32,15 @@ dependencies = [
 # combine, e.g. `deeperfly[all,gpu]`).
 gpu = [
     "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+# Apple Metal (MPS) acceleration for the JAX detector backend via the jax-mps
+# plugin (PJRT -> MLX). Apple Silicon only, so the marker makes it a no-op
+# (cleanly skipped) elsewhere. Experimental and float32-only, so it accelerates
+# the *detector* only -- geometry and bundle adjustment stay float64 on CPU.
+# Request explicitly: `deeperfly[mps]`. The torch backend already auto-uses Metal
+# on macOS (a more mature path); this extra is for staying on the JAX backend.
+mps = [
+    "jax-mps>=0.10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 viz = [
     "matplotlib>=3.10",
