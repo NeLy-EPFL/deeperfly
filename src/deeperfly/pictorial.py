@@ -48,7 +48,8 @@ DEFAULT_LAMBDA = 1.0  # bone-length prior weight (relative to per-view evidence 
 DEFAULT_HUBER = 0.5  # Huber knee for the bone-length residual, in units of bone length
 DEFAULT_MU = 5.0  # temporal weight (per unit squared 3D displacement / bone-scale^2)
 DEFAULT_PEAK_THRESHOLD = 0.05  # ignore heatmap peaks weaker than this
-DEFAULT_PEAK_RADIUS = 2  # NMS neighborhood half-width (heatmap pixels)
+DEFAULT_PEAK_RADIUS = 2  # NMS / sub-pixel-window half-width (heatmap pixels)
+DEFAULT_SUBPIXEL = "weighted"  # peak refinement: "argmax" | "weighted" | "taylor"
 
 
 @dataclass(frozen=True)
@@ -83,21 +84,30 @@ def peak_candidates(
     *,
     radius: int = DEFAULT_PEAK_RADIUS,
     threshold: float = DEFAULT_PEAK_THRESHOLD,
+    method: str = DEFAULT_SUBPIXEL,
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
     """Top-``k`` local-maxima peaks per heatmap channel (normalized ``(x, y)`` + score).
 
     A pixel is a peak if it is the maximum of its ``(2*radius+1)`` neighborhood
     and exceeds ``threshold``; the strongest ``k`` peaks are returned, ordered by
-    score and padded with ``NaN`` / ``0`` when fewer than ``k`` exist. Coordinates
-    are normalized to ``[0, 1]`` like :func:`~deeperfly.pose2d.inference.heatmap_to_points`.
+    score and padded with ``NaN`` / ``0`` when fewer than ``k`` exist. Each peak
+    cell is then refined to sub-pixel by ``method`` (the same
+    :func:`~deeperfly.pose2d.inference.refine_peaks` the single-peak decoder uses,
+    over the same ``radius`` window), so the candidates fed to PS carry the same
+    localization as the arg-max. Coordinates are normalized to ``[0, 1]`` like
+    :func:`~deeperfly.pose2d.inference.heatmap_to_points`; the score stays the raw
+    peak value.
     """
     from scipy.ndimage import maximum_filter
 
+    from .pose2d.inference import refine_peaks
+
     hm = np.asarray(heatmaps, dtype=float)
     hh, ww = hm.shape[-2:]
+    chan = hm.shape[:-2]
     size = (1,) * (hm.ndim - 2) + (2 * radius + 1, 2 * radius + 1)
     is_peak = (hm == maximum_filter(hm, size=size)) & (hm > threshold)
-    flat = np.where(is_peak, hm, -np.inf).reshape(*hm.shape[:-2], hh * ww)
+    flat = np.where(is_peak, hm, -np.inf).reshape(*chan, hh * ww)
 
     k = min(k, flat.shape[-1])
     top = np.argpartition(-flat, k - 1, axis=-1)[..., :k]
@@ -107,7 +117,15 @@ def peak_candidates(
     val = np.take_along_axis(top_val, order, axis=-1)
 
     row, col = idx // ww, idx % ww
-    xy = np.stack([col / ww, row / hh], axis=-1).astype(float)
+    m = int(np.prod(chan)) if chan else 1
+    cx, cy = refine_peaks(
+        hm.reshape(m, hh, ww),
+        row.reshape(m, k),
+        col.reshape(m, k),
+        method=method,
+        radius=radius,
+    )
+    xy = np.stack([cx.reshape(*chan, k) / ww, cy.reshape(*chan, k) / hh], axis=-1)
     valid = np.isfinite(val)
     xy = np.where(valid[..., None], xy, np.nan)
     score = np.where(valid, val, 0.0)

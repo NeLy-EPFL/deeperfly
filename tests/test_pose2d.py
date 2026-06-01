@@ -116,10 +116,55 @@ def test_heatmap_to_points_argmax_and_conf():
     hm = np.zeros((1, 2, 64, 128), dtype=np.float32)
     hm[0, 0, 10, 20] = 5.0
     hm[0, 1, 30, 100] = 3.0
-    points, conf = inference.heatmap_to_points(jnp.asarray(hm))
-    np.testing.assert_allclose(points[0, 0], [20 / 128, 10 / 64])
-    np.testing.assert_allclose(points[0, 1], [100 / 128, 30 / 64])
-    np.testing.assert_allclose(conf[0], [5.0, 3.0])
+    # A lone spike has no neighbourhood mass, so every method returns its cell.
+    for method in ("argmax", "weighted", "taylor"):
+        points, conf = inference.heatmap_to_points(jnp.asarray(hm), method=method)
+        np.testing.assert_allclose(points[0, 0], [20 / 128, 10 / 64])
+        np.testing.assert_allclose(points[0, 1], [100 / 128, 30 / 64])
+        np.testing.assert_allclose(conf[0], [5.0, 3.0])
+
+
+def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
+    hh, ww = 64, 128
+    ys, xs = np.mgrid[0:hh, 0:ww]
+    true_r, true_c = 10.7, 20.3  # centre between cells
+    hm = np.exp(-((ys - true_r) ** 2 + (xs - true_c) ** 2) / 2.0)[None, None]
+
+    def err(method):
+        pts, _ = inference.heatmap_to_points(hm, method=method)
+        return abs(pts[0, 0, 0] * ww - true_c), abs(pts[0, 0, 1] * hh - true_r)
+
+    ax, ay = err("argmax")
+    sx, sy = err("weighted")
+    tx, ty = err("taylor")
+    assert ax >= 0.3 and ay >= 0.3  # arg-max is quantized to the cell
+    assert sx < 0.1 and sy < 0.1  # centroid lands well inside the cell
+    assert tx < 1e-2 and ty < 1e-2  # Taylor is near-exact on a clean Gaussian
+
+
+def test_refine_peaks_jax_matches_numpy():
+    # The on-device decode (fused fast path) must equal the host refine_peaks.
+    rng = np.random.default_rng(1)
+    hh, ww, j = 64, 128, 19
+    ys, xs = np.mgrid[0:hh, 0:ww]
+    hm = np.zeros((j, hh, ww), np.float32)
+    for jj in range(j):
+        r, c = rng.uniform(3, hh - 3), rng.uniform(3, ww - 3)
+        hm[jj] = np.exp(-((ys - r) ** 2 + (xs - c) ** 2) / 2.0)
+    hm += 0.01 * rng.standard_normal(hm.shape).astype(np.float32)
+
+    flat = hm.reshape(j, -1)
+    idx = np.argmax(flat, axis=-1)
+    row, col = idx // ww, idx % ww
+    for method in ("argmax", "weighted", "taylor"):
+        cx_np, cy_np = inference.refine_peaks(
+            hm, row[:, None], col[:, None], method=method
+        )
+        cx_jx, cy_jx = inference.refine_peaks_jax(
+            jnp.asarray(hm), jnp.asarray(row), jnp.asarray(col), method=method
+        )
+        np.testing.assert_allclose(np.asarray(cx_jx), cx_np[:, 0], atol=1e-4)
+        np.testing.assert_allclose(np.asarray(cy_jx), cy_np[:, 0], atol=1e-4)
 
 
 # -- preprocessing -----------------------------------------------------------

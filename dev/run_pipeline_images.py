@@ -19,9 +19,9 @@ an RTX 4090, and batching past one synchronized frame does not help -- it alread
 saturates the GPU). Two float32-exact tricks close the gap to that floor:
 
 * The JAX path fuses preprocessing (flip + resize + mean-subtract), the forward
-  pass and the arg-max peak decode into a single jitted, vmapped call, so each
-  frame uploads only raw uint8 and downloads only the 19x2 peaks -- no per-image
-  resize round-trips and no multi-MB heatmap transfer.
+  pass and the sub-pixel peak decode (``--decode``) into a single jitted, vmapped
+  call, so each frame uploads only raw uint8 and downloads only the 19x2 peaks --
+  no per-image resize round-trips and no multi-MB heatmap transfer.
 * Image decode is prefetched on worker threads (``--workers``) so disk + JPEG
   decode overlap the GPU compute instead of serializing in front of it.
 
@@ -58,20 +58,23 @@ def load_detector(backend: str, checkpoint: str | None):
     return backends.load_detector(backend, checkpoint or default)
 
 
-def build_detector(model, backend: str, sides, flips):
+def build_detector(model, backend: str, sides, flips, *, method="weighted", radius=2):
     """Return ``detect(batch) -> (pts (K,V,38,2) px, conf (K,V,38))``.
 
     ``batch`` is ``K`` synchronized frames as ``(K, V, H, W)`` uint8 (grayscale,
-    as in this rig). The JAX backend fuses preprocess + forward + arg-max over all
-    ``K*V`` images in one jitted vmap, so only uint8 goes up and only the peaks
-    come down. At ``K=1`` this is bit-identical to :func:`inference.detect`; at
-    larger ``K`` the batched conv uses different kernels, so results match only at
-    the float32 level (~1e-5 in confidence) -- enough to flip the arg-max on the
-    rare near-tie joint (~0.05%), which is harmless here (those points are
-    low-confidence and get dropped by reprojection-outlier rejection downstream).
-    ``K`` sets the GPU batch (see ``--batch``); the jit recompiles once per
-    distinct ``K`` (steady chunk + smaller final remainder = two compiles). The
-    torch backend reuses :func:`inference.detect` per frame.
+    as in this rig). The JAX backend fuses preprocess + forward + sub-pixel decode
+    over all ``K*V`` images in one jitted vmap, so only uint8 goes up and only the
+    peaks come down -- the decode (``method`` / ``radius``, see
+    :func:`inference.heatmap_to_points`) runs on-device via
+    :func:`inference.refine_peaks_jax`. At ``K=1`` this is bit-identical to
+    :func:`inference.detect`; at larger ``K`` the batched conv uses different
+    kernels, so results match only at the float32 level (~1e-5 in confidence) --
+    enough to flip the arg-max on the rare near-tie joint (~0.05%), which is
+    harmless here (those points are low-confidence and get dropped by
+    reprojection-outlier rejection downstream). ``K`` sets the GPU batch (see
+    ``--batch``); the jit recompiles once per distinct ``K`` (steady chunk +
+    smaller final remainder = two compiles). The torch backend reuses
+    :func:`inference.detect` per frame.
     """
     n_views = len(sides)
 
@@ -83,7 +86,12 @@ def build_detector(model, backend: str, sides, flips):
             conf = np.empty((k, n_views, 38))
             for i in range(k):
                 pts[i], conf[i] = inference.detect(
-                    model, [batch[i, v] for v in range(n_views)], sides, flips
+                    model,
+                    [batch[i, v] for v in range(n_views)],
+                    sides,
+                    flips,
+                    method=method,
+                    radius=radius,
                 )
             return pts, conf
 
@@ -104,12 +112,18 @@ def build_detector(model, backend: str, sides, flips):
             x = jnp.where(flip, x[:, ::-1, :], x)  # mirror far-side cameras
             x = jax.image.resize(x, (out_h, out_w, 3), method="linear", antialias=True)
             x = jnp.transpose(x, (2, 0, 1)) - mean
-            hm = m.heatmaps(x)
+            hm = m.heatmaps(x)  # (J, h, w)
             j, h, w = hm.shape
             flat = hm.reshape(j, h * w)
             idx = jnp.argmax(flat, axis=-1)
-            pts = jnp.stack([(idx % w) / w, (idx // w) / h], axis=-1)
-            return pts, jnp.max(flat, axis=-1)
+            conf = jnp.max(flat, axis=-1)
+            row, col = idx // w, idx % w  # arg-max cell per joint
+            # Sub-pixel decode stays on-device (the GPU twin of the host path), so
+            # nothing leaves the accelerator until the final (J, 2) peaks.
+            cx, cy = inference.refine_peaks_jax(
+                hm, row, col, method=method, radius=radius
+            )
+            return jnp.stack([cx / w, cy / h], axis=-1), conf
 
         return jax.vmap(one)(imgs_u8, fl)
 
@@ -127,13 +141,27 @@ def build_detector(model, backend: str, sides, flips):
     return detect_jax
 
 
-def detect_pictorial(model, sides, flips, frame_ids, load_stack, *, k, workers):
+def detect_pictorial(
+    model,
+    sides,
+    flips,
+    frame_ids,
+    load_stack,
+    *,
+    k,
+    workers,
+    method="weighted",
+    radius=2,
+):
     """Stream detection keeping the top-K candidate peaks per joint (PS path).
 
     Pictorial structures needs the full heatmaps (to read off secondary peaks), so
     this deliberately uses the un-fused detect path -- ``backends.predict_heatmaps``
-    per frame -- instead of the on-GPU arg-max fast path. Returns the arg-max
-    ``(pts2d, conf)`` (for calibration) and a :class:`deeperfly.pictorial.Candidates`.
+    per frame -- instead of the on-GPU fast path. The single-peak ``(pts2d, conf)``
+    (for calibration) and the top-K candidates are both decoded with ``method`` /
+    ``radius`` (see :func:`inference.heatmap_to_points`); in this path ``radius``
+    also sets the candidate NMS neighbourhood. Returns ``(pts2d, conf)`` and a
+    :class:`deeperfly.pictorial.Candidates`.
     """
     from deeperfly import pictorial
     from deeperfly.pose2d import backends
@@ -155,11 +183,13 @@ def detect_pictorial(model, sides, flips, frame_ids, load_stack, *, k, workers):
         )
         heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))
         image_size = [(im.shape[1], im.shape[0]) for im in images]
-        pnorm, c = inference.heatmap_to_points(heatmaps)
+        pnorm, c = inference.heatmap_to_points(heatmaps, method=method, radius=radius)
         p2, cf = inference.assemble_skeleton(
             np.asarray(pnorm), np.asarray(c), sides, flips, image_size
         )
-        cxy, csc = pictorial.extract_candidates(heatmaps, sides, flips, image_size, k=k)
+        cxy, csc = pictorial.extract_candidates(
+            heatmaps, sides, flips, image_size, k=k, method=method, radius=radius
+        )
         return p2, cf, cxy, csc
 
     depth = workers + 1
@@ -211,7 +241,22 @@ def main() -> None:
     ap.add_argument("--ps-k", type=int, default=5, help="candidate peaks/joint (PS)")
     ap.add_argument("--ps-temporal", action="store_true", help="PS temporal term")
     ap.add_argument("--ps-lambda", type=float, default=1.0, help="PS bone-prior weight")
+    ap.add_argument(
+        "--decode",
+        choices=["argmax", "weighted", "taylor"],
+        default="weighted",
+        help="heatmap->point decode: raw arg-max cell, weighted-centroid sub-pixel "
+        "(default), or DARK Taylor sub-pixel",
+    )
+    ap.add_argument(
+        "--decode-radius",
+        type=int,
+        default=2,
+        help="sub-pixel window half-width in heatmap px (taylor needs >=2)",
+    )
     args = ap.parse_args()
+    if args.decode == "taylor" and args.decode_radius < 2:
+        ap.error("--decode taylor needs --decode-radius >= 2")
 
     root = Path(args.images)
     # Frame numbers present for every camera, in order.
@@ -252,6 +297,7 @@ def main() -> None:
 
     candidates = None
     t0 = time.perf_counter()
+    print(f"decode: {args.decode} (radius {args.decode_radius})")
     if args.correct == "pictorial":
         # Accuracy mode: stream the full-heatmap detector and keep top-K candidates.
         print(f"pictorial structures: keeping {args.ps_k} candidates/joint")
@@ -263,9 +309,18 @@ def main() -> None:
             load_stack,
             k=args.ps_k,
             workers=args.workers,
+            method=args.decode,
+            radius=args.decode_radius,
         )
     else:
-        detect_batch = build_detector(model, args.backend, sides, flips)
+        detect_batch = build_detector(
+            model,
+            args.backend,
+            sides,
+            flips,
+            method=args.decode,
+            radius=args.decode_radius,
+        )
 
         # GPU batch (synchronized frames per forward). 'auto' fits VRAM; for this
         # 8-stack net throughput plateaus at a small batch on a fast GPU, so sizing
