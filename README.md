@@ -98,6 +98,15 @@ faster backend on GPU — benchmark them on your own hardware:
 uv run python dev/bench_pose2d.py --batch 7 --frames 8
 ```
 
+On NVIDIA GPUs both backends use CUDA automatically (JAX via the `gpu` extra). On
+**Apple Silicon** the PyTorch backend auto-uses the GPU via Metal (MPS) with no
+setup — the simplest accelerated path on macOS. To accelerate the *JAX* backend
+on macOS instead, install the optional `mps` extra (`uv pip install
+'deeperfly[mps]'`), which adds the experimental [`jax-mps`](https://github.com/tillahoffmann/jax-mps)
+Metal plugin; the float32 detector then runs on Metal while geometry and bundle
+adjustment stay in float64 on the CPU (MLX is float32-only). Both detector
+backends match their CPU output to float32 precision.
+
 ## Video I/O backends
 
 `deeperfly.video` reads and writes frames through a pluggable backend registry,

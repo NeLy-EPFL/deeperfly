@@ -30,6 +30,15 @@ from jaxtyping import Array, Float
 
 jax.config.update("jax_enable_x64", True)
 
+# The optional jax-mps plugin (Apple Silicon) registers an experimental Metal
+# backend and makes it the *default* device -- but MLX is float32-only, so the
+# x64 geometry/bundle-adjustment math here would crash on it. Keep float64 work on
+# the CPU; the detector opts into Metal explicitly (it is float32 --
+# deeperfly.pose2d.backends.jax.load_model). No-op without jax-mps, and leaves
+# CUDA/CPU defaults untouched.
+if jax.default_backend() == "mps":
+    jax.config.update("jax_default_device", jax.devices("cpu")[0])
+
 # Below this squared rotation angle, sin/cos are evaluated via Taylor series
 # to avoid catastrophic cancellation in ``1 - cos theta``.
 _SMALL_THETA_SQ = 1e-8

@@ -33,6 +33,15 @@ dependencies = [
 gpu = [
     "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+# Apple Metal (MPS) acceleration for the JAX detector backend via the jax-mps
+# plugin (PJRT -> MLX). Apple Silicon only, so the marker makes it a no-op
+# (cleanly skipped) elsewhere. Experimental and float32-only, so it accelerates
+# the *detector* only -- geometry and bundle adjustment stay float64 on CPU.
+# Request explicitly: `deeperfly[mps]`. The torch backend already auto-uses Metal
+# on macOS (a more mature path); this extra is for staying on the JAX backend.
+mps = [
+    "jax-mps>=0.10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 viz = [
     "matplotlib>=3.10",
     "imageio>=2.34",
