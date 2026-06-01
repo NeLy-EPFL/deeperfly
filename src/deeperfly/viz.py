@@ -21,12 +21,12 @@ from .skeleton import Skeleton  # noqa: E402
 
 #: Per-leg colors: left = blues, right = reds, lightening front -> hind.
 LEG_PALETTE: dict[str, str] = {
-    "LF_leg": "#0f7399",
-    "LM_leg": "#1a8daf",
-    "LH_leg": "#75becb",
-    "RF_leg": "#ba1e31",
-    "RM_leg": "#c9564f",
-    "RH_leg": "#d58579",
+    "lf_leg": "#0f7399",
+    "lm_leg": "#1a8daf",
+    "lh_leg": "#75becb",
+    "rf_leg": "#ba1e31",
+    "rm_leg": "#c9564f",
+    "rh_leg": "#d58579",
 }
 #: Muted side tint for non-leg limbs (antennae, stripes) by their L/R prefix.
 _SIDE_TINT: dict[str, str] = {"L": "#5b8f9c", "R": "#b07c77"}

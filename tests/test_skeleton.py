@@ -133,7 +133,7 @@ def test_merge_lr_stripes_structure(fly):
     # The surviving stripe limb drops its side prefix; the empty one is gone.
     assert merged.n_limbs == 9  # the now-empty left-stripe limb is dropped
     assert "stripe" in merged.limb_names
-    assert "R_stripe" not in merged.limb_names and "L_stripe" not in merged.limb_names
+    assert "r_stripe" not in merged.limb_names and "l_stripe" not in merged.limb_names
 
 
 def test_merge_lr_stripes_visibility(fly):

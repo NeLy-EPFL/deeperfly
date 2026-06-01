@@ -278,10 +278,10 @@ def test_bundle_adjust_from_config(rig):
             for i, name in enumerate(rig["names"])
         },
         "bundle_adjustment": {
-            "solver": "scipy.least_squares",
+            "solver": "least_squares_scipy",
             "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
             "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-            "scipy": {"least_squares": {"max_nfev": 2000, "loss": "linear"}},
+            "least_squares_scipy": {"max_nfev": 2000, "loss": "linear"},
         },
     }
     res, opt, _ = bundle_adjust_from_config(config, pts2d)

@@ -181,7 +181,7 @@ class Skeleton:
     def merge_lr_stripes(self) -> tuple[Skeleton, Int[np.ndarray, "N"]]:
         """Merge left/right abdominal stripe points into shared markers.
 
-        ``R_Stripe*`` and ``L_Stripe*`` track the same physical markers on the
+        ``r_stripe*`` and ``l_stripe*`` track the same physical markers on the
         abdomen but are stored as separate points seen by disjoint camera sets.
         This returns ``(merged_skeleton, remap)`` where the two stripe sets are
         collapsed into single prefix-stripped points (``Stripe0/1/2``) so they

@@ -124,7 +124,7 @@ def test_skeleton_chains_partition_fly(fly):
     covered = sorted(j for c in chains for j in c)
     assert covered == list(range(fly.n_points))  # exact partition, no dupes
     assert sorted(len(c) for c in chains) == [1, 1, 3, 3, 5, 5, 5, 5, 5, 5]
-    # Each leg chain is a contiguous ThoraxCoxa..Claw run.
+    # Each leg chain is a contiguous thorax_coxa..claw run.
     legs = [c for c in chains if len(c) == 5]
     for c in legs:
         assert c == list(range(c[0], c[0] + 5))
@@ -235,7 +235,7 @@ def test_chain_dp_skips_jointless_gaps():
 
 def test_temporal_term_suppresses_jump(cameras, fly, rng):
     pts3d = fly_cloud(rng)
-    joint = 15  # R_Antenna: a singleton (no bone coupling) seen by several cameras
+    joint = 15  # r_antenna: a singleton (no bone coupling) seen by several cameras
     proj = np.asarray(cameras.project(pts3d))
 
     near = pts3d[joint]

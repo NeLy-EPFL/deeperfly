@@ -67,7 +67,7 @@ def _calibrate_kwargs(config: dict) -> dict:
 
     Reads ``[bundle_adjustment]``: ``keypoints`` (-> ``ba_keypoints``), ``fixed``,
     ``shared`` and the solver sub-table (e.g.
-    ``[bundle_adjustment.scipy.least_squares]``, forwarded as solver kwargs like
+    ``[bundle_adjustment.least_squares_scipy]``, forwarded as solver kwargs like
     ``max_nfev`` / ``loss``). Anything omitted falls through to ``calibrate``'s
     own defaults.
     """
@@ -80,7 +80,7 @@ def _calibrate_kwargs(config: dict) -> dict:
     if "shared" in ba:
         out["shared"] = ba["shared"]
     sub = ba
-    for part in ba.get("solver", "scipy.least_squares").split("."):
+    for part in ba.get("solver", "least_squares_scipy").split("."):
         sub = sub.get(part, {}) if isinstance(sub, dict) else {}
     out.update(sub)  # e.g. max_nfev, loss
     return out

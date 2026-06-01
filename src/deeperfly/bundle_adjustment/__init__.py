@@ -9,7 +9,7 @@ core solver (:mod:`deeperfly.bundle_adjustment.core`), and returns an optimized
 :func:`bundle_adjust_from_config` is the config-driven entry point: it reads the
 ``[bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``,
 ``solver`` and a solver-named kwargs sub-table such as
-``[bundle_adjustment.scipy.least_squares]``) and dispatches to
+``[bundle_adjustment.least_squares_scipy]``) and dispatches to
 :func:`bundle_adjust`.
 """
 
@@ -36,7 +36,7 @@ __all__ = [
     "core",
 ]
 
-_SUPPORTED_SOLVERS = ("scipy.least_squares",)
+_SUPPORTED_SOLVERS = ("least_squares_scipy",)
 
 
 def bundle_adjust(
@@ -114,7 +114,7 @@ def bundle_adjust_from_config(
             f"unsupported solver {solver!r}; expected one of {_SUPPORTED_SOLVERS}"
         )
     solver_kwargs = ba
-    for part in solver.split("."):  # e.g. ba["scipy"]["least_squares"]
+    for part in solver.split("."):  # e.g. ba["least_squares_scipy"]
         solver_kwargs = solver_kwargs.get(part, {})
 
     return bundle_adjust(

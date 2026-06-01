@@ -1,7 +1,7 @@
 # Drosophila skeleton for the DeepFly3D 7-camera setup.
 #
 # 38 tracked points = 19 per side (R = 0..18, L = 19..37). Each side has three
-# legs of 5 joints (ThoraxCoxa, CoxaTrochanter, FemurTibia, TibiaTarsus, Claw),
+# legs of 5 joints (thorax_coxa, coxa_trochanter, femur_tibia, tibia_tarsus, claw),
 # one antenna, and three abdominal stripe markers. `limb_id` assigns each point
 # to one of 10 limbs; `bones` are the within-leg + within-stripe 2D edges;
 # `bones3d` links the two antennae across the body. Definitions transcribed from
@@ -11,19 +11,19 @@
 name = "drosophila"
 
 joint_names = [
-    "RF_ThoraxCoxa", "RF_CoxaTrochanter", "RF_FemurTibia", "RF_TibiaTarsus", "RF_Claw",
-    "RM_ThoraxCoxa", "RM_CoxaTrochanter", "RM_FemurTibia", "RM_TibiaTarsus", "RM_Claw",
-    "RH_ThoraxCoxa", "RH_CoxaTrochanter", "RH_FemurTibia", "RH_TibiaTarsus", "RH_Claw",
-    "R_Antenna", "R_Stripe0", "R_Stripe1", "R_Stripe2",
-    "LF_ThoraxCoxa", "LF_CoxaTrochanter", "LF_FemurTibia", "LF_TibiaTarsus", "LF_Claw",
-    "LM_ThoraxCoxa", "LM_CoxaTrochanter", "LM_FemurTibia", "LM_TibiaTarsus", "LM_Claw",
-    "LH_ThoraxCoxa", "LH_CoxaTrochanter", "LH_FemurTibia", "LH_TibiaTarsus", "LH_Claw",
-    "L_Antenna", "L_Stripe0", "L_Stripe1", "L_Stripe2",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+    "r_antenna", "r_stripe0", "r_stripe1", "r_stripe2",
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "l_antenna", "l_stripe0", "l_stripe1", "l_stripe2",
 ]
 
 limb_names = [
-    "RF_leg", "RM_leg", "RH_leg", "R_antenna", "R_stripe",
-    "LF_leg", "LM_leg", "LH_leg", "L_antenna", "L_stripe",
+    "rf_leg", "rm_leg", "rh_leg", "r_antenna", "r_stripe",
+    "lf_leg", "lm_leg", "lh_leg", "l_antenna", "l_stripe",
 ]
 
 limb_id = [
