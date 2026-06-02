@@ -200,16 +200,20 @@ frames = video.read_images("frames/", device="cuda")        # nvJPEG -> GPU tens
 frames = video.read_frames(path)                            # video file *or* image dir
 ```
 
-### GPU video decoding for `deeperfly run` (zero-copy)
+### GPU video decoding for `deeperfly run` (opt-in, zero-copy)
 
-When the JAX detector runs on an NVIDIA GPU, `deeperfly run` decodes each camera's
-video **directly on the GPU** (NVDEC) and feeds the frames to the network without
-a host round-trip: the decoded `torch.Tensor` is bridged to JAX via DLPack, so
-`preprocess` normalizes and resizes it on the GPU and the frames never leave the
-device. This happens automatically — no config change — and falls back to a fast
-CPU decode if no GPU backend can decode here.
+`deeperfly run` decodes frames **on the CPU by default** and uploads each window to
+the GPU in one shot. The 2D detector — not decode — is the bottleneck, so CPU
+decode lands within ~6% of GPU/NVDEC end to end (RTX 4090, 7-cam 480×960; see
+`dev/bench_video.py`), and the default needs none of the CUDA-video stack below.
 
-**Setup.** The `gpu` extra is all you need: it installs a CUDA-enabled JAX *and*
+Set `[detector] decode_device = "cuda"` (or `"auto"`) to decode **directly on the
+GPU** (NVDEC) instead: the decoded `torch.Tensor` is bridged to JAX via DLPack, so
+`preprocess` resizes it on the GPU and frames never touch host memory. It falls
+back to CPU decode if no GPU backend can decode here, and is worth it only on the
+fastest GPUs — install one of the decoders below first.
+
+**Setup.** The `gpu` extra installs a CUDA-enabled JAX (the detector on the GPU) *and*
 the fastest GPU decoder, `torchcodec` on CUDA (the CUDA-13 torchcodec build + NVIDIA
 NPP, pinned in the lockfile — see below). **NVIDIA DALI** is an alternative NVDEC
 decoder; add `--extra dali` for it. Both are frame-accurate.
@@ -244,10 +248,11 @@ uv sync --all-extras
   yourself. (It decodes the window straight to a GPU tensor, but rebuilds its
   pipeline per window, so it prefers a larger `chunk_frames`.)
 
-If no frame-accurate GPU backend can decode (or there's no GPU), decoding falls
-back to the fastest installed CPU backend (decord, …) and the detector still runs
-— correct results, just with a host→GPU upload per frame instead of on-device
-decode.
+With `decode_device = "cuda"`, if no frame-accurate GPU backend can decode (or
+there's no GPU), decoding falls back to the fastest installed CPU backend (decord,
+…) — the same path as the default, just selected automatically. Either way each
+window is uploaded to the GPU in a single transfer, so the host path runs at full
+detector speed.
 
 > **Memory & long videos:** detection **streams** — it decodes and detects
 > `[detector] chunk_frames` frames at a time per camera (default 64) and frees each

@@ -207,26 +207,23 @@ def _camera_source(root: str | Path, prefix: str) -> Path | str:
 
 
 def _frame_read_device(config: dict) -> str:
-    """Where to decode frames for the detector.
+    """Where to decode frames for the detector. Defaults to the CPU.
 
-    ``"cuda"`` when the JAX detector will run on the GPU -- frames are then decoded
-    straight onto the device (NVDEC) and fed to the network zero-copy via DLPack,
-    never touching host memory. Otherwise ``"auto"`` (fast CPU decode, host NumPy).
-    The torch backend keeps the CPU path (it copies inputs to host internally, so
-    GPU decode would not help). ``read_frames`` still falls back to CPU gracefully
-    if no GPU video backend can actually decode here.
+    CPU decode is within a few percent of GPU/NVDEC once each window is uploaded in
+    one shot (see :func:`deeperfly.pose2d.inference._window_to_device`) -- decode is
+    never the bottleneck, the forward is -- and it keeps the decoder off the GPU and
+    out of the CUDA-video dependency stack (see ``dev/bench_video.py``). Opt into
+    on-device (NVDEC) decode, which feeds the JAX network zero-copy via DLPack, with
+    ``[detector] decode_device = "cuda"`` (or ``"auto"``); it is worth it only on
+    the fastest GPUs. ``read_frames`` still falls back to the CPU if no GPU video
+    backend can actually decode here. The torch detector backend always decodes on
+    the CPU (it copies inputs to host internally, so GPU decode would not help).
     """
-    if config.get("detector", {}).get("backend", "jax") != "jax":
-        return "auto"
-    try:
-        import jax
-
-        # JAX reports CUDA (and ROCm) devices with platform "gpu".
-        if any(d.platform == "gpu" for d in jax.devices()):
-            return "cuda"
-    except Exception:
-        pass
-    return "auto"
+    det = config.get("detector", {})
+    device = det.get("decode_device", "cpu")
+    if device == "cpu" or det.get("backend", "jax") != "jax":
+        return "cpu"
+    return device  # "cuda" / "auto": opt-in on-device decode for the JAX backend
 
 
 def _camera_sources(input_dir: str | Path, config: dict) -> list[tuple[str, object]]:

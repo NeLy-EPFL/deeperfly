@@ -227,18 +227,33 @@ def test_detect_sequence_chunking_is_equivalent(model):
     np.testing.assert_array_equal(np.concatenate([c0, c1], axis=1), full_conf)
 
 
-def test_detect_sequence_batched_matches_per_frame(model):
-    # Batching the forward across (frame, pass) must match the per-frame path --
-    # the detector is per-row independent -- even when a batch straddles frame
-    # boundaries (batch_size not a multiple of the passes-per-frame).
+def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
+    # Batching the forward across (frame, pass) only regroups inputs, so it must
+    # yield the same skeletons as the per-frame path -- even when a batch straddles
+    # frame boundaries (batch_size not a multiple of the passes-per-frame). Stub the
+    # forward with a deterministic, sharply-peaked response keyed on each input's
+    # content (identical however rows are batched). That isolates the batching
+    # plumbing from XLA's batch-size-dependent conv arithmetic, which on the real
+    # *untrained* model perturbs near-flat heatmaps enough to flip arg-max peaks.
+    from deeperfly.pose2d import backends
+
+    def fake_predict(_model, inputs):
+        x = np.asarray(inputs)  # (N, 3, 256, 512) preprocessed passes
+        hm = np.zeros((x.shape[0], inference.N_SIDE_JOINTS, 64, 128), np.float32)
+        for i in range(x.shape[0]):
+            r, c = divmod(int(abs(x[i]).sum() * 1e3) % (64 * 128), 128)
+            hm[i, :, r, c] = 1.0  # one unambiguous peak -> arg-max is stable
+        return hm
+
+    monkeypatch.setattr(backends, "predict_heatmaps", fake_predict)
     sides, flips = inference.fly_camera_layout(["rh", "lf"])
     rng = np.random.default_rng(3)
     frames = [rng.uniform(size=(5, 64, 64, 3)).astype(np.float32) for _ in range(2)]
     ref_pts, ref_conf = inference.detect_sequence(model, frames, sides, flips)
     for bs in (1, 3, 64):  # < passes, straddling, and >> the whole window
         p, c = inference.detect_sequence(model, frames, sides, flips, batch_size=bs)
-        np.testing.assert_allclose(p, ref_pts, atol=1e-4, equal_nan=True)
-        np.testing.assert_allclose(c, ref_conf, atol=1e-4)
+        np.testing.assert_array_equal(p, ref_pts)
+        np.testing.assert_array_equal(c, ref_conf)
 
 
 # -- single-side -> full skeleton --------------------------------------------
