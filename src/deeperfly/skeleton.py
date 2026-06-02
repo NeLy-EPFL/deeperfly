@@ -36,12 +36,11 @@ class Skeleton:
         Identifier for the skeleton (e.g. ``"drosophila"``).
     joint_names
         Human-readable name per tracked point, in order (length ``n_points``).
-    limb_names
-        Name per limb (length ``n_limbs``).
-    limb_id
-        Limb index for each tracked point, shape ``(n_points,)``.
-    bones
-        Within-view 2D edges as point-index pairs, shape ``(n_bones, 2)``.
+    limb_names, limb_id, bones
+        Limb structure derived from the config's ``limb_joints`` mapping (see
+        :func:`_parse_limb_joints`): the limb names (length ``n_limbs``), each
+        point's limb index (shape ``(n_points,)``), and the within-view 2D edges
+        as point-index pairs (shape ``(n_bones, 2)``).
     bones3d
         Cross-body edges meaningful only in 3D (e.g. antenna-antenna), shape
         ``(n_bones3d, 2)``.
@@ -78,12 +77,7 @@ class Skeleton:
                 config = tomllib.load(f)
         spec = config["skeleton"]
         n = len(spec["joint_names"])
-        limb_id = np.asarray(spec["limb_id"], dtype=np.int64)
-        if limb_id.shape != (n,):
-            raise ValueError(
-                f"limb_id has {limb_id.size} entries but there are {n} joints"
-            )
-        bones = _edges(spec.get("bones", []), n, "bones")
+        limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
         bones3d = _edges(spec.get("bones3d", []), n, "bones3d")
         visibility = {
             name: np.asarray(idx, dtype=np.int64)
@@ -95,7 +89,7 @@ class Skeleton:
         return cls(
             name=spec.get("name", "skeleton"),
             joint_names=tuple(spec["joint_names"]),
-            limb_names=tuple(spec.get("limb_names", ())),
+            limb_names=limb_names,
             limb_id=limb_id,
             bones=bones,
             bones3d=bones3d,
@@ -253,6 +247,36 @@ class Skeleton:
             visibility=new_visibility,
         )
         return merged, remap
+
+
+def _parse_limb_joints(
+    limb_joints: dict[str, list[int]], n_points: int
+) -> tuple[tuple[str, ...], Int[np.ndarray, "N"], Int[np.ndarray, "B 2"]]:
+    """Expand a ``{limb_name: [joint_indices]}`` mapping into limb structure.
+
+    ``limb_joints`` is the single source of truth for a skeleton's limbs: each
+    entry lists a limb's points in kinematic-chain order. From it we derive
+
+    * ``limb_names`` -- the mapping keys, in order;
+    * ``limb_id`` -- each point's limb (its key's position), shape ``(n_points,)``;
+      points absent from every limb get ``-1``;
+    * ``bones`` -- the within-limb 2D edges, i.e. consecutive points of each
+      chain (so a single-point limb such as an antenna contributes none).
+    """
+    limb_names = tuple(limb_joints)
+    limb_id = np.full(n_points, -1, dtype=np.int64)
+    bones: list[list[int]] = []
+    for lid, joints in enumerate(limb_joints.values()):
+        joints = [int(j) for j in joints]
+        for j in joints:
+            if not 0 <= j < n_points:
+                raise ValueError(
+                    f"limb {limb_names[lid]!r} references point index {j} "
+                    f"outside [0, {n_points})"
+                )
+            limb_id[j] = lid
+        bones.extend([a, b] for a, b in zip(joints, joints[1:]))
+    return limb_names, limb_id, _edges(bones, n_points, "bones")
 
 
 def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:

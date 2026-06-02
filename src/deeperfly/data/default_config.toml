@@ -137,8 +137,9 @@ loss = "linear"
 # Skeleton: the tracked points and their structure. Inlined from the packaged
 # Drosophila skeleton (DeepFly3D 7-camera rig). 38 points = 19 per side
 # (R = 0..18, L = 19..37): three 5-joint legs, one antenna and three abdominal
-# stripe markers per side. `limb_id` assigns each point to one of 10 limbs;
-# `bones` are the within-leg + within-stripe 2D edges; `bones3d` links the two
+# stripe markers per side. `limb_joints` groups the points into 10 named limbs,
+# each ordered as a kinematic chain -- the single source of the limb names, each
+# point's limb, and the within-leg/within-stripe 2D bones; `bones3d` links the two
 # antennae across the body. Edit to track a different animal.
 # ---------------------------------------------------------------------------
 [skeleton]
@@ -155,34 +156,28 @@ joint_names = [
     "l_antenna", "l_stripe0", "l_stripe1", "l_stripe2",
 ]
 
-limb_names = [
-    "rf_leg", "rm_leg", "rh_leg", "r_antenna", "r_stripe",
-    "lf_leg", "lm_leg", "lh_leg", "l_antenna", "l_stripe",
-]
-
-limb_id = [
-    0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 4,
-    5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 8, 9, 9, 9,
-]
-
 # Leg-joint indices per side, used for separate left/right Procrustes alignment.
 right_points = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 left_points = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
 
-# 2D bones (within-leg chains + abdominal stripe chains).
-bones = [
-    [0, 1], [1, 2], [2, 3], [3, 4],
-    [5, 6], [6, 7], [7, 8], [8, 9],
-    [10, 11], [11, 12], [12, 13], [13, 14],
-    [16, 17], [17, 18],
-    [19, 20], [20, 21], [21, 22], [22, 23],
-    [24, 25], [25, 26], [26, 27], [27, 28],
-    [29, 30], [30, 31], [31, 32], [32, 33],
-    [35, 36], [36, 37],
-]
-
 # Cross-body 3D bone(s): right antenna <-> left antenna.
 bones3d = [[15, 34]]
+
+# Limbs: each entry lists a limb's tracked points in kinematic-chain order. This
+# is the single source of the limb names, each point's limb membership (the index
+# of its key here), and the within-limb 2D bones -- consecutive points in a chain
+# (so a single-point limb such as an antenna contributes none).
+[skeleton.limb_joints]
+rf_leg = [0, 1, 2, 3, 4]
+rm_leg = [5, 6, 7, 8, 9]
+rh_leg = [10, 11, 12, 13, 14]
+r_antenna = [15]
+r_stripe = [16, 17, 18]
+lf_leg = [19, 20, 21, 22, 23]
+lm_leg = [24, 25, 26, 27, 28]
+lh_leg = [29, 30, 31, 32, 33]
+l_antenna = [34]
+l_stripe = [35, 36, 37]
 
 # Per-camera point visibility for the canonical 7-camera rig (camera names match
 # the [cameras.*] tables above). Right cameras see the right side, left cameras

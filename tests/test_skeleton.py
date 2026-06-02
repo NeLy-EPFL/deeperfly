@@ -69,9 +69,7 @@ def test_from_config_dict_roundtrip(fly):
         "skeleton": {
             "name": "toy",
             "joint_names": ["a", "b", "c"],
-            "limb_names": ["L"],
-            "limb_id": [0, 0, 0],
-            "bones": [[0, 1], [1, 2]],
+            "limb_joints": {"L": [0, 1, 2]},
             "bones3d": [],
             "left_points": [0],
             "right_points": [2],
@@ -80,15 +78,27 @@ def test_from_config_dict_roundtrip(fly):
     }
     s = Skeleton.from_config(spec)
     assert s.n_points == 3
-    assert s.bones.shape == (2, 2)
+    assert s.limb_names == ("L",)
+    np.testing.assert_array_equal(s.limb_id, [0, 0, 0])
+    # The limb's three points form a two-edge chain.
+    np.testing.assert_array_equal(s.bones, [[0, 1], [1, 2]])
     assert s.bones3d.shape == (0, 2)
     mask = s.visibility_mask(["cam0", "cam1"])
     np.testing.assert_array_equal(mask, [[True, True, False], [False, True, True]])
 
 
-def test_bad_limb_id_length_raises():
-    spec = {"skeleton": {"joint_names": ["a", "b"], "limb_id": [0]}}
-    with pytest.raises(ValueError, match="limb_id"):
+def test_limb_joints_derive_structure(fly):
+    # limb_names / limb_id / bones are all derived from the limb_joints mapping.
+    assert fly.limb_names[0] == "rf_leg" and fly.limb_names[3] == "r_antenna"
+    assert fly.limb_id[:5].tolist() == [0, 0, 0, 0, 0]
+    assert fly.limb_id[15] == 3  # the single-point r_antenna limb
+    # A leg's five points become a four-edge chain; an antenna contributes none.
+    np.testing.assert_array_equal(fly.bones[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
+
+
+def test_out_of_range_limb_joint_raises():
+    spec = {"skeleton": {"joint_names": ["a", "b"], "limb_joints": {"L": [0, 2]}}}
+    with pytest.raises(ValueError, match="outside"):
         Skeleton.from_config(spec)
 
 
