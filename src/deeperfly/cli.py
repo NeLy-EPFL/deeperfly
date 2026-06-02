@@ -9,12 +9,14 @@ and the skeleton. The commands:
 
 - ``init`` -- write a default config.toml.
 - ``run`` -- the whole pipeline (``detect`` 2D -> ``pose3d`` calibrate+triangulate
-  -> ``visualize``) or any prefix of it. ``-i`` takes a recording; ``-o`` is an
-  output *directory* (default ``<input>/deeperfly_outputs``) that collects the
-  result ``poses.h5``, the videos and a copy of the config. Each run reuses
-  whatever is already cached in that directory and computes only what is missing;
-  ``--overwrite`` recomputes everything and ``--until`` stops early. Detector
-  weights are downloaded and converted automatically on first use.
+  -> ``visualize``) or any prefix of it. The recording is the positional argument;
+  ``-c``/``--config`` is the merged config TOML (defaults to the packaged default
+  config when omitted) and ``-o`` is an output *directory* (default
+  ``<input>/deeperfly_outputs``) that collects the result ``poses.h5``, the videos
+  and a copy of the config. Each run reuses whatever is already cached in that
+  directory and computes only what is missing; ``--overwrite`` recomputes
+  everything and ``--until`` stops early. Detector weights are downloaded and
+  converted automatically on first use.
 - ``info`` -- print a summary of a result file.
 
 The 2D->3D pipeline is a linear sequence of three stages; ``run`` resumes from the
@@ -68,14 +70,11 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
 #: The linear pipeline stages, in order. ``run`` executes a contiguous range.
 STAGES = ("detect", "pose3d", "visualize")
 
-#: Frames decoded + detected per streaming window, per camera (``[detector]
-#: chunk_frames`` overrides). Bounds peak frame memory so arbitrarily long
-#: recordings run in constant memory; the GPU path decodes a window onto the
-#: device, detects it, frees it, then moves on. This is a *memory* knob, not a
-#: speed one: detection is compute-bound (~28 frames/s on an RTX 4090) and every
-#: decoder is far faster, so a small window costs no throughput but keeps VRAM
-#: low. 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig; raise it only on
-#: the DALI fallback (which prefers larger windows) or to cut per-window setup.
+#: Frames decoded + detected per streaming window, per camera (overridable via
+#: ``[detector] chunk_frames``). Bounds peak frame memory, so arbitrarily long
+#: recordings run in constant memory. A *memory* knob, not a speed one: detection
+#: is the bottleneck, so every decoder outpaces it and a small window costs no
+#: throughput. 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
 DEFAULT_CHUNK_FRAMES = 64
 
 log = logging.getLogger("deeperfly")
@@ -443,18 +442,6 @@ def _stage_in_range(stage: str, start: int, stop: int) -> bool:
     return start <= STAGES.index(stage) <= stop
 
 
-def _require_viz() -> None:
-    """Fail fast if the visualize stage can't import its rendering deps."""
-    try:
-        import imageio  # noqa: F401
-        import matplotlib  # noqa: F401
-    except ImportError as e:
-        raise SystemExit(
-            "visualization needs the 'viz' extra (matplotlib + imageio). Install it "
-            "(e.g. pip install 'deeperfly[viz]') or stop earlier with --until pose3d."
-        ) from e
-
-
 # -- pipeline stages ---------------------------------------------------------
 
 
@@ -574,7 +561,7 @@ def _overlay_frames(
     """Load one camera's frames for a 2D overlay when resuming (no frames in hand).
 
     Source order: ``--recording`` -> the recording path stored in ``result.meta``
-    (if it still exists) -> the run's own ``-i`` input -> error pointing at
+    (if it still exists) -> the run's own input recording -> error pointing at
     ``--recording``.
     """
     from . import video
@@ -654,13 +641,13 @@ def _cmd_init(args: argparse.Namespace) -> None:
     print(f"wrote {dst}")
     print(
         "next: edit [inputs]/[cameras] to match your rig, then "
-        f"'deeperfly run {dst} -i <recording>' "
+        f"'deeperfly run <recording> -c {dst}' "
         "(outputs land in <recording>/deeperfly_outputs/; override with -o <dir>)"
     )
 
 
 def _save_config_snapshot(
-    args: argparse.Namespace, outdir: Path, *, reused_cache: bool
+    config_path: Path, outdir: Path, *, reused_cache: bool
 ) -> None:
     """Copy the run config into ``outdir`` for reproducibility.
 
@@ -669,20 +656,21 @@ def _save_config_snapshot(
     different config (pass ``--overwrite`` to recompute from scratch). The new
     config then replaces the snapshot.
     """
-    src = Path(args.config).read_text()
+    src = config_path.read_text()
     dst = outdir / "config.toml"
     if reused_cache and dst.exists() and dst.read_text() != src:
         log.warning(
             "config %s differs from the one that produced the cached results in "
             "%s; reusing the cache anyway. Pass --overwrite to recompute.",
-            args.config,
+            config_path,
             outdir,
         )
     dst.write_text(src)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    config = _load_config(args.config)
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    config = _load_config(config_path)
     outdir = Path(args.output) if args.output else _default_outdir(args.input)
     outdir.mkdir(parents=True, exist_ok=True)
     log.info("output directory: %s", outdir)
@@ -701,11 +689,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         )
         return
     log.info("running stages %s..%s", STAGES[start], STAGES[stop])
-
-    # Fail fast before the expensive detect if we can't render at the end.
-    if _stage_in_range("visualize", start, stop):
-        _require_viz()
-    _save_config_snapshot(args, outdir, reused_cache=cached)
+    _save_config_snapshot(config_path, outdir, reused_cache=cached)
 
     frames = candidates = None
     if _stage_in_range("detect", start, stop):
@@ -739,7 +723,15 @@ def _cmd_info(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="deeperfly", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="deeperfly",
+        description=(
+            "Markerless 3D pose estimation of tethered Drosophila from a "
+            "multi-camera rig. 'deeperfly init' writes a config to edit; "
+            "'deeperfly run' detects 2D pose, reconstructs 3D and renders a "
+            "video; 'deeperfly info' summarizes a result file."
+        ),
+    )
 
     common = argparse.ArgumentParser(add_help=False)
     g = common.add_mutually_exclusive_group()
@@ -771,15 +763,18 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser(
         "run",
         parents=[common],
-        help="detect 2D -> 3D -> visualize, or a prefix of it (resumes from -i)",
+        help="detect 2D -> 3D -> visualize, or a prefix of it (resumes from cache)",
     )
-    pr.add_argument("config", help="merged config TOML (from 'deeperfly init')")
     pr.add_argument(
-        "-i",
-        "--input-dir",
-        dest="input",
-        required=True,
-        help="recording dir/glob",
+        "input",
+        help="recording dir/glob (per-camera videos or image folders)",
+    )
+    pr.add_argument(
+        "-c",
+        "--config",
+        default=None,
+        help="merged config TOML (from 'deeperfly init'); "
+        "defaults to the packaged default config",
     )
     pr.add_argument(
         "-o",

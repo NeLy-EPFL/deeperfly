@@ -1,8 +1,8 @@
 """Fetch and cache the pretrained DeepFly2D weights.
 
-Downloads the original PyTorch checkpoint (so a one-off ``convert-weights`` step
-can produce the native JAX checkpoint) into a per-user cache. A pre-converted
-JAX checkpoint can be dropped in at the same location once published, letting end
+Downloads the original PyTorch checkpoint and converts it to a native JAX
+checkpoint on first use (:func:`ensure_jax_weights`), caching both per-user. A
+pre-converted JAX checkpoint can be dropped in at the same location to let end
 users skip torch entirely.
 """
 
@@ -70,8 +70,7 @@ def ensure_jax_weights(path: str | Path | None = None, *, force: bool = False) -
     ``.tar`` is downloaded (:func:`download_torch_weights`) and converted to the
     native Equinox checkpoint, so the runtime detector never needs torch again.
     This is what ``deeperfly run`` calls when the JAX backend finds no cached
-    weights, replacing the old manual ``download-weights`` + ``convert-weights``
-    steps.
+    weights.
 
     The heavy imports (torch reader, jax converter) stay inside the function so a
     cache hit costs neither framework.

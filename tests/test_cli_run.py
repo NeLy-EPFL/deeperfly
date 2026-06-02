@@ -87,7 +87,7 @@ def test_run_to_detect_writes_2d_only(tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
     cli.main(
-        ["run", str(cfg), "-i", str(rec), "-o", str(outdir), "--until", "detect", "-q"]
+        ["run", str(rec), "-c", str(cfg), "-o", str(outdir), "--until", "detect", "-q"]
     )
 
     res = PoseResult.load(outdir / "poses.h5")
@@ -99,6 +99,16 @@ def test_run_to_detect_writes_2d_only(tmp_path, monkeypatch):
     assert (outdir / "config.toml").read_text() == cfg.read_text()
 
 
+def test_run_without_config_uses_default(tmp_path, monkeypatch):
+    """Omitting -c falls back to the packaged default config (snapshotted as-is)."""
+    _stub_detect(monkeypatch, tmp_path)
+    outdir = tmp_path / "out"
+    rec = tmp_path / "rec"
+    cli.main(["run", str(rec), "-o", str(outdir), "--until", "detect", "-q"])
+    assert (outdir / "poses.h5").exists()
+    assert (outdir / "config.toml").read_text() == cli.DEFAULT_CONFIG_PATH.read_text()
+
+
 def test_default_outdir_inside_input(tmp_path, monkeypatch):
     """With no -o, results land in <input>/deeperfly_outputs/."""
     cfg = tmp_path / "config.toml"
@@ -106,7 +116,7 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
     _stub_detect(monkeypatch, tmp_path)
     rec = tmp_path / "rec"
     rec.mkdir()
-    cli.main(["run", str(cfg), "-i", str(rec), "--until", "detect", "-q"])
+    cli.main(["run", str(rec), "-c", str(cfg), "--until", "detect", "-q"])
     assert (rec / "deeperfly_outputs" / "poses.h5").exists()
 
 
@@ -125,9 +135,9 @@ def test_run_skips_cached_2d(result, tmp_path, monkeypatch):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir),
             "--until",
@@ -147,10 +157,9 @@ def test_run_skips_cached_3d_only_renders(result, tmp_path, monkeypatch):
     cfg.write_text("")
     monkeypatch.setattr(cli, "_stage_detect", lambda *a, **k: pytest.fail("no detect"))
     monkeypatch.setattr(cli, "_stage_pose3d", lambda *a, **k: pytest.fail("no pose3d"))
-    monkeypatch.setattr(cli, "_require_viz", lambda: None)
     called: list[bool] = []
     monkeypatch.setattr(cli, "_stage_visualize", lambda *a, **k: called.append(True))
-    cli.main(["run", str(cfg), "-i", str(tmp_path / "rec"), "-o", str(outdir), "-q"])
+    cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir), "-q"])
     assert called == [True]
 
 
@@ -165,9 +174,9 @@ def test_overwrite_forces_full_recompute(tmp_path, monkeypatch):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir),
             "--overwrite",
@@ -196,9 +205,9 @@ def test_stale_config_warns(result, tmp_path, caplog):
         cli.main(
             [
                 "run",
-                str(cfg),
-                "-i",
                 str(tmp_path / "rec"),
+                "-c",
+                str(cfg),
                 "-o",
                 str(outdir),
                 "--until",
@@ -220,9 +229,9 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
         cli.main(
             [
                 "run",
-                str(cfg),
-                "-i",
                 str(tmp_path / "rec"),
+                "-c",
+                str(cfg),
                 "-o",
                 str(outdir),
                 "--until",
@@ -318,9 +327,9 @@ def test_resume_pictorial_falls_back_to_reproject(result, tmp_path, caplog):
         cli.main(
             [
                 "run",
-                str(cfg),
-                "-i",
                 str(tmp_path / "rec"),
+                "-c",
+                str(cfg),
                 "-o",
                 str(outdir),
                 "--until",
@@ -347,9 +356,9 @@ def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir),
             "--until",
@@ -420,7 +429,7 @@ def test_overlay_frames_source_order(result, tmp_path, monkeypatch):
     )
     assert frames == ("frames", (str(rec_a), res.cameras.names[1]))
 
-    # else fall back to the run's own -i input (recording) if it exists.
+    # else fall back to the run's own input (recording) if it exists.
     rec_c = tmp_path / "recC"
     rec_c.mkdir()
     bare_meta = PoseResult(result.cameras, result.skeleton, result.pts2d, meta={})

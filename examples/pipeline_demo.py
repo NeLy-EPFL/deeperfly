@@ -5,7 +5,7 @@ adds detector-like noise and a gross outlier, then runs the geometry pipeline
 (visibility masking -> triangulation -> outlier rejection -> smoothing) and
 writes an HDF5 result plus a 3D-skeleton video.
 
-    uv run --extra viz python examples/pipeline_demo.py
+    uv run python examples/pipeline_demo.py
 """
 
 from __future__ import annotations

@@ -4,8 +4,9 @@
 # rig, how input files map to cameras, the 2D detector, the 2D->3D pipeline
 # options, bundle adjustment, and the tracked-point skeleton. Run with:
 #
-#     deeperfly run config.toml -i recording/ -o outputs/
-#     # -o is optional; it defaults to <recording>/deeperfly_outputs/
+#     deeperfly run recording/ -c config.toml -o outputs/
+#     # -c is optional (defaults to this packaged config); -o defaults to
+#     # <recording>/deeperfly_outputs/
 #
 # Every section is also usable on its own: CameraGroup.from_config reads only
 # [camera_defaults]/[cameras.*], Skeleton.from_config only [skeleton], and the
@@ -46,7 +47,7 @@ azimuth_deg = 120
 
 
 # ---------------------------------------------------------------------------
-# Inputs: how files under `-i`/`--input-dir` map to cameras. For each camera, deeperfly
+# Inputs: how files under the recording dir/glob map to cameras. For each camera, deeperfly
 # looks for a video "<prefix>.<ext>" (mp4/avi/mov/...), then a subdirectory
 # "<prefix>/" of images, then the image sequence "<prefix>*" (e.g.
 # camera_0_img_000123.jpg). A camera with no entry here defaults to its own name
@@ -73,17 +74,14 @@ backend = "jax"          # jax | torch
 # "torchcodec" | "decord" | "pyav" | "opencv".
 video_backend = "auto"
 # Where to decode. "cpu" (default) decodes on the CPU and uploads each window to
-# the GPU in one shot -- within a few percent of NVDEC, since the forward (not
-# decode) is the bottleneck. Set "cuda" (alias "gpu") -- or "auto" -- to decode on
-# the GPU/NVDEC and feed the network zero-copy; worth it only on the fastest GPUs,
-# and needs a CUDA video backend (torchcodec-cu / dali). Falls back to the CPU if
-# none can decode.
+# the GPU in one shot -- within a few percent of on-GPU NVDEC, since the detector
+# (not decode) is the bottleneck. "cuda" (or "auto") decodes on the GPU/NVDEC and
+# feeds the network zero-copy; worth it only on the fastest GPUs, needs a CUDA
+# video backend (the `cuda`/`dali` extras), and falls back to the CPU otherwise.
 decode_device = "cpu"
-# Frames decoded + detected at a time, per camera (streaming). A *memory* knob:
-# detection is compute-bound, so every decoder outpaces it and a small window
-# costs no speed but keeps VRAM low (64 ~= 0.6 GB of frames for a 7-cam 480x960
-# rig). Lower it for high-res / many cameras / small GPUs; raise it on the DALI
-# fallback (prefers larger windows) or to cut per-window decoder setup.
+# Frames decoded + detected at a time, per camera (streaming), so long videos run
+# in constant memory. A *memory* knob, not a speed one (detection is the
+# bottleneck): lower it for high-res / many cameras / small GPUs.
 chunk_frames = 64
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 

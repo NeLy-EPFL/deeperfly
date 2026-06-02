@@ -1,20 +1,39 @@
 [project]
 name = "deeperfly"
 version = "0.1.0"
-description = "JAX multi-view geometry and bundle adjustment for multi-camera rigs"
+description = "Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig, in JAX"
 readme = "README.md"
-authors = [
-    { name = "tkclam", email = "thomas.lam@epfl.ch" }
-]
 requires-python = ">=3.13"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "tkclam", email = "thomas.lam@epfl.ch" },
+]
+keywords = [
+    "pose-estimation",
+    "drosophila",
+    "neuroscience",
+    "jax",
+    "bundle-adjustment",
+    "triangulation",
+    "multi-view-geometry",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
 dependencies = [
-    # JAX CPU baseline -- portable on every platform. NVIDIA CUDA acceleration is
-    # opt-in via the `gpu` extra below (CUDA 13 wheels exist for Linux x86-64 only).
+    # Geometry/BA core (float64, JIT- and grad-friendly). CPU JAX is portable on
+    # every platform; NVIDIA CUDA acceleration is opt-in via the `cuda` extra below.
     "jax>=0.10.1",
-    # The 2D detector can be run on either of two backends (JAX/Equinox and PyTorch);
-    # torch also converts the original DeepFly2D weights. On Apple Silicon the torch
-    # backend auto-uses the GPU via Metal (MPS) -- the only accelerated detector path
-    # on macOS, since JAX stays CPU-only there.
+    # The 2D detector runs on either backend (JAX/Equinox or PyTorch); torch also
+    # converts the original DeepFly2D weights and auto-uses Metal (MPS) on Apple
+    # Silicon -- the only accelerated detector path on macOS.
     "torch>=2.2",
     "torchvision>=0.17",
     "jaxtyping>=0.3.10",
@@ -23,69 +42,57 @@ dependencies = [
     "h5py>=3.11",
     "equinox>=0.11",
     "platformdirs>=4.0",
-    # Progress bars for the CLI's detector loop (auto-disabled off a TTY / under -q).
-    "tqdm>=4.66",
-]
-
-[project.optional-dependencies]
-# NVIDIA CUDA 13 acceleration for JAX. CUDA wheels are published for Linux
-# x86-64 only, so the environment marker makes this a no-op (cleanly skipped)
-# on macOS, Windows and ARM. Request it explicitly: `deeperfly[gpu]` (or
-# combine, e.g. `deeperfly[all,gpu]`).
-gpu = [
-    "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    # GPU/NVDEC video decode via torchcodec. The PyPI torchcodec wheel is CPU-only,
-    # so on Linux x86-64 [tool.uv.sources] below pulls the CUDA-13 build from the
-    # PyTorch index (torch itself already bundles CUDA 13 on PyPI, so it is left
-    # untouched). nvidia-npp (GPU colour conversion) is on PyPI but torchcodec does
-    # not depend on it, so this extra adds it; the torchcodec backend dlopens its
-    # libs automatically (no LD_LIBRARY_PATH needed).
-    "torchcodec>=0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "nvidia-npp>=13; sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
-# Apple Metal (MPS) acceleration for the JAX detector backend via the jax-mps
-# plugin (PJRT -> MLX). Apple Silicon only, so the marker makes it a no-op
-# (cleanly skipped) elsewhere. Experimental and float32-only, so it accelerates
-# the *detector* only -- geometry and bundle adjustment stay float64 on CPU.
-# Request explicitly: `deeperfly[mps]`. The torch backend already auto-uses Metal
-# on macOS (a more mature path); this extra is for staying on the JAX backend.
-mps = [
-    "jax-mps>=0.10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
-]
-viz = [
+    "tqdm>=4.66",          # CLI progress bars (auto-disabled off a TTY / under -q)
+    # Visualization + default video I/O, so `deeperfly run` works out of the box.
     "matplotlib>=3.10",
     "imageio>=2.34",
     "imageio-ffmpeg>=0.5",
 ]
-# Optional video read/write backends (deeperfly.video). Each is selectable via
-# `backend=...`; install the one(s) you want. torch is already a core dependency
-# (the second detector backend), so torchcodec only needs its own
-# bindings. NVIDIA DALI is intentionally not listed -- it ships from NVIDIA's
-# package index (e.g. nvidia-dali-cuda120), not PyPI -- but `backend="dali"` is
-# used automatically when it is importable.
+
+[project.urls]
+Homepage = "https://github.com/tkclam/deeperfly"
+Repository = "https://github.com/tkclam/deeperfly"
+Issues = "https://github.com/tkclam/deeperfly/issues"
+
+[project.scripts]
+deeperfly = "deeperfly.cli:main"
+
+[project.optional-dependencies]
+# NVIDIA CUDA acceleration: CUDA-13 JAX (detector on the GPU) plus the fastest
+# GPU/NVDEC decoder, torchcodec-on-CUDA. CUDA wheels exist for Linux x86-64 only,
+# so the markers make this a clean no-op elsewhere. Install with `deeperfly[cuda]`.
+# (torch's PyPI wheel already bundles CUDA 13; [tool.uv.sources] routes torchcodec
+# to the PyTorch CUDA index, and nvidia-npp gives it GPU colour conversion -- its
+# libs are dlopen'd, so no LD_LIBRARY_PATH is needed.)
+cuda = [
+    "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torchcodec>=0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-npp>=13; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+# Apple Metal (MPS) acceleration for the JAX detector via the jax-mps plugin
+# (experimental, float32-only -- geometry/BA stay float64 on CPU). Apple Silicon
+# only. The torch backend already auto-uses Metal on macOS, so use this only to
+# stay on the JAX backend. Install with `deeperfly[mps]`.
+mps = [
+    "jax-mps>=0.10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# Optional faster video read/write backends (deeperfly.video), each selectable via
+# `backend=...`. torch is already core, so torchcodec only needs its own bindings.
 opencv = ["opencv-python-headless>=4.10"]
 pyav = ["av>=12"]
-# Random-access reader. decord publishes Linux/Windows wheels only; the
-# eva-decord fork has no macOS wheels for current versions / Python 3.13 either.
-# Limited to Linux/Windows (no-op on macOS) -- on macOS use pyav/opencv/torchcodec.
+# decord/video-reader-rs publish Linux/Windows wheels only (no-op on macOS, where
+# pyav/opencv/torchcodec cover the same ground).
 decord = ["decord>=0.6; sys_platform != 'darwin'"]
-# Fast Rust/FFmpeg reader with get_batch. Wheels published for Linux/Windows
-# only at the required version, so gated off macOS (no-op there).
 video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
-torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into torch tensors; cross-platform wheels
+torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into torch tensors
 # NVIDIA DALI: frame-accurate GPU (NVDEC) decode. The wheel is CUDA-version
-# specific -- this pins the CUDA 13 build to match the `gpu` extra (jax[cuda13]);
-# for another toolkit install nvidia-dali-cuda1NN yourself. Linux x86-64 only.
+# specific; this pins the CUDA 13 build to match `cuda`. Linux x86-64 only.
 dali = ["nvidia-dali-cuda130>=2.1; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
-# Visualization + every non-NVIDIA video backend. Each backend is platform-gated
-# in its own extra above (decord/video-reader-rs are no-ops on macOS), so
-# `deeperfly[all]` stays installable on Linux, macOS and Windows. Deliberately
-# excluded -- they need an NVIDIA GPU / pull CUDA libraries, so add them
-# explicitly (e.g. `deeperfly[all,gpu,dali]`): `gpu` (NVIDIA CUDA) and `dali`
-# (NVDEC decode).
+# Every cross-platform video backend (each is platform-gated above, so this stays
+# installable on Linux/macOS/Windows). Excludes `cuda`/`dali`, which need an NVIDIA
+# GPU -- add those explicitly, e.g. `deeperfly[all,cuda]`.
 all = [
-    "deeperfly[viz]",
     "deeperfly[opencv]",
     "deeperfly[pyav]",
     "deeperfly[decord]",
@@ -93,42 +100,30 @@ all = [
     "deeperfly[torchcodec]",
 ]
 
-[project.scripts]
-deeperfly = "deeperfly.cli:main"
-
 [build-system]
 requires = ["uv_build>=0.11.16,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
-    "ipykernel>=7.2.0",
-    "matplotlib>=3.10.9",  # examples / notebooks only
-]
+dev = ["ipykernel>=7.2.0"]
 test = [
-    "opencv-python-headless>=4.13.0.92",  # reference cross-checks + opencv video backend
+    "opencv-python-headless>=4.13.0.92",  # OpenCV cross-checks + opencv video backend
     "pytest>=9.0.3",
-    "imageio>=2.34",          # video read/write smoke tests
-    "imageio-ffmpeg>=0.5",
-    "av>=12",                 # exercise the pyav video backend
+    "av>=12",                             # exercises the pyav video backend
 ]
 
-# CUDA-13 PyTorch wheels (torch/torchvision/torchcodec) for GPU/NVDEC video decode.
-# `explicit` => this index is consulted *only* for packages routed here by
-# [tool.uv.sources] below, never for anything else.
+# CUDA-13 PyTorch index, consulted only for packages routed here by
+# [tool.uv.sources] below (never for anything else).
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 # Route torchcodec to the CUDA-13 PyTorch index on Linux x86-64 (its PyPI wheel is
-# CPU-only); everywhere else it stays on PyPI. The marker is platform-only, not
-# extra-gated, so uv keeps *both* a +cu130 stanza (Linux x86-64) and a PyPI stanza
-# (macOS / Windows / ARM) in the lock -- macOS `deeperfly[all]` is unaffected. On
-# Linux x86-64 the cu130 build is used even without `[gpu]`; it decodes on CPU too
-# and only attempts GPU/NVDEC when nvidia-npp + a GPU are present (the `gpu` extra).
-# torch/torchvision are left on PyPI -- the PyPI torch wheel already bundles CUDA
-# 13, so torchcodec+cu130 is ABI-compatible with it.
+# CPU-only); elsewhere it stays on PyPI. Platform-only marker, so the lock keeps
+# both a +cu130 stanza (Linux x86-64) and a PyPI stanza (macOS/Windows/ARM). torch
+# itself stays on PyPI -- its wheel already bundles CUDA 13, so the cu130 torchcodec
+# is ABI-compatible.
 [tool.uv.sources]
 torchcodec = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
 

@@ -37,7 +37,7 @@ def test_forward_shapes(model):
 
 def test_deepfly2d_default_is_sh8():
     # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
-    # convert-weights / load_model build a matching architecture.
+    # weight conversion / load_model build a matching architecture.
     assert HourglassNet.deepfly2d(key=jax.random.PRNGKey(0)).num_stacks == 8
 
 

@@ -113,9 +113,9 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir),
             "--until",
@@ -140,9 +140,9 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir2),
             "--until",
@@ -162,9 +162,9 @@ def test_cli_run_visualize_only(result, tmp_path):
     cli.main(
         [
             "run",
-            str(cfg),
-            "-i",
             str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
             "-o",
             str(outdir),
             "--fps",
