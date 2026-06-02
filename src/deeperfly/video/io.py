@@ -18,6 +18,7 @@ from jaxtyping import Float
 
 from .base import (
     GPU_READ_ORDER,
+    canonical_device,
     gpu_reader_candidates,
     is_gpu_device,
     mark_gpu_auto_failed,
@@ -247,8 +248,7 @@ def read_images(
     workers
         Decode thread count (default: number of CPUs, capped at the frame count).
     """
-    if device == "auto":
-        device = "cpu"
+    device = "cpu" if device == "auto" else canonical_device(device)  # "gpu" -> "cuda"
     files = _subset(list_image_files(pattern), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")

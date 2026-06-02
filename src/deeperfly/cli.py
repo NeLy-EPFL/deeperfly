@@ -219,16 +219,17 @@ def _frame_read_device(config: dict) -> str:
     never the bottleneck, the forward is -- and it keeps the decoder off the GPU and
     out of the CUDA-video dependency stack (see ``dev/bench_video.py``). Opt into
     on-device (NVDEC) decode, which feeds the JAX network zero-copy via DLPack, with
-    ``[detector] decode_device = "cuda"`` (or ``"auto"``); it is worth it only on
-    the fastest GPUs. ``read_frames`` still falls back to the CPU if no GPU video
-    backend can actually decode here. The torch detector backend always decodes on
-    the CPU (it copies inputs to host internally, so GPU decode would not help).
+    ``[detector] decode_device = "cuda"`` (alias ``"gpu"``, or ``"auto"``); it is
+    worth it only on the fastest GPUs. ``read_frames`` still falls back to the CPU
+    if no GPU video backend can actually decode here. The torch detector backend
+    always decodes on the CPU (it copies inputs to host internally, so GPU decode
+    would not help).
     """
     det = config.get("detector", {})
     device = det.get("decode_device", "cpu")
     if device == "cpu" or det.get("backend", "jax") != "jax":
         return "cpu"
-    return device  # "cuda" / "auto": opt-in on-device decode for the JAX backend
+    return device  # "cuda"/"gpu" / "auto": opt-in on-device decode for the JAX backend
 
 
 def _camera_sources(input_dir: str | Path, config: dict) -> list[tuple[str, object]]:

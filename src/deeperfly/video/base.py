@@ -41,11 +41,11 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 # robust NVDEC path and the one that feeds JAX zero-copy (see ``to_jax``); every
 # listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
 CPU_READ_ORDER = (
+    "opencv",
+    "pyav",
+    "torchcodec",
     "decord",
     "video_reader_rs",
-    "torchcodec",
-    "pyav",
-    "opencv",
     "imageio",
 )
 # torchcodec (fastest, when its CUDA build + NPP are present) -> DALI (robust
@@ -79,8 +79,25 @@ def _have(*modules: str) -> bool:
     return True
 
 
+# Friendly device aliases: users (and our example config) naturally write "gpu",
+# but torch/torchcodec only understand "cuda" -- ``device="gpu"`` reaches the
+# decoder verbatim and dies with "Unknown device type: gpu". Normalize at the read
+# boundary so "gpu" / "gpu:1" mean "cuda" / "cuda:1"; every other value (cpu, cuda,
+# auto, ...) passes through untouched.
+_DEVICE_ALIASES = {"gpu": "cuda"}
+
+
+def canonical_device(device):
+    """Map the ``"gpu"`` alias to ``"cuda"`` (preserving any ``:ordinal``); else unchanged."""
+    if device is None:
+        return device
+    head, sep, tail = str(device).partition(":")
+    alias = _DEVICE_ALIASES.get(head)
+    return f"{alias}{sep}{tail}" if alias else device
+
+
 def is_gpu_device(device) -> bool:
-    """Whether ``device`` names a non-CPU device (``"cuda"``, ``"cuda:0"``...)."""
+    """Whether ``device`` names a non-CPU device (``"cuda"``, ``"cuda:0"``, ``"gpu"``...)."""
     return device is not None and str(device).split(":")[0] not in ("cpu", "")
 
 
@@ -164,6 +181,7 @@ def resolve_device(device, backend: str = "auto") -> str:
     ``auto``-backend GPU request is downgraded to ``"cpu"`` once a prior probe has
     shown no GPU backend can decode here (so callers stop retrying a dead path).
     """
+    device = canonical_device(device)  # "gpu" -> "cuda" before anyone sees it
     if device != "auto":
         if backend == "auto" and _gpu_auto_failed and is_gpu_device(device):
             return "cpu"

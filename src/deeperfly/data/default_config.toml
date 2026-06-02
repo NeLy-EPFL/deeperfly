@@ -74,9 +74,10 @@ backend = "jax"          # jax | torch
 video_backend = "auto"
 # Where to decode. "cpu" (default) decodes on the CPU and uploads each window to
 # the GPU in one shot -- within a few percent of NVDEC, since the forward (not
-# decode) is the bottleneck. Set "cuda" (or "auto") to decode on the GPU/NVDEC and
-# feed the network zero-copy; worth it only on the fastest GPUs, and needs a CUDA
-# video backend (torchcodec-cu / dali). Falls back to the CPU if none can decode.
+# decode) is the bottleneck. Set "cuda" (alias "gpu") -- or "auto" -- to decode on
+# the GPU/NVDEC and feed the network zero-copy; worth it only on the fastest GPUs,
+# and needs a CUDA video backend (torchcodec-cu / dali). Falls back to the CPU if
+# none can decode.
 decode_device = "cpu"
 # Frames decoded + detected at a time, per camera (streaming). A *memory* knob:
 # detection is compute-bound, so every decoder outpaces it and a small window

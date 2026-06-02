@@ -185,6 +185,20 @@ def test_resolve_device_passthrough_and_no_gpu(monkeypatch):
     assert base.resolve_device("auto", "torchcodec") == "cpu"
 
 
+def test_gpu_alias_normalizes_to_cuda(monkeypatch):
+    # Users (and the example config) write "gpu", but torch/torchcodec only know
+    # "cuda" -- the alias must be rewritten before any device string reaches them.
+    assert base.canonical_device("gpu") == "cuda"
+    assert base.canonical_device("gpu:1") == "cuda:1"
+    assert base.canonical_device("cuda") == "cuda"  # passthrough
+    assert base.canonical_device("cpu") == "cpu"
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
+    assert base.resolve_device("gpu", "torchcodec") == "cuda"
+    # A "gpu" request still routes to a GPU-capable backend (CPU-only ones reject it).
+    with pytest.raises(ValueError):
+        base.select_reader("imageio", device="gpu")
+
+
 def test_resolve_device_prefers_gpu_when_available(monkeypatch):
     # Pretend a GPU and the torchcodec backend are both present.
     monkeypatch.setattr(base, "_gpu_auto_failed", False)  # ignore prior probes
@@ -337,6 +351,18 @@ def test_to_jax_dlpack_from_torch():
 
 
 # -- readers -----------------------------------------------------------------
+
+
+def test_video_reader_rs_installed_means_available():
+    # video_reader-rs's wheel bundles FFmpeg libs that lack an inter-lib RUNPATH,
+    # so `import video_reader` dies on a transitive dep unless we pre-dlopen them.
+    # When the package is on disk, the backend must therefore advertise itself --
+    # otherwise the preload regressed and the install is silently unusable.
+    import importlib.util
+
+    if importlib.util.find_spec("video_reader") is None:
+        pytest.skip("video_reader-rs not installed")
+    assert "video_reader_rs" in video.available_read_backends()
 
 
 @pytest.mark.parametrize("backend", CPU_READERS)
