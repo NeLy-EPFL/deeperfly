@@ -33,16 +33,17 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 
 # Preference order for ``backend="auto"`` -- fastest first. Explicit names always
 # win; "auto" walks the list for the device and picks the first *installed*
-# backend. CPU order leads with in-process decoders (decord / video_reader_rs /
-# torchcodec link FFmpeg directly) and keeps imageio last: it shells out to the
-# ``ffmpeg`` binary (a subprocess fork -- slower, and it trips Python 3.13's
+# backend. CPU order leads with pyav, the in-process core default (it links FFmpeg
+# directly -- no subprocess), then the other in-process decoders (opencv /
+# video_reader_rs / torchcodec / decord), and keeps imageio last: it shells out to
+# the ``ffmpeg`` binary (a subprocess fork -- slower, and it trips Python 3.13's
 # os.fork()-in-a-multithreaded-process warning once JAX has started threads), so
-# it is only the portable last resort. GPU order leads with torchcodec -- the most
-# robust NVDEC path and the one that feeds JAX zero-copy (see ``to_jax``); every
-# listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
+# it is only the optional forking fallback. GPU order leads with torchcodec -- the
+# most robust NVDEC path and the one that feeds JAX zero-copy (see ``to_jax``);
+# every listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
 CPU_READ_ORDER = (
-    "opencv",
     "pyav",
+    "opencv",
     "torchcodec",
     "decord",
     "video_reader_rs",
@@ -51,10 +52,10 @@ CPU_READ_ORDER = (
 # torchcodec (fastest, when its CUDA build + NPP are present) -> DALI (robust
 # NVDEC, needs only the driver) -> decord (GPU only with a rare CUDA build).
 GPU_READ_ORDER = ("torchcodec", "dali", "decord")
-# Writers prefer pyav: like imageio it encodes H.264 (libx264), but in-process --
-# imageio shells out to the ``ffmpeg`` binary (the os.fork() subprocess warning
-# again, now at render time). Fall back to imageio (libx264, but forks) and then
-# opencv (mp4v fourcc, last resort) when pyav is absent.
+# Writers prefer pyav, the core default: like imageio it encodes H.264 (libx264),
+# but in-process -- imageio shells out to the ``ffmpeg`` binary (the os.fork()
+# subprocess warning again, now at render time). Fall back to imageio (libx264,
+# but forks) and then opencv (mp4v fourcc, last resort) when pyav is absent.
 WRITE_ORDER = ("pyav", "imageio", "opencv")
 
 

@@ -51,10 +51,11 @@ def read_video(
     Parameters
     ----------
     backend
-        ``"auto"`` | ``"imageio"`` | ``"opencv"`` | ``"pyav"`` | ``"decord"`` |
+        ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"imageio"`` | ``"decord"`` |
         ``"video_reader_rs"`` | ``"torchcodec"`` | ``"dali"``. ``"auto"`` picks
         the fastest installed backend for the resolved ``device`` (GPU order
-        leads with NVDEC; CPU order leads with in-process decoders, imageio last).
+        leads with NVDEC; CPU order leads with in-process decoders -- pyav, the
+        core default -- and keeps imageio last).
     device
         ``"auto"`` (the default) decodes on the GPU when one is present *and* a
         GPU backend works, else on the CPU -- and always returns host ``NumPy``
@@ -332,9 +333,10 @@ def _count_pyav(p: Path) -> int:
 
 
 def _count_imageio(p: Path) -> int:
-    # The default backend (imageio + bundled ffmpeg) -- always present, unlike the
-    # optional decord/opencv/pyav probes above. count_frames_and_secs counts packets
-    # via `ffmpeg -c copy` (no pixel decode), so it is exact and fast (~0.1 s here).
+    # Optional fallback (imageio + bundled ffmpeg); reached only if the core pyav
+    # probe and the optional decord/opencv probes above all miss.
+    # count_frames_and_secs counts packets via `ffmpeg -c copy` (no pixel decode),
+    # so it is exact and fast (~0.1 s here).
     import imageio_ffmpeg
 
     n, _secs = imageio_ffmpeg.count_frames_and_secs(str(p))
@@ -345,9 +347,10 @@ def count_frames(path: str | Path) -> int | None:
     """Frame count of a video file or image sequence -- ``None`` if unknown.
 
     Image sequences count their files exactly; videos read it from container
-    metadata (decord / OpenCV / PyAV) or, failing those, ffmpeg's packet count
-    (imageio, the default backend, always installed) -- all cheap, with no full
-    pixel decode. This is a **best-effort hint** for a progress bar's total: callers
+    metadata (PyAV, the core default, always installed -- or decord / OpenCV when
+    present) or, failing those, ffmpeg's packet count (the optional imageio
+    backend) -- all cheap, with no full pixel decode. This is a **best-effort
+    hint** for a progress bar's total: callers
     stream frames and detect end-of-file from the decoder itself, so an off-by-a-few
     count (rare, container-dependent) or a ``None`` never affects correctness.
     """
@@ -379,9 +382,9 @@ def write_mp4(
     """Write ``(T, H, W, 3)`` frames to an MP4.
 
     ``frames`` may be NumPy or a GPU tensor; non-``uint8`` input is clipped to
-    ``[0, 255]``. ``backend`` is ``"auto"`` | ``"imageio"`` | ``"pyav"`` |
-    ``"opencv"``; ``codec`` overrides the backend default (libx264 for
-    imageio/pyav, the ``mp4v`` fourcc for opencv).
+    ``[0, 255]``. ``backend`` is ``"auto"`` (pyav, the core default) | ``"pyav"``
+    | ``"imageio"`` | ``"opencv"``; ``codec`` overrides the backend default
+    (libx264 for pyav/imageio, the ``mp4v`` fourcc for opencv).
     """
     writer = select_writer(backend)
     frames = to_numpy(frames)

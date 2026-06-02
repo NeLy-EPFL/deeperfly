@@ -1,7 +1,9 @@
-"""imageio (+ imageio-ffmpeg) backend -- the portable CPU default.
+"""imageio (+ imageio-ffmpeg) backend -- optional portable CPU fallback.
 
-Sequential decode only; random access uses the base decode-once-and-gather
-fallback (imageio-ffmpeg's per-index seeking is not reliably frame-accurate).
+PyAV is the in-process core default; this backend is opt-in (the ``imageio``
+extra) and forks an ``ffmpeg`` subprocess. Sequential decode only; random access
+uses the base decode-once-and-gather fallback (imageio-ffmpeg's per-index seeking
+is not reliably frame-accurate).
 """
 
 from __future__ import annotations

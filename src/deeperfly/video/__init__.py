@@ -3,11 +3,12 @@
 Reading and writing dispatch over a backend registry so you can choose where
 decoding happens and what frames live in. ``backend="auto"`` and ``device="auto"``
 (both defaults) pick the fastest available path: GPU/NVDEC decode when a GPU and a
-GPU backend are present, otherwise the fastest installed CPU decoder (imageio,
-which forks an ``ffmpeg`` subprocess, is the last resort).
+GPU backend are present, otherwise the fastest installed CPU decoder (``pyav``,
+the in-process core default; the optional ``imageio``, which forks an ``ffmpeg``
+subprocess, is the last resort).
 
-- CPU readers: ``decord``, ``video_reader_rs``, ``torchcodec``, ``pyav``,
-  ``opencv``, ``imageio``.
+- CPU readers: ``pyav`` (default), ``opencv``, ``decord``, ``video_reader_rs``,
+  ``torchcodec``, ``imageio``.
 - GPU readers (frames stay a device tensor): ``torchcodec``, ``decord``,
   ``dali``.
 - Writers: ``pyav`` (default; in-process H.264), ``imageio``, ``opencv``.
@@ -17,8 +18,8 @@ which forks an ``ffmpeg`` subprocess, is the last resort).
 >>> frames = video.read_video("clip.mp4", backend="pyav")       # frame-accurate
 >>> frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")
 >>> video.write_mp4(frames, "out.mp4", fps=30, backend="opencv")
->>> video.available_read_backends()
-['imageio', 'opencv']
+>>> video.available_read_backends()         # varies with installed extras
+['opencv', 'pyav']
 
 The rendering helpers (``render_pose3d_video`` / ``render_overlay_video`` /
 ``figure_to_array``) require the ``viz`` extra and are imported lazily, so plain

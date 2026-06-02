@@ -1,17 +1,22 @@
 # Video I/O
 
 `deeperfly.video` reads and writes frames through a pluggable backend registry.
-The base install reads/writes via `imageio`; install an extra for a faster decoder:
+The base install reads/writes via `pyav` (PyAV) — in-process libx264, with its
+own FFmpeg bundled in the wheel, so no system FFmpeg is needed. Install an extra
+for an alternative or faster decoder:
 
 | Backend | Read | Write | Frames | Install |
 | --- | :-: | :-: | --- | --- |
-| `imageio` | ✓ | ✓ | NumPy (CPU) | core |
+| `pyav` | ✓ | ✓ | NumPy (CPU) | core (default) |
 | `opencv` | ✓ | ✓ | NumPy (CPU) | `opencv` |
-| `pyav` | ✓ | ✓ | NumPy (CPU) | `pyav` |
+| `imageio` | ✓ | ✓ | NumPy (CPU) | `imageio` |
 | `decord` | ✓ | – | NumPy / `torch` (CPU/**CUDA**) | `decord` |
 | `video_reader_rs` | ✓ | – | NumPy (CPU) | `video-reader-rs` |
 | `torchcodec` | ✓ | – | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` / `cuda` |
 | `dali` | ✓ | – | `torch.Tensor` / NumPy (**CUDA**) | `dali` |
+
+Image *sequences* (a directory or glob of PNG/JPG/…) are always read via
+`imageio` (core), independent of the video backend above.
 
 ```python
 from deeperfly import video

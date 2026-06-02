@@ -295,10 +295,10 @@ name = "deeperfly"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "av" },
     { name = "equinox" },
     { name = "h5py" },
     { name = "imageio" },
-    { name = "imageio-ffmpeg" },
     { name = "jax" },
     { name = "jaxtyping" },
     { name = "matplotlib" },
@@ -312,8 +312,8 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "av" },
     { name = "decord", marker = "sys_platform != 'darwin'" },
+    { name = "imageio-ffmpeg" },
     { name = "opencv-python-headless" },
     { name = "torchcodec", version = "0.13.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "torchcodec", version = "0.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -330,14 +330,14 @@ dali = [
 decord = [
     { name = "decord", marker = "sys_platform != 'darwin'" },
 ]
+imageio = [
+    { name = "imageio-ffmpeg" },
+]
 mps = [
     { name = "jax-mps", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
 opencv = [
     { name = "opencv-python-headless" },
-]
-pyav = [
-    { name = "av" },
 ]
 torchcodec = [
     { name = "torchcodec", version = "0.13.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
@@ -352,24 +352,24 @@ dev = [
     { name = "ipykernel" },
 ]
 test = [
-    { name = "av" },
+    { name = "imageio-ffmpeg" },
     { name = "opencv-python-headless" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'pyav'", specifier = ">=12" },
+    { name = "av", specifier = ">=13" },
     { name = "decord", marker = "sys_platform != 'darwin' and extra == 'decord'", specifier = ">=0.6" },
     { name = "deeperfly", extras = ["decord"], marker = "extra == 'all'" },
+    { name = "deeperfly", extras = ["imageio"], marker = "extra == 'all'" },
     { name = "deeperfly", extras = ["opencv"], marker = "extra == 'all'" },
-    { name = "deeperfly", extras = ["pyav"], marker = "extra == 'all'" },
     { name = "deeperfly", extras = ["torchcodec"], marker = "extra == 'all'" },
     { name = "deeperfly", extras = ["video-reader-rs"], marker = "extra == 'all'" },
     { name = "equinox", specifier = ">=0.11" },
     { name = "h5py", specifier = ">=3.11" },
     { name = "imageio", specifier = ">=2.34" },
-    { name = "imageio-ffmpeg", specifier = ">=0.5" },
+    { name = "imageio-ffmpeg", marker = "extra == 'imageio'", specifier = ">=0.5" },
     { name = "jax", specifier = ">=0.10.1" },
     { name = "jax", extras = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.10.1" },
     { name = "jax-mps", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mps'", specifier = ">=0.10.1" },
@@ -389,12 +389,12 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.17" },
     { name = "video-reader-rs", marker = "sys_platform != 'darwin' and extra == 'video-reader-rs'", specifier = ">=0.4" },
 ]
-provides-extras = ["cuda", "mps", "opencv", "pyav", "decord", "video-reader-rs", "torchcodec", "dali", "all"]
+provides-extras = ["cuda", "mps", "opencv", "imageio", "decord", "video-reader-rs", "torchcodec", "dali", "all"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ipykernel", specifier = ">=7.2.0" }]
 test = [
-    { name = "av", specifier = ">=12" },
+    { name = "imageio-ffmpeg", specifier = ">=0.5" },
     { name = "opencv-python-headless", specifier = ">=4.13.0.92" },
     { name = "pytest", specifier = ">=9.0.3" },
 ]

@@ -69,9 +69,9 @@ lh = "camera_6"
 [detector]
 backend = "jax"          # jax | torch
 # frame decoder backend. "auto" = fastest installed *frame-accurate* decoder for
-# `decode_device` (CPU: decord/video_reader_rs/torchcodec/pyav/opencv before
-# imageio; GPU/NVDEC: torchcodec then dali). Force one with e.g. "dali" |
-# "torchcodec" | "decord" | "pyav" | "opencv".
+# `decode_device` (CPU: pyav -- the in-process default -- then opencv/torchcodec/
+# decord/video_reader_rs before the optional imageio; GPU/NVDEC: torchcodec then
+# dali). Force one with e.g. "dali" | "torchcodec" | "decord" | "pyav" | "opencv".
 video_backend = "auto"
 # Where to decode. "cpu" (default) decodes on the CPU and uploads each window to
 # the GPU in one shot -- within a few percent of on-GPU NVDEC, since the detector
