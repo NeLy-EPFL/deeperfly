@@ -1,0 +1,54 @@
+# Example rig: an array of cameras orbiting an object near the world origin.
+# `[camera_defaults]` is merged into every camera; per-camera keys override it.
+
+[camera_defaults]
+focal_length_px = [22388.125, 22388.125]    # scalar is also allowed when fx == fy
+
+# optional; omit to auto-detect each view's image center ((w-1)/2, (h-1)/2)
+# needs to be specified if the principal point is not at the image center
+# principal_point_px = [479.5, 239.5]
+
+distortion_coefficients = []  # empty means no distortion
+look_at = [0.0, 0.0, 0.0]
+distance = 107.463
+elevation_deg = 0.0
+roll_deg = 0.0
+
+[cameras.rh]
+azimuth_deg = -120
+[cameras.rm]
+azimuth_deg = -90
+[cameras.rf]
+azimuth_deg = -45
+[cameras.f]
+azimuth_deg = 0
+[cameras.lf]
+azimuth_deg = 45
+[cameras.lm]
+azimuth_deg = 90
+[cameras.lh]
+azimuth_deg = 120
+
+# Pipeline geometry options for `deeperfly run` / `pose3d` (a `deeperfly init`
+# config gathers these alongside [inputs] / [detector] / [skeleton]).
+[pipeline]
+merge_stripes = true   # fuse the left/right abdominal stripes into shared points
+
+[bundle_adjustment]
+solver = "least_squares_scipy"
+# Keypoint categories that drive camera calibration (subset of
+# legs, antennae, stripes). Legs sit at sharp corners and are the most reliable.
+keypoints = ["legs"]
+fixed = [
+    "*.intr",     # keep all intrinsics fixed
+    "f.rvec",     # anchor the front camera's orientation ...
+    "f.tvec",     # ... and position (fixes the world gauge)
+    "rm.tvec[2]",
+]
+shared = [
+    ["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"],
+]
+
+[bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
+max_nfev = 2000
+loss = "linear"
