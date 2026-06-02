@@ -267,11 +267,17 @@ def main() -> None:
     ap.add_argument("--smooth", choices=["gaussian", "one_euro"], default="one_euro")
     ap.add_argument("--fps", type=float, default=100.0)
     ap.add_argument(
-        "--correct",
-        choices=["reproject", "pictorial"],
-        default="reproject",
-        help="2D->3D: reprojection-outlier rejection (fast, default) or DeepFly3D-"
-        "style pictorial structures (slower; uses the full-heatmap detect path)",
+        "--triangulation",
+        choices=["ransac", "greedy", "dlt"],
+        default="ransac",
+        help="2D->3D triangulation: ransac consensus (default), greedy "
+        "reprojection-outlier rejection, or plain dlt",
+    )
+    ap.add_argument(
+        "--pictorial",
+        action="store_true",
+        help="run DeepFly3D-style pictorial structures before triangulation "
+        "(slower; uses the full-heatmap detect path)",
     )
     ap.add_argument("--ps-k", type=int, default=5, help="candidate peaks/joint (PS)")
     ap.add_argument("--ps-temporal", action="store_true", help="PS temporal term")
@@ -333,7 +339,7 @@ def main() -> None:
     candidates = None
     t0 = time.perf_counter()
     print(f"decode: {args.decode} (radius {args.decode_radius})")
-    if args.correct == "pictorial":
+    if args.pictorial:
         # Accuracy mode: stream the full-heatmap detector and keep top-K candidates.
         print(f"pictorial structures: keeping {args.ps_k} candidates/joint")
         pts2d, conf, candidates = detect_pictorial(
@@ -417,7 +423,8 @@ def main() -> None:
         conf,
         do_calibrate=True,
         calibrate_kwargs=calibrate_kwargs,
-        correct=args.correct,
+        triangulation=args.triangulation,
+        do_pictorial=args.pictorial,
         candidates=candidates,
         ps_kwargs={"temporal": args.ps_temporal, "lam": args.ps_lambda},
         smooth=args.smooth,
@@ -425,7 +432,8 @@ def main() -> None:
         meta={
             "source": str(root),
             "backend": args.backend,
-            "correct": args.correct,
+            "triangulation": args.triangulation,
+            "pictorial": args.pictorial,
             "n_frames_input": n_t,
         },
     )

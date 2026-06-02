@@ -13,28 +13,44 @@ per-stage caching so re-runs only compute what is missing.
 | --- | --- | --- |
 | 2D pose | `pose2d/` (`backends/{jax,torch}/`) | Stacked hourglass in two backends behind one interface; JAX/Equinox by default, PyTorch runs the original weights directly. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
-| Triangulation | `triangulate.py` / `pipeline.reconstruct` | NaN-aware DLT + greedy reprojection-outlier rejection. |
-| 3D correction | `correction.py` / `pictorial.py` | Reprojection outlier rejection (default) or pictorial structures; Procrustes alignment + smoothing. |
+| Triangulation | `triangulate.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT. |
+| 3D correction | `correction.py` / `pictorial.py` | Triangulation (ransac/greedy/dlt), optionally after pictorial-structures peak recovery; Procrustes alignment + smoothing. |
 | Visualization | `viz.py`, `video/` | matplotlib 2D overlays, 3D skeleton, MP4 export. |
 | Result I/O | `io.py` | Self-contained HDF5 `PoseResult`. |
 | Skeleton | `skeleton.py` + `data/skeleton_fly.toml` | 38 points, 10 limbs, 28 bones, per-camera visibility. |
 
-## 3D correction: reproject vs pictorial
+## 3D correction: triangulation (± pictorial)
 
-Each view is detected independently; the views only meet *geometrically*, and
-there are two ways to do that (`[pipeline].correct`, or
-`run_from_points2d(..., correct=...)`):
+Each view is detected independently; the views only meet *geometrically*. The
+reconstruction is two orthogonal choices — `run_from_points2d(...,
+triangulation=..., do_pictorial=...)`, or `[pipeline].triangulation` +
+`[pipeline].do_pictorial`:
 
-- **`reproject`** (default) — triangulate the arg-max detections and greedily drop
-  the worst-reprojecting view of each offending point. Fast; *vetoes* a bad
-  per-view detection.
-- **`pictorial`** — DeepFly3D-style pictorial structures over the detector's top-K
-  candidate peaks (`pictorial.py`): build multi-view-consistent 3D hypotheses per
-  joint, then pick one per joint by exact dynamic programming along each limb under
-  bone-length priors (plus an optional temporal term). It can *recover* a joint when
-  the arg-max landed on the wrong heatmap peak (occlusion, crossing legs, L/R
-  confusion). It needs the full-heatmap detect path (slower) and is opt-in; on clean
-  recordings it matches `reproject`.
+**`triangulation`** — how the per-view 2D points become one 3D point:
+
+- **`ransac`** (default) — triangulate each point from its largest set of
+  mutually consistent views, *vetoing* a bad detection. Because the rig has only a
+  handful of cameras it **exhaustively enumerates all `C(V,2)` two-view
+  hypotheses** (the deterministic limit of RANSAC), counts inliers within
+  `ransac_threshold` px, breaks ties toward the lower total reprojection error,
+  and refits from the inliers. A gross outlier never enters the fit. NaN
+  (unobserved) views never count as inliers.
+- **`greedy`** — triangulate the arg-max detections by DLT and iteratively drop
+  the single worst-reprojecting view of each offending point, re-triangulating
+  from the survivors (`reproj_threshold` / `max_drops`). Cheaper, but refines an
+  already-contaminated least-squares fit. (`reproject` is a legacy alias.)
+- **`dlt`** — plain least-squares triangulation over all available views, no
+  outlier handling. The bare baseline. (`none` is an alias.)
+
+**`do_pictorial`** (bool, default off) — when on, first run DeepFly3D-style pictorial
+structures over the detector's top-K candidate peaks (`pictorial.py`): build
+multi-view-consistent 3D hypotheses per joint, then pick one per joint by exact
+dynamic programming along each limb under bone-length priors (plus an optional
+temporal term). It can *recover* a joint when the arg-max landed on the wrong
+heatmap peak (occlusion, crossing legs, L/R confusion) — something the
+triangulators can only *veto*. It needs the full-heatmap detect path (slower); its
+committed per-view 2D then feeds the chosen `triangulation` (a plain `dlt` pass
+keeps the PS estimate as-is). On clean recordings it is a no-op.
 
 ## 2D detector backends
 

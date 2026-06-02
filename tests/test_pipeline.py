@@ -13,7 +13,13 @@ import pytest
 
 from deeperfly.cameras import CameraGroup
 from deeperfly.io import PoseResult
-from deeperfly.pipeline import calibrate, reconstruct, run_from_points2d
+from deeperfly.pipeline import (
+    _resolve_triangulation,
+    calibrate,
+    reconstruct,
+    reconstruct_ransac,
+    run_from_points2d,
+)
 from deeperfly.skeleton import Skeleton
 from helpers import small_rotation
 
@@ -62,6 +68,22 @@ def test_reconstruct_noisy_is_approximate(cameras, rng):
     pts2d += rng.normal(scale=0.2, size=pts2d.shape)  # sub-pixel detector noise
     recovered, _, _ = reconstruct(cameras, pts2d, max_drops=0)
     np.testing.assert_allclose(recovered, pts3d, atol=0.05)  # mm-scale
+
+
+def test_reconstruct_ransac_rejects_outliers_and_handles_nan(cameras, rng):
+    pts3d = fly_motion(rng)
+    pts2d = np.array(cameras.project(pts3d))  # (V, T, N, 2)
+    pts2d[1, 0, 5] += [200.0, -150.0]  # gross single-view outliers
+    pts2d[4, 3, 20] += [-300.0, 120.0]
+    pts2d[0, :, 7] = np.nan  # camera 0 never sees point 7 (NaN observations)
+
+    recovered, cleaned, err = reconstruct_ransac(cameras, pts2d, threshold=15.0)
+    assert recovered.shape == pts3d.shape
+    assert not np.isnan(recovered).any()  # every point still has >= 2 good views
+    assert np.nanmax(err) < 15.0  # outliers excluded from the cleaned reprojection
+    np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
+    assert np.isnan(cleaned[1, 0, 5]).all()  # the outlier observation was rejected
+    assert np.isnan(cleaned[0, :, 7]).all()  # the unobserved view stays NaN
 
 
 # -- calibrate ---------------------------------------------------------------
@@ -307,9 +329,105 @@ def test_run_merges_stripes_pictorial(cameras, fly, rng):
         proj,
         np.ones(proj.shape[:3]),
         candidates=cands,
-        correct="pictorial",
+        do_pictorial=True,
+        triangulation="dlt",  # keep the PS estimate as-is
         do_calibrate=False,
     )
     assert result.skeleton.n_points == 35
     assert result.pts3d.shape == (t, 35, 3)
     np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-3)
+
+
+# -- triangulation choices (ransac default, greedy, dlt) + pictorial flag -----
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("ransac", "ransac"),
+        ("greedy", "greedy"),
+        ("dlt", "dlt"),
+        ("reproject", "greedy"),  # legacy alias
+        ("none", "dlt"),  # legacy alias
+    ],
+)
+def test_resolve_triangulation(spec, expected):
+    assert _resolve_triangulation(spec) == expected
+
+
+@pytest.mark.parametrize("spec", ["bogus", "pictorial", "ransac+greedy", ""])
+def test_resolve_triangulation_rejects_bad(spec):
+    with pytest.raises(ValueError, match="triangulation"):
+        _resolve_triangulation(spec)
+
+
+@pytest.mark.parametrize("triangulation", ["ransac", "greedy", "dlt"])
+def test_run_triangulation_choices(cameras, fly, rng, triangulation):
+    pts3d = fly_motion(rng, n_frames=8)
+    pts2d = np.array(cameras.project(pts3d))
+    if triangulation != "dlt":  # dlt has no outlier handling, so keep it clean
+        pts2d[2, 4, 9] += [200.0, 200.0]  # a gross single-view outlier
+
+    result = run_from_points2d(
+        cameras,
+        fly,
+        pts2d,
+        merge_stripes=False,
+        do_calibrate=False,
+        triangulation=triangulation,
+    )
+    assert result.meta["triangulation"] == triangulation
+    assert result.meta["pictorial"] is False
+    assert not np.isnan(result.pts3d).any()
+    np.testing.assert_allclose(result.pts3d, pts3d, atol=1e-4)
+
+
+def test_run_default_triangulation_is_ransac(cameras, fly, rng):
+    pts2d = np.array(cameras.project(fly_motion(rng, n_frames=4)))
+    result = run_from_points2d(cameras, fly, pts2d, do_calibrate=False)
+    assert result.meta["triangulation"] == "ransac"  # the default
+
+
+def test_run_unknown_triangulation_raises(cameras, fly, rng):
+    pts2d = np.array(cameras.project(fly_motion(rng, n_frames=2)))
+    with pytest.raises(ValueError, match="triangulation"):
+        run_from_points2d(
+            cameras, fly, pts2d, do_calibrate=False, triangulation="bogus"
+        )
+
+
+@pytest.mark.parametrize("triangulation", ["ransac", "greedy", "dlt"])
+def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
+    """pictorial recovers the peak, then the chosen triangulation fits the 3D."""
+    from deeperfly import pictorial
+
+    pts3d = fly_motion(rng, n_frames=5)
+    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
+    proj = np.asarray(cameras.project(pts3d))  # (V, T, 38, 2)
+    v, t = proj.shape[:2]
+    xy = np.full((v, t, 38, 2, 2), np.nan)
+    sc = np.zeros((v, t, 38, 2))
+    xy[:, :, :, 0] = proj  # the true projection is the (only) candidate peak
+    sc[:, :, :, 0] = 0.9
+    cands = pictorial.Candidates(xy=xy, score=sc)
+
+    result = run_from_points2d(
+        cameras,
+        fly,
+        proj,
+        np.ones(proj.shape[:3]),
+        candidates=cands,
+        do_pictorial=True,
+        triangulation=triangulation,
+        do_calibrate=False,
+    )
+    assert result.meta["pictorial"] is True
+    assert result.meta["triangulation"] == triangulation
+    assert result.skeleton.n_points == 35
+    np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-2)
+
+
+def test_run_pictorial_requires_candidates(cameras, fly, rng):
+    pts2d = np.array(cameras.project(fly_motion(rng, n_frames=2)))
+    with pytest.raises(ValueError, match="requires candidates"):
+        run_from_points2d(cameras, fly, pts2d, do_calibrate=False, do_pictorial=True)

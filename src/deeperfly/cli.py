@@ -217,7 +217,7 @@ def _run_kwargs(config: dict) -> dict:
 
     Built entirely from the config's ``[pipeline]`` / ``[bundle_adjustment]``
     sections; an empty config yields the library defaults (merge stripes on,
-    calibrate on, legs-only BA, reproject, no smoothing).
+    calibrate on, legs-only BA, RANSAC reconstruction, no smoothing).
     """
     pipe = config.get("pipeline", {})
     ps = pipe.get("pictorial", {})
@@ -228,7 +228,10 @@ def _run_kwargs(config: dict) -> dict:
         merge_stripes=pipe.get("merge_stripes", True),
         do_calibrate=pipe.get("calibrate", True),
         calibrate_kwargs=_calibrate_kwargs(config),
-        correct=pipe.get("correct", "reproject"),
+        triangulation=pipe.get("triangulation", "ransac"),
+        do_pictorial=pipe.get("do_pictorial", False),
+        ransac_threshold=pipe.get("ransac_threshold", 15.0),
+        min_inliers=pipe.get("min_inliers", 2),
         ps_kwargs={"temporal": ps.get("temporal", False), "lam": ps.get("lam", 1.0)},
         smooth=smooth,
         fps=pipe.get("fps", 100.0),
@@ -362,7 +365,7 @@ def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
         yield item[1], item[2]
 
 
-def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
+def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k, quiet):
     """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
 
     Decodes and detects ``[detector] chunk_frames`` frames at a time per camera and
@@ -430,7 +433,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
         for window, _ in _prefetch_windows(
             sources, backend=backend, device=device, chunk=chunk
         ):
-            if correct == "pictorial":
+            if do_pictorial:
                 p, c, cand = inference.detect_candidates_sequence(
                     model, window, sides, flips, k=k, progress=progress
                 )
@@ -512,7 +515,7 @@ def _stage_detect(
     """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
 
     Returns ``(result, candidates, None, image_sizes)``. ``candidates`` is the
-    top-K peak set (only when ``correct = "pictorial"``). Frames are **not** held
+    top-K peak set (only when ``[pipeline].do_pictorial``). Frames are **not** held
     in memory (detection streams them in windows -- see :func:`_detect_2d`), so the
     third slot is ``None``; the recording path is recorded in ``result.meta`` and a
     visualize stage re-sources the one overlay camera it needs.
@@ -538,7 +541,7 @@ def _stage_detect(
     log.info("%s detector ready on device %s", backend, backends.detector_device(model))
 
     pipe = config.get("pipeline", {})
-    correct = pipe.get("correct", "reproject")
+    do_pictorial = pipe.get("do_pictorial", False)
     k = pipe.get("pictorial", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)
     n_passes = len(inference.expand_passes(sides, flips)[0])
@@ -553,7 +556,14 @@ def _stage_detect(
         chunk,
     )
     pts2d, conf, candidates = _detect_2d(
-        args, config, model, sides, flips, correct=correct, k=k, quiet=args.quiet
+        args,
+        config,
+        model,
+        sides,
+        flips,
+        do_pictorial=do_pictorial,
+        k=k,
+        quiet=args.quiet,
     )
 
     result = PoseResult(
@@ -580,27 +590,31 @@ def _stage_pose3d(
     re-run from ``detect`` (frame sizes are needed to place the principal point).
 
     ``candidates`` is only present when ``detect`` just ran in this process;
-    resuming from a stored 2D result has none, so a ``pictorial`` config falls
-    back to ``reproject`` with a warning.
+    resuming from a stored 2D result has none, so a ``do_pictorial = true`` config
+    disables pictorial (keeping the chosen ``triangulation``) with a warning.
     """
     cameras = result.cameras
 
     kwargs = _run_kwargs(config)
-    if kwargs["correct"] == "pictorial" and candidates is None:
+    if kwargs["do_pictorial"] and candidates is None:
+        # Drop the (now-impossible) pictorial stage, keep the triangulator.
         log.warning(
             "pictorial correction needs detector candidates, which a cached 2D "
-            "result does not store; falling back to 'reproject'. Re-run with "
-            "--overwrite (re-running detect from the recording) to use pictorial."
+            "result does not store; disabling pictorial and using triangulation=%r. "
+            "Re-run with --overwrite (re-running detect from the recording) to use "
+            "pictorial.",
+            kwargs["triangulation"],
         )
-        kwargs["correct"] = "reproject"
+        kwargs["do_pictorial"] = False
 
     carry = {"input": result.meta["input"]} if "input" in (result.meta or {}) else {}
     log.info(
-        "pose3d: calibrate=%s merge_stripes=%s correct=%s smooth=%s fps=%s "
-        "(%d frames, %d views)",
+        "pose3d: calibrate=%s merge_stripes=%s triangulation=%s do_pictorial=%s "
+        "smooth=%s fps=%s (%d frames, %d views)",
         kwargs["do_calibrate"],
         kwargs["merge_stripes"],
-        kwargs["correct"],
+        kwargs["triangulation"],
+        kwargs["do_pictorial"],
         kwargs["smooth"],
         kwargs["fps"],
         result.n_frames,

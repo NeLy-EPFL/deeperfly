@@ -30,8 +30,10 @@ result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf, smooth="one_eur
 result.save("fly.h5")
 ```
 
-`run_from_points2d(..., correct=...)` selects the 3D correction strategy
-(`reproject` or `pictorial` — see [architecture.md](architecture.md)).
+`run_from_points2d(..., triangulation=..., do_pictorial=...)` selects the 3D
+reconstruction: `triangulation` is `ransac` (default), `greedy` or `dlt`, and
+`do_pictorial=True` runs pictorial-structures peak recovery first (see
+[architecture.md](architecture.md)).
 
 ## Video I/O
 

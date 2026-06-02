@@ -3,7 +3,7 @@
 Covers the stage-range resolver, the output-directory cache (start inferred from
 what is cached, ``--overwrite``, the default ``<input>/deeperfly_outputs``), the
 ``--until detect`` 2D-only write, automatic weight provisioning, the
-pictorial->reproject fallback on resume, the detector progress hook, and the
+pictorial-disabled fallback on resume, the detector progress hook, and the
 overlay frame-recovery order. The detector and frame I/O are stubbed so these need
 neither real weights nor video files.
 """
@@ -352,17 +352,23 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
     assert str(cli.DEFAULT_CONFIG_PATH) in out
 
 
-# -- pictorial -> reproject fallback on resume -------------------------------
+# -- pictorial disabled (kept triangulator) on resume ------------------------
 
 
-def test_resume_pictorial_falls_back_to_reproject(result, tmp_path, caplog):
+@pytest.mark.parametrize("triangulation", ["ransac", "greedy"])
+def test_resume_pictorial_disabled_without_candidates(
+    result, tmp_path, caplog, triangulation
+):
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
         outdir / "poses.h5"
     )
     cfg = tmp_path / "cfg.toml"
-    cfg.write_text('[pipeline]\ncalibrate = false\ncorrect = "pictorial"\n')
+    cfg.write_text(
+        "[pipeline]\ncalibrate = false\ndo_pictorial = true\n"
+        f'triangulation = "{triangulation}"\n'
+    )
     with caplog.at_level("WARNING"):
         cli.main(
             [
@@ -377,7 +383,7 @@ def test_resume_pictorial_falls_back_to_reproject(result, tmp_path, caplog):
             ]
         )
     assert any(
-        "pictorial" in r.message and "reproject" in r.message for r in caplog.records
+        "pictorial" in r.message and triangulation in r.message for r in caplog.records
     )
     assert PoseResult.load(outdir / "poses.h5").pts3d is not None
 

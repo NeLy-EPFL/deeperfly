@@ -129,7 +129,7 @@ for full walkthroughs.
 ## Documentation
 
 - [docs/library.md](docs/library.md) — the Python API: bundle adjustment, the pipeline, video I/O.
-- [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (reproject vs pictorial), detector backends.
+- [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), detector backends.
 - [docs/video.md](docs/video.md) — video decoding backends and on-GPU decode.
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.

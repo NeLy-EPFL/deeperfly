@@ -7,8 +7,11 @@ detector stays pluggable (a callable producing ``(pts2d, conf)``):
 - :func:`calibrate` -- treat the animal itself as the calibration target and
   refine the cameras with bundle adjustment, using detector confidences as
   per-observation weights, a robust (Huber) loss and a soft bone-length prior.
-- :func:`reconstruct` -- triangulate a 2D sequence and iteratively reject
+- :func:`reconstruct` -- triangulate a 2D sequence and *greedily* reject
   high-reprojection-error observations, re-triangulating from the survivors.
+- :func:`reconstruct_ransac` -- the robust alternative: triangulate each point
+  from its largest multi-view consensus set (RANSAC) instead of from a
+  contaminated least-squares fit. The default reconstruction path.
 - :func:`run_from_points2d` -- the whole pipeline from a 2D sequence to a saved
   :class:`PoseResult` (calibration, reconstruction, optional template alignment
   and temporal smoothing).
@@ -36,6 +39,7 @@ from .triangulate import (
     merge_sources,
     reprojection_error,
     triangulate,
+    triangulate_ransac,
 )
 from .bundle_adjustment import bundle_adjust
 
@@ -228,6 +232,56 @@ def reconstruct(
     return pts3d, pts2d, err
 
 
+def reconstruct_ransac(
+    cameras: CameraGroup,
+    pts2d: Float[np.ndarray, "V T N 2"],
+    *,
+    threshold: float = 15.0,
+    min_inliers: int = 2,
+) -> tuple[
+    Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
+]:
+    """Triangulate a sequence robustly via per-point RANSAC consensus.
+
+    Unlike :func:`reconstruct`, which refines a (gross-outlier-contaminated)
+    least-squares fit by deleting the worst view, this builds each point's
+    estimate from the *largest set of mutually consistent views*
+    (:func:`deeperfly.triangulate.triangulate_ransac`), so a single badly
+    mislocated detection never enters the fit in the first place. NaN (unobserved)
+    observations are handled throughout and never count as inliers.
+
+    The returned 2D array is the input with every non-inlier (and unobserved)
+    observation set to ``NaN``, matching :func:`reconstruct`'s
+    ``(pts3d, cleaned_pts2d, reproj_error)`` contract.
+    """
+    pts2d = np.array(pts2d, dtype=float)
+    pts3d, inliers = triangulate_ransac(
+        cameras, pts2d, threshold=threshold, min_inliers=min_inliers
+    )
+    cleaned = np.where(inliers[..., None], pts2d, np.nan)
+    err = reprojection_error(cameras, pts3d, cleaned)
+    return pts3d, cleaned, err
+
+
+#: Triangulation strategies for the reconstruction step, plus legacy aliases.
+_TRIANGULATORS = ("ransac", "greedy", "dlt")
+_TRIANGULATION_ALIASES = {"reproject": "greedy", "none": "dlt"}
+
+
+def _resolve_triangulation(triangulation: str) -> str:
+    """Normalize a ``triangulation`` choice to one of :data:`_TRIANGULATORS`.
+
+    ``"ransac"`` (robust consensus), ``"greedy"`` (drop the worst-reprojecting
+    view) and ``"dlt"`` (plain least-squares, no outlier handling) are the
+    canonical names; ``"reproject"`` and ``"none"`` are accepted as aliases for
+    ``"greedy"`` and ``"dlt"`` respectively.
+    """
+    method = _TRIANGULATION_ALIASES.get(triangulation, triangulation)
+    if method not in _TRIANGULATORS:
+        raise ValueError(f"unknown triangulation {triangulation!r} (ransac|greedy|dlt)")
+    return method
+
+
 def run_from_points2d(
     cameras: CameraGroup,
     skeleton: Skeleton,
@@ -237,9 +291,12 @@ def run_from_points2d(
     merge_stripes: bool = True,
     do_calibrate: bool = True,
     calibrate_kwargs: dict | None = None,
-    correct: str = "reproject",
+    triangulation: str = "ransac",
+    do_pictorial: bool = False,
     candidates: pictorial.Candidates | None = None,
     ps_kwargs: dict | None = None,
+    ransac_threshold: float = 15.0,
+    min_inliers: int = 2,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
     template: Float[np.ndarray, "N 3"] | None = None,
@@ -260,19 +317,32 @@ def run_from_points2d(
     result carries 35 instead of 38 points. The returned :class:`PoseResult`
     then uses the merged skeleton and point layout throughout.
 
-    ``correct`` selects the 2D->3D reconstruction:
+    The 2D->3D reconstruction is two orthogonal choices:
 
-    * ``"reproject"`` (default) -- triangulate the arg-max detections and greedily
-      reject reprojection outliers (:func:`reconstruct`).
-    * ``"pictorial"`` -- DeepFly3D-style pictorial-structures correction over the
-      detector's top-K candidate peaks (:func:`deeperfly.pictorial.reconstruct`),
-      which requires ``candidates`` and accepts ``ps_kwargs`` (e.g. ``temporal``,
-      ``lam``, ``max_hyp``). Calibration still uses the arg-max ``pts2d``.
+    * ``triangulation`` -- the final triangulation strategy (:func:`_resolve_triangulation`):
+
+      * ``"ransac"`` (default) -- triangulate each point from its largest
+        multi-view consensus set (:func:`reconstruct_ransac`), tuned by
+        ``ransac_threshold`` / ``min_inliers``. Robust to a gross 2D outlier
+        before it ever enters the fit.
+      * ``"greedy"`` -- triangulate by DLT and greedily drop the
+        worst-reprojecting view of each offending point (:func:`reconstruct`),
+        tuned by ``reproj_threshold`` / ``max_drops``. (``"reproject"`` alias.)
+      * ``"dlt"`` -- plain least-squares triangulation, no outlier handling
+        (``"none"`` alias).
+
+    * ``do_pictorial`` -- when ``True``, first run DeepFly3D-style
+      pictorial-structures peak recovery over the detector's top-K candidates
+      (:func:`deeperfly.pictorial.reconstruct`; requires ``candidates``, accepts
+      ``ps_kwargs`` such as ``temporal``, ``lam``, ``max_hyp``), then feed its
+      committed per-view 2D into the chosen ``triangulation`` (``"dlt"`` keeps the
+      PS estimate as-is). Calibration always uses the arg-max ``pts2d``.
 
     ``smooth`` is ``None``, ``"gaussian"`` or ``"one_euro"``; ``smooth_kwargs``
     is forwarded to the corresponding :mod:`deeperfly.correction` function
     (``one_euro`` also receives ``fps``).
     """
+    method = _resolve_triangulation(triangulation)  # validate before calibrating
     names = cameras.names
     pts2d = apply_visibility(np.asarray(pts2d, dtype=float), skeleton, names)
 
@@ -286,21 +356,29 @@ def run_from_points2d(
             cameras, pts2d, conf, skeleton, **(calibrate_kwargs or {})
         )
 
-    if correct == "pictorial":
+    if do_pictorial:
         if candidates is None:
-            raise ValueError("correct='pictorial' requires candidates=...")
+            raise ValueError("do_pictorial=True requires candidates=...")
+        # PS recovers the right peaks; its committed per-view 2D then feeds the
+        # triangulator below (a plain "dlt" pass reproduces the PS estimate).
         pts3d, pts2d, reproj = pictorial.reconstruct(
             cameras, skeleton, candidates, pts2d, **(ps_kwargs or {})
         )
-    elif correct == "reproject":
+
+    if method == "ransac":
+        pts3d, pts2d, reproj = reconstruct_ransac(
+            cameras, pts2d, threshold=ransac_threshold, min_inliers=min_inliers
+        )
+    elif method == "greedy":
         pts3d, pts2d, reproj = reconstruct(
             cameras,
             pts2d,
             reproj_threshold=reproj_threshold,
             max_drops=max_drops,
         )
-    else:
-        raise ValueError(f"unknown correct mode {correct!r} (reproject|pictorial)")
+    else:  # "dlt": plain least-squares triangulation, no outlier handling
+        pts3d = triangulate(cameras, pts2d)
+        reproj = reprojection_error(cameras, pts3d, pts2d)
 
     if template is not None:
         pts3d = align_to_template(pts3d, template, skeleton)
@@ -322,5 +400,10 @@ def run_from_points2d(
         pts3d=pts3d,
         pts3d_smoothed=pts3d_smoothed,
         reproj_error=reproj,
-        meta={"fps": fps, "correct": correct, **(meta or {})},
+        meta={
+            "fps": fps,
+            "triangulation": method,
+            "pictorial": do_pictorial,
+            **(meta or {}),
+        },
     )

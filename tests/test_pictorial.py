@@ -303,11 +303,11 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
         fly,
         proj[:, :, :, 0, :] if proj.ndim == 5 else proj,
         do_calibrate=False,
-        correct="pictorial",
+        do_pictorial=True,
         candidates=cands,
     )
     assert isinstance(result, PoseResult)
-    assert result.meta["correct"] == "pictorial"
+    assert result.meta["pictorial"] is True
     # Stripes merge by default (38 -> 35), exercising candidate remapping in the
     # pictorial path; the merged skeleton travels through to the result.
     assert result.skeleton.n_points == 35
@@ -317,4 +317,4 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
 def test_pictorial_requires_candidates(cameras, fly, rng):
     proj = np.asarray(cameras.project(fly_cloud(rng)[None]))
     with pytest.raises(ValueError, match="requires candidates"):
-        run_from_points2d(cameras, fly, proj, do_calibrate=False, correct="pictorial")
+        run_from_points2d(cameras, fly, proj, do_calibrate=False, do_pictorial=True)

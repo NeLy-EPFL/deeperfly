@@ -224,3 +224,24 @@ def test_ransac_min_inliers_below_two_raises(cameras, rng):
     pts2d = np.asarray(cameras.project(_fly_cloud(rng, n=2)))
     with pytest.raises(ValueError, match="min_inliers"):
         triangulate_ransac(cameras, pts2d, min_inliers=1)
+
+
+def test_ransac_tie_break_prefers_tighter_consensus(cameras):
+    # Two disjoint, equal-size (3-view) consensus sets compete for one point: a
+    # well-separated P (views 0,1,2) and Q (views 3,4,5), with view 6 unobserved.
+    # One of Q's views is nudged off, so both sets have the same inlier *count*
+    # but P's reprojects tighter -- the tie must break toward P.
+    assert len(cameras) >= 6
+    P = np.array([0.3, -0.2, 0.5])
+    Q = np.array([-0.8, 0.6, -0.4])
+    proj = np.asarray(cameras.project(np.stack([P, Q])))  # (V, 2, 2)
+    pP, pQ = proj[:, 0], proj[:, 1]
+
+    pts2d = np.full((len(cameras), 1, 2), np.nan)
+    pts2d[0, 0], pts2d[1, 0], pts2d[2, 0] = pP[0], pP[1], pP[2]  # exact -> err 0
+    pts2d[3, 0], pts2d[4, 0] = pQ[3], pQ[4]
+    pts2d[5, 0] = pQ[5] + 2.0  # Q's consensus is 2 px looser than P's
+
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=5.0)
+    np.testing.assert_allclose(recovered[0], P, atol=1e-6)
+    assert inliers[:3, 0].all() and not inliers[3:, 0].any()

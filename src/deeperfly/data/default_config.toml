@@ -93,14 +93,20 @@ chunk_frames = 64
 calibrate = true         # refine the cameras with bundle adjustment (see below)
 merge_stripes = true     # fuse the left/right abdominal stripes into shared
                          # points before triangulation (38 -> 35 points)
-correct = "reproject"    # reproject (outlier rejection) | pictorial (top-K).
-                         # pictorial needs the detect stage's candidate peaks, so
-                         # it is unavailable when resuming `run` from a stored 2D
-                         # result (it falls back to reproject there).
+triangulation = "ransac" # 2D->3D triangulation strategy:
+                         #   ransac - largest multi-view consensus (default, robust)
+                         #   greedy - drop the worst-reprojecting view (a.k.a. reproject)
+                         #   dlt    - plain least-squares, no outlier handling (a.k.a. none)
+do_pictorial = false     # run DeepFly3D-style pictorial structures over the detector's
+                         # top-K candidates before triangulation (needs the detect stage's
+                         # candidates, so it is disabled when resuming `run` from a stored
+                         # 2D result); its committed 2D then feeds the triangulation above
+ransac_threshold = 15.0  # inlier reprojection cutoff (px) for triangulation = ransac
+min_inliers = 2          # min agreeing views to accept a point (ransac)
 smooth = "none"          # none | gaussian | one_euro
 fps = 100.0
 
-[pipeline.pictorial]     # only used when correct = "pictorial"
+[pipeline.pictorial]     # tuning for do_pictorial (above)
 k = 5                    # candidate peaks per joint
 temporal = false         # add a temporal-consistency term
 lam = 1.0                # bone-length prior weight
