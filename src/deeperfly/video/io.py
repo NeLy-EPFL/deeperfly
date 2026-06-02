@@ -99,7 +99,7 @@ def read_video(
         frames = reader.read(path, device=device, **read_kw)
 
     out = frames if is_gpu_device(device) and not want_host else to_numpy(frames)
-    log.info(
+    log.debug(  # per-read detail (one line per camera per window) -- only at -vv
         "read video %s via '%s' backend -> %d frames %dx%d (device=%s)",
         Path(path).name,
         reader.name,
@@ -257,7 +257,7 @@ def read_images(
         if is_gpu_device(device)
         else _read_images_cpu(files, workers)
     )
-    log.info(
+    log.debug(  # per-read detail (one line per camera per window) -- only at -vv
         "read %d images (imageio) -> %d frames %dx%d (device=%s)",
         len(files),
         out.shape[0],

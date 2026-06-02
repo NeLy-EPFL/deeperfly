@@ -98,6 +98,11 @@ def _configure_logging(verbose: int, quiet: bool) -> None:
         level = logging.WARNING
     logging.basicConfig(level=level, format="%(message)s", stream=sys.stderr)
     log.setLevel(level)
+    # JAX probes every platform on first use and warns when the TPU plugin's
+    # libtpu.so is absent (the normal case on a CPU/GPU box). Mute that noise
+    # unless we're at -vv (debug), where seeing every backend probe is useful.
+    if verbose < 2:
+        logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
 
 
 def _load_detector(checkpoint: str | None, backend: str):
@@ -245,9 +250,10 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     from . import video
 
     backend = config.get("detector", {}).get("video_backend", "auto")
+    device = _frame_read_device(config)  # match detection (CPU by default)
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args.input, config):
-        head = video.read_frames(src, backend=backend, device="auto", indices=[0])
+        head = video.read_frames(src, backend=backend, device=device, indices=[0])
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 
@@ -333,6 +339,21 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
     # Size the forward to the GPU so each window is a few big batches, not one
     # batch per frame -- this only changes dispatch granularity, not the result.
     batch_size = auto_batch_size(inference.IMG_SIZE)
+
+    # One-line summary instead of a per-camera/per-window read log (that spam is at
+    # -vv now; see deeperfly.video.io). select_reader resolves "auto" to the real
+    # backend; guard since a forced GPU backend may be uninstalled.
+    try:
+        reader_name = video.select_reader(backend, device=device).name
+    except Exception:  # noqa: BLE001
+        reader_name = backend
+    log.info(
+        "reading frames via '%s' backend: %d/read per camera (device=%s), forward batch %d",
+        reader_name,
+        chunk,
+        device,
+        batch_size,
+    )
 
     pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
     bar = tqdm(total=total, desc="detect 2D", unit="frame", disable=quiet or None)

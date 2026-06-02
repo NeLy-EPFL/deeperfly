@@ -19,6 +19,7 @@ framework (and importing :mod:`deeperfly.pose2d` never imports torch).
 
 from __future__ import annotations
 
+import os
 from types import ModuleType
 
 import numpy as np
@@ -92,32 +93,50 @@ def gpu_memory_bytes(device=None) -> int | None:
         return None
 
 
+def _xla_mem_fraction() -> float:
+    """Fraction of GPU memory the JAX pool may use, for the batch-fit budget.
+
+    ``deeperfly run`` sets ``XLA_PYTHON_CLIENT_MEM_FRACTION`` (to share the card
+    with on-device frames); JAX's own default preallocation is ~0.75. Sizing a
+    batch against the *whole* card instead of this pool overshoots it and the
+    forward OOMs.
+    """
+    try:
+        return float(os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.75"))
+    except ValueError:
+        return 0.75
+
+
 def auto_batch_size(
     image_hw: tuple[int, int] = (256, 512),
     *,
     device=None,
     safety: float = 0.5,
     min_batch: int = 1,
-    max_batch: int = 64,
+    max_batch: int = 32,
 ) -> int:
     """Pick a detector batch size (images per forward) that fits the GPU's VRAM.
 
     Scales the measured per-image forward cost (:data:`_FWD_BYTES_PER_IMAGE`, at
-    256x512) by the actual ``image_hw`` and divides a ``safety`` fraction of total
-    VRAM by it, clamped to ``[min_batch, max_batch]``. Without a GPU it returns
-    ``min_batch``.
+    256x512) by the actual ``image_hw`` and divides a ``safety`` fraction of the
+    memory JAX can actually use -- ``total VRAM`` times :func:`_xla_mem_fraction`,
+    **not** the whole card -- by it, clamped to ``[min_batch, max_batch]``. Without
+    a GPU it returns ``min_batch``.
 
-    The cap matters: for this 8-stack network throughput saturates at a small
-    batch on a fast GPU (bigger batches don't help -- see ``dev/bench_pose2d.py``),
-    so the point of sizing is to *fit* memory on smaller GPUs and avoid OOM, not
-    to chase speed by going ever larger.
+    Budgeting against the pool matters: ``deeperfly run`` caps JAX at half the card
+    (``XLA_PYTHON_CLIENT_MEM_FRACTION``), so a batch sized to the *full* card
+    overshoots that pool and the forward OOMs -- XLA then retries on a slow
+    fragmented path (the ~2x slowdown that motivated this). The cap also matters:
+    for this 8-stack network throughput saturates at a small batch on a fast GPU
+    (bigger batches don't help -- see ``dev/bench_pose2d.py``), so sizing is to
+    *fit* memory and avoid OOM, not to chase speed.
     """
     total = gpu_memory_bytes(device)
     if total is None:
         return min_batch
     h, w = image_hw
     per_image = _FWD_BYTES_PER_IMAGE * (h * w) / _REF_PIXELS
-    fit = int(total * safety / per_image)
+    fit = int(total * _xla_mem_fraction() * safety / per_image)
     return max(min_batch, min(max_batch, fit))
 
 
