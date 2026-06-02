@@ -76,7 +76,7 @@ first `deeperfly run` fetches them.
 
 ```bash
 deeperfly init config.toml                                # write a config you can edit
-deeperfly run recording/ -c config.toml -v                  # run the full pipeline
+deeperfly run recording/ -c config.toml                  # run the full pipeline
 deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
@@ -100,7 +100,8 @@ deeperfly run recording/ -o out/                  # resume: reuse cached 2D, fin
 deeperfly run recording/ -o out/ --overwrite      # recompute everything
 ```
 
-Add `-v`/`-vv` for more logging, or `-q` to quiet it.
+Pass `--log-level debug` for more detail, or `--log-level warning` to quiet the
+per-stage logs and progress bar.
 
 ### The config file
 

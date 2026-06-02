@@ -87,7 +87,18 @@ def test_run_to_detect_writes_2d_only(tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
     cli.main(
-        ["run", str(rec), "-c", str(cfg), "-o", str(outdir), "--until", "detect", "-q"]
+        [
+            "run",
+            str(rec),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--until",
+            "detect",
+            "--log-level",
+            "error",
+        ]
     )
 
     res = PoseResult.load(outdir / "poses.h5")
@@ -104,7 +115,18 @@ def test_run_without_config_uses_default(tmp_path, monkeypatch):
     _stub_detect(monkeypatch, tmp_path)
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
-    cli.main(["run", str(rec), "-o", str(outdir), "--until", "detect", "-q"])
+    cli.main(
+        [
+            "run",
+            str(rec),
+            "-o",
+            str(outdir),
+            "--until",
+            "detect",
+            "--log-level",
+            "error",
+        ]
+    )
     assert (outdir / "poses.h5").exists()
     assert (outdir / "config.toml").read_text() == cli.DEFAULT_CONFIG_PATH.read_text()
 
@@ -116,7 +138,9 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
     _stub_detect(monkeypatch, tmp_path)
     rec = tmp_path / "rec"
     rec.mkdir()
-    cli.main(["run", str(rec), "-c", str(cfg), "--until", "detect", "-q"])
+    cli.main(
+        ["run", str(rec), "-c", str(cfg), "--until", "detect", "--log-level", "error"]
+    )
     assert (rec / "deeperfly_outputs" / "poses.h5").exists()
 
 
@@ -142,7 +166,8 @@ def test_run_skips_cached_2d(result, tmp_path, monkeypatch):
             str(outdir),
             "--until",
             "pose3d",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     assert PoseResult.load(outdir / "poses.h5").pts3d is not None
@@ -159,7 +184,18 @@ def test_run_skips_cached_3d_only_renders(result, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_stage_pose3d", lambda *a, **k: pytest.fail("no pose3d"))
     called: list[bool] = []
     monkeypatch.setattr(cli, "_stage_visualize", lambda *a, **k: called.append(True))
-    cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir), "-q"])
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--log-level",
+            "error",
+        ]
+    )
     assert called == [True]
 
 
@@ -182,7 +218,8 @@ def test_overwrite_forces_full_recompute(tmp_path, monkeypatch):
             "--overwrite",
             "--until",
             "detect",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     res = PoseResult.load(outdir / "poses.h5")
@@ -220,7 +257,8 @@ def test_stale_config_warns(result, tmp_path, caplog):
 
 
 def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
-    """-v surfaces input image sizes and the detector forward batch / input size."""
+    """The default (info) surfaces input image sizes and the detector forward
+    batch / input size."""
     cfg = tmp_path / "config.toml"
     cli.main(["init", str(cfg)])
     _stub_detect(monkeypatch, tmp_path)
@@ -236,7 +274,6 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
                 str(outdir),
                 "--until",
                 "detect",
-                "-v",
             ]
         )
     msgs = "\n".join(r.message for r in caplog.records)
@@ -409,7 +446,8 @@ def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
             str(outdir),
             "--until",
             "pose3d",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     res = PoseResult.load(outdir / "poses.h5")

@@ -124,21 +124,19 @@ def _load_config(path: str | Path) -> dict:
         return tomllib.load(f)
 
 
-def _configure_logging(verbose: int, quiet: bool) -> None:
-    """Map ``-v``/``-q`` onto a root log level (default ``WARNING``).
+def _configure_logging(level_name: str) -> None:
+    """Configure the root log level from a ``--log-level`` name (default ``info``).
+
+    The default ``info`` surfaces the per-stage progress messages (and the bar);
+    ``warning`` or higher hides them, so it doubles as the "quiet" mode. The
+    progress bar follows the same line: it shows only while INFO logging is
+    enabled (see :func:`_detect_2d`).
 
     Records render through rich's :class:`~rich.logging.RichHandler` (colored level
     column, messages wrapped to the terminal) on the same stderr console as the
     progress bar, so log lines and the bar never overwrite each other.
     """
-    if quiet:
-        level = logging.ERROR
-    elif verbose >= 2:
-        level = logging.DEBUG
-    elif verbose == 1:
-        level = logging.INFO
-    else:
-        level = logging.WARNING
+    level = getattr(logging, level_name.upper())
     handler = RichHandler(
         console=err_console,
         show_time=False,
@@ -150,8 +148,8 @@ def _configure_logging(verbose: int, quiet: bool) -> None:
     log.setLevel(level)
     # JAX probes every platform on first use and warns when the TPU plugin's
     # libtpu.so is absent (the normal case on a CPU/GPU box). Mute that noise
-    # unless we're at -vv (debug), where seeing every backend probe is useful.
-    if verbose < 2:
+    # unless we're at debug, where seeing every backend probe is useful.
+    if level > logging.DEBUG:
         logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
 
 
@@ -365,7 +363,7 @@ def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
         yield item[1], item[2]
 
 
-def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k, quiet):
+def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
     """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
 
     Decodes and detects ``[detector] chunk_frames`` frames at a time per camera and
@@ -418,8 +416,9 @@ def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k, quie
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=err_console,
-        # mirror tqdm's auto-disable: off under -q and when stderr isn't a TTY.
-        disable=quiet or not err_console.is_terminal,
+        # the bar is info-level progress: show it only when INFO logging is on
+        # (so --log-level warning+ hides it) and stderr is a TTY (tqdm-style).
+        disable=not (log.isEnabledFor(logging.INFO) and err_console.is_terminal),
     )
 
     with bar:
@@ -563,7 +562,6 @@ def _stage_detect(
         flips,
         do_pictorial=do_pictorial,
         k=k,
-        quiet=args.quiet,
     )
 
     result = PoseResult(
@@ -1025,16 +1023,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    g = common.add_mutually_exclusive_group()
-    g.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="more logging (-v info, -vv debug)",
-    )
-    g.add_argument(
-        "-q", "--quiet", action="store_true", help="only errors; hide progress bars"
+    common.add_argument(
+        "--log-level",
+        dest="log_level",
+        type=str.lower,  # accept INFO/Info/info
+        choices=["debug", "info", "warning", "error", "critical"],
+        default="info",
+        help="logging verbosity (default: info); 'warning' or higher hides the "
+        "per-stage logs and the progress bar",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1117,5 +1113,5 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    _configure_logging(getattr(args, "verbose", 0), getattr(args, "quiet", False))
+    _configure_logging(getattr(args, "log_level", "info"))
     args.func(args)

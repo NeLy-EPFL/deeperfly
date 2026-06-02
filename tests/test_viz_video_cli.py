@@ -120,7 +120,8 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
             str(outdir),
             "--until",
             "pose3d",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     out = PoseResult.load(outdir / "poses.h5")
@@ -147,7 +148,8 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
             str(outdir2),
             "--until",
             "pose3d",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     assert PoseResult.load(outdir2 / "poses.h5").pts3d.shape == (result.n_frames, 38, 3)
@@ -169,7 +171,8 @@ def test_cli_run_visualize_only(result, tmp_path):
             str(outdir),
             "--fps",
             "5",
-            "-q",
+            "--log-level",
+            "error",
         ]
     )
     assert video.read_video(outdir / "pose3d.mp4").shape[0] == result.n_frames
