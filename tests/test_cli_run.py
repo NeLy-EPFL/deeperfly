@@ -272,7 +272,7 @@ def test_ensure_jax_weights_cache_miss_converts(tmp_path, monkeypatch):
     monkeypatch.setattr(
         download,
         "download_torch_weights",
-        lambda **k: (order.append("download"), tmp_path / "src.tar")[1],
+        lambda **k: (order.append("download"), tmp_path / "src.pth")[1],
     )
     monkeypatch.setattr(
         torchb,
@@ -310,6 +310,46 @@ def test_load_detector_jax_provisions(tmp_path, monkeypatch):
         backends, "load_detector", lambda backend, path: (backend, path)
     )
     assert cli._load_detector(None, "jax") == ("jax", sentinel)
+
+
+# -- doctor (installation / runtime report) ----------------------------------
+
+
+def test_fmt_bytes_units():
+    assert cli._fmt_bytes(512) == "512 B"
+    assert cli._fmt_bytes(1536) == "1.5 KiB"
+    assert cli._fmt_bytes(2 * 1024**3) == "2.0 GiB"
+
+
+def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
+    """`deeperfly doctor` prints each section and reflects the weights cache.
+
+    The weights cache is redirected to a temp dir with only the PyTorch
+    checkpoint present, so the report shows one weight downloaded and the other
+    not. COLUMNS is widened so rich does not wrap the lines we assert on.
+    """
+    from deeperfly.pose2d import download
+
+    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setattr(download, "cache_dir", lambda: tmp_path)
+    (tmp_path / download.TORCH_WEIGHTS_NAME).write_bytes(b"x" * 2048)
+
+    cli.main(["doctor"])
+    out = capsys.readouterr().out
+
+    for section in (
+        "deeperfly",
+        "system",
+        "inference",
+        "video backends",
+        "weights",
+        "config",
+    ):
+        assert section in out
+    assert "GPU inference" in out and "detectors" in out
+    assert "downloaded" in out  # the PyTorch checkpoint we created
+    assert f"not downloaded -- would cache as {download.JAX_WEIGHTS_NAME}" in out
+    assert str(cli.DEFAULT_CONFIG_PATH) in out
 
 
 # -- pictorial -> reproject fallback on resume -------------------------------

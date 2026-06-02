@@ -17,7 +17,10 @@ and the skeleton. The commands:
   directory and computes only what is missing; ``--overwrite`` recomputes
   everything and ``--until`` stops early. Detector weights are downloaded and
   converted automatically on first use.
-- ``info`` -- print a summary of a result file.
+- ``inspect`` -- print a summary of a result file.
+- ``doctor`` -- print installation/runtime details: package version, whether
+  CPU/GPU inference is available, the installed video backends, whether the
+  detector weights have been downloaded (and where), and the default config path.
 
 The 2D->3D pipeline is a linear sequence of three stages; ``run`` resumes from the
 furthest-along artifact cached in the output directory, so partial work is never
@@ -153,10 +156,10 @@ def _configure_logging(verbose: int, quiet: bool) -> None:
 
 
 def _load_detector(checkpoint: str | None, backend: str):
-    """Load the JAX detector (native .eqx) or the PyTorch detector (.tar).
+    """Load the JAX detector (native .eqx) or the PyTorch detector (.pth).
 
     With no explicit ``checkpoint`` the cached weights are used, provisioning them
-    on demand: the PyTorch ``.tar`` is downloaded, and for the JAX backend it is
+    on demand: the PyTorch checkpoint is downloaded, and for the JAX backend it is
     also converted to a native checkpoint (:func:`ensure_jax_weights`). An explicit
     but missing ``checkpoint`` is an error (we never write to a user-named path).
     """
@@ -782,7 +785,7 @@ def _info_line(label: str, value: object) -> None:
     console.print(line)
 
 
-def _cmd_info(args: argparse.Namespace) -> None:
+def _cmd_inspect(args: argparse.Namespace) -> None:
     result = PoseResult.load(args.input)
     _info_line("file:     ", args.input)
     _info_line("views:    ", f"{result.n_views}  {result.cameras.names}")
@@ -799,6 +802,202 @@ def _cmd_info(args: argparse.Namespace) -> None:
         )
 
 
+# -- doctor: installation / runtime report -----------------------------------
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size (``1.2 GiB``)."""
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(size) < 1024 or unit == "TiB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
+def _by_priority(available, *orders) -> list[str]:
+    """``available`` backend names in their ``backend="auto"`` preference order.
+
+    Walks each preference tuple in ``orders`` (e.g. the CPU then GPU read order),
+    keeping the first occurrence of each installed backend, then appends any
+    remaining installed ones (alphabetically) so nothing is dropped. Mirrors how
+    ``select_reader``/``select_writer`` actually pick a backend, so the report
+    lists the highest-priority installed decoder first.
+    """
+    avail = set(available)
+    ranked: list[str] = []
+    for order in orders:
+        ranked += [b for b in order if b in avail and b not in ranked]
+    ranked += sorted(b for b in avail if b not in ranked)
+    return ranked
+
+
+def _doctor_header(title: str) -> None:
+    """Print a blank line then a section title (its own colored line)."""
+    console.print()
+    console.print(Text(title, style="bold magenta"))
+
+
+def _doctor_row(label: str, value: object, *, width: int = 18) -> None:
+    """Print one indented ``label   value`` row, label padded to ``width``.
+
+    Built as :class:`~rich.text.Text` (not markup) so values containing brackets
+    -- e.g. JAX's ``[cuda:0]`` device list -- are never parsed as style tags.
+    """
+    line = Text("  ")
+    line.append(f"{label:<{width}}", style="bold cyan")
+    line.append(str(value))
+    console.print(line)
+
+
+def _probe_torch() -> dict:
+    """PyTorch presence + accelerator availability, without raising.
+
+    Torch is a core dependency, but probing CUDA/MPS can fail on a broken
+    install, so every query is guarded and missing keys mean "unknown/no".
+    """
+    info: dict = {"installed": False}
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return info
+    info.update(installed=True, version=torch.__version__)
+    try:
+        if torch.cuda.is_available():
+            info["cuda"] = torch.cuda.get_device_name(0)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        info["mps"] = bool(torch.backends.mps.is_available())
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
+def _probe_jax() -> dict:
+    """JAX presence + default backend/devices, without raising."""
+    info: dict = {"installed": False}
+    try:
+        import jax
+    except Exception:  # noqa: BLE001
+        return info
+    info.update(installed=True, version=jax.__version__)
+    try:
+        info["backend"] = jax.default_backend()
+        info["devices"] = [str(d) for d in jax.devices()]
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
+def _cmd_doctor(args: argparse.Namespace) -> None:
+    """Report the installation and what this machine can actually run.
+
+    Covers package version + location, the Python/OS, whether CPU/GPU inference
+    is available (torch CUDA/MPS and the JAX backend), the installed video
+    read/write backends (flagging GPU/NVDEC decoders), whether the detector
+    weights have been downloaded and where, and the default config path. The
+    framework imports are lazy and each probe is guarded, so a missing or broken
+    optional piece is reported rather than crashing the command.
+    """
+    import importlib.metadata
+    import importlib.util
+    import platform
+
+    from . import video
+    from .pose2d import backends, download
+    from .video.base import CPU_READ_ORDER, GPU_READ_ORDER, WRITE_ORDER
+
+    _doctor_header("deeperfly")
+    try:
+        version = importlib.metadata.version("deeperfly")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown (not installed as a package)"
+    _doctor_row("version", version)
+    _doctor_row("location", Path(__file__).resolve().parent)
+
+    _doctor_header("system")
+    _doctor_row(
+        "python", f"{platform.python_version()} ({platform.python_implementation()})"
+    )
+    _doctor_row("platform", platform.platform())
+
+    torch_info = _probe_torch()
+    jax_info = _probe_jax()
+    _doctor_header("inference")
+    if torch_info["installed"]:
+        accel = []
+        if "cuda" in torch_info:
+            accel.append(f"CUDA: {torch_info['cuda']}")
+        if torch_info.get("mps"):
+            accel.append("Metal (MPS)")
+        _doctor_row(
+            "torch",
+            f"{torch_info['version']}  ({', '.join(accel) if accel else 'CPU only'})",
+        )
+    else:
+        _doctor_row("torch", "not installed")
+    if jax_info["installed"]:
+        be = jax_info.get("backend", "?")
+        devices = ", ".join(jax_info.get("devices", [])) or "?"
+        _doctor_row(
+            "jax", f"{jax_info['version']}  (backend: {be}; devices: {devices})"
+        )
+    else:
+        _doctor_row("jax", "not installed")
+
+    gpu = (
+        "cuda" in torch_info
+        or torch_info.get("mps")
+        or (jax_info.get("backend") not in (None, "cpu"))
+    )
+    mem = backends.gpu_memory_bytes()
+    if gpu:
+        _doctor_row(
+            "GPU inference",
+            f"available ({_fmt_bytes(mem)} memory)" if mem else "available",
+        )
+    else:
+        _doctor_row("GPU inference", "not available -- CPU only")
+    detectors = ", ".join(
+        f"{b} (default)" if b == backends.DEFAULT_BACKEND else b
+        for b in backends.BACKENDS
+        if importlib.util.find_spec(b) is not None
+    )
+    _doctor_row("detectors", detectors or "none")
+
+    _doctor_header("video backends")
+    read_avail = video.available_read_backends()
+    write_avail = video.available_write_backends()
+    read = _by_priority(read_avail, CPU_READ_ORDER, GPU_READ_ORDER)
+    gpu_read = [b for b in GPU_READ_ORDER if b in read_avail]
+    _doctor_row("read", ", ".join(read) or "none")
+    _doctor_row("GPU decoders", ", ".join(gpu_read) or "none (CPU decode only)")
+    _doctor_row("write", ", ".join(_by_priority(write_avail, WRITE_ORDER)) or "none")
+    missing = sorted(
+        set(video.list_read_backends() + video.list_write_backends())
+        - set(read_avail)
+        - set(write_avail)
+    )
+    if missing:
+        _doctor_row("not installed", ", ".join(missing))
+
+    _doctor_header("weights")
+    _doctor_row("cache dir", download.cache_dir())
+    for label, path in (
+        ("PyTorch", download.torch_weights_path()),
+        ("JAX", download.jax_weights_path()),
+    ):
+        if path.exists():
+            state = f"downloaded ({_fmt_bytes(path.stat().st_size)}) -- {path.name}"
+        else:
+            state = f"not downloaded -- would cache as {path.name}"
+        _doctor_row(label, state)
+
+    _doctor_header("config")
+    _doctor_row("default config", DEFAULT_CONFIG_PATH)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deeperfly",
@@ -806,7 +1005,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Markerless 3D pose estimation of tethered Drosophila from a "
             "multi-camera rig. 'deeperfly init' writes a config to edit; "
             "'deeperfly run' detects 2D pose, reconstructs 3D and renders a "
-            "video; 'deeperfly info' summarizes a result file."
+            "video; 'deeperfly inspect' summarizes a result file; "
+            "'deeperfly doctor' reports the installation/runtime."
         ),
     )
 
@@ -886,10 +1086,17 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=_cmd_run)
 
     pi = sub.add_parser(
-        "info", parents=[common], help="print a summary of a result file"
+        "inspect", parents=[common], help="print a summary of a result file"
     )
     pi.add_argument("input", help="path to a result .h5 file")
-    pi.set_defaults(func=_cmd_info)
+    pi.set_defaults(func=_cmd_inspect)
+
+    pd = sub.add_parser(
+        "doctor",
+        parents=[common],
+        help="report installation/runtime: accelerators, video backends, weights",
+    )
+    pd.set_defaults(func=_cmd_doctor)
 
     return parser
 

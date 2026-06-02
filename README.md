@@ -29,12 +29,61 @@ To use deeperfly as a library, add it to your project instead:
 uv add deeperfly[cuda]
 ```
 
+## Checking your install
+
+`deeperfly doctor` reports what this machine can actually run — useful right after
+installing, after adding an extra, or when a GPU isn't being picked up. It prints
+the package version and location, whether **CPU/GPU inference** is available
+(PyTorch CUDA/Metal and the JAX backend, plus total accelerator memory), which
+**video backends** are installed for read/write — listed in the order
+`backend="auto"` prefers them, flagging the GPU/NVDEC decoders — whether the
+**detector weights** have been downloaded and where they're cached, and
+the path to the packaged default config:
+
+```bash
+deeperfly doctor
+```
+
+```
+deeperfly
+  version           0.1.0
+  location          /home/you/.venv/lib/python3.13/site-packages/deeperfly
+
+system
+  python            3.13.1 (CPython)
+  platform          Linux-7.0.0-15-generic-x86_64-with-glibc2.39
+
+inference
+  torch             2.6.0+cu124  (CUDA: NVIDIA GeForce RTX 4090)
+  jax               0.4.38  (backend: gpu; devices: cuda:0)
+  GPU inference     available (24.0 GiB memory)
+  detectors         jax (default), torch
+
+video backends
+  read              pyav, opencv, torchcodec, imageio
+  GPU decoders      torchcodec
+  write             pyav, imageio, opencv
+  not installed     dali, decord, video_reader_rs
+
+weights
+  cache dir         /home/you/.cache/deeperfly/weights
+  PyTorch           downloaded (96.2 MiB) -- sh8_deepfly.pth
+  JAX               downloaded (24.1 MiB) -- sh8_deepfly.eqx
+
+config
+  default config    /home/you/.venv/.../site-packages/deeperfly/data/default_config.toml
+```
+
+On a CPU-only box `GPU inference` reads `not available -- CPU only`, `GPU decoders`
+shows `none (CPU decode only)`, and the weights show `not downloaded` until the
+first `deeperfly run` fetches and converts them.
+
 ## Quickstart
 
 ```bash
 deeperfly init config.toml                                # write a config you can edit
 deeperfly run recording/ -c config.toml -v                  # run the full pipeline
-deeperfly info recording/deeperfly_outputs/poses.h5      # inspect the result
+deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,

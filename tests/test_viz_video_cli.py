@@ -127,7 +127,7 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     assert out.pts3d is not None
     assert out.pts3d.shape == (result.n_frames, 35, 3)  # L/R stripes merged by default
 
-    cli.main(["info", str(outdir / "poses.h5")])
+    cli.main(["inspect", str(outdir / "poses.h5")])
     printed = capsys.readouterr().out
     assert "skeleton: drosophila  (35 points)" in printed
     assert "has 3D:   True" in printed
