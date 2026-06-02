@@ -9,8 +9,6 @@ from deeperfly.cameras import CameraGroup
 from deeperfly.skeleton import Skeleton
 from deeperfly.triangulate import (
     apply_visibility,
-    merge_points,
-    merge_sources,
     reprojection_error,
     triangulate,
     triangulate_ransac,
@@ -97,52 +95,6 @@ def test_sequence_layout(cameras, rng):
     recovered = triangulate(cameras, pts2d)
     assert recovered.shape == (5, 38, 3)
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
-
-
-# -- stripe merge ------------------------------------------------------------
-
-
-def test_merge_points_routes_each_view_to_its_visible_side(fly, rng):
-    merged, remap = fly.merge_lr_stripes()
-    vis = fly.visibility_mask(CAMERA_NAMES)
-    src = merge_sources(remap, vis, merged.n_points)
-    assert src.shape == (7, 35)
-
-    pts2d = apply_visibility(rng.normal(size=(7, 3, 38, 2)), fly, CAMERA_NAMES)
-    out = merge_points(pts2d, src, axis=2)
-    assert out.shape == (7, 3, 35, 2)
-    rh, lh, f = (CAMERA_NAMES.index(n) for n in ("rh", "lh", "f"))
-    # Stripe0 (merged idx 16): right cameras keep the right column (old 16),
-    # left cameras pull from the left column (old 35), the front sees neither.
-    np.testing.assert_array_equal(out[rh, :, 16], pts2d[rh, :, 16])
-    np.testing.assert_array_equal(out[lh, :, 16], pts2d[lh, :, 35])
-    assert np.isnan(out[f, :, 16]).all()
-    # A non-stripe column passes through unchanged.
-    np.testing.assert_array_equal(out[:, :, 5], pts2d[:, :, 5])
-
-
-def test_merge_points_handles_candidate_axes(fly, rng):
-    merged, remap = fly.merge_lr_stripes()
-    src = merge_sources(remap, fly.visibility_mask(CAMERA_NAMES), merged.n_points)
-    score = rng.uniform(size=(7, 2, 38, 4))  # (V, T, N, K)
-    out = merge_points(score, src, axis=2)
-    assert out.shape == (7, 2, 35, 4)
-    lh = CAMERA_NAMES.index("lh")
-    np.testing.assert_array_equal(out[lh, :, 16], score[lh, :, 35])
-
-
-def test_merged_stripe_triangulates_from_four_cameras(cameras, fly, rng):
-    pts3d = _fly_cloud(rng)
-    pts3d[35:38] = pts3d[16:19]  # left/right stripes are the same physical markers
-    pts2d = apply_visibility(np.asarray(cameras.project(pts3d)), fly, CAMERA_NAMES)
-
-    merged, remap = fly.merge_lr_stripes()
-    src = merge_sources(remap, fly.visibility_mask(CAMERA_NAMES), merged.n_points)
-    merged2d = merge_points(pts2d, src, axis=1)  # single frame: (V, N, 2)
-    recovered = triangulate(cameras, merged2d)
-    # The merged stripes recover the shared 3D point from all four side cameras.
-    np.testing.assert_allclose(recovered[16:19], pts3d[16:19], atol=1e-6)
-    assert np.isfinite(recovered).all()
 
 
 # -- RANSAC -----------------------------------------------------------------

@@ -91,8 +91,6 @@ chunk_frames = 64
 # ---------------------------------------------------------------------------
 [pipeline]
 calibrate = true         # refine the cameras with bundle adjustment (see below)
-merge_stripes = false    # fuse the left/right abdominal stripes into shared
-                         # points before triangulation (38 -> 35 points)
 triangulation = "ransac" # 2D->3D triangulation strategy:
                          #   ransac - largest multi-view consensus (default, robust)
                          #   greedy - drop the worst-reprojecting view (a.k.a. reproject)
@@ -117,9 +115,14 @@ lam = 1.0                # bone-length prior weight
 # ---------------------------------------------------------------------------
 [bundle_adjustment]
 solver = "least_squares_scipy"
-# Keypoint categories that drive camera calibration (subset of
-# legs, antennae, stripes). Legs sit at sharp corners and are the most reliable.
-keypoints = ["legs"]
+# Indices of the keypoints (into [skeleton]) that drive camera calibration. The
+# leg joints sit at sharp limb corners and are the most reliable detections, so
+# the default uses the 30 leg points only. Omit this key entirely to calibrate
+# on all keypoints.
+keypoints = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,       # right legs
+    19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,  # left legs
+]
 fixed = [
     "*.intr",     # keep all intrinsics fixed
     "f.rvec",     # anchor the front camera's orientation ...
@@ -155,10 +158,6 @@ joint_names = [
     "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
     "l_antenna", "l_stripe0", "l_stripe1", "l_stripe2",
 ]
-
-# Leg-joint indices per side, used for separate left/right Procrustes alignment.
-right_points = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-left_points = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
 
 # Limbs: each entry lists a limb's tracked points in kinematic-chain order.
 [skeleton.limb_joints]

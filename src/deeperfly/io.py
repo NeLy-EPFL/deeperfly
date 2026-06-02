@@ -150,8 +150,6 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     )
     g.create_dataset("limb_id", data=s.limb_id)
     g.create_dataset("bones", data=s.bones)
-    g.create_dataset("left_idx", data=s.left_idx)
-    g.create_dataset("right_idx", data=s.right_idx)
     pal = g.create_group("palette")
     for name, color in s.palette.items():
         pal.attrs[name] = color
@@ -176,7 +174,5 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],
         palette=palette,
-        left_idx=g["left_idx"][()],
-        right_idx=g["right_idx"][()],
         visibility=visibility,
     )

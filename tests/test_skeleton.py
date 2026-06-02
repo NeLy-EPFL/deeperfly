@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from deeperfly.skeleton import Skeleton
-from helpers import CAMERA_NAMES
+from helpers import CAMERA_NAMES, leg_indices
 
 
 @pytest.fixture
@@ -31,17 +31,18 @@ def test_palette(fly):
     # One color per limb, with the bright antenna/stripe cues set in the config.
     assert set(fly.palette) == set(fly.limb_names)
     assert fly.palette["l_antenna"] == "#0000ff"
-    assert fly.palette["r_antenna"] == "#ff00ff"
+    assert fly.palette["r_antenna"] == "#ff0000"
     assert fly.palette["l_stripe"] == "#00ffff"
     assert fly.palette["r_stripe"] == "#ff00ff"
 
 
 def test_left_right_legs_disjoint(fly):
-    assert fly.left_idx.size == 15
-    assert fly.right_idx.size == 15
-    assert set(fly.left_idx).isdisjoint(fly.right_idx)
+    left, right = leg_indices(fly, "l"), leg_indices(fly, "r")
+    assert left.size == 15
+    assert right.size == 15
+    assert set(left).isdisjoint(right)
     # Right legs are the low indices, left legs the high ones.
-    assert fly.right_idx.max() < fly.left_idx.min()
+    assert right.max() < left.min()
 
 
 def test_visibility_mask_matches_table(fly):
@@ -52,8 +53,8 @@ def test_visibility_mask_matches_table(fly):
     # Right cameras never see left-side points and vice versa.
     rh = CAMERA_NAMES.index("rh")
     lh = CAMERA_NAMES.index("lh")
-    assert not mask[rh, fly.left_idx].any()
-    assert not mask[lh, fly.right_idx].any()
+    assert not mask[rh, leg_indices(fly, "l")].any()
+    assert not mask[lh, leg_indices(fly, "r")].any()
 
 
 def test_unknown_camera_sees_everything(fly):
@@ -75,8 +76,6 @@ def test_from_config_dict_roundtrip(fly):
             "joint_names": ["a", "b", "c"],
             "limb_joints": {"L": [0, 1, 2]},
             "palette": {"L": "#123456"},
-            "left_points": [0],
-            "right_points": [2],
             "visibility": {"cam0": [0, 1], "cam1": [1, 2]},
         }
     }
@@ -104,70 +103,3 @@ def test_out_of_range_limb_joint_raises():
     spec = {"skeleton": {"joint_names": ["a", "b"], "limb_joints": {"L": [0, 2]}}}
     with pytest.raises(ValueError, match="outside"):
         Skeleton.from_config(spec)
-
-
-# -- keypoint categories -----------------------------------------------------
-
-
-def test_points_in_category(fly):
-    legs = fly.points_in_category("legs")
-    assert legs.size == 30  # six 5-joint legs
-    assert set(legs) == set(fly.right_idx) | set(fly.left_idx)
-    np.testing.assert_array_equal(fly.points_in_category(["antennae"]), [15, 34])
-    np.testing.assert_array_equal(
-        fly.points_in_category(("stripes",)), [16, 17, 18, 35, 36, 37]
-    )
-    # A multi-category request is the union, and the whole set covers all points.
-    everything = fly.points_in_category(["legs", "antennae", "stripes"])
-    np.testing.assert_array_equal(everything, np.arange(fly.n_points))
-
-
-def test_points_in_category_unknown_raises(fly):
-    with pytest.raises(ValueError, match="unknown keypoint category 'wings'"):
-        fly.points_in_category(["legs", "wings"])
-
-
-# -- left/right stripe merge -------------------------------------------------
-
-
-def test_merge_lr_stripes_structure(fly):
-    merged, remap = fly.merge_lr_stripes()
-    assert merged.n_points == 35  # 38 - 3 left stripe duplicates
-    assert merged.joint_names[16:19] == ("stripe0", "stripe1", "stripe2")
-    # The left stripes (35..37) collapse onto the right ones (16..18); every
-    # other point keeps its index.
-    np.testing.assert_array_equal(remap[:35], np.arange(35))
-    np.testing.assert_array_equal(remap[35:38], [16, 17, 18])
-    # The duplicated stripe chain collapses.
-    assert merged.bones.shape == (26, 2)
-    # Leg indices are unchanged (all below the dropped points).
-    np.testing.assert_array_equal(merged.left_idx, fly.left_idx)
-    np.testing.assert_array_equal(merged.right_idx, fly.right_idx)
-    # The surviving stripe limb drops its side prefix; the empty one is gone.
-    assert merged.n_limbs == 9  # the now-empty left-stripe limb is dropped
-    assert "stripe" in merged.limb_names
-    assert "r_stripe" not in merged.limb_names and "l_stripe" not in merged.limb_names
-    # The surviving stripe limb keeps its color under the prefix-stripped name.
-    assert merged.palette["stripe"] == fly.palette["r_stripe"]
-    assert "r_stripe" not in merged.palette and "l_stripe" not in merged.palette
-
-
-def test_merge_lr_stripes_visibility(fly):
-    merged, _ = fly.merge_lr_stripes()
-    mask = merged.visibility_mask(CAMERA_NAMES)
-    assert mask.shape == (7, 35)
-    seers = {CAMERA_NAMES[v] for v in range(7) if mask[v, 16]}  # Stripe0
-    assert seers == {"rh", "rm", "lm", "lh"}  # all four cameras that see a side
-
-
-def test_merge_lr_stripes_idempotent(fly):
-    merged, _ = fly.merge_lr_stripes()
-    again, remap = merged.merge_lr_stripes()
-    assert again is merged  # nothing left to merge
-    np.testing.assert_array_equal(remap, np.arange(merged.n_points))
-
-
-def test_merged_points_in_category(fly):
-    merged, _ = fly.merge_lr_stripes()
-    np.testing.assert_array_equal(merged.points_in_category("stripes"), [16, 17, 18])
-    assert merged.points_in_category("legs").size == 30

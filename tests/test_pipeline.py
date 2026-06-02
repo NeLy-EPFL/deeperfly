@@ -21,7 +21,7 @@ from deeperfly.pipeline import (
     run_from_points2d,
 )
 from deeperfly.skeleton import Skeleton
-from helpers import small_rotation
+from helpers import leg_indices, small_rotation
 
 
 @pytest.fixture
@@ -181,7 +181,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
         pts2d = apply_visibility(pts2d_full.copy(), fly, names)
         if not front_sees_both:  # drop the front camera's left-side observations
             fi = names.index("f")
-            for j in fly.left_idx:
+            for j in leg_indices(fly, "l"):
                 pts2d[fi, :, j] = np.nan
         opt, _ = calibrate(
             perturbed,
@@ -218,7 +218,6 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
         fly,
         pts2d,
         conf,
-        merge_stripes=False,  # synthetic stripes here are not L/R-symmetric
         do_calibrate=False,
         max_drops=3,
         smooth="one_euro",
@@ -236,18 +235,22 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
 
 
 def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
-    """The default legs-only BA refines the cameras from leg joints alone, so
+    """Restricting BA to the leg joints refines the cameras from those alone, so
     gross errors on the antennae / stripes do not corrupt the calibration."""
+    legs = np.concatenate(  # the 30 leg-joint indices
+        [leg_indices(fly, "r"), leg_indices(fly, "l")]
+    )
     pts3d = fly_motion(rng, n_frames=20)
     pts2d = np.array(cameras.project(pts3d))
-    nonleg = np.setdiff1d(np.arange(38), fly.points_in_category("legs"))
+    nonleg = np.setdiff1d(np.arange(38), legs)
     pts2d[:, :, nonleg] += rng.normal(scale=200.0, size=pts2d[:, :, nonleg].shape)
     cams0 = perturbed_cameras(rig)
 
-    opt, _ = calibrate(  # ba_keypoints defaults to ("legs",)
+    opt, _ = calibrate(
         cams0,
         pts2d,
         skeleton=fly,
+        ba_keypoints=legs,
         fixed=["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
         bone_prior=False,
         loss="linear",
@@ -255,26 +258,8 @@ def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
     )
     # Despite the corrupted non-leg observations, the leg joints reproject almost
     # exactly -- the cameras were recovered from the legs alone.
-    legs = fly.points_in_category("legs")
     proj = np.asarray(opt.project(pts3d))
     assert np.nanmax(np.abs(proj[:, :, legs] - pts2d[:, :, legs])) < 1e-2
-
-
-def test_run_merges_stripes_end_to_end(cameras, fly, rng):
-    """With merging on (the default) the L/R stripes collapse to shared points
-    triangulated from all four cameras that see either side."""
-    pts3d = fly_motion(rng, n_frames=12)
-    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
-    pts2d = np.array(cameras.project(pts3d))
-    conf = np.ones(pts2d.shape[:3])
-
-    result = run_from_points2d(cameras, fly, pts2d, conf, do_calibrate=False)
-    assert result.skeleton.n_points == 35
-    assert result.skeleton.joint_names[16:19] == ("stripe0", "stripe1", "stripe2")
-    assert result.pts3d.shape == (12, 35, 3)
-    # The merged stripes recover the shared 3D truth and are fully triangulated.
-    np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-4)
-    assert np.isfinite(result.pts3d[:, 16:19]).all()
 
 
 def test_run_with_calibration(rig, cameras, fly, rng):
@@ -286,10 +271,9 @@ def test_run_with_calibration(rig, cameras, fly, rng):
         cams0,
         fly,
         pts2d,
-        merge_stripes=False,  # keep the full 38-point layout for the comparison
         do_calibrate=True,
         calibrate_kwargs={
-            "ba_keypoints": ("legs", "antennae", "stripes"),  # calibrate on all points
+            # ba_keypoints defaults to None -> calibrate on all points
             "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
             "bone_prior": False,
             "loss": "linear",
@@ -300,42 +284,10 @@ def test_run_with_calibration(rig, cameras, fly, rng):
     # Right-side points (seen by the gauge-anchored right cameras) recover
     # tightly; far-side points are weaker once visibility masking is applied,
     # but the whole pose is still close and reprojects well.
-    np.testing.assert_allclose(
-        result.pts3d[:, fly.right_idx], pts3d[:, fly.right_idx], atol=1e-2
-    )
+    right = leg_indices(fly, "r")
+    np.testing.assert_allclose(result.pts3d[:, right], pts3d[:, right], atol=1e-2)
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.5)
     assert np.nanmax(result.reproj_error) < 5.0
-
-
-def test_run_merges_stripes_pictorial(cameras, fly, rng):
-    """Merging also feeds the pictorial corrector: the detector candidates are
-    remapped onto the merged 35-point layout so PS runs and recovers the shared
-    stripes."""
-    from deeperfly import pictorial
-
-    pts3d = fly_motion(rng, n_frames=6)
-    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
-    proj = np.asarray(cameras.project(pts3d))  # (V, T, 38, 2)
-    v, t = proj.shape[:2]
-    xy = np.full((v, t, 38, 2, 2), np.nan)
-    sc = np.zeros((v, t, 38, 2))
-    xy[:, :, :, 0] = proj  # the true projection is the (only) peak
-    sc[:, :, :, 0] = 0.9
-    cands = pictorial.Candidates(xy=xy, score=sc)
-
-    result = run_from_points2d(
-        cameras,
-        fly,
-        proj,
-        np.ones(proj.shape[:3]),
-        candidates=cands,
-        do_pictorial=True,
-        triangulation="dlt",  # keep the PS estimate as-is
-        do_calibrate=False,
-    )
-    assert result.skeleton.n_points == 35
-    assert result.pts3d.shape == (t, 35, 3)
-    np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-3)
 
 
 # -- triangulation choices (ransac default, greedy, dlt) + pictorial flag -----
@@ -372,7 +324,6 @@ def test_run_triangulation_choices(cameras, fly, rng, triangulation):
         cameras,
         fly,
         pts2d,
-        merge_stripes=False,
         do_calibrate=False,
         triangulation=triangulation,
     )
@@ -402,7 +353,6 @@ def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
     from deeperfly import pictorial
 
     pts3d = fly_motion(rng, n_frames=5)
-    pts3d[:, 35:38] = pts3d[:, 16:19]  # L/R stripes are the same physical markers
     proj = np.asarray(cameras.project(pts3d))  # (V, T, 38, 2)
     v, t = proj.shape[:2]
     xy = np.full((v, t, 38, 2, 2), np.nan)
@@ -423,7 +373,7 @@ def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
     )
     assert result.meta["pictorial"] is True
     assert result.meta["triangulation"] == triangulation
-    assert result.skeleton.n_points == 35
+    assert result.skeleton.n_points == 38
     np.testing.assert_allclose(result.pts3d[:, 16:19], pts3d[:, 16:19], atol=1e-2)
 
 

@@ -92,8 +92,8 @@ stage that *recovers* the right peak first.
   on the wrong peak (occlusion, crossing legs, L/R confusion); its committed 2D
   then feeds the chosen `triangulation` (a plain `dlt` pass keeps the PS estimate).
 
-`correction.py` adds template (Procrustes) alignment and NaN-aware temporal
-smoothing (Gaussian or a streaming 1-Euro filter).
+`correction.py` adds NaN-aware temporal smoothing (Gaussian or a streaming
+1-Euro filter).
 
 ### Interface, I/O, reproducibility
 

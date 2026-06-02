@@ -3,23 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from deeperfly import geometry as geom
 from deeperfly.correction import (
     OneEuroFilter,
-    align_to_template,
     drop_outliers,
     flag_outliers,
-    procrustes_align,
     smooth_gaussian,
     smooth_one_euro,
 )
-from deeperfly.skeleton import Skeleton
-
-
-def _rotation(rng):
-    return np.asarray(geom.rvec_to_rmat(rng.normal(size=3)))
 
 
 # -- outliers ----------------------------------------------------------------
@@ -39,65 +30,6 @@ def test_drop_outliers_sets_nan():
     assert np.isnan(out[0, 1]).all()
     assert not np.isnan(out[0, 0]).any()
     np.testing.assert_array_equal(out[~mask], pts2d[~mask])
-
-
-# -- Procrustes --------------------------------------------------------------
-
-
-def test_procrustes_recovers_known_similarity(rng):
-    x = rng.normal(size=(15, 3))
-    s_true, r_true, t_true = 1.7, _rotation(rng), rng.normal(size=3)
-    y = s_true * (x @ r_true.T) + t_true
-    aligned, (s, r, t) = procrustes_align(x, y)
-    np.testing.assert_allclose(aligned, y, atol=1e-9)
-    assert s == pytest.approx(s_true, rel=1e-6)
-    np.testing.assert_allclose(r, r_true, atol=1e-6)
-    np.testing.assert_allclose(t, t_true, atol=1e-6)
-
-
-def test_procrustes_rigid_ignores_scale(rng):
-    x = rng.normal(size=(10, 3))
-    r_true, t_true = _rotation(rng), rng.normal(size=3)
-    y = 3.0 * (x @ r_true.T) + t_true  # scaled target
-    _, (s, _, _) = procrustes_align(x, y, scale=False)
-    assert s == 1.0
-
-
-def test_procrustes_ignores_nan_rows(rng):
-    x = rng.normal(size=(15, 3))
-    r_true, t_true = _rotation(rng), rng.normal(size=3)
-    y = x @ r_true.T + t_true
-    x_nan = x.copy()
-    x_nan[3] = np.nan
-    aligned, (_, r, _) = procrustes_align(x_nan, y)
-    np.testing.assert_allclose(r, r_true, atol=1e-6)
-    assert np.isnan(aligned[3]).all()  # NaN row stays NaN
-
-
-def test_align_to_template_per_side(rng):
-    skel = Skeleton.fly()
-    template = rng.normal(size=(skel.n_points, 3))
-    pts = template.copy()
-    for idx in (skel.left_idx, skel.right_idx):
-        r, t = _rotation(rng), rng.normal(size=3)
-        pts[idx] = 1.3 * (template[idx] @ r.T) + t
-    aligned = align_to_template(pts, template, skel)
-    np.testing.assert_allclose(
-        aligned[skel.left_idx], template[skel.left_idx], atol=1e-6
-    )
-    np.testing.assert_allclose(
-        aligned[skel.right_idx], template[skel.right_idx], atol=1e-6
-    )
-
-
-def test_align_to_template_sequence(rng):
-    skel = Skeleton.fly()
-    template = rng.normal(size=(skel.n_points, 3))
-    seq = np.stack(
-        [template + rng.normal(scale=0.01, size=template.shape) for _ in range(4)]
-    )
-    aligned = align_to_template(seq, template, skel)
-    assert aligned.shape == seq.shape
 
 
 # -- smoothing ---------------------------------------------------------------

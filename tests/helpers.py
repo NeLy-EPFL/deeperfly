@@ -17,6 +17,22 @@ AZIMUTHS_DEG = [-120, -90, -45, 0, 45, 90, 120]
 CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
 
+def leg_indices(skeleton, side: str) -> np.ndarray:
+    """Point indices of one body side's leg joints (``side`` is ``"r"`` or ``"l"``).
+
+    Leg joints are named ``"{side}{f|m|h}_..."`` (front / mid / hind leg); the
+    antennae and abdominal stripes (``"{side}_..."``) are excluded.
+    """
+    return np.array(
+        [
+            i
+            for i, name in enumerate(skeleton.joint_names)
+            if name[:1] == side and name[1:2] in "fmh"
+        ],
+        dtype=np.int64,
+    )
+
+
 def reference_rmat(yaw_rad: float) -> np.ndarray:
     """Reference world->camera rotation for a camera at azimuth ``yaw_rad``.
 

@@ -29,8 +29,8 @@ def render_pose3d_video(
     *,
     fps: float = 30.0,
     use_smoothed: bool = True,
-    elev: float = 90,
-    azim: float = 0.0,
+    elev: float = 20,
+    azim: float = -60,
     background: str = "white",
     backend: str = "auto",
 ) -> None:

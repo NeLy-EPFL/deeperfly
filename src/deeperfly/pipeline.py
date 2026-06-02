@@ -13,8 +13,8 @@ detector stays pluggable (a callable producing ``(pts2d, conf)``):
   from its largest multi-view consensus set (RANSAC) instead of from a
   contaminated least-squares fit. The default reconstruction path.
 - :func:`run_from_points2d` -- the whole pipeline from a 2D sequence to a saved
-  :class:`PoseResult` (calibration, reconstruction, optional template alignment
-  and temporal smoothing).
+  :class:`PoseResult` (calibration, reconstruction, and optional temporal
+  smoothing).
 
 All 2D arrays use the view-leading layout ``(V, T, N, 2)`` with NaN for missing
 observations; 3D points come out as ``(T, N, 3)``.
@@ -30,13 +30,11 @@ from scipy.optimize import OptimizeResult
 
 from . import pictorial
 from .cameras import CameraGroup
-from .correction import align_to_template, smooth_gaussian, smooth_one_euro
+from .correction import smooth_gaussian, smooth_one_euro
 from .io import PoseResult
 from .skeleton import Skeleton
 from .triangulate import (
     apply_visibility,
-    merge_points,
-    merge_sources,
     reprojection_error,
     triangulate,
     triangulate_ransac,
@@ -71,49 +69,13 @@ def _bone_prior(
     return pairs, np.tile(targets, n_frames)
 
 
-def _merge_stripes(
-    skeleton: Skeleton,
-    camera_names: list[str],
-    pts2d: Float[np.ndarray, "V T N 2"],
-    conf: Float[np.ndarray, "V T N"] | None,
-    candidates: pictorial.Candidates | None,
-) -> tuple[
-    Skeleton,
-    np.ndarray,
-    np.ndarray | None,
-    pictorial.Candidates | None,
-]:
-    """Fuse the left/right abdominal stripes into shared points.
-
-    Returns the merged skeleton and the 2D arrays remapped onto its (smaller)
-    point layout. ``pts2d`` is assumed already visibility-masked so each stripe
-    side is NaN outside the cameras that see it; the per-view source selection
-    (:func:`deeperfly.triangulate.merge_sources`) then routes each camera to the
-    side it observes, so a merged stripe is triangulated from all four cameras
-    that see either side. If the skeleton has nothing to merge this is a no-op.
-    """
-    merged, remap = skeleton.merge_lr_stripes()
-    if merged is skeleton:
-        return skeleton, pts2d, conf, candidates
-    src = merge_sources(remap, skeleton.visibility_mask(camera_names), merged.n_points)
-    pts2d = merge_points(pts2d, src, axis=2)
-    if conf is not None:
-        conf = merge_points(conf, src, axis=2)
-    if candidates is not None:
-        candidates = pictorial.Candidates(
-            merge_points(candidates.xy, src, axis=2),
-            merge_points(candidates.score, src, axis=2),
-        )
-    return merged, pts2d, conf, candidates
-
-
 def calibrate(
     cameras: CameraGroup,
     pts2d: Float[np.ndarray, "V T N 2"],
     conf: Float[np.ndarray, "V T N"] | None = None,
     skeleton: Skeleton | None = None,
     *,
-    ba_keypoints: Sequence[str] | None = ("legs",),
+    ba_keypoints: Sequence[int] | None = None,
     fixed: list[str] = (),
     shared: list[list[str]] = (),
     bone_prior: bool = True,
@@ -131,14 +93,13 @@ def calibrate(
     stabilize the fit. ``fixed`` / ``shared`` anchor the gauge exactly as in
     :func:`deeperfly.bundle_adjustment.bundle_adjust`.
 
-    ``ba_keypoints`` restricts which keypoint categories drive the camera
-    refinement -- a subset of ``{"legs", "antennae", "stripes"}`` resolved via
-    :meth:`Skeleton.points_in_category`. It defaults to ``("legs",)`` because the
-    leg joints sit at sharp limb corners and are the most trustworthy
-    detections; observations of unselected points are masked out (the solver
-    drops NaNs). Pass ``None`` (or omit a skeleton) to use every point. Only the
-    camera fit is restricted -- all points are still triangulated afterward by
-    :func:`reconstruct` with the refined cameras.
+    ``ba_keypoints`` restricts which keypoints drive the camera refinement -- a
+    sequence of point indices into the skeleton. Observations of unselected
+    points are masked out (the solver drops NaNs). It defaults to ``None``,
+    which uses every point; pass e.g. the leg-joint indices to calibrate on the
+    sharp, trustworthy limb corners alone. Only the camera fit is restricted --
+    all points are still triangulated afterward by :func:`reconstruct` with the
+    refined cameras.
 
     Returns the refined :class:`CameraGroup` and the raw scipy result.
     """
@@ -149,10 +110,9 @@ def calibrate(
     n_sel = len(sel)
 
     masked = False
-    if ba_keypoints is not None and skeleton is not None:
-        keep = skeleton.points_in_category(ba_keypoints)
+    if ba_keypoints is not None:
         drop = np.ones(n_pts, dtype=bool)
-        drop[keep] = False
+        drop[np.asarray(ba_keypoints, dtype=int)] = False
         if drop.any():
             p = p.copy()
             p[:, :, drop] = np.nan  # masked-out observations are ignored by the solver
@@ -288,7 +248,6 @@ def run_from_points2d(
     pts2d: Float[np.ndarray, "V T N 2"],
     conf: Float[np.ndarray, "V T N"] | None = None,
     *,
-    merge_stripes: bool = True,
     do_calibrate: bool = True,
     calibrate_kwargs: dict | None = None,
     triangulation: str = "ransac",
@@ -299,7 +258,6 @@ def run_from_points2d(
     min_inliers: int = 2,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
-    template: Float[np.ndarray, "N 3"] | None = None,
     smooth: str | None = None,
     fps: float = 100.0,
     smooth_kwargs: dict | None = None,
@@ -307,15 +265,8 @@ def run_from_points2d(
 ) -> PoseResult:
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
-    Steps: apply skeleton visibility -> (optional) merge L/R stripes ->
-    (optional) calibrate cameras -> reconstruct 3D -> (optional) Procrustes
-    alignment to a template -> (optional) temporal smoothing.
-
-    ``merge_stripes`` (default ``True``) fuses the left/right abdominal stripe
-    markers into shared ``stripe0/1/2`` points (:meth:`Skeleton.merge_lr_stripes`),
-    so each is triangulated from all four cameras that see either side and the
-    result carries 35 instead of 38 points. The returned :class:`PoseResult`
-    then uses the merged skeleton and point layout throughout.
+    Steps: apply skeleton visibility -> (optional) calibrate cameras ->
+    reconstruct 3D -> (optional) temporal smoothing.
 
     The 2D->3D reconstruction is two orthogonal choices:
 
@@ -346,11 +297,6 @@ def run_from_points2d(
     names = cameras.names
     pts2d = apply_visibility(np.asarray(pts2d, dtype=float), skeleton, names)
 
-    if merge_stripes:
-        skeleton, pts2d, conf, candidates = _merge_stripes(
-            skeleton, names, pts2d, conf, candidates
-        )
-
     if do_calibrate:
         cameras, _ = calibrate(
             cameras, pts2d, conf, skeleton, **(calibrate_kwargs or {})
@@ -379,9 +325,6 @@ def run_from_points2d(
     else:  # "dlt": plain least-squares triangulation, no outlier handling
         pts3d = triangulate(cameras, pts2d)
         reproj = reprojection_error(cameras, pts3d, pts2d)
-
-    if template is not None:
-        pts3d = align_to_template(pts3d, template, skeleton)
 
     pts3d_smoothed = None
     sk = smooth_kwargs or {}

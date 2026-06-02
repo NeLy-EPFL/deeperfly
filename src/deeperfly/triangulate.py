@@ -19,7 +19,7 @@ from __future__ import annotations
 from itertools import combinations
 
 import numpy as np
-from jaxtyping import Bool, Float, Int
+from jaxtyping import Bool, Float
 
 from .cameras import CameraGroup
 from .skeleton import Skeleton
@@ -49,54 +49,6 @@ def apply_visibility(
     n_mid = pts2d.ndim - 3
     m = mask.reshape((n_view, *([1] * n_mid), n_pts))
     return np.where(m[..., None], pts2d, np.nan)
-
-
-def merge_sources(
-    remap: Int[np.ndarray, "N_old"],
-    vis_mask: Bool[np.ndarray, "V N_old"],
-    n_new: int,
-) -> Int[np.ndarray, "V N_new"]:
-    """Per-view source index for each merged point (see :func:`merge_points`).
-
-    ``remap`` maps each old point index to its merged index. For a merged point
-    fed by several old points (the left/right stripe pair) the source chosen for
-    a view is the one that view can actually *see* (``vis_mask``); since the two
-    stripe sides are visible to disjoint cameras this is unambiguous. Views that
-    see no source keep an arbitrary (first) source -- the gathered value is NaN
-    there anyway, since visibility was already applied to the observations.
-    """
-    n_view = vis_mask.shape[0]
-    src = np.full((n_view, n_new), -1, dtype=np.int64)
-    for old, new in enumerate(remap):
-        first = src[:, new] == -1
-        src[first, new] = old  # default: the first source feeding this point
-        src[vis_mask[:, old], new] = old  # a source this view can see wins
-    return src
-
-
-def merge_points(
-    arr: Float[np.ndarray, "V *pts"],
-    src_for_dest: Int[np.ndarray, "V N_new"],
-    *,
-    axis: int = 2,
-) -> Float[np.ndarray, "V *pts"]:
-    """Collapse the point axis of ``arr`` using a per-view source index.
-
-    ``arr`` is view-leading with its point axis at ``axis`` (2 for ``pts2d``
-    ``(V,T,N,2)``, ``conf`` ``(V,T,N)`` and the candidate ``(V,T,N,K,...)``
-    arrays). ``src_for_dest`` (from :func:`merge_sources`) gives, per view, the
-    old point index to take for each merged point; the gather broadcasts over
-    every other axis. This is how left/right stripe columns are fused into one.
-    """
-    arr = np.asarray(arr, dtype=float)
-    ax = axis % arr.ndim
-    n_view, n_new = src_for_dest.shape
-    idx_shape = [1] * arr.ndim
-    idx_shape[0] = n_view
-    idx_shape[ax] = n_new
-    idx = src_for_dest.reshape(idx_shape)
-    idx = np.broadcast_to(idx, arr.shape[:ax] + (n_new,) + arr.shape[ax + 1 :])
-    return np.take_along_axis(arr, idx, axis=ax)
 
 
 def triangulate(

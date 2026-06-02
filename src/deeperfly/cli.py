@@ -214,8 +214,8 @@ def _run_kwargs(config: dict) -> dict:
     """Keyword arguments for :func:`deeperfly.pipeline.run_from_points2d`.
 
     Built entirely from the config's ``[pipeline]`` / ``[bundle_adjustment]``
-    sections; an empty config yields the library defaults (merge stripes on,
-    calibrate on, legs-only BA, RANSAC reconstruction, no smoothing).
+    sections; an empty config yields the library defaults (calibrate on,
+    all-keypoint BA, RANSAC reconstruction, no smoothing).
     """
     pipe = config.get("pipeline", {})
     ps = pipe.get("pictorial", {})
@@ -223,7 +223,6 @@ def _run_kwargs(config: dict) -> dict:
     if isinstance(smooth, str) and smooth.lower() == "none":
         smooth = None
     return dict(
-        merge_stripes=pipe.get("merge_stripes", True),
         do_calibrate=pipe.get("calibrate", True),
         calibrate_kwargs=_calibrate_kwargs(config),
         triangulation=pipe.get("triangulation", "ransac"),
@@ -607,10 +606,9 @@ def _stage_pose3d(
 
     carry = {"input": result.meta["input"]} if "input" in (result.meta or {}) else {}
     log.info(
-        "pose3d: calibrate=%s merge_stripes=%s triangulation=%s do_pictorial=%s "
+        "pose3d: calibrate=%s triangulation=%s do_pictorial=%s "
         "smooth=%s fps=%s (%d frames, %d views)",
         kwargs["do_calibrate"],
-        kwargs["merge_stripes"],
         kwargs["triangulation"],
         kwargs["do_pictorial"],
         kwargs["smooth"],

@@ -126,33 +126,12 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     )
     out = PoseResult.load(outdir / "poses.h5")
     assert out.pts3d is not None
-    assert out.pts3d.shape == (result.n_frames, 35, 3)  # L/R stripes merged by default
+    assert out.pts3d.shape == (result.n_frames, 38, 3)
 
     cli.main(["inspect", str(outdir / "poses.h5")])
     printed = capsys.readouterr().out
-    assert "skeleton: drosophila  (35 points)" in printed
+    assert "skeleton: fly38  (38 points)" in printed
     assert "has 3D:   True" in printed
-
-    # [pipeline].merge_stripes = false keeps the full 38-point layout. A fresh
-    # output dir (re-seeded with 2D) avoids the now-cached 3D result above.
-    outdir2 = tmp_path / "out2"
-    _seed_2d(result, outdir2)
-    cfg.write_text("[pipeline]\ncalibrate = false\nmerge_stripes = false\n")
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir2),
-            "--until",
-            "pose3d",
-            "--log-level",
-            "error",
-        ]
-    )
-    assert PoseResult.load(outdir2 / "poses.h5").pts3d.shape == (result.n_frames, 38, 3)
 
 
 def test_cli_run_visualize_only(result, tmp_path):
