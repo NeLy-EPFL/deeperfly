@@ -61,6 +61,25 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     return np.asarray(_backend(name).predict_heatmaps(model, inputs))
 
 
+def detector_device(model) -> str:
+    """Device the detector's parameters live on (e.g. ``"cuda:0"``, ``"cpu"``).
+
+    Dispatches on the model's backend like :func:`predict_heatmaps` -- the JAX
+    forward runs wherever its array leaves live (:func:`backends.jax.to_device`),
+    so we read a leaf's device; the torch forward runs on its parameters' device.
+    Lets callers log where 2D inference actually runs. ``"cpu"`` if no array leaf
+    is found.
+    """
+    if type(model).__module__.startswith(f"{__name__}.torch"):
+        return str(next(model.parameters()).device)
+    import jax
+
+    for leaf in jax.tree_util.tree_leaves(model):
+        if hasattr(leaf, "devices"):  # a jax.Array leaf
+            return str(next(iter(leaf.devices())))
+    return "cpu"
+
+
 # Measured marginal GPU memory of one sh8-hourglass forward at 256x512 (the
 # per-image slope; jax ~80 MB, torch ~61 MB -- see dev/bench_pose2d.py). The large
 # fixed cost is transient cuDNN workspace that shrinks when memory is tight, so it
@@ -162,6 +181,7 @@ __all__ = [
     "DEFAULT_BACKEND",
     "load_detector",
     "predict_heatmaps",
+    "detector_device",
     "infer_num_stacks",
     "gpu_memory_bytes",
     "auto_batch_size",

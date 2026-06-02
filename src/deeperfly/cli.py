@@ -514,7 +514,7 @@ def _stage_detect(
     third slot is ``None``; the recording path is recorded in ``result.meta`` and a
     visualize stage re-sources the one overlay camera it needs.
     """
-    from .pose2d import inference
+    from .pose2d import backends, inference
     from .skeleton import Skeleton
 
     image_sizes = _camera_image_sizes(args, config)
@@ -532,6 +532,7 @@ def _stage_detect(
         det.get("checkpoint") or "cached",
     )
     model = _load_detector(det.get("checkpoint"), backend)
+    log.info("%s detector ready on device %s", backend, backends.detector_device(model))
 
     pipe = config.get("pipeline", {})
     correct = pipe.get("correct", "reproject")
