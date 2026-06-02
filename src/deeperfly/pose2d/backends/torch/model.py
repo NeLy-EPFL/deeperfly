@@ -180,16 +180,44 @@ def device() -> str:
 
 
 def _as_torch(inputs) -> "torch.Tensor":
-    """Coerce ``(N, 3, H, W)`` inputs to a torch tensor without a writability warning.
+    """Coerce ``(N, 3, H, W)`` inputs to a torch tensor, on-device when possible.
 
     The shared preprocess path stacks on-device, so ``inputs`` is usually a
-    ``jax.Array`` (immutable). ``np.array`` materializes a writable host copy --
-    ``torch.from_numpy`` on an immutable array warns, and importing a JAX array via
-    DLPack yields an inference tensor that the model's autograd path rejects.
+    ``jax.Array`` on the GPU; bridge it via DLPack so it stays on the device
+    (zero-copy) instead of round-tripping through host memory like ``np.array``
+    would. ``predict_heatmaps`` runs under ``inference_mode``, so the inference
+    tensor DLPack yields is accepted by the forward. Host NumPy is copied to a
+    writable tensor (``torch.from_numpy`` warns on the immutable array
+    ``np.array`` produces).
     """
     if isinstance(inputs, torch.Tensor):
         return inputs
-    return torch.from_numpy(np.array(inputs))  # writable host copy
+    if hasattr(inputs, "__dlpack__"):  # jax.Array / other on-device array -- zero-copy
+        return torch.from_dlpack(inputs)
+    return torch.from_numpy(np.array(inputs))  # host array -> writable copy
+
+
+#: Cache of ``torch.compile``-d models, keyed by ``id(model)`` (a run holds one).
+_COMPILED: dict[int, "torch.nn.Module"] = {}
+
+
+def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
+    """The model, ``torch.compile``-d for production CUDA runs (else eager).
+
+    The eager forward is ~1.8x slower than the JAX backend; ``torch.compile``
+    closes that gap (matches JAX on an RTX 4090 -- see ``dev/bench_video.py``).
+    Gated to CUDA and to the large batches a real ``deeperfly run`` uses: on CPU
+    the speedup is small, and for the tiny batches in tests the one-off compile
+    latency would dwarf the work (and the remainder sub-batch stays eager rather
+    than forcing a second compile).
+    """
+    if dev.type != "cuda" or batch < 16:
+        return model
+    fn = _COMPILED.get(id(model))
+    if fn is None:
+        fn = torch.compile(model)
+        _COMPILED[id(model)] = fn
+    return fn
 
 
 @torch.inference_mode()
@@ -197,7 +225,7 @@ def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
     """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
-    out = model(x)[-1]
+    out = _forward_fn(model, dev, x.shape[0])(x)[-1]
     if dev.type == "cuda":
         torch.cuda.synchronize()
     return out.cpu().numpy()
