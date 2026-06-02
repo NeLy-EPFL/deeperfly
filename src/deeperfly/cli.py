@@ -36,6 +36,17 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    Task,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.text import Text
 
 
@@ -88,6 +99,21 @@ console = Console()
 err_console = Console(stderr=True)
 
 log = logging.getLogger("deeperfly")
+
+
+class _FPSColumn(ProgressColumn):
+    """Detection throughput in frames/second (rich ships no built-in FPS column).
+
+    ``task.speed`` is the smoothed completed-per-second rate; since the bar ticks
+    once per frame, that is frames/second. ``finished_speed`` holds the final
+    average once the bar completes.
+    """
+
+    def render(self, task: Task) -> Text:
+        speed = task.finished_speed or task.speed
+        if not speed:
+            return Text("  ?.? fps", style="progress.data.speed")
+        return Text(f"{speed:5.1f} fps", style="progress.data.speed")
 
 
 def _load_config(path: str | Path) -> dict:
@@ -346,16 +372,6 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
     depend on :func:`deeperfly.video.count_frames` being exact -- that is only the
     progress-bar total.
     """
-    from rich.progress import (
-        BarColumn,
-        MofNCompleteColumn,
-        Progress,
-        TaskProgressColumn,
-        TextColumn,
-        TimeElapsedColumn,
-        TimeRemainingColumn,
-    )
-
     from . import video
     from .pictorial import Candidates
     from .pose2d import auto_batch_size, inference
@@ -392,6 +408,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
         TaskProgressColumn(),
         MofNCompleteColumn(),
         TextColumn("frames"),
+        _FPSColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=err_console,

@@ -331,14 +331,25 @@ def _count_pyav(p: Path) -> int:
         return int(container.streams.video[0].frames)
 
 
+def _count_imageio(p: Path) -> int:
+    # The default backend (imageio + bundled ffmpeg) -- always present, unlike the
+    # optional decord/opencv/pyav probes above. count_frames_and_secs counts packets
+    # via `ffmpeg -c copy` (no pixel decode), so it is exact and fast (~0.1 s here).
+    import imageio_ffmpeg
+
+    n, _secs = imageio_ffmpeg.count_frames_and_secs(str(p))
+    return int(n)
+
+
 def count_frames(path: str | Path) -> int | None:
     """Frame count of a video file or image sequence -- ``None`` if unknown.
 
     Image sequences count their files exactly; videos read it from container
-    metadata (decord / OpenCV / PyAV), which is cheap (no full decode). This is a
-    **best-effort hint** for a progress bar's total: callers stream frames and
-    detect end-of-file from the decoder itself, so an off-by-a-few count (rare,
-    container-dependent) or a ``None`` never affects correctness.
+    metadata (decord / OpenCV / PyAV) or, failing those, ffmpeg's packet count
+    (imageio, the default backend, always installed) -- all cheap, with no full
+    pixel decode. This is a **best-effort hint** for a progress bar's total: callers
+    stream frames and detect end-of-file from the decoder itself, so an off-by-a-few
+    count (rare, container-dependent) or a ``None`` never affects correctness.
     """
     p = Path(path)
     if not (p.is_file() and p.suffix.lower() in _VIDEO_EXTS):
@@ -346,7 +357,7 @@ def count_frames(path: str | Path) -> int | None:
             return len(list_image_files(path))
         except FileNotFoundError:
             return None
-    for probe in (_count_decord, _count_opencv, _count_pyav):
+    for probe in (_count_decord, _count_opencv, _count_pyav, _count_imageio):
         try:
             n = probe(p)
         except Exception:  # backend missing or metadata absent -> try the next
