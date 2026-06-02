@@ -31,15 +31,9 @@ uv add deeperfly[cuda]
 
 ## Checking your install
 
-`deeperfly doctor` reports what this machine can actually run — useful right after
-installing, after adding an extra, or when a GPU isn't being picked up. It prints
-the package version and location, whether **CPU/GPU inference** is available
-(PyTorch CUDA/Metal and the JAX backend, plus total accelerator memory), which
-**video backends** are installed for read/write — listed in the order
-`backend="auto"` prefers them, flagging the GPU/NVDEC decoders — whether the
-**detector weights** have been downloaded and where they're cached, and
-the path to the packaged default config:
-
+`deeperfly doctor` reports what this machine can actually run — inference backends,
+video read/write backends (in `backend="auto"` preference order), detector weights,
+and the default config path. Run it after installing to check that everything is set up correctly.
 ```bash
 deeperfly doctor
 ```
@@ -76,7 +70,7 @@ config
 
 On a CPU-only box `GPU inference` reads `not available -- CPU only`, `GPU decoders`
 shows `none (CPU decode only)`, and the weights show `not downloaded` until the
-first `deeperfly run` fetches and converts them.
+first `deeperfly run` fetches them.
 
 ## Quickstart
 
