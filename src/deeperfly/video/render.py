@@ -29,15 +29,15 @@ def render_pose3d_video(
     *,
     fps: float = 30.0,
     use_smoothed: bool = True,
-    elev: float = 20.0,
-    azim: float = -60.0,
+    elev: float = 90,
+    azim: float = 0.0,
     background: str = "white",
     backend: str = "auto",
 ) -> None:
     """Render the triangulated 3D skeleton over time to an MP4.
 
-    ``background`` is ``"white"`` or ``"black"``; legs follow
-    :data:`deeperfly.viz.LEG_PALETTE` (left blue / right red).
+    ``background`` is ``"white"`` or ``"black"``; limbs follow the skeleton's
+    ``palette`` (legs left blue / right red).
     """
     import matplotlib.pyplot as plt
 
@@ -94,7 +94,7 @@ def render_overlay_video(
     """Render one camera's 2D pose overlay across frames to an MP4.
 
     ``background`` (``"white"`` / ``"black"``) colors the margins around the
-    frame; legs follow :data:`deeperfly.viz.LEG_PALETTE`. ``images`` may be a
+    frame; limbs follow the skeleton's ``palette``. ``images`` may be a
     GPU-decoded tensor (e.g. when the detector ran on the GPU); it is brought to
     host NumPy here for matplotlib.
     """

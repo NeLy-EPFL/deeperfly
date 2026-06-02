@@ -150,9 +150,11 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     )
     g.create_dataset("limb_id", data=s.limb_id)
     g.create_dataset("bones", data=s.bones)
-    g.create_dataset("bones3d", data=s.bones3d)
     g.create_dataset("left_idx", data=s.left_idx)
     g.create_dataset("right_idx", data=s.right_idx)
+    pal = g.create_group("palette")
+    for name, color in s.palette.items():
+        pal.attrs[name] = color
     vis = g.create_group("visibility")
     for name, idx in s.visibility.items():
         vis.create_dataset(name, data=idx)
@@ -163,13 +165,17 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         x.decode() if isinstance(x, bytes) else x for x in arr
     )
     visibility = {name: g["visibility"][name][()] for name in g.get("visibility", {})}
+    palette = {
+        name: (v.decode() if isinstance(v, bytes) else v)
+        for name, v in g["palette"].attrs.items()
+    }
     return Skeleton(
         name=g.attrs["name"],
         joint_names=decode(g["joint_names"][()]),
         limb_names=decode(g["limb_names"][()]),
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],
-        bones3d=g["bones3d"][()],
+        palette=palette,
         left_idx=g["left_idx"][()],
         right_idx=g["right_idx"][()],
         visibility=visibility,

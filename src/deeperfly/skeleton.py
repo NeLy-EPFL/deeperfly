@@ -9,8 +9,8 @@ and visualization (drawing bones).
 
 The default fly skeleton is packaged as ``data/skeleton_fly.toml`` and mirrors
 NeLy-EPFL/DeepFly3D's ``skeleton_fly.py``: 38 points (right ``0..18``, left
-``19..37``), 10 limbs, 28 within-leg/stripe bones, and one cross-body antenna
-bone. Load it with :meth:`Skeleton.fly`.
+``19..37``), 10 limbs and 28 within-leg/stripe bones. Load it with
+:meth:`Skeleton.fly`.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ class Skeleton:
         :func:`_parse_limb_joints`): the limb names (length ``n_limbs``), each
         point's limb index (shape ``(n_points,)``), and the within-view 2D edges
         as point-index pairs (shape ``(n_bones, 2)``).
-    bones3d
-        Cross-body edges meaningful only in 3D (e.g. antenna-antenna), shape
-        ``(n_bones3d, 2)``.
+    palette
+        Mapping ``limb_name -> hex color`` for plotting. Limbs absent from the
+        mapping fall back to a default colormap in the visualization helpers.
     left_idx, right_idx
         Point indices of the left / right leg joints, used for separate-side
         Procrustes alignment.
@@ -57,7 +57,7 @@ class Skeleton:
     limb_names: tuple[str, ...]
     limb_id: Int[np.ndarray, "N"]
     bones: Int[np.ndarray, "B 2"]
-    bones3d: Int[np.ndarray, "B3 2"]
+    palette: dict[str, str]
     left_idx: Int[np.ndarray, "L"]
     right_idx: Int[np.ndarray, "R"]
     visibility: dict[str, Int[np.ndarray, "M"]]
@@ -78,7 +78,7 @@ class Skeleton:
         spec = config["skeleton"]
         n = len(spec["joint_names"])
         limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
-        bones3d = _edges(spec.get("bones3d", []), n, "bones3d")
+        palette = {str(k): str(v) for k, v in spec.get("palette", {}).items()}
         visibility = {
             name: np.asarray(idx, dtype=np.int64)
             for name, idx in spec.get("visibility", {}).items()
@@ -92,7 +92,7 @@ class Skeleton:
             limb_names=limb_names,
             limb_id=limb_id,
             bones=bones,
-            bones3d=bones3d,
+            palette=palette,
             left_idx=np.asarray(spec.get("left_points", []), dtype=np.int64),
             right_idx=np.asarray(spec.get("right_points", []), dtype=np.int64),
             visibility=visibility,
@@ -127,16 +127,10 @@ class Skeleton:
         return mask
 
     def bone_index_pairs(
-        self, include_3d: bool = False
+        self,
     ) -> tuple[Int[np.ndarray, "B"], Int[np.ndarray, "B"]]:
-        """Endpoint index arrays ``(i, j)`` for vectorized bone-length maths.
-
-        With ``include_3d`` the cross-body :attr:`bones3d` edges are appended.
-        """
-        edges = self.bones
-        if include_3d and self.bones3d.size:
-            edges = np.concatenate([self.bones, self.bones3d], axis=0)
-        return edges[:, 0], edges[:, 1]
+        """Endpoint index arrays ``(i, j)`` for vectorized bone-length maths."""
+        return self.bones[:, 0], self.bones[:, 1]
 
     # -- point selection / merging -------------------------------------------
 
@@ -229,9 +223,14 @@ class Skeleton:
             _strip_side_prefix(name) if "stripe" in name.lower() else name
             for name in (self.limb_names[u] for u in used)
         ]
+        # Carry each surviving limb's color across to its (possibly renamed) limb.
+        new_palette = {
+            new_name: self.palette[self.limb_names[u]]
+            for new_name, u in zip(new_limb_names, used)
+            if self.limb_names[u] in self.palette
+        }
 
         new_bones = _unique_edges(remap[self.bones])
-        new_bones3d = _unique_edges(remap[self.bones3d])
         new_visibility = {
             cam: np.unique(remap[idx]) for cam, idx in self.visibility.items()
         }
@@ -241,7 +240,7 @@ class Skeleton:
             limb_names=tuple(new_limb_names),
             limb_id=new_limb_id,
             bones=new_bones,
-            bones3d=new_bones3d,
+            palette=new_palette,
             left_idx=remap[self.left_idx] if self.left_idx.size else self.left_idx,
             right_idx=remap[self.right_idx] if self.right_idx.size else self.right_idx,
             visibility=new_visibility,

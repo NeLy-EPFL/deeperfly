@@ -18,15 +18,22 @@ def test_counts(fly):
     assert fly.n_points == 38
     assert fly.n_limbs == 10
     assert fly.bones.shape == (28, 2)
-    assert fly.bones3d.tolist() == [[15, 34]]
     assert len(fly.joint_names) == 38
     assert fly.limb_id.shape == (38,)
 
 
 def test_bone_indices_in_range(fly):
-    for edges in (fly.bones, fly.bones3d):
-        assert edges.min() >= 0
-        assert edges.max() < fly.n_points
+    assert fly.bones.min() >= 0
+    assert fly.bones.max() < fly.n_points
+
+
+def test_palette(fly):
+    # One color per limb, with the bright antenna/stripe cues set in the config.
+    assert set(fly.palette) == set(fly.limb_names)
+    assert fly.palette["l_antenna"] == "#0000ff"
+    assert fly.palette["r_antenna"] == "#ff00ff"
+    assert fly.palette["l_stripe"] == "#00ffff"
+    assert fly.palette["r_stripe"] == "#ff00ff"
 
 
 def test_left_right_legs_disjoint(fly):
@@ -59,9 +66,6 @@ def test_bone_index_pairs(fly):
     i, j = fly.bone_index_pairs()
     assert i.shape == j.shape == (28,)
     np.testing.assert_array_equal(np.stack([i, j], axis=1), fly.bones)
-    i3, j3 = fly.bone_index_pairs(include_3d=True)
-    assert i3.shape == (29,)
-    assert (i3[-1], j3[-1]) == (15, 34)
 
 
 def test_from_config_dict_roundtrip(fly):
@@ -70,7 +74,7 @@ def test_from_config_dict_roundtrip(fly):
             "name": "toy",
             "joint_names": ["a", "b", "c"],
             "limb_joints": {"L": [0, 1, 2]},
-            "bones3d": [],
+            "palette": {"L": "#123456"},
             "left_points": [0],
             "right_points": [2],
             "visibility": {"cam0": [0, 1], "cam1": [1, 2]},
@@ -82,7 +86,7 @@ def test_from_config_dict_roundtrip(fly):
     np.testing.assert_array_equal(s.limb_id, [0, 0, 0])
     # The limb's three points form a two-edge chain.
     np.testing.assert_array_equal(s.bones, [[0, 1], [1, 2]])
-    assert s.bones3d.shape == (0, 2)
+    assert s.palette == {"L": "#123456"}
     mask = s.visibility_mask(["cam0", "cam1"])
     np.testing.assert_array_equal(mask, [[True, True, False], [False, True, True]])
 
@@ -134,9 +138,8 @@ def test_merge_lr_stripes_structure(fly):
     # other point keeps its index.
     np.testing.assert_array_equal(remap[:35], np.arange(35))
     np.testing.assert_array_equal(remap[35:38], [16, 17, 18])
-    # The duplicated stripe chain collapses; the antenna 3D bone is untouched.
+    # The duplicated stripe chain collapses.
     assert merged.bones.shape == (26, 2)
-    assert merged.bones3d.tolist() == [[15, 34]]
     # Leg indices are unchanged (all below the dropped points).
     np.testing.assert_array_equal(merged.left_idx, fly.left_idx)
     np.testing.assert_array_equal(merged.right_idx, fly.right_idx)
@@ -144,6 +147,9 @@ def test_merge_lr_stripes_structure(fly):
     assert merged.n_limbs == 9  # the now-empty left-stripe limb is dropped
     assert "stripe" in merged.limb_names
     assert "r_stripe" not in merged.limb_names and "l_stripe" not in merged.limb_names
+    # The surviving stripe limb keeps its color under the prefix-stripped name.
+    assert merged.palette["stripe"] == fly.palette["r_stripe"]
+    assert "r_stripe" not in merged.palette and "l_stripe" not in merged.palette
 
 
 def test_merge_lr_stripes_visibility(fly):

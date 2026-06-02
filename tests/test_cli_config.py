@@ -64,7 +64,7 @@ def test_template_skeleton_matches_fly():
     assert sk.limb_names == fly.limb_names
     np.testing.assert_array_equal(sk.limb_id, fly.limb_id)
     np.testing.assert_array_equal(sk.bones, fly.bones)
-    np.testing.assert_array_equal(sk.bones3d, fly.bones3d)
+    assert sk.palette == fly.palette
     np.testing.assert_array_equal(sk.left_idx, fly.left_idx)
     np.testing.assert_array_equal(sk.right_idx, fly.right_idx)
     assert set(sk.visibility) == set(fly.visibility)

@@ -76,6 +76,7 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     sk = PoseResult.load(path).skeleton
     assert sk.name == "drosophila"
     assert sk.joint_names == Skeleton.fly().joint_names
+    assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
     np.testing.assert_array_equal(
         sk.visibility_mask(cameras.names),

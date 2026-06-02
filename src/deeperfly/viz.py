@@ -1,8 +1,8 @@
 """Headless matplotlib visualization of 2D overlays and 3D skeletons.
 
 Functions draw onto an existing ``Axes`` when given one (so callers compose
-montages / video frames) or create a figure otherwise. Bones come from the
-:class:`~deeperfly.skeleton.Skeleton`; each limb gets a stable color and
+montages / video frames) or create a figure otherwise. Bones and per-limb
+colors come from the :class:`~deeperfly.skeleton.Skeleton` (its ``palette``);
 detector confidence (when supplied) modulates joint opacity. Requires the
 ``viz`` extra (``matplotlib``); import this module only when plotting.
 """
@@ -22,18 +22,6 @@ from jaxtyping import Float  # noqa: E402
 
 from .skeleton import Skeleton  # noqa: E402
 
-#: Per-leg colors: left = blues, right = reds, lightening front -> hind.
-LEG_PALETTE: dict[str, str] = {
-    "lf_leg": "#0f7399",
-    "lm_leg": "#1a8daf",
-    "lh_leg": "#75becb",
-    "rf_leg": "#ba1e31",
-    "rm_leg": "#c9564f",
-    "rh_leg": "#d58579",
-}
-#: Muted side tint for non-leg limbs (antennae, stripes) by their L/R prefix.
-_SIDE_TINT: dict[str, str] = {"L": "#5b8f9c", "R": "#b07c77"}
-
 #: Background presets: figure/axes face color and the matching foreground
 #: (spines, ticks, labels, 3D panes) so plots read on white or black.
 BACKGROUNDS: dict[str, dict[str, str]] = {
@@ -47,11 +35,12 @@ def limb_colors(
 ) -> np.ndarray:
     """A stable RGBA color per tracked point, colored by its limb.
 
-    Legs use :data:`LEG_PALETTE` (left blue / right red, lightening to the hind
-    leg); antennae and stripes take a muted tint of their side; any other limb
-    falls back to ``tab10`` so non-fly skeletons stay distinguishable.
+    Colors come from the skeleton's :attr:`~deeperfly.skeleton.Skeleton.palette`
+    (a ``limb_name -> hex`` mapping; pass ``palette`` to override it). Limbs
+    without an entry fall back to ``tab10`` so non-fly skeletons stay
+    distinguishable.
     """
-    palette = LEG_PALETTE if palette is None else palette
+    palette = skeleton.palette if palette is None else palette
     cmap = plt.get_cmap("tab10")
     colors = []
     for n in range(skeleton.n_points):
@@ -59,8 +48,6 @@ def limb_colors(
         name = skeleton.limb_names[lid] if lid < len(skeleton.limb_names) else ""
         if name in palette:
             colors.append(mcolors.to_rgba(palette[name]))
-        elif name[:1] in _SIDE_TINT:
-            colors.append(mcolors.to_rgba(_SIDE_TINT[name[0]]))
         else:
             colors.append(cmap((lid % 10) / 10.0))
     return np.array(colors)
@@ -147,10 +134,9 @@ def plot_skeleton_3d(
     ax: Axes3D | None = None,
     elev: float = 20.0,
     azim: float = -60.0,
-    draw_bones3d: bool = True,
     background: str = "white",
 ) -> Axes3D:
-    """Draw a 3D skeleton (bones + cross-body bones) into a 3D axis.
+    """Draw a 3D skeleton (bones) into a 3D axis.
 
     ``background`` is ``"white"`` or ``"black"`` (sets the panes, grid and labels).
     """
@@ -161,16 +147,15 @@ def plot_skeleton_3d(
     pts3d = np.asarray(pts3d, dtype=float)
     colors = limb_colors(skeleton)
 
-    edges = skeleton.bones
-    if draw_bones3d and skeleton.bones3d.size:
-        edges = np.concatenate([skeleton.bones, skeleton.bones3d], axis=0)
-    for a, b in edges:
+    for a, b in skeleton.bones:
         if np.isfinite(pts3d[[a, b]]).all():
             ax.plot(*pts3d[[a, b]].T, "-", color=colors[a], linewidth=1.0)
     finite = np.isfinite(pts3d).all(-1)
     ax.scatter(*pts3d[finite].T, s=10, c=colors[finite])
     ax.set_aspect("equal")
     ax.view_init(elev=elev, azim=azim)
+    ax.grid(False)
+    ax.axis("off")
     return ax
 
 

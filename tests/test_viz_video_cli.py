@@ -37,14 +37,14 @@ def test_overlay_grid_runs(result):
     assert len(fig.axes) >= result.n_views
 
 
-def test_leg_palette_colors(fly):
+def test_limb_palette_colors(fly):
     import matplotlib.colors as mc
 
     colors = viz.limb_colors(fly)
-    for joint, hexc in viz.LEG_PALETTE.items():
-        # each leg's joints take that leg's color
-        idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == joint]
-        assert idx, joint
+    for limb, hexc in fly.palette.items():
+        # each of the limb's joints takes that limb's color from the skeleton palette
+        idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == limb]
+        assert idx, limb
         for i in idx:
             np.testing.assert_allclose(colors[i], mc.to_rgba(hexc))
 
