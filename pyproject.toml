@@ -42,7 +42,7 @@ dependencies = [
     "h5py>=3.11",
     "equinox>=0.11",
     "platformdirs>=4.0",
-    "tqdm>=4.66",          # CLI progress bars (auto-disabled off a TTY / under -q)
+    "rich>=14.0",          # colored logs, status output and the detection progress bar
     # Visualization + default video I/O, so `deeperfly run` works out of the box.
     "matplotlib>=3.10",
     "imageio>=2.34",

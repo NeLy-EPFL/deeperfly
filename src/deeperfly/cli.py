@@ -34,6 +34,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.text import Text
+
 
 def _prep_gpu_memory_policy() -> None:
     """Cap JAX's GPU memory pool so the detector can share VRAM with on-device
@@ -77,6 +81,12 @@ STAGES = ("detect", "pose3d", "visualize")
 #: throughput. 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
 DEFAULT_CHUNK_FRAMES = 64
 
+#: Human-facing output goes through rich: status/results to stdout, while logs and
+#: the detection progress bar share the stderr console (so piping stdout to a file
+#: stays clean and progress never clobbers a log line).
+console = Console()
+err_console = Console(stderr=True)
+
 log = logging.getLogger("deeperfly")
 
 
@@ -86,7 +96,12 @@ def _load_config(path: str | Path) -> dict:
 
 
 def _configure_logging(verbose: int, quiet: bool) -> None:
-    """Map ``-v``/``-q`` onto a root log level (default ``WARNING``)."""
+    """Map ``-v``/``-q`` onto a root log level (default ``WARNING``).
+
+    Records render through rich's :class:`~rich.logging.RichHandler` (colored level
+    column, messages wrapped to the terminal) on the same stderr console as the
+    progress bar, so log lines and the bar never overwrite each other.
+    """
     if quiet:
         level = logging.ERROR
     elif verbose >= 2:
@@ -95,7 +110,14 @@ def _configure_logging(verbose: int, quiet: bool) -> None:
         level = logging.INFO
     else:
         level = logging.WARNING
-    logging.basicConfig(level=level, format="%(message)s", stream=sys.stderr)
+    handler = RichHandler(
+        console=err_console,
+        show_time=False,
+        show_path=False,
+        markup=False,  # log messages carry dict/list reprs; don't parse their brackets
+        rich_tracebacks=True,
+    )
+    logging.basicConfig(level=level, format="%(message)s", handlers=[handler])
     log.setLevel(level)
     # JAX probes every platform on first use and warns when the TPU plugin's
     # libtpu.so is absent (the normal case on a CPU/GPU box). Mute that noise
@@ -324,7 +346,15 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
     depend on :func:`deeperfly.video.count_frames` being exact -- that is only the
     progress-bar total.
     """
-    from tqdm import tqdm
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
 
     from . import video
     from .pictorial import Candidates
@@ -356,14 +386,27 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
     )
 
     pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
-    bar = tqdm(total=total, desc="detect 2D", unit="frame", disable=quiet or None)
+    bar = Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn("frames"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=err_console,
+        # mirror tqdm's auto-disable: off under -q and when stderr isn't a TTY.
+        disable=quiet or not err_console.is_terminal,
+    )
 
-    def progress(rng):  # advance the single bar across every chunk
-        for t in rng:
-            yield t
-            bar.update(1)
+    with bar:
+        task = bar.add_task("detect 2D", total=total)
 
-    try:
+        def progress(rng):  # advance the single bar once per completed frame
+            for t in rng:
+                yield t
+                bar.advance(task)
+
         for window, _ in _prefetch_windows(
             sources, backend=backend, device=device, chunk=chunk
         ):
@@ -385,8 +428,6 @@ def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
             pts_parts.append(p)
             conf_parts.append(c)
             del window  # release this window's frames before the next is consumed
-    finally:
-        bar.close()
 
     if not pts_parts:
         raise SystemExit("detector received no frames")
@@ -638,11 +679,15 @@ def _cmd_init(args: argparse.Namespace) -> None:
     if dst.exists() and not args.force:
         raise SystemExit(f"{dst} already exists (pass --force to overwrite)")
     dst.write_text(DEFAULT_CONFIG_PATH.read_text())
-    print(f"wrote {dst}")
-    print(
+    console.print(f"[green]wrote[/green] {dst}")
+    # markup=False: the message shows literal [inputs]/[cameras] config sections,
+    # which rich would otherwise try to parse as style tags.
+    console.print(
         "next: edit [inputs]/[cameras] to match your rig, then "
         f"'deeperfly run <recording> -c {dst}' "
-        "(outputs land in <recording>/deeperfly_outputs/; override with -o <dir>)"
+        "(outputs land in <recording>/deeperfly_outputs/; override with -o <dir>)",
+        markup=False,
+        highlight=False,
     )
 
 
@@ -708,17 +753,31 @@ def _cmd_run(args: argparse.Namespace) -> None:
         _stage_visualize(args, config, result, frames, outdir)
 
 
+def _info_line(label: str, value: object) -> None:
+    """Print one ``label   value`` row with a colored label.
+
+    Built as a :class:`rich.text.Text` (not markup) so dynamic values that contain
+    brackets -- e.g. the camera-name list -- are never parsed as style tags.
+    """
+    line = Text(label, style="bold cyan")
+    line.append(str(value))
+    console.print(line)
+
+
 def _cmd_info(args: argparse.Namespace) -> None:
     result = PoseResult.load(args.input)
-    print(f"file:     {args.input}")
-    print(f"views:    {result.n_views}  {result.cameras.names}")
-    print(f"frames:   {result.n_frames}")
-    print(f"skeleton: {result.skeleton.name}  ({result.skeleton.n_points} points)")
-    print(f"has 3D:   {result.pts3d is not None}")
+    _info_line("file:     ", args.input)
+    _info_line("views:    ", f"{result.n_views}  {result.cameras.names}")
+    _info_line("frames:   ", result.n_frames)
+    _info_line(
+        "skeleton: ", f"{result.skeleton.name}  ({result.skeleton.n_points} points)"
+    )
+    _info_line("has 3D:   ", result.pts3d is not None)
     if result.reproj_error is not None:
-        print(
-            f"reproj:   median {np.nanmedian(result.reproj_error):.3f} px"
-            f"  max {np.nanmax(result.reproj_error):.3f} px"
+        _info_line(
+            "reproj:   ",
+            f"median {np.nanmedian(result.reproj_error):.3f} px"
+            f"  max {np.nanmax(result.reproj_error):.3f} px",
         )
 
 

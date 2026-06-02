@@ -488,9 +488,9 @@ def detect_sequence(
     identical (the detector is per-row independent), only the dispatch granularity
     differs.
 
-    ``progress`` optionally wraps the per-frame iterator (e.g. ``tqdm``) so callers
-    can show a progress bar; it defaults to the identity, keeping the library
-    UI-free. It is advanced once per *completed* frame in either mode.
+    ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress bar)
+    so callers can show a progress bar; it defaults to the identity, keeping the
+    library UI-free. It is advanced once per *completed* frame in either mode.
     """
     n_views, n_frames = len(frames), len(frames[0])
     frames = [_window_to_device(f) for f in frames]  # one host->device copy per cam
