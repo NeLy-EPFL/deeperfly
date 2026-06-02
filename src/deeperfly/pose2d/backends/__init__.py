@@ -7,7 +7,7 @@ interface:
   runs the published ``sh8`` weights as a pure JAX PyTree (``jit`` / ``vmap``-able)
   and is the faster backend on GPU (see ``dev/bench_pose2d.py``).
 * :mod:`~deeperfly.pose2d.backends.torch` -- a faithful copy of the original
-  DeepFly2D network that loads the released ``.tar`` weights directly, with no
+  DeepFly2D network that loads the released DeepFly2D weights directly, with no
   conversion. A reference implementation and a path for users already on PyTorch.
 
 Each backend exposes the same trio -- ``HourglassNet``, :func:`load_model` and

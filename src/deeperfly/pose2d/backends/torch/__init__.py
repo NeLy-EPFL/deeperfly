@@ -1,4 +1,4 @@
-"""PyTorch detector backend -- the reference that runs the original ``.tar``.
+"""PyTorch detector backend -- the reference that runs the original checkpoint.
 
 Presents the uniform backend interface (``HourglassNet``, :func:`load_model`,
 :func:`predict_heatmaps`) plus :func:`state_dict_from_torch_checkpoint`, which

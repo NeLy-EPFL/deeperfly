@@ -17,9 +17,11 @@ import platformdirs
 
 log = logging.getLogger("deeperfly")
 
-# Original DeepFly2D stacked-hourglass weights (PyTorch .tar), from df2d/inference.py.
+# Original DeepFly2D stacked-hourglass weights (from df2d/inference.py). The
+# upstream release is a legacy PyTorch pickle the file name calls ``.tar`` (it is
+# not a tar archive); we cache it locally as ``.pth`` to match torch convention.
 TORCH_WEIGHTS_URL = "https://www.dropbox.com/s/csgon8uojr3gdd9/sh8_front_j8.tar?dl=1"
-TORCH_WEIGHTS_NAME = "sh8_deepfly.tar"
+TORCH_WEIGHTS_NAME = "sh8_deepfly.pth"
 JAX_WEIGHTS_NAME = "sh8_deepfly.eqx"
 
 
@@ -53,7 +55,7 @@ def download_torch_weights(*, force: bool = False, sha256: str | None = None) ->
 
 
 def torch_weights_path() -> Path:
-    """Expected path of the original PyTorch ``.tar`` checkpoint in the cache."""
+    """Expected path of the cached PyTorch checkpoint (``.pth``)."""
     return cache_dir() / TORCH_WEIGHTS_NAME
 
 
@@ -67,7 +69,7 @@ def ensure_jax_weights(path: str | Path | None = None, *, force: bool = False) -
 
     On a cache hit (``path`` -- default :func:`jax_weights_path` -- exists and not
     ``force``) the path is returned immediately. Otherwise the original PyTorch
-    ``.tar`` is downloaded (:func:`download_torch_weights`) and converted to the
+    checkpoint is downloaded (:func:`download_torch_weights`) and converted to the
     native Equinox checkpoint, so the runtime detector never needs torch again.
     This is what ``deeperfly run`` calls when the JAX backend finds no cached
     weights.

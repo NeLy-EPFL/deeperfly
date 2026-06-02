@@ -7,7 +7,7 @@ is a key-by-key copy with two shape fixups: convolution kernels share PyTorch's
 ``(out, 1, 1)`` and BatchNorm running statistics map onto :class:`FrozenBatchNorm`.
 :func:`convert_state_dict` produces a model that :func:`save_checkpoint` serializes
 with Equinox's native format, so the runtime (:func:`load_model`) never imports
-torch. Reading the original ``.tar`` lives in the torch backend
+torch. Reading the original checkpoint lives in the torch backend
 (:func:`deeperfly.pose2d.backends.torch.weights.state_dict_from_torch_checkpoint`).
 """
 

@@ -6,7 +6,7 @@ The detector ships two interchangeable backends behind one interface, in
 * :mod:`~deeperfly.pose2d.backends.jax` -- the **default** Equinox port; runs the
   published ``sh8`` weights as a pure JAX PyTree and is the faster backend on GPU.
 * :mod:`~deeperfly.pose2d.backends.torch` -- a faithful copy of the original
-  DeepFly2D network that loads the released ``.tar`` weights directly.
+  DeepFly2D network that loads the released DeepFly2D weights directly.
 
 Both expose ``HourglassNet`` / ``load_model`` / ``predict_heatmaps`` and the same
 heatmap contract, so the shared orchestration in

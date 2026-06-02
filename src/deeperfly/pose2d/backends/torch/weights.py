@@ -1,4 +1,4 @@
-"""Weight I/O for the PyTorch backend: read the original DeepFly2D ``.tar``.
+"""Weight I/O for the PyTorch backend: read the original DeepFly2D checkpoint.
 
 The released checkpoint is a plain PyTorch ``state_dict`` (possibly wrapped by
 Lightning/DataParallel), so this backend loads it directly into the
@@ -18,7 +18,7 @@ from .model import HourglassNet, device
 
 
 def state_dict_from_torch_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
-    """Load a DeepFly2D ``.tar`` checkpoint into a native ``HourglassNet`` state-dict.
+    """Load a DeepFly2D checkpoint into a native ``HourglassNet`` state-dict.
 
     Strips Lightning/DataParallel ``module.`` / ``model.`` prefixes and returns
     plain NumPy arrays (so it doubles as the source for the JAX conversion).
@@ -36,7 +36,7 @@ def state_dict_from_torch_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
 def load_model(
     checkpoint: str | Path | None = None, *, dev: str | None = None
 ) -> HourglassNet:
-    """Build the DeepFly2D net and (optionally) load the original ``.tar`` weights.
+    """Build the DeepFly2D net and (optionally) load the original DeepFly2D weights.
 
     The number of stacks is taken from the checkpoint (the published weights are
     ``sh8`` = 8 stacks), so the architecture always matches before the strict
