@@ -65,22 +65,17 @@ def test_resolve_stages_all_cached_is_noop():
 
 
 def _stub_detect(monkeypatch, tmp_path):
-    """Stub frame reading + detector so detect needs no files or weights."""
+    """Stub frame sizing + detection so detect needs no files or weights."""
     T, H, W = 3, 16, 16
-    frames = [np.zeros((T, H, W, 3), np.uint8) for _ in FLY_CAMERAS]
     sizes = {n: (H, W) for n in FLY_CAMERAS}
-    monkeypatch.setattr(cli, "_read_camera_frames", lambda inp, config: (frames, sizes))
+    monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
     monkeypatch.setattr(cli, "_load_detector", lambda checkpoint, backend: object())
 
-    from deeperfly.pose2d import inference
+    def fake_detect_2d(args, config, model, sides, flips, **kw):
+        v = len(FLY_CAMERAS)
+        return np.zeros((v, T, 38, 2)), np.ones((v, T, 38)), None
 
-    def fake_detect_sequence(model, frames, sides, flips, *, progress=None, **kw):
-        steps = progress(range(len(frames[0]))) if progress else range(len(frames[0]))
-        list(steps)  # exercise the progress hook
-        v, t = len(frames), len(frames[0])
-        return np.zeros((v, t, 38, 2)), np.ones((v, t, 38))
-
-    monkeypatch.setattr(inference, "detect_sequence", fake_detect_sequence)
+    monkeypatch.setattr(cli, "_detect_2d", fake_detect_2d)
     return T
 
 

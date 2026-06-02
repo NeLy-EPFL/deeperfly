@@ -24,6 +24,8 @@ for bundle adjustment. The batched public functions are themselves thin
 
 from __future__ import annotations
 
+import sys
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -35,8 +37,11 @@ jax.config.update("jax_enable_x64", True)
 # x64 geometry/bundle-adjustment math here would crash on it. Keep float64 work on
 # the CPU; the detector opts into Metal explicitly (it is float32 --
 # deeperfly.pose2d.backends.jax.load_model). No-op without jax-mps, and leaves
-# CUDA/CPU defaults untouched.
-if jax.default_backend() == "mps":
+# CUDA/CPU defaults untouched. Gate on macOS first: ``jax.default_backend()``
+# forces JAX to initialize a backend, and doing that at import would lock in the
+# GPU memory policy before the CLI can tune it -- only Apple Silicon can ever be
+# "mps", so elsewhere we skip the probe entirely.
+if sys.platform == "darwin" and jax.default_backend() == "mps":
     jax.config.update("jax_default_device", jax.devices("cpu")[0])
 
 # Below this squared rotation angle, sin/cos are evaluated via Taylor series

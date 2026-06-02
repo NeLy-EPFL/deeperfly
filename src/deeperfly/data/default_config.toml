@@ -67,7 +67,17 @@ lh = "camera_6"
 # ---------------------------------------------------------------------------
 [detector]
 backend = "jax"          # jax | torch
-video_backend = "auto"   # frame reader: auto|imageio|opencv|pyav|decord|...
+# frame reader. "auto" = fastest *frame-accurate* decoder: GPU/NVDEC (torchcodec,
+# then dali) when a GPU and a GPU backend are installed, else the fastest installed
+# CPU decoder (decord/video_reader_rs/torchcodec/pyav/opencv before imageio). Force
+# one with e.g. "dali" | "torchcodec" | "decord" | "pyav" | "opencv".
+video_backend = "auto"
+# Frames decoded + detected at a time, per camera (streaming). A *memory* knob:
+# detection is compute-bound, so every decoder outpaces it and a small window
+# costs no speed but keeps VRAM low (64 ~= 0.6 GB of frames for a 7-cam 480x960
+# rig). Lower it for high-res / many cameras / small GPUs; raise it on the DALI
+# fallback (prefers larger windows) or to cut per-window decoder setup.
+chunk_frames = 64
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
@@ -105,9 +115,7 @@ fixed = [
     "f.tvec",     # ... and position (fixes the world gauge)
     "rm.tvec[2]",
 ]
-shared = [
-    ["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"],
-]
+shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
 
 [bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
 max_nfev = 2000

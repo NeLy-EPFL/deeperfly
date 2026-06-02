@@ -87,12 +87,16 @@ def render_overlay_video(
     """Render one camera's 2D pose overlay across frames to an MP4.
 
     ``background`` (``"white"`` / ``"black"``) colors the margins around the
-    frame; legs follow :data:`deeperfly.viz.LEG_PALETTE`.
+    frame; legs follow :data:`deeperfly.viz.LEG_PALETTE`. ``images`` may be a
+    GPU-decoded tensor (e.g. when the detector ran on the GPU); it is brought to
+    host NumPy here for matplotlib.
     """
     import matplotlib.pyplot as plt
 
     from .. import viz
+    from .base import to_numpy
 
+    images = to_numpy(images)
     frames = []
     fig, ax = plt.subplots(figsize=(images.shape[2] / 100, images.shape[1] / 100))
     for t in range(result.pts2d.shape[1]):

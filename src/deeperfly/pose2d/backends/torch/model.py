@@ -179,11 +179,24 @@ def device() -> str:
     return "cpu"
 
 
+def _as_torch(inputs) -> "torch.Tensor":
+    """Coerce ``(N, 3, H, W)`` inputs to a torch tensor without a writability warning.
+
+    The shared preprocess path stacks on-device, so ``inputs`` is usually a
+    ``jax.Array`` (immutable). ``np.array`` materializes a writable host copy --
+    ``torch.from_numpy`` on an immutable array warns, and importing a JAX array via
+    DLPack yields an inference tensor that the model's autograd path rejects.
+    """
+    if isinstance(inputs, torch.Tensor):
+        return inputs
+    return torch.from_numpy(np.array(inputs))  # writable host copy
+
+
 @torch.inference_mode()
 def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
-    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy in/out)."""
+    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
     dev = next(model.parameters()).device
-    x = torch.from_numpy(np.ascontiguousarray(inputs)).float().to(dev)
+    x = _as_torch(inputs).float().to(dev)
     out = model(x)[-1]
     if dev.type == "cuda":
         torch.cuda.synchronize()

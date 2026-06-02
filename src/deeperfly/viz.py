@@ -14,6 +14,9 @@ import matplotlib
 matplotlib.use("Agg", force=False)  # default to a headless backend
 import matplotlib.colors as mcolors  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np  # noqa: E402
 from jaxtyping import Float  # noqa: E402
 
@@ -63,7 +66,7 @@ def limb_colors(
     return np.array(colors)
 
 
-def apply_background(ax: plt.Axes, background: str = "white") -> plt.Axes:
+def apply_background(ax: Axes | Axes3D, background: str = "white") -> Axes | Axes3D:
     """Style ``ax`` (and its figure) for a ``"white"`` or ``"black"`` background.
 
     Sets the figure and axes face colors and recolors spines / ticks / labels
@@ -100,10 +103,10 @@ def plot_skeleton_2d(
     *,
     image: Float[np.ndarray, "H W 3"] | None = None,
     conf: Float[np.ndarray, "N"] | None = None,
-    ax: plt.Axes | None = None,
+    ax: Axes | None = None,
     point_size: float = 12.0,
     background: str = "white",
-) -> plt.Axes:
+) -> Axes:
     """Draw one camera's 2D joints + bones, optionally over its image.
 
     ``pts2d`` is a single frame/camera ``(N, 2)`` in pixels; NaN joints (and the
@@ -141,12 +144,12 @@ def plot_skeleton_3d(
     pts3d: Float[np.ndarray, "N 3"],
     skeleton: Skeleton,
     *,
-    ax: plt.Axes | None = None,
+    ax: Axes3D | None = None,
     elev: float = 20.0,
     azim: float = -60.0,
     draw_bones3d: bool = True,
     background: str = "white",
-) -> plt.Axes:
+) -> Axes3D:
     """Draw a 3D skeleton (bones + cross-body bones) into a 3D axis.
 
     ``background`` is ``"white"`` or ``"black"`` (sets the panes, grid and labels).
@@ -166,6 +169,7 @@ def plot_skeleton_3d(
             ax.plot(*pts3d[[a, b]].T, "-", color=colors[a], linewidth=1.0)
     finite = np.isfinite(pts3d).all(-1)
     ax.scatter(*pts3d[finite].T, s=10, c=colors[finite])
+    ax.set_aspect("equal")
     ax.view_init(elev=elev, azim=azim)
     return ax
 
@@ -178,7 +182,7 @@ def overlay_grid(
     camera_names: list[str] | None = None,
     ncols: int = 4,
     background: str = "white",
-) -> plt.Figure:
+) -> Figure:
     """A montage of every camera's 2D overlay for a single frame."""
     n_views = pts2d.shape[0]
     nrows = int(np.ceil(n_views / ncols))

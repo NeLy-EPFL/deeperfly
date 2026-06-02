@@ -144,33 +144,44 @@ so you can pick where decoding happens and what the frames live in:
 
 | Backend | Read | Write | Seek | Frames | Install |
 | --- | :-: | :-: | :-: | --- | --- |
-| `imageio` (default) | ✓ | ✓ | – | NumPy (CPU) | `viz` extra |
+| `imageio` | ✓ | ✓ | – | NumPy (CPU) | `viz` extra |
 | `opencv` | ✓ | ✓ | ✓ | NumPy (CPU) | `opencv` extra |
 | `pyav` | ✓ | ✓ | ✓ | NumPy (CPU) | `pyav` extra |
 | `decord` | ✓ | – | ✓ | NumPy / `torch` (CPU/**CUDA**) | `decord` extra |
 | `video_reader_rs` | ✓ | – | ✓ | NumPy (CPU) | `video-reader-rs` extra |
 | `torchcodec` | ✓ | – | ✓ | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` extra |
-| `pynvvideocodec` | ✓ | – | ✓ | `torch.Tensor` (**CUDA**) | `pynvvideocodec` extra |
-| `dali` | ✓ | – | – | `torch.Tensor` / NumPy (**CUDA**) | NVIDIA index |
+| `dali` | ✓ | – | ✓ | `torch.Tensor` / NumPy (**CUDA**) | `dali` extra |
 
 ```python
 from deeperfly import video
 
-frames = video.read_video("clip.mp4")                              # NumPy, CPU
+frames = video.read_video("clip.mp4")                              # auto: NumPy (host)
 frames = video.read_video("clip.mp4", backend="pyav")              # frame-accurate
 frames = video.read_video("clip.mp4", indices=[0, 50, 120])        # random access
-frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")  # GPU
+frames = video.read_video("clip.mp4", device="cuda")               # GPU tensor (NVDEC)
 video.write_mp4(frames, "out.mp4", fps=30, backend="opencv")
 video.available_read_backends()       # what's installed here
 ```
 
-`backend="auto"` picks the first installed backend (CPU: imageio → pyav →
-opencv → decord → video_reader_rs; GPU: torchcodec → decord → pynvvideocodec →
-dali). Pass `indices=[...]` for random access: seek-capable backends fetch just
-those frames, others decode up to `max(indices)` and gather. `deeperfly run`
-reads the decoder from `[detector].video_backend`. NVIDIA DALI ships from NVIDIA's package index (e.g.
-`nvidia-dali-cuda120`), so it's not a pip extra but is used automatically when
-importable.
+`backend="auto"` and `device="auto"` (both defaults) pick the **fastest working**
+path. With a GPU present and a GPU backend installed, frames are decoded on the
+GPU; otherwise the fastest installed CPU decoder is used. Preference order
+(fastest first):
+
+- **GPU:** `torchcodec` → `dali` → `decord` (all frame-accurate).
+- **CPU:** `decord` → `video_reader_rs` → `torchcodec` → `pyav` → `opencv` →
+  `imageio` (last; it forks an `ffmpeg` subprocess, which is slow and trips
+  Python 3.13's `os.fork()`-in-a-multithreaded-process warning).
+
+`device="auto"` always returns host NumPy (portable). `device="cuda"` keeps frames
+an on-device `torch.Tensor` for zero-copy handoff to JAX, and with `backend="auto"`
+it tries each GPU backend until one decodes, gracefully falling back to a CPU read
+if none can. Pass `indices=[...]` for random access: seek-capable backends fetch
+just those frames, others decode up to `max(indices)` and gather. `deeperfly run`
+reads the decoder from `[detector].video_backend`. NVIDIA DALI's wheel is
+CUDA-version specific — the `dali` extra pins the CUDA 13 build
+(`nvidia-dali-cuda130`); install `nvidia-dali-cuda1NN` directly for another
+toolkit.
 
 ### Image sequences (jpg / png / …)
 
@@ -189,23 +200,84 @@ frames = video.read_images("frames/", device="cuda")        # nvJPEG -> GPU tens
 frames = video.read_frames(path)                            # video file *or* image dir
 ```
 
-### GPU frames → JAX (zero-copy)
+### GPU video decoding for `deeperfly run` (zero-copy)
 
-The detector runs in JAX, so when you decode onto the GPU you want the frames in
-a JAX array *without* a host round-trip. `video.to_jax` does this via DLPack —
-on a shared GPU, JAX wraps the **same** device buffer the decoder produced:
+When the JAX detector runs on an NVIDIA GPU, `deeperfly run` decodes each camera's
+video **directly on the GPU** (NVDEC) and feeds the frames to the network without
+a host round-trip: the decoded `torch.Tensor` is bridged to JAX via DLPack, so
+`preprocess` normalizes and resizes it on the GPU and the frames never leave the
+device. This happens automatically — no config change — and falls back to a fast
+CPU decode if no GPU backend can decode here.
+
+**Setup.** The `gpu` extra is all you need: it installs a CUDA-enabled JAX *and*
+the fastest GPU decoder, `torchcodec` on CUDA (the CUDA-13 torchcodec build + NVIDIA
+NPP, pinned in the lockfile — see below). **NVIDIA DALI** is an alternative NVDEC
+decoder; add `--extra dali` for it. Both are frame-accurate.
+
+```bash
+# Recommended — CUDA JAX + torchcodec-on-CUDA, fully managed by the lock:
+uv sync --extra gpu
+
+# Add DALI too (also NVDEC, frame-accurate; needs only the NVIDIA driver):
+uv sync --extra gpu --extra dali
+
+# …or just grab everything (all decoders + viz + dali):
+uv sync --all-extras
+```
+
+- **CUDA JAX** (`gpu` extra) puts the detector on the GPU. Check with
+  `python -c "import jax; print(jax.devices())"` → it should list a `CudaDevice`.
+- **`torchcodec`** is tried first and is the fastest decoder here. CUDA decode
+  needs a *CUDA-enabled* torchcodec build — the plain PyPI wheel is CPU-only — plus
+  NVIDIA **NPP** (for GPU color conversion). The `gpu` extra handles both: on Linux
+  x86-64 `[tool.uv.sources]` routes `torchcodec` to the PyTorch CUDA-13 index
+  (`download.pytorch.org/whl/cu130`) and pulls `nvidia-npp`, so a plain `uv sync
+  --extra gpu` reproduces a working GPU decoder from the lockfile — no manual
+  `uv pip install`. (torch itself is left on PyPI; its wheel already bundles CUDA 13,
+  so the cu130 torchcodec is ABI-compatible.) deeperfly `dlopen`s NPP's libs for
+  you, so no `LD_LIBRARY_PATH` tweak is needed. If the CUDA build/NPP are missing
+  you'll see a one-time `GPU decode via 'torchcodec' backend failed …` and it
+  moves on to the next backend.
+- **`dali`** (NVIDIA DALI) is a frame-accurate NVDEC decoder that just needs the
+  driver. Its wheel is CUDA-version specific — the `dali` extra pins the CUDA 13
+  build (`nvidia-dali-cuda130`); for another toolkit install `nvidia-dali-cuda1NN`
+  yourself. (It decodes the window straight to a GPU tensor, but rebuilds its
+  pipeline per window, so it prefers a larger `chunk_frames`.)
+
+If no frame-accurate GPU backend can decode (or there's no GPU), decoding falls
+back to the fastest installed CPU backend (decord, …) and the detector still runs
+— correct results, just with a host→GPU upload per frame instead of on-device
+decode.
+
+> **Memory & long videos:** detection **streams** — it decodes and detects
+> `[detector] chunk_frames` frames at a time per camera (default 64) and frees each
+> window before the next, so peak frame memory is bounded by the window, *not* the
+> recording length. A multi-hour video runs in constant memory. `chunk_frames` is a
+> **memory** knob, not a speed one: detection is compute-bound (~28 frames/s on an
+> RTX 4090) and every decoder is far faster (see `dev/bench_video.py`), so a small
+> window costs no throughput — 64 holds ~0.6 GB of frames for a 7-camera 480×960
+> rig. Lower it for high-res / many cameras / small GPUs; raise it on the DALI
+> fallback or to cut per-window decoder setup. `deeperfly run` also caps JAX's GPU
+> pool at half the card (`XLA_PYTHON_CLIENT_MEM_FRACTION=0.5`, unless you set it),
+> and the auto path degrades to CPU decode if a window still won't fit.
+
+#### Doing it yourself
+
+`video.to_jax` is the DLPack bridge used under the hood — on a shared GPU, JAX
+wraps the **same** device buffer the decoder produced:
 
 ```python
-frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")  # torch, GPU
-x = video.to_jax(frames)              # jax.Array on the GPU, zero-copy
+frames = video.read_video("clip.mp4", device="cuda")  # torch.Tensor on the GPU (NVDEC)
+x = video.to_jax(frames)                               # jax.Array on the GPU, zero-copy
 # keep `frames` alive until JAX has consumed `x`
 ```
 
 Notes: both sides must share the same CUDA device; modern JAX/torch handle the
 DLPack stream synchronization. `video.to_jax` also accepts NumPy (host copy onto
 JAX's default device) and decord/DALI GPU tensors. `video.to_numpy` is the
-host-side counterpart. Since `pose2d.preprocess` already resizes/normalizes with
-`jax.image.resize`, a `to_jax` array feeds straight in and stays on the GPU.
+host-side counterpart. `pose2d.preprocess` accepts an on-device tensor directly
+(bridging via DLPack), resizes/normalizes with `jax.image.resize`, and keeps the
+result on the GPU.
 
 ## Development
 
@@ -216,5 +288,5 @@ uv run --group test pytest           # run the suite (incl. PyTorch-equivalence 
 
 Optional extras: `viz` (matplotlib + imageio for plotting/video), and the video
 read/write backends `opencv` / `pyav` / `decord` / `video-reader-rs` /
-`torchcodec` / `pynvvideocodec`. PyTorch is a core dependency (the second
+`torchcodec`. PyTorch is a core dependency (the second
 detector backend), so no extra is needed for it.

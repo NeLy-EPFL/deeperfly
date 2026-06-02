@@ -1,7 +1,7 @@
 """Importing this package registers every built-in video backend.
 
 Each module is import-cheap: the heavy third-party libraries (cv2, av,
-torchcodec, decord, video_reader, PyNvVideoCodec, nvidia.dali, imageio) are
+torchcodec, decord, video_reader, nvidia.dali, imageio) are
 imported lazily inside the backends, so importing all of them here only
 populates the registry.
 """
@@ -14,7 +14,6 @@ from . import (  # noqa: F401  (imported for registration side effects)
     imageio_io,
     opencv_io,
     pyav_io,
-    pynvvideocodec_io,
     torchcodec_io,
     video_reader_rs_io,
 )
@@ -26,6 +25,5 @@ __all__ = [
     "decord_io",
     "video_reader_rs_io",
     "torchcodec_io",
-    "pynvvideocodec_io",
     "dali_io",
 ]

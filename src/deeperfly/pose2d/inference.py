@@ -37,6 +37,49 @@ MEAN = 0.22  # DeepFly2D subtracts this scalar from the [0, 1] image
 N_SIDE_JOINTS = 19  # detector channels (one body side)
 
 
+def _to_jax_image(image) -> Array:
+    """Image -> ``jnp`` array, staying on-device for GPU inputs (zero-copy).
+
+    A GPU-decoded frame arrives as a ``torch.Tensor`` (or other DLPack-capable
+    array) already on the CUDA device; hand it to JAX via DLPack so it never round
+    -trips through host memory. A ``jax.Array`` passes through untouched; NumPy
+    (and anything else) is uploaded the usual way.
+    """
+    if isinstance(image, jax.Array):
+        return image
+    if hasattr(image, "__dlpack__"):  # torch / most array libs -- same-device
+        return jnp.from_dlpack(image)
+    if hasattr(image, "to_dlpack"):  # decord NDArray (older API)
+        return jnp.from_dlpack(image.to_dlpack())
+    return jnp.asarray(image)
+
+
+def _window_to_device(window):
+    """Move one camera's ``(T, H, W, 3)`` window onto the JAX device *once*.
+
+    A CPU decoder returns the whole window as a single host NumPy array. Without
+    this, :func:`preprocess` would re-upload a frame for *every* pass that reads it
+    (the front camera twice, and once per frame in the batched path) -- hundreds of
+    tiny synchronous host->device copies that serialize behind the per-batch
+    heatmap pull, decoding ~30x slower than the on-device forward itself. Uploading
+    the window in one transfer collapses that to a single copy; per-frame
+    :func:`preprocess` then just re-slices on-device. On-device inputs (a
+    ``jax.Array`` or a GPU/DLPack tensor) are already zero-copy, so they pass
+    through untouched.
+    """
+    if isinstance(window, np.ndarray):
+        return jnp.asarray(window)
+    return window
+
+
+def _image_wh(image) -> tuple[int, int]:
+    """``(width, height)`` of an ``(H, W, ...)`` frame without copying to host."""
+    shape = getattr(image, "shape", None)
+    if shape is None:
+        shape = np.asarray(image).shape
+    return int(shape[1]), int(shape[0])
+
+
 def preprocess(
     image: Float[np.ndarray, "H W 3"],
     *,
@@ -46,15 +89,19 @@ def preprocess(
 ) -> Float[Array, "3 Hh Ww"]:
     """Image (HWC, uint8 or float[0,1]) -> normalized CHW network input.
 
-    Mirror-side cameras are horizontally flipped so the fly faces the trained
-    orientation. Uses bilinear (anti-aliased) resize; this is close to but not
-    bit-identical with DeepFly2D's skimage resize -- argmax peak picking is
-    robust to the difference.
+    Accepts a NumPy array or an on-device tensor (e.g. a GPU-decoded
+    ``torch.Tensor``); on-device inputs are bridged to JAX zero-copy
+    (:func:`_to_jax_image`), so a GPU-decoded frame is normalized and resized on
+    the GPU and never leaves it. Mirror-side cameras are horizontally flipped so
+    the fly faces the trained orientation. Uses bilinear (anti-aliased) resize;
+    this is close to but not bit-identical with DeepFly2D's skimage resize --
+    argmax peak picking is robust to the difference.
     """
-    arr = np.asarray(image)
-    if np.issubdtype(arr.dtype, np.integer):
-        arr = arr.astype(np.float32) / 255.0
-    img = jnp.asarray(arr, dtype=jnp.float32)
+    img = _to_jax_image(image)
+    if jnp.issubdtype(img.dtype, jnp.integer):
+        img = img.astype(jnp.float32) / 255.0
+    else:
+        img = img.astype(jnp.float32)
     if img.ndim == 2:
         img = jnp.stack([img] * 3, axis=-1)
     img = img[..., :3]
@@ -398,16 +445,15 @@ def detect(
     from . import backends  # lazy: dispatch never imports the unused framework
 
     views, pass_sides, pass_flips = expand_passes(sides, flips)
-    inputs = np.stack(
-        [
-            np.asarray(preprocess(images[views[i]], flip=pass_flips[i]))
-            for i in range(len(views))
-        ]
+    # Keep the batch on-device: stacking the (jnp) preprocessed passes avoids a
+    # host round-trip, so GPU-decoded frames feed the JAX forward pass zero-copy.
+    inputs = jnp.stack(
+        [preprocess(images[views[i]], flip=pass_flips[i]) for i in range(len(views))]
     )
     points_norm, conf = heatmap_to_points(
         backends.predict_heatmaps(model, inputs), method=method, radius=radius
     )
-    image_size = [(np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images]
+    image_size = [_image_wh(im) for im in images]  # (w, h) without materializing
     return assemble_skeleton(
         np.asarray(points_norm),
         np.asarray(conf),
@@ -427,26 +473,84 @@ def detect_sequence(
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
+    batch_size: int | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ) -> tuple[Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]]:
     """Detect a multi-camera sequence -> ``(V, T, 38, 2)`` pixels and ``(V, T, 38)`` conf.
 
+    ``batch_size`` controls how many detector *passes* go through one forward.
+    ``None`` (the default) detects one multi-camera frame at a time (batch =
+    passes-per-frame, ~8 for the fly rig) -- the simple per-frame path. A larger
+    ``batch_size`` flattens the whole window into ``(T*passes, 3, Hh, Ww)`` and
+    forwards it in groups of ``batch_size``, collapsing ``T`` separate dispatches
+    into ``ceil(T*passes / batch_size)``; size it to the GPU via
+    :func:`~deeperfly.pose2d.backends.auto_batch_size`. Results are numerically
+    identical (the detector is per-row independent), only the dispatch granularity
+    differs.
+
     ``progress`` optionally wraps the per-frame iterator (e.g. ``tqdm``) so callers
     can show a progress bar; it defaults to the identity, keeping the library
-    UI-free.
+    UI-free. It is advanced once per *completed* frame in either mode.
     """
     n_views, n_frames = len(frames), len(frames[0])
+    frames = [_window_to_device(f) for f in frames]  # one host->device copy per cam
     pts = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS, 2))
     conf = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS))
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
-    for t in steps:
-        pts[:, t], conf[:, t] = detect(
-            model,
-            [frames[v][t] for v in range(n_views)],
-            sides,
-            flips,
-            method=method,
-            radius=radius,
+    if batch_size is None:
+        for t in steps:
+            pts[:, t], conf[:, t] = detect(
+                model,
+                [frames[v][t] for v in range(n_views)],
+                sides,
+                flips,
+                method=method,
+                radius=radius,
+            )
+        return pts, conf
+
+    # Batched: forward all (frame, pass) inputs in groups of ``batch_size``,
+    # bounding memory to one group of heatmaps. Pairs are time-major, so frame t
+    # owns the contiguous pair block [t*P, (t+1)*P) -- which lets us tick progress
+    # per completed frame and assemble per frame once every pass has landed.
+    from . import backends
+
+    views, pass_sides, pass_flips = expand_passes(sides, flips)
+    n_passes = len(views)
+    bs = max(n_passes, int(batch_size))
+    image_size = [_image_wh(frames[v][0]) for v in range(n_views)]  # constant per video
+    pn = np.empty((n_frames, n_passes, N_SIDE_JOINTS, 2))
+    cc = np.empty((n_frames, n_passes, N_SIDE_JOINTS))
+    pairs = [(t, p) for t in range(n_frames) for p in range(n_passes)]
+
+    step_iter = iter(steps)
+    ticked = 0  # frames whose progress tick has fired
+    for i in range(0, len(pairs), bs):
+        grp = pairs[i : i + bs]
+        inputs = jnp.stack(  # on-device batch (zero-copy for GPU-decoded frames)
+            [preprocess(frames[views[p]][t], flip=pass_flips[p]) for (t, p) in grp]
+        )
+        pg, cg = heatmap_to_points(
+            backends.predict_heatmaps(model, inputs), method=method, radius=radius
+        )
+        for j, (t, p) in enumerate(grp):
+            pn[t, p], cc[t, p] = pg[j], cg[j]
+        covered = (i + len(grp)) // n_passes  # frames now fully forwarded
+        while ticked < covered:
+            next(step_iter, None)
+            ticked += 1
+    for _ in step_iter:  # drain any trailing progress ticks
+        pass
+
+    for t in range(n_frames):
+        pts[:, t], conf[:, t] = assemble_skeleton(
+            pn[t],
+            cc[t],
+            pass_sides,
+            pass_flips,
+            image_size,
+            views=views,
+            n_views=n_views,
         )
     return pts, conf
 
@@ -477,6 +581,7 @@ def detect_candidates_sequence(
     from . import backends
 
     n_views, n_frames = len(frames), len(frames[0])
+    frames = [_window_to_device(f) for f in frames]  # one host->device copy per cam
     n_pts = 2 * N_SIDE_JOINTS
     views, pass_sides, pass_flips = expand_passes(sides, flips)
     pts = np.empty((n_views, n_frames, n_pts, 2))
@@ -486,16 +591,14 @@ def detect_candidates_sequence(
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
     for t in steps:
         images = [frames[v][t] for v in range(n_views)]
-        inputs = np.stack(
+        inputs = jnp.stack(  # on-device batch (zero-copy for GPU-decoded frames)
             [
-                np.asarray(preprocess(images[views[i]], flip=pass_flips[i]))
+                preprocess(images[views[i]], flip=pass_flips[i])
                 for i in range(len(views))
             ]
         )
         heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))  # (P,J,Hh,Ww)
-        image_size = [
-            (np.asarray(im).shape[1], np.asarray(im).shape[0]) for im in images
-        ]
+        image_size = [_image_wh(im) for im in images]  # (w, h), no host copy
         points_norm, c = heatmap_to_points(heatmaps, method=method, radius=radius)
         pts[:, t], conf[:, t] = assemble_skeleton(
             np.asarray(points_norm),

@@ -1,18 +1,19 @@
-"""NVIDIA DALI backend: GPU (NVDEC) batch video decode.
+"""NVIDIA DALI backend: GPU (NVDEC) video decode, frame-accurate.
 
 DALI (https://github.com/NVIDIA/DALI) builds a small one-shot pipeline that
-decodes the whole clip on the GPU. When a CUDA ``device`` is requested the
-frames are handed back as a GPU ``torch.Tensor`` (zero-copy via DLPack where
-possible); otherwise they are copied to the host as NumPy.
+decodes a video on the GPU via NVDEC. ``fn.decoders.video`` selects an exact
+frame range (``start_frame`` / ``end_frame`` / ``stride``) or explicit ``frames``,
+so a windowed read decodes **only** that window -- the streaming detector's reads
+stay bounded, not "decode the whole clip then slice". On a CUDA ``device`` frames
+come back as a GPU ``torch.Tensor`` (zero-copy via DLPack); otherwise they are
+copied to the host as NumPy.
 
-DALI ships on NVIDIA's package index rather than PyPI, e.g.::
+DALI's seeking is frame-accurate (its windows match
+decord/pyav/opencv/torchcodec exactly, bar a rounding bit in the YUV->RGB
+conversion), so it is safe in ``backend="auto"``.
 
-    pip install nvidia-dali-cuda120
-
-so it is intentionally absent from this project's extras and only used when the
-package and a GPU are present. The whole clip is decoded, then ``start:stop:step``
-(or ``indices`` via the base fallback) is applied; it needs enough device memory
-to hold every frame.
+The CUDA-version-specific wheel is on PyPI -- install the one matching your CUDA
+toolkit, e.g. ``pip install nvidia-dali-cuda130`` (CUDA 13) or the ``dali`` extra.
 """
 
 from __future__ import annotations
@@ -22,40 +23,50 @@ import numpy as np
 from ..base import ReaderBackend, device_id, is_gpu_device, register_reader
 
 
+def _decode(path, device, *, start_frame=0, end_frame=None, stride=1, frames=None):
+    """Decode one window (or explicit ``frames``) -> ``(F, H, W, 3)`` on ``device``."""
+    from nvidia.dali import fn, pipeline_def
+
+    dev_id = device_id(device) if is_gpu_device(device) else 0
+
+    @pipeline_def(batch_size=1, num_threads=2, device_id=dev_id)
+    def _pipeline():
+        data, _ = fn.readers.file(files=[str(path)])
+        # "mixed" = NVDEC on the GPU. pad_mode="none" returns a short sequence at
+        # the end of the clip instead of zero-padding, so the last streaming window
+        # yields exactly the frames that remain.
+        kwargs = {"device": "mixed", "pad_mode": "none"}
+        if frames is not None:
+            kwargs["frames"] = [int(i) for i in frames]
+        else:
+            kwargs["start_frame"] = int(start_frame)
+            if end_frame is not None:
+                kwargs["end_frame"] = int(end_frame)
+            if stride != 1:
+                kwargs["stride"] = int(stride)
+        return fn.decoders.video(data, **kwargs)
+
+    pipe = _pipeline()
+    pipe.build()
+    (out,) = pipe.run()  # one sample, FHWC
+    if is_gpu_device(device):
+        import torch
+
+        return torch.from_dlpack(out[0])  # GPU tensor, zero-copy
+    return np.asarray(out.as_cpu()[0])
+
+
 @register_reader
 class DALIReader(ReaderBackend):
     name = "dali"
     requires = ("nvidia.dali",)
     supports_gpu = True
-    supports_seek = False
+    supports_seek = True  # start_frame/end_frame/frames decode only what's asked
 
     @staticmethod
     def _read_sequential(path, device, start, stop, step):
-        from nvidia.dali import fn, pipeline_def
+        return _decode(path, device, start_frame=start, end_frame=stop, stride=step)
 
-        dev_id = device_id(device) if is_gpu_device(device) else 0
-
-        @pipeline_def(batch_size=1, num_threads=2, device_id=dev_id)
-        def _pipeline():
-            data, _ = fn.readers.file(files=[str(path)])
-            return fn.experimental.decoders.video(data, device="mixed")
-
-        pipe = _pipeline()
-        pipe.build()
-        (out,) = pipe.run()  # TensorListGPU, one sample, layout FHWC
-        sl = slice(start, stop, step)
-
-        if is_gpu_device(device):
-            try:  # keep frames on the GPU
-                import torch
-
-                return torch.from_dlpack(out[0])[sl]
-            except Exception:  # noqa: BLE001 -- fall back to a host copy
-                pass
-
-        arr = np.asarray(out.as_cpu()[0])[sl]
-        if is_gpu_device(device):
-            import torch
-
-            return torch.as_tensor(arr, device=str(device))
-        return arr
+    @classmethod
+    def _read_indices(cls, path, device, indices):
+        return _decode(path, device, frames=indices)

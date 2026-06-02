@@ -34,6 +34,14 @@ dependencies = [
 # combine, e.g. `deeperfly[all,gpu]`).
 gpu = [
     "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # GPU/NVDEC video decode via torchcodec. The PyPI torchcodec wheel is CPU-only,
+    # so on Linux x86-64 [tool.uv.sources] below pulls the CUDA-13 build from the
+    # PyTorch index (torch itself already bundles CUDA 13 on PyPI, so it is left
+    # untouched). nvidia-npp (GPU colour conversion) is on PyPI but torchcodec does
+    # not depend on it, so this extra adds it; the torchcodec backend dlopens its
+    # libs automatically (no LD_LIBRARY_PATH needed).
+    "torchcodec>=0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-npp>=13; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 # Apple Metal (MPS) acceleration for the JAX detector backend via the jax-mps
 # plugin (PJRT -> MLX). Apple Silicon only, so the marker makes it a no-op
@@ -51,7 +59,7 @@ viz = [
 ]
 # Optional video read/write backends (deeperfly.video). Each is selectable via
 # `backend=...`; install the one(s) you want. torch is already a core dependency
-# (the second detector backend), so torchcodec/pynvvideocodec only need their own
+# (the second detector backend), so torchcodec only needs its own
 # bindings. NVIDIA DALI is intentionally not listed -- it ships from NVIDIA's
 # package index (e.g. nvidia-dali-cuda120), not PyPI -- but `backend="dali"` is
 # used automatically when it is importable.
@@ -65,14 +73,17 @@ decord = ["decord>=0.6; sys_platform != 'darwin'"]
 # only at the required version, so gated off macOS (no-op there).
 video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
 torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into torch tensors; cross-platform wheels
-# NVIDIA NVDEC bindings; GPU-only, so gated to Linux x86-64 (no-op elsewhere).
-pynvvideocodec = ["PyNvVideoCodec>=1.0; sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# NVIDIA DALI: frame-accurate GPU (NVDEC) decode. The wheel is CUDA-version
+# specific -- this pins the CUDA 13 build to match the `gpu` extra (jax[cuda13]);
+# for another toolkit install nvidia-dali-cuda1NN yourself. Linux x86-64 only.
+dali = ["nvidia-dali-cuda130>=2.1; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 # Visualization + every non-NVIDIA video backend. Each backend is platform-gated
 # in its own extra above (decord/video-reader-rs are no-ops on macOS), so
 # `deeperfly[all]` stays installable on Linux, macOS and Windows. Deliberately
-# excluded: `gpu` (NVIDIA CUDA -- add explicitly, e.g. `deeperfly[all,gpu]`) and
-# `pynvvideocodec` (NVIDIA NVDEC bindings, Linux x86-64 only).
+# excluded -- they need an NVIDIA GPU / pull CUDA libraries, so add them
+# explicitly (e.g. `deeperfly[all,gpu,dali]`): `gpu` (NVIDIA CUDA) and `dali`
+# (NVDEC decode).
 all = [
     "deeperfly[viz]",
     "deeperfly[opencv]",
@@ -101,6 +112,25 @@ test = [
     "imageio-ffmpeg>=0.5",
     "av>=12",                 # exercise the pyav video backend
 ]
+
+# CUDA-13 PyTorch wheels (torch/torchvision/torchcodec) for GPU/NVDEC video decode.
+# `explicit` => this index is consulted *only* for packages routed here by
+# [tool.uv.sources] below, never for anything else.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# Route torchcodec to the CUDA-13 PyTorch index on Linux x86-64 (its PyPI wheel is
+# CPU-only); everywhere else it stays on PyPI. The marker is platform-only, not
+# extra-gated, so uv keeps *both* a +cu130 stanza (Linux x86-64) and a PyPI stanza
+# (macOS / Windows / ARM) in the lock -- macOS `deeperfly[all]` is unaffected. On
+# Linux x86-64 the cu130 build is used even without `[gpu]`; it decodes on CPU too
+# and only attempts GPU/NVDEC when nvidia-npp + a GPU are present (the `gpu` extra).
+# torch/torchvision are left on PyPI -- the PyPI torch wheel already bundles CUDA
+# 13, so torchcodec+cu130 is ABI-compatible with it.
+[tool.uv.sources]
+torchcodec = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

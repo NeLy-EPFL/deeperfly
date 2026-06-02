@@ -1,10 +1,10 @@
 """Tests for the pluggable video read/write backends.
 
 CPU backends that are installed (imageio, opencv, pyav, decord,
-video_reader_rs) are exercised for real; GPU backends (torchcodec,
-pynvvideocodec, dali) are only checked for registration/availability since they
-need CUDA. Encoded video is lossy, so round-trips assert on frame count / shape /
-dtype and coarse color, not pixel values.
+video_reader_rs) are exercised for real; GPU backends (torchcodec, dali) are
+only checked for registration/availability since they need CUDA. Encoded video
+is lossy, so round-trips assert on frame count / shape / dtype and coarse color,
+not pixel values.
 """
 
 from __future__ import annotations
@@ -16,7 +16,14 @@ from deeperfly import video
 from deeperfly.video import base
 
 # Backends we can actually run on CPU here, restricted to what's installed.
-_CPU_CANDIDATES = ("imageio", "opencv", "pyav", "decord", "video_reader_rs")
+_CPU_CANDIDATES = (
+    "imageio",
+    "opencv",
+    "pyav",
+    "decord",
+    "video_reader_rs",
+    "torchcodec",
+)
 CPU_READERS = [b for b in _CPU_CANDIDATES if b in video.available_read_backends()]
 CPU_WRITERS = [
     b for b in ("imageio", "opencv", "pyav") if b in video.available_write_backends()
@@ -47,6 +54,43 @@ def _write_clip(tmp_path, frames, *, backend="imageio", name="clip.mp4"):
     return path
 
 
+@pytest.fixture(autouse=True)
+def _reset_gpu_cache():
+    """Clear the process-wide GPU-decode probe cache around every test.
+
+    Tests that exercise the real auto path on a GPU box set ``_gpu_auto_failed`` /
+    ``_gpu_auto_reader``; reset both so order can't leak between tests.
+    """
+    base._gpu_auto_failed, base._gpu_auto_reader = False, None
+    yield
+    base._gpu_auto_failed, base._gpu_auto_reader = False, None
+
+
+def _boom(*_a, **_k):
+    raise RuntimeError("Unsupported device: cuda")
+
+
+def _installed_gpu_readers():
+    return [base._READERS[n] for n in base.GPU_READ_ORDER if n in base._READERS]
+
+
+def _break_gpu_decode(monkeypatch, cls):
+    """Make ``cls`` fail on a GPU device but decode normally on the CPU.
+
+    Mirrors the real failure mode (a torchcodec/decord build whose CUDA path is
+    missing) for backends that also serve CPU reads, so a CPU fallback still works.
+    """
+    monkeypatch.setattr(cls, "is_available", lambda: True)
+    orig = cls._read_sequential
+
+    def maybe_boom(path, device, start, stop, step):
+        if base.is_gpu_device(device):
+            raise RuntimeError("Unsupported device: cuda")
+        return orig(path, device, start, stop, step)
+
+    monkeypatch.setattr(cls, "_read_sequential", staticmethod(maybe_boom))
+
+
 # -- registry / selection ----------------------------------------------------
 
 
@@ -58,7 +102,6 @@ def test_builtin_backends_registered():
         "decord",
         "video_reader_rs",
         "torchcodec",
-        "pynvvideocodec",
         "dali",
     }
     assert set(video.list_write_backends()) >= {"imageio", "opencv", "pyav"}
@@ -74,10 +117,33 @@ def test_backend_capability_flags():
     assert base._READERS["dali"].supports_gpu
     assert base._READERS["decord"].supports_gpu
     assert not base._READERS["imageio"].supports_gpu
-    # seek-capable backends
-    for name in ("opencv", "pyav", "decord", "video_reader_rs", "torchcodec"):
+    # seek-capable backends (dali decodes only the requested frame range)
+    for name in ("opencv", "pyav", "decord", "video_reader_rs", "torchcodec", "dali"):
         assert base._READERS[name].supports_seek, name
     assert not base._READERS["imageio"].supports_seek
+
+
+@pytest.mark.skipif(
+    "dali" not in video.available_read_backends() or not base.cuda_available(),
+    reason="needs NVIDIA DALI and a CUDA GPU",
+)
+def test_dali_windowed_decode_is_frame_accurate(tmp_path):
+    # DALI must decode *only* the requested window (bounded memory) and match a
+    # reference FFmpeg decoder frame-for-frame (bar a YUV->RGB rounding bit).
+    # Random access and chunk boundaries must agree too.
+    frames = _indexed_clip(12, 64, 64)  # NVDEC needs a minimum frame size
+    path = _write_clip(tmp_path, frames)
+    ref = video.read_video(path, backend="decord", device="cpu").astype(np.int16)
+    win = video.to_numpy(
+        video.read_video(path, backend="dali", device="cuda", start=4, stop=9)
+    )
+    assert win.shape[0] == 5  # decoded only the window, not all 12 frames
+    assert np.abs(win.astype(np.int16) - ref[4:9]).max() <= 4  # frame-accurate
+    idx = [0, 7, 3]
+    pick = video.to_numpy(
+        video.read_video(path, backend="dali", device="cuda", indices=idx)
+    )
+    assert np.abs(pick.astype(np.int16) - ref[idx]).max() <= 4  # seek-accurate
 
 
 def test_unknown_backend_raises():
@@ -96,6 +162,146 @@ def test_cpu_backend_rejects_gpu_device(tmp_path):
 def test_auto_select_returns_installed_backend():
     assert video.select_reader("auto", device="cpu").name in CPU_READERS
     assert video.select_writer("auto").name in CPU_WRITERS
+
+
+def test_cpu_order_is_fastest_first_imageio_last():
+    # imageio forks an ffmpeg subprocess, so it must be the CPU last resort and
+    # never outrank an in-process decoder in the auto preference order.
+    assert base.CPU_READ_ORDER[-1] == "imageio"
+    for fast in ("decord", "video_reader_rs", "torchcodec", "pyav", "opencv"):
+        assert base.CPU_READ_ORDER.index(fast) < base.CPU_READ_ORDER.index("imageio")
+    # GPU order leads with torchcodec and lists only frame-accurate decoders.
+    assert base.GPU_READ_ORDER[0] == "torchcodec"
+
+
+def test_resolve_device_passthrough_and_no_gpu(monkeypatch):
+    # Concrete devices are returned unchanged, regardless of hardware.
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
+    assert base.resolve_device("cpu") == "cpu"
+    assert base.resolve_device("cuda:1") == "cuda:1"
+    # No GPU -> "auto" falls back to CPU.
+    monkeypatch.setattr(base, "cuda_available", lambda: False)
+    assert base.resolve_device("auto") == "cpu"
+    assert base.resolve_device("auto", "torchcodec") == "cpu"
+
+
+def test_resolve_device_prefers_gpu_when_available(monkeypatch):
+    # Pretend a GPU and the torchcodec backend are both present.
+    monkeypatch.setattr(base, "_gpu_auto_failed", False)  # ignore prior probes
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
+    monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
+    # auto backend + GPU hardware + a GPU backend installed -> cuda.
+    assert base.resolve_device("auto") == "cuda"
+    assert video.select_reader("auto", device="auto").name == "torchcodec"
+    # A forced GPU-capable backend also resolves to cuda...
+    assert base.resolve_device("auto", "torchcodec") == "cuda"
+    # ...but a CPU-only forced backend stays on the CPU even with a GPU present.
+    assert base.resolve_device("auto", "imageio") == "cpu"
+
+
+def test_auto_device_returns_host_numpy_even_for_gpu_decode(tmp_path, monkeypatch):
+    # device="auto" is the portable path: it may decode via a GPU backend but
+    # must hand back host NumPy. Explicit device="cuda" keeps the device tensor.
+    torch = pytest.importorskip("torch")
+    path = _write_clip(tmp_path, _gradient_clip(4))
+    fake_gpu = torch.zeros((4, 8, 8, 3), dtype=torch.uint8)
+
+    monkeypatch.setattr(base, "_gpu_auto_failed", False)  # ignore prior probes
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
+    monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
+    monkeypatch.setattr(
+        base._READERS["torchcodec"],
+        "_read_sequential",
+        staticmethod(lambda *a, **k: fake_gpu),
+    )
+
+    auto = video.read_video(path, device="auto")
+    assert isinstance(auto, np.ndarray)  # brought to host
+    explicit = video.read_video(path, backend="torchcodec", device="cuda")
+    assert explicit is fake_gpu  # left on device for zero-copy
+
+
+def test_gpu_reader_candidates_order_forced_and_cache(monkeypatch):
+    for cls in (base._READERS["torchcodec"], base._READERS["dali"]):
+        monkeypatch.setattr(cls, "is_available", lambda: True)
+    names = [c.name for c in base.gpu_reader_candidates("auto")]
+    assert names[:2] == ["torchcodec", "dali"]  # GPU order, torchcodec then dali
+    # A forced backend yields only itself.
+    assert [c.name for c in base.gpu_reader_candidates("dali")] == ["dali"]
+    base.remember_gpu_reader("decord")  # cached winner short-circuits "auto"
+    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["decord"]
+
+
+def test_gpu_auto_skips_broken_backend_and_caches_winner(tmp_path, monkeypatch, caplog):
+    # torchcodec is "installed" but its CUDA decode fails; the auto path must skip
+    # it, land on a working GPU backend, return the on-device tensor, and remember
+    # the winner so the next read does not retry the broken one.
+    torch = pytest.importorskip("torch")
+    path = _write_clip(tmp_path, _gradient_clip(5, 32, 32))
+    fake_gpu = torch.zeros((5, 32, 32, 3), dtype=torch.uint8)
+
+    for cls in _installed_gpu_readers():  # only torchcodec + a stand-in are usable
+        monkeypatch.setattr(cls, "is_available", lambda: False)
+    monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
+    monkeypatch.setattr(base._READERS["decord"], "is_available", lambda: True)
+    monkeypatch.setattr(
+        base._READERS["torchcodec"], "_read_sequential", staticmethod(_boom)
+    )
+    monkeypatch.setattr(
+        base._READERS["decord"],
+        "_read_sequential",
+        staticmethod(lambda *a, **k: fake_gpu),
+    )
+
+    with caplog.at_level("INFO", logger="deeperfly.video"):
+        out = video.read_video(path, backend="auto", device="cuda", stop=5)
+    assert out is fake_gpu  # device tensor handed back (no host round-trip)
+    assert base._gpu_auto_reader == "decord"  # winner cached
+    assert any("torchcodec" in r.message for r in caplog.records)
+
+    caplog.clear()
+    out2 = video.read_video(path, backend="auto", device="cuda", stop=5)
+    assert out2 is fake_gpu
+    assert not any("torchcodec" in r.message for r in caplog.records)  # cache used
+
+
+def test_auto_falls_back_to_cpu_when_all_gpu_backends_fail(
+    tmp_path, monkeypatch, caplog
+):
+    # Every installed GPU backend fails to decode (a GPU is present but unusable).
+    # The auto path warns once, disables the GPU process-wide, and returns host
+    # NumPy via a CPU decoder.
+    path = _write_clip(tmp_path, _gradient_clip(6, 64, 48))
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
+    for cls in _installed_gpu_readers():
+        _break_gpu_decode(monkeypatch, cls)  # GPU fails, CPU still decodes
+
+    with caplog.at_level("WARNING", logger="deeperfly.video"):
+        out = video.read_video(path, device="auto")
+    assert isinstance(out, np.ndarray) and out.shape[0] == 6  # decoded on CPU
+    assert sum("using CPU decode" in r.message for r in caplog.records) == 1
+    assert base._gpu_auto_failed  # GPU disabled for the rest of the process
+    assert base.resolve_device("auto") == "cpu"  # no second GPU probe
+
+
+def test_resolve_device_downgrades_explicit_gpu_after_failure(monkeypatch):
+    # Once GPU decode is known dead, an auto-backend cuda request is downgraded to
+    # CPU (stop retrying), but a forced GPU backend is still honored strictly.
+    monkeypatch.setattr(base, "_gpu_auto_failed", True)
+    assert base.resolve_device("cuda", "auto") == "cpu"
+    assert base.resolve_device("cuda", "torchcodec") == "cuda"
+
+
+def test_explicit_gpu_failure_is_not_swallowed(tmp_path, monkeypatch):
+    # A forced GPU backend is strict: a decode failure must propagate, not silently
+    # fall back to the CPU.
+    path = _write_clip(tmp_path, _gradient_clip(4))
+    monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
+    monkeypatch.setattr(
+        base._READERS["torchcodec"], "_read_sequential", staticmethod(_boom)
+    )
+    with pytest.raises(RuntimeError):
+        video.read_video(path, backend="torchcodec", device="cuda")
 
 
 def test_is_gpu_device_and_device_id():
@@ -137,7 +343,7 @@ def test_to_jax_dlpack_from_torch():
 def test_reader_roundtrip(tmp_path, backend):
     frames = _gradient_clip(8, 64, 48)
     path = _write_clip(tmp_path, frames)  # written by imageio (reliable)
-    out = video.read_video(path, backend=backend)
+    out = video.read_video(path, backend=backend, device="cpu")
     assert out.shape[0] == frames.shape[0]
     assert out.shape[1:] == (64, 48, 3)
     assert out.dtype == np.uint8
@@ -147,7 +353,7 @@ def test_reader_roundtrip(tmp_path, backend):
 def test_reader_sequential_slice(tmp_path, backend):
     frames = _gradient_clip(10, 32, 32)
     path = _write_clip(tmp_path, frames)
-    out = video.read_video(path, backend=backend, start=2, stop=8, step=2)
+    out = video.read_video(path, backend=backend, device="cpu", start=2, stop=8, step=2)
     assert out.shape[0] == len(range(2, 8, 2))  # 3 frames
 
 
@@ -158,8 +364,8 @@ def test_random_access_matches_sequential(tmp_path, backend):
     frames = _indexed_clip(12, 32, 32)
     path = _write_clip(tmp_path, frames)
     idx = [0, 5, 3, 9, 5]
-    full = video.read_video(path, backend=backend)
-    picked = video.read_video(path, backend=backend, indices=idx)
+    full = video.read_video(path, backend=backend, device="cpu")
+    picked = video.read_video(path, backend=backend, device="cpu", indices=idx)
     assert picked.shape[0] == len(idx)
     np.testing.assert_allclose(
         picked.reshape(len(idx), -1).mean(1),
@@ -186,7 +392,7 @@ def test_color_channel_order_preserved(tmp_path, backend):
     red = np.zeros((6, 32, 32, 3), np.uint8)
     red[..., 0] = 220
     path = _write_clip(tmp_path, red, backend=backend, name=f"{backend}_red.mp4")
-    out = video.read_video(path, backend=backend)
+    out = video.read_video(path, backend=backend, device="cpu")
     mean = out.reshape(-1, 3).mean(0)
     assert mean[0] > mean[1] and mean[0] > mean[2]
 
@@ -207,6 +413,14 @@ def _write_images(tmp_path, frames, *, ext="png", name="f"):
     for i, fr in enumerate(frames):
         iio.imwrite(tmp_path / f"{name}_{i:03d}.{ext}", fr)
     return tmp_path
+
+
+def test_count_frames_video_and_images(tmp_path):
+    clip = _write_clip(tmp_path, _gradient_clip(12, 32, 32))
+    assert video.count_frames(clip) == 12  # container metadata, no full decode
+    img_dir = _write_images(tmp_path, _gradient_clip(5, 16, 16), ext="png")
+    assert video.count_frames(img_dir) == 5  # image sequences count files
+    assert video.count_frames(tmp_path / "missing.mp4") is None  # unknown -> None
 
 
 def test_read_images_parallel_rgb(tmp_path):

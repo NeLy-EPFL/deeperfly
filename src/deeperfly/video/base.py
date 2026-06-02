@@ -14,7 +14,7 @@ Readers expose two access patterns:
   decoding up to ``max(indices)`` once and gathering, which is always correct.
 
 Frame contract: ``(T, H, W, 3)`` ``uint8`` RGB. CPU backends return NumPy;
-GPU backends (``torchcodec``, ``decord``, ``pynvvideocodec``, ``dali``) keep
+GPU backends (``torchcodec``, ``decord``, ``dali``) keep
 frames as a framework tensor on the requested device. :func:`to_numpy` collapses
 either to NumPy on the host; :func:`to_jax` hands GPU frames to JAX zero-copy.
 """
@@ -31,12 +31,31 @@ import numpy as np
 _READERS: dict[str, type["ReaderBackend"]] = {}
 _WRITERS: dict[str, type["WriterBackend"]] = {}
 
-# Preference order for ``backend="auto"``. Explicit names always win; "auto"
-# walks these and picks the first installed backend. CPU order keeps imageio
-# first so existing behavior is unchanged when nothing else is installed.
-CPU_READ_ORDER = ("imageio", "pyav", "opencv", "decord", "video_reader_rs")
-GPU_READ_ORDER = ("torchcodec", "decord", "pynvvideocodec", "dali")
-WRITE_ORDER = ("imageio", "pyav", "opencv")
+# Preference order for ``backend="auto"`` -- fastest first. Explicit names always
+# win; "auto" walks the list for the device and picks the first *installed*
+# backend. CPU order leads with in-process decoders (decord / video_reader_rs /
+# torchcodec link FFmpeg directly) and keeps imageio last: it shells out to the
+# ``ffmpeg`` binary (a subprocess fork -- slower, and it trips Python 3.13's
+# os.fork()-in-a-multithreaded-process warning once JAX has started threads), so
+# it is only the portable last resort. GPU order leads with torchcodec -- the most
+# robust NVDEC path and the one that feeds JAX zero-copy (see ``to_jax``); every
+# listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
+CPU_READ_ORDER = (
+    "decord",
+    "video_reader_rs",
+    "torchcodec",
+    "pyav",
+    "opencv",
+    "imageio",
+)
+# torchcodec (fastest, when its CUDA build + NPP are present) -> DALI (robust
+# NVDEC, needs only the driver) -> decord (GPU only with a rare CUDA build).
+GPU_READ_ORDER = ("torchcodec", "dali", "decord")
+# Writers prefer pyav: like imageio it encodes H.264 (libx264), but in-process --
+# imageio shells out to the ``ffmpeg`` binary (the os.fork() subprocess warning
+# again, now at render time). Fall back to imageio (libx264, but forks) and then
+# opencv (mp4v fourcc, last resort) when pyav is absent.
+WRITE_ORDER = ("pyav", "imageio", "opencv")
 
 
 def register_reader(cls: type["ReaderBackend"]) -> type["ReaderBackend"]:
@@ -74,6 +93,93 @@ def device_id(device) -> int:
 def require_cpu(device, name: str) -> None:
     if is_gpu_device(device):
         raise ValueError(f"{name!r} is a CPU-only backend; got device={device!r}")
+
+
+def cuda_available() -> bool:
+    """Whether a CUDA GPU is usable, for resolving ``device="auto"``.
+
+    Probes torch (a core dependency, so always importable regardless of the 2D
+    detector backend). The probe does not initialize JAX; ``torch.cuda`` is cheap
+    once torch is loaded and any import cost is paid once per process.
+    """
+    try:
+        import torch
+
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+# Process-wide cache of how GPU "auto" decode actually behaves here, so we probe
+# the environment once instead of on every read. ``_gpu_auto_failed`` is set when
+# *every* installed GPU backend fails to decode (a GPU is present but none can use
+# it -- e.g. a torchcodec build without working CUDA); after that, "auto" steers
+# clear of the GPU. ``_gpu_auto_reader`` records the first GPU backend that *did*
+# decode, so later reads go straight to it without re-trying the broken ones.
+_gpu_auto_failed = False
+_gpu_auto_reader: str | None = None
+
+
+def mark_gpu_auto_failed() -> None:
+    """Disable GPU selection for ``device="auto"`` for the rest of the process."""
+    global _gpu_auto_failed
+    _gpu_auto_failed = True
+
+
+def remember_gpu_reader(name: str) -> None:
+    """Record the GPU backend now known to decode here (skip the rest next time)."""
+    global _gpu_auto_reader
+    _gpu_auto_reader = name
+
+
+def gpu_reader_candidates(backend: str = "auto") -> list[type["ReaderBackend"]]:
+    """GPU reader classes to try, in order, for ``device`` on the GPU.
+
+    A forced ``backend`` yields just that one (strict). ``"auto"`` yields the
+    cached winner if one is known, else every installed backend from
+    :data:`GPU_READ_ORDER` -- so :func:`read_video` can walk them until one
+    actually decodes.
+    """
+    _ensure_backends()
+    if backend != "auto":
+        cls = _READERS.get(backend)
+        return [cls] if cls is not None else []
+    if _gpu_auto_reader is not None:
+        return [_READERS[_gpu_auto_reader]]
+    return [
+        cls
+        for name in GPU_READ_ORDER
+        if (cls := _READERS.get(name)) is not None and cls.is_available()
+    ]
+
+
+def resolve_device(device, backend: str = "auto") -> str:
+    """Resolve ``device="auto"`` to a concrete ``"cuda"`` or ``"cpu"``.
+
+    ``"auto"`` picks ``"cuda"`` when a GPU is present *and* a GPU-capable read
+    backend is usable -- either an installed backend from :data:`GPU_READ_ORDER`
+    (when ``backend="auto"``), or the forced ``backend`` if it advertises
+    ``supports_gpu``. Otherwise it falls back to ``"cpu"``. Concrete device
+    strings (``"cpu"``, ``"cuda:1"``, ...) pass through unchanged -- except an
+    ``auto``-backend GPU request is downgraded to ``"cpu"`` once a prior probe has
+    shown no GPU backend can decode here (so callers stop retrying a dead path).
+    """
+    if device != "auto":
+        if backend == "auto" and _gpu_auto_failed and is_gpu_device(device):
+            return "cpu"
+        return device
+    if _gpu_auto_failed or not cuda_available():
+        return "cpu"
+    _ensure_backends()
+    if backend == "auto":
+        gpu_ready = any(
+            (cls := _READERS.get(name)) is not None and cls.is_available()
+            for name in GPU_READ_ORDER
+        )
+    else:
+        cls = _READERS.get(backend)
+        gpu_ready = cls is not None and cls.supports_gpu
+    return "cuda" if gpu_ready else "cpu"
 
 
 class ReaderBackend(abc.ABC):
@@ -131,8 +237,13 @@ def _ensure_backends() -> None:
 
 
 def select_reader(backend: str = "auto", *, device="cpu") -> type[ReaderBackend]:
-    """Resolve a reader backend by name (or ``"auto"``) for the given device."""
+    """Resolve a reader backend by name (or ``"auto"``) for the given device.
+
+    ``device="auto"`` is resolved first (:func:`resolve_device`): it becomes a
+    GPU device when hardware and a GPU backend are both available, else CPU.
+    """
     _ensure_backends()
+    device = resolve_device(device, backend)
     if backend != "auto":
         try:
             cls = _READERS[backend]

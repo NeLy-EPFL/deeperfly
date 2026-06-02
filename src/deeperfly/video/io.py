@@ -16,7 +16,17 @@ from pathlib import Path
 import numpy as np
 from jaxtyping import Float
 
-from .base import is_gpu_device, select_reader, select_writer, to_numpy
+from .base import (
+    GPU_READ_ORDER,
+    gpu_reader_candidates,
+    is_gpu_device,
+    mark_gpu_auto_failed,
+    remember_gpu_reader,
+    resolve_device,
+    select_reader,
+    select_writer,
+    to_numpy,
+)
 
 log = logging.getLogger("deeperfly.video")
 
@@ -29,7 +39,7 @@ def read_video(
     path: str | Path,
     *,
     backend: str = "auto",
-    device: str = "cpu",
+    device: str = "auto",
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
@@ -41,12 +51,18 @@ def read_video(
     ----------
     backend
         ``"auto"`` | ``"imageio"`` | ``"opencv"`` | ``"pyav"`` | ``"decord"`` |
-        ``"video_reader_rs"`` | ``"torchcodec"`` | ``"pynvvideocodec"`` |
-        ``"dali"``. ``"auto"`` picks the first installed backend appropriate for
-        ``device``.
+        ``"video_reader_rs"`` | ``"torchcodec"`` | ``"dali"``. ``"auto"`` picks
+        the fastest installed backend for the resolved ``device`` (GPU order
+        leads with NVDEC; CPU order leads with in-process decoders, imageio last).
     device
-        ``"cpu"`` (NumPy result) or a CUDA device such as ``"cuda"`` /
-        ``"cuda:0"`` (GPU-resident ``torch.Tensor`` result, GPU backends only).
+        ``"auto"`` (the default) decodes on the GPU when one is present *and* a
+        GPU backend works, else on the CPU -- and always returns host ``NumPy``
+        (the portable path). ``"cpu"`` forces a NumPy result. A CUDA device
+        (``"cuda"`` / ``"cuda:0"``) returns a GPU-resident ``torch.Tensor`` (ready
+        for :func:`~deeperfly.video.to_jax`, zero-copy): with ``backend="auto"``
+        it tries each installed GPU backend until one decodes and gracefully falls
+        back to a CPU NumPy read if none can; with a forced ``backend`` it is
+        strict and raises if that backend cannot decode on the GPU.
     start, stop, step
         Sequential frame slice, like ``range(start, stop, step)``.
     indices
@@ -54,11 +70,35 @@ def read_video(
         Seek-capable backends fetch just these frames; others decode up to
         ``max(indices)`` and gather.
     """
-    reader = select_reader(backend, device=device)
-    frames = reader.read(
-        path, device=device, start=start, stop=stop, step=step, indices=indices
-    )
-    out = frames if is_gpu_device(device) else to_numpy(frames)
+    # "auto" device is the portable convenience path: it may hardware-decode on
+    # the GPU but always hands back host NumPy. A CUDA device keeps the frames an
+    # on-device tensor for zero-copy handoff. "auto" *backend* is best-effort -- a
+    # GPU decode failure falls back to the CPU; a forced backend is strict.
+    want_host = device == "auto"
+    best_effort = backend == "auto"
+    device = resolve_device(device, backend)
+    read_kw = dict(start=start, stop=stop, step=step, indices=indices)
+
+    if is_gpu_device(device):
+        try:
+            reader, frames = _read_on_gpu(path, backend, device, read_kw)
+        except Exception as exc:
+            if not best_effort:
+                raise  # a forced GPU backend surfaces its failure
+            log.warning(
+                "GPU video decode unavailable (%s); using CPU decode for this and "
+                "subsequent reads",
+                exc,
+            )
+            mark_gpu_auto_failed()  # stop steering "auto" at the GPU this process
+            device = "cpu"
+            reader = select_reader(backend, device=device)
+            frames = reader.read(path, device=device, **read_kw)
+    else:
+        reader = select_reader(backend, device=device)
+        frames = reader.read(path, device=device, **read_kw)
+
+    out = frames if is_gpu_device(device) and not want_host else to_numpy(frames)
     log.info(
         "read video %s via '%s' backend -> %d frames %dx%d (device=%s)",
         Path(path).name,
@@ -69,6 +109,43 @@ def read_video(
         device,
     )
     return out
+
+
+def _read_on_gpu(path, backend, device, read_kw):
+    """Decode ``path`` on ``device`` (a GPU), returning ``(reader, frames)``.
+
+    A forced ``backend`` is validated and used strictly. ``backend="auto"`` walks
+    the installed GPU backends (:func:`~deeperfly.video.base.gpu_reader_candidates`)
+    until one actually decodes -- skipping builds whose CUDA support is missing --
+    then caches the winner so later reads go straight to it.
+    """
+    if backend != "auto":
+        reader = select_reader(backend, device=device)  # validates install + GPU
+        return reader, reader.read(path, device=device, **read_kw)
+
+    candidates = gpu_reader_candidates("auto")
+    if not candidates:
+        raise RuntimeError(
+            f"no GPU video backend installed; install one of {list(GPU_READ_ORDER)}"
+        )
+    errors = []
+    for cls in candidates:
+        try:
+            frames = cls.read(path, device=device, **read_kw)
+        except Exception as exc:
+            errors.append(f"{cls.name}: {exc}")
+            if len(candidates) > 1:
+                # Normal auto-probing (a backend's CUDA build may be missing); the
+                # next candidate may work, so keep this quiet unless -v / -vv.
+                log.info(
+                    "GPU decode via '%s' backend failed (%s); trying next",
+                    cls.name,
+                    exc,
+                )
+            continue
+        remember_gpu_reader(cls.name)  # probe once: stick with the winner
+        return cls, frames
+    raise RuntimeError("GPU video decode failed (" + "; ".join(errors) + ")")
 
 
 def list_image_files(pattern: str | Path) -> list[Path]:
@@ -144,7 +221,7 @@ def _read_images_gpu(files: list[Path], device: str, workers: int | None):
 def read_images(
     pattern: str | Path,
     *,
-    device: str = "cpu",
+    device: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
@@ -160,14 +237,18 @@ def read_images(
     Parameters
     ----------
     device
-        ``"cpu"`` returns NumPy; a CUDA device (``"cuda"`` / ``"cuda:0"``) returns
-        a GPU-resident ``torch.Tensor`` (JPEGs via nvJPEG when available), ready
-        for :func:`~deeperfly.video.to_jax`.
+        ``"auto"`` (the default) and ``"cpu"`` return host NumPy via the parallel
+        CPU decode -- already fast, so "auto" does not move image decode to the
+        GPU. An explicit CUDA device (``"cuda"`` / ``"cuda:0"``) returns a
+        GPU-resident ``torch.Tensor`` (JPEGs via nvJPEG when available), ready for
+        :func:`~deeperfly.video.to_jax`.
     indices, start, stop, step
         Select a subset, mirroring :func:`read_video` (``indices`` wins).
     workers
         Decode thread count (default: number of CPUs, capped at the frame count).
     """
+    if device == "auto":
+        device = "cpu"
     files = _subset(list_image_files(pattern), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")
@@ -191,7 +272,7 @@ def read_frames(
     path: str | Path,
     *,
     backend: str = "auto",
-    device: str = "cpu",
+    device: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
@@ -225,6 +306,54 @@ def read_frames(
         step=step,
         workers=workers,
     )
+
+
+def _count_decord(p: Path) -> int:
+    import decord
+
+    return len(decord.VideoReader(str(p), ctx=decord.cpu(0)))
+
+
+def _count_opencv(p: Path) -> int:
+    import cv2
+
+    cap = cv2.VideoCapture(str(p))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+
+
+def _count_pyav(p: Path) -> int:
+    import av
+
+    with av.open(str(p)) as container:
+        return int(container.streams.video[0].frames)
+
+
+def count_frames(path: str | Path) -> int | None:
+    """Frame count of a video file or image sequence -- ``None`` if unknown.
+
+    Image sequences count their files exactly; videos read it from container
+    metadata (decord / OpenCV / PyAV), which is cheap (no full decode). This is a
+    **best-effort hint** for a progress bar's total: callers stream frames and
+    detect end-of-file from the decoder itself, so an off-by-a-few count (rare,
+    container-dependent) or a ``None`` never affects correctness.
+    """
+    p = Path(path)
+    if not (p.is_file() and p.suffix.lower() in _VIDEO_EXTS):
+        try:
+            return len(list_image_files(path))
+        except FileNotFoundError:
+            return None
+    for probe in (_count_decord, _count_opencv, _count_pyav):
+        try:
+            n = probe(p)
+        except Exception:  # backend missing or metadata absent -> try the next
+            continue
+        if n and n > 0:
+            return int(n)
+    return None
 
 
 def write_mp4(

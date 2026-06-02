@@ -185,6 +185,62 @@ def test_preprocess_flip_commutes_with_resize():
     np.testing.assert_allclose(a, b, atol=1e-5)
 
 
+def test_preprocess_accepts_on_device_tensor_via_dlpack():
+    # A GPU-decoded frame arrives as a torch.Tensor; preprocess must bridge it to
+    # JAX (DLPack) and produce the same result as the NumPy path. Exercised on the
+    # CPU here (DLPack works host-side too), so no GPU is required.
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 256, size=(96, 128, 3), dtype=np.uint8)
+    from_numpy = np.asarray(inference.preprocess(img))
+    from_tensor = np.asarray(inference.preprocess(torch.from_numpy(img)))
+    np.testing.assert_array_equal(from_numpy, from_tensor)
+
+
+def test_detect_accepts_tensor_frames(model):
+    # The whole detect() path must accept on-device (torch.Tensor) frames and match
+    # the NumPy result -- the zero-copy GPU decode handoff, verified on the CPU.
+    torch = pytest.importorskip("torch")
+    sides, flips = inference.fly_camera_layout(["rh", "lf"])
+    rng = np.random.default_rng(1)
+    images = [rng.uniform(size=(96, 128, 3)).astype(np.float32) for _ in range(2)]
+    pts_np, conf_np = inference.detect(model, images, sides, flips)
+    pts_t, conf_t = inference.detect(
+        model, [torch.from_numpy(im) for im in images], sides, flips
+    )
+    np.testing.assert_allclose(pts_np, pts_t, atol=1e-4, equal_nan=True)
+    np.testing.assert_allclose(conf_np, conf_t, atol=1e-4)
+
+
+def test_detect_sequence_chunking_is_equivalent(model):
+    # Detection is per-frame independent, so processing a clip in windows and
+    # concatenating along time must equal one full pass. This is the invariant the
+    # CLI's streaming detector (bounded memory for long videos) relies on.
+    sides, flips = inference.fly_camera_layout(["rh", "lf"])
+    rng = np.random.default_rng(2)
+    frames = [rng.uniform(size=(7, 64, 64, 3)).astype(np.float32) for _ in range(2)]
+    full_pts, full_conf = inference.detect_sequence(model, frames, sides, flips)
+    a = 4  # split time into windows [0:4) and [4:7)
+    p0, c0 = inference.detect_sequence(model, [f[:a] for f in frames], sides, flips)
+    p1, c1 = inference.detect_sequence(model, [f[a:] for f in frames], sides, flips)
+    np.testing.assert_array_equal(np.concatenate([p0, p1], axis=1), full_pts)
+    np.testing.assert_array_equal(np.concatenate([c0, c1], axis=1), full_conf)
+
+
+def test_detect_sequence_batched_matches_per_frame(model):
+    # Batching the forward across (frame, pass) must match the per-frame path --
+    # the detector is per-row independent -- even when a batch straddles frame
+    # boundaries (batch_size not a multiple of the passes-per-frame).
+    sides, flips = inference.fly_camera_layout(["rh", "lf"])
+    rng = np.random.default_rng(3)
+    frames = [rng.uniform(size=(5, 64, 64, 3)).astype(np.float32) for _ in range(2)]
+    ref_pts, ref_conf = inference.detect_sequence(model, frames, sides, flips)
+    for bs in (1, 3, 64):  # < passes, straddling, and >> the whole window
+        p, c = inference.detect_sequence(model, frames, sides, flips, batch_size=bs)
+        np.testing.assert_allclose(p, ref_pts, atol=1e-4, equal_nan=True)
+        np.testing.assert_allclose(c, ref_conf, atol=1e-4)
+
+
 # -- single-side -> full skeleton --------------------------------------------
 
 

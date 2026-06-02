@@ -25,24 +25,58 @@ recomputed.
 from __future__ import annotations
 
 import argparse
-import functools
 import glob
 import logging
+import os
 import sys
 import tomllib
 from pathlib import Path
 
-import numpy as np
 
-from .cameras import CameraGroup
-from .io import PoseResult
-from .pipeline import run_from_points2d
+def _prep_gpu_memory_policy() -> None:
+    """Cap JAX's GPU memory pool so the detector can share VRAM with on-device
+    video frames, *before* anything initializes the JAX backend.
+
+    ``deeperfly run`` decodes each camera's frames onto the GPU (NVDEC) when the
+    JAX detector runs there; JAX's default ~75% preallocation then collides with
+    those frame tensors and XLA logs alarming ``CUDA_ERROR_OUT_OF_MEMORY`` lines
+    (it recovers, but they look like a crash). The detector's forward pass is
+    small, so half the GPU is ample and leaves room for the frames. This must run
+    before ``import .geometry`` (which probes ``jax.default_backend()`` at import
+    and would lock in the memory policy), and uses an import-free GPU probe so it
+    does not pull in or initialize torch/JAX. Only for ``run``; honors an override.
+    """
+    if not (len(sys.argv) > 1 and sys.argv[1] == "run"):
+        return
+    if any(k.startswith("XLA_PYTHON_CLIENT_") for k in os.environ):
+        return  # respect a user-chosen JAX memory policy
+    if glob.glob("/dev/nvidia[0-9]*"):  # an NVIDIA GPU is present
+        os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
+
+
+_prep_gpu_memory_policy()  # before the imports below initialize the JAX backend
+
+import numpy as np  # noqa: E402  (must follow the GPU memory policy above)
+
+from .cameras import CameraGroup  # noqa: E402
+from .io import PoseResult  # noqa: E402
+from .pipeline import run_from_points2d  # noqa: E402
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
 
 #: The linear pipeline stages, in order. ``run`` executes a contiguous range.
 STAGES = ("detect", "pose3d", "visualize")
+
+#: Frames decoded + detected per streaming window, per camera (``[detector]
+#: chunk_frames`` overrides). Bounds peak frame memory so arbitrarily long
+#: recordings run in constant memory; the GPU path decodes a window onto the
+#: device, detects it, frees it, then moves on. This is a *memory* knob, not a
+#: speed one: detection is compute-bound (~28 frames/s on an RTX 4090) and every
+#: decoder is far faster, so a small window costs no throughput but keeps VRAM
+#: low. 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig; raise it only on
+#: the DALI fallback (which prefers larger windows) or to cut per-window setup.
+DEFAULT_CHUNK_FRAMES = 64
 
 log = logging.getLogger("deeperfly")
 
@@ -172,26 +206,182 @@ def _camera_source(root: str | Path, prefix: str) -> Path | str:
     raise SystemExit(f"no video or images for camera {prefix!r} under {root}")
 
 
-def _read_camera_frames(
-    input_dir: str | Path, config: dict
-) -> tuple[list, dict[str, tuple[int, int]]]:
-    """Read per-camera frames mapped by ``[inputs]`` (default: prefix == name).
+def _frame_read_device(config: dict) -> str:
+    """Where to decode frames for the detector.
 
-    Returns the per-camera frame stacks (in camera order) and a
-    ``name -> (height, width)`` map used to infer each view's principal point.
+    ``"cuda"`` when the JAX detector will run on the GPU -- frames are then decoded
+    straight onto the device (NVDEC) and fed to the network zero-copy via DLPack,
+    never touching host memory. Otherwise ``"auto"`` (fast CPU decode, host NumPy).
+    The torch backend keeps the CPU path (it copies inputs to host internally, so
+    GPU decode would not help). ``read_frames`` still falls back to CPU gracefully
+    if no GPU video backend can actually decode here.
+    """
+    if config.get("detector", {}).get("backend", "jax") != "jax":
+        return "auto"
+    try:
+        import jax
+
+        # JAX reports CUDA (and ROCm) devices with platform "gpu".
+        if any(d.platform == "gpu" for d in jax.devices()):
+            return "cuda"
+    except Exception:
+        pass
+    return "auto"
+
+
+def _camera_sources(input_dir: str | Path, config: dict) -> list[tuple[str, object]]:
+    """``(name, source)`` per camera (in camera order), mapped via ``[inputs]``."""
+    root = Path(input_dir)
+    inputs = config.get("inputs", {})
+    return [
+        (name, _camera_source(root, inputs.get(name, name)))
+        for name in config.get("cameras", {})
+    ]
+
+
+def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
+    """``name -> (height, width)`` from a single frame per camera.
+
+    Used to infer each view's principal point. Reads only frame 0 (host), so it is
+    cheap and independent of the full streaming decode.
     """
     from . import video
 
-    root = Path(input_dir)
     backend = config.get("detector", {}).get("video_backend", "auto")
-    inputs = config.get("inputs", {})
-    frames, image_sizes = [], {}
-    for name in config.get("cameras", {}):
-        src = _camera_source(root, inputs.get(name, name))
-        view = video.read_frames(src, backend=backend)
-        frames.append(view)
-        image_sizes[name] = tuple(view.shape[1:3])  # (height, width)
-    return frames, image_sizes
+    sizes: dict[str, tuple[int, int]] = {}
+    for name, src in _camera_sources(args.input, config):
+        head = video.read_frames(src, backend=backend, device="auto", indices=[0])
+        sizes[name] = tuple(int(d) for d in head.shape[1:3])
+    return sizes
+
+
+def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
+    """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
+
+    A background producer decodes the next window while the consumer detects the
+    current one, so decode overlaps the GPU forward instead of running before it.
+    The win is largest for CPU decode (it runs on otherwise-idle cores fully in
+    parallel with the GPU); GPU decode shares the device, so it overlaps less.
+
+    EOF semantics match the old serial loop: a short or empty window ends the
+    stream, and a read failure on the *very first* window propagates (anything
+    later is treated as "past the end").
+    """
+    import queue
+    import threading
+
+    from . import video
+
+    q: queue.Queue = queue.Queue(maxsize=depth)
+    DONE = object()
+
+    def produce():
+        done = 0
+        while True:
+            try:
+                window = [
+                    video.read_frames(
+                        s, backend=backend, device=device, start=done, stop=done + chunk
+                    )
+                    for s in sources
+                ]
+            except Exception as exc:  # noqa: BLE001
+                q.put(("err", exc) if done == 0 else DONE)
+                return
+            n = len(window[0])
+            if n == 0:
+                q.put(DONE)
+                return
+            q.put(("win", window, n))
+            done += n
+            if n < chunk:  # a short window is the last one
+                q.put(DONE)
+                return
+
+    threading.Thread(target=produce, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is DONE:
+            return
+        if item[0] == "err":
+            raise item[1]
+        yield item[1], item[2]
+
+
+def _detect_2d(args, config: dict, model, sides, flips, *, correct, k, quiet):
+    """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
+
+    Decodes and detects ``[detector] chunk_frames`` frames at a time per camera and
+    frees each window before the next, so peak frame memory is bounded by the chunk
+    size, **not** the recording length -- the key to handling long videos. On the
+    GPU path each window is decoded onto the device (NVDEC), detected zero-copy, and
+    released. Per-window ``(V, w, ...)`` results are concatenated along time.
+
+    End-of-file is taken from the decoder (a short or empty window), so it does not
+    depend on :func:`deeperfly.video.count_frames` being exact -- that is only the
+    progress-bar total.
+    """
+    from tqdm import tqdm
+
+    from . import video
+    from .pictorial import Candidates
+    from .pose2d import auto_batch_size, inference
+
+    det = config.get("detector", {})
+    backend = det.get("video_backend", "auto")
+    device = _frame_read_device(config)
+    chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
+    sources = [src for _, src in _camera_sources(args.input, config)]
+    total = video.count_frames(sources[0]) if sources else 0
+    # Size the forward to the GPU so each window is a few big batches, not one
+    # batch per frame -- this only changes dispatch granularity, not the result.
+    batch_size = auto_batch_size(inference.IMG_SIZE)
+
+    pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
+    bar = tqdm(total=total, desc="detect 2D", unit="frame", disable=quiet or None)
+
+    def progress(rng):  # advance the single bar across every chunk
+        for t in rng:
+            yield t
+            bar.update(1)
+
+    try:
+        for window, _ in _prefetch_windows(
+            sources, backend=backend, device=device, chunk=chunk
+        ):
+            if correct == "pictorial":
+                p, c, cand = inference.detect_candidates_sequence(
+                    model, window, sides, flips, k=k, progress=progress
+                )
+                cand_xy.append(cand.xy)
+                cand_score.append(cand.score)
+            else:
+                p, c = inference.detect_sequence(
+                    model,
+                    window,
+                    sides,
+                    flips,
+                    batch_size=batch_size,
+                    progress=progress,
+                )
+            pts_parts.append(p)
+            conf_parts.append(c)
+            del window  # release this window's frames before the next is consumed
+    finally:
+        bar.close()
+
+    if not pts_parts:
+        raise SystemExit("detector received no frames")
+    pts2d = np.concatenate(pts_parts, axis=1)
+    conf = np.concatenate(conf_parts, axis=1)
+    candidates = (
+        Candidates(
+            xy=np.concatenate(cand_xy, axis=1), score=np.concatenate(cand_score, axis=1)
+        )
+        if cand_xy
+        else None
+    )
+    return pts2d, conf, candidates
 
 
 # -- stage resolution --------------------------------------------------------
@@ -246,30 +436,24 @@ def _require_viz() -> None:
         ) from e
 
 
-def _make_progress(quiet: bool, desc: str):
-    """A ``tqdm``-backed iterator wrapper for the detector loop (off when quiet)."""
-    from tqdm import tqdm
-
-    return functools.partial(tqdm, desc=desc, unit="frame", disable=quiet or None)
-
-
 # -- pipeline stages ---------------------------------------------------------
 
 
 def _stage_detect(
     args: argparse.Namespace, config: dict
-) -> tuple[PoseResult, object | None, list, dict]:
+) -> tuple[PoseResult, object | None, None, dict]:
     """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
 
-    Returns ``(result, candidates, frames, image_sizes)``. ``candidates`` is the
-    top-K peak set (only when ``correct = "pictorial"``); ``frames`` are reused by
-    a later visualize stage. The recording path is recorded in ``result.meta`` so
-    a future resume can recover the frames for visualization.
+    Returns ``(result, candidates, None, image_sizes)``. ``candidates`` is the
+    top-K peak set (only when ``correct = "pictorial"``). Frames are **not** held
+    in memory (detection streams them in windows -- see :func:`_detect_2d`), so the
+    third slot is ``None``; the recording path is recorded in ``result.meta`` and a
+    visualize stage re-sources the one overlay camera it needs.
     """
     from .pose2d import inference
     from .skeleton import Skeleton
 
-    frames, image_sizes = _read_camera_frames(args.input, config)
+    image_sizes = _camera_image_sizes(args, config)
     log.info(
         "input image sizes (h, w): %s", {n: tuple(s) for n, s in image_sizes.items()}
     )
@@ -287,29 +471,22 @@ def _stage_detect(
 
     pipe = config.get("pipeline", {})
     correct = pipe.get("correct", "reproject")
+    k = pipe.get("pictorial", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)
     n_passes = len(inference.expand_passes(sides, flips)[0])
-    n_frames = len(frames[0]) if frames else 0
+    chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
     log.info(
-        "detecting 2D poses: %d frames x %d views, %d forward passes/frame, "
-        "network input %dx%d",
-        n_frames,
-        len(frames),
+        "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
+        "streaming in chunks of %d frames",
+        len(image_sizes),
         n_passes,
         inference.IMG_SIZE[0],
         inference.IMG_SIZE[1],
+        chunk,
     )
-    progress = _make_progress(args.quiet, "detect 2D")
-    candidates = None
-    if correct == "pictorial":
-        k = pipe.get("pictorial", {}).get("k", 5)
-        pts2d, conf, candidates = inference.detect_candidates_sequence(
-            model, frames, sides, flips, k=k, progress=progress
-        )
-    else:
-        pts2d, conf = inference.detect_sequence(
-            model, frames, sides, flips, progress=progress
-        )
+    pts2d, conf, candidates = _detect_2d(
+        args, config, model, sides, flips, correct=correct, k=k, quiet=args.quiet
+    )
 
     result = PoseResult(
         cameras=cameras,
@@ -318,7 +495,7 @@ def _stage_detect(
         conf=conf,
         meta={"input": str(Path(args.input).resolve())},
     )
-    return result, candidates, frames, image_sizes
+    return result, candidates, None, image_sizes
 
 
 def _stage_pose3d(
