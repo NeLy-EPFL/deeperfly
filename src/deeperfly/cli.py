@@ -888,7 +888,7 @@ def build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser(
         "info", parents=[common], help="print a summary of a result file"
     )
-    pi.add_argument("--in", dest="input", required=True)
+    pi.add_argument("input", help="path to a result .h5 file")
     pi.set_defaults(func=_cmd_info)
 
     return parser
