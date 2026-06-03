@@ -253,13 +253,13 @@ l_stripe = [35, 36, 37]
 rf_leg = "#ba1e31"
 rm_leg = "#c9564f"
 rh_leg = "#d58579"
-r_antenna = "#ff0000"
-r_stripe = "#ff00ff"
+r_antenna = "#8c1525"
+r_stripe = "#e6b3a8"
 lf_leg = "#0f7399"
 lm_leg = "#1a8daf"
 lh_leg = "#75becb"
-l_antenna = "#0000ff"
-l_stripe = "#00ffff"
+l_antenna = "#0a4f6b"
+l_stripe = "#a9dbe4"
 
 # Per-camera point visibility for the canonical 7-camera rig (camera names match
 # the [cameras.*] tables above). Right cameras see the right side, left cameras
