@@ -2,7 +2,7 @@
 
 - :func:`bundle_adjust` wraps :func:`scipy.optimize.least_squares` (TRF +
   LSMR). The per-observation residual and its Jacobian are computed via
-  :func:`jax.vmap` + :func:`jax.jacfwd` on
+  :func:`jax.vmap` + :func:`jax.jacrev` on
   :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
   SciPy matrix using the precomputed sparsity pattern.
 
@@ -40,8 +40,10 @@ class BASolution(NamedTuple):
 # Per-observation projection and its Jacobian w.r.t. all five parameter groups
 # (pt3d, rvec, tvec, intr, dist). The Jacobian tuple is returned in the order
 # of project_full_one's arguments and we keep cols_per_obs aligned with it below.
+# project_full_one maps 13 inputs (pt3d+rvec+tvec+intr+dist) -> 2 outputs, so
+# reverse-mode (jacrev) costs ~1 pass per output instead of jacfwd's ~1 per input.
 _project_per_obs = jax.jit(jax.vmap(project_full_one))
-_jac_per_obs = jax.jit(jax.vmap(jax.jacfwd(project_full_one, argnums=(0, 1, 2, 3, 4))))
+_jac_per_obs = jax.jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
@@ -216,6 +218,23 @@ def bundle_adjust(
         rows = np.concatenate([rows, bone_rows])
         cols = np.concatenate([cols, bone_cols_nz])
 
+    # The (rows, cols) pattern is constant across iterations -- only the values
+    # change -- so build the canonical CSR layout (indptr/indices) once and map
+    # each COO entry to its CSR data slot. Sorting ``row * n_free + col`` groups
+    # entries by row then column, which is exactly CSR's sorted order; the inverse
+    # map then scatters each iteration's values into that fixed structure with a
+    # single np.bincount (which sums any duplicate (row, col) entries, just as the
+    # old coo->csr conversion did, but without re-sorting every call).
+    coo_key = rows.astype(np.int64) * n_free + cols
+    uniq_key, coo_to_csr = np.unique(coo_key, return_inverse=True)
+    coo_to_csr = coo_to_csr.reshape(-1)  # numpy version-proof: keep 1D
+    nnz_csr = uniq_key.size
+    csr_indices = (uniq_key % n_free).astype(np.int64)
+    csr_rows = uniq_key // n_free
+    csr_indptr = np.concatenate(
+        [[0], np.cumsum(np.bincount(csr_rows, minlength=n_resid))]
+    ).astype(np.int64)
+
     def jac(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
         jac_blocks = _jac_per_obs(
@@ -238,7 +257,8 @@ def bundle_adjust(
                 [np.asarray(dpi), np.asarray(dpj)], axis=1
             )  # (B, 6)
             data = np.concatenate([data, bone_jac[bone_valid]])
-        return csr_matrix((data, (rows, cols)), shape=(n_resid, n_free))
+        csr_data = np.bincount(coo_to_csr, weights=data, minlength=nnz_csr)
+        return csr_matrix((csr_data, csr_indices, csr_indptr), shape=(n_resid, n_free))
 
     result = least_squares(
         residuals,
