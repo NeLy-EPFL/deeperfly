@@ -9,7 +9,8 @@ pulled in until it is actually used:
   with ``cv2``, with painter's-algorithm depth ordering for 3D (needs the
   ``opencv`` extra).
 - :mod:`deeperfly.viz.compose` -- a config-driven panel compositor that layers
-  the OpenCV primitives into video frames (one MP4 per ``[[viz.videos]]`` entry).
+  the OpenCV primitives into video frames (one MP4 per
+  ``[[pipeline.visualization.videos]]`` entry).
 
 For backward compatibility the matplotlib drawing helpers (``plot_skeleton_2d``,
 ``plot_skeleton_3d``, ``overlay_grid``, ``limb_colors``, ``apply_background``,

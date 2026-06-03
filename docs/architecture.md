@@ -3,9 +3,13 @@
 How the pipeline works internally. For a comparison with the upstream projects,
 see [comparison.md](comparison.md).
 
-`deeperfly run` is the whole pipeline as one linear sequence of stages — `detect`
-(2D) → `pose3d` (calibrate + triangulate + correct + smooth) → `visualize` — with
-per-stage caching so re-runs only compute what is missing.
+`deeperfly run` is the pipeline as one linear sequence of stages — `pose2d`
+(2D) → `bundle_adjustment` → `pictorial_structures` → `triangulation` →
+`smoothing` → `visualization` — each toggled by its own `do_<stage>` boolean in the
+config's `[pipeline]` table (with its own `[pipeline.<stage>]` parameter
+sub-table). An enabled stage recomputes its output; a disabled one is read back
+from the cached `poses.h5` in the output directory and fed to the stages still on,
+so disabling the finished stages resumes a partial run.
 
 ## Pipeline stages
 
@@ -23,8 +27,9 @@ per-stage caching so re-runs only compute what is missing.
 
 Each view is detected independently; the views only meet *geometrically*. The
 reconstruction is two orthogonal choices — `run_from_points2d(...,
-triangulation=..., do_pictorial=...)`, or `[pipeline].triangulation` +
-`[pipeline].do_pictorial`:
+triangulation=..., do_pictorial=...)` for the library, or
+`[pipeline.triangulation].method` + `[pipeline].do_pictorial_structures` for the
+CLI:
 
 **`triangulation`** — how the per-view 2D points become one 3D point:
 
@@ -42,8 +47,9 @@ triangulation=..., do_pictorial=...)`, or `[pipeline].triangulation` +
 - **`dlt`** — plain least-squares triangulation over all available views, no
   outlier handling. The bare baseline. (`none` is an alias.)
 
-**`do_pictorial`** (bool, default off) — when on, first run DeepFly3D-style pictorial
-structures over the detector's top-K candidate peaks (`pictorial.py`): build
+**`do_pictorial_structures`** (bool, default off; `do_pictorial=` in the library
+call) — when on, first run DeepFly3D-style pictorial structures over the
+detector's top-K candidate peaks (`pictorial.py`): build
 multi-view-consistent 3D hypotheses per joint, then pick one per joint by exact
 dynamic programming along each limb under bone-length priors (plus an optional
 temporal term). It can *recover* a joint when the arg-max landed on the wrong
@@ -57,7 +63,7 @@ keeps the PS estimate as-is). On clean recordings it is a no-op.
 The detector ships two interchangeable backends under
 `pose2d/backends/{jax,torch}/`, each exposing the same `HourglassNet` /
 `load_model` / `predict_heatmaps`, both installed by default and selectable with
-`[detector].backend`. The PyTorch backend runs the published `sh8` weights
+`[pipeline.pose2d].backend`. The PyTorch backend runs the published `sh8` weights
 directly; the JAX backend (default) runs the same weights from a native checkpoint
 that `deeperfly run` downloads and converts on first use, validated to match the
 PyTorch reference numerically (`tests/test_pose2d_torch.py`). JAX is faster on GPU

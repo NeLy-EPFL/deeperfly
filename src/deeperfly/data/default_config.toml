@@ -10,7 +10,7 @@
 #
 # Every section is also usable on its own: CameraGroup.from_config reads only
 # [camera_defaults]/[cameras.*], Skeleton.from_config only [skeleton], and the
-# bundle-adjuster only [bundle_adjustment] -- foreign sections are ignored.
+# bundle-adjuster only [pipeline.bundle_adjustment] -- foreign sections are ignored.
 
 
 # ---------------------------------------------------------------------------
@@ -64,83 +64,35 @@ lh = "camera_6"
 
 
 # ---------------------------------------------------------------------------
-# Visualization: each [[viz.videos]] is one output MP4 (`<video_name>.mp4`),
-# composited from an ordered list of `panels`. A panel draws one `plot` op for
-# one `view` (camera) with its top-left at pixel offset (`x0`, `y0`):
-#   imshow      - that view's video frame
-#   skeleton_2d - that view's 2D detections
-#   skeleton_3d - the 3D skeleton reprojected into that view (OpenCV, depth-sorted)
-# Panels are drawn in order, so a skeleton panel after an `imshow` of the same
-# view/offset overlays it. `x0`/`y0` are pixels: set them to multiples of your
-# frame size. The canvas auto-sizes to fit all panels unless you set `width`/`height`
-# on the video.
+# Pipeline: the run is a linear sequence of stages, each its own on/off switch
+# in [pipeline] (do_<stage>) with its own parameter sub-table below:
 #
-# `background` is the canvas fill (default black); set `viz.background` here for
-# every video, or a `background` key on a single panel to repaint just its tile.
+#   do_pose2d               -> [pipeline.pose2d]               detect 2D per view
+#   do_bundle_adjustment    -> [pipeline.bundle_adjustment]    refine the cameras
+#   do_pictorial_structures -> [pipeline.pictorial_structures] peak recovery
+#   do_triangulation        -> [pipeline.triangulation]        2D -> 3D
+#   do_smoothing            -> [pipeline.smoothing]            temporal smoothing
+#   do_visualization        -> [pipeline.visualization]        render the videos
 #
-# Keyword args for a draw op (e.g. point_radius, line_thickness, scale, palette)
-# can be set at three levels, each keyed by the `plot` op name: `[viz.kwargs]`
-# below (every panel of every video), a `kwargs` table on a `[[viz.videos]]`
-# entry (all that video's panels), and extra keys on a single panel. They merge
-# in that order, most specific winning -- so `scale = 0.5` lives once in
-# `[viz.kwargs]` here but a panel can still override it with its own `scale`.
-#
-# Instead of `scale`, give a target `width` and/or `height` in pixels (also a
-# layout key, settable at any level). These take priority over `scale` and let
-# you fix the layout without knowing the source frame size: both -> that exact
-# box, one -> the other follows to keep aspect.
+# An enabled stage recomputes its output; to *reuse* finished work switch that
+# stage off -- its result is then read from the cached `poses.h5` in the output
+# dir and fed to the stages still on. So "resume" is just turning off the stages
+# already done, e.g. `do_pose2d = false` to reconstruct 3D from the cached 2D
+# pose. An enabled stage whose input is unavailable (e.g. do_triangulation on but
+# no 2D, detected or cached) is skipped with the reason logged.
 # ---------------------------------------------------------------------------
-[viz]
-background = "black"
-
-[viz.kwargs]
-imshow      = { width = 480, height = 240 }
-skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
-skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
-
-[[viz.videos]]
-video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
-panels = [
-    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
-    { plot = "skeleton_2d", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "skeleton_2d", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
-    { plot = "skeleton_2d", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "skeleton_2d", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
-    { plot = "skeleton_2d", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "skeleton_2d", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
-    { plot = "skeleton_2d", view = "lh", x0 = 480, y0 = 720 },
-]
-
-[[viz.videos]]
-video_name = "pose3d"   # same montage with the triangulated 3D skeleton reprojected back
-panels = [
-    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
-    { plot = "skeleton_3d", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "skeleton_3d", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
-    { plot = "skeleton_3d", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "skeleton_3d", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
-    { plot = "skeleton_3d", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "skeleton_3d", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
-    { plot = "skeleton_3d", view = "lh", x0 = 480, y0 = 720 },
-]
+[pipeline]
+do_pose2d               = true   # detect 2D pose in every camera view
+do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
+do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
+do_triangulation        = true   # triangulate 2D -> 3D
+do_smoothing            = false  # temporal smoothing of the 3D track
+do_visualization        = true   # render the videos (see [pipeline.visualization] below)
+fps = 100.0              # frames/sec; shared by one_euro smoothing and the videos
 
 
-# ---------------------------------------------------------------------------
 # Detector: the 2D pose backend and frame reader.
-# ---------------------------------------------------------------------------
-[detector]
+[pipeline.pose2d]
 backend = "jax"          # jax | torch
 # frame decoder backend. "auto" = fastest installed *frame-accurate* decoder for
 # `decode_device` (CPU: pyav -- the in-process default -- then opencv/torchcodec/
@@ -160,34 +112,8 @@ chunk_frames = 64
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
-# ---------------------------------------------------------------------------
-# Pipeline: 2D -> calibration -> 3D -> correction -> smoothing.
-# ---------------------------------------------------------------------------
-[pipeline]
-calibrate = true         # refine the cameras with bundle adjustment (see below)
-triangulation = "ransac" # 2D->3D triangulation strategy:
-                         #   ransac - largest multi-view consensus (default, robust)
-                         #   greedy - drop the worst-reprojecting view (a.k.a. reproject)
-                         #   dlt    - plain least-squares, no outlier handling (a.k.a. none)
-do_pictorial = false     # run DeepFly3D-style pictorial structures over the detector's
-                         # top-K candidates before triangulation (needs the detect stage's
-                         # candidates, so it is disabled when resuming `run` from a stored
-                         # 2D result); its committed 2D then feeds the triangulation above
-ransac_threshold = 15.0  # inlier reprojection cutoff (px) for triangulation = ransac
-min_inliers = 2          # min agreeing views to accept a point (ransac)
-smooth = "none"          # none | gaussian | one_euro
-fps = 100.0
-
-[pipeline.pictorial]     # tuning for do_pictorial (above)
-k = 5                    # candidate peaks per joint
-temporal = false         # add a temporal-consistency term
-lam = 1.0                # bone-length prior weight
-
-
-# ---------------------------------------------------------------------------
 # Bundle adjustment: the fly itself is the calibration target.
-# ---------------------------------------------------------------------------
-[bundle_adjustment]
+[pipeline.bundle_adjustment]
 solver = "least_squares_scipy"
 # Indices of the keypoints (into [skeleton]) that drive camera calibration. The
 # leg joints sit at sharp limb corners and are the most reliable detections, so
@@ -205,9 +131,112 @@ fixed = [
 ]
 shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
 
-[bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
+[pipeline.bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
 max_nfev = 2000
 loss = "linear"
+
+
+# Pictorial structures: DeepFly3D-style peak recovery over the detector's top-K
+# candidates before triangulation. Needs do_pose2d in the same run (the candidate
+# peaks are not cached), so it is skipped when resuming from a stored 2D result;
+# its committed 2D then feeds the triangulation below.
+[pipeline.pictorial_structures]
+k = 5                    # candidate peaks per joint
+temporal = false         # add a temporal-consistency term
+lam = 1.0                # bone-length prior weight
+
+
+# Triangulation: how the per-view 2D points become one 3D point.
+[pipeline.triangulation]
+method = "ransac"        # ransac - largest multi-view consensus (default, robust)
+                         # greedy - drop the worst-reprojecting view (a.k.a. reproject)
+                         # dlt    - plain least-squares, no outlier handling (a.k.a. none)
+ransac_threshold = 15.0  # inlier reprojection cutoff (px) for method = ransac
+min_inliers = 2          # min agreeing views to accept a point (ransac)
+# reproj_threshold = 40.0  # method = greedy: per-view reprojection cutoff (px)
+# max_drops = 5            # method = greedy: max views dropped per offending point
+
+
+# Smoothing: temporal correction of the 3D track (runs only when do_smoothing).
+[pipeline.smoothing]
+method = "gaussian"      # gaussian | one_euro
+
+
+# ---------------------------------------------------------------------------
+# Visualization: each [[pipeline.visualization.videos]] is one output MP4
+# (`<video_name>.mp4`), composited from an ordered list of `panels`. A panel
+# draws one `plot` op for one `view` (camera) with its top-left at pixel offset
+# (`x0`, `y0`):
+#   imshow      - that view's video frame
+#   skeleton_2d - that view's 2D detections
+#   skeleton_3d - the 3D skeleton reprojected into that view (OpenCV, depth-sorted)
+# Panels are drawn in order, so a skeleton panel after an `imshow` of the same
+# view/offset overlays it. `x0`/`y0` are pixels: set them to multiples of your
+# frame size. The canvas auto-sizes to fit all panels unless you set `width`/`height`
+# on the video.
+#
+# `background` is the canvas fill (default black); set
+# `pipeline.visualization.background` here for every video, or a `background` key
+# on a single panel to repaint just its tile.
+#
+# Keyword args for a draw op (e.g. point_radius, line_thickness, scale, palette)
+# can be set at three levels, each keyed by the `plot` op name:
+# `[pipeline.visualization.kwargs]` below (every panel of every video), a `kwargs`
+# table on a `[[pipeline.visualization.videos]]` entry (all that video's panels),
+# and extra keys on a single panel. They merge in that order, most specific
+# winning -- so `scale = 0.5` lives once in `[pipeline.visualization.kwargs]` here
+# but a panel can still override it with its own `scale`.
+#
+# Instead of `scale`, give a target `width` and/or `height` in pixels (also a
+# layout key, settable at any level). These take priority over `scale` and let
+# you fix the layout without knowing the source frame size: both -> that exact
+# box, one -> the other follows to keep aspect.
+# ---------------------------------------------------------------------------
+[pipeline.visualization]
+background = "black"
+
+[pipeline.visualization.kwargs]
+imshow      = { width = 480, height = 240 }
+skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
+skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
+
+[[pipeline.visualization.videos]]
+video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
+panels = [
+    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
+    { plot = "skeleton_2d", view = "f",  x0 = 240, y0 = 0   },
+    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "skeleton_2d", view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
+    { plot = "skeleton_2d", view = "lf", x0 = 480, y0 = 240 },
+    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "skeleton_2d", view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
+    { plot = "skeleton_2d", view = "lm", x0 = 480, y0 = 480 },
+    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "skeleton_2d", view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
+    { plot = "skeleton_2d", view = "lh", x0 = 480, y0 = 720 },
+]
+
+[[pipeline.visualization.videos]]
+video_name = "pose3d"   # same montage with the triangulated 3D skeleton reprojected back
+panels = [
+    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
+    { plot = "skeleton_3d", view = "f",  x0 = 240, y0 = 0   },
+    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "skeleton_3d", view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
+    { plot = "skeleton_3d", view = "lf", x0 = 480, y0 = 240 },
+    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "skeleton_3d", view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
+    { plot = "skeleton_3d", view = "lm", x0 = 480, y0 = 480 },
+    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "skeleton_3d", view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
+    { plot = "skeleton_3d", view = "lh", x0 = 480, y0 = 720 },
+]
 
 
 # ---------------------------------------------------------------------------

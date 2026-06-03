@@ -1,9 +1,9 @@
 """Config-driven panel compositor: layer draw-ops into video frames.
 
-A ``[[viz.videos]]`` entry describes one output video as an ordered list of
-*panels* (layers) drawn onto a shared RGB buffer::
+A ``[[pipeline.visualization.videos]]`` entry describes one output video as an
+ordered list of *panels* (layers) drawn onto a shared RGB buffer::
 
-    [[viz.videos]]
+    [[pipeline.visualization.videos]]
     video_name = "pose3d"
     panels = [
         { plot = "imshow",      view = "rf", x0 = 0,   y0 = 0 },
@@ -28,11 +28,11 @@ Keyword arguments for a draw op can be set at three levels, each a table keyed
 by ``plot`` op name (``skeleton_2d`` / ``skeleton_3d`` / ``imshow``) so the same
 config can tune several op kinds at once::
 
-    [viz.kwargs]                 # 1. global: every panel of every video
+    [pipeline.visualization.kwargs]   # 1. global: every panel of every video
     skeleton_2d = { line_thickness = 2 }
     skeleton_3d = { line_thickness = 2 }
 
-    [[viz.videos]]
+    [[pipeline.visualization.videos]]
     video_name = "pose3d"
     kwargs = { skeleton_3d = { point_radius = 5 } }   # 2. one video, all panels
     panels = [
@@ -53,12 +53,13 @@ three are layout keys, settable at any of the three levels just like draw kwargs
 forwarded to the op. The canvas is sized to the video's own ``width`` /
 ``height`` when given, else to the bounding box of every panel's footprint.
 
-The canvas background is ``black`` unless ``viz.background`` is set (global); a
-single panel can override it over its own footprint with a ``background`` key::
+The canvas background is ``black`` unless ``pipeline.visualization.background`` is
+set (global); a single panel can override it over its own footprint with a
+``background`` key::
 
-    [viz]
+    [pipeline.visualization]
     background = "white"          # canvas fill for every video
-    [[viz.videos]]
+    [[pipeline.visualization.videos]]
     panels = [
         { plot = "skeleton_3d", view = "rf", background = "black" },  # one tile
     ]
@@ -245,7 +246,7 @@ def _op_kwargs(table: dict, plot: str) -> dict:
     value = table.get(plot, {})
     if not isinstance(value, dict):
         raise ValueError(
-            f"viz kwargs for plot op {plot!r} must be a table of keyword "
+            f"visualization kwargs for plot op {plot!r} must be a table of keyword "
             f"arguments, got {value!r}"
         )
     return value
@@ -264,21 +265,22 @@ def _layout_key(panel: dict, options: dict, key: str):
 
 
 def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
-    """Parse ``[[viz.videos]]`` from a config dict or TOML path into specs.
+    """Parse ``[[pipeline.visualization.videos]]`` from a config dict or TOML path.
 
     Per-op keyword arguments are resolved here and baked into each panel's
-    ``options``, merged from least to most specific: ``[viz.kwargs]`` (global),
-    the video entry's ``kwargs`` (all its panels), then the panel's own extra
-    keys. Each ``kwargs`` table is keyed by ``plot`` op name. The layout keys
-    ``scale`` / ``width`` / ``height`` taken from those kwargs are lifted onto the
-    matching :class:`Panel` fields rather than forwarded. The canvas background
-    comes from ``viz.background`` (default ``"black"``); a panel's ``background``
-    key sets :attr:`Panel.background`.
+    ``options``, merged from least to most specific:
+    ``[pipeline.visualization.kwargs]`` (global), the video entry's ``kwargs`` (all
+    its panels), then the panel's own extra keys. Each ``kwargs`` table is keyed by
+    ``plot`` op name. The layout keys ``scale`` / ``width`` / ``height`` taken from
+    those kwargs are lifted onto the matching :class:`Panel` fields rather than
+    forwarded. The canvas background comes from
+    ``pipeline.visualization.background`` (default ``"black"``); a panel's
+    ``background`` key sets :attr:`Panel.background`.
     """
     if not isinstance(config, dict):
         with open(config, "rb") as f:
             config = tomllib.load(f)
-    viz = config.get("viz", {})
+    viz = config.get("pipeline", {}).get("visualization", {})
     global_kwargs = viz.get("kwargs", {})
     background = viz.get("background", "black")
     specs: list[VideoSpec] = []
@@ -384,7 +386,7 @@ def render_videos(
     fps: float = 30.0,
     backend: str = "auto",
 ) -> list[Path]:
-    """Render every ``[[viz.videos]]`` in ``config`` to ``<outdir>/<name>.mp4``."""
+    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``."""
     from ..video import write_mp4
 
     outdir = Path(outdir)

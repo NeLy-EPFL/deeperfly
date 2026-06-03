@@ -76,7 +76,7 @@ priors and multi-view geometry. deeperfly splits this into two orthogonal knobs:
 a `triangulation` strategy that *vetoes* bad views, and an optional `pictorial`
 stage that *recovers* the right peak first.
 
-- **`triangulation`** (`[pipeline].triangulation`):
+- **`triangulation`** (`[pipeline.triangulation].method`):
   - **`ransac`** (default) — triangulate each point from its largest multi-view
     consensus set; a gross outlier never enters the fit.
   - **`greedy`** — greedily drop the worst-reprojecting view of each offending
@@ -84,7 +84,7 @@ stage that *recovers* the right peak first.
     (`reproject` is a legacy alias.)
   - **`dlt`** — plain least-squares triangulation, no outlier handling. (`none`
     is an alias.)
-- **`do_pictorial`** (`[pipeline].do_pictorial`) — a re-implementation of the
+- **`do_pictorial_structures`** (`[pipeline].do_pictorial_structures`) — a re-implementation of the
   DeepFly3D idea over the top-K candidate peaks. Because the fly skeleton's bones
   form a forest of simple chains (each leg a 5-joint path), the MAP estimate is
   solved by **exact dynamic programming** per limb — no loopy belief propagation —

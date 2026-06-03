@@ -105,11 +105,14 @@ def _seed_2d(result, outdir):
 def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     outdir = tmp_path / "out"
     _seed_2d(result, outdir)
-    # pose3d options live in the config; disable calibration here.
+    # Resume: pose2d/bundle_adjustment/visualization off (reuse the cached 2D, no
+    # recalibration, no video); triangulate the cached 2D into 3D.
     cfg = tmp_path / "cfg.toml"
-    cfg.write_text("[pipeline]\ncalibrate = false\n")
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
+        "do_triangulation = true\ndo_visualization = false\n"
+    )
 
-    # `run` resumes from the cached 2D (start = pose3d); --until pose3d skips video.
     cli.main(
         [
             "run",
@@ -118,8 +121,6 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
             str(cfg),
             "-o",
             str(outdir),
-            "--until",
-            "pose3d",
             "--log-level",
             "error",
         ]
@@ -134,18 +135,21 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     assert "has 3D:   True" in printed
 
 
-def test_cli_run_visualize_only(result, tmp_path):
+def test_cli_run_visualization_only(result, tmp_path):
     outdir = tmp_path / "out"
     outdir.mkdir()
     cfg = tmp_path / "cfg.toml"
-    # A skeleton_3d-only video needs no image frames, so the visualize stage runs
-    # without a recording (canvas sized from the camera's intrinsics).
+    # every compute stage off -> visualization from the cached 3D result. A
+    # skeleton_3d-only video needs no image frames (canvas sized from the camera's
+    # intrinsics); fps comes from the config.
     cfg.write_text(
-        "[[viz.videos]]\n"
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
+        "do_triangulation = false\ndo_visualization = true\nfps = 5\n"
+        "[[pipeline.visualization.videos]]\n"
         'video_name = "pose3d"\n'
         'panels = [{ plot = "skeleton_3d", view = "rh", x0 = 0, y0 = 0 }]\n'
     )
-    result.save(outdir / "poses.h5")  # full result (has 3D) -> auto-resume to visualize
+    result.save(outdir / "poses.h5")  # full result (has 3D)
     cli.main(
         [
             "run",
@@ -154,8 +158,6 @@ def test_cli_run_visualize_only(result, tmp_path):
             str(cfg),
             "-o",
             str(outdir),
-            "--fps",
-            "5",
             "--log-level",
             "error",
         ]

@@ -31,6 +31,6 @@ video.write_mp4(frames, "out.mp4", fps=30)
 `deeperfly run` decodes on the **CPU by default** and uploads each window to the
 GPU in one shot — within a few percent of GPU/NVDEC end to end, since the 2D
 detector (not decode) is the bottleneck. Opt into on-device NVDEC decode with
-`[detector] decode_device = "cuda"` (it falls back to CPU if no GPU decoder is
-available). See the config comments and `deeperfly.video` docstrings for the full
-decoder details.
+`[pipeline.pose2d] decode_device = "cuda"` (it falls back to CPU if no GPU decoder
+is available). See the config comments and `deeperfly.video` docstrings for the
+full decoder details.

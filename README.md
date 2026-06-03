@@ -91,14 +91,32 @@ tweak the pipeline.
 
 ### Resuming and partial runs
 
-Each run reuses whatever is already cached in the output directory and computes
-only what is missing, so finished work is never recomputed:
+The pipeline is a sequence of stages — `pose2d` (2D) → `bundle_adjustment` →
+`pictorial_structures` → `triangulation` → `smoothing` → `visualization` — each
+toggled by its own `do_<stage>` boolean in the config's `[pipeline]` table, with
+its own parameter sub-table (`[pipeline.pose2d]`, `[pipeline.bundle_adjustment]`,
+`[pipeline.triangulation]`, …):
 
-```bash
-deeperfly run recording/ -o out/ --until detect   # 2D only
-deeperfly run recording/ -o out/                  # resume: reuse cached 2D, finish 3D + video
-deeperfly run recording/ -o out/ --overwrite      # recompute everything
+```toml
+[pipeline]
+do_pose2d               = true   # detect 2D pose in every view
+do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
+do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
+do_triangulation        = true   # triangulate 2D -> 3D
+do_smoothing            = false  # temporal smoothing (opt-in)
+do_visualization        = true   # render the videos
 ```
+
+An *enabled* stage recomputes its output; a *disabled* stage is skipped and its
+result is read from the cached `poses.h5` in the output directory instead. So to
+reuse finished work, switch off the stages already done — e.g. set
+`do_pose2d = false` to reconstruct 3D from a cached 2D pose without re-running
+detection. An enabled stage whose input is unavailable (say `do_triangulation` is
+on but there's no 2D, detected or cached) is skipped and the reason is logged.
+
+A run also reuses the `config.toml` already saved in the output directory (it owns
+the cached results), so `-o out/` alone resumes consistently; pass `-c` only for a
+fresh output directory, and edit `out/config.toml` to change a run in place.
 
 Pass `--log-level debug` for more detail, or `--log-level warning` to quiet the
 per-stage logs and progress bar.

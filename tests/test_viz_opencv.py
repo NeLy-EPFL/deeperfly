@@ -92,18 +92,20 @@ def test_draw_skeleton_3d_depth_orders_and_drops_behind_camera(cameras, fly):
 
 def _two_panel_config(plot):
     return {
-        "viz": {
-            "videos": [
-                {
-                    "video_name": f"test_{plot}",
-                    "panels": [
-                        {"plot": "imshow", "view": "rh", "x0": 0, "y0": 0},
-                        {"plot": plot, "view": "rh", "point_radius": 2},
-                        {"plot": "imshow", "view": "rm", "x0": 128, "y0": 0},
-                        {"plot": plot, "view": "rm", "x0": 128, "y0": 0},
-                    ],
-                }
-            ]
+        "pipeline": {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": f"test_{plot}",
+                        "panels": [
+                            {"plot": "imshow", "view": "rh", "x0": 0, "y0": 0},
+                            {"plot": plot, "view": "rh", "point_radius": 2},
+                            {"plot": "imshow", "view": "rm", "x0": 128, "y0": 0},
+                            {"plot": plot, "view": "rm", "x0": 128, "y0": 0},
+                        ],
+                    }
+                ]
+            }
         }
     }
 
@@ -125,24 +127,26 @@ def test_read_video_specs_parses_panels_and_options():
 
 def test_op_kwargs_merge_three_levels():
     cfg = {
-        "viz": {
-            "kwargs": {  # 1. global, all videos
-                "skeleton_2d": {"line_thickness": 2, "point_radius": 1},
-                "skeleton_3d": {"line_thickness": 2},
-            },
-            "videos": [
-                {
-                    "video_name": "v",
-                    "kwargs": {"skeleton_2d": {"point_radius": 7}},  # 2. this video
-                    "panels": [
-                        {"plot": "skeleton_2d", "view": "rh"},
-                        # 3. panel-level key overrides both broader levels
-                        {"plot": "skeleton_2d", "view": "rm", "line_thickness": 9},
-                        {"plot": "skeleton_3d", "view": "rf"},
-                        {"plot": "imshow", "view": "rh"},  # unrelated op untouched
-                    ],
-                }
-            ],
+        "pipeline": {
+            "visualization": {
+                "kwargs": {  # 1. global, all videos
+                    "skeleton_2d": {"line_thickness": 2, "point_radius": 1},
+                    "skeleton_3d": {"line_thickness": 2},
+                },
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "kwargs": {"skeleton_2d": {"point_radius": 7}},  # 2. this video
+                        "panels": [
+                            {"plot": "skeleton_2d", "view": "rh"},
+                            # 3. panel-level key overrides both broader levels
+                            {"plot": "skeleton_2d", "view": "rm", "line_thickness": 9},
+                            {"plot": "skeleton_3d", "view": "rf"},
+                            {"plot": "imshow", "view": "rh"},  # unrelated op untouched
+                        ],
+                    }
+                ],
+            }
         }
     }
     panels = compose.read_video_specs(cfg)[0].panels
@@ -158,11 +162,16 @@ def test_op_kwargs_merge_three_levels():
 
 def test_op_kwargs_must_be_a_table():
     cfg = {
-        "viz": {
-            "kwargs": {"skeleton_2d": 2},
-            "videos": [
-                {"video_name": "v", "panels": [{"plot": "skeleton_2d", "view": "rh"}]}
-            ],
+        "pipeline": {
+            "visualization": {
+                "kwargs": {"skeleton_2d": 2},
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [{"plot": "skeleton_2d", "view": "rh"}],
+                    }
+                ],
+            }
         }
     }
     with pytest.raises(ValueError, match="must be a table"):
@@ -171,17 +180,23 @@ def test_op_kwargs_must_be_a_table():
 
 def test_scale_from_kwargs_lifted_to_panel_and_panel_key_wins():
     cfg = {
-        "viz": {
-            "kwargs": {"skeleton_2d": {"scale": 0.5, "line_thickness": 2}},
-            "videos": [
-                {
-                    "video_name": "v",
-                    "panels": [
-                        {"plot": "skeleton_2d", "view": "rh"},  # scale from kwargs
-                        {"plot": "skeleton_2d", "view": "rm", "scale": 0.25},  # wins
-                    ],
-                }
-            ],
+        "pipeline": {
+            "visualization": {
+                "kwargs": {"skeleton_2d": {"scale": 0.5, "line_thickness": 2}},
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            {"plot": "skeleton_2d", "view": "rh"},  # scale from kwargs
+                            {
+                                "plot": "skeleton_2d",
+                                "view": "rm",
+                                "scale": 0.25,
+                            },  # wins
+                        ],
+                    }
+                ],
+            }
         }
     }
     panels = compose.read_video_specs(cfg)[0].panels
@@ -194,18 +209,28 @@ def test_scale_from_kwargs_lifted_to_panel_and_panel_key_wins():
 
 def test_width_height_resolve_scales_and_override_scale():
     cfg = {
-        "viz": {
-            "videos": [
-                {
-                    "video_name": "v",
-                    "panels": [
-                        {"plot": "imshow", "view": "rh", "scale": 0.5},  # uniform
-                        {"plot": "imshow", "view": "rh", "width": 64, "height": 32},
-                        {"plot": "imshow", "view": "rh", "width": 64},  # aspect kept
-                        {"plot": "imshow", "view": "rh", "height": 48},  # aspect kept
-                    ],
-                }
-            ]
+        "pipeline": {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            {"plot": "imshow", "view": "rh", "scale": 0.5},  # uniform
+                            {"plot": "imshow", "view": "rh", "width": 64, "height": 32},
+                            {
+                                "plot": "imshow",
+                                "view": "rh",
+                                "width": 64,
+                            },  # aspect kept
+                            {
+                                "plot": "imshow",
+                                "view": "rh",
+                                "height": 48,
+                            },  # aspect kept
+                        ],
+                    }
+                ]
+            }
         }
     }
     panels = compose.read_video_specs(cfg)[0].panels
@@ -221,22 +246,29 @@ def test_width_height_resolve_scales_and_override_scale():
 def test_width_height_set_panel_footprint_for_canvas_size(result, fly, frames):
     # frames are 96x128 per view; pin each tile to a fixed 100x60 box regardless
     cfg = {
-        "viz": {
-            "videos": [
-                {
-                    "video_name": "v",
-                    "panels": [
-                        {"plot": "imshow", "view": "rh", "width": 100, "height": 60},
-                        {
-                            "plot": "imshow",
-                            "view": "rm",
-                            "x0": 100,
-                            "width": 100,
-                            "height": 60,
-                        },
-                    ],
-                }
-            ]
+        "pipeline": {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            {
+                                "plot": "imshow",
+                                "view": "rh",
+                                "width": 100,
+                                "height": 60,
+                            },
+                            {
+                                "plot": "imshow",
+                                "view": "rm",
+                                "x0": 100,
+                                "width": 100,
+                                "height": 60,
+                            },
+                        ],
+                    }
+                ]
+            }
         }
     }
     spec = compose.read_video_specs(cfg)[0]
@@ -249,11 +281,13 @@ def test_width_height_set_panel_footprint_for_canvas_size(result, fly, frames):
 
 def test_width_height_via_global_kwargs():
     cfg = {
-        "viz": {
-            "kwargs": {"imshow": {"width": 80, "height": 80}},
-            "videos": [
-                {"video_name": "v", "panels": [{"plot": "imshow", "view": "rh"}]}
-            ],
+        "pipeline": {
+            "visualization": {
+                "kwargs": {"imshow": {"width": 80, "height": 80}},
+                "videos": [
+                    {"video_name": "v", "panels": [{"plot": "imshow", "view": "rh"}]}
+                ],
+            }
         }
     }
     panel = compose.read_video_specs(cfg)[0].panels[0]
@@ -263,17 +297,23 @@ def test_width_height_via_global_kwargs():
 
 def test_background_two_levels_global_and_panel():
     cfg = {
-        "viz": {
-            "background": "white",  # global canvas fill
-            "videos": [
-                {
-                    "video_name": "v",
-                    "panels": [
-                        {"plot": "skeleton_3d", "view": "rh"},
-                        {"plot": "skeleton_3d", "view": "rm", "background": "black"},
-                    ],
-                }
-            ],
+        "pipeline": {
+            "visualization": {
+                "background": "white",  # global canvas fill
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            {"plot": "skeleton_3d", "view": "rh"},
+                            {
+                                "plot": "skeleton_3d",
+                                "view": "rm",
+                                "background": "black",
+                            },
+                        ],
+                    }
+                ],
+            }
         }
     }
     spec = compose.read_video_specs(cfg)[0]
@@ -286,10 +326,15 @@ def test_background_two_levels_global_and_panel():
 
 def test_background_defaults_to_black():
     cfg = {
-        "viz": {
-            "videos": [
-                {"video_name": "v", "panels": [{"plot": "skeleton_3d", "view": "rh"}]}
-            ]
+        "pipeline": {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [{"plot": "skeleton_3d", "view": "rh"}],
+                    }
+                ]
+            }
         }
     }
     assert compose.read_video_specs(cfg)[0].background == "black"
@@ -304,17 +349,23 @@ def test_fill_region_paints_and_clips():
 
 def test_panel_background_fills_footprint_before_op(result, fly, frames):
     cfg = {
-        "viz": {
-            "background": "black",
-            "videos": [
-                {
-                    "video_name": "v",
-                    "panels": [
-                        # skeleton-only tile on its own white backdrop
-                        {"plot": "skeleton_3d", "view": "rh", "background": "white"},
-                    ],
-                }
-            ],
+        "pipeline": {
+            "visualization": {
+                "background": "black",
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            # skeleton-only tile on its own white backdrop
+                            {
+                                "plot": "skeleton_3d",
+                                "view": "rh",
+                                "background": "white",
+                            },
+                        ],
+                    }
+                ],
+            }
         }
     }
     spec = compose.read_video_specs(cfg)[0]
@@ -343,7 +394,7 @@ def test_scale_shrinks_panel_footprint_and_image(result, fly, frames):
 
     # a 0.5-scaled panel halves its footprint in the inferred canvas size
     cfg = _two_panel_config("skeleton_2d")
-    for panel in cfg["viz"]["videos"][0]["panels"]:
+    for panel in cfg["pipeline"]["visualization"]["videos"][0]["panels"]:
         panel["scale"] = 0.5
         panel["x0"] = panel.get("x0", 0) // 2  # keep the two 64-wide tiles adjacent
     spec = compose.read_video_specs(cfg)[0]
@@ -383,7 +434,7 @@ def test_render_video_stacks_all_frames(result, fly, frames):
 
 def test_unknown_plot_op_raises(result, fly, frames):
     cfg = _two_panel_config("skeleton_2d")
-    cfg["viz"]["videos"][0]["panels"][1]["plot"] = "bogus"
+    cfg["pipeline"]["visualization"]["videos"][0]["panels"][1]["plot"] = "bogus"
     spec = compose.read_video_specs(cfg)[0]
     src = compose.Sources(fly, result.cameras, frames, pts2d=result.pts2d)
     with pytest.raises(ValueError, match="unknown plot op 'bogus'"):
@@ -391,17 +442,17 @@ def test_unknown_plot_op_raises(result, fly, frames):
 
 
 def test_packaged_config_videos_parse():
-    """The shipped default config's [[viz.videos]] parse into valid specs."""
+    """The shipped default config's [[pipeline.visualization.videos]] parse into valid specs."""
     from importlib.resources import files
 
     cfg = files("deeperfly.data") / "default_config.toml"
     specs = compose.read_video_specs(cfg)
     assert {s.video_name for s in specs} == {"pose2d", "pose3d"}
     assert all(p.plot in compose.OPS for s in specs for p in s.panels)
-    # the global [viz.kwargs] sets line_thickness=2 on every skeleton panel
+    # the global [pipeline.visualization.kwargs] sets line_thickness=2 on every skeleton panel
     skel = [p for s in specs for p in s.panels if p.plot.startswith("skeleton")]
     assert skel and all(p.options.get("line_thickness") == 2 for p in skel)
-    # scale moved to global [viz.kwargs]; every panel resolves to 0.5
+    # scale moved to global [pipeline.visualization.kwargs]; every panel resolves to 0.5
     assert all(p.scale == 0.5 for s in specs for p in s.panels)
     # and the default canvas background is black
     assert all(s.background == "black" for s in specs)

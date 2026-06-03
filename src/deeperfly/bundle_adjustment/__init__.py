@@ -7,9 +7,9 @@ core solver (:mod:`deeperfly.bundle_adjustment.core`), and returns an optimized
 ``CameraGroup`` alongside the refined 3D points.
 
 :func:`bundle_adjust_from_config` is the config-driven entry point: it reads the
-``[bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``,
+``[pipeline.bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``,
 ``solver`` and a solver-named kwargs sub-table such as
-``[bundle_adjustment.least_squares_scipy]``) and dispatches to
+``[pipeline.bundle_adjustment.least_squares_scipy]``) and dispatches to
 :func:`bundle_adjust`.
 """
 
@@ -97,16 +97,16 @@ def bundle_adjust_from_config(
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:
     """Run :func:`bundle_adjust` driven by a TOML config (dict or file path).
 
-    The ``[bundle_adjustment]`` section supplies ``fixed``, ``shared`` and
+    The ``[pipeline.bundle_adjustment]`` section supplies ``fixed``, ``shared`` and
     ``solver``; solver kwargs live in a sub-table named after the solver, e.g.
-    ``[bundle_adjustment.scipy.least_squares]``.
+    ``[pipeline.bundle_adjustment.least_squares_scipy]``.
     """
     if not isinstance(config, dict):
         with open(config, "rb") as f:
             config = tomllib.load(f)
 
     cameras = CameraGroup.from_config(config)
-    ba = config.get("bundle_adjustment", {})
+    ba = config.get("pipeline", {}).get("bundle_adjustment", {})
 
     solver = ba.get("solver", "scipy.least_squares")
     if solver not in _SUPPORTED_SOLVERS:

@@ -8,26 +8,29 @@ filename->camera map, the 2D detector, the pipeline options, bundle adjustment
 and the skeleton. The commands:
 
 - ``init`` -- write a default config.toml.
-- ``run`` -- the whole pipeline (``detect`` 2D -> ``pose3d`` calibrate+triangulate
-  -> ``visualize``) or any prefix of it. The recording is the positional argument; a
-  wildcard pattern (``fly*``) fans out to every matching directory, and
-  ``-r``/``--recursive`` treats the argument as a parent directory and runs every
-  recording nested beneath it -- each run in turn into its own output dir.
-  ``-c``/``--config`` is the merged config TOML (defaults to the packaged default
-  config when omitted) and ``-o`` is an output *directory* (default
-  ``<input>/deeperfly_outputs``) that collects the result ``poses.h5``, the videos
-  and a copy of the config. Each run reuses whatever is already cached in that
-  directory and computes only what is missing; ``--overwrite`` recomputes
-  everything and ``--until`` stops early. Detector weights are downloaded and
-  converted automatically on first use.
+- ``run`` -- the pipeline's enabled stages (``pose2d`` 2D -> ``bundle_adjustment``
+  -> ``pictorial_structures`` -> ``triangulation`` -> ``smoothing`` ->
+  ``visualization``). The recording is the positional argument; a wildcard pattern
+  (``fly*``) fans out to every matching directory, and ``-r``/``--recursive``
+  treats the argument as a parent directory and runs every recording nested
+  beneath it -- each run in turn into its own output dir.
+  ``-o`` is an output *directory* (default ``<input>/deeperfly_outputs``) that
+  collects the result ``poses.h5``, the videos and a copy of the config used.
+  ``-c``/``--config`` is the merged config TOML; a run prefers the ``config.toml``
+  already snapshotted in the output dir (its source of truth -- even over ``-c``,
+  notifying when it ignores one), then ``-c`` if given, else the packaged default.
+  The ``[pipeline].do_<stage>`` booleans toggle which stages run: an enabled stage
+  recomputes, a disabled one is reused from the cached ``poses.h5``, and an enabled
+  stage whose input is missing is skipped with the reason logged. Detector weights
+  are downloaded and converted automatically on first use.
 - ``inspect`` -- print a summary of a result file.
 - ``doctor`` -- print installation/runtime details: package version, whether
   CPU/GPU inference is available, the installed video backends, whether the
   detector weights have been downloaded (and where), and the default config path.
 
-The 2D->3D pipeline is a linear sequence of three stages; ``run`` resumes from the
-furthest-along artifact cached in the output directory, so partial work is never
-recomputed.
+The pipeline is a linear sequence of stages (:data:`STAGES`); each stage's input is
+produced by the enabled stage before it or read from the cached artifacts in the
+output directory, so disabling the finished stages resumes a partial run.
 """
 
 from __future__ import annotations
@@ -87,27 +90,34 @@ import numpy as np  # noqa: E402  (must follow the GPU memory policy above)
 
 from .cameras import CameraGroup  # noqa: E402
 from .io import PoseResult  # noqa: E402
-from .pipeline import run_from_points2d  # noqa: E402
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
 
 
-class Stage(str, Enum):
-    """The linear pipeline stages, in order; ``run`` executes a contiguous range.
+#: The linear pipeline stages, in run order. Each is independently toggled by a
+#: ``[pipeline].do_<stage>`` boolean (see :func:`_stage_flags`) and parameterized
+#: by its own ``[pipeline.<stage>]`` sub-table.
+STAGES = (
+    "pose2d",
+    "bundle_adjustment",
+    "pictorial_structures",
+    "triangulation",
+    "smoothing",
+    "visualization",
+)
 
-    A ``str`` enum, so each member doubles as its own plain-string name: Typer
-    renders it as the ``--until`` choices, and :data:`STAGES` is the same names as
-    a tuple for the stage-index arithmetic below.
-    """
-
-    detect = "detect"
-    pose3d = "pose3d"
-    visualize = "visualize"
-
-
-#: The stage names in order, as plain strings (e.g. ``STAGES.index(name)``).
-STAGES = tuple(s.value for s in Stage)
+#: Default for each ``do_<stage>`` when the key is omitted: detection,
+#: calibration, triangulation and visualization run by default; pictorial
+#: structures and smoothing are opt-in.
+STAGE_DEFAULTS = {
+    "pose2d": True,
+    "bundle_adjustment": True,
+    "pictorial_structures": False,
+    "triangulation": True,
+    "smoothing": False,
+    "visualization": True,
+}
 
 #: Frames decoded + detected per streaming window, per camera (overridable via
 #: ``[detector] chunk_frames``). Bounds peak frame memory, so arbitrarily long
@@ -228,16 +238,25 @@ def _load_detector(checkpoint: str | None, backend: str):
 # -- config-driven option resolution -----------------------------------------
 
 
-def _calibrate_kwargs(config: dict) -> dict:
-    """Bundle-adjustment options for :func:`deeperfly.pipeline.calibrate`.
+def _pose2d_config(config: dict) -> dict:
+    """The ``[pipeline.pose2d]`` detector/decoder sub-table (empty if absent)."""
+    return config.get("pipeline", {}).get("pose2d", {})
 
-    Reads ``[bundle_adjustment]``: ``keypoints`` (-> ``ba_keypoints``), ``fixed``,
-    ``shared`` and the solver sub-table (e.g.
-    ``[bundle_adjustment.least_squares_scipy]``, forwarded as solver kwargs like
-    ``max_nfev`` / ``loss``). Anything omitted falls through to ``calibrate``'s
-    own defaults.
+
+def _fps(config: dict) -> float:
+    """Frames/sec from ``[pipeline].fps`` -- shared by one_euro smoothing and videos."""
+    return config.get("pipeline", {}).get("fps", 100.0)
+
+
+def _bundle_adjustment_kwargs(config: dict) -> dict:
+    """Options for :func:`deeperfly.pipeline.calibrate` from ``[pipeline.bundle_adjustment]``.
+
+    Reads ``keypoints`` (-> ``ba_keypoints``), ``fixed``, ``shared`` and the solver
+    sub-table (e.g. ``[pipeline.bundle_adjustment.least_squares_scipy]``, forwarded
+    as solver kwargs like ``max_nfev`` / ``loss``). Anything omitted falls through
+    to ``calibrate``'s own defaults.
     """
-    ba = config.get("bundle_adjustment", {})
+    ba = config.get("pipeline", {}).get("bundle_adjustment", {})
     out: dict = {}
     if "keypoints" in ba:
         out["ba_keypoints"] = ba["keypoints"]
@@ -252,29 +271,29 @@ def _calibrate_kwargs(config: dict) -> dict:
     return out
 
 
-def _run_kwargs(config: dict) -> dict:
-    """Keyword arguments for :func:`deeperfly.pipeline.run_from_points2d`.
+def _pictorial_kwargs(config: dict) -> dict:
+    """Keyword args for :func:`deeperfly.pictorial.reconstruct` from ``[pipeline.pictorial_structures]``."""
+    ps = config.get("pipeline", {}).get("pictorial_structures", {})
+    return {"temporal": ps.get("temporal", False), "lam": ps.get("lam", 1.0)}
 
-    Built entirely from the config's ``[pipeline]`` / ``[bundle_adjustment]``
-    sections; an empty config yields the library defaults (calibrate on,
-    all-keypoint BA, RANSAC reconstruction, no smoothing).
-    """
-    pipe = config.get("pipeline", {})
-    ps = pipe.get("pictorial", {})
-    smooth = pipe.get("smooth") or None
-    if isinstance(smooth, str) and smooth.lower() == "none":
-        smooth = None
-    return dict(
-        do_calibrate=pipe.get("calibrate", True),
-        calibrate_kwargs=_calibrate_kwargs(config),
-        triangulation=pipe.get("triangulation", "ransac"),
-        do_pictorial=pipe.get("do_pictorial", False),
-        ransac_threshold=pipe.get("ransac_threshold", 15.0),
-        min_inliers=pipe.get("min_inliers", 2),
-        ps_kwargs={"temporal": ps.get("temporal", False), "lam": ps.get("lam", 1.0)},
-        smooth=smooth,
-        fps=pipe.get("fps", 100.0),
-    )
+
+def _triangulation_options(config: dict) -> dict:
+    """Method + thresholds for the triangulation stage from ``[pipeline.triangulation]``."""
+    tri = config.get("pipeline", {}).get("triangulation", {})
+    return {
+        "method": tri.get("method", "ransac"),
+        "ransac_threshold": tri.get("ransac_threshold", 15.0),
+        "min_inliers": tri.get("min_inliers", 2),
+        "reproj_threshold": tri.get("reproj_threshold", 40.0),
+        "max_drops": tri.get("max_drops", 5),
+    }
+
+
+def _smoothing_options(config: dict) -> tuple[str, dict]:
+    """``(method, extra_kwargs)`` for the smoothing stage from ``[pipeline.smoothing]``."""
+    sm = dict(config.get("pipeline", {}).get("smoothing", {}))
+    method = sm.pop("method", "gaussian")
+    return method, sm
 
 
 # -- input -> camera frame resolution ----------------------------------------
@@ -317,7 +336,7 @@ def _frame_read_device(config: dict) -> str:
     always decodes on the CPU (it copies inputs to host internally, so GPU decode
     would not help).
     """
-    det = config.get("detector", {})
+    det = _pose2d_config(config)
     device = det.get("decode_device", "cpu")
     if device == "cpu" or det.get("backend", "jax") != "jax":
         return "cpu"
@@ -344,7 +363,7 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     """
     from . import video
 
-    backend = config.get("detector", {}).get("video_backend", "auto")
+    backend = _pose2d_config(config).get("video_backend", "auto")
     device = _frame_read_device(config)  # match detection (CPU by default)
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args.input, config):
@@ -406,7 +425,7 @@ def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
         yield item[1], item[2]
 
 
-def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
+def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
 
     Decodes and detects ``[detector] chunk_frames`` frames at a time per camera and
@@ -423,7 +442,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
     from .pictorial import Candidates
     from .pose2d import auto_batch_size, inference
 
-    det = config.get("detector", {})
+    det = _pose2d_config(config)
     backend = det.get("video_backend", "auto")
     device = _frame_read_device(config)
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
@@ -464,7 +483,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
         for window, _ in _prefetch_windows(
             sources, backend=backend, device=device, chunk=chunk
         ):
-            if do_pictorial:
+            if want_candidates:
                 p, c, cand = inference.detect_candidates_sequence(
                     model, window, sides, flips, k=k, progress=progress
                 )
@@ -511,48 +530,71 @@ def _default_outdir(inp: str | Path) -> Path:
     return base / "deeperfly_outputs"
 
 
-def _resolve_stages(
-    args: argparse.Namespace, *, have_2d: bool, have_3d: bool
-) -> tuple[int, int]:
-    """Inclusive ``(start, stop)`` indices into :data:`STAGES`.
+#: Keys removed in the per-stage refactor, mapped to their new home so an old
+#: config fails with a fix-it message instead of being silently ignored.
+_REMOVED_PIPELINE_KEYS = {
+    "calibrate": "do_bundle_adjustment",
+    "do_calibrate": "do_bundle_adjustment",
+    "do_pictorial": "do_pictorial_structures",
+    "do_visualize": "do_visualization",
+    "triangulation": "[pipeline.triangulation].method",
+    "ransac_threshold": "[pipeline.triangulation].ransac_threshold",
+    "min_inliers": "[pipeline.triangulation].min_inliers",
+    "smooth": "do_smoothing + [pipeline.smoothing].method",
+}
 
-    The start is inferred from what is already cached in the output directory:
-    nothing cached starts at ``detect``; a cached 2D-only result resumes at
-    ``pose3d``; a cached result that already has 3D resumes at ``visualize``.
-    ``--overwrite`` ignores the cache and starts at ``detect``. ``--until`` caps
-    the stop; when everything requested is already cached (``stop < start``) the
-    caller treats the run as a no-op.
+
+def _stage_flags(config: dict) -> dict[str, bool]:
+    """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
+
+    Each stage (:data:`STAGES`) has its own boolean defaulting to
+    :data:`STAGE_DEFAULTS`: an enabled stage runs (so a "resume" is just disabling
+    the stages already done, whose cached results in the output dir then feed the
+    enabled ones); a disabled stage never executes but its cached output, if
+    present, still feeds downstream. Unknown ``do_*`` keys -- and keys removed in
+    the per-stage refactor (the old ``[stages]`` table, ``[pipeline].calibrate`` /
+    ``triangulation`` / ``smooth``) -- fail loudly, pointing at the new location.
     """
-    if args.overwrite or not have_2d:
-        start = STAGES.index("detect")
-    elif have_3d:
-        start = STAGES.index("visualize")
-    else:
-        start = STAGES.index("pose3d")
-    stop = STAGES.index(args.until) if args.until else len(STAGES) - 1
-    return start, stop
-
-
-def _stage_in_range(stage: str, start: int, stop: int) -> bool:
-    return start <= STAGES.index(stage) <= stop
+    if "stages" in config:
+        raise SystemExit(
+            "[stages] was removed; the stage toggles now live in [pipeline] as "
+            + ", ".join(f"do_{n}" for n in STAGES)
+        )
+    pipe = config.get("pipeline", {})
+    for old, new in _REMOVED_PIPELINE_KEYS.items():
+        # A scalar at the old key is the removed usage; a sub-table (dict) of the
+        # same name -- e.g. the new [pipeline.triangulation] -- is fine.
+        if old in pipe and not isinstance(pipe[old], dict):
+            raise SystemExit(f"[pipeline].{old} was removed; use {new}")
+    valid = {f"do_{name}" for name in STAGES}
+    unknown = {k for k in pipe if k.startswith("do_")} - valid
+    if unknown:
+        raise SystemExit(
+            f"[pipeline] has unknown stage toggle(s) {', '.join(sorted(unknown))}; "
+            f"the stages are {', '.join(STAGES)}"
+        )
+    return {n: bool(pipe.get(f"do_{n}", STAGE_DEFAULTS[n])) for n in STAGES}
 
 
 # -- pipeline stages ---------------------------------------------------------
 
 
-def _stage_detect(
-    args: argparse.Namespace, config: dict
+def _stage_pose2d(
+    args: argparse.Namespace, config: dict, *, want_candidates: bool
 ) -> tuple[PoseResult, object | None, None, dict]:
     """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
 
     Returns ``(result, candidates, None, image_sizes)``. ``candidates`` is the
-    top-K peak set (only when ``[pipeline].do_pictorial``). Frames are **not** held
-    in memory (detection streams them in windows -- see :func:`_detect_2d`), so the
-    third slot is ``None``; the recording path is recorded in ``result.meta`` and a
-    visualize stage re-sources the one overlay camera it needs.
+    top-K peak set, extracted only when ``want_candidates`` (i.e. the
+    ``pictorial_structures`` stage is enabled, since the candidates are not cached).
+    Frames are **not** held in memory (detection streams them in windows -- see
+    :func:`_detect_2d`), so the third slot is ``None``; the recording path is
+    recorded in ``result.meta`` and a visualization stage re-sources the one overlay
+    camera it needs.
     """
     from .pose2d import backends, inference
     from .skeleton import Skeleton
+    from .triangulate import apply_visibility
 
     image_sizes = _camera_image_sizes(args, config)
     log.info(
@@ -561,7 +603,7 @@ def _stage_detect(
     cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
     skeleton = Skeleton.from_config(config) if "skeleton" in config else Skeleton.fly()
 
-    det = config.get("detector", {})
+    det = _pose2d_config(config)
     backend = det.get("backend", "jax")
     log.info(
         "loading %s detector (checkpoint: %s)",
@@ -571,9 +613,7 @@ def _stage_detect(
     model = _load_detector(det.get("checkpoint"), backend)
     log.info("%s detector ready on device %s", backend, backends.detector_device(model))
 
-    pipe = config.get("pipeline", {})
-    do_pictorial = pipe.get("do_pictorial", False)
-    k = pipe.get("pictorial", {}).get("k", 5)
+    k = config.get("pipeline", {}).get("pictorial_structures", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)
     n_passes = len(inference.expand_passes(sides, flips)[0])
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
@@ -592,9 +632,13 @@ def _stage_detect(
         model,
         sides,
         flips,
-        do_pictorial=do_pictorial,
+        want_candidates=want_candidates,
         k=k,
     )
+    # Mask (camera, point) pairs the rig cannot see once, here -- the spot the old
+    # monolithic run_from_points2d masked -- so the cached 2D and every downstream
+    # stage (BA, pictorial, triangulation) see the same visibility-masked points.
+    pts2d = apply_visibility(pts2d, skeleton, cameras.names)
 
     result = PoseResult(
         cameras=cameras,
@@ -606,58 +650,120 @@ def _stage_detect(
     return result, candidates, None, image_sizes
 
 
-def _stage_pose3d(
-    args: argparse.Namespace,
-    config: dict,
-    result: PoseResult,
-    candidates: object | None,
-) -> PoseResult:
-    """Calibrate + triangulate + correct + smooth -> a full :class:`PoseResult`.
+def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
+    """Refine ``result.cameras`` with bundle adjustment (fly-as-calibration-target).
 
-    Uses ``result.cameras`` -- the rig built from the config with image sizes
-    during ``detect``, or the (possibly already-calibrated) rig stored in a
-    resumed result. To triangulate against an edited rig, change the config and
-    re-run from ``detect`` (frame sizes are needed to place the principal point).
-
-    ``candidates`` is only present when ``detect`` just ran in this process;
-    resuming from a stored 2D result has none, so a ``do_pictorial = true`` config
-    disables pictorial (keeping the chosen ``triangulation``) with a warning.
+    Calibrates on the arg-max 2D in ``result`` and replaces its cameras in place.
+    Uses the rig already in ``result`` -- built from the config with image sizes
+    during ``pose2d``, or restored from a resumed result. To calibrate an edited
+    rig, change the config and re-run from ``pose2d`` (frame sizes are needed to
+    place the principal point).
     """
-    cameras = result.cameras
+    from .pipeline import calibrate
 
-    kwargs = _run_kwargs(config)
-    if kwargs["do_pictorial"] and candidates is None:
-        # Drop the (now-impossible) pictorial stage, keep the triangulator.
-        log.warning(
-            "pictorial correction needs detector candidates, which a cached 2D "
-            "result does not store; disabling pictorial and using triangulation=%r. "
-            "Re-run with --overwrite (re-running detect from the recording) to use "
-            "pictorial.",
-            kwargs["triangulation"],
-        )
-        kwargs["do_pictorial"] = False
-
-    carry = {"input": result.meta["input"]} if "input" in (result.meta or {}) else {}
     log.info(
-        "pose3d: calibrate=%s triangulation=%s do_pictorial=%s "
-        "smooth=%s fps=%s (%d frames, %d views)",
-        kwargs["do_calibrate"],
-        kwargs["triangulation"],
-        kwargs["do_pictorial"],
-        kwargs["smooth"],
-        kwargs["fps"],
+        "bundle adjustment: refining cameras (%d frames, %d views)",
         result.n_frames,
         result.n_views,
     )
-    return run_from_points2d(
-        cameras,
-        result.skeleton,
+    result.cameras, _ = calibrate(
+        result.cameras,
         result.pts2d,
         result.conf,
-        candidates=candidates,
-        meta=carry,
-        **kwargs,
+        result.skeleton,
+        **_bundle_adjustment_kwargs(config),
     )
+    return result
+
+
+def _stage_pictorial_structures(
+    config: dict, result: PoseResult, candidates: object
+) -> PoseResult:
+    """DeepFly3D pictorial-structures recovery over the detector's top-K candidates.
+
+    Commits a corrected per-view 2D (``result.pts2d``) and an initial 3D estimate
+    (``result.pts3d``); the triangulation stage, if enabled, then re-triangulates
+    the committed 2D. ``candidates`` must come from a ``pose2d`` run in this process
+    (they are not cached).
+    """
+    from . import pictorial
+
+    log.info(
+        "pictorial structures: recovering peaks (%d frames, %d views)",
+        result.n_frames,
+        result.n_views,
+    )
+    pts3d, pts2d, reproj = pictorial.reconstruct(
+        result.cameras,
+        result.skeleton,
+        candidates,
+        result.pts2d,
+        **_pictorial_kwargs(config),
+    )
+    result.pts2d, result.pts3d, result.reproj_error = pts2d, pts3d, reproj
+    result.meta["pictorial"] = True
+    return result
+
+
+def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
+    """Triangulate the 2D in ``result`` to 3D by the configured method.
+
+    Sets ``result.pts3d`` (and the cleaned ``result.pts2d`` / ``reproj_error`` for
+    the outlier-rejecting methods) using ``result.cameras``. ``ransac`` builds each
+    point from its largest multi-view consensus, ``greedy`` drops the
+    worst-reprojecting view, ``dlt`` is plain least squares (see
+    :func:`deeperfly.pipeline._resolve_triangulation`).
+    """
+    from .pipeline import _resolve_triangulation, reconstruct, reconstruct_ransac
+    from .triangulate import reprojection_error, triangulate
+
+    opts = _triangulation_options(config)
+    method = _resolve_triangulation(opts["method"])
+    log.info(
+        "triangulation: method=%s (%d frames, %d views)",
+        method,
+        result.n_frames,
+        result.n_views,
+    )
+    if method == "ransac":
+        pts3d, pts2d, reproj = reconstruct_ransac(
+            result.cameras,
+            result.pts2d,
+            threshold=opts["ransac_threshold"],
+            min_inliers=opts["min_inliers"],
+        )
+    elif method == "greedy":
+        pts3d, pts2d, reproj = reconstruct(
+            result.cameras,
+            result.pts2d,
+            reproj_threshold=opts["reproj_threshold"],
+            max_drops=opts["max_drops"],
+        )
+    else:  # "dlt": plain least-squares triangulation, no outlier handling
+        pts2d = result.pts2d
+        pts3d = triangulate(result.cameras, pts2d)
+        reproj = reprojection_error(result.cameras, pts3d, pts2d)
+    result.pts2d, result.pts3d, result.reproj_error = pts2d, pts3d, reproj
+    result.meta["triangulation"] = method
+    return result
+
+
+def _stage_smoothing(config: dict, result: PoseResult) -> PoseResult:
+    """Temporal smoothing of ``result.pts3d`` -> ``result.pts3d_smoothed``."""
+    from .correction import smooth_gaussian, smooth_one_euro
+
+    method, kwargs = _smoothing_options(config)
+    log.info("smoothing: method=%s", method)
+    if method == "gaussian":
+        result.pts3d_smoothed = smooth_gaussian(result.pts3d, **kwargs)
+    elif method == "one_euro":
+        result.pts3d_smoothed = smooth_one_euro(result.pts3d, _fps(config), **kwargs)
+    else:
+        raise SystemExit(
+            f"unknown [pipeline.smoothing].method {method!r} (gaussian|one_euro)"
+        )
+    result.meta["fps"] = _fps(config)
+    return result
 
 
 def _source_view_frames(
@@ -667,13 +773,14 @@ def _source_view_frames(
     views: list[str],
     in_memory: list | None = None,
 ) -> dict[str, np.ndarray]:
-    """Per-view footage for the visualize stage's ``imshow`` panels.
+    """Per-view footage for the visualization stage's ``imshow`` panels.
 
     Uses ``in_memory`` frames (a list indexed by camera order) when available;
     otherwise re-sources each requested view from a recording, resolving the root
-    in order: ``--recording`` -> the recording path stored in ``result.meta`` (if
-    it still exists) -> the run's own input recording -> error pointing at
-    ``--recording``.
+    in order: the run's own input recording (the positional argument) if it exists
+    -> the recording path stored in ``result.meta`` (if it still exists) -> error.
+    So a resume that needs the original frames just re-passes the recording:
+    ``deeperfly run <recording> -o <outdir>``.
     """
     from . import video
 
@@ -684,66 +791,71 @@ def _source_view_frames(
         return {v: in_memory[names.index(v)] for v in views}
 
     inp = getattr(args, "input", None)
-    if args.recording:
-        root = args.recording
+    if inp and Path(inp).exists():
+        root = inp
+        log.info("sourcing overlay frames from the input recording %s", root)
     elif (stored := (result.meta or {}).get("input")) and Path(stored).exists():
         root = stored
-        log.info("sourcing frames from recorded input %s", root)
-    elif inp and Path(inp).exists():
-        root = inp
-        log.info("sourcing frames from -i input %s", root)
+        log.info(
+            "sourcing overlay frames from the recording stored in the result %s", root
+        )
     else:
         raise SystemExit(
             "image (imshow) panels need the original frames, but none are in memory "
-            "and the recording recorded in the result is unavailable. Pass "
-            "--recording <dir> (or drop the imshow panels from [[viz.videos]])."
+            "and no recording is available. Re-run with the recording as the input "
+            "('deeperfly run <recording> -o <outdir>'), or drop the imshow panels "
+            "from [[pipeline.visualization.videos]]."
         )
     inputs = config.get("inputs", {})
-    backend = config.get("detector", {}).get("video_backend", "auto")
+    backend = _pose2d_config(config).get("video_backend", "auto")
     return {
         v: video.read_frames(_camera_source(root, inputs.get(v, v)), backend=backend)
         for v in views
     }
 
 
-def _stage_visualize(
+def _stage_visualization(
     args: argparse.Namespace,
     config: dict,
     result: PoseResult,
     frames: list | None,
     outdir: Path,
 ) -> None:
-    """Render every ``[[viz.videos]]`` in the config to ``<outdir>/<name>.mp4``.
+    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
     Each video is composited by :mod:`deeperfly.viz.compose` from its panels (see
-    the config's ``[viz]`` section). An existing MP4 is kept (skipped) unless
-    ``--overwrite`` is set; frames for ``imshow`` panels are sourced only across
-    the videos that still need rendering.
+    the config's ``[pipeline.visualization]`` section), overwriting any existing MP4
+    (the visualization stage recomputes when enabled; disable it to keep prior
+    renders). A video whose panels reproject the 3D skeleton is skipped with a
+    reason when the result has no 3D pose (e.g. no triangulation/pictorial stage
+    ran); frames for ``imshow`` panels are sourced only across the videos that
+    actually render.
     """
     from . import video
     from .viz import compose
 
     specs = compose.read_video_specs(config)
     if not specs:
-        log.info("no [[viz.videos]] in the config; nothing to visualize")
+        log.info(
+            "no [[pipeline.visualization.videos]] in the config; nothing to render"
+        )
         return
-    if args.bg is not None:  # --bg overrides the config's viz.background
-        for spec in specs:
-            spec.background = args.bg
 
     pending = []
     for spec in specs:
-        path = outdir / f"{spec.video_name}.mp4"
-        if path.exists() and not args.overwrite:
-            log.info("video already present, skipping: %s", path)
+        if result.pts3d is None and any(p.plot == "skeleton_3d" for p in spec.panels):
+            log.warning(
+                "skipping video %r: it reprojects the 3D skeleton but the result has "
+                "no 3D pose (enable [pipeline].do_triangulation or do_pictorial_structures)",
+                spec.video_name,
+            )
         else:
             pending.append(spec)
     if not pending:
         return
 
-    pipe = config.get("pipeline", {})
-    fps = args.fps if args.fps is not None else pipe.get("fps", 30.0)
-    backend = config.get("detector", {}).get("video_backend", "auto")
+    fps = _fps(config)
+    backend = _pose2d_config(config).get("video_backend", "auto")
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
@@ -791,26 +903,39 @@ def _cmd_init(args: argparse.Namespace) -> None:
     )
 
 
-def _save_config_snapshot(
-    config_path: Path, outdir: Path, *, reused_cache: bool
-) -> None:
-    """Copy the run config into ``outdir`` for reproducibility.
+def _resolve_config(cli_config: str | None, outdir: Path) -> tuple[dict, Path]:
+    """Pick the config for one run, preferring the snapshot already in ``outdir``.
 
-    If a snapshot from a previous run is already there and differs while we are
-    reusing that run's cached results, warn: those artifacts were produced with a
-    different config (pass ``--overwrite`` to recompute from scratch). The new
-    config then replaces the snapshot.
+    A previous run snapshots its config to ``<outdir>/config.toml``; that snapshot
+    is the output dir's source of truth (it owns the cached results and the stage
+    toggles that drive a resume), so it wins -- even over an explicit ``-c``,
+    notifying that the passed config is ignored. To change it, edit that file (or
+    point ``-o`` at a fresh dir). With no snapshot, ``-c`` is used if given, else
+    the packaged default config.
     """
-    src = config_path.read_text()
-    dst = outdir / "config.toml"
-    if reused_cache and dst.exists() and dst.read_text() != src:
-        log.warning(
-            "config %s differs from the one that produced the cached results in "
-            "%s; reusing the cache anyway. Pass --overwrite to recompute.",
-            config_path,
-            outdir,
-        )
-    dst.write_text(src)
+    snapshot = outdir / "config.toml"
+    if snapshot.exists():
+        if cli_config is not None:
+            log.warning(
+                "using the config already in %s (ignoring -c %s); edit that file to "
+                "change the run (e.g. to toggle [pipeline].do_<stage>), or point -o at "
+                "a new dir",
+                snapshot,
+                cli_config,
+            )
+        return _load_config(snapshot), snapshot
+    path = Path(cli_config) if cli_config else DEFAULT_CONFIG_PATH
+    return _load_config(path), path
+
+
+def _save_config_snapshot(config_path: Path, outdir: Path) -> None:
+    """Snapshot the run config into ``<outdir>/config.toml`` for reproducibility.
+
+    A no-op rewrite when the config already came from there (see
+    :func:`_resolve_config`); otherwise it records the ``-c``/default config that
+    produced this run's results so a later resume reuses the very same config.
+    """
+    (outdir / "config.toml").write_text(config_path.read_text())
 
 
 def _has_glob(pattern: str) -> bool:
@@ -889,44 +1014,113 @@ def _run_outdir(args: argparse.Namespace, recording: Path, *, batch: bool) -> Pa
     return base / recording.name if batch else base
 
 
-def _run_one(
-    args: argparse.Namespace, config: dict, config_path: Path, outdir: Path
-) -> None:
-    """Run the pipeline (or a cached prefix of it) for a single recording."""
+def _has_2d(result: PoseResult | None) -> bool:
+    return result is not None and result.pts2d is not None
+
+
+def _run_one(args: argparse.Namespace, outdir: Path) -> None:
+    """Run the config's enabled stages for a single recording.
+
+    The config is resolved against ``outdir`` (see :func:`_resolve_config`) and its
+    ``[pipeline].do_<stage>`` toggles decide what runs (see :func:`_stage_flags`).
+    Each enabled stage runs only if the input it needs is available -- recording
+    footage for ``pose2d``, a 2D pose for ``bundle_adjustment`` / ``triangulation``,
+    detector candidates for ``pictorial_structures``, a 3D pose for ``smoothing``, a
+    pose result for ``visualization`` -- where an input comes either from an enabled
+    upstream stage in this run or from a cached ``poses.h5`` in ``outdir``; an
+    enabled stage whose input is missing is skipped with the reason logged. A
+    disabled stage never runs but its cached output still feeds downstream, so
+    "resume" is just disabling finished stages.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     log.info("output directory: %s", outdir)
+    config, config_path = _resolve_config(args.config, outdir)
+    stages = _stage_flags(config)  # validates before we snapshot a rejected config
+    _save_config_snapshot(config_path, outdir)
+    log.info(
+        "stages: %s",
+        ", ".join(f"{n}={'on' if stages[n] else 'off'}" for n in STAGES),
+    )
+
+    # The cache seeds inputs for disabled stages (and any enabled stage whose
+    # upstream is off); enabled stages overwrite it with freshly computed results.
     h5_path = outdir / "poses.h5"
-
-    cached = h5_path.exists() and not args.overwrite
-    result = PoseResult.load(h5_path) if cached else None
-    have_2d = result is not None
-    have_3d = result is not None and result.pts3d is not None
-
-    start, stop = _resolve_stages(args, have_2d=have_2d, have_3d=have_3d)
-    if stop < start:
-        log.info(
-            "all requested stages already cached in %s; pass --overwrite to recompute",
-            outdir,
-        )
-        return
-    log.info("running stages %s..%s", STAGES[start], STAGES[stop])
-    _save_config_snapshot(config_path, outdir, reused_cache=cached)
-
+    result = PoseResult.load(h5_path) if h5_path.exists() else None
     frames = candidates = None
-    if _stage_in_range("detect", start, stop):
-        result, candidates, frames, _ = _stage_detect(args, config)
-    if _stage_in_range("pose3d", start, stop):
-        result = _stage_pose3d(args, config, result, candidates)
-    if _stage_in_range("detect", start, stop) or _stage_in_range("pose3d", start, stop):
+    produced = False  # whether we computed new 2D/3D worth persisting
+
+    if stages["pose2d"]:
+        result, candidates, frames, _ = _stage_pose2d(
+            args, config, want_candidates=stages["pictorial_structures"]
+        )
+        produced = True
+
+    if stages["bundle_adjustment"]:
+        if _has_2d(result):
+            result = _stage_bundle_adjustment(config, result)
+            produced = True
+        else:
+            log.warning(
+                "skipping bundle_adjustment: no 2D pose available -- enable "
+                "[pipeline].do_pose2d or leave a cached poses.h5 with 2D in %s",
+                outdir,
+            )
+
+    if stages["pictorial_structures"]:
+        if candidates is not None and _has_2d(result):
+            result = _stage_pictorial_structures(config, result, candidates)
+            produced = True
+        elif not _has_2d(result):
+            log.warning(
+                "skipping pictorial_structures: no 2D pose available -- enable "
+                "[pipeline].do_pose2d or leave a cached poses.h5 with 2D in %s",
+                outdir,
+            )
+        else:
+            log.warning(
+                "skipping pictorial_structures: it needs the detector's top-K "
+                "candidates, which a cached 2D result does not store -- enable "
+                "[pipeline].do_pose2d to re-detect from the recording"
+            )
+
+    if stages["triangulation"]:
+        if _has_2d(result):
+            result = _stage_triangulation(config, result)
+            produced = True
+        else:
+            log.warning(
+                "skipping triangulation: no 2D pose available -- enable "
+                "[pipeline].do_pose2d or leave a cached poses.h5 with 2D in %s",
+                outdir,
+            )
+
+    if stages["smoothing"]:
+        if result is not None and result.pts3d is not None:
+            result = _stage_smoothing(config, result)
+            produced = True
+        else:
+            log.warning(
+                "skipping smoothing: no 3D pose available -- enable "
+                "[pipeline].do_triangulation or do_pictorial_structures, or leave a "
+                "cached poses.h5 with 3D in %s",
+                outdir,
+            )
+
+    if produced and result is not None:
         result.save(h5_path)
         log.info(
-            "wrote %s  (%d frames, %d views)",
-            h5_path,
-            result.n_frames,
-            result.n_views,
+            "wrote %s  (%d frames, %d views)", h5_path, result.n_frames, result.n_views
         )
-    if _stage_in_range("visualize", start, stop):
-        _stage_visualize(args, config, result, frames, outdir)
+
+    if stages["visualization"]:
+        if result is not None:
+            _stage_visualization(args, config, result, frames, outdir)
+        else:
+            log.warning(
+                "skipping visualization: no pose result available -- enable a stage "
+                "above or leave a cached poses.h5 in %s",
+                outdir,
+            )
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -938,10 +1132,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
     recording does not abort the rest), with a non-zero exit if any failed; a single
     recording fails fast as before.
     """
-    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
-    config = _load_config(config_path)
+    # Only used to recognize recording directories while recursing (it reads
+    # [cameras]/[inputs]); each run then resolves its own config against its output
+    # dir (see _resolve_config), which may differ per recording.
+    discovery_config = _load_config(
+        Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    )
     recordings = _resolve_recordings(
-        args.input, recursive=args.recursive, config=config
+        args.input, recursive=args.recursive, config=discovery_config
     )
     batch = len(recordings) > 1
     if batch:
@@ -956,7 +1154,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         run_args = copy.copy(args)
         run_args.input = str(rec)
         try:
-            _run_one(run_args, config, config_path, _run_outdir(args, rec, batch=batch))
+            _run_one(run_args, _run_outdir(args, rec, batch=batch))
         except (Exception, SystemExit) as exc:  # noqa: BLE001
             if not batch:
                 raise  # a single recording fails fast (unchanged behavior)
@@ -1219,13 +1417,6 @@ class LogLevel(str, Enum):
     critical = "critical"
 
 
-class Background(str, Enum):
-    """``--bg`` canvas-background choices (overrides the config's viz.background)."""
-
-    white = "white"
-    black = "black"
-
-
 #: The shared ``--log-level`` option. Typer has no click-style shared-option
 #: decorator, so it is declared once as a reusable parameter annotation and spread
 #: across every command. ``case_sensitive=False`` accepts INFO/Info/info.
@@ -1298,44 +1489,21 @@ def run(
             "missing)",
         ),
     ] = None,
-    until: Annotated[
-        Stage | None,
-        typer.Option(help="stop after this stage (default: run through visualize)"),
-    ] = None,
-    overwrite: Annotated[
-        bool,
-        typer.Option(
-            "--overwrite",
-            help="recompute and re-render everything, ignoring cached outputs",
-        ),
-    ] = False,
-    recording: Annotated[
-        str | None,
-        typer.Option(
-            "--recording",
-            help="per-camera frames for the visualize stage's image (imshow) panels "
-            "when resuming and they are not in memory",
-        ),
-    ] = None,
-    fps: Annotated[
-        float | None, typer.Option("--fps", help="video fps (default from config)")
-    ] = None,
-    bg: Annotated[
-        Background | None,
-        typer.Option(
-            help="canvas background; overrides the config's viz.background "
-            "(default: black)",
-        ),
-    ] = None,
     log_level: LogLevelOption = LogLevel.info,
 ) -> None:
-    """detect 2D -> 3D -> visualize, or a prefix of it (resumes from cache).
+    """detect 2D -> reconstruct 3D -> visualization (the enabled stages, reusing cache).
 
     INPUT is a recording directory (per-camera videos or image folders), or a
     wildcard pattern matching several (e.g. 'fly*' -> fly1/, fly2/, ...), each run
     in turn; quote the pattern so the shell does not expand it first. With
     -r/--recursive, INPUT is a parent directory and every recording nested under
     it is run in turn (e.g. 'deeperfly run -r data' -> data/fly1/, data/fly2/, ...).
+
+    Everything else is set in the config: the do_<stage> toggles choose which
+    stages run, alongside the video fps, canvas background and each stage's own
+    parameters. An enabled stage recomputes; to reuse cached work, disable that
+    stage in the config (its cached output then feeds the rest). With no -c, a run
+    reuses the config.toml already in the output dir, else the packaged default.
     """
     _configure_logging(log_level.value)
     _cmd_run(
@@ -1344,11 +1512,6 @@ def run(
             recursive=recursive,
             config=config,
             output=output,
-            until=until.value if until is not None else None,
-            overwrite=overwrite,
-            recording=recording,
-            fps=fps,
-            bg=bg.value if bg is not None else None,
             log_level=log_level.value,
         )
     )

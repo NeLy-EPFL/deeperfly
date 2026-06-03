@@ -277,11 +277,13 @@ def test_bundle_adjust_from_config(rig):
             }
             for i, name in enumerate(rig["names"])
         },
-        "bundle_adjustment": {
-            "solver": "least_squares_scipy",
-            "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
-            "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-            "least_squares_scipy": {"max_nfev": 2000, "loss": "linear"},
+        "pipeline": {
+            "bundle_adjustment": {
+                "solver": "least_squares_scipy",
+                "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
+                "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
+                "least_squares_scipy": {"max_nfev": 2000, "loss": "linear"},
+            },
         },
     }
     res, opt, _ = bundle_adjust_from_config(config, pts2d)
@@ -302,7 +304,7 @@ def test_bundle_adjust_from_config_rejects_unknown_solver(rig):
                 "principal_point_px": [1, 2],
             }
         },
-        "bundle_adjustment": {"solver": "ceres"},
+        "pipeline": {"bundle_adjustment": {"solver": "ceres"}},
     }
     with pytest.raises(ValueError, match="unsupported solver"):
         bundle_adjust_from_config(config, np.zeros((1, 1, 2)))
