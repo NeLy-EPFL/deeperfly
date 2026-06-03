@@ -309,6 +309,34 @@ def read_frames(
     )
 
 
+def reader_name(
+    path: str | Path, *, backend: str = "auto", device: str = "auto"
+) -> str:
+    """Name of the decoder :func:`read_frames` would actually use for ``path``.
+
+    Mirrors :func:`read_frames`'s dispatch so logs/diagnostics report the decoder
+    that really runs rather than the video backend registry's choice (which only
+    applies to video *files*):
+
+    - a video file (``.mp4`` / ``.avi`` ...) resolves through
+      :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / a GPU
+      backend, honoring ``backend`` and ``device``);
+    - an image directory or glob is decoded by :func:`read_images`, which ignores
+      the video backend: ``imageio`` on the CPU, or ``nvjpeg`` (torchvision) for an
+      all-JPEG set on a CUDA device (it falls back to CPU ``imageio`` only if that
+      torchvision build lacks GPU JPEG support).
+    """
+    p = Path(path)
+    if p.is_file() and p.suffix.lower() in _VIDEO_EXTS:
+        return select_reader(backend, device=device).name
+    dev = "cpu" if device == "auto" else canonical_device(device)  # match read_images
+    if is_gpu_device(dev) and all(
+        f.suffix.lower() in _JPEG_EXTS for f in list_image_files(path)
+    ):
+        return "nvjpeg"
+    return "imageio"
+
+
 def _count_decord(p: Path) -> int:
     import decord
 

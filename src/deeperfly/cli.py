@@ -303,7 +303,9 @@ def _frame_read_device(config: dict) -> str:
     return device  # "cuda"/"gpu" / "auto": opt-in on-device decode for the JAX backend
 
 
-def _camera_sources(input_dir: str | Path, config: dict) -> list[tuple[str, object]]:
+def _camera_sources(
+    input_dir: str | Path, config: dict
+) -> list[tuple[str, Path | str]]:
     """``(name, source)`` per camera (in camera order), mapped via ``[inputs]``."""
     root = Path(input_dir)
     inputs = config.get("inputs", {})
@@ -411,15 +413,17 @@ def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
     batch_size = auto_batch_size(inference.IMG_SIZE)
 
     # One-line summary instead of a per-camera/per-window read log (that spam is at
-    # -vv now; see deeperfly.video.io). select_reader resolves "auto" to the real
-    # backend; guard since a forced GPU backend may be uninstalled.
+    # -vv now; see deeperfly.video.io). reader_name mirrors read_frames's dispatch
+    # off the actual source (video file -> the decode backend; image folder/glob ->
+    # imageio/nvjpeg, *not* the video backend), so the reported decoder matches what
+    # really runs; guard since a forced GPU backend may be uninstalled.
     try:
-        reader_name = video.select_reader(backend, device=device).name
+        reader = video.reader_name(sources[0], backend=backend, device=device)
     except Exception:  # noqa: BLE001
-        reader_name = backend
+        reader = backend
     log.info(
         "reading frames via '%s' backend: %d/read per camera (device=%s), forward batch %d",
-        reader_name,
+        reader,
         chunk,
         device,
         batch_size,
