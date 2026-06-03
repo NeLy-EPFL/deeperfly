@@ -5,6 +5,9 @@ montages / video frames) or create a figure otherwise. Bones and per-limb
 colors come from the :class:`~deeperfly.skeleton.Skeleton` (its ``palette``);
 detector confidence (when supplied) modulates joint opacity. Requires the
 ``viz`` extra (``matplotlib``); import this module only when plotting.
+
+The faster, figure-less :mod:`deeperfly.viz.opencv` backend draws the same
+overlays straight into image arrays -- prefer it for video.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import numpy as np  # noqa: E402
 from jaxtyping import Float  # noqa: E402
 
-from .skeleton import Skeleton  # noqa: E402
+from ..skeleton import Skeleton  # noqa: E402
 
 #: Background presets: figure/axes face color and the matching foreground
 #: (spines, ticks, labels, 3D panes) so plots read on white or black.

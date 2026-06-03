@@ -119,6 +119,27 @@ class _FPSColumn(ProgressColumn):
         return Text(f"{speed:5.1f} fps", style="progress.data.speed")
 
 
+def _frame_progress() -> Progress:
+    """A frames/second progress bar on the stderr console (detection, rendering).
+
+    Shown only while INFO logging is on (so ``--log-level warning+`` hides it) and
+    stderr is a TTY (tqdm-style); otherwise it is a no-op, so log lines and the bar
+    never overwrite each other.
+    """
+    return Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn("frames"),
+        _FPSColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=err_console,
+        disable=not (log.isEnabledFor(logging.INFO) and err_console.is_terminal),
+    )
+
+
 def _load_config(path: str | Path) -> dict:
     with open(path, "rb") as f:
         return tomllib.load(f)
@@ -405,20 +426,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, do_pictorial, k):
     )
 
     pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
-    bar = Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TextColumn("frames"),
-        _FPSColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=err_console,
-        # the bar is info-level progress: show it only when INFO logging is on
-        # (so --log-level warning+ hides it) and stderr is a TTY (tqdm-style).
-        disable=not (log.isEnabledFor(logging.INFO) and err_console.is_terminal),
-    )
+    bar = _frame_progress()
 
     with bar:
         task = bar.add_task("detect 2D", total=total)
@@ -627,36 +635,50 @@ def _stage_pose3d(
     )
 
 
-def _overlay_frames(
-    args: argparse.Namespace, config: dict, result: PoseResult, camera: int
-) -> np.ndarray:
-    """Load one camera's frames for a 2D overlay when resuming (no frames in hand).
+def _source_view_frames(
+    args: argparse.Namespace,
+    config: dict,
+    result: PoseResult,
+    views: list[str],
+    in_memory: list | None = None,
+) -> dict[str, np.ndarray]:
+    """Per-view footage for the visualize stage's ``imshow`` panels.
 
-    Source order: ``--recording`` -> the recording path stored in ``result.meta``
-    (if it still exists) -> the run's own input recording -> error pointing at
+    Uses ``in_memory`` frames (a list indexed by camera order) when available;
+    otherwise re-sources each requested view from a recording, resolving the root
+    in order: ``--recording`` -> the recording path stored in ``result.meta`` (if
+    it still exists) -> the run's own input recording -> error pointing at
     ``--recording``.
     """
     from . import video
+
+    if not views:
+        return {}
+    names = result.cameras.names
+    if in_memory is not None:
+        return {v: in_memory[names.index(v)] for v in views}
 
     inp = getattr(args, "input", None)
     if args.recording:
         root = args.recording
     elif (stored := (result.meta or {}).get("input")) and Path(stored).exists():
         root = stored
-        log.info("sourcing overlay frames from recorded input %s", root)
+        log.info("sourcing frames from recorded input %s", root)
     elif inp and Path(inp).exists():
         root = inp
-        log.info("sourcing overlay frames from -i input %s", root)
+        log.info("sourcing frames from -i input %s", root)
     else:
         raise SystemExit(
-            "2D overlay needs the original frames, but none are in memory and the "
-            "recording recorded in the result is unavailable. Pass --recording <dir>."
+            "image (imshow) panels need the original frames, but none are in memory "
+            "and the recording recorded in the result is unavailable. Pass "
+            "--recording <dir> (or drop the imshow panels from [[viz.videos]])."
         )
-    name = result.cameras.names[camera]
     inputs = config.get("inputs", {})
     backend = config.get("detector", {}).get("video_backend", "auto")
-    src = _camera_source(root, inputs.get(name, name))
-    return video.read_frames(src, backend=backend)
+    return {
+        v: video.read_frames(_camera_source(root, inputs.get(v, v)), backend=backend)
+        for v in views
+    }
 
 
 def _stage_visualize(
@@ -666,40 +688,62 @@ def _stage_visualize(
     frames: list | None,
     outdir: Path,
 ) -> None:
-    """Render the 3D skeleton MP4 (and, with ``--overlay-camera``, a 2D overlay).
+    """Render every ``[[viz.videos]]`` in the config to ``<outdir>/<name>.mp4``.
 
-    Both land in ``outdir`` under fixed names; an existing MP4 is kept (skipped)
-    unless ``--overwrite`` is set, and an overlay's frames are sourced only when
-    the overlay actually needs rendering.
+    Each video is composited by :mod:`deeperfly.viz.compose` from its panels (see
+    the config's ``[viz]`` section). An existing MP4 is kept (skipped) unless
+    ``--overwrite`` is set; frames for ``imshow`` panels are sourced only across
+    the videos that still need rendering.
     """
     from . import video
+    from .viz import compose
+
+    specs = compose.read_video_specs(config)
+    if not specs:
+        log.info("no [[viz.videos]] in the config; nothing to visualize")
+        return
+    if args.bg is not None:  # --bg overrides the config's viz.background
+        for spec in specs:
+            spec.background = args.bg
+
+    pending = []
+    for spec in specs:
+        path = outdir / f"{spec.video_name}.mp4"
+        if path.exists() and not args.overwrite:
+            log.info("video already present, skipping: %s", path)
+        else:
+            pending.append(spec)
+    if not pending:
+        return
 
     pipe = config.get("pipeline", {})
     fps = args.fps if args.fps is not None else pipe.get("fps", 30.0)
-    video_path = outdir / "pose3d.mp4"
-    if video_path.exists() and not args.overwrite:
-        log.info("3D video already present, skipping: %s", video_path)
-    else:
-        log.info("rendering 3D pose video -> %s", video_path)
-        video.render_pose3d_video(result, video_path, fps=fps, background=args.bg)
-        log.info("wrote %s", video_path)
+    backend = config.get("detector", {}).get("video_backend", "auto")
+    views = sorted(
+        {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
+    )
+    src = compose.Sources(
+        skeleton=result.skeleton,
+        camera_group=result.cameras,
+        frames=_source_view_frames(args, config, result, views, in_memory=frames),
+        pts2d=result.pts2d,
+        pts3d=result.pts3d,
+        conf=result.conf,
+    )
+    with _frame_progress() as bar:
+        for spec in pending:
+            path = outdir / f"{spec.video_name}.mp4"
+            log.info("rendering %s -> %s", spec.video_name, path)
+            task = bar.add_task(f"render {spec.video_name}", total=src.n_frames())
 
-    if args.overlay_camera is not None:
-        cam = args.overlay_camera
-        overlay_path = outdir / f"pose3d_overlay_cam{cam}.mp4"
-        if overlay_path.exists() and not args.overwrite:
-            log.info("2D overlay already present, skipping: %s", overlay_path)
-            return
-        cam_frames = (
-            frames[cam]
-            if frames is not None
-            else _overlay_frames(args, config, result, cam)
-        )
-        log.info("rendering 2D overlay (camera %d) -> %s", cam, overlay_path)
-        video.render_overlay_video(
-            result, cam_frames, overlay_path, camera=cam, fps=fps, background=args.bg
-        )
-        log.info("wrote %s", overlay_path)
+            def progress(rng, _task=task):  # advance the bar once per composited frame
+                for t in rng:
+                    yield t
+                    bar.advance(_task)
+
+            clip = compose.render_video(spec, src, progress=progress)
+            video.write_mp4(clip, path, fps=fps, backend=backend)
+            log.info("wrote %s", path)
 
 
 # -- subcommands -------------------------------------------------------------
@@ -1078,19 +1122,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="recompute and re-render everything, ignoring cached outputs",
     )
     pr.add_argument(
-        "--overlay-camera",
-        dest="overlay_camera",
-        type=int,
-        default=None,
-        help="also render a 2D overlay for this camera index",
-    )
-    pr.add_argument(
-        "--recording", help="per-camera frames for the 2D overlay when resuming"
+        "--recording",
+        help="per-camera frames for the visualize stage's image (imshow) panels "
+        "when resuming and they are not in memory",
     )
     pr.add_argument(
         "--fps", type=float, default=None, help="video fps (default from config)"
     )
-    pr.add_argument("--bg", choices=["white", "black"], default="white")
+    pr.add_argument(
+        "--bg",
+        choices=["white", "black"],
+        default=None,
+        help="canvas background; overrides the config's viz.background "
+        "(default: black)",
+    )
     pr.set_defaults(func=_cmd_run)
 
     pi = sub.add_parser(

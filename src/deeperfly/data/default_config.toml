@@ -64,6 +64,80 @@ lh = "camera_6"
 
 
 # ---------------------------------------------------------------------------
+# Visualization: each [[viz.videos]] is one output MP4 (`<video_name>.mp4`),
+# composited from an ordered list of `panels`. A panel draws one `plot` op for
+# one `view` (camera) with its top-left at pixel offset (`x0`, `y0`):
+#   imshow      - that view's video frame
+#   skeleton_2d - that view's 2D detections
+#   skeleton_3d - the 3D skeleton reprojected into that view (OpenCV, depth-sorted)
+# Panels are drawn in order, so a skeleton panel after an `imshow` of the same
+# view/offset overlays it. `x0`/`y0` are pixels: set them to multiples of your
+# frame size. The canvas auto-sizes to fit all panels unless you set `width`/`height`
+# on the video.
+#
+# `background` is the canvas fill (default black); set `viz.background` here for
+# every video, or a `background` key on a single panel to repaint just its tile.
+#
+# Keyword args for a draw op (e.g. point_radius, line_thickness, scale, palette)
+# can be set at three levels, each keyed by the `plot` op name: `[viz.kwargs]`
+# below (every panel of every video), a `kwargs` table on a `[[viz.videos]]`
+# entry (all that video's panels), and extra keys on a single panel. They merge
+# in that order, most specific winning -- so `scale = 0.5` lives once in
+# `[viz.kwargs]` here but a panel can still override it with its own `scale`.
+#
+# Instead of `scale`, give a target `width` and/or `height` in pixels (also a
+# layout key, settable at any level). These take priority over `scale` and let
+# you fix the layout without knowing the source frame size: both -> that exact
+# box, one -> the other follows to keep aspect.
+# ---------------------------------------------------------------------------
+[viz]
+background = "black"
+
+[viz.kwargs]
+imshow      = { width = 480, height = 240 }
+skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
+skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
+
+[[viz.videos]]
+video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
+panels = [
+    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
+    { plot = "skeleton_2d", view = "f",  x0 = 240, y0 = 0   },
+    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "skeleton_2d", view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
+    { plot = "skeleton_2d", view = "lf", x0 = 480, y0 = 240 },
+    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "skeleton_2d", view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
+    { plot = "skeleton_2d", view = "lm", x0 = 480, y0 = 480 },
+    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "skeleton_2d", view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
+    { plot = "skeleton_2d", view = "lh", x0 = 480, y0 = 720 },
+]
+
+[[viz.videos]]
+video_name = "pose3d"   # same montage with the triangulated 3D skeleton reprojected back
+panels = [
+    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
+    { plot = "skeleton_3d", view = "f",  x0 = 240, y0 = 0   },
+    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "skeleton_3d", view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
+    { plot = "skeleton_3d", view = "lf", x0 = 480, y0 = 240 },
+    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "skeleton_3d", view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
+    { plot = "skeleton_3d", view = "lm", x0 = 480, y0 = 480 },
+    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "skeleton_3d", view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
+    { plot = "skeleton_3d", view = "lh", x0 = 480, y0 = 720 },
+]
+
+
+# ---------------------------------------------------------------------------
 # Detector: the 2D pose backend and frame reader.
 # ---------------------------------------------------------------------------
 [detector]

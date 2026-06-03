@@ -41,7 +41,7 @@ def render_pose3d_video(
     """
     import matplotlib.pyplot as plt
 
-    from .. import viz
+    from ..viz import matplotlib as viz
 
     pts3d = (
         result.pts3d_smoothed
@@ -100,7 +100,7 @@ def render_overlay_video(
     """
     import matplotlib.pyplot as plt
 
-    from .. import viz
+    from ..viz import matplotlib as viz
     from .base import to_numpy
 
     images = to_numpy(images)
