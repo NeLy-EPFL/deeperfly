@@ -42,17 +42,12 @@ dependencies = [
     "h5py>=3.11",
     "equinox>=0.11",
     "platformdirs>=4.0",
-    "rich>=14.0",          # colored logs, status output and the detection progress bar
-    "typer>=0.26",         # the CLI itself: typed commands over click, rich-rendered --help
-    # Visualization + default video I/O, so `deeperfly run` works out of the box.
-    # PyAV is the default video reader/writer: in-process libx264 decode/encode
-    # (no `ffmpeg` subprocess fork), with its own FFmpeg bundled in the wheel -- so
-    # no system FFmpeg is needed. imageio stays for image-sequence reading
-    # (`imageio.v3`, which does not use imageio-ffmpeg); the optional imageio
-    # *video* backend lives in the `imageio` extra below.
+    "rich>=14.0",
+    "typer>=0.26",
     "matplotlib>=3.10",
     "av>=13",
     "imageio>=2.34",
+    "opencv-python-headless>=4.13",
 ]
 
 [project.urls]
@@ -85,7 +80,6 @@ mps = [
 # Optional faster/alternative video read/write backends (deeperfly.video), each
 # selectable via `backend=...`. PyAV is core (the default), so it is not repeated
 # here. torch is already core, so torchcodec only needs its own bindings.
-opencv = ["opencv-python-headless>=4.10"]
 # imageio *video* backend: imageio is core (image sequences), but its FFmpeg
 # plugin is opt-in -- PyAV covers the same ground in-process by default.
 imageio = ["imageio-ffmpeg>=0.5"]
@@ -98,17 +92,6 @@ torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into t
 # specific; this pins the CUDA 13 build to match `cuda`. Linux x86-64 only.
 dali = ["nvidia-dali-cuda130>=2.1; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
-# Every cross-platform video backend (each is platform-gated above, so this stays
-# installable on Linux/macOS/Windows). Excludes `cuda`/`dali`, which need an NVIDIA
-# GPU -- add those explicitly, e.g. `deeperfly[all,cuda]`.
-all = [
-    "deeperfly[opencv]",
-    "deeperfly[imageio]",
-    "deeperfly[decord]",
-    "deeperfly[video-reader-rs]",
-    "deeperfly[torchcodec]",
-]
-
 [build-system]
 requires = ["uv_build>=0.11.16,<0.12.0"]
 build-backend = "uv_build"
@@ -116,7 +99,6 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = ["ipykernel>=7.2.0"]
 test = [
-    "opencv-python-headless>=4.13.0.92",  # OpenCV cross-checks + opencv video backend
     "pytest>=9.0.3",
     "imageio-ffmpeg>=0.5",                # exercises the (optional) imageio video backend
 ]

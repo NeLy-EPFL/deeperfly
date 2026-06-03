@@ -243,9 +243,57 @@ def _pose2d_config(config: dict) -> dict:
     return config.get("pipeline", {}).get("pose2d", {})
 
 
-def _fps(config: dict) -> float:
-    """Frames/sec from ``[pipeline].fps`` -- shared by one_euro smoothing and videos."""
-    return config.get("pipeline", {}).get("fps", 100.0)
+#: Frame rate used when ``[pipeline].fps`` is unset and none can be detected from
+#: the recording (e.g. an image sequence carries no intrinsic rate). Matches the
+#: historical default.
+_FPS_FALLBACK = 100.0
+
+
+def _detect_input_fps(args: argparse.Namespace, config: dict) -> float | None:
+    """First detectable per-camera video frame rate, or ``None``.
+
+    Walks the configured camera sources and returns the first video file's frame
+    rate (:func:`deeperfly.video.video_fps`); image-sequence cameras have none.
+    Guarded so a missing recording (a cache-only resume) yields ``None`` rather
+    than raising.
+    """
+    from . import video
+
+    try:
+        sources = [src for _, src in _camera_sources(args.input, config)]
+    except SystemExit:
+        return None
+    for src in sources:
+        try:
+            fps = video.video_fps(src)
+        except Exception:  # noqa: BLE001
+            fps = None
+        if fps:
+            return float(fps)
+    return None
+
+
+def _resolve_fps(args: argparse.Namespace, config: dict) -> float:
+    """The recording's frame rate, for one_euro smoothing and the visualization base.
+
+    Uses ``[pipeline].fps`` when set; otherwise detects it from the input videos
+    (:func:`_detect_input_fps`). Falls back to :data:`_FPS_FALLBACK` when neither
+    is available -- e.g. an image sequence, or a cache-only resume with no
+    recording -- logging a hint to set ``[pipeline].fps`` explicitly.
+    """
+    fps = config.get("pipeline", {}).get("fps")
+    if fps is not None:
+        return float(fps)
+    detected = _detect_input_fps(args, config)
+    if detected is not None:
+        log.info("detected input fps %.4g from the recording", detected)
+        return detected
+    log.warning(
+        "could not detect the input fps (image sequence, or no recording available); "
+        "using %g fps -- set [pipeline].fps to override",
+        _FPS_FALLBACK,
+    )
+    return _FPS_FALLBACK
 
 
 def _bundle_adjustment_kwargs(config: dict) -> dict:
@@ -576,6 +624,68 @@ def _stage_flags(config: dict) -> dict[str, bool]:
     return {n: bool(pipe.get(f"do_{n}", STAGE_DEFAULTS[n])) for n in STAGES}
 
 
+#: Sentinel injected by :func:`_normalize_overwrite_argv` for a bare ``--overwrite``
+#: (no stage names), meaning "recompute every stage".
+_OVERWRITE_ALL = "__all__"
+
+
+def _overwrite_stages(overwrite: list[str] | None) -> set[str]:
+    """Stage names selected by ``--overwrite`` (empty set = reuse all cached).
+
+    ``None`` / empty -> reuse everything (the default). The ``_OVERWRITE_ALL``
+    sentinel (a bare ``--overwrite``) selects every stage. Otherwise the listed
+    stage names are validated against :data:`STAGES`.
+    """
+    if not overwrite:
+        return set()
+    if _OVERWRITE_ALL in overwrite:
+        return set(STAGES)
+    unknown = [s for s in overwrite if s not in STAGES]
+    if unknown:
+        raise SystemExit(
+            f"--overwrite got unknown stage(s) {', '.join(unknown)}; choose from "
+            f"{', '.join(STAGES)} (or a bare --overwrite to recompute everything)"
+        )
+    return set(overwrite)
+
+
+def _visualization_cached(config: dict, outdir: Path) -> bool:
+    """Whether every ``[[pipeline.visualization.videos]]`` MP4 already exists in ``outdir``."""
+    from .viz import compose
+
+    specs = compose.read_video_specs(config)
+    return bool(specs) and all(
+        (outdir / f"{spec.video_name}.mp4").exists() for spec in specs
+    )
+
+
+def _stage_cached(
+    stage: str, cached: PoseResult | None, config: dict, outdir: Path
+) -> bool:
+    """Whether ``stage``'s output already exists in the output dir (so it can be reused).
+
+    The pose stages read the cached ``poses.h5`` loaded as ``cached`` (its arrays /
+    ``meta`` markers); ``visualization`` checks for the rendered MP4s. Used to skip
+    recomputation by default -- ``--overwrite`` forces a stage to recompute even
+    when this returns ``True``.
+    """
+    if stage == "visualization":
+        return _visualization_cached(config, outdir)
+    if cached is None:
+        return False
+    if stage == "pose2d":
+        return cached.pts2d is not None
+    if stage == "bundle_adjustment":
+        return bool(cached.meta.get("bundle_adjustment"))
+    if stage == "pictorial_structures":
+        return bool(cached.meta.get("pictorial"))
+    if stage == "triangulation":
+        return cached.pts3d is not None
+    if stage == "smoothing":
+        return cached.pts3d_smoothed is not None
+    return False
+
+
 # -- pipeline stages ---------------------------------------------------------
 
 
@@ -673,6 +783,7 @@ def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
         result.skeleton,
         **_bundle_adjustment_kwargs(config),
     )
+    result.meta["bundle_adjustment"] = True  # marks the cameras as BA-refined (cache)
     return result
 
 
@@ -748,21 +859,24 @@ def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
     return result
 
 
-def _stage_smoothing(config: dict, result: PoseResult) -> PoseResult:
+def _stage_smoothing(
+    args: argparse.Namespace, config: dict, result: PoseResult
+) -> PoseResult:
     """Temporal smoothing of ``result.pts3d`` -> ``result.pts3d_smoothed``."""
     from .correction import smooth_gaussian, smooth_one_euro
 
     method, kwargs = _smoothing_options(config)
+    fps = _resolve_fps(args, config)
     log.info("smoothing: method=%s", method)
     if method == "gaussian":
         result.pts3d_smoothed = smooth_gaussian(result.pts3d, **kwargs)
     elif method == "one_euro":
-        result.pts3d_smoothed = smooth_one_euro(result.pts3d, _fps(config), **kwargs)
+        result.pts3d_smoothed = smooth_one_euro(result.pts3d, fps, **kwargs)
     else:
         raise SystemExit(
             f"unknown [pipeline.smoothing].method {method!r} (gaussian|one_euro)"
         )
-    result.meta["fps"] = _fps(config)
+    result.meta["fps"] = fps
     return result
 
 
@@ -854,7 +968,7 @@ def _stage_visualization(
     if not pending:
         return
 
-    fps = _fps(config)
+    input_fps = _resolve_fps(args, config)
     backend = _pose2d_config(config).get("video_backend", "auto")
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
@@ -870,7 +984,8 @@ def _stage_visualization(
     with _frame_progress() as bar:
         for spec in pending:
             path = outdir / f"{spec.video_name}.mp4"
-            log.info("rendering %s -> %s", spec.video_name, path)
+            fps = spec.resolve_fps(input_fps)
+            log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
             task = bar.add_task(f"render {spec.video_name}", total=src.n_frames())
 
             def progress(rng, _task=task):  # advance the bar once per composited frame
@@ -1022,43 +1137,65 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
     """Run the config's enabled stages for a single recording.
 
     The config is resolved against ``outdir`` (see :func:`_resolve_config`) and its
-    ``[pipeline].do_<stage>`` toggles decide what runs (see :func:`_stage_flags`).
-    Each enabled stage runs only if the input it needs is available -- recording
+    ``[pipeline].do_<stage>`` toggles decide which stages are part of the pipeline
+    (see :func:`_stage_flags`). An enabled stage **reuses its result if it is already
+    in the output dir** and only recomputes when that output is missing or
+    ``--overwrite`` selects it (see :func:`_stage_cached` / :func:`_overwrite_stages`)
+    -- so re-running a finished recording is a cheap no-op by default. Recomputing a
+    stage invalidates the ones after it, so once any stage recomputes every enabled
+    stage downstream recomputes too (their inputs changed).
+
+    Each stage still runs only if the input it needs is available -- recording
     footage for ``pose2d``, a 2D pose for ``bundle_adjustment`` / ``triangulation``,
     detector candidates for ``pictorial_structures``, a 3D pose for ``smoothing``, a
-    pose result for ``visualization`` -- where an input comes either from an enabled
-    upstream stage in this run or from a cached ``poses.h5`` in ``outdir``; an
-    enabled stage whose input is missing is skipped with the reason logged. A
-    disabled stage never runs but its cached output still feeds downstream, so
-    "resume" is just disabling finished stages.
+    pose result for ``visualization`` -- coming either from an upstream stage in this
+    run or from the cached ``poses.h5`` in ``outdir``; a stage whose input is missing
+    is skipped with the reason logged. A disabled stage never runs but its cached
+    output still feeds downstream.
     """
     outdir.mkdir(parents=True, exist_ok=True)
     log.info("output directory: %s", outdir)
     config, config_path = _resolve_config(args.config, outdir)
     stages = _stage_flags(config)  # validates before we snapshot a rejected config
+    overwrite = _overwrite_stages(getattr(args, "overwrite", None))
     _save_config_snapshot(config_path, outdir)
     log.info(
         "stages: %s",
         ", ".join(f"{n}={'on' if stages[n] else 'off'}" for n in STAGES),
     )
 
-    # The cache seeds inputs for disabled stages (and any enabled stage whose
-    # upstream is off); enabled stages overwrite it with freshly computed results.
+    # `cached` is the result already in the output dir; `result` starts there and a
+    # reused stage keeps it, while a recomputed stage replaces/updates it. Reuse is
+    # only safe while nothing upstream has changed, so the first recompute flips
+    # `recomputed` and every later enabled stage recomputes too (cascade).
     h5_path = outdir / "poses.h5"
-    result = PoseResult.load(h5_path) if h5_path.exists() else None
+    cached = PoseResult.load(h5_path) if h5_path.exists() else None
+    result = cached
     frames = candidates = None
     produced = False  # whether we computed new 2D/3D worth persisting
+    recomputed = False  # has any enabled stage recomputed this run? -> cascade
 
-    if stages["pose2d"]:
+    def _recompute(stage: str) -> bool:
+        """Whether enabled ``stage`` should recompute rather than reuse its cache."""
+        if stage in overwrite or recomputed:
+            return True
+        if _stage_cached(stage, cached, config, outdir):
+            log.info(
+                "reusing cached %s (pass --overwrite %s to recompute)", stage, stage
+            )
+            return False
+        return True
+
+    if stages["pose2d"] and _recompute("pose2d"):
         result, candidates, frames, _ = _stage_pose2d(
             args, config, want_candidates=stages["pictorial_structures"]
         )
-        produced = True
+        produced = recomputed = True
 
-    if stages["bundle_adjustment"]:
+    if stages["bundle_adjustment"] and _recompute("bundle_adjustment"):
         if _has_2d(result):
             result = _stage_bundle_adjustment(config, result)
-            produced = True
+            produced = recomputed = True
         else:
             log.warning(
                 "skipping bundle_adjustment: no 2D pose available -- enable "
@@ -1066,10 +1203,10 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
                 outdir,
             )
 
-    if stages["pictorial_structures"]:
+    if stages["pictorial_structures"] and _recompute("pictorial_structures"):
         if candidates is not None and _has_2d(result):
             result = _stage_pictorial_structures(config, result, candidates)
-            produced = True
+            produced = recomputed = True
         elif not _has_2d(result):
             log.warning(
                 "skipping pictorial_structures: no 2D pose available -- enable "
@@ -1083,10 +1220,10 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
                 "[pipeline].do_pose2d to re-detect from the recording"
             )
 
-    if stages["triangulation"]:
+    if stages["triangulation"] and _recompute("triangulation"):
         if _has_2d(result):
             result = _stage_triangulation(config, result)
-            produced = True
+            produced = recomputed = True
         else:
             log.warning(
                 "skipping triangulation: no 2D pose available -- enable "
@@ -1094,10 +1231,10 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
                 outdir,
             )
 
-    if stages["smoothing"]:
+    if stages["smoothing"] and _recompute("smoothing"):
         if result is not None and result.pts3d is not None:
-            result = _stage_smoothing(config, result)
-            produced = True
+            result = _stage_smoothing(args, config, result)
+            produced = recomputed = True
         else:
             log.warning(
                 "skipping smoothing: no 3D pose available -- enable "
@@ -1112,7 +1249,7 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
             "wrote %s  (%d frames, %d views)", h5_path, result.n_frames, result.n_views
         )
 
-    if stages["visualization"]:
+    if stages["visualization"] and _recompute("visualization"):
         if result is not None:
             _stage_visualization(args, config, result, frames, outdir)
         else:
@@ -1489,6 +1626,16 @@ def run(
             "missing)",
         ),
     ] = None,
+    overwrite: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--overwrite",
+            help="recompute stages instead of reusing results already in the output "
+            "dir. A bare --overwrite recomputes everything; name stages to recompute "
+            "only those (e.g. --overwrite pose2d visualization). Recomputing a stage "
+            "also refreshes the stages after it.",
+        ),
+    ] = None,
     log_level: LogLevelOption = LogLevel.info,
 ) -> None:
     """detect 2D -> reconstruct 3D -> visualization (the enabled stages, reusing cache).
@@ -1499,11 +1646,16 @@ def run(
     -r/--recursive, INPUT is a parent directory and every recording nested under
     it is run in turn (e.g. 'deeperfly run -r data' -> data/fly1/, data/fly2/, ...).
 
+    By default a stage whose result is already in the output dir is reused, so
+    re-running a finished recording is a cheap no-op. Pass --overwrite to recompute:
+    a bare --overwrite redoes every stage, or name stages to redo only those (e.g.
+    '--overwrite pose2d visualization'); recomputing a stage also refreshes the
+    stages downstream of it.
+
     Everything else is set in the config: the do_<stage> toggles choose which
-    stages run, alongside the video fps, canvas background and each stage's own
-    parameters. An enabled stage recomputes; to reuse cached work, disable that
-    stage in the config (its cached output then feeds the rest). With no -c, a run
-    reuses the config.toml already in the output dir, else the packaged default.
+    stages are part of the pipeline, alongside the fps, canvas background and each
+    stage's own parameters. With no -c, a run reuses the config.toml already in the
+    output dir, else the packaged default.
     """
     _configure_logging(log_level.value)
     _cmd_run(
@@ -1512,6 +1664,7 @@ def run(
             recursive=recursive,
             config=config,
             output=output,
+            overwrite=overwrite,
             log_level=log_level.value,
         )
     )
@@ -1534,6 +1687,37 @@ def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
     _cmd_doctor(argparse.Namespace())
 
 
+def _normalize_overwrite_argv(argv: list[str]) -> list[str]:
+    """Let ``run``'s ``--overwrite`` take zero or more space-separated stage names.
+
+    click options cannot be variadic, so rewrite a bare ``--overwrite`` into
+    ``--overwrite <_OVERWRITE_ALL>`` (recompute everything) and ``--overwrite a b``
+    into the repeated ``--overwrite a --overwrite b`` that the underlying
+    ``multiple=True`` option accepts. Only the known stage names (:data:`STAGES`)
+    are consumed after the flag, so the positional recording argument and any later
+    options are left untouched; the ``--overwrite=...`` form is passed through as-is.
+    """
+    if not (argv and argv[0] == "run"):
+        return argv
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok != "--overwrite":
+            out.append(tok)
+            i += 1
+            continue
+        j = i + 1
+        picked: list[str] = []
+        while j < len(argv) and argv[j] in STAGES:
+            picked.append(argv[j])
+            j += 1
+        for stage in picked or [_OVERWRITE_ALL]:
+            out += ["--overwrite", stage]
+        i = j
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: parse ``argv`` (default ``sys.argv``) and dispatch a subcommand.
 
@@ -1542,7 +1726,12 @@ def main(argv: list[str] | None = None) -> None:
     ``SystemExit(0)`` raised on a clean exit so calling ``main([...])`` as a library
     (and from the tests) returns normally. Real failures -- our own
     ``SystemExit("message")`` and click's non-zero usage exits -- still propagate.
+
+    ``argv`` is normalized first (:func:`_normalize_overwrite_argv`) so ``run``'s
+    ``--overwrite`` can take space-separated stage names or stand alone.
     """
+    argv = sys.argv[1:] if argv is None else list(argv)
+    argv = _normalize_overwrite_argv(argv)
     command = typer.main.get_command(app)
     try:
         command(args=argv, prog_name="deeperfly")

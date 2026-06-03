@@ -7,9 +7,12 @@ see [comparison.md](comparison.md).
 (2D) → `bundle_adjustment` → `pictorial_structures` → `triangulation` →
 `smoothing` → `visualization` — each toggled by its own `do_<stage>` boolean in the
 config's `[pipeline]` table (with its own `[pipeline.<stage>]` parameter
-sub-table). An enabled stage recomputes its output; a disabled one is read back
-from the cached `poses.h5` in the output directory and fed to the stages still on,
-so disabling the finished stages resumes a partial run.
+sub-table). An enabled stage reuses its cached result when it is already in the
+output directory and only recomputes when that result is missing or `--overwrite`
+selects it (recomputing a stage also refreshes the stages downstream of it), so
+re-running a finished recording is a no-op by default. A disabled stage is dropped
+from the pipeline: its cached `poses.h5` output is read back and fed to the stages
+still on, so disabling the finished stages also resumes a partial run.
 
 ## Pipeline stages
 

@@ -8,7 +8,7 @@ for an alternative or faster decoder:
 | Backend | Read | Write | Frames | Install |
 | --- | :-: | :-: | --- | --- |
 | `pyav` | ✓ | ✓ | NumPy (CPU) | core (default) |
-| `opencv` | ✓ | ✓ | NumPy (CPU) | `opencv` |
+| `opencv` | ✓ | ✓ | NumPy (CPU) | core |
 | `imageio` | ✓ | ✓ | NumPy (CPU) | `imageio` |
 | `decord` | ✓ | – | NumPy / `torch` (CPU/**CUDA**) | `decord` |
 | `video_reader_rs` | ✓ | – | NumPy (CPU) | `video-reader-rs` |

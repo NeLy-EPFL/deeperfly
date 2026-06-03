@@ -74,12 +74,16 @@ lh = "camera_6"
 #   do_smoothing            -> [pipeline.smoothing]            temporal smoothing
 #   do_visualization        -> [pipeline.visualization]        render the videos
 #
-# An enabled stage recomputes its output; to *reuse* finished work switch that
-# stage off -- its result is then read from the cached `poses.h5` in the output
-# dir and fed to the stages still on. So "resume" is just turning off the stages
-# already done, e.g. `do_pose2d = false` to reconstruct 3D from the cached 2D
-# pose. An enabled stage whose input is unavailable (e.g. do_triangulation on but
-# no 2D, detected or cached) is skipped with the reason logged.
+# An enabled stage reuses its result when it is already in the output dir, and
+# only recomputes when that output is missing or the CLI's --overwrite selects it
+# (a bare --overwrite redoes everything; `--overwrite pose2d visualization` redoes
+# just those -- and recomputing a stage also refreshes the stages after it). So
+# re-running a finished recording is a cheap no-op by default. Switching a stage
+# *off* drops it from the pipeline entirely: its cached result (if any) is read
+# from `poses.h5` and fed to the stages still on -- so e.g. `do_pose2d = false`
+# reconstructs 3D from a cached 2D pose without re-detecting. An enabled stage
+# whose input is unavailable (e.g. do_triangulation on but no 2D, detected or
+# cached) is skipped with the reason logged.
 # ---------------------------------------------------------------------------
 [pipeline]
 do_pose2d               = true   # detect 2D pose in every camera view
@@ -88,7 +92,9 @@ do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
 do_triangulation        = true   # triangulate 2D -> 3D
 do_smoothing            = false  # temporal smoothing of the 3D track
 do_visualization        = true   # render the videos (see [pipeline.visualization] below)
-fps = 100.0              # frames/sec; shared by one_euro smoothing and the videos
+# fps = 100.0            # optional; omit to detect the frame rate from the input
+                         # videos. Sets the rate for one_euro smoothing and the base
+                         # playback rate for the videos (see [pipeline.visualization]).
 
 
 # Detector: the 2D pose backend and frame reader.
@@ -179,6 +185,12 @@ method = "gaussian"      # gaussian | one_euro
 # `pipeline.visualization.background` here for every video, or a `background` key
 # on a single panel to repaint just its tile.
 #
+# Output frame rate: set `output_fps` (an explicit fps) or `speed` (output fps =
+# input video fps * speed; 0.5 = half speed / slow motion) -- globally under
+# `[pipeline.visualization]` or per video on a `[[...videos]]` entry, the per-video
+# value winning. With neither, a video plays at the input recording's own frame
+# rate (or `[pipeline].fps` when that is set).
+#
 # Keyword args for a draw op (e.g. point_radius, line_thickness, scale, palette)
 # can be set at three levels, each keyed by the `plot` op name:
 # `[pipeline.visualization.kwargs]` below (every panel of every video), a `kwargs`
@@ -194,6 +206,8 @@ method = "gaussian"      # gaussian | one_euro
 # ---------------------------------------------------------------------------
 [pipeline.visualization]
 background = "black"
+# output_fps = 30        # explicit output fps for every video (per-video override below)
+# speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
 
 [pipeline.visualization.kwargs]
 imshow      = { width = 480, height = 240 }

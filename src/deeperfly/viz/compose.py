@@ -64,8 +64,8 @@ set (global); a single panel can override it over its own footprint with a
         { plot = "skeleton_3d", view = "rf", background = "black" },  # one tile
     ]
 
-The primitives live in :mod:`deeperfly.viz.opencv`; this module needs the
-``opencv`` extra (and the ``imageio``/PyAV video stack to write MP4s).
+The primitives live in :mod:`deeperfly.viz.opencv` (OpenCV is a core dependency);
+writing the composited frames to MP4 uses the core PyAV video stack.
 """
 
 from __future__ import annotations
@@ -143,6 +143,12 @@ class VideoSpec:
 
     ``background`` is the canvas fill color (default ``"black"``); panels may
     override it over their own footprint via :attr:`Panel.background`.
+
+    The output frame rate is set by exactly one of ``output_fps`` (an explicit
+    fps) or ``speed`` (a multiple of the recording's own fps -- ``0.5`` is half
+    speed / slow motion, ``2`` twice as fast); both ``None`` means play at the
+    recording's native rate. :meth:`resolve_fps` turns these into a concrete fps
+    given the input recording's frame rate.
     """
 
     video_name: str
@@ -150,6 +156,21 @@ class VideoSpec:
     width: int | None = None
     height: int | None = None
     background: str | tuple[int, int, int] = "black"
+    output_fps: float | None = None
+    speed: float | None = None
+
+    def resolve_fps(self, input_fps: float) -> float:
+        """Concrete output fps from ``output_fps`` / ``speed`` and the input fps.
+
+        An explicit ``output_fps`` wins; otherwise ``speed`` scales the input
+        recording's frame rate (``input_fps * speed``); with neither, the output
+        plays at the input rate.
+        """
+        if self.output_fps is not None:
+            return float(self.output_fps)
+        if self.speed is not None:
+            return float(input_fps) * float(self.speed)
+        return float(input_fps)
 
 
 @dataclass
@@ -283,6 +304,7 @@ def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
     viz = config.get("pipeline", {}).get("visualization", {})
     global_kwargs = viz.get("kwargs", {})
     background = viz.get("background", "black")
+    global_fps = (viz.get("output_fps"), viz.get("speed"))
     specs: list[VideoSpec] = []
     for entry in viz.get("videos", []):
         video_kwargs = entry.get("kwargs", {})
@@ -313,6 +335,7 @@ def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
                     options=options,
                 )
             )
+        output_fps, speed = _resolve_fps_spec(entry, *global_fps)
         specs.append(
             VideoSpec(
                 video_name=entry["video_name"],
@@ -320,9 +343,32 @@ def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
                 width=entry.get("width"),
                 height=entry.get("height"),
                 background=background,
+                output_fps=output_fps,
+                speed=speed,
             )
         )
     return specs
+
+
+def _resolve_fps_spec(
+    entry: dict, global_output_fps, global_speed
+) -> tuple[float | None, float | None]:
+    """Pick this video's ``(output_fps, speed)``, most specific level winning.
+
+    A per-video ``output_fps`` or ``speed`` overrides the global
+    ``[pipeline.visualization]`` setting, and within one level an explicit
+    ``output_fps`` beats ``speed``. Exactly one of the pair is set (or both
+    ``None``), so :meth:`VideoSpec.resolve_fps` never has to break a tie.
+    """
+    if entry.get("output_fps") is not None:
+        return float(entry["output_fps"]), None
+    if entry.get("speed") is not None:
+        return None, float(entry["speed"])
+    if global_output_fps is not None:
+        return float(global_output_fps), None
+    if global_speed is not None:
+        return None, float(global_speed)
+    return None, None
 
 
 # -- rendering ----------------------------------------------------------------

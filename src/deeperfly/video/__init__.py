@@ -47,6 +47,7 @@ from .io import (
     read_images,
     read_video,
     reader_name,
+    video_fps,
     write_mp4,
 )
 
@@ -57,6 +58,7 @@ __all__ = [
     "read_images",
     "read_frames",
     "count_frames",
+    "video_fps",
     "list_image_files",
     "reader_name",
     "write_mp4",

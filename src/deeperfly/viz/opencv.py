@@ -12,7 +12,8 @@ camera-frame ``z`` of each point (``R @ X + t``), matching the projection in
 :func:`deeperfly.geometry.project_full`; points behind the camera are dropped.
 
 Buffers are treated as RGB (deeperfly's video-I/O convention) and color tuples
-are written in that order, so output stays RGB. Needs the ``opencv`` extra.
+are written in that order, so output stays RGB. OpenCV (``cv2``) is a core
+dependency, so these primitives are always available.
 """
 
 from __future__ import annotations

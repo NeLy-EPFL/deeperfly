@@ -29,11 +29,13 @@ Layer GPU acceleration and faster video backends on top as needed (see
 ```bash
 uv sync --group test --extra cuda          # NVIDIA CUDA (Linux x86-64)
 uv sync --group test --extra mps           # Apple Metal for the JAX detector
-uv sync --group test --extra all           # every cross-platform video backend
+uv sync --group test --extra torchcodec    # one optional video backend (repeat --extra for more)
 ```
 
-PyTorch is a core dependency, so no extra is needed for the PyTorch detector
-backend.
+PyTorch, OpenCV and PyAV are core dependencies, so no extra is needed for the
+PyTorch detector backend or the default OpenCV/PyAV video stack. The other
+cross-platform video backends are each their own extra (`imageio`, `decord`,
+`video-reader-rs`, `torchcodec`); add the ones you want to exercise.
 
 ## Running the tests
 

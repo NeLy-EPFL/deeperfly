@@ -308,8 +308,73 @@ def test_visualization_skipped_without_result(tmp_path, caplog):
     )
 
 
-def test_enabled_pose2d_recomputes_over_cache(result, tmp_path, monkeypatch):
-    """An enabled stage recomputes, overwriting a cached result of another shape."""
+def test_normalize_overwrite_argv():
+    """`--overwrite` accepts bare (all) or space-separated stage names."""
+    norm = cli._normalize_overwrite_argv
+    # bare -> the "all" sentinel; only `run` is rewritten.
+    assert norm(["run", "rec", "--overwrite"]) == [
+        "run",
+        "rec",
+        "--overwrite",
+        "__all__",
+    ]
+    assert norm(["inspect", "--overwrite"]) == ["inspect", "--overwrite"]
+    # space-separated stage names -> the repeated form click understands; the
+    # following positional / option (a non-stage token) ends the run of names.
+    assert norm(["run", "rec", "--overwrite", "pose2d", "visualization"]) == [
+        "run",
+        "rec",
+        "--overwrite",
+        "pose2d",
+        "--overwrite",
+        "visualization",
+    ]
+    assert norm(["run", "--overwrite", "triangulation", "rec"]) == [
+        "run",
+        "--overwrite",
+        "triangulation",
+        "rec",
+    ]
+
+
+def test_overwrite_stages_parsing():
+    assert cli._overwrite_stages(None) == set()
+    assert cli._overwrite_stages([cli._OVERWRITE_ALL]) == set(cli.STAGES)
+    assert cli._overwrite_stages(["pose2d", "smoothing"]) == {"pose2d", "smoothing"}
+    with pytest.raises(SystemExit, match="unknown stage"):
+        cli._overwrite_stages(["pose2d", "nope"])
+
+
+def test_enabled_pose2d_reused_when_cached(result, tmp_path, monkeypatch):
+    """An enabled stage whose output is already cached is reused, not recomputed."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    result.save(outdir / "poses.h5")  # cached full result, n_frames=6
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _stub_detect(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d should be reused")
+    )
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--log-level",
+            "error",
+        ]
+    )
+    # the cache is untouched: nothing recomputed, so the n_frames=6 result stands.
+    assert PoseResult.load(outdir / "poses.h5").n_frames == 6
+
+
+def test_overwrite_pose2d_recomputes_over_cache(result, tmp_path, monkeypatch):
+    """--overwrite forces an enabled stage to recompute over its cache."""
     outdir = tmp_path / "out"
     outdir.mkdir()
     result.save(outdir / "poses.h5")  # cached full result, n_frames=6
@@ -325,12 +390,71 @@ def test_enabled_pose2d_recomputes_over_cache(result, tmp_path, monkeypatch):
             str(cfg),
             "-o",
             str(outdir),
+            "--overwrite",
+            "pose2d",
             "--log-level",
             "error",
         ]
     )
     res = PoseResult.load(outdir / "poses.h5")
     assert res.pts3d is None and res.pts2d.shape == (7, T, 38, 2)  # fresh 2D, not cache
+
+
+def test_overwrite_cascades_to_downstream_stages(result, tmp_path, monkeypatch):
+    """Overwriting an upstream stage also refreshes the enabled stages after it."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    result.save(outdir / "poses.h5")  # cached full result with 3D, n_frames=6
+    # pose2d + bundle_adjustment + triangulation on (visualization off); all cached.
+    cfg = _default_cfg(tmp_path, visualization=False)
+    T = _stub_detect(monkeypatch, tmp_path)  # fresh 2D has 3 frames
+    triangulated: list[bool] = []
+    real_triangulate = cli._stage_triangulation
+
+    def spy_triangulate(config, res):
+        triangulated.append(True)
+        return real_triangulate(config, res)
+
+    monkeypatch.setattr(cli, "_stage_bundle_adjustment", lambda config, res: res)
+    monkeypatch.setattr(cli, "_stage_triangulation", spy_triangulate)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--overwrite",
+            "pose2d",
+            "--log-level",
+            "error",
+        ]
+    )
+    # triangulation reran (cascade) even though it was not named, producing 3D over
+    # the freshly detected 3-frame 2D rather than reusing the cached 6-frame 3D.
+    assert triangulated == [True]
+    res = PoseResult.load(outdir / "poses.h5")
+    assert res.pts3d is not None and res.pts3d.shape[0] == T
+
+
+def test_overwrite_unknown_stage_errors(tmp_path):
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text("[pipeline]\ndo_pose2d = false\n")
+    with pytest.raises(SystemExit, match="unknown stage"):
+        cli.main(
+            [
+                "run",
+                str(tmp_path / "rec"),
+                "-c",
+                str(cfg),
+                "-o",
+                str(tmp_path / "out"),
+                "--overwrite=nope",
+                "--log-level",
+                "error",
+            ]
+        )
 
 
 def test_existing_config_in_outdir_wins(result, tmp_path, caplog):

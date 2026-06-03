@@ -398,6 +398,47 @@ def count_frames(path: str | Path) -> int | None:
     return None
 
 
+def _fps_pyav(p: Path) -> float | None:
+    import av
+
+    with av.open(str(p)) as container:
+        rate = container.streams.video[0].average_rate
+    return float(rate) if rate else None
+
+
+def _fps_opencv(p: Path) -> float | None:
+    import cv2
+
+    cap = cv2.VideoCapture(str(p))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+    finally:
+        cap.release()
+    return float(fps) if fps and fps > 0 else None
+
+
+def video_fps(path: str | Path) -> float | None:
+    """Frame rate of a video file in frames/sec -- ``None`` if unknown.
+
+    Read from container metadata (PyAV, the core default -- or OpenCV, also core,
+    as a fallback); both are cheap and need no pixel decode. Image *sequences*
+    carry no intrinsic frame rate, so they return ``None``. Used to detect the
+    playback rate of a recording when ``[pipeline].fps`` is left unset and as the
+    base rate for the visualization ``speed`` factor.
+    """
+    p = Path(path)
+    if not (p.is_file() and p.suffix.lower() in _VIDEO_EXTS):
+        return None
+    for probe in (_fps_pyav, _fps_opencv):
+        try:
+            fps = probe(p)
+        except Exception:  # backend missing or metadata absent -> try the next
+            continue
+        if fps and fps > 0:
+            return float(fps)
+    return None
+
+
 def write_mp4(
     frames: Float[np.ndarray, "T H W 3"],
     path: str | Path,

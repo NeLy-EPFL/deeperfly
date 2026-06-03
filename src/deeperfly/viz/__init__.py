@@ -6,8 +6,8 @@ pulled in until it is actually used:
 - :mod:`deeperfly.viz.matplotlib` -- figure / ``Axes`` drawing for 3D skeletons
   and montages (needs the ``viz`` extra; ``matplotlib``).
 - :mod:`deeperfly.viz.opencv` -- fast overlays drawn straight into image arrays
-  with ``cv2``, with painter's-algorithm depth ordering for 3D (needs the
-  ``opencv`` extra).
+  with ``cv2``, with painter's-algorithm depth ordering for 3D (OpenCV is a core
+  dependency).
 - :mod:`deeperfly.viz.compose` -- a config-driven panel compositor that layers
   the OpenCV primitives into video frames (one MP4 per
   ``[[pipeline.visualization.videos]]`` entry).

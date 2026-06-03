@@ -312,6 +312,7 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "opencv-python-headless" },
     { name = "platformdirs" },
     { name = "rich" },
     { name = "scipy" },
@@ -321,14 +322,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "decord", marker = "sys_platform != 'darwin'" },
-    { name = "imageio-ffmpeg" },
-    { name = "opencv-python-headless" },
-    { name = "torchcodec", version = "0.13.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
-    { name = "torchcodec", version = "0.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "video-reader-rs", marker = "sys_platform != 'darwin'" },
-]
 cuda = [
     { name = "jax", extra = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-npp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -346,9 +339,6 @@ imageio = [
 mps = [
     { name = "jax-mps", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
-opencv = [
-    { name = "opencv-python-headless" },
-]
 torchcodec = [
     { name = "torchcodec", version = "0.13.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "torchcodec", version = "0.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -363,7 +353,6 @@ dev = [
 ]
 test = [
     { name = "imageio-ffmpeg" },
-    { name = "opencv-python-headless" },
     { name = "pytest" },
 ]
 
@@ -371,11 +360,6 @@ test = [
 requires-dist = [
     { name = "av", specifier = ">=13" },
     { name = "decord", marker = "sys_platform != 'darwin' and extra == 'decord'", specifier = ">=0.6" },
-    { name = "deeperfly", extras = ["decord"], marker = "extra == 'all'" },
-    { name = "deeperfly", extras = ["imageio"], marker = "extra == 'all'" },
-    { name = "deeperfly", extras = ["opencv"], marker = "extra == 'all'" },
-    { name = "deeperfly", extras = ["torchcodec"], marker = "extra == 'all'" },
-    { name = "deeperfly", extras = ["video-reader-rs"], marker = "extra == 'all'" },
     { name = "equinox", specifier = ">=0.11" },
     { name = "h5py", specifier = ">=3.11" },
     { name = "imageio", specifier = ">=2.34" },
@@ -388,7 +372,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "nvidia-dali-cuda130", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'dali'", specifier = ">=2.1" },
     { name = "nvidia-npp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda'", specifier = ">=13" },
-    { name = "opencv-python-headless", marker = "extra == 'opencv'", specifier = ">=4.10" },
+    { name = "opencv-python-headless", specifier = ">=4.13" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "rich", specifier = ">=14.0" },
     { name = "scipy", specifier = ">=1.14" },
@@ -400,13 +384,12 @@ requires-dist = [
     { name = "typer", specifier = ">=0.26" },
     { name = "video-reader-rs", marker = "sys_platform != 'darwin' and extra == 'video-reader-rs'", specifier = ">=0.4" },
 ]
-provides-extras = ["cuda", "mps", "opencv", "imageio", "decord", "video-reader-rs", "torchcodec", "dali", "all"]
+provides-extras = ["cuda", "mps", "imageio", "decord", "video-reader-rs", "torchcodec", "dali"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ipykernel", specifier = ">=7.2.0" }]
 test = [
     { name = "imageio-ffmpeg", specifier = ">=0.5" },
-    { name = "opencv-python-headless", specifier = ">=4.13.0.92" },
     { name = "pytest", specifier = ">=9.0.3" },
 ]
 

@@ -107,12 +107,23 @@ do_smoothing            = false  # temporal smoothing (opt-in)
 do_visualization        = true   # render the videos
 ```
 
-An *enabled* stage recomputes its output; a *disabled* stage is skipped and its
-result is read from the cached `poses.h5` in the output directory instead. So to
-reuse finished work, switch off the stages already done — e.g. set
-`do_pose2d = false` to reconstruct 3D from a cached 2D pose without re-running
-detection. An enabled stage whose input is unavailable (say `do_triangulation` is
-on but there's no 2D, detected or cached) is skipped and the reason is logged.
+An *enabled* stage **reuses its result when it is already in the output directory**
+and only recomputes when that result is missing — so re-running a finished
+recording is a cheap no-op. Force a recompute with `--overwrite`: a bare
+`--overwrite` redoes every stage, or name stages to redo only those (recomputing a
+stage also refreshes the stages after it):
+
+```bash
+deeperfly run recording/ --overwrite                       # recompute everything
+deeperfly run recording/ --overwrite pose2d visualization  # just these (+ what follows)
+```
+
+A *disabled* stage (`do_<stage> = false`) is dropped from the pipeline entirely;
+its cached result is read from the output directory's `poses.h5` and fed to the
+stages still on — so set `do_pose2d = false` to reconstruct 3D from a cached 2D
+pose without re-running detection. An enabled stage whose input is unavailable (say
+`do_triangulation` is on but there's no 2D, detected or cached) is skipped and the
+reason is logged.
 
 A run also reuses the `config.toml` already saved in the output directory (it owns
 the cached results), so `-o out/` alone resumes consistently; pass `-c` only for a
