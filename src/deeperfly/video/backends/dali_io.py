@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..base import ReaderBackend, device_id, is_gpu_device, register_reader
+from ..base import ReaderBackend, _have, device_id, is_gpu_device, register_reader
 
 
 def _decode(path, device, *, start_frame=0, end_frame=None, stride=1, frames=None):
@@ -62,6 +62,14 @@ class DALIReader(ReaderBackend):
     requires = ("nvidia.dali",)
     supports_gpu = True
     supports_seek = True  # start_frame/end_frame/frames decode only what's asked
+
+    @classmethod
+    def is_available(cls) -> bool:
+        # ``nvidia.dali`` can resolve to a namespace-package stub (another
+        # ``nvidia-*`` wheel created the ``nvidia`` namespace) without the compiled
+        # decode API. Require the real ``fn`` submodule so a half-install reports
+        # unavailable here instead of dying with an ImportError at decode time.
+        return _have("nvidia.dali.fn")
 
     @staticmethod
     def _read_sequential(path, device, start, stop, step):

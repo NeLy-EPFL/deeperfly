@@ -452,7 +452,7 @@ def test_packaged_config_videos_parse():
     # the global [pipeline.visualization.kwargs] sets line_thickness=2 on every skeleton panel
     skel = [p for s in specs for p in s.panels if p.plot.startswith("skeleton")]
     assert skel and all(p.options.get("line_thickness") == 2 for p in skel)
-    # scale moved to global [pipeline.visualization.kwargs]; every panel resolves to 0.5
-    assert all(p.scale == 0.5 for s in specs for p in s.panels)
+    # the global [pipeline.visualization.kwargs] sizes every panel to a 480x240 box
+    assert all(p.width == 480 and p.height == 240 for s in specs for p in s.panels)
     # and the default canvas background is black
     assert all(s.background == "black" for s in specs)

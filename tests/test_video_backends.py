@@ -123,17 +123,27 @@ def test_backend_capability_flags():
     assert not base._READERS["imageio"].supports_seek
 
 
+# A frame-accurate CPU decoder to validate DALI against. decord and pyav both
+# wrap ffmpeg, like NVDEC, so they agree bar a YUV->RGB rounding bit.
+_DALI_REF_BACKENDS = ("decord", "pyav")
+
+
 @pytest.mark.skipif(
-    "dali" not in video.available_read_backends() or not base.cuda_available(),
-    reason="needs NVIDIA DALI and a CUDA GPU",
+    "dali" not in video.available_read_backends()
+    or not base.cuda_available()
+    or not any(b in video.available_read_backends() for b in _DALI_REF_BACKENDS),
+    reason="needs NVIDIA DALI, a CUDA GPU and a frame-accurate CPU reference decoder",
 )
 def test_dali_windowed_decode_is_frame_accurate(tmp_path):
     # DALI must decode *only* the requested window (bounded memory) and match a
     # reference FFmpeg decoder frame-for-frame (bar a YUV->RGB rounding bit).
     # Random access and chunk boundaries must agree too.
+    ref_backend = next(
+        b for b in _DALI_REF_BACKENDS if b in video.available_read_backends()
+    )
     frames = _indexed_clip(12, 64, 64)  # NVDEC needs a minimum frame size
     path = _write_clip(tmp_path, frames)
-    ref = video.read_video(path, backend="decord", device="cpu").astype(np.int16)
+    ref = video.read_video(path, backend=ref_backend, device="cpu").astype(np.int16)
     win = video.to_numpy(
         video.read_video(path, backend="dali", device="cuda", start=4, stop=9)
     )

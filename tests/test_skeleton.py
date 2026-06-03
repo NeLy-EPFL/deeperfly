@@ -30,10 +30,10 @@ def test_bone_indices_in_range(fly):
 def test_palette(fly):
     # One color per limb, with the bright antenna/stripe cues set in the config.
     assert set(fly.palette) == set(fly.limb_names)
-    assert fly.palette["l_antenna"] == "#0000ff"
-    assert fly.palette["r_antenna"] == "#ff0000"
-    assert fly.palette["l_stripe"] == "#00ffff"
-    assert fly.palette["r_stripe"] == "#ff00ff"
+    assert fly.palette["l_antenna"] == "#0a4f6b"
+    assert fly.palette["r_antenna"] == "#8c1525"
+    assert fly.palette["l_stripe"] == "#a9dbe4"
+    assert fly.palette["r_stripe"] == "#e6b3a8"
 
 
 def test_left_right_legs_disjoint(fly):
