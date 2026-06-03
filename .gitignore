@@ -20,3 +20,9 @@ results_/
 *.h5
 *.mp4
 *.png
+
+# Scratch / working files (not for version control)
+scratch/
+
+# ...except the committed example recording (overrides the *.mp4 rule above)
+!examples/data/*.mp4
