@@ -138,7 +138,13 @@ def test_cli_run_visualize_only(result, tmp_path):
     outdir = tmp_path / "out"
     outdir.mkdir()
     cfg = tmp_path / "cfg.toml"
-    cfg.write_text("")
+    # A skeleton_3d-only video needs no image frames, so the visualize stage runs
+    # without a recording (canvas sized from the camera's intrinsics).
+    cfg.write_text(
+        "[[viz.videos]]\n"
+        'video_name = "pose3d"\n'
+        'panels = [{ plot = "skeleton_3d", view = "rh", x0 = 0, y0 = 0 }]\n'
+    )
     result.save(outdir / "poses.h5")  # full result (has 3D) -> auto-resume to visualize
     cli.main(
         [

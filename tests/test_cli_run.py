@@ -480,10 +480,10 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
     assert pts.shape == (2, T, 38, 2)
 
 
-# -- overlay frame recovery on resume ----------------------------------------
+# -- view frame recovery on resume -------------------------------------------
 
 
-def test_overlay_frames_source_order(result, tmp_path, monkeypatch):
+def test_source_view_frames_root_order(result, tmp_path, monkeypatch):
     from deeperfly import video
 
     monkeypatch.setattr(cli, "_camera_source", lambda root, prefix: (root, prefix))
@@ -491,6 +491,7 @@ def test_overlay_frames_source_order(result, tmp_path, monkeypatch):
         video, "read_frames", lambda src, backend="auto": ("frames", src)
     )
     cfg = {"inputs": {}, "detector": {}}
+    names = result.cameras.names
 
     rec_a, rec_b = tmp_path / "recA", tmp_path / "recB"
     rec_a.mkdir()
@@ -504,27 +505,44 @@ def test_overlay_frames_source_order(result, tmp_path, monkeypatch):
     )
 
     # --recording wins over the metadata path.
-    frames = cli._overlay_frames(argparse.Namespace(recording=str(rec_b)), cfg, res, 0)
-    assert frames == ("frames", (str(rec_b), res.cameras.names[0]))
-
-    # else fall back to the recording recorded in meta (if it still exists).
-    frames = cli._overlay_frames(
-        argparse.Namespace(recording=None, input=None), cfg, res, 1
+    got = cli._source_view_frames(
+        argparse.Namespace(recording=str(rec_b)), cfg, res, [names[0]]
     )
-    assert frames == ("frames", (str(rec_a), res.cameras.names[1]))
+    assert got == {names[0]: ("frames", (str(rec_b), names[0]))}
+
+    # else fall back to the meta path; every requested view is sourced.
+    got = cli._source_view_frames(
+        argparse.Namespace(recording=None, input=None), cfg, res, [names[1], names[2]]
+    )
+    assert got == {
+        names[1]: ("frames", (str(rec_a), names[1])),
+        names[2]: ("frames", (str(rec_a), names[2])),
+    }
 
     # else fall back to the run's own input (recording) if it exists.
     rec_c = tmp_path / "recC"
     rec_c.mkdir()
     bare_meta = PoseResult(result.cameras, result.skeleton, result.pts2d, meta={})
-    frames = cli._overlay_frames(
-        argparse.Namespace(recording=None, input=str(rec_c)), cfg, bare_meta, 2
+    got = cli._source_view_frames(
+        argparse.Namespace(recording=None, input=str(rec_c)), cfg, bare_meta, [names[2]]
     )
-    assert frames == ("frames", (str(rec_c), result.cameras.names[2]))
+    assert got == {names[2]: ("frames", (str(rec_c), names[2]))}
+
+    # in-memory frames (indexed by camera order) bypass the recording entirely.
+    mem = [f"mem{i}" for i in range(len(names))]
+    got = cli._source_view_frames(
+        argparse.Namespace(recording=None, input=None),
+        cfg,
+        bare_meta,
+        [names[2], names[0]],
+        in_memory=mem,
+    )
+    assert got == {names[2]: "mem2", names[0]: "mem0"}
+
+    # no imshow views -> nothing sourced (no recording needed).
+    ns = argparse.Namespace(recording=None, input=None)
+    assert cli._source_view_frames(ns, cfg, bare_meta, []) == {}
 
     # else error pointing at --recording.
-    bare = PoseResult(result.cameras, result.skeleton, result.pts2d, meta={})
     with pytest.raises(SystemExit, match="--recording"):
-        cli._overlay_frames(
-            argparse.Namespace(recording=None, input=None), cfg, bare, 0
-        )
+        cli._source_view_frames(ns, cfg, bare_meta, [names[0]])

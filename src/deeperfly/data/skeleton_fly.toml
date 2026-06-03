@@ -35,20 +35,22 @@ lh_leg = [29, 30, 31, 32, 33]
 l_antenna = [34]
 l_stripe = [35, 36, 37]
 
-# Per-limb plotting color (hex). Legs read left = blue / right = red, lightening
-# front -> hind; antennae and stripes are bright cues. Limbs without an entry
-# fall back to a default colormap.
+# Per-limb plotting color (hex). Each side keeps one hue -- left = blue,
+# right = red -- and ramps from dark to light across antenna -> front leg ->
+# middle leg -> hind leg -> stripe: the antenna is darker than its front leg
+# and the stripe is lighter than its hind leg. Limbs without an entry fall back
+# to a default colormap.
 [skeleton.palette]
 rf_leg = "#ba1e31"
 rm_leg = "#c9564f"
 rh_leg = "#d58579"
-r_antenna = "#ff0000"
-r_stripe = "#ff00ff"
+r_antenna = "#8c1525"
+r_stripe = "#e6b3a8"
 lf_leg = "#0f7399"
 lm_leg = "#1a8daf"
 lh_leg = "#75becb"
-l_antenna = "#0000ff"
-l_stripe = "#00ffff"
+l_antenna = "#0a4f6b"
+l_stripe = "#a9dbe4"
 
 # Per-camera point visibility for the canonical 7-camera rig (camera names match
 # examples/cameras.toml). Right cameras see the right side, left cameras the left
