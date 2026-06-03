@@ -9,7 +9,10 @@ and the skeleton. The commands:
 
 - ``init`` -- write a default config.toml.
 - ``run`` -- the whole pipeline (``detect`` 2D -> ``pose3d`` calibrate+triangulate
-  -> ``visualize``) or any prefix of it. The recording is the positional argument;
+  -> ``visualize``) or any prefix of it. The recording is the positional argument; a
+  wildcard pattern (``fly*``) fans out to every matching directory, and
+  ``-r``/``--recursive`` treats the argument as a parent directory and runs every
+  recording nested beneath it -- each run in turn into its own output dir.
   ``-c``/``--config`` is the merged config TOML (defaults to the packaged default
   config when omitted) and ``-o`` is an output *directory* (default
   ``<input>/deeperfly_outputs``) that collects the result ``poses.h5``, the videos
@@ -30,13 +33,17 @@ recomputed.
 from __future__ import annotations
 
 import argparse
+import copy
 import glob
 import logging
 import os
 import sys
 import tomllib
+from enum import Enum
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -85,8 +92,22 @@ from .pipeline import run_from_points2d  # noqa: E402
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
 
-#: The linear pipeline stages, in order. ``run`` executes a contiguous range.
-STAGES = ("detect", "pose3d", "visualize")
+
+class Stage(str, Enum):
+    """The linear pipeline stages, in order; ``run`` executes a contiguous range.
+
+    A ``str`` enum, so each member doubles as its own plain-string name: Typer
+    renders it as the ``--until`` choices, and :data:`STAGES` is the same names as
+    a tuple for the stage-index arithmetic below.
+    """
+
+    detect = "detect"
+    pose3d = "pose3d"
+    visualize = "visualize"
+
+
+#: The stage names in order, as plain strings (e.g. ``STAGES.index(name)``).
+STAGES = tuple(s.value for s in Stage)
 
 #: Frames decoded + detected per streaming window, per camera (overridable via
 #: ``[detector] chunk_frames``). Bounds peak frame memory, so arbitrarily long
@@ -792,10 +813,86 @@ def _save_config_snapshot(
     dst.write_text(src)
 
 
-def _cmd_run(args: argparse.Namespace) -> None:
-    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
-    config = _load_config(config_path)
-    outdir = Path(args.output) if args.output else _default_outdir(args.input)
+def _has_glob(pattern: str) -> bool:
+    """Whether ``pattern`` carries a shell wildcard (so it should be expanded)."""
+    return any(c in pattern for c in "*?[")
+
+
+def _is_recording(root: Path, config: dict) -> bool:
+    """Whether ``root`` directly holds footage for every configured camera.
+
+    Used to pick the real recording directories out of a tree while recursing:
+    intermediate directories and ``deeperfly_outputs`` hold no per-camera footage,
+    so they are skipped.
+    """
+    cameras = config.get("cameras", {})
+    if not cameras:
+        return False
+    inputs = config.get("inputs", {})
+    for name in cameras:
+        try:
+            _camera_source(root, inputs.get(name, name))
+        except SystemExit:
+            return False
+    return True
+
+
+def _resolve_recordings(pattern: str, *, recursive: bool, config: dict) -> list[Path]:
+    """Expand the ``run`` input into the recording directories to process.
+
+    Without ``--recursive``: a plain path is taken as-is -- a single recording,
+    even if it does not exist yet -- and a wildcard pattern (``fly*``) is globbed
+    to every matching *directory* (``fly1/``, ``fly2/``, ...), each run in turn;
+    files are ignored, since a recording is a directory of per-camera footage.
+
+    With ``--recursive`` the input is a *parent* directory whose subtree is
+    walked for recording directories -- those that directly hold footage for
+    every configured camera (:func:`_is_recording`) -- so ``-r data`` runs every
+    recording nested under ``data/`` (e.g. ``data/fly1/``) and skips intermediate
+    and ``deeperfly_outputs`` directories. Matches are sorted so the run order is
+    stable; an empty match is an error.
+    """
+    if not recursive:
+        if not _has_glob(pattern):
+            return [Path(pattern)]
+        dirs = sorted({Path(p) for p in glob.glob(pattern) if Path(p).is_dir()})
+        if not dirs:
+            raise SystemExit(f"no recording directories match {pattern!r}")
+        return dirs
+
+    root = Path(pattern)
+    if not root.is_dir():
+        raise SystemExit(f"--recursive needs an existing directory, not {pattern!r}")
+    dirs = [
+        d
+        for d in [root, *sorted(root.rglob("*"))]
+        if d.is_dir() and _is_recording(d, config)
+    ]
+    if not dirs:
+        raise SystemExit(
+            f"no recordings found under {pattern!r} (searched recursively); a "
+            "recording is a directory holding footage for every configured camera"
+        )
+    return dirs
+
+
+def _run_outdir(args: argparse.Namespace, recording: Path, *, batch: bool) -> Path:
+    """Output directory for one recording.
+
+    Default (no ``-o``): the recording's own ``deeperfly_outputs``. With ``-o``:
+    that directory for a single recording, or a per-recording subdirectory under
+    it for a wildcard/recursive batch (so the runs don't overwrite each other).
+    """
+    if not args.output:
+        return _default_outdir(recording)
+    base = Path(args.output)
+    return base / recording.name if batch else base
+
+
+def _run_one(
+    args: argparse.Namespace, config: dict, config_path: Path, outdir: Path
+) -> None:
+    """Run the pipeline (or a cached prefix of it) for a single recording."""
     outdir.mkdir(parents=True, exist_ok=True)
     log.info("output directory: %s", outdir)
     h5_path = outdir / "poses.h5"
@@ -830,6 +927,47 @@ def _cmd_run(args: argparse.Namespace) -> None:
         )
     if _stage_in_range("visualize", start, stop):
         _stage_visualize(args, config, result, frames, outdir)
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Run the pipeline for each recording the input resolves to.
+
+    ``input`` is a single recording directory, or a wildcard/recursive pattern
+    (see :func:`_resolve_recordings`) that fans out to several. In a multi-recording
+    batch each run is independent and a failure is logged and skipped (so one bad
+    recording does not abort the rest), with a non-zero exit if any failed; a single
+    recording fails fast as before.
+    """
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    config = _load_config(config_path)
+    recordings = _resolve_recordings(
+        args.input, recursive=args.recursive, config=config
+    )
+    batch = len(recordings) > 1
+    if batch:
+        log.info(
+            "matched %d recordings: %s", len(recordings), [str(r) for r in recordings]
+        )
+
+    failures: list[Path] = []
+    for i, rec in enumerate(recordings, 1):
+        if batch:
+            console.rule(Text(f"{rec}  ({i}/{len(recordings)})", style="bold cyan"))
+        run_args = copy.copy(args)
+        run_args.input = str(rec)
+        try:
+            _run_one(run_args, config, config_path, _run_outdir(args, rec, batch=batch))
+        except (Exception, SystemExit) as exc:  # noqa: BLE001
+            if not batch:
+                raise  # a single recording fails fast (unchanged behavior)
+            log.error("recording %s failed: %s", rec, exc)
+            failures.append(rec)
+
+    if failures:
+        raise SystemExit(
+            f"{len(failures)}/{len(recordings)} recordings failed: "
+            + ", ".join(str(r) for r in failures)
+        )
 
 
 def _info_line(label: str, value: object) -> None:
@@ -1056,109 +1194,195 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("default config", DEFAULT_CONFIG_PATH)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="deeperfly",
-        description=(
-            "Markerless 3D pose estimation of tethered Drosophila from a "
-            "multi-camera rig. 'deeperfly init' writes a config to edit; "
-            "'deeperfly run' detects 2D pose, reconstructs 3D and renders a "
-            "video; 'deeperfly inspect' summarizes a result file; "
-            "'deeperfly doctor' reports the installation/runtime."
+# -- typer app ---------------------------------------------------------------
+#
+# The CLI is built with Typer (https://typer.tiangolo.com): typed function
+# signatures layered over click, with usage and --help rendered through rich -- so
+# the help prints on the same rich stack as the rest of the output. Each command
+# declares its options as parameters, configures logging, then hands an
+# argparse-style namespace to the matching ``_cmd_*`` worker above; those workers
+# stay plain and namespace-driven so they remain equally callable as a library and
+# directly from the tests. Constrained options are typed as ``str``-valued Enums
+# (Typer's native choice mechanism); the commands pass their ``.value`` on, so the
+# workers keep receiving the same plain strings as before.
+
+
+class LogLevel(str, Enum):
+    """``--log-level`` choices, shared by every subcommand (it follows the command,
+    e.g. ``deeperfly run REC --log-level debug``). A ``str`` enum, so each member's
+    ``.value`` is the name :func:`_configure_logging` expects."""
+
+    debug = "debug"
+    info = "info"
+    warning = "warning"
+    error = "error"
+    critical = "critical"
+
+
+class Background(str, Enum):
+    """``--bg`` canvas-background choices (overrides the config's viz.background)."""
+
+    white = "white"
+    black = "black"
+
+
+#: The shared ``--log-level`` option. Typer has no click-style shared-option
+#: decorator, so it is declared once as a reusable parameter annotation and spread
+#: across every command. ``case_sensitive=False`` accepts INFO/Info/info.
+LogLevelOption = Annotated[
+    LogLevel,
+    typer.Option(
+        case_sensitive=False,
+        help="logging verbosity; 'warning' or higher hides the per-stage logs and "
+        "the progress bar",
+    ),
+]
+
+app = typer.Typer(
+    add_completion=False,  # no shell-completion options; keep the surface minimal
+    rich_markup_mode="rich",  # rich-rendered (boxed, colored) usage and --help
+    no_args_is_help=True,  # bare 'deeperfly' prints help instead of a usage error
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help="Markerless 3D pose estimation of tethered Drosophila from a multi-camera "
+    "rig. 'deeperfly init' writes a config to edit; 'deeperfly run' detects 2D "
+    "pose, reconstructs 3D and renders a video; 'deeperfly inspect' summarizes a "
+    "result file; 'deeperfly doctor' reports the installation/runtime.",
+)
+
+
+@app.command()
+def init(
+    output: Annotated[
+        str, typer.Argument(help="destination (defaults to config.toml)")
+    ] = "config.toml",
+    force: Annotated[
+        bool, typer.Option("--force", help="overwrite an existing file")
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Write a default config.toml to edit (destination defaults to config.toml)."""
+    _configure_logging(log_level.value)
+    _cmd_init(argparse.Namespace(output=output, force=force))
+
+
+@app.command()
+def run(
+    input: Annotated[
+        str,
+        typer.Argument(help="recording dir/glob (per-camera videos or image folders)"),
+    ],
+    recursive: Annotated[
+        bool,
+        typer.Option(
+            "-r",
+            "--recursive",
+            help="treat INPUT as a parent directory and run every recording nested "
+            "under it (each subdirectory holding the configured per-camera footage)",
         ),
+    ] = False,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c",
+            "--config",
+            help="merged config TOML (from 'deeperfly init'); "
+            "defaults to the packaged default config",
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output-dir",
+            help="output directory (default: <input>/deeperfly_outputs; created if "
+            "missing)",
+        ),
+    ] = None,
+    until: Annotated[
+        Stage | None,
+        typer.Option(help="stop after this stage (default: run through visualize)"),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help="recompute and re-render everything, ignoring cached outputs",
+        ),
+    ] = False,
+    recording: Annotated[
+        str | None,
+        typer.Option(
+            "--recording",
+            help="per-camera frames for the visualize stage's image (imshow) panels "
+            "when resuming and they are not in memory",
+        ),
+    ] = None,
+    fps: Annotated[
+        float | None, typer.Option("--fps", help="video fps (default from config)")
+    ] = None,
+    bg: Annotated[
+        Background | None,
+        typer.Option(
+            help="canvas background; overrides the config's viz.background "
+            "(default: black)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """detect 2D -> 3D -> visualize, or a prefix of it (resumes from cache).
+
+    INPUT is a recording directory (per-camera videos or image folders), or a
+    wildcard pattern matching several (e.g. 'fly*' -> fly1/, fly2/, ...), each run
+    in turn; quote the pattern so the shell does not expand it first. With
+    -r/--recursive, INPUT is a parent directory and every recording nested under
+    it is run in turn (e.g. 'deeperfly run -r data' -> data/fly1/, data/fly2/, ...).
+    """
+    _configure_logging(log_level.value)
+    _cmd_run(
+        argparse.Namespace(
+            input=input,
+            recursive=recursive,
+            config=config,
+            output=output,
+            until=until.value if until is not None else None,
+            overwrite=overwrite,
+            recording=recording,
+            fps=fps,
+            bg=bg.value if bg is not None else None,
+            log_level=log_level.value,
+        )
     )
 
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument(
-        "--log-level",
-        dest="log_level",
-        type=str.lower,  # accept INFO/Info/info
-        choices=["debug", "info", "warning", "error", "critical"],
-        default="info",
-        help="logging verbosity (default: info); 'warning' or higher hides the "
-        "per-stage logs and the progress bar",
-    )
 
-    sub = parser.add_subparsers(dest="command", required=True)
+@app.command()
+def inspect(
+    input: Annotated[str, typer.Argument(help="path to a result .h5 file")],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Print a summary of a result .h5 file."""
+    _configure_logging(log_level.value)
+    _cmd_inspect(argparse.Namespace(input=input))
 
-    pini = sub.add_parser(
-        "init", parents=[common], help="write a default config.toml to edit"
-    )
-    pini.add_argument(
-        "output",
-        nargs="?",
-        default="config.toml",
-        help="destination (default config.toml)",
-    )
-    pini.add_argument("--force", action="store_true", help="overwrite an existing file")
-    pini.set_defaults(func=_cmd_init)
 
-    pr = sub.add_parser(
-        "run",
-        parents=[common],
-        help="detect 2D -> 3D -> visualize, or a prefix of it (resumes from cache)",
-    )
-    pr.add_argument(
-        "input",
-        help="recording dir/glob (per-camera videos or image folders)",
-    )
-    pr.add_argument(
-        "-c",
-        "--config",
-        default=None,
-        help="merged config TOML (from 'deeperfly init'); "
-        "defaults to the packaged default config",
-    )
-    pr.add_argument(
-        "-o",
-        "--output-dir",
-        dest="output",
-        help="output directory (default: <input>/deeperfly_outputs; created if missing)",
-    )
-    pr.add_argument(
-        "--until",
-        choices=STAGES,
-        help="stop after this stage (default: run through visualize)",
-    )
-    pr.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="recompute and re-render everything, ignoring cached outputs",
-    )
-    pr.add_argument(
-        "--recording",
-        help="per-camera frames for the visualize stage's image (imshow) panels "
-        "when resuming and they are not in memory",
-    )
-    pr.add_argument(
-        "--fps", type=float, default=None, help="video fps (default from config)"
-    )
-    pr.add_argument(
-        "--bg",
-        choices=["white", "black"],
-        default=None,
-        help="canvas background; overrides the config's viz.background "
-        "(default: black)",
-    )
-    pr.set_defaults(func=_cmd_run)
-
-    pi = sub.add_parser(
-        "inspect", parents=[common], help="print a summary of a result file"
-    )
-    pi.add_argument("input", help="path to a result .h5 file")
-    pi.set_defaults(func=_cmd_inspect)
-
-    pd = sub.add_parser(
-        "doctor",
-        parents=[common],
-        help="report installation/runtime: accelerators, video backends, weights",
-    )
-    pd.set_defaults(func=_cmd_doctor)
-
-    return parser
+@app.command()
+def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
+    """Report installation/runtime: accelerators, video backends, weights."""
+    _configure_logging(log_level.value)
+    _cmd_doctor(argparse.Namespace())
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
-    _configure_logging(getattr(args, "log_level", "info"))
-    args.func(args)
+    """Entry point: parse ``argv`` (default ``sys.argv``) and dispatch a subcommand.
+
+    Runs the Typer app -- via its underlying click command -- in standalone mode so
+    usage errors and ``--help`` render through rich, but swallows the
+    ``SystemExit(0)`` raised on a clean exit so calling ``main([...])`` as a library
+    (and from the tests) returns normally. Real failures -- our own
+    ``SystemExit("message")`` and click's non-zero usage exits -- still propagate.
+    """
+    command = typer.main.get_command(app)
+    try:
+        command(args=argv, prog_name="deeperfly")
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            raise

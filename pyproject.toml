@@ -43,6 +43,7 @@ dependencies = [
     "equinox>=0.11",
     "platformdirs>=4.0",
     "rich>=14.0",          # colored logs, status output and the detection progress bar
+    "typer>=0.26",         # the CLI itself: typed commands over click, rich-rendered --help
     # Visualization + default video I/O, so `deeperfly run` works out of the box.
     # PyAV is the default video reader/writer: in-process libx264 decode/encode
     # (no `ffmpeg` subprocess fork), with its own FFmpeg bundled in the wheel -- so
