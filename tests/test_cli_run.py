@@ -752,3 +752,76 @@ def test_source_view_frames_root_order(result, tmp_path, monkeypatch):
     # else error telling the user to re-run with the recording as the input.
     with pytest.raises(SystemExit, match="recording"):
         cli._source_view_frames(ns, cfg, bare_meta, [names[0]])
+
+
+# -- per-camera [preprocess.*] frame transform wiring ------------------------
+
+
+def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
+    # Overlay footage must get the same per-camera transform the detector saw, so
+    # 2D/3D overlays (now in transformed-frame coords) land on matching frames.
+    from deeperfly import video
+
+    rng = np.random.default_rng(0)
+    names = result.cameras.names
+    raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
+    monkeypatch.setattr(cli, "_camera_source", lambda root, prefix: prefix)
+    monkeypatch.setattr(video, "read_frames", lambda src, backend="auto": raw[src])
+
+    v0, v1 = names[0], names[1]
+    cfg = {
+        "inputs": {n: n for n in names},
+        "pipeline": {"pose2d": {}},
+        "preprocess": {v0: {"rot90": 1, "fliplr": True}},
+    }
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    got = cli._source_view_frames(
+        argparse.Namespace(input=str(rec)), cfg, result, [v0, v1]
+    )
+    np.testing.assert_array_equal(
+        got[v0], video.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
+    )
+    np.testing.assert_array_equal(got[v1], raw[v1])  # no table -> untouched
+
+
+def test_prefetch_windows_applies_per_source_transform(monkeypatch):
+    from deeperfly import video
+
+    rng = np.random.default_rng(1)
+    win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)
+
+    def fake_read_frames(src, *, backend, device, start, stop):
+        return win.copy() if start == 0 else np.empty((0, 4, 6, 3), np.uint8)
+
+    monkeypatch.setattr(video, "read_frames", fake_read_frames)
+    t = video.FrameTransform(fliplr=True, rot90=1)
+    windows = list(
+        cli._prefetch_windows(
+            ["camA"], backend="auto", device="cpu", chunk=2, transforms=[t]
+        )
+    )
+    assert len(windows) == 1
+    window, n = windows[0]
+    assert n == 2
+    np.testing.assert_array_equal(window[0], t.apply(win))
+
+
+def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
+    # A rot90 swaps H/W, so the inferred principal point must use the transformed
+    # size; an untransformed camera keeps its raw (H, W).
+    from deeperfly import video
+
+    monkeypatch.setattr(
+        cli, "_camera_sources", lambda root, config: [("rh", "A"), ("lf", "B")]
+    )
+    head = np.zeros((1, 4, 6, 3), np.uint8)
+    monkeypatch.setattr(
+        video,
+        "read_frames",
+        lambda src, backend="auto", device="cpu", indices=None: head,
+    )
+    cfg = {"preprocess": {"rh": {"rot90": 1}}, "pipeline": {"pose2d": {}}}
+    sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)
+    assert sizes["rh"] == (6, 4)  # (H, W) swapped by the quarter-turn
+    assert sizes["lf"] == (4, 6)  # identity

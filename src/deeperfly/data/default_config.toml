@@ -64,6 +64,25 @@ lh = "camera_6"
 
 
 # ---------------------------------------------------------------------------
+# Preprocess: optional per-camera geometric correction applied to each video's
+# frames right after decoding -- for a camera mounted sideways/upside-down or
+# with a mirrored sensor. It is applied once, at the start: the *transformed*
+# frame becomes the canonical frame for the whole run, so the 2D detector, the
+# inferred principal point, calibration and the visualization overlays all use
+# it (nothing is mapped back to the raw footage). Each `[preprocess.<camera>]`
+# table (keyed by camera name, as in [cameras]/[inputs]) takes:
+#   fliplr = true|false   # left-right flip   (numpy fliplr)
+#   flipud = true|false   # up-down flip      (numpy flipud)
+#   rot90  = 0|1|2|3       # counter-clockwise 90-degree turns (numpy rot90, k)
+# applied in that order. Cameras with no table (or the whole section omitted)
+# are left untouched. Example (disabled -- all identity):
+# [preprocess.rh]
+# fliplr = false
+# flipud = false
+# rot90  = 0
+
+
+# ---------------------------------------------------------------------------
 # Pipeline: the run is a linear sequence of stages, each its own on/off switch
 # in [pipeline] (do_<stage>) with its own parameter sub-table below:
 #

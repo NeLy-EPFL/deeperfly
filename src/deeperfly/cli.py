@@ -413,20 +413,29 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
 
     backend = _pose2d_config(config).get("video_backend", "auto")
     device = _frame_read_device(config)  # match detection (CPU by default)
+    # Size the principal point on the *transformed* frame -- the detector and the
+    # overlays use the [preprocess.*]-transformed footage, so a rot90 that swaps
+    # H/W must swap here too.
+    transforms = video.parse_frame_transforms(config)
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args.input, config):
         head = video.read_frames(src, backend=backend, device=device, indices=[0])
+        head = transforms.get(name, video.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 
 
-def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
+def _prefetch_windows(sources, *, backend, device, chunk, transforms=None, depth=1):
     """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
 
     A background producer decodes the next window while the consumer detects the
     current one, so decode overlaps the GPU forward instead of running before it.
     The win is largest for CPU decode (it runs on otherwise-idle cores fully in
     parallel with the GPU); GPU decode shares the device, so it overlaps less.
+
+    ``transforms`` is an optional per-source :class:`~deeperfly.video.FrameTransform`
+    (aligned to ``sources``) applied to each decoded window before it is yielded,
+    so detection sees the configured ``[preprocess.*]`` orientation.
 
     EOF semantics match the old serial loop: a short or empty window ends the
     stream, and a read failure on the *very first* window propagates (anything
@@ -437,6 +446,8 @@ def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
 
     from . import video
 
+    if transforms is None:
+        transforms = [video.FrameTransform()] * len(sources)
     q: queue.Queue = queue.Queue(maxsize=depth)
     DONE = object()
 
@@ -445,10 +456,16 @@ def _prefetch_windows(sources, *, backend, device, chunk, depth=1):
         while True:
             try:
                 window = [
-                    video.read_frames(
-                        s, backend=backend, device=device, start=done, stop=done + chunk
+                    transforms[i].apply(
+                        video.read_frames(
+                            s,
+                            backend=backend,
+                            device=device,
+                            start=done,
+                            stop=done + chunk,
+                        )
                     )
-                    for s in sources
+                    for i, s in enumerate(sources)
                 ]
             except Exception as exc:  # noqa: BLE001
                 q.put(("err", exc) if done == 0 else DONE)
@@ -494,7 +511,14 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     backend = det.get("video_backend", "auto")
     device = _frame_read_device(config)
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
-    sources = [src for _, src in _camera_sources(args.input, config)]
+    cam_sources = _camera_sources(args.input, config)
+    sources = [src for _, src in cam_sources]
+    # Apply each camera's [preprocess.*] transform to its decoded window, so the
+    # detector sees the corrected orientation (and 2D points land in that frame).
+    transforms_by_name = video.parse_frame_transforms(config)
+    transforms = [
+        transforms_by_name.get(name, video.FrameTransform()) for name, _ in cam_sources
+    ]
     total = video.count_frames(sources[0]) if sources else 0
     # Size the forward to the GPU so each window is a few big batches, not one
     # batch per frame -- this only changes dispatch granularity, not the result.
@@ -529,7 +553,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
                 bar.advance(task)
 
         for window, _ in _prefetch_windows(
-            sources, backend=backend, device=device, chunk=chunk
+            sources, backend=backend, device=device, chunk=chunk, transforms=transforms
         ):
             if want_candidates:
                 p, c, cand = inference.detect_candidates_sequence(
@@ -702,15 +726,37 @@ def _stage_pose2d(
     recorded in ``result.meta`` and a visualization stage re-sources the one overlay
     camera it needs.
     """
+    from . import video
     from .pose2d import backends, inference
     from .skeleton import Skeleton
     from .triangulate import apply_visibility
 
+    transforms = video.parse_frame_transforms(config)
     image_sizes = _camera_image_sizes(args, config)
     log.info(
-        "input image sizes (h, w): %s", {n: tuple(s) for n, s in image_sizes.items()}
+        "input image sizes (h, w, after [preprocess.*]): %s",
+        {n: tuple(s) for n, s in image_sizes.items()},
     )
     cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
+    unknown = set(transforms) - set(cameras.names)
+    if unknown:
+        log.warning(
+            "[preprocess.*] entries for unknown cameras are ignored: %s",
+            sorted(unknown),
+        )
+    active = {
+        n: t
+        for n, t in transforms.items()
+        if n in cameras.names and not t.is_identity()
+    }
+    if active:
+        log.info(
+            "frame preprocessing (per camera): %s",
+            {
+                n: f"fliplr={t.fliplr}, flipud={t.flipud}, rot90={t.rot90}"
+                for n, t in active.items()
+            },
+        )
     skeleton = Skeleton.from_config(config) if "skeleton" in config else Skeleton.fly()
 
     det = _pose2d_config(config)
@@ -901,8 +947,16 @@ def _source_view_frames(
     if not views:
         return {}
     names = result.cameras.names
+    # The detector ran on transformed frames, so the 2D/3D overlays live in
+    # transformed-frame coordinates; the overlay footage must match (apply the
+    # same per-camera [preprocess.*] transform).
+    transforms = video.parse_frame_transforms(config)
+
+    def transform(v, frames):
+        return transforms.get(v, video.FrameTransform()).apply(frames)
+
     if in_memory is not None:
-        return {v: in_memory[names.index(v)] for v in views}
+        return {v: transform(v, in_memory[names.index(v)]) for v in views}
 
     inp = getattr(args, "input", None)
     if inp and Path(inp).exists():
@@ -923,7 +977,10 @@ def _source_view_frames(
     inputs = config.get("inputs", {})
     backend = _pose2d_config(config).get("video_backend", "auto")
     return {
-        v: video.read_frames(_camera_source(root, inputs.get(v, v)), backend=backend)
+        v: transform(
+            v,
+            video.read_frames(_camera_source(root, inputs.get(v, v)), backend=backend),
+        )
         for v in views
     }
 

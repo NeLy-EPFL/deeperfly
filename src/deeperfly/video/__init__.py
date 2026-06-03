@@ -50,6 +50,7 @@ from .io import (
     video_fps,
     write_mp4,
 )
+from .transform import FrameTransform, parse_frame_transforms
 
 _LAZY = {"figure_to_array", "render_pose3d_video", "render_overlay_video"}
 
@@ -62,6 +63,8 @@ __all__ = [
     "list_image_files",
     "reader_name",
     "write_mp4",
+    "FrameTransform",
+    "parse_frame_transforms",
     "to_numpy",
     "to_jax",
     "select_reader",
