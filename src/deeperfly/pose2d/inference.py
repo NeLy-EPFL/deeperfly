@@ -15,7 +15,7 @@ model. Pipeline for one recording:
    per-joint heatmaps as NumPy.
 4. :func:`heatmap_to_points` -> normalized sub-pixel peak locations + confidence.
 5. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
-   38-point skeleton (right pass -> indices 0..18, mirrored left pass -> 19..37
+   38-point skeleton (right pass -> indices 19..37, mirrored left pass -> 0..18
    with the x flip undone) and scale to original-image pixels. The front camera's
    two passes fill *both* halves of its row, so it observes left and right joints.
 
@@ -318,8 +318,8 @@ def expand_passes(
     A *pass* is one detector forward run. Most cameras are a single pass; a camera
     whose side is ``"both"`` (the front camera) becomes **two** passes that share
     its physical view index: ``("right", flip=False)`` populating skeleton indices
-    ``0..18`` and ``("left", flip=True)`` -- the mirror-flipped image -- populating
-    ``19..37``. So the one front image yields detections for both body sides,
+    ``19..37`` and ``("left", flip=True)`` -- the mirror-flipped image -- populating
+    ``0..18``. So the one front image yields detections for both body sides,
     making it the cross-side bridge the rig calibration relies on.
 
     Returns ``(views, pass_sides, pass_flips)`` -- the physical view index, side
@@ -360,7 +360,7 @@ def assemble_skeleton(
         ``(P, 19)`` confidence (``P`` passes, see :func:`expand_passes`).
     sides
         ``"right"`` or ``"left"`` per pass -- which half of the skeleton the 19
-        channels populate (right -> 0..18, left -> 19..37).
+        channels populate (left -> 0..18, right -> 19..37).
     flips
         Whether each pass's image was mirror-flipped in :func:`preprocess`
         (the x coordinate is then undone as ``1 - x``).
@@ -391,7 +391,7 @@ def assemble_skeleton(
         p = p * np.array([w, h])
         sl = (
             slice(0, N_SIDE_JOINTS)
-            if sides[i] == "right"
+            if sides[i] == "left"
             else slice(N_SIDE_JOINTS, 2 * N_SIDE_JOINTS)
         )
         pts[v, sl] = p

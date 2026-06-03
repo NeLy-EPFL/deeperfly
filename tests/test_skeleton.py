@@ -41,8 +41,8 @@ def test_left_right_legs_disjoint(fly):
     assert left.size == 15
     assert right.size == 15
     assert set(left).isdisjoint(right)
-    # Right legs are the low indices, left legs the high ones.
-    assert right.max() < left.min()
+    # Left legs are the low indices, right legs the high ones.
+    assert left.max() < right.min()
 
 
 def test_visibility_mask_matches_table(fly):
@@ -92,9 +92,9 @@ def test_from_config_dict_roundtrip(fly):
 
 def test_limb_joints_derive_structure(fly):
     # limb_names / limb_id / bones are all derived from the limb_joints mapping.
-    assert fly.limb_names[0] == "rf_leg" and fly.limb_names[3] == "r_antenna"
+    assert fly.limb_names[0] == "lf_leg" and fly.limb_names[3] == "l_antenna"
     assert fly.limb_id[:5].tolist() == [0, 0, 0, 0, 0]
-    assert fly.limb_id[15] == 3  # the single-point r_antenna limb
+    assert fly.limb_id[15] == 3  # the single-point l_antenna limb
     # A leg's five points become a four-edge chain; an antenna contributes none.
     np.testing.assert_array_equal(fly.bones[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
 

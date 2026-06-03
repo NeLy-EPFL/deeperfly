@@ -150,7 +150,7 @@ def extract_candidates(
     The candidate analog of :func:`deeperfly.pose2d.inference.assemble_skeleton`:
     extracts K peaks per detector channel, undoes the mirror flip (``x -> 1 - x``),
     scales to original pixels, and places a right pass's 19 channels into skeleton
-    indices ``0..18`` and a left pass's into ``19..37``.
+    indices ``19..37`` and a left pass's into ``0..18``.
 
     ``heatmaps`` is one stack per *pass* (see
     :func:`deeperfly.pose2d.inference.expand_passes`); ``views`` gives the physical
@@ -174,7 +174,7 @@ def extract_candidates(
         p = p * np.array([w, h])
         sl = (
             slice(0, n_side_joints)
-            if sides[i] == "right"
+            if sides[i] == "left"
             else slice(n_side_joints, 2 * n_side_joints)
         )
         cand_xy[v, sl] = p

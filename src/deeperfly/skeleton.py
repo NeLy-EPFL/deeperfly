@@ -7,10 +7,10 @@ It carries no geometry; it is consumed by triangulation (to mask unobservable
 points), bundle adjustment (bone-length priors), correction (per-side Procrustes)
 and visualization (drawing bones).
 
-The default fly skeleton is packaged as ``data/skeleton_fly.toml`` and mirrors
-NeLy-EPFL/DeepFly3D's ``skeleton_fly.py``: 38 points (right ``0..18``, left
-``19..37``), 10 limbs and 28 within-leg/stripe bones. Load it with
-:meth:`Skeleton.fly`.
+The default fly skeleton is packaged as ``data/skeleton_fly.toml``; it tracks the
+same 38 points as NeLy-EPFL/DeepFly3D's ``skeleton_fly.py`` but orders the body
+sides left-first (left ``0..18``, right ``19..37``), with 10 limbs and 28
+within-leg/stripe bones. Load it with :meth:`Skeleton.fly`.
 """
 
 from __future__ import annotations

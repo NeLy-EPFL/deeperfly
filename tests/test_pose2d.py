@@ -270,19 +270,19 @@ def test_assemble_skeleton_places_and_flips():
         image_size=[(100, 200), (100, 200)],
     )
     assert pts.shape == (2, 38, 2)
-    # right camera -> indices 0..18 in pixels, far side NaN
-    np.testing.assert_allclose(pts[0, 0], [50.0, 50.0])
-    assert np.isnan(pts[0, 19:]).all()
-    np.testing.assert_allclose(cout[0, :19], 0.9)
-    # left camera -> indices 19..37, x flip undone (1 - 0.3 = 0.7)
-    np.testing.assert_allclose(pts[1, 19], [70.0, 80.0])
-    assert np.isnan(pts[1, :19]).all()
-    np.testing.assert_allclose(cout[1, 19:], 0.7)
+    # right camera -> indices 19..37 in pixels, far side NaN
+    np.testing.assert_allclose(pts[0, 19], [50.0, 50.0])
+    assert np.isnan(pts[0, :19]).all()
+    np.testing.assert_allclose(cout[0, 19:], 0.9)
+    # left camera -> indices 0..18, x flip undone (1 - 0.3 = 0.7)
+    np.testing.assert_allclose(pts[1, 0], [70.0, 80.0])
+    assert np.isnan(pts[1, 19:]).all()
+    np.testing.assert_allclose(cout[1, :19], 0.7)
 
 
 def test_assemble_skeleton_front_camera_both_sides():
     # The front camera runs as two passes sharing physical view 1: a right pass
-    # (indices 0..18) and a flipped left pass (19..37). Both must land on row 1.
+    # (indices 19..37) and a flipped left pass (0..18). Both must land on row 1.
     points = np.stack(
         [
             np.full((19, 2), [0.5, 0.25]),  # right side-camera (view 0)
@@ -302,12 +302,12 @@ def test_assemble_skeleton_front_camera_both_sides():
     )
     assert pts.shape == (2, 38, 2)
     # Front camera (row 1) carries BOTH halves: right pass un-flipped ...
-    np.testing.assert_allclose(pts[1, 0], [60.0, 20.0])
+    np.testing.assert_allclose(pts[1, 19], [60.0, 20.0])
     # ... and left pass with the x flip undone (1 - 0.3 = 0.7).
-    np.testing.assert_allclose(pts[1, 19], [70.0, 80.0])
+    np.testing.assert_allclose(pts[1, 0], [70.0, 80.0])
     assert np.isfinite(pts[1]).all()  # no NaNs left on the bridging view
-    np.testing.assert_allclose(cout[1, :19], 0.8)
-    np.testing.assert_allclose(cout[1, 19:], 0.7)
+    np.testing.assert_allclose(cout[1, 19:], 0.8)
+    np.testing.assert_allclose(cout[1, :19], 0.7)
 
 
 def test_expand_passes_front_runs_twice():
@@ -335,11 +335,11 @@ def test_detect_sequence_shapes_and_sides(model):
     pts, conf = inference.detect_sequence(model, frames, sides, flips)
     assert pts.shape == (7, 2, 38, 2)
     assert conf.shape == (7, 2, 38)
-    # Right cameras populate the right half (0..18), left cameras the left half.
-    assert not np.isnan(pts[0, :, :19]).any()
-    assert np.isnan(pts[0, :, 19:]).all()
-    assert not np.isnan(pts[4, :, 19:]).any()
-    assert np.isnan(pts[4, :, :19]).all()
+    # Right cameras populate the right half (19..37), left cameras the left half (0..18).
+    assert not np.isnan(pts[0, :, 19:]).any()
+    assert np.isnan(pts[0, :, :19]).all()
+    assert not np.isnan(pts[4, :, :19]).any()
+    assert np.isnan(pts[4, :, 19:]).all()
     # The front camera (index 3) bridges: it fills BOTH halves.
     assert not np.isnan(pts[3, :, :19]).any()
     assert not np.isnan(pts[3, :, 19:]).any()

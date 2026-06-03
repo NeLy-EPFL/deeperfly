@@ -72,7 +72,7 @@ def test_peak_candidates_pads_when_too_few():
 
 
 def test_extract_candidates_flip_and_side_mapping():
-    # One left camera (flipped, fills indices 19..37) with a peak in channel 3.
+    # One left camera (flipped, fills indices 0..18) with a peak in channel 3.
     j, hh, ww = 19, 16, 32
     hm = np.zeros((1, j, hh, ww))
     hm[0, 3, 6, 20] = 1.0  # (row=6, col=20)
@@ -81,17 +81,17 @@ def test_extract_candidates_flip_and_side_mapping():
         hm, sides=["left"], flips=[True], image_size=[(w, h)], k=2
     )
     assert xy.shape == (1, 38, 2, 2) and score.shape == (1, 38, 2)
-    # Left side -> skeleton index 19 + 3; x flipped: (1 - 20/ww) * w.
+    # Left side -> skeleton index 0 + 3; x flipped: (1 - 20/ww) * w.
     np.testing.assert_allclose(
-        xy[0, 22, 0], [(1 - 20 / ww) * w, (6 / hh) * h], atol=1e-6
+        xy[0, 3, 0], [(1 - 20 / ww) * w, (6 / hh) * h], atol=1e-6
     )
-    assert np.isnan(xy[0, :19]).all()  # right side untouched by a left camera
+    assert np.isnan(xy[0, 19:]).all()  # right side untouched by a left camera
 
 
 def test_extract_candidates_front_camera_both_sides():
     # The front camera is two passes on one physical view: a right pass and a
     # flipped left pass. Candidates from both must land on the same output row,
-    # filling indices 0..18 (right) and 19..37 (left).
+    # filling indices 19..37 (right) and 0..18 (left).
     j, hh, ww = 19, 16, 32
     hm = np.zeros((2, j, hh, ww))  # two passes (right, left) for view 0
     hm[0, 3, 6, 20] = 1.0  # right pass, channel 3
@@ -107,13 +107,13 @@ def test_extract_candidates_front_camera_both_sides():
         n_views=1,
     )
     assert xy.shape == (1, 38, 2, 2) and score.shape == (1, 38, 2)
-    # Right pass -> index 3, un-flipped x.
-    np.testing.assert_allclose(xy[0, 3, 0], [(20 / ww) * w, (6 / hh) * h], atol=1e-6)
-    # Left pass -> index 19 + 5, x flipped: (1 - 10/ww) * w.
+    # Right pass -> index 19 + 3, un-flipped x.
+    np.testing.assert_allclose(xy[0, 22, 0], [(20 / ww) * w, (6 / hh) * h], atol=1e-6)
+    # Left pass -> index 5, x flipped: (1 - 10/ww) * w.
     np.testing.assert_allclose(
-        xy[0, 24, 0], [(1 - 10 / ww) * w, (4 / hh) * h], atol=1e-6
+        xy[0, 5, 0], [(1 - 10 / ww) * w, (4 / hh) * h], atol=1e-6
     )
-    assert score[0, 3, 0] == 1.0 and score[0, 24, 0] == 1.0
+    assert score[0, 22, 0] == 1.0 and score[0, 5, 0] == 1.0
 
 
 # -- skeleton chains ---------------------------------------------------------
@@ -162,9 +162,9 @@ def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     k = 5
     xy, sc = candidates_from_proj(proj, k)
 
-    # Joint 2 (right leg, seen by several right cameras): in camera 0 the arg-max
+    # Joint 21 (right leg, seen by several right cameras): in camera 0 the arg-max
     # is a 40 px decoy while the *true* location is only the secondary peak.
-    decoy_view, joint = 0, 2
+    decoy_view, joint = 0, 21
     xy[decoy_view, 0, joint, 1] = proj[decoy_view, joint]  # true as secondary
     sc[decoy_view, 0, joint, 1] = 0.9
     xy[decoy_view, 0, joint, 0] = proj[decoy_view, joint] + [40.0, 40.0]  # decoy
