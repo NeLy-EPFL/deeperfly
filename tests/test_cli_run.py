@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from deeperfly import cli
+from deeperfly.cameras import CameraGroup
 from deeperfly.io import PoseResult
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
@@ -128,11 +129,14 @@ def test_resolve_config_snapshot_used_silently_without_cli(tmp_path, caplog):
 
 
 def _stub_detect(monkeypatch, tmp_path):
-    """Stub frame sizing + detection so detect needs no files or weights."""
+    """Stub frame sizing + detection so detect needs no files, weights or recording."""
     T, H, W = 3, 16, 16
     sizes = {n: (H, W) for n in FLY_CAMERAS}
     monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
     monkeypatch.setattr(cli, "_load_detector", lambda checkpoint, backend: object())
+    # The recording footage is stubbed away, so skip the pre-run footage validation a
+    # real fresh pose2d run does (covered separately by the input-resolution tests).
+    monkeypatch.setattr(cli, "_require_input_footage", lambda args, config: None)
 
     def fake_detect_2d(args, config, model, sides, flips, **kw):
         v = len(FLY_CAMERAS)
@@ -140,6 +144,14 @@ def _stub_detect(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "_detect_2d", fake_detect_2d)
     return T
+
+
+def _make_fly_recording(d):
+    """A directory holding (empty) per-camera videos for the packaged 7-camera rig."""
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(len(FLY_CAMERAS)):
+        (d / f"camera_{i}.mp4").write_bytes(b"")
+    return d
 
 
 def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
@@ -158,8 +170,6 @@ def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
     res = PoseResult.load(outdir / "poses.h5")
     assert res.pts3d is None  # 2D only (no triangulation/pictorial)
     assert res.pts2d.shape == (7, T, 38, 2)
-    # the recording path is recorded so a later resume can recover the frames.
-    assert res.meta["input"] == str(rec.resolve())
     # the config used is snapshotted next to the results for reproducibility.
     assert (outdir / "config.toml").read_text() == cfg.read_text()
 
@@ -190,6 +200,296 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
     rec.mkdir()
     cli.main(["run", str(rec), "-c", str(cfg), "--log-level", "error"])
     assert (rec / "deeperfly_outputs" / "poses.h5").exists()
+
+
+# -- input footage validated before the output dir is created ----------------
+
+
+def _footage_cfg(tmp_path):
+    """A minimal two-camera config whose pose2d run reads real footage."""
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[cameras.cam0]\n[cameras.cam1]\n"
+        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+    return cfg
+
+
+def test_run_errors_on_missing_recording_before_creating_outdir(tmp_path):
+    """A fresh pose2d run whose recording does not exist fails up front, leaving no
+    empty output dir behind."""
+    outdir = tmp_path / "out"
+    with pytest.raises(SystemExit, match="needs footage for pose2d"):
+        cli.main(
+            [
+                "run",
+                str(tmp_path / "ghost"),
+                "-c",
+                str(_footage_cfg(tmp_path)),
+                "-o",
+                str(outdir),
+                "--log-level",
+                "error",
+            ]
+        )
+    assert not outdir.exists()  # validated before any deeperfly_outputs was made
+
+
+def test_run_errors_on_missing_camera_footage_before_creating_outdir(tmp_path, caplog):
+    """A recording that exists but lacks a configured camera's footage is warned
+    (naming the camera) at discovery and fails before the output dir is created."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "cam0.mp4").write_bytes(b"")  # cam0 present, cam1 missing
+    outdir = tmp_path / "out"
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="needs footage for pose2d"):
+            cli.main(
+                [
+                    "run",
+                    str(rec),
+                    "-c",
+                    str(_footage_cfg(tmp_path)),
+                    "-o",
+                    str(outdir),
+                ]
+            )
+    assert any("missing ['cam1']" in r.message for r in caplog.records)
+    assert not outdir.exists()
+
+
+def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
+    """A resume that reuses the cached 2D (pose2d off) does not require the
+    recording, so a missing input is fine."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
+        outdir / "poses.h5"
+    )
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
+        "do_triangulation = true\ndo_visualization = false\n"
+    )
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "ghost"),  # no recording on disk
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert PoseResult.load(outdir / "poses.h5").pts3d is not None
+
+
+# -- input resolution: multiple inputs, wildcards, --recursive ----------------
+
+_RES_CFG = {"cameras": {"cam0": {}, "cam1": {}}, "inputs": {}}
+
+
+def _make_recording(d, *, ext="mp4", count=1):
+    """A directory holding (empty) footage files for the two configured cameras.
+
+    ``count`` files per camera (an image sequence when > 1); ``ext`` sets the
+    extension. Empty files, so discovery validates filenames without decoding.
+    """
+    d.mkdir(parents=True, exist_ok=True)
+    for cam in ("cam0", "cam1"):
+        for i in range(count):
+            suffix = f"_{i}" if count > 1 else ""
+            (d / f"{cam}{suffix}.{ext}").write_bytes(b"")
+    return d
+
+
+def _resolve(patterns, tmp_path, *, recursive=False, output=None):
+    # globs are written relative to tmp_path, so resolve from there
+    return cli._resolve_recordings(
+        [str(tmp_path / p) for p in patterns],
+        recursive=recursive,
+        config=_RES_CFG,
+        output=output,
+    )
+
+
+def _rec_dir(rec):
+    """The recording directory, recovered from its resolved footage (flat layout)."""
+    files = next(iter(rec.sources.values()), [])
+    return files[0].parent if files else None
+
+
+def _rec_dirs(recordings):
+    return [_rec_dir(rec) for rec in recordings]
+
+
+def test_resolve_single_literal_recording(tmp_path):
+    rec = _make_recording(tmp_path / "rec")
+    out = _resolve(["rec"], tmp_path)
+    # the per-camera footage is resolved up front and threaded to the run, alongside
+    # the resolved output directory (the input dir is not retained).
+    assert out[0].sources == {
+        "cam0": [rec / "cam0.mp4"],
+        "cam1": [rec / "cam1.mp4"],
+    }
+    assert out[0].outdir == rec / "deeperfly_outputs"
+
+
+def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
+    """A single explicit path is kept even when it is not valid footage (so a resume
+    from its cache still works), with a warning naming the resolved path."""
+    bad = tmp_path / "nope"  # does not exist -> no footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["nope"], tmp_path)
+    # kept with empty footage; its output dir still resolves so a cached resume works.
+    assert out[0].sources == {}
+    assert out[0].outdir == cli._default_outdir(bad)
+    assert any(
+        str(bad.resolve()) in r.message and "not a valid recording" in r.message
+        for r in caplog.records
+    )
+
+
+def test_resolve_image_sequence_recording(tmp_path):
+    """A camera's footage may be a multi-file image sequence (natsorted)."""
+    rec = _make_recording(tmp_path / "rec", ext="png", count=3)
+    out = _resolve(["rec"], tmp_path)
+    assert out[0].sources["cam0"] == [rec / f"cam0_{i}.png" for i in range(3)]
+
+
+def test_resolve_partial_cameras_warns_and_skips(tmp_path, caplog):
+    """A directory with footage for only some cameras is warned and skipped."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "cam0.mp4").write_bytes(b"")  # cam1 missing
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["rec"], tmp_path)
+    assert out[0].sources == {}  # not a valid recording -> kept empty for resume
+    assert any("missing ['cam1']" in r.message for r in caplog.records)
+
+
+def test_resolve_uneven_file_count_warns_and_skips(tmp_path, caplog):
+    """Image sequences with different file counts across cameras are skipped."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    for i in range(3):
+        (rec / f"cam0_{i}.png").write_bytes(b"")
+    (rec / "cam1_0.png").write_bytes(b"")  # only one frame for cam1
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["rec"], tmp_path)
+    assert out[0].sources == {}
+    assert any("uneven file count" in r.message for r in caplog.records)
+
+
+def test_resolve_wildcard_keeps_valid_skips_nonrecordings_quietly(tmp_path, caplog):
+    """A wildcard keeps the valid recordings and silently drops its incidental
+    non-recording matches (no warning while at least one is valid)."""
+    _make_recording(tmp_path / "fly1")
+    _make_recording(tmp_path / "fly2")
+    (tmp_path / "deeperfly_outputs").mkdir()  # a non-recording the glob also matches
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["*"], tmp_path)
+    assert sorted(p.name for p in _rec_dirs(out)) == ["fly1", "fly2"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_resolve_multiple_inputs_batch_filters_quietly(tmp_path, caplog):
+    """Several inputs run as a batch: an invalid one is skipped without warning as
+    long as another is valid (matches a shell-expanded wildcard)."""
+    rec = _make_recording(tmp_path / "fly1")
+    (tmp_path / "fly2").mkdir()  # exists but no footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["fly1", "fly2"], tmp_path)
+    assert _rec_dirs(out) == [rec]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_resolve_batch_no_valid_warns_and_errors(tmp_path, caplog):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()  # neither holds footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="no valid recording"):
+            _resolve(["*"], tmp_path)
+    assert any("none of the inputs" in r.message for r in caplog.records)
+
+
+def test_resolve_wildcard_no_match_warns_and_errors(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit):
+            _resolve(["none*"], tmp_path)
+    assert any("matched no paths" in r.message for r in caplog.records)
+
+
+def test_resolve_recursive_multiple_and_glob_roots(tmp_path):
+    """--recursive searches each (possibly wildcard) parent for nested recordings."""
+    _make_recording(tmp_path / "expA" / "fly1")
+    _make_recording(tmp_path / "expB" / "sub" / "fly2")
+    out = _resolve(["exp*"], tmp_path, recursive=True)
+    assert sorted(p.name for p in _rec_dirs(out)) == ["fly1", "fly2"]
+
+
+def test_resolve_output_dir_handling(tmp_path):
+    """Each recording's output directory is resolved up front into the Recording.
+
+    No -o: each recording writes into its own <recording>/deeperfly_outputs. With -o
+    and a single recording: that directory directly. With -o and a batch: a
+    per-recording subdirectory so the runs don't overwrite each other.
+    """
+    _make_recording(tmp_path / "fly1")
+    _make_recording(tmp_path / "fly2")
+    (out,) = _resolve(["fly1"], tmp_path)
+    assert out.outdir == tmp_path / "fly1" / "deeperfly_outputs"
+    (out,) = _resolve(["fly1"], tmp_path, output=str(tmp_path / "results"))
+    assert out.outdir == tmp_path / "results"
+    batch = _resolve(["*"], tmp_path, output=str(tmp_path / "results"))
+    assert {r.outdir for r in batch} == {
+        tmp_path / "results" / "fly1",
+        tmp_path / "results" / "fly2",
+    }
+
+
+def test_resolve_recursive_nondir_literal_warns_and_errors(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="no recordings"):
+            _resolve(["ghost"], tmp_path, recursive=True)
+    assert any("is not a directory" in r.message for r in caplog.records)
+
+
+def test_resolve_recursive_no_recordings_errors(tmp_path):
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit, match="no recordings"):
+        _resolve(["empty"], tmp_path, recursive=True)
+
+
+def test_run_batch_multiple_inputs(tmp_path, monkeypatch):
+    """Two input recordings run as a batch into per-recording output subdirs."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _stub_detect(
+        monkeypatch, tmp_path
+    )  # detection stubbed; footage only needs to exist
+    _make_fly_recording(tmp_path / "r1")
+    _make_fly_recording(tmp_path / "r2")
+    out = tmp_path / "out"
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "r1"),
+            str(tmp_path / "r2"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(out),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert (out / "r1" / "poses.h5").exists()
+    assert (out / "r2" / "poses.h5").exists()
 
 
 def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
@@ -438,6 +738,110 @@ def test_overwrite_cascades_to_downstream_stages(result, tmp_path, monkeypatch):
     assert res.pts3d is not None and res.pts3d.shape[0] == T
 
 
+def test_overwrite_bundle_adjustment_rebuilds_config_rig(result, tmp_path, monkeypatch):
+    """--overwrite bundle_adjustment on a BA-refined cache re-runs BA from the
+    *config* rig, not the already-refined cached cameras.
+
+    The cached poses.h5 stores the previous BA *output*; feeding it back to BA as
+    the starting point would begin at the prior optimum, so edited
+    [pipeline.bundle_adjustment] params barely move it. The stage must instead
+    rebuild the un-refined config rig (the regression behind "--overwrite does
+    nothing" after editing the BA config).
+    """
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(
+        result.cameras,
+        result.skeleton,
+        result.pts2d,
+        conf=result.conf,
+        meta={"bundle_adjustment": True},  # cached cameras are a previous BA output
+    ).save(outdir / "poses.h5")
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+
+    # a recognizable rig the config rebuild yields (distinct from the cached one).
+    fresh = CameraGroup.from_arrays(
+        result.cameras.names,
+        result.cameras.rvecs,
+        result.cameras.tvecs * 2.0,
+        result.cameras.intrs,
+        result.cameras.dists,
+    )
+    monkeypatch.setattr(cli, "_config_camera_rig", lambda args, config: fresh)
+    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    seen: dict = {}
+
+    def spy_ba(config, res):
+        seen["is_fresh"] = res.cameras is fresh
+        return res
+
+    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--overwrite",
+            "bundle_adjustment",
+            "--log-level",
+            "error",
+        ]
+    )
+    assert seen["is_fresh"]  # BA started from the rebuilt config rig, not the cache
+
+
+def test_recompute_bundle_adjustment_keeps_unrefined_cached_rig(
+    result, tmp_path, monkeypatch
+):
+    """Cached cameras that were never BA-refined are legitimate input: a BA
+    recompute keeps them and does not rebuild the config rig."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
+        outdir / "poses.h5"
+    )  # no bundle_adjustment marker
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_config_camera_rig",
+        lambda args, config: pytest.fail("must not rebuild an un-refined rig"),
+    )
+    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    seen: dict = {}
+
+    def spy_ba(config, res):
+        seen["is_cached"] = res.cameras.names == result.cameras.names
+        return res
+
+    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--overwrite",
+            "bundle_adjustment",
+            "--log-level",
+            "error",
+        ]
+    )
+    assert seen["is_cached"]  # BA refined the stored cameras, no config rebuild
+
+
 def test_overwrite_unknown_stage_errors(tmp_path):
     cfg = tmp_path / "cfg.toml"
     cfg.write_text("[pipeline]\ndo_pose2d = false\n")
@@ -683,72 +1087,105 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
 # -- view frame recovery on resume -------------------------------------------
 
 
-def test_source_view_frames_root_order(result, tmp_path, monkeypatch):
+def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     from deeperfly import video
 
-    monkeypatch.setattr(cli, "_camera_source", lambda root, prefix: (root, prefix))
+    # read_frames echoes its source so we can see which footage each view used.
     monkeypatch.setattr(
         video, "read_frames", lambda src, backend="auto": ("frames", src)
     )
     cfg = {"inputs": {}, "pipeline": {"pose2d": {}}}
     names = result.cameras.names
+    v0, v1 = names[0], names[1]
+    res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
 
-    rec_a, rec_b = tmp_path / "recA", tmp_path / "recB"
-    rec_a.mkdir()
-    rec_b.mkdir()
-    res = PoseResult(
-        result.cameras,
-        result.skeleton,
-        result.pts2d,
-        conf=result.conf,
-        meta={"input": str(rec_a)},
-    )
-
-    # the run's own input (the positional recording) wins over the metadata path.
+    # 1) this run's already-resolved footage (args.sources) is used directly.
     got = cli._source_view_frames(
-        argparse.Namespace(input=str(rec_b)), cfg, res, [names[0]]
+        argparse.Namespace(sources={v0: ["f0"], v1: ["f1"]}), cfg, res, [v0, v1]
     )
-    assert got == {names[0]: ("frames", (str(rec_b), names[0]))}
+    assert got == {v0: ("frames", ["f0"]), v1: ("frames", ["f1"])}
 
-    # else fall back to the recording stored in the result; every view is sourced.
-    got = cli._source_view_frames(
-        argparse.Namespace(input=None), cfg, res, [names[1], names[2]]
-    )
-    assert got == {
-        names[1]: ("frames", (str(rec_a), names[1])),
-        names[2]: ("frames", (str(rec_a), names[2])),
-    }
+    # 2) no run footage -> error telling the user to re-pass the recording.
+    with pytest.raises(SystemExit, match="overwrite visualization"):
+        cli._source_view_frames(argparse.Namespace(sources={}), cfg, res, [v0])
 
-    # a stored path that no longer exists is skipped in favor of the input.
-    rec_c = tmp_path / "recC"
-    rec_c.mkdir()
-    stale_meta = PoseResult(
-        result.cameras,
-        result.skeleton,
-        result.pts2d,
-        meta={"input": str(tmp_path / "gone")},
-    )
-    got = cli._source_view_frames(
-        argparse.Namespace(input=str(rec_c)), cfg, stale_meta, [names[2]]
-    )
-    assert got == {names[2]: ("frames", (str(rec_c), names[2]))}
-
-    # in-memory frames (indexed by camera order) bypass the recording entirely.
-    bare_meta = PoseResult(result.cameras, result.skeleton, result.pts2d, meta={})
+    # 3) in-memory frames (indexed by camera order) bypass the recording entirely.
     mem = [f"mem{i}" for i in range(len(names))]
     got = cli._source_view_frames(
-        argparse.Namespace(input=None),
-        cfg,
-        bare_meta,
-        [names[2], names[0]],
-        in_memory=mem,
+        argparse.Namespace(sources=None), cfg, res, [names[2], v0], in_memory=mem
     )
-    assert got == {names[2]: "mem2", names[0]: "mem0"}
+    assert got == {names[2]: "mem2", v0: "mem0"}
 
-    # no imshow views -> nothing sourced (no recording needed).
-    ns = argparse.Namespace(input=None)
-    assert cli._source_view_frames(ns, cfg, bare_meta, []) == {}
+    # 4) no imshow views -> nothing sourced.
+    assert cli._source_view_frames(argparse.Namespace(sources=None), cfg, res, []) == {}
 
-    # else error telling the user to re-run with the recording as the input.
-    with pytest.raises(SystemExit, match="recording"):
-        cli._source_view_frames(ns, cfg, bare_meta, [names[0]])
+
+# -- per-camera [preprocess.*] frame transform wiring ------------------------
+
+
+def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
+    # Overlay footage must get the same per-camera transform the detector saw, so
+    # 2D/3D overlays (now in transformed-frame coords) land on matching frames.
+    from deeperfly import video
+
+    rng = np.random.default_rng(0)
+    names = result.cameras.names
+    raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
+    # the run's resolved footage maps each view to one "file" (its name); read_frames
+    # returns that view's raw footage.
+    monkeypatch.setattr(video, "read_frames", lambda src, backend="auto": raw[src[0]])
+
+    v0, v1 = names[0], names[1]
+    cfg = {
+        "inputs": {n: n for n in names},
+        "pipeline": {"pose2d": {}},
+        "preprocess": {v0: {"rot90": 1, "fliplr": True}},
+    }
+    args = argparse.Namespace(sources={n: [n] for n in names})
+    got = cli._source_view_frames(args, cfg, result, [v0, v1])
+    np.testing.assert_array_equal(
+        got[v0], video.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
+    )
+    np.testing.assert_array_equal(got[v1], raw[v1])  # no table -> untouched
+
+
+def test_prefetch_windows_applies_per_source_transform(monkeypatch):
+    from deeperfly import video
+
+    rng = np.random.default_rng(1)
+    win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)
+
+    def fake_read_frames(src, *, backend, device, start, stop):
+        return win.copy() if start == 0 else np.empty((0, 4, 6, 3), np.uint8)
+
+    monkeypatch.setattr(video, "read_frames", fake_read_frames)
+    t = video.FrameTransform(fliplr=True, rot90=1)
+    windows = list(
+        cli._prefetch_windows(
+            ["camA"], backend="auto", device="cpu", chunk=2, transforms=[t]
+        )
+    )
+    assert len(windows) == 1
+    window, n = windows[0]
+    assert n == 2
+    np.testing.assert_array_equal(window[0], t.apply(win))
+
+
+def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
+    # A rot90 swaps H/W, so the inferred principal point must use the transformed
+    # size; an untransformed camera keeps its raw (H, W).
+    from deeperfly import video
+
+    monkeypatch.setattr(
+        cli, "_camera_sources", lambda root, config: [("rh", "A"), ("lf", "B")]
+    )
+    head = np.zeros((1, 4, 6, 3), np.uint8)
+    monkeypatch.setattr(
+        video,
+        "read_frames",
+        lambda src, backend="auto", device="cpu", indices=None: head,
+    )
+    cfg = {"preprocess": {"rh": {"rot90": 1}}, "pipeline": {"pose2d": {}}}
+    sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)
+    assert sizes["rh"] == (6, 4)  # (H, W) swapped by the quarter-turn
+    assert sizes["lf"] == (4, 6)  # identity

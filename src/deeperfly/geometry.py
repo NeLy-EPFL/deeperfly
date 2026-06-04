@@ -1,4 +1,4 @@
-"""Multi-view geometry primitives (JAX).
+"""Multi-view geometry primitives (JAX, pinned to the CPU).
 
 Conventions:
 
@@ -16,33 +16,23 @@ Geometry functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``,
 ``rmat``, ...) first and any camera parameters after, in the canonical order
 ``rvecs, tvecs, intrs, dists``. All functions are JIT- and grad-friendly.
 
-The ``*_one`` variants operate on a single observation (no leading batch axes)
-and are designed to be composed with :func:`jax.vmap` and :func:`jax.jacfwd`
-for bundle adjustment. The batched public functions are themselves thin
-:func:`jax.vmap` wrappers around the ``*_one`` building blocks.
+The batched public functions are :func:`cpu_jit`-wrapped, so they run on the CPU
+and return CPU-resident arrays regardless of the process-wide default device --
+the tiny camera-algebra arrays don't benefit from a GPU, and pinning them to the
+CPU keeps a host-side geometry user clear of JAX's GPU VRAM preallocation (see
+:mod:`deeperfly._jax_cpu`). The ``*_one`` variants operate on a single
+observation (no leading batch axes) and are designed to be composed with
+:func:`jax.vmap` and :func:`jax.jacfwd` for bundle adjustment; the batched
+public functions are themselves thin :func:`jax.vmap` wrappers around them.
 """
 
 from __future__ import annotations
-
-import sys
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-jax.config.update("jax_enable_x64", True)
-
-# The optional jax-mps plugin (Apple Silicon) registers an experimental Metal
-# backend and makes it the *default* device -- but MLX is float32-only, so the
-# x64 geometry/bundle-adjustment math here would crash on it. Keep float64 work on
-# the CPU; the detector opts into Metal explicitly (it is float32 --
-# deeperfly.pose2d.backends.jax.load_model). No-op without jax-mps, and leaves
-# CUDA/CPU defaults untouched. Gate on macOS first: ``jax.default_backend()``
-# forces JAX to initialize a backend, and doing that at import would lock in the
-# GPU memory policy before the CLI can tune it -- only Apple Silicon can ever be
-# "mps", so elsewhere we skip the probe entirely.
-if sys.platform == "darwin" and jax.default_backend() == "mps":
-    jax.config.update("jax_default_device", jax.devices("cpu")[0])
+from ._jax_cpu import cpu_jit
 
 # Below this squared rotation angle, sin/cos are evaluated via Taylor series
 # to avoid catastrophic cancellation in ``1 - cos theta``.
@@ -206,7 +196,7 @@ def project_full_one(
 # -- batched / composed functions -------------------------------------------
 
 
-@jax.jit
+@cpu_jit
 def intr_to_kmat(
     intr: Float[Array, "*batch P"],
 ) -> Float[Array, "*batch 3 3"]:
@@ -231,7 +221,7 @@ def intr_to_kmat(
     return kmat
 
 
-@jax.jit
+@cpu_jit
 def rvec_to_rmat(
     rvec: Float[Array, "*batch 3"],
 ) -> Float[Array, "*batch 3 3"]:
@@ -260,7 +250,7 @@ def rvec_to_rmat(
     return out.reshape(*rvec.shape[:-1], 3, 3)
 
 
-@jax.jit
+@cpu_jit
 def rmat_to_rvec(
     rmat: Float[Array, "*batch 3 3"],
 ) -> Float[Array, "*batch 3"]:
@@ -286,7 +276,7 @@ def rmat_to_rvec(
     return out.reshape(*rmat.shape[:-2], 3)
 
 
-@jax.jit
+@cpu_jit
 def project_pmat(
     pts3d: Float[Array, "*pts 3"],
     pmats: Float[Array, "*cams 3 4"],
@@ -313,7 +303,7 @@ def project_pmat(
     return pts2d.reshape(output_shape)
 
 
-@jax.jit
+@cpu_jit
 def triangulate_dlt(
     pts2d: Float[Array, "V *pts 2"],
     pmats: Float[Array, "V 3 4"],
@@ -351,7 +341,7 @@ def triangulate_dlt(
     return jnp.where((valid.sum(axis=-1) < 2)[..., None], jnp.nan, pts3d)
 
 
-@jax.jit
+@cpu_jit
 def distort(
     pts2d: Float[Array, "V *pts 2"],
     dists: Float[Array, "V K"],
@@ -394,7 +384,7 @@ def distort(
     return out.reshape(pts2d.shape)
 
 
-@jax.jit
+@cpu_jit
 def project_full(
     pts3d: Float[Array, "*pts 3"],
     rvecs: Float[Array, "V 3"],
