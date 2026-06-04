@@ -1,22 +1,20 @@
 """Cameras and camera rigs (bundle-adjustment-unaware).
 
-A :class:`Camera` bundles the parameters needed to project a 3D world point to
-a 2D image point under the conventions of :mod:`deeperfly.geometry`: world to
-camera is ``R(rvec) @ X + tvec``; the camera looks down its ``+z`` row, ``+y``
-is image-down and ``+x`` image-right; the camera center is ``-R.T @ tvec``.
+A :class:`Camera` bundles the parameters to project a 3D world point to a 2D
+image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
+``R(rvec) @ X + tvec``; the camera looks down its ``+z`` row, ``+y`` image-down,
+``+x`` image-right; the camera center is ``-R.T @ tvec``.
 
-A :class:`CameraGroup` is an ordered collection of named cameras, typically
-built from a TOML config (see :meth:`CameraGroup.from_config`). The config
-describes *only* the cameras -- it knows nothing about bundle adjustment. The
-bundle-adjustment wrapper in :mod:`deeperfly.bundle_adjustment` consumes a
-``CameraGroup`` together with a separate ``[bundle_adjustment]`` config section.
+A :class:`CameraGroup` is an ordered collection of named cameras, typically built
+from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
+*only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
+``CameraGroup`` with a separate ``[bundle_adjustment]`` section.
 
-Orientation and position can be specified in whatever combination is most
-convenient -- a Rodrigues vector, a rotation matrix, a forward/up axis pair, or
-an orbit around a ``look_at`` target (azimuth / elevation / roll / distance) --
-as long as the supplied keys are not in conflict. Everything is resolved to a
-single ``(rvec, tvec)`` pair, so the rest of the pipeline only ever sees the
-canonical extrinsics. See :func:`resolve_extrinsics` for the exact rules.
+Orientation and position accept whatever combination is convenient -- a Rodrigues
+vector, a rotation matrix, a forward/up axis pair, or an orbit around a
+``look_at`` target (azimuth / elevation / roll / distance) -- as long as the keys
+don't conflict. Everything resolves to a single ``(rvec, tvec)``; see
+:func:`resolve_extrinsics` for the rules.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 # Video I/O
 
 `deeperfly.video` reads and writes frames through a pluggable backend registry.
-The base install reads/writes via `pyav` (PyAV) — in-process libx264, with its
-own FFmpeg bundled in the wheel, so no system FFmpeg is needed. Install an extra
-for an alternative or faster decoder:
+The base install reads/writes via `pyav` — in-process libx264, with FFmpeg
+bundled in the wheel (no system FFmpeg needed). Install an extra for an
+alternative or faster decoder:
 
 | Backend | Read | Write | Frames | Install |
 | --- | :-: | :-: | --- | --- |
@@ -34,9 +34,9 @@ video.write_mp4(frames, "out.mp4", fps=30)
 ```
 
 `backend="auto"` (the default) picks the fastest installed decoder. `deeperfly
-run` decodes on the CPU and uploads each window to the detector device (the GPU,
-when present) in one shot — decode is not the bottleneck, the 2D detector forward
-is. The read/write/image-read backends are configured once in the shared `[io]`
-section — `[io.video] reader` (input decoder), `[io.video] writer` (output encoder)
-and `[io.image] reader` (image-sequence decoder) — and apply across every stage. See
-the config comments and `deeperfly.video` docstrings for the full details.
+run` decodes on the CPU and uploads each window to the detector device in one shot
+— decode is not the bottleneck, the detector forward is. The backends are
+configured once in the shared `[io]` section — `[io.video] reader` (input
+decoder), `[io.video] writer` (output encoder) and `[io.image] reader`
+(image-sequence decoder) — and apply across every stage. See the config comments
+and `deeperfly.video` docstrings for details.

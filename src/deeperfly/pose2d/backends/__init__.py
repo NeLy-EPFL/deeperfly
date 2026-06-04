@@ -1,15 +1,15 @@
 """The PyTorch 2D detector backend and its shared helpers.
 
 deeperfly ships the stacked-hourglass detector in PyTorch
-(:mod:`~deeperfly.pose2d.backends.torch`): a faithful copy of the original
-DeepFly2D network that loads the released DeepFly2D weights directly, with no
-conversion. It runs on CUDA (NVIDIA) and Metal/MPS (Apple Silicon) automatically.
+(:mod:`~deeperfly.pose2d.backends.torch`): a faithful copy of the DeepFly2D
+network that loads the released weights directly, running on CUDA (NVIDIA) and
+Metal/MPS (Apple Silicon) automatically.
 
-This package exposes the detector behind a small interface -- :func:`load_detector`,
-:func:`predict_heatmaps`, :func:`detector_device` -- so the shared orchestration in
+The detector sits behind a small interface (:func:`load_detector`,
+:func:`predict_heatmaps`, :func:`detector_device`), so the orchestration in
 :mod:`deeperfly.pose2d.inference` never touches the backend directly, plus the
 GPU-sizing helpers (:func:`gpu_memory_bytes`, :func:`auto_batch_size`) and
-:func:`infer_num_stacks`. The backend is imported lazily, so importing
+:func:`infer_num_stacks`. The backend imports lazily, so importing
 :mod:`deeperfly.pose2d` never imports torch.
 """
 
@@ -43,9 +43,9 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
 def set_precision(model, precision: str = "float32") -> None:
     """Set the detector forward precision: ``"float32"`` (default) or ``"float16"``.
 
-    ``"float16"`` runs the forward under CUDA autocast (faster, negligible keypoint
-    drift); it is a no-op on CPU/MPS. Stored on the model, so the next
-    :func:`predict_heatmaps` honors it.
+    ``"float16"`` runs under CUDA autocast (faster, negligible keypoint drift);
+    a no-op on CPU/MPS. Stored on the model, so the next :func:`predict_heatmaps`
+    honors it.
     """
     from . import torch as backend
 
@@ -55,9 +55,8 @@ def set_precision(model, precision: str = "float32") -> None:
 def detector_device(model) -> str:
     """Device the detector's parameters live on (e.g. ``"cuda:0"``, ``"cpu"``).
 
-    Lets callers log where 2D inference actually runs, and tells the orchestration
-    where to upload frames. Falls back to ``"cpu"`` for a parameterless model (a
-    stub, or one with no parameters).
+    Lets callers log where 2D inference runs and tells the orchestration where to
+    upload frames. Falls back to ``"cpu"`` for a parameterless model.
     """
     params = getattr(model, "parameters", None)
     if params is None:
@@ -70,8 +69,8 @@ def detector_device(model) -> str:
 
 # Measured marginal GPU memory of one sh8-hourglass forward at 256x512 (the
 # per-image slope; ~61 MB for torch -- see dev/bench_video.py). The large fixed
-# cost is transient cuDNN workspace that shrinks when memory is tight, so it is
-# not counted here; `safety` below leaves headroom for it plus the weights.
+# cost is transient cuDNN workspace; `safety` below leaves headroom for it plus
+# the weights.
 _FWD_BYTES_PER_IMAGE = 90 * 1024**2
 _REF_PIXELS = 256 * 512
 
@@ -79,9 +78,8 @@ _REF_PIXELS = 256 * 512
 def gpu_memory_bytes(device=None) -> int | None:
     """Usable accelerator memory (bytes), or ``None`` when running on CPU.
 
-    Reports the CUDA device's total memory, or -- on Apple Silicon -- Metal's
-    (MPS) recommended working-set size, since there the GPU shares the system's
-    unified memory. Uses torch to query the physical device.
+    The CUDA device's total memory, or -- on Apple Silicon -- Metal's (MPS)
+    recommended working-set size (the GPU shares unified memory there).
     """
     try:
         import torch
@@ -109,16 +107,13 @@ def auto_batch_size(
 ) -> int:
     """Pick a detector batch size (images per forward) that fits the GPU's VRAM.
 
-    Scales the measured per-image forward cost (:data:`_FWD_BYTES_PER_IMAGE`, at
-    256x512) by the actual ``image_hw`` and divides a ``safety`` fraction of the
-    card's total memory by it, clamped to ``[min_batch, max_batch]``. Without a
-    GPU it returns ``min_batch``.
+    Scales the per-image forward cost (:data:`_FWD_BYTES_PER_IMAGE`, at 256x512) by
+    the actual ``image_hw`` and divides a ``safety`` fraction of total memory by it,
+    clamped to ``[min_batch, max_batch]``. Without a GPU it returns ``min_batch``.
 
-    The ``safety`` margin leaves headroom for the weights and the transient cuDNN
-    workspace, so the forward fits rather than OOMing. The cap also matters: for
-    this 8-stack network throughput saturates at a small batch on a fast GPU
-    (bigger batches don't help -- see ``dev/bench_video.py``), so sizing is to
-    *fit* memory, not to chase speed.
+    ``safety`` leaves headroom for the weights and transient cuDNN workspace. The
+    cap matters too: this 8-stack network's throughput saturates at a small batch
+    on a fast GPU, so sizing is to *fit* memory, not chase speed.
     """
     total = gpu_memory_bytes(device)
     if total is None:
@@ -132,9 +127,9 @@ def auto_batch_size(
 def infer_num_stacks(state_dict) -> int:
     """Number of hourglass stacks in a ``state_dict`` (counts ``score.{i}.weight``).
 
-    Used by the backend's loader so the architecture matches the checkpoint before
-    a strict load. The published checkpoint is ``sh8`` (8 stacks), but the count is
-    derived from the weights so any depth round-trips.
+    Lets the loader match the architecture to the checkpoint before a strict load.
+    The published checkpoint is ``sh8`` (8 stacks), but the count is derived from
+    the weights so any depth round-trips.
     """
     n = 0
     while f"score.{n}.weight" in state_dict:

@@ -1,15 +1,14 @@
-"""Modern, self-contained result container for the pose pipeline (HDF5).
+"""Self-contained HDF5 result container for the pose pipeline.
 
 A :class:`PoseResult` bundles everything produced for one recording -- the
 calibrated cameras, the skeleton, the 2D detections + confidences, and the
-triangulated (and optionally smoothed) 3D points -- plus free-form metadata. It
-serializes to a single HDF5 file that fully reconstructs the cameras and
-skeleton, so results are portable without the original config files.
+triangulated (and optionally smoothed) 3D points -- plus free-form metadata. The
+HDF5 file fully reconstructs the cameras and skeleton, so results are portable
+without the original config files.
 
-Array layout follows the view-leading convention used everywhere else:
-``pts2d`` is ``(V, T, N, 2)``, ``conf`` is ``(V, T, N)``, ``pts3d`` is
-``(T, N, 3)``. NaN encodes missing observations / un-triangulated points and is
-preserved by the float64 datasets.
+Arrays use the view-leading layout: ``pts2d`` is ``(V, T, N, 2)``, ``conf`` is
+``(V, T, N)``, ``pts3d`` is ``(T, N, 3)``. NaN encodes missing observations /
+un-triangulated points and is preserved by the float64 datasets.
 """
 
 from __future__ import annotations

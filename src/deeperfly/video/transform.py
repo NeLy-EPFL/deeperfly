@@ -1,20 +1,14 @@
 """Per-camera frame preprocessing applied once at decode time.
 
-A :class:`FrameTransform` is a small, lossless geometric correction --
-left-right flip, up-down flip and/or rotation by whole quarter-turns -- applied
-to a camera's frames *right after they are read*, before anything else sees them.
-A camera physically mounted sideways/upside-down (or whose sensor is mirrored)
-is brought into a sane orientation once, and the **transformed** frame then is
-the canonical frame for the whole run: the 2D detector, the inferred principal
-point, calibration, triangulation and the visualization overlays all operate on
-it. Nothing maps coordinates back to the raw footage.
+A :class:`FrameTransform` is a lossless geometric correction -- left-right flip,
+up-down flip and/or quarter-turn rotation -- applied to a camera's frames right
+after they are read, for a camera mounted sideways/upside-down or with a mirrored
+sensor. The transformed frame is the canonical frame for the whole run (detector,
+principal point, calibration, overlays); nothing maps back to the raw footage.
 
 Configured per camera under ``[preprocess.<camera>]`` (see
-:func:`parse_frame_transforms`); a camera with no entry is left untouched.
-
-The forward op matches the NumPy functions of the same name and is applied in a
-fixed order: :func:`numpy.fliplr` (left-right), then :func:`numpy.flipud`
-(up-down), then :func:`numpy.rot90` ``rot90`` times (counter-clockwise).
+:func:`parse_frame_transforms`). Applied in a fixed order: :func:`numpy.fliplr`,
+then :func:`numpy.flipud`, then :func:`numpy.rot90` ``rot90`` times (CCW).
 """
 
 from __future__ import annotations

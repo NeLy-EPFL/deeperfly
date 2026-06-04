@@ -12,10 +12,9 @@ pulled in until it is actually used:
   the OpenCV primitives into video frames (one MP4 per
   ``[[pipeline.visualization.videos]]`` entry).
 
-For backward compatibility the matplotlib drawing helpers (``plot_skeleton_2d``,
-``plot_skeleton_3d``, ``overlay_grid``, ``limb_colors``, ``apply_background``,
-``BACKGROUNDS``) are also reachable directly on this package; they live in
-:mod:`deeperfly.viz.matplotlib`.
+The matplotlib drawing helpers (``plot_skeleton_2d``, ``plot_skeleton_3d``,
+``overlay_grid``, ``limb_colors``, ``apply_background``, ``BACKGROUNDS``) are also
+reachable directly on this package.
 """
 
 from __future__ import annotations

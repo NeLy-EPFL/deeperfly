@@ -12,16 +12,14 @@ Conventions:
   ordering ``[k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4]``.
 - A projection matrix ``pmat`` is the 3x4 product ``K @ [R | t]``.
 
-Geometry functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``,
-``rmat``, ...) first and any camera parameters after, in the canonical order
-``rvecs, tvecs, intrs, dists``. All functions are JIT- and grad-friendly.
+Functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``, ...) first
+and camera parameters after, in the canonical order ``rvecs, tvecs, intrs,
+dists``. All are JIT- and grad-friendly.
 
-The batched public functions are :func:`jax.jit`-wrapped; deeperfly installs only
-CPU JAX, so this camera-algebra runs on the CPU -- the tiny arrays don't benefit
-from a GPU. The ``*_one`` variants operate on a single observation (no leading
-batch axes) and are designed to be composed with :func:`jax.vmap` and
-:func:`jax.jacfwd` for bundle adjustment; the batched public functions are
-themselves thin :func:`jax.vmap` wrappers around them.
+The batched public functions are :func:`jax.jit`-wrapped thin :func:`jax.vmap`
+wrappers around the ``*_one`` single-observation variants, which compose with
+:func:`jax.vmap` / :func:`jax.jacfwd` for bundle adjustment. deeperfly installs
+only CPU JAX -- the tiny arrays don't benefit from a GPU.
 """
 
 from __future__ import annotations
@@ -30,12 +28,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-# The geometry / bundle-adjustment math is closed-form camera algebra that needs
-# float64 to stay accurate (scipy's least-squares outer loop is double too, and the
-# Taylor-series thresholds below are tuned for double). x64 must be enabled
-# process-wide before the first JAX array is created; geometry is the foundational
-# JAX module -- every deeperfly path that touches JAX imports it -- so enabling it
-# here, before any array exists, covers the whole package.
+# The geometry / BA math needs float64 to stay accurate (scipy's least-squares
+# loop is double too, and the Taylor thresholds below are tuned for it). x64 must
+# be enabled before the first JAX array exists; every JAX path imports geometry,
+# so enabling it here covers the whole package.
 jax.config.update("jax_enable_x64", True)
 
 # Below this squared rotation angle, sin/cos are evaluated via Taylor series

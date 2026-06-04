@@ -1,17 +1,12 @@
-"""Pragmatic 3D error correction: outliers and temporal smoothing.
-
-This module turns raw triangulated points into a cleaner trajectory using the
-approach chosen for deeperfly (no pictorial-structures / belief-propagation):
+"""3D error correction: outliers and temporal smoothing.
 
 - **Outlier handling** -- flag observations whose reprojection error exceeds a
   pixel threshold (:func:`flag_outliers`) and drop them to ``NaN``
-  (:func:`drop_outliers`) so the point can be re-triangulated from the
-  remaining views.
+  (:func:`drop_outliers`) so the point can be re-triangulated from the rest.
 - **Temporal smoothing** -- NaN-aware Gaussian (:func:`smooth_gaussian`) or a
   streaming 1-Euro filter (:class:`OneEuroFilter` / :func:`smooth_one_euro`).
 
-Robust loss (Huber) and bone-length priors live in bundle adjustment itself
-(:func:`deeperfly.bundle_adjustment.core.bundle_adjust`), not here.
+Robust loss (Huber) and bone-length priors live in bundle adjustment, not here.
 """
 
 from __future__ import annotations
@@ -53,9 +48,8 @@ def smooth_gaussian(
 ) -> Float[np.ndarray, "T N 3"]:
     """NaN-aware Gaussian smoothing along time (axis 0) via normalized convolution.
 
-    Missing samples (``NaN``) are excluded from the weighted average instead of
-    poisoning their neighbors; positions that stay all-NaN within a window
-    remain ``NaN``.
+    Missing samples (``NaN``) are excluded from the weighted average rather than
+    poisoning their neighbors; positions all-NaN within a window stay ``NaN``.
     """
     a = np.asarray(pts_seq, dtype=float)
     nan = np.isnan(a)
@@ -81,9 +75,9 @@ class _LowPass:
 class OneEuroFilter:
     """Streaming 1-Euro filter (Casiez et al. 2012) for vector-valued signals.
 
-    Low cutoff for slow motion (low jitter) and a higher cutoff as speed rises
-    (low lag), controlled by ``mincutoff`` and ``beta``. Operates element-wise,
-    so any array shape is filtered independently per element.
+    Low cutoff for slow motion (low jitter), higher cutoff as speed rises (low
+    lag), controlled by ``mincutoff`` and ``beta``. Filters each array element
+    independently.
     """
 
     def __init__(

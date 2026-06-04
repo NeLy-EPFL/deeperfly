@@ -179,12 +179,10 @@ def device() -> str:
 def _as_torch(inputs) -> "torch.Tensor":
     """Coerce ``(N, 3, H, W)`` inputs to a torch tensor, on-device when possible.
 
-    The shared preprocess path already stacks into a torch tensor on the detector
-    device, so ``inputs`` is usually a ``torch.Tensor`` that passes straight
-    through (a GPU-decoded frame thus reaches the forward without ever leaving the
-    GPU). Any other DLPack-capable on-device array is bridged zero-copy; host NumPy
-    is copied to a writable tensor (``torch.from_numpy`` warns on the immutable
-    array ``np.array`` produces).
+    ``inputs`` is usually already a ``torch.Tensor`` on the detector device (so a
+    GPU-decoded frame reaches the forward without leaving the GPU) and passes
+    straight through. Any other DLPack-capable on-device array is bridged
+    zero-copy; host NumPy is copied to a writable tensor.
     """
     if isinstance(inputs, torch.Tensor):
         return inputs
@@ -200,12 +198,10 @@ _COMPILED: dict[int, "torch.nn.Module"] = {}
 def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     """The model, ``torch.compile``-d for production CUDA runs (else eager).
 
-    ``torch.compile`` roughly halves the eager forward time on CUDA (see
-    ``dev/bench_video.py``). Gated to CUDA and to the large batches a real
-    ``deeperfly run`` uses: on CPU
-    the speedup is small, and for the tiny batches in tests the one-off compile
-    latency would dwarf the work (and the remainder sub-batch stays eager rather
-    than forcing a second compile).
+    ``torch.compile`` roughly halves the eager CUDA forward time (see
+    ``dev/bench_video.py``). Gated to CUDA and large batches: on CPU the speedup is
+    small, and for tiny test batches the one-off compile latency would dwarf the
+    work.
     """
     if dev.type != "cuda" or batch < 16:
         return model
@@ -224,18 +220,15 @@ def set_precision(model: HourglassNet, precision: str = "float32") -> None:
     """Record the forward precision ``predict_heatmaps`` should run the model in.
 
     ``"float32"`` (default, the reference) or ``"float16"`` (CUDA autocast). Stored
-    on the model so the forward picks it up without threading it through every call
-    -- the same model-keyed pattern as the ``torch.compile`` cache and
-    :func:`~deeperfly.pose2d.backends.detector_device`.
+    on the model so the forward picks it up without threading it through every call.
     """
     precision = (precision or "float32").lower()
     if precision not in _PRECISIONS:
         raise ValueError(
             f"unknown detector precision {precision!r}; use 'float32' or 'float16'"
         )
-    # A real detector (nn.Module) carries a __dict__; bare test stubs don't and
-    # never run the real forward, so there's nothing to configure on them (mirrors
-    # how detector_device tolerates a parameterless stub).
+    # A real detector (nn.Module) carries a __dict__; bare test stubs don't (and
+    # never run the real forward), so there's nothing to set on them.
     if hasattr(model, "__dict__"):
         model._deeperfly_precision = precision
 

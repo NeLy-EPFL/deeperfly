@@ -12,60 +12,35 @@ ordered list of *panels* (layers) drawn onto a shared RGB buffer::
         { plot = "skeleton_3d", view = "lf", x0 = 480, y0 = 0 },
     ]
 
-Panels are applied in order, so a ``skeleton_*`` layer placed after an
-``imshow`` of the same ``view`` / offset overlays the skeleton on that frame;
-placed alone it lands on the background. This makes image-backed and
-skeleton-only panels fall out of the same mechanism.
-
-Supported ``plot`` ops:
+Panels are applied in order, so a ``skeleton_*`` layer after an ``imshow`` of the
+same ``view`` / offset overlays the skeleton; placed alone it lands on the
+background. Supported ``plot`` ops:
 
 - ``imshow``      -- the view's video frame.
 - ``skeleton_2d`` -- the view's 2D detections.
-- ``skeleton_3d`` -- the triangulated 3D skeleton reprojected into the view
-  (OpenCV, depth-ordered).
+- ``skeleton_3d`` -- the 3D skeleton reprojected into the view (OpenCV, depth-ordered).
 
-Keyword arguments for a draw op can be set at three levels, each a table keyed
-by ``plot`` op name (``skeleton_2d`` / ``skeleton_3d`` / ``imshow``) so the same
-config can tune several op kinds at once::
+Draw-op kwargs merge across three levels, each a table keyed by ``plot`` op name,
+most specific winning::
 
     [pipeline.visualization.kwargs]   # 1. global: every panel of every video
-    skeleton_2d = { line_thickness = 2 }
     skeleton_3d = { line_thickness = 2 }
 
     [[pipeline.visualization.videos]]
     video_name = "pose3d"
-    kwargs = { skeleton_3d = { point_radius = 5 } }   # 2. one video, all panels
+    kwargs = { skeleton_3d = { point_radius = 5 } }   # 2. one video
     panels = [
         { plot = "skeleton_3d", view = "rf", line_thickness = 4 },  # 3. one panel
     ]
 
-For each panel the three are merged in that order -- global, then this video's,
-then the panel's own extra keys -- with the more specific level winning. A
-level's entry for the panel's op (or the panel's extra keys) is forwarded to the
-draw op (e.g. ``point_radius``, ``line_thickness``, ``palette``).
+The layout keys ``scale`` / ``width`` / ``height`` are settable at the same levels
+but resize the layer instead of reaching the op (``width`` / ``height`` win over
+``scale``: both -> that exact box, one -> aspect preserved). The canvas is sized
+to the video's ``width`` / ``height`` when given, else the panels' bounding box.
+Its background is ``black`` unless ``pipeline.visualization.background`` is set; a
+panel's ``background`` key repaints just its tile.
 
-A panel's footprint comes from ``scale`` (a factor on the view's image size) or
-from a target ``width`` / ``height`` in pixels -- the latter let a layout be
-fixed without knowing the source image size, and take priority over ``scale``
-(both -> that exact box, one -> aspect preserved, neither -> ``scale``). All
-three are layout keys, settable at any of the three levels just like draw kwargs
-(the panel's direct key still wins) but resized into the layer rather than
-forwarded to the op. The canvas is sized to the video's own ``width`` /
-``height`` when given, else to the bounding box of every panel's footprint.
-
-The canvas background is ``black`` unless ``pipeline.visualization.background`` is
-set (global); a single panel can override it over its own footprint with a
-``background`` key::
-
-    [pipeline.visualization]
-    background = "white"          # canvas fill for every video
-    [[pipeline.visualization.videos]]
-    panels = [
-        { plot = "skeleton_3d", view = "rf", background = "black" },  # one tile
-    ]
-
-The primitives live in :mod:`deeperfly.viz.opencv` (OpenCV is a core dependency);
-writing the composited frames to MP4 uses the core PyAV video stack.
+Primitives live in :mod:`deeperfly.viz.opencv`; MP4 writing uses the PyAV stack.
 """
 
 from __future__ import annotations
@@ -95,14 +70,10 @@ _RESERVED = frozenset(
 class Panel:
     """One draw-op layer: ``plot`` op for ``view`` placed at ``(x0, y0)``.
 
-    The layer's footprint is set either by ``scale`` (resizes the view's image
-    size uniformly) or by a target ``width`` / ``height`` in pixels, which lets a
-    layout be fixed without knowing the source image size. ``width`` / ``height``
-    take priority over ``scale``: giving both fits that exact box (axes scaled
-    independently), giving one preserves aspect ratio, giving neither uses
-    ``scale``. ``background``, when set, fills the panel's footprint with that
-    color before the op draws (otherwise the video's canvas background shows
-    through).
+    The footprint is set by ``scale`` (uniform) or a target ``width`` / ``height``
+    in pixels, the latter winning: both -> that exact box, one -> aspect preserved.
+    ``background``, when set, fills the footprint with that color before the op
+    draws (otherwise the canvas background shows through).
     """
 
     plot: str
@@ -141,14 +112,11 @@ class Panel:
 class VideoSpec:
     """One output video: a name and an ordered list of :class:`Panel` layers.
 
-    ``background`` is the canvas fill color (default ``"black"``); panels may
-    override it over their own footprint via :attr:`Panel.background`.
-
-    The output frame rate is set by exactly one of ``output_fps`` (an explicit
-    fps) or ``speed`` (a multiple of the recording's own fps -- ``0.5`` is half
-    speed / slow motion, ``2`` twice as fast); both ``None`` means play at the
-    recording's native rate. :meth:`resolve_fps` turns these into a concrete fps
-    given the input recording's frame rate.
+    ``background`` is the canvas fill (default ``"black"``); panels may override it
+    via :attr:`Panel.background`. The output frame rate is set by one of
+    ``output_fps`` (explicit) or ``speed`` (a multiple of the recording's fps;
+    ``0.5`` is slow motion); both ``None`` plays at the native rate
+    (:meth:`resolve_fps`).
     """
 
     video_name: str
@@ -288,15 +256,12 @@ def _layout_key(panel: dict, options: dict, key: str):
 def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
     """Parse ``[[pipeline.visualization.videos]]`` from a config dict or TOML path.
 
-    Per-op keyword arguments are resolved here and baked into each panel's
-    ``options``, merged from least to most specific:
-    ``[pipeline.visualization.kwargs]`` (global), the video entry's ``kwargs`` (all
-    its panels), then the panel's own extra keys. Each ``kwargs`` table is keyed by
-    ``plot`` op name. The layout keys ``scale`` / ``width`` / ``height`` taken from
-    those kwargs are lifted onto the matching :class:`Panel` fields rather than
-    forwarded. The canvas background comes from
-    ``pipeline.visualization.background`` (default ``"black"``); a panel's
-    ``background`` key sets :attr:`Panel.background`.
+    Per-op kwargs are merged into each panel's ``options`` from least to most
+    specific: global ``[pipeline.visualization.kwargs]``, the video entry's
+    ``kwargs``, then the panel's own extra keys (each keyed by ``plot`` op name).
+    The layout keys ``scale`` / ``width`` / ``height`` are lifted onto the
+    :class:`Panel` fields rather than forwarded. The canvas background comes from
+    ``pipeline.visualization.background`` (default ``"black"``).
     """
     if not isinstance(config, dict):
         with open(config, "rb") as f:
@@ -316,9 +281,8 @@ def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
                 **_op_kwargs(video_kwargs, plot),
                 **{k: v for k, v in p.items() if k not in _RESERVED},
             }
-            # scale / width / height resize the layer rather than reaching the
-            # draw op, so pull them out of the merged kwargs (a panel may set them
-            # per-op via the kwargs levels or directly, the direct key winning).
+            # scale / width / height resize the layer rather than reaching the draw
+            # op, so pull them out of the merged kwargs.
             scale = _layout_key(p, options, "scale")
             width = _layout_key(p, options, "width")
             height = _layout_key(p, options, "height")

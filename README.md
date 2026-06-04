@@ -20,22 +20,16 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 uv tool install deeperfly --python 3.14 --torch-backend=auto
 ```
 
-`--python 3.14` installs the tool on the latest CPython (deeperfly itself supports
-Python ≥ 3.11, so it also runs as a library on older interpreters). `--torch-backend=auto`
-lets uv pick the PyTorch wheel that matches this machine:
-the CUDA build matching the installed driver on an NVIDIA GPU, or the lean
-CPU-only wheel where there's no GPU (so a CPU box skips the multi-gigabyte CUDA
-download). The 2D detector (PyTorch) then uses the GPU automatically on NVIDIA
-(CUDA) and Apple Silicon (Metal/MPS).
+`--torch-backend=auto` lets uv pick the PyTorch wheel for this machine — the CUDA
+build on an NVIDIA GPU, the lean CPU-only wheel otherwise. The detector then uses
+the GPU automatically on NVIDIA (CUDA) and Apple Silicon (Metal/MPS). deeperfly
+needs Python ≥ 3.11; `--python 3.14` just pins the latest CPython for the tool.
 
-Video decoding always runs on the CPU — it is not the bottleneck (the detector
-is), so CPU decode is within a few percent end to end. The base install reads and
-writes with PyAV/OpenCV; optional extras add alternative decoders (see
-[docs/video.md](docs/video.md)).
+Video decoding runs on the CPU via PyAV/OpenCV; optional extras add alternative
+decoders (see [docs/video.md](docs/video.md)).
 
-To use deeperfly as a library, add it to your project instead. `uv add` has no
-`--torch-backend` flag, so set it for the environment (or add
-`[tool.uv]`\ `torch-backend = "auto"` to your `pyproject.toml`):
+To add deeperfly as a library, set the backend for the environment (`uv add` has
+no `--torch-backend` flag):
 
 ```bash
 UV_TORCH_BACKEND=auto uv add deeperfly
@@ -43,10 +37,9 @@ UV_TORCH_BACKEND=auto uv add deeperfly
 
 ## Checking your install
 
-`deeperfly doctor` reports what this machine can actually run — inference backends,
-frame I/O backends (video read/write and image read, CPU decode, in `"auto"`
-preference order), detector weights, and the default config path. Run it after
-installing to check that everything is set up correctly.
+`deeperfly doctor` reports what this machine can run — inference backends, frame
+I/O backends (in `"auto"` preference order), detector weights, and the default
+config path. Run it after installing.
 ```bash
 deeperfly doctor
 ```
@@ -92,21 +85,19 @@ deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
-calibrate the cameras, triangulate to 3D, correct and smooth the result, then
-render a skeleton video. Outputs land in `recording/deeperfly_outputs/` (override
-with `-o`): `poses.h5`, the rendered video, and a copy of the config used.
+calibrate the cameras, triangulate to 3D, correct and smooth, then render a
+skeleton video. Outputs land in `recording/deeperfly_outputs/` (override with
+`-o`): `poses.h5`, the rendered video, and a copy of the config used.
 
-The config is optional — `deeperfly run recording/` runs with sensible defaults.
-Generate one with `deeperfly init` when you need to point at your cameras or
-tweak the pipeline.
+The config is optional — `deeperfly run recording/` uses sensible defaults.
+Generate one with `deeperfly init` to point at your cameras or tweak the pipeline.
 
 ### Resuming and partial runs
 
 The pipeline is a sequence of stages — `pose2d` (2D) → `bundle_adjustment` →
 `pictorial_structures` → `triangulation` → `smoothing` → `visualization` — each
-toggled by its own `do_<stage>` boolean in the config's `[pipeline]` table, with
-its own parameter sub-table (`[pipeline.pose2d]`, `[pipeline.bundle_adjustment]`,
-`[pipeline.triangulation]`, …):
+toggled by a `do_<stage>` boolean in `[pipeline]`, with its own `[pipeline.<stage>]`
+parameter sub-table:
 
 ```toml
 [pipeline]
@@ -118,27 +109,24 @@ do_smoothing            = false  # temporal smoothing (opt-in)
 do_visualization        = true   # render the videos
 ```
 
-An *enabled* stage **reuses its result when it is already in the output directory**
-and only recomputes when that result is missing — so re-running a finished
-recording is a cheap no-op. Force a recompute with `--overwrite`: a bare
-`--overwrite` redoes every stage, or name stages to redo only those (recomputing a
-stage also refreshes the stages after it):
+An *enabled* stage reuses its result when it is already in the output directory,
+recomputing only when it's missing — so re-running a finished recording is a cheap
+no-op. Force a recompute with `--overwrite`: bare redoes every stage, or name
+stages to redo only those (plus the stages after them):
 
 ```bash
 deeperfly run recording/ --overwrite                       # recompute everything
 deeperfly run recording/ --overwrite pose2d visualization  # just these (+ what follows)
 ```
 
-A *disabled* stage (`do_<stage> = false`) is dropped from the pipeline entirely;
-its cached result is read from the output directory's `poses.h5` and fed to the
-stages still on — so set `do_pose2d = false` to reconstruct 3D from a cached 2D
-pose without re-running detection. An enabled stage whose input is unavailable (say
-`do_triangulation` is on but there's no 2D, detected or cached) is skipped and the
-reason is logged.
+A *disabled* stage (`do_<stage> = false`) is dropped from the pipeline; its cached
+result is read from `poses.h5` and fed to the stages still on — so `do_pose2d =
+false` reconstructs 3D from a cached 2D pose without re-running detection. An
+enabled stage whose input is unavailable is skipped, with the reason logged.
 
-A run also reuses the `config.toml` already saved in the output directory (it owns
-the cached results), so `-o out/` alone resumes consistently; pass `-c` only for a
-fresh output directory, and edit `out/config.toml` to change a run in place.
+A run reuses the `config.toml` saved in the output directory (it owns the cached
+results), so `-o out/` alone resumes; pass `-c` only for a fresh output directory,
+and edit `out/config.toml` to change a run in place.
 
 Pass `--log-level debug` for more detail, or `--log-level warning` to quiet the
 per-stage logs and progress bar.
@@ -147,14 +135,14 @@ per-stage logs and progress bar.
 
 A single `config.toml` (from `deeperfly init`) carries everything a run needs —
 the camera rig, which file belongs to which camera, the detector, correction mode
-and smoothing. The `[inputs]` section maps each camera to a filename prefix under
-the recording (e.g. `rh = "camera_0"` matches `camera_0.mp4` or the image
-sequence `camera_0_img_*.jpg`). The generated file is commented; edit it in place.
+and smoothing. The `[inputs]` section maps each camera to a filename prefix (e.g.
+`rh = "camera_0"` matches `camera_0.mp4` or the sequence `camera_0_img_*.jpg`).
+The generated file is commented; edit it in place.
 
 ## Library usage
 
-deeperfly is also a Python library — the cameras, bundle adjustment,
-triangulation, the detector and video I/O are all importable:
+deeperfly is also a Python library — cameras, bundle adjustment, triangulation,
+the detector and video I/O are all importable:
 
 ```python
 from deeperfly import CameraGroup, Skeleton, run_from_points2d

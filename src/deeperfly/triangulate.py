@@ -1,17 +1,14 @@
 """Skeleton-aware triangulation helpers over a :class:`CameraGroup`.
 
-Thin, NumPy-facing wrappers around the geometry already provided by
-:mod:`deeperfly.geometry` and :class:`deeperfly.cameras.CameraGroup`. The single
-contract with the geometry layer is the **NaN convention**: a 2D observation of
-``NaN`` means "this camera did not (or cannot) see this point". Both
-:func:`deeperfly.geometry.triangulate_dlt` and the bundle-adjustment residual
-builder already honor it, so visibility is expressed purely as NaNs -- no
+Thin NumPy-facing wrappers around :mod:`deeperfly.geometry` and
+:class:`deeperfly.cameras.CameraGroup`. The contract with the geometry layer is
+the **NaN convention**: a 2D observation of ``NaN`` means "this camera did not
+(or cannot) see this point", so visibility is expressed purely as NaNs -- no
 separate mask array travels downstream.
 
-All functions use the **view-leading** layout shared with the geometry module:
-``pts2d`` has shape ``(V, *pts, 2)`` (e.g. ``(V, N, 2)`` for one frame or
-``(V, T, N, 2)`` for a sequence) and triangulated points come back as
-``(*pts, 3)``.
+All functions use the **view-leading** layout: ``pts2d`` has shape ``(V, *pts, 2)``
+(``(V, N, 2)`` for one frame, ``(V, T, N, 2)`` for a sequence); triangulated
+points come back as ``(*pts, 3)``.
 """
 
 from __future__ import annotations
@@ -57,10 +54,8 @@ def triangulate(
 ) -> Float[np.ndarray, "*pts 3"]:
     """Triangulate 3D points from 2D observations (NaN-aware DLT).
 
-    Points seen by fewer than two cameras come back as ``NaN``. This simply
-    forwards to :meth:`CameraGroup.triangulate`; it exists as the pipeline's
-    named entry point alongside :func:`apply_visibility` and
-    :func:`reprojection_error`.
+    Points seen by fewer than two cameras come back as ``NaN``. Forwards to
+    :meth:`CameraGroup.triangulate`.
     """
     return cameras.triangulate(pts2d)
 
@@ -90,38 +85,35 @@ def triangulate_ransac(
 ) -> tuple[Float[np.ndarray, "*pts 3"], Bool[np.ndarray, "V *pts"]]:
     """Robustly triangulate 3D points, rejecting gross 2D outliers (RANSAC).
 
-    Plain DLT (:func:`triangulate`) is a least-squares fit, so a single badly
-    mislocated 2D detection drags the whole estimate -- and inflates *every*
-    view's reprojection error, hiding which view was actually wrong. RANSAC
-    instead searches for the largest set of mutually consistent views.
+    A single badly mislocated detection drags a plain least-squares fit
+    (:func:`triangulate`) and inflates *every* view's reprojection error, hiding
+    which view was wrong. RANSAC instead searches for the largest set of mutually
+    consistent views.
 
-    Two views are the minimal set needed to triangulate, and the rigs deeperfly
-    targets have only a handful of cameras, so rather than sampling randomly this
-    **exhaustively enumerates all** ``C(V, 2)`` two-view hypotheses -- the
-    deterministic limit of RANSAC. For each pair it triangulates a candidate
-    point and counts how many views reproject within ``threshold`` pixels
-    (NaN/unobserved views never count). The pair with the largest consensus wins
-    (ties broken by smaller total inlier error), and the point is re-triangulated
-    from *all* its inlier views. Points with fewer than ``min_inliers`` agreeing
-    views -- including those seen by fewer than two cameras -- come back ``NaN``.
+    The rigs deeperfly targets have only a handful of cameras, so rather than
+    sampling, this **exhaustively enumerates all** ``C(V, 2)`` two-view hypotheses
+    (the deterministic limit of RANSAC). For each pair it triangulates a candidate
+    and counts views reprojecting within ``threshold`` pixels (NaN views never
+    count). The largest consensus wins (ties broken by smaller total inlier
+    error), and the point is re-triangulated from all its inlier views. Points
+    with fewer than ``min_inliers`` agreeing views come back ``NaN``.
 
-    Operates per point over any leading layout (``(V, N, 2)``, ``(V, T, N, 2)``,
-    ...); each point gets its own consensus and inlier set.
+    Operates per point over any leading layout (``(V, N, 2)``, ``(V, T, N, 2)``).
 
     Parameters
     ----------
     threshold
-        Inlier reprojection-error cutoff in pixels. Tune to the detector noise
-        and rig scale (the greedy :func:`deeperfly.pipeline.reconstruct` uses a
-        looser 40 px to *drop* outliers rather than gate inliers).
+        Inlier reprojection-error cutoff in pixels (the greedy
+        :func:`deeperfly.pipeline.reconstruct` uses a looser 40 px to *drop*
+        outliers rather than gate inliers).
     min_inliers
         Minimum agreeing views required to accept a point (>= 2).
 
     Returns
     -------
-    ``(pts3d, inliers)`` with ``pts3d`` of shape ``(*pts, 3)`` and ``inliers`` a
-    boolean ``(V, *pts)`` mask of the views kept for each point. Outliers can be
-    NaN'd out of the originals with ``np.where(inliers[..., None], pts2d, np.nan)``.
+    ``(pts3d, inliers)`` -- ``pts3d`` of shape ``(*pts, 3)`` and ``inliers`` a
+    boolean ``(V, *pts)`` mask of the views kept per point. NaN out the original
+    outliers with ``np.where(inliers[..., None], pts2d, np.nan)``.
     """
     if min_inliers < 2:
         raise ValueError(f"min_inliers must be >= 2, got {min_inliers}")

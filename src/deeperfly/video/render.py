@@ -51,9 +51,9 @@ def render_pose3d_video(
     if pts3d is None:
         raise ValueError("result has no 3D points to render")
     finite = pts3d[np.isfinite(pts3d).all(-1)]
-    # Fix the axis limits once from the whole sequence so the view does not jump
-    # frame to frame. Use the 1st/99th percentile per axis (not min/max) so a few
-    # outlier points -- a momentarily misplaced keypoint -- don't blow out the box.
+    # Fix the axis limits once from the whole sequence so the view doesn't jump
+    # frame to frame. Use the 1st/99th percentile (not min/max) so a few outlier
+    # points don't blow out the box.
     lo, hi = np.percentile(finite, [1, 99], axis=0)
 
     frames = []
@@ -72,9 +72,8 @@ def render_pose3d_video(
         ax.set_xlim(lo[0], hi[0])
         ax.set_ylim(lo[1], hi[1])
         ax.set_zlim(lo[2], hi[2])
-        # plot_skeleton_3d set the aspect from *this* frame's data, which bakes a
-        # per-frame box aspect; recompute "equal" from the fixed limits so the
-        # cube's shape (not just its numeric limits) stays constant across frames.
+        # plot_skeleton_3d set the aspect from this frame's data; recompute "equal"
+        # from the fixed limits so the box shape stays constant across frames.
         ax.set_aspect("equal")
         frames.append(figure_to_array(fig))
     plt.close(fig)

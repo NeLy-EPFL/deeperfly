@@ -1,37 +1,29 @@
 """Command-line interface: ``deeperfly <subcommand>``.
 
 Subcommands are thin wrappers over :mod:`deeperfly.pipeline`, :mod:`deeperfly.io`,
-:mod:`deeperfly.video` and :mod:`deeperfly.pose2d`, so everything is equally
-usable as a library. Everything a run needs lives in one merged config TOML
-(``deeperfly init`` writes a default to edit): the camera rig, the input
-filename->camera map, the 2D detector, the pipeline options, bundle adjustment
-and the skeleton. The commands:
+:mod:`deeperfly.video` and :mod:`deeperfly.pose2d`. Everything a run needs lives
+in one merged config TOML (``deeperfly init`` writes a default to edit). The
+commands:
 
 - ``init`` -- write a default config.toml.
-- ``run`` -- the pipeline's enabled stages (``pose2d`` 2D -> ``bundle_adjustment``
-  -> ``pictorial_structures`` -> ``triangulation`` -> ``smoothing`` ->
-  ``visualization``). One or more recordings are the positional arguments; a
-  wildcard pattern (``fly*``, ``data/* data2/*``) and several inputs fan out to
-  every matching recording (only the valid ones, non-recording matches skipped),
-  and ``-r``/``--recursive`` treats each argument as a parent directory and runs
-  every recording nested beneath it -- each run in turn into its own output dir.
-  ``-o`` is an output *directory* (default ``<input>/deeperfly_outputs``) that
-  collects the result ``poses.h5``, the videos and a copy of the config used.
-  ``-c``/``--config`` is the merged config TOML; a run prefers the ``config.toml``
-  already snapshotted in the output dir (its source of truth -- even over ``-c``,
-  notifying when it ignores one), then ``-c`` if given, else the packaged default.
-  The ``[pipeline].do_<stage>`` booleans toggle which stages run: an enabled stage
-  recomputes, a disabled one is reused from the cached ``poses.h5``, and an enabled
-  stage whose input is missing is skipped with the reason logged. Detector weights
-  are downloaded and converted automatically on first use.
+- ``run`` -- the pipeline's enabled stages (``pose2d`` -> ``bundle_adjustment`` ->
+  ``pictorial_structures`` -> ``triangulation`` -> ``smoothing`` ->
+  ``visualization``). Recordings are the positional arguments; a wildcard
+  (``fly*``, ``data/*``) and several inputs fan out to every matching recording
+  (non-recording matches skipped), and ``-r``/``--recursive`` runs every recording
+  nested under each argument. ``-o`` is the output *directory* (default
+  ``<input>/deeperfly_outputs``) collecting ``poses.h5``, the videos and a copy of
+  the config. ``-c``/``--config`` is the config TOML; a run prefers the
+  ``config.toml`` already in the output dir (over ``-c``, notifying), then ``-c``,
+  else the packaged default. ``[pipeline].do_<stage>`` toggles which stages run.
+  Detector weights download on first use.
 - ``inspect`` -- print a summary of a result file.
-- ``doctor`` -- print installation/runtime details: package version, whether
-  CPU/GPU inference is available, the installed video backends, whether the
-  detector weights have been downloaded (and where), and the default config path.
+- ``doctor`` -- print installation/runtime details: version, CPU/GPU inference,
+  installed video backends, detector weights, and the default config path.
 
-The pipeline is a linear sequence of stages (:data:`STAGES`); each stage's input is
-produced by the enabled stage before it or read from the cached artifacts in the
-output directory, so disabling the finished stages resumes a partial run.
+The pipeline is a linear sequence (:data:`STAGES`); each stage's input comes from
+the enabled stage before it or the cached output, so disabling the finished
+stages resumes a partial run.
 """
 
 from __future__ import annotations
@@ -99,15 +91,13 @@ STAGE_DEFAULTS = {
 }
 
 #: Frames decoded + detected per streaming window, per camera (overridable via
-#: ``[detector] chunk_frames``). Bounds peak frame memory, so arbitrarily long
-#: recordings run in constant memory. A *memory* knob, not a speed one: detection
-#: is the bottleneck, so every decoder outpaces it and a small window costs no
-#: throughput. 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
+#: ``[detector] chunk_frames``). Bounds peak frame memory, so long recordings run
+#: in constant memory. A *memory* knob, not a speed one (detection is the
+#: bottleneck). 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
 DEFAULT_CHUNK_FRAMES = 64
 
-#: Human-facing output goes through rich: status/results to stdout, while logs and
-#: the detection progress bar share the stderr console (so piping stdout to a file
-#: stays clean and progress never clobbers a log line).
+#: rich output: status/results to stdout, logs and the progress bar to stderr, so
+#: piping stdout stays clean and progress never clobbers a log line.
 console = Console()
 err_console = Console(stderr=True)
 
@@ -158,14 +148,10 @@ def _load_config(path: str | Path) -> dict:
 def _configure_logging(level_name: str) -> None:
     """Configure the root log level from a ``--log-level`` name (default ``info``).
 
-    The default ``info`` surfaces the per-stage progress messages (and the bar);
-    ``warning`` or higher hides them, so it doubles as the "quiet" mode. The
-    progress bar follows the same line: it shows only while INFO logging is
-    enabled (see :func:`_detect_2d`).
-
-    Records render through rich's :class:`~rich.logging.RichHandler` (colored level
-    column, messages wrapped to the terminal) on the same stderr console as the
-    progress bar, so log lines and the bar never overwrite each other.
+    ``info`` surfaces the per-stage messages and the progress bar; ``warning`` or
+    higher hides them (the "quiet" mode). Records render through rich's
+    :class:`~rich.logging.RichHandler` on the same stderr console as the bar, so
+    log lines and the bar never overwrite each other.
     """
     level = getattr(logging, level_name.upper())
     handler = RichHandler(
@@ -177,9 +163,8 @@ def _configure_logging(level_name: str) -> None:
     )
     logging.basicConfig(level=level, format="%(message)s", handlers=[handler])
     log.setLevel(level)
-    # JAX probes every platform on first use and warns when the TPU plugin's
-    # libtpu.so is absent (the normal case on a CPU/GPU box). Mute that noise
-    # unless we're at debug, where seeing every backend probe is useful.
+    # JAX warns when the TPU plugin's libtpu.so is absent (the normal case). Mute
+    # that noise unless we're at debug.
     if level > logging.DEBUG:
         logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
 
@@ -211,10 +196,8 @@ def _pose2d_config(config: dict) -> dict:
     return config.get("pipeline", {}).get("pose2d", {})
 
 
-# Frame I/O backends live in a shared, stage-independent ``[io]`` section -- the same
-# reader/writer/image-reader choices apply wherever a stage reads input footage or
-# writes output videos (the detector, the visualizer, ...), so they are not duplicated
-# per stage.
+# Frame I/O backends live in a shared ``[io]`` section -- the same reader/writer/
+# image-reader choices apply across every stage, not duplicated per stage.
 def _video_reader(config: dict) -> str:
     """``[io.video].reader`` -- input video decoder (default ``"auto"``)."""
     return config.get("io", {}).get("video", {}).get("reader", "auto")
@@ -342,9 +325,9 @@ def _smoothing_options(config: dict) -> tuple[str, dict]:
 def _footage_exts() -> tuple[str, ...]:
     """Footage extensions deeperfly can read, in priority order (video before image).
 
-    Used to recognize a camera's frames and, when a recording folder mixes several,
-    to pick the one to keep (the earliest here wins). Imported lazily so this module
-    does not pull in the video stack just to resolve filenames.
+    Recognizes a camera's frames and, when a folder mixes several, picks the one to
+    keep (earliest wins). Imported lazily so resolving filenames doesn't pull in the
+    video stack.
     """
     from .video.io import _IMAGE_EXTS, _VIDEO_EXTS
 
@@ -377,13 +360,11 @@ def _camera_glob(pattern: str) -> str:
 def _camera_files(root: Path, pattern: str) -> list[Path]:
     """A camera's footage files under ``root`` matching its ``[inputs]`` ``pattern``.
 
-    Globs ``pattern`` (see :func:`_camera_glob`), keeps only files with a known
-    footage extension, and -- when several extensions match (e.g. a stray
-    ``camera_0.png`` next to ``camera_0.mp4``) -- keeps the single highest-priority
-    one. Naturally sorted (so ``img2`` precedes ``img10``). Video footage is a single
-    file, so if several videos match only the first is kept (warned); images stay as
-    the whole sequence. Empty when nothing footage-like matches, so the caller can
-    treat the camera as absent.
+    Globs ``pattern`` (see :func:`_camera_glob`), keeps files with a known footage
+    extension, and -- when several extensions match -- keeps the highest-priority
+    one. Naturally sorted. Video footage is a single file, so several matching
+    videos keep only the first (warned); images stay as the whole sequence. Empty
+    when nothing footage-like matches, so the caller can treat the camera as absent.
     """
     from natsort import natsorted
 
@@ -434,12 +415,11 @@ def _camera_sources(
 ) -> list[tuple[str, list[Path]]]:
     """``(name, footage-files)`` per camera (in ``[cameras]`` order).
 
-    Prefers the files ``deeperfly run`` already resolved for this recording
-    (``args.sources``, see :func:`_resolve_recordings`) so the footage is globbed
-    once per run; otherwise -- a library caller that set only ``args.input`` -- it
-    resolves each camera from ``args.input`` with the ``[inputs]`` patterns. With
-    neither, every camera resolves to an empty list. Each source is the list passed
-    to :func:`deeperfly.video.read_frames` (a single video file, or an image sequence).
+    Prefers the files ``deeperfly run`` already resolved (``args.sources``) so
+    footage is globbed once per run; otherwise resolves each camera from
+    ``args.input`` with the ``[inputs]`` patterns (a library caller). With neither,
+    every camera resolves to an empty list. Each source is the list passed to
+    :func:`deeperfly.video.read_frames`.
     """
     patterns = _camera_patterns(config)
     pre = getattr(args, "sources", None)
@@ -487,17 +467,17 @@ def _prefetch_windows(
 ):
     """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
 
-    A background producer decodes the next window (on the CPU) while the consumer
-    detects the current one, so decode runs on otherwise-idle cores in parallel
-    with the GPU forward instead of serially before it.
+    A background producer decodes the next window (CPU) while the consumer detects
+    the current one, so decode runs in parallel with the GPU forward instead of
+    serially before it.
 
-    ``transforms`` is an optional per-source :class:`~deeperfly.video.FrameTransform`
-    (aligned to ``sources``) applied to each decoded window before it is yielded,
-    so detection sees the configured ``[preprocess.*]`` orientation.
+    ``transforms`` is an optional per-source
+    :class:`~deeperfly.video.FrameTransform` (aligned to ``sources``) applied to
+    each window before yielding, so detection sees the ``[preprocess.*]``
+    orientation.
 
-    EOF semantics match the old serial loop: a short or empty window ends the
-    stream, and a read failure on the *very first* window propagates (anything
-    later is treated as "past the end").
+    EOF: a short or empty window ends the stream; a read failure on the *first*
+    window propagates (anything later is treated as past the end).
     """
     import queue
     import threading
@@ -550,17 +530,14 @@ def _prefetch_windows(
 
 
 def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
-    """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
+    """Stream 2D detection over fixed-size windows -> ``(pts2d, conf, candidates)``.
 
-    Decodes (on the CPU) and detects ``[detector] chunk_frames`` frames at a time
-    per camera and frees each window before the next, so peak frame memory is
-    bounded by the chunk size, **not** the recording length -- the key to handling
-    long videos. Each window is uploaded to the detector device in one shot, then
-    released. Per-window ``(V, w, ...)`` results are concatenated along time.
-
-    End-of-file is taken from the decoder (a short or empty window), so it does not
-    depend on :func:`deeperfly.video.count_frames` being exact -- that is only the
-    progress-bar total.
+    Decodes (CPU) and detects ``[detector] chunk_frames`` frames at a time per
+    camera and frees each window before the next, so peak frame memory is bounded
+    by the chunk size, not the recording length. Per-window results are
+    concatenated along time. End-of-file comes from the decoder (a short or empty
+    window), so it doesn't depend on :func:`deeperfly.video.count_frames` being
+    exact -- that is only the progress-bar total.
     """
     from . import video
     from .pictorial import Candidates
@@ -584,11 +561,9 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     # batch per frame -- this only changes dispatch granularity, not the result.
     batch_size = auto_batch_size(inference.IMG_SIZE)
 
-    # One-line summary instead of a per-camera/per-window read log (that spam is at
-    # -vv now; see deeperfly.video.io). reader_name mirrors read_frames's dispatch
-    # off the actual source (video file -> the video decode backend; image folder/glob
-    # -> the image reader, not the video backend), so the reported decoder matches what
-    # really runs; guard since a forced backend may be uninstalled.
+    # One-line summary instead of a per-window read log (that's at -vv now).
+    # reader_name mirrors read_frames's dispatch off the actual source, so the
+    # reported decoder matches what really runs; guard a forced-but-uninstalled one.
     try:
         reader = video.reader_name(
             sources[0], backend=backend, image_backend=image_backend
@@ -785,12 +760,11 @@ def _stage_pose2d(
     """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
 
     Returns ``(result, candidates, None, image_sizes)``. ``candidates`` is the
-    top-K peak set, extracted only when ``want_candidates`` (i.e. the
-    ``pictorial_structures`` stage is enabled, since the candidates are not cached).
-    Frames are **not** held in memory (detection streams them in windows -- see
-    :func:`_detect_2d`), so the third slot is ``None``; the recording path is
-    recorded in ``result.meta`` and a visualization stage re-sources the one overlay
-    camera it needs.
+    top-K peak set, extracted only when ``want_candidates`` (the
+    ``pictorial_structures`` stage, since candidates aren't cached). Frames are not
+    held in memory (detection streams them in windows -- see :func:`_detect_2d`),
+    so the third slot is ``None``; a visualization stage re-sources the overlay
+    cameras it needs.
     """
     from . import video
     from .pose2d import backends, inference
@@ -860,9 +834,8 @@ def _stage_pose2d(
         want_candidates=want_candidates,
         k=k,
     )
-    # Mask (camera, point) pairs the rig cannot see once, here -- the spot the old
-    # monolithic run_from_points2d masked -- so the cached 2D and every downstream
-    # stage (BA, pictorial, triangulation) see the same visibility-masked points.
+    # Mask (camera, point) pairs the rig cannot see once, here, so the cached 2D
+    # and every downstream stage see the same visibility-masked points.
     pts2d = apply_visibility(pts2d, skeleton, cameras.names)
 
     result = PoseResult(cameras=cameras, skeleton=skeleton, pts2d=pts2d, conf=conf)
@@ -872,13 +845,12 @@ def _stage_pose2d(
 def _config_camera_rig(args: argparse.Namespace, config: dict) -> CameraGroup:
     """The un-refined camera rig straight from the config -- the BA stage's *input*.
 
-    Bundle adjustment refines this config rig; the refined rig is what lands in the
-    cached ``poses.h5``. So on a resume that reuses the cached 2D, ``result.cameras``
-    are the *previous* BA output, and re-running bundle adjustment (e.g. after editing
-    ``[pipeline.bundle_adjustment]`` or the ``[cameras]`` rig) must restart from this
-    fresh config rig -- otherwise it just re-refines already-refined cameras and barely
-    moves, so the edits look ignored. Reads one frame per camera for the image sizes,
-    exactly as ``pose2d`` does, so the principal-point inference matches.
+    On a resume that reuses the cached 2D, ``result.cameras`` are the *previous* BA
+    output, so re-running bundle adjustment (e.g. after editing
+    ``[pipeline.bundle_adjustment]`` or the ``[cameras]`` rig) must restart from
+    this fresh config rig -- otherwise it just re-refines already-refined cameras
+    and the edits look ignored. Reads one frame per camera for the image sizes, as
+    ``pose2d`` does, so principal-point inference matches.
     """
     image_sizes = _camera_image_sizes(args, config)
     return CameraGroup.from_config(config, image_sizes=image_sizes)
@@ -888,10 +860,9 @@ def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
     """Refine ``result.cameras`` with bundle adjustment (fly-as-calibration-target).
 
     Calibrates on the arg-max 2D in ``result`` and replaces its cameras in place.
-    The caller hands in the un-refined config rig -- built from the config during
-    ``pose2d``, or rebuilt by :func:`_config_camera_rig` on a resume -- so editing
-    the ``[cameras]`` rig or ``[pipeline.bundle_adjustment]`` and recomputing this
-    stage recalibrates from the edited config rather than from the prior BA output.
+    The caller hands in the un-refined config rig (see :func:`_config_camera_rig`),
+    so editing the rig or ``[pipeline.bundle_adjustment]`` and recomputing this
+    stage recalibrates from the edited config rather than the prior BA output.
     """
     from .pipeline import calibrate
     from .triangulate import reprojection_error, triangulate
@@ -910,9 +881,8 @@ def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
     )
     result.meta["bundle_adjustment"] = True  # marks the cameras as BA-refined (cache)
 
-    # Report the pixel reprojection error of the refined rig (triangulate the
-    # committed 2D with the new cameras and reproject). INFO so it shows at the
-    # default log level and above; the triangulation stage refines this further.
+    # Report the refined rig's pixel reprojection error (triangulate the committed
+    # 2D with the new cameras and reproject); the triangulation stage refines it.
     err = reprojection_error(
         result.cameras, triangulate(result.cameras, result.pts2d), result.pts2d
     )
@@ -1026,12 +996,10 @@ def _source_view_frames(
 ) -> dict[str, np.ndarray]:
     """Per-view footage for the visualization stage's ``imshow`` panels.
 
-    Uses ``in_memory`` frames (a list indexed by camera order) when available;
-    otherwise the footage ``deeperfly run`` resolved for this recording up front
-    (``args.sources``). A resume that re-renders the videos just re-passes the
-    recording (``deeperfly run <recording> --overwrite visualization``), which
-    re-resolves the footage exactly the same way -- so nothing about the source
-    recording needs to be stored in the result. Errors if neither is available.
+    Uses ``in_memory`` frames (indexed by camera order) when available; otherwise
+    the footage ``deeperfly run`` resolved up front (``args.sources``). A resume
+    that re-renders just re-passes the recording, re-resolving the footage the same
+    way. Errors if neither is available.
     """
     from . import video
 
@@ -1170,11 +1138,10 @@ def _resolve_config(cli_config: str | None, outdir: Path) -> tuple[dict, Path]:
     """Pick the config for one run, preferring the snapshot already in ``outdir``.
 
     A previous run snapshots its config to ``<outdir>/config.toml``; that snapshot
-    is the output dir's source of truth (it owns the cached results and the stage
-    toggles that drive a resume), so it wins -- even over an explicit ``-c``,
-    notifying that the passed config is ignored. To change it, edit that file (or
-    point ``-o`` at a fresh dir). With no snapshot, ``-c`` is used if given, else
-    the packaged default config.
+    owns the cached results and the stage toggles that drive a resume, so it wins
+    even over an explicit ``-c`` (notifying that it's ignored). To change it, edit
+    that file or point ``-o`` at a fresh dir. With no snapshot, ``-c`` is used if
+    given, else the packaged default.
     """
     snapshot = outdir / "config.toml"
     if snapshot.exists():
@@ -1216,19 +1183,16 @@ def _has_glob(pattern: str) -> bool:
 class Recording:
     """One unit of work: a camera -> footage-files map and where its results go.
 
-    ``sources`` maps a camera name to its naturally-sorted footage files -- a single
-    video file, or an image sequence -- already reconciled to one extension and
-    validated to share a file and frame count with the other cameras (so
-    :func:`deeperfly.video.read_frames` decodes them as one aligned clip). It is empty
-    only for a directory kept so a resume can reuse a cached result though its footage
-    is absent (see :func:`_resolve_recordings`).
+    ``sources`` maps a camera name to its naturally-sorted footage files (a single
+    video, or an image sequence), already reconciled to one extension and validated
+    to share a file and frame count with the other cameras. Empty only for a
+    directory kept so a resume can reuse a cached result though its footage is
+    absent (see :func:`_resolve_recordings`).
 
-    ``outdir`` is the resolved output directory for this recording (see
-    :func:`_run_outdir`); it is the run's durable identity -- it holds the config
-    snapshot and the cached ``poses.h5``. The input recording directory is not
-    retained: it is only used to resolve ``sources`` and ``outdir`` up front. A resume
-    that re-renders just re-passes the recording, which re-resolves ``sources`` the
-    same way, so nothing about the source recording is stored in the result.
+    ``outdir`` is this recording's output directory (see :func:`_run_outdir`) --
+    the run's durable identity, holding the config snapshot and cached ``poses.h5``.
+    The input directory is not retained; a resume re-passes the recording, which
+    re-resolves ``sources`` the same way.
     """
 
     sources: dict[str, list[Path]]
@@ -1238,11 +1202,10 @@ class Recording:
 def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
     """Whether every camera under ``root`` has the same file and frame count.
 
-    File counts are compared directly (cheap). Equal file counts already imply equal
-    frame counts for image sequences (one frame per file), so only *video* footage is
-    probed for its frame count, and only when the count is actually knowable -- an
-    unreadable / metadata-less file (count ``None``) is left out rather than falsely
-    rejecting the recording. Warns naming the offending counts when they differ.
+    File counts are compared directly. For image sequences equal file counts
+    already imply equal frame counts, so only *video* footage is probed for its
+    frame count, and only when knowable (an unreadable file's ``None`` count is
+    skipped rather than falsely rejecting the recording). Warns when counts differ.
     """
     file_counts = {n: len(ps) for n, ps in sources.items()}
     if len(set(file_counts.values())) > 1:
@@ -1273,9 +1236,9 @@ def _find_recording(root: Path, config: dict) -> dict[str, list[Path]] | None:
     """``root``'s ``camera -> footage-files`` map if it is a recording, else ``None``.
 
     A *recording* is a directory holding footage for every configured camera (its
-    ``[inputs]`` glob, see :func:`_camera_glob`); the footage is a single video file
-    or an image sequence. A directory matching *no* camera is silently not a
-    recording (an intermediate or output directory); the rest warn and skip:
+    ``[inputs]`` glob); the footage is a single video file or an image sequence. A
+    directory matching *no* camera is silently not a recording (an intermediate or
+    output dir); the rest warn and skip:
 
     - footage for only some cameras (a malformed recording, or a wrong ``[inputs]``);
     - files matched but none with a known footage extension;
@@ -1351,13 +1314,10 @@ def _find_recording(root: Path, config: dict) -> dict[str, list[Path]] | None:
 def _expand_pattern(pattern: str) -> tuple[list[Path], bool]:
     """One ``run`` input argument -> ``(paths, is_glob)``.
 
-    A wildcard pattern (``fly*``, ``data/*``) is expanded against the filesystem to
-    its sorted matches (possibly empty); a literal argument yields just itself. The
-    shell usually expands an unquoted ``*`` before the program runs -- so a wildcard
-    only reaches us quoted/escaped -- but either way every argument is normalized to
-    a list of paths here. ``is_glob`` flags which it was, so a wildcard's incidental
-    non-recording matches (e.g. ``data/deeperfly_outputs``) are skipped silently
-    while a single literal path the user typed is reported when it is not valid.
+    A wildcard (``fly*``, ``data/*``) expands to its sorted matches (possibly
+    empty); a literal argument yields just itself. ``is_glob`` flags which it was,
+    so a wildcard's incidental non-recording matches are skipped silently while a
+    literal path the user typed is reported when invalid.
     """
     if _has_glob(pattern):
         return [Path(p) for p in sorted(glob.glob(pattern))], True
@@ -1498,14 +1458,11 @@ def _has_2d(result: PoseResult | None) -> bool:
 def _require_input_footage(args: argparse.Namespace, config: dict) -> None:
     """Fail (before any output dir is created) if the run's recording is unreadable.
 
-    Checked only when the ``pose2d`` stage will actually decode frames; a resume
-    that reuses a cached 2D pose needs no footage, so the recording may legitimately
-    be absent then. The footage was already resolved up front by
-    :func:`_resolve_recordings` (``args.sources``): a recording missing a camera's
-    files was warned there and arrives with that camera absent. A library caller that
-    set only ``args.input`` is validated directly (naming a missing recording
-    directory or camera). Raising here keeps a fresh run that cannot read its input
-    from leaving an empty ``deeperfly_outputs`` behind.
+    Checked only when ``pose2d`` will actually decode frames; a resume that reuses
+    a cached 2D pose needs no footage. The footage was resolved up front by
+    :func:`_resolve_recordings` (``args.sources``); a library caller that set only
+    ``args.input`` is validated directly. Raising here keeps a fresh run that can't
+    read its input from leaving an empty ``deeperfly_outputs`` behind.
     """
     patterns = _camera_patterns(config)
     inp = getattr(args, "input", None)
@@ -1540,38 +1497,32 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
     """Run the config's enabled stages for a single recording.
 
     The config is resolved against ``outdir`` (see :func:`_resolve_config`) and its
-    ``[pipeline].do_<stage>`` toggles decide which stages are part of the pipeline
-    (see :func:`_stage_flags`). An enabled stage **reuses its result if it is already
-    in the output dir** and only recomputes when that output is missing or
-    ``--overwrite`` selects it (see :func:`_stage_cached` / :func:`_overwrite_stages`)
-    -- so re-running a finished recording is a cheap no-op by default. Recomputing a
-    stage invalidates the ones after it, so once any stage recomputes every enabled
-    stage downstream recomputes too (their inputs changed).
+    ``[pipeline].do_<stage>`` toggles decide which stages run (:func:`_stage_flags`).
+    An enabled stage reuses its result if it's already in the output dir,
+    recomputing only when missing or ``--overwrite`` selects it; recomputing a stage
+    cascades to every enabled stage downstream (their inputs changed).
 
-    Each stage still runs only if the input it needs is available -- recording
-    footage for ``pose2d``, a 2D pose for ``bundle_adjustment`` / ``triangulation``,
-    detector candidates for ``pictorial_structures``, a 3D pose for ``smoothing``, a
-    pose result for ``visualization`` -- coming either from an upstream stage in this
-    run or from the cached ``poses.h5`` in ``outdir``; a stage whose input is missing
-    is skipped with the reason logged. A disabled stage never runs but its cached
-    output still feeds downstream.
+    Each stage runs only if its input is available -- footage for ``pose2d``, a 2D
+    pose for ``bundle_adjustment`` / ``triangulation``, candidates for
+    ``pictorial_structures``, a 3D pose for ``smoothing``, a result for
+    ``visualization`` -- from an upstream stage or the cached ``poses.h5``; a stage
+    whose input is missing is skipped with the reason logged. A disabled stage never
+    runs but its cached output still feeds downstream.
     """
     config, config_path = _resolve_config(args.config, outdir)
     stages = _stage_flags(config)  # validates before we touch the output dir
     overwrite = _overwrite_stages(getattr(args, "overwrite", None))
 
-    # `cached` is the result already in the output dir; `result` starts there and a
-    # reused stage keeps it, while a recomputed stage replaces/updates it. Reuse is
-    # only safe while nothing upstream has changed, so the first recompute flips
-    # `recomputed` and every later enabled stage recomputes too (cascade).
+    # `cached` is the result already in the output dir; `result` starts there, a
+    # reused stage keeps it, a recomputed stage replaces it. The first recompute
+    # flips `recomputed` so every later enabled stage recomputes too (cascade).
     h5_path = outdir / "poses.h5"
     cached = PoseResult.load(h5_path) if h5_path.exists() else None
 
-    # Validate the recording's footage *before* creating the output dir, so a fresh
-    # run that cannot read its input fails cleanly instead of leaving an empty
-    # deeperfly_outputs behind. Only pose2d decodes the recording, and only when it
-    # recomputes (mirrors `_recompute("pose2d")` -- the first stage, so no cascade
-    # yet); a resume reusing a cached 2D pose needs no footage.
+    # Validate the footage *before* creating the output dir, so a fresh run that
+    # can't read its input fails cleanly instead of leaving an empty dir behind.
+    # Only pose2d decodes the recording, and only when it recomputes; a resume
+    # reusing a cached 2D pose needs no footage.
     if stages["pose2d"] and (
         "pose2d" in overwrite or not _stage_cached("pose2d", cached, config, outdir)
     ):
@@ -1613,11 +1564,10 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
 
     if stages["bundle_adjustment"] and _recompute("bundle_adjustment"):
         if _has_2d(result):
-            # If the rig we're about to refine is itself a *previous* BA output
-            # (cached and marked), rebuild the un-refined config rig first, so this
-            # recompute starts from the (edited) config instead of re-refining
-            # already-refined cameras and barely moving. Cached cameras that were
-            # never BA-refined are legitimate input, so we keep them as-is.
+            # If the rig to refine is itself a *previous* BA output (cached and
+            # marked), rebuild the un-refined config rig first, so this recompute
+            # starts from the (edited) config instead of re-refining already-refined
+            # cameras. Cached cameras never BA-refined are kept as-is.
             if (
                 not fresh_rig
                 and cached is not None
@@ -1703,16 +1653,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
     """Run the pipeline for each recording the inputs resolve to.
 
     ``inputs`` is one or more recording directories and/or wildcard/recursive
-    patterns (see :func:`_resolve_recordings`) that fan out to several recordings.
-    In a multi-recording batch each run is independent and a failure is logged and
-    skipped (so one bad recording does not abort the rest), with a non-zero exit if
-    any failed; a single recording fails fast as before.
+    patterns (see :func:`_resolve_recordings`). In a batch each run is independent
+    and a failure is logged and skipped (non-zero exit if any failed); a single
+    recording fails fast.
     """
     if not args.inputs:
         raise SystemExit("give at least one recording directory (or wildcard) to run")
-    # Only used to recognize recording directories while resolving the inputs (it
-    # reads [cameras]/[inputs]); each run then resolves its own config against its
-    # output dir (see _resolve_config), which may differ per recording.
+    # Only used to recognize recording directories while resolving the inputs; each
+    # run then resolves its own config against its output dir (_resolve_config).
     discovery_config = _load_config(
         Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     )
@@ -1757,8 +1705,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
 def _info_line(label: str, value: object) -> None:
     """Print one ``label   value`` row with a colored label.
 
-    Built as a :class:`rich.text.Text` (not markup) so dynamic values that contain
-    brackets -- e.g. the camera-name list -- are never parsed as style tags.
+    Built as :class:`rich.text.Text` (not markup) so values containing brackets
+    (e.g. the camera-name list) are never parsed as style tags.
     """
     line = Text(label, style="bold cyan")
     line.append(str(value))
@@ -1798,10 +1746,9 @@ def _fmt_bytes(n: int) -> str:
 def _by_priority(available, *orders) -> list[str]:
     """``available`` backend names in their ``backend="auto"`` preference order.
 
-    Walks each preference tuple in ``orders`` (e.g. the read order),
-    keeping the first occurrence of each installed backend, then appends any
-    remaining installed ones (alphabetically) so nothing is dropped. Mirrors how
-    ``select_reader``/``select_writer`` actually pick a backend, so the report
+    Walks each preference tuple in ``orders``, keeping the first occurrence of each
+    installed backend, then appends any remaining installed ones (alphabetically).
+    Mirrors how ``select_reader``/``select_writer`` pick a backend, so the report
     lists the highest-priority installed decoder first.
     """
     avail = set(available)
@@ -1822,7 +1769,7 @@ def _doctor_row(label: str, value: object, *, width: int = 18) -> None:
     """Print one indented ``label   value`` row, label padded to ``width``.
 
     Built as :class:`~rich.text.Text` (not markup) so values containing brackets
-    -- e.g. JAX's ``[cuda:0]`` device list -- are never parsed as style tags.
+    (e.g. JAX's ``[cuda:0]`` device list) are never parsed as style tags.
     """
     line = Text("  ")
     line.append(f"{label:<{width}}", style="bold cyan")
@@ -1833,8 +1780,8 @@ def _doctor_row(label: str, value: object, *, width: int = 18) -> None:
 def _probe_torch() -> dict:
     """PyTorch presence + accelerator availability, without raising.
 
-    Torch is a core dependency, but probing CUDA/MPS can fail on a broken
-    install, so every query is guarded and missing keys mean "unknown/no".
+    Probing CUDA/MPS can fail on a broken install, so every query is guarded and
+    missing keys mean "unknown/no".
     """
     info: dict = {"installed": False}
     try:
@@ -1871,14 +1818,12 @@ def _probe_jax() -> dict:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> None:
-    """Report the installation and what this machine can actually run.
+    """Report the installation and what this machine can run.
 
-    Covers package version + location, the Python/OS, whether CPU/GPU inference
-    is available (torch CUDA/MPS; JAX is CPU-only, for geometry), the installed
-    video read/write backends (all CPU decode), whether the detector weights have
-    been downloaded and where, and the default config path. The
-    framework imports are lazy and each probe is guarded, so a missing or broken
-    optional piece is reported rather than crashing the command.
+    Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS; JAX is
+    CPU-only), the installed video backends, whether the detector weights are
+    downloaded and where, and the default config path. Imports are lazy and each
+    probe guarded, so a missing or broken piece is reported rather than crashing.
     """
     import importlib.metadata
     import platform
@@ -1975,21 +1920,17 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
 # -- typer app ---------------------------------------------------------------
 #
-# The CLI is built with Typer (https://typer.tiangolo.com): typed function
-# signatures layered over click, with usage and --help rendered through rich -- so
-# the help prints on the same rich stack as the rest of the output. Each command
-# declares its options as parameters, configures logging, then hands an
-# argparse-style namespace to the matching ``_cmd_*`` worker above; those workers
-# stay plain and namespace-driven so they remain equally callable as a library and
-# directly from the tests. Constrained options are typed as ``str``-valued Enums
-# (Typer's native choice mechanism); the commands pass their ``.value`` on, so the
-# workers keep receiving the same plain strings as before.
+# The CLI is built with Typer: typed signatures over click, with usage/--help
+# rendered through rich. Each command declares its options, configures logging,
+# then hands an argparse-style namespace to the matching ``_cmd_*`` worker; the
+# workers stay namespace-driven so they remain callable as a library and from the
+# tests. Constrained options are ``str``-valued Enums; commands pass their
+# ``.value``, so workers keep receiving plain strings.
 
 
 class LogLevel(str, Enum):
-    """``--log-level`` choices, shared by every subcommand (it follows the command,
-    e.g. ``deeperfly run REC --log-level debug``). A ``str`` enum, so each member's
-    ``.value`` is the name :func:`_configure_logging` expects."""
+    """``--log-level`` choices, shared by every subcommand. A ``str`` enum, so each
+    member's ``.value`` is the name :func:`_configure_logging` expects."""
 
     debug = "debug"
     info = "info"
@@ -1998,9 +1939,9 @@ class LogLevel(str, Enum):
     critical = "critical"
 
 
-#: The shared ``--log-level`` option. Typer has no click-style shared-option
-#: decorator, so it is declared once as a reusable parameter annotation and spread
-#: across every command. ``case_sensitive=False`` accepts INFO/Info/info.
+#: The shared ``--log-level`` option, declared once as a reusable parameter
+#: annotation and spread across every command. ``case_sensitive=False`` accepts
+#: INFO/Info/info.
 LogLevelOption = Annotated[
     LogLevel,
     typer.Option(
@@ -2090,22 +2031,18 @@ def run(
     """detect 2D -> reconstruct 3D -> visualization (the enabled stages, reusing cache).
 
     INPUT is one or more recording directories (per-camera videos or image folders)
-    and/or wildcard patterns matching several (e.g. 'fly*' -> fly1/, fly2/, ... or
-    'data/* data2/*'), each run in turn. Several inputs or a wildcard run as a batch:
-    only the valid recordings are kept (non-recording matches are skipped). With
-    -r/--recursive, each INPUT is a parent directory and every recording nested under
-    it is run in turn (e.g. 'deeperfly run -r data' -> data/fly1/, data/fly2/, ...).
+    and/or wildcards matching several (e.g. 'fly*' -> fly1/, fly2/, ...), each run
+    in turn. Several inputs or a wildcard run as a batch, keeping only the valid
+    recordings. With -r/--recursive, each INPUT is a parent directory and every
+    recording nested under it is run in turn.
 
-    By default a stage whose result is already in the output dir is reused, so
-    re-running a finished recording is a cheap no-op. Pass --overwrite to recompute:
-    a bare --overwrite redoes every stage, or name stages to redo only those (e.g.
-    '--overwrite pose2d visualization'); recomputing a stage also refreshes the
-    stages downstream of it.
+    By default a stage already in the output dir is reused, so re-running a finished
+    recording is a cheap no-op. Pass --overwrite to recompute: bare redoes every
+    stage, or name stages to redo only those (plus the stages after them).
 
-    Everything else is set in the config: the do_<stage> toggles choose which
-    stages are part of the pipeline, alongside the fps, canvas background and each
-    stage's own parameters. With no -c, a run reuses the config.toml already in the
-    output dir, else the packaged default.
+    Everything else is set in the config: the do_<stage> toggles choose which stages
+    run, alongside fps, background and each stage's parameters. With no -c, a run
+    reuses the config.toml already in the output dir, else the packaged default.
     """
     _configure_logging(log_level.value)
     _cmd_run(
@@ -2140,12 +2077,11 @@ def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
 def _normalize_overwrite_argv(argv: list[str]) -> list[str]:
     """Let ``run``'s ``--overwrite`` take zero or more space-separated stage names.
 
-    click options cannot be variadic, so rewrite a bare ``--overwrite`` into
-    ``--overwrite <_OVERWRITE_ALL>`` (recompute everything) and ``--overwrite a b``
-    into the repeated ``--overwrite a --overwrite b`` that the underlying
-    ``multiple=True`` option accepts. Only the known stage names (:data:`STAGES`)
-    are consumed after the flag, so the positional recording argument and any later
-    options are left untouched; the ``--overwrite=...`` form is passed through as-is.
+    click options can't be variadic, so rewrite a bare ``--overwrite`` into
+    ``--overwrite <_OVERWRITE_ALL>`` and ``--overwrite a b`` into the repeated
+    ``--overwrite a --overwrite b`` the ``multiple=True`` option accepts. Only known
+    stage names (:data:`STAGES`) are consumed after the flag, leaving the positional
+    argument and later options untouched; ``--overwrite=...`` passes through as-is.
     """
     if not (argv and argv[0] == "run"):
         return argv
@@ -2171,14 +2107,11 @@ def _normalize_overwrite_argv(argv: list[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> None:
     """Entry point: parse ``argv`` (default ``sys.argv``) and dispatch a subcommand.
 
-    Runs the Typer app -- via its underlying click command -- in standalone mode so
-    usage errors and ``--help`` render through rich, but swallows the
-    ``SystemExit(0)`` raised on a clean exit so calling ``main([...])`` as a library
-    (and from the tests) returns normally. Real failures -- our own
-    ``SystemExit("message")`` and click's non-zero usage exits -- still propagate.
-
-    ``argv`` is normalized first (:func:`_normalize_overwrite_argv`) so ``run``'s
-    ``--overwrite`` can take space-separated stage names or stand alone.
+    Runs the Typer app in standalone mode so usage errors and ``--help`` render
+    through rich, but swallows the ``SystemExit(0)`` of a clean exit so
+    ``main([...])`` returns normally as a library / from the tests. Real failures
+    still propagate. ``argv`` is normalized first
+    (:func:`_normalize_overwrite_argv`).
     """
     argv = sys.argv[1:] if argv is None else list(argv)
     argv = _normalize_overwrite_argv(argv)

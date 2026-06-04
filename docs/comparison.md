@@ -20,7 +20,7 @@ and the I/O is modern.
 | | DeepFly3D / DeepFly2D / PyBundleAdjustment | deeperfly |
 | --- | --- | --- |
 | Numerical core | NumPy + SciPy + PyTorch | **JAX** (float64 geometry/BA), PyTorch for the detector |
-| 2D detector | Stacked hourglass (PyTorch) | Same network + weights, default **JAX/Equinox** port; PyTorch kept as a second backend |
+| 2D detector | Stacked hourglass (PyTorch) | Same network + weights, a faithful **PyTorch** port running the released weights directly |
 | Bundle-adjustment Jacobian | SciPy `least_squares`, sparse | SciPy `least_squares` with an **analytic JAX Jacobian** + sparsity pattern |
 | 3D correction | Pictorial structures (belief propagation) | **Triangulation** — RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT — optionally after a re-implemented pictorial-structures corrector (exact DP) |
 | Interface | PyQt **GUI** | **Headless CLI + library** (one merged `config.toml`) |
@@ -33,12 +33,10 @@ and the I/O is modern.
 ### 2D detector
 
 Both use the same stacked-hourglass architecture and the same published `sh8`
-weights. deeperfly ports the network to **JAX/Equinox** as the default backend
-(a pure PyTree, so the forward pass is `jit`/`vmap`-friendly and runs the seven
-views in one batched call) and keeps a faithful **PyTorch** backend behind the
-same interface. The JAX port is validated numerically against the PyTorch
-reference (`tests/test_pose2d_torch.py`); the original PyTorch weights are
-downloaded and converted to a native checkpoint automatically on first use.
+weights. deeperfly is a faithful **PyTorch** port that loads the released weights
+directly (no conversion), batches the seven views through the network in one call,
+and downloads the weights on first use. It runs on CUDA (NVIDIA) and Metal/MPS
+(Apple Silicon) automatically.
 
 deeperfly does **not** include training code — it consumes the released weights.
 Train or fine-tune with the upstream DeepFly2D repository.
@@ -49,8 +47,8 @@ Like the originals, deeperfly calibrates with **no external target**: the fly's
 own detected joints are the calibration points, refined by bundle adjustment
 (`pipeline.calibrate`). The solver is still SciPy's `least_squares` (TRF + LSMR),
 but the per-observation residual and its **Jacobian are computed analytically in
-JAX** (`jax.vmap` + `jax.jacfwd` over the projection model) and assembled into a
-sparse matrix from a precomputed sparsity pattern.
+JAX** (`jax.vmap` + `jax.jacfwd`) and assembled into a sparse matrix from a
+precomputed sparsity pattern.
 
 Beyond PyBundleAdjustment, the `bundle_adjustment/` module adds:
 
@@ -99,27 +97,24 @@ stage that *recovers* the right peak first.
 
 DeepFly3D ships a PyQt **GUI** for visualization and manual correction.
 deeperfly is **headless**: a single `deeperfly run` drives the whole pipeline
-from one merged `config.toml` (camera rig, input→camera map, detector, pipeline,
-bundle adjustment, skeleton), with per-stage caching so re-runs only compute
-what changed. Results are a self-contained **HDF5** `PoseResult` (cameras,
-skeleton, 2D/3D points, confidences, diagnostics, provenance) instead of pickled
-objects, and visualization is matplotlib overlays + MP4 export.
+from one merged `config.toml`, with per-stage caching so re-runs only compute
+what changed. Results are a self-contained **HDF5** `PoseResult` instead of
+pickled objects, and visualization is matplotlib overlays + MP4 export.
 
 ### Performance
 
-The geometry/BA core is JAX with float64 enabled, so projection, triangulation
-and the BA residual/Jacobian are JIT-compiled and vectorized. Detection batches
-all views through the network and **streams** frames in fixed-size windows
-(constant memory for arbitrarily long recordings), decoding on the CPU and
-uploading each window to the detector device in one shot — decode is not the
-bottleneck. The PyTorch detector uses CUDA on NVIDIA GPUs automatically; on Apple
-Silicon it runs on **Metal/MPS**.
+The geometry/BA core is JAX with float64, so projection, triangulation and the BA
+residual/Jacobian are JIT-compiled and vectorized. Detection batches all views
+through the network and **streams** frames in fixed-size windows (constant memory
+for arbitrarily long recordings), decoding on the CPU and uploading each window to
+the detector in one shot — decode is not the bottleneck. The detector uses CUDA
+(NVIDIA) and **Metal/MPS** (Apple Silicon) automatically.
 
 ## What deeperfly intentionally drops
 
 - **No GUI** and no manual point-by-point correction — it is built to run in a
   script or on a cluster.
-- **No training** — it converts and runs the published detector weights.
+- **No training** — it runs the published detector weights.
 - **No legacy formats** — HDF5 only, no pickle importer.
 
 ## References

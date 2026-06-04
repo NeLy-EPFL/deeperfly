@@ -31,20 +31,17 @@ import numpy as np
 _READERS: dict[str, type["ReaderBackend"]] = {}
 _WRITERS: dict[str, type["WriterBackend"]] = {}
 
-# Preference order for ``backend="auto"`` -- fastest first. Explicit names always
-# win; "auto" walks the list and picks the first *installed* backend. The order
-# leads with pyav, the in-process core default (it links FFmpeg directly -- no
-# subprocess), then the other in-process decoders (opencv / torchcodec /
-# video_reader_rs). All decode on the CPU.
+# Preference order for ``backend="auto"`` -- fastest first; "auto" picks the first
+# *installed* one. Leads with pyav, the in-process core default (links FFmpeg
+# directly), then opencv / torchcodec / video_reader_rs. All decode on the CPU.
 READ_ORDER = (
     "pyav",
     "opencv",
     "torchcodec",
     "video_reader_rs",
 )
-# Writers prefer pyav, the core default: it encodes H.264 (libx264) in-process
-# (links FFmpeg directly -- no subprocess). Fall back to opencv (mp4v fourcc, last
-# resort) when pyav is absent.
+# Writers prefer pyav (in-process H.264 via libx264), falling back to opencv (mp4v
+# fourcc) when pyav is absent.
 WRITE_ORDER = ("pyav", "opencv")
 
 
@@ -221,11 +218,10 @@ def available_write_backends() -> list[str]:
     return sorted(n for n, c in _WRITERS.items() if c.is_available())
 
 
-# Still-image decode (image sequences, not video files). Unlike the video readers
-# above these aren't full backend classes -- the work is a per-file decode -- so the
-# registry is just a preference order plus a name resolver. ``opencv`` is the core
-# default (fast, always installed); ``imageio`` is an optional extra used as a broad
-# -format fallback (see ``deeperfly.video.io._read_images_cpu``).
+# Still-image decode (image sequences, not video files). These aren't full backend
+# classes -- the work is a per-file decode -- so the registry is just a preference
+# order plus a name resolver. ``opencv`` is the core default; ``imageio`` is an
+# optional broad-format fallback (see ``deeperfly.video.io._read_images_cpu``).
 IMAGE_READ_ORDER = ("opencv", "imageio")
 _IMAGE_READER_REQUIRES = {"opencv": ("cv2",), "imageio": ("imageio",)}
 
