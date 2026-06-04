@@ -1801,29 +1801,13 @@ def _probe_torch() -> dict:
     return info
 
 
-def _probe_jax() -> dict:
-    """JAX presence + default backend/devices, without raising."""
-    info: dict = {"installed": False}
-    try:
-        import jax
-    except Exception:  # noqa: BLE001
-        return info
-    info.update(installed=True, version=jax.__version__)
-    try:
-        info["backend"] = jax.default_backend()
-        info["devices"] = [str(d) for d in jax.devices()]
-    except Exception:  # noqa: BLE001
-        pass
-    return info
-
-
 def _cmd_doctor(args: argparse.Namespace) -> None:
     """Report the installation and what this machine can run.
 
-    Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS; JAX is
-    CPU-only), the installed video backends, whether the detector weights are
-    downloaded and where, and the default config path. Imports are lazy and each
-    probe guarded, so a missing or broken piece is reported rather than crashing.
+    Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS), the
+    installed video backends, whether the detector weights are downloaded and
+    where, and the default config path. Imports are lazy and each probe guarded, so
+    a missing or broken piece is reported rather than crashing.
     """
     import importlib.metadata
     import platform
@@ -1847,7 +1831,6 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("platform", platform.platform())
 
     torch_info = _probe_torch()
-    jax_info = _probe_jax()
     _doctor_header("inference")
     if torch_info["installed"]:
         accel = []
@@ -1861,14 +1844,6 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         )
     else:
         _doctor_row("torch", "not installed")
-    if jax_info["installed"]:
-        be = jax_info.get("backend", "?")
-        devices = ", ".join(jax_info.get("devices", [])) or "?"
-        _doctor_row(
-            "jax", f"{jax_info['version']}  (backend: {be}; devices: {devices})"
-        )
-    else:
-        _doctor_row("jax", "not installed")
 
     gpu = "cuda" in torch_info or torch_info.get("mps")
     mem = backends.gpu_memory_bytes()
