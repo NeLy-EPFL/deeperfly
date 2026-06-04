@@ -94,9 +94,9 @@ def render_overlay_video(
     """Render one camera's 2D pose overlay across frames to an MP4.
 
     ``background`` (``"white"`` / ``"black"``) colors the margins around the
-    frame; limbs follow the skeleton's ``palette``. ``images`` may be a
-    GPU-decoded tensor (e.g. when the detector ran on the GPU); it is brought to
-    host NumPy here for matplotlib.
+    frame; limbs follow the skeleton's ``palette``. ``images`` may be a torch
+    tensor (e.g. from the ``torchcodec`` reader); it is brought to host NumPy
+    here for matplotlib.
     """
     import matplotlib.pyplot as plt
 

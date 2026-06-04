@@ -7,27 +7,27 @@ for an alternative or faster decoder:
 
 | Backend | Read | Write | Frames | Install |
 | --- | :-: | :-: | --- | --- |
-| `pyav` | ✓ | ✓ | NumPy (CPU) | core (default) |
-| `opencv` | ✓ | ✓ | NumPy (CPU) | core |
-| `video_reader_rs` | ✓ | – | NumPy (CPU) | `video-reader-rs` |
-| `torchcodec` | ✓ | – | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` / `cuda` |
+| `pyav` | ✓ | ✓ | NumPy | core (default) |
+| `opencv` | ✓ | ✓ | NumPy | core |
+| `video_reader_rs` | ✓ | – | NumPy | `video-reader-rs` |
+| `torchcodec` | ✓ | – | `torch.Tensor` | `torchcodec` |
 
-Image *sequences* (a directory or glob of PNG/JPG/…) are always read via
-`imageio` (core), independent of the video backend above.
+All decoding runs on the CPU. Image *sequences* (a directory or glob of
+PNG/JPG/…) are always read via `imageio` (core), independent of the video backend
+above.
 
 ```python
 from deeperfly import video
 
-frames = video.read_frames(path)                        # video file or image dir; auto NumPy (host)
+frames = video.read_frames(path)                        # video file or image dir; NumPy (host)
 frames = video.read_video("clip.mp4", indices=[0, 50])  # random access
-frames = video.read_video("clip.mp4", device="cuda")    # on-GPU tensor (NVDEC), zero-copy to torch via to_torch
+frames = video.read_video("clip.mp4", backend="torchcodec")  # torch tensor (CPU)
 video.write_mp4(frames, "out.mp4", fps=30)
 ```
 
-`backend="auto"` and `device="auto"` (the defaults) pick the fastest working path.
-`deeperfly run` decodes on the **CPU by default** and uploads each window to the
-GPU in one shot — within a few percent of GPU/NVDEC end to end, since the 2D
-detector (not decode) is the bottleneck. Opt into on-device NVDEC decode with
-`[pipeline.pose2d] decode_device = "cuda"` (it falls back to CPU if no GPU decoder
-is available). See the config comments and `deeperfly.video` docstrings for the
-full decoder details.
+`backend="auto"` (the default) picks the fastest installed decoder. `deeperfly
+run` decodes on the CPU and uploads each window to the detector device (the GPU,
+when present) in one shot — decode is not the bottleneck, the 2D detector forward
+is. Pick the read decoder with `[pipeline.pose2d] video_backend` and the output
+encoder with `[pipeline.visualization] video_backend`. See the config comments and
+`deeperfly.video` docstrings for the full details.

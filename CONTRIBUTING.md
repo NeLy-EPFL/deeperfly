@@ -23,25 +23,20 @@ without reinstalling. Run the CLI from the env with `uv run deeperfly ...`.
 
 ### Optional extras
 
-Layer GPU acceleration and faster video backends on top as needed (see
+Layer the alternative (CPU) video backends on top as needed (see
 [docs/video.md](docs/video.md) for the backends):
 
 ```bash
-uv sync --group test --extra cuda          # NVIDIA CUDA video-decode deps (Linux x86-64)
-uv sync --group test --extra torchcodec    # one optional video backend (repeat --extra for more)
+uv sync --group test --extra torchcodec        # one optional video backend
+uv sync --group test --extra video-reader-rs   # (repeat --extra for more)
 ```
 
 PyTorch, OpenCV and PyAV are core dependencies, so no extra is needed for the
 PyTorch detector backend (it uses CUDA / Apple Metal automatically) or the default
 OpenCV/PyAV video stack. The other cross-platform video backends are each their own
-extra (`video-reader-rs`, `torchcodec`); add the ones you want to exercise.
-
-`uv sync` installs the CPU `torchcodec` wheel from the lock. GPU/NVDEC decode needs
-the CUDA build, which uv selects only at install time via `--torch-backend` — fetch
-it into the synced env with `uv pip install --torch-backend=auto torchcodec` (see
-the [README](README.md) for the mechanism). Plain CPU decode needs nothing extra
-and is within a few percent end to end, since the detector — not decode — is the
-bottleneck.
+extra (`video-reader-rs`, `torchcodec`); add the ones you want to exercise. All
+video decode runs on the CPU — it is not the bottleneck (the detector is), so CPU
+decode is within a few percent end to end.
 
 ## Running the tests
 

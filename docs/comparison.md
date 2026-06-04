@@ -25,7 +25,7 @@ and the I/O is modern.
 | 3D correction | Pictorial structures (belief propagation) | **Triangulation** — RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT — optionally after a re-implemented pictorial-structures corrector (exact DP) |
 | Interface | PyQt **GUI** | **Headless CLI + library** (one merged `config.toml`) |
 | Result I/O | Pickle / custom | Self-contained **HDF5** (`PoseResult`) |
-| Acceleration | CUDA (PyTorch) | CUDA (JAX + NVDEC video) and Apple **Metal/MPS** |
+| Acceleration | CUDA (PyTorch) | CUDA (PyTorch detector) and Apple **Metal/MPS** |
 | Scope | Training + inference + GUI correction | **Inference only** (uses the published weights), headless |
 
 ## Component-by-component
@@ -109,10 +109,11 @@ objects, and visualization is matplotlib overlays + MP4 export.
 
 The geometry/BA core is JAX with float64 enabled, so projection, triangulation
 and the BA residual/Jacobian are JIT-compiled and vectorized. Detection batches
-all views through the network, **streams** frames in fixed-size windows (constant
-memory for arbitrarily long recordings), and can decode video straight on the
-GPU (NVDEC) and hand frames to JAX zero-copy via DLPack. CUDA acceleration is
-opt-in (`deeperfly[cuda]`); on Apple Silicon the detector runs on **Metal/MPS**.
+all views through the network and **streams** frames in fixed-size windows
+(constant memory for arbitrarily long recordings), decoding on the CPU and
+uploading each window to the detector device in one shot — decode is not the
+bottleneck. The PyTorch detector uses CUDA on NVIDIA GPUs automatically; on Apple
+Silicon it runs on **Metal/MPS**.
 
 ## What deeperfly intentionally drops
 

@@ -17,35 +17,34 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install deeperfly[cuda] --torch-backend=auto      # NVIDIA GPU
-uv tool install deeperfly --torch-backend=auto            # CPU-only box
+uv tool install deeperfly --torch-backend=auto
 ```
 
-`--torch-backend=auto` lets uv pick the PyTorch wheels (torch **and** the
-`torchcodec` video decoder) that match this machine: the CUDA build matching the
-installed driver on an NVIDIA GPU, or the lean CPU-only wheels where there's no
-GPU (so a CPU box skips the multi-gigabyte CUDA download). The 2D detector
-(PyTorch) then uses the GPU automatically on NVIDIA (CUDA) and Apple Silicon
-(Metal/MPS).
+`--torch-backend=auto` lets uv pick the PyTorch wheel that matches this machine:
+the CUDA build matching the installed driver on an NVIDIA GPU, or the lean
+CPU-only wheel where there's no GPU (so a CPU box skips the multi-gigabyte CUDA
+download). The 2D detector (PyTorch) then uses the GPU automatically on NVIDIA
+(CUDA) and Apple Silicon (Metal/MPS).
 
-The `cuda` extra adds the fastest GPU/NVDEC video decoder (`torchcodec`-on-CUDA);
-it needs `--torch-backend=auto` to fetch the CUDA build. Omit both the extra and
-the flag for plain CPU decode — decode is not the bottleneck (the detector is), so
-CPU decode is within a few percent end to end.
+Video decoding always runs on the CPU — it is not the bottleneck (the detector
+is), so CPU decode is within a few percent end to end. The base install reads and
+writes with PyAV/OpenCV; optional extras add alternative decoders (see
+[docs/video.md](docs/video.md)).
 
 To use deeperfly as a library, add it to your project instead. `uv add` has no
 `--torch-backend` flag, so set it for the environment (or add
 `[tool.uv]`\ `torch-backend = "auto"` to your `pyproject.toml`):
 
 ```bash
-UV_TORCH_BACKEND=auto uv add deeperfly[cuda]   # NVIDIA GPU (or drop [cuda] on CPU)
+UV_TORCH_BACKEND=auto uv add deeperfly
 ```
 
 ## Checking your install
 
 `deeperfly doctor` reports what this machine can actually run — inference backends,
-video read/write backends (in `backend="auto"` preference order), detector weights,
-and the default config path. Run it after installing to check that everything is set up correctly.
+video read/write backends (CPU decode, in `backend="auto"` preference order),
+detector weights, and the default config path. Run it after installing to check
+that everything is set up correctly.
 ```bash
 deeperfly doctor
 ```
@@ -67,7 +66,6 @@ inference
 
 video backends
   read              pyav, opencv, torchcodec
-  GPU decoders      torchcodec
   write             pyav, opencv
   not installed     video_reader_rs
 
@@ -79,9 +77,8 @@ config
   default config    /home/you/.venv/.../site-packages/deeperfly/data/default_config.toml
 ```
 
-On a CPU-only box `GPU inference` reads `not available -- CPU only`, `GPU decoders`
-shows `none (CPU decode only)`, and the weights show `not downloaded` until the
-first `deeperfly run` fetches them.
+On a CPU-only box `GPU inference` reads `not available -- CPU only`, and the
+weights show `not downloaded` until the first `deeperfly run` fetches them.
 
 ## Quickstart
 
@@ -171,7 +168,7 @@ for full walkthroughs.
 
 - [docs/library.md](docs/library.md) — the Python API: bundle adjustment, the pipeline, video I/O.
 - [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), the detector.
-- [docs/video.md](docs/video.md) — video decoding backends and on-GPU decode.
+- [docs/video.md](docs/video.md) — video read/write backends (CPU decode).
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.
 

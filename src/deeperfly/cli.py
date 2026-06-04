@@ -211,6 +211,11 @@ def _pose2d_config(config: dict) -> dict:
     return config.get("pipeline", {}).get("pose2d", {})
 
 
+def _visualization_config(config: dict) -> dict:
+    """The ``[pipeline.visualization]`` sub-table (empty if absent)."""
+    return config.get("pipeline", {}).get("visualization", {})
+
+
 #: Frame rate used when ``[pipeline].fps`` is unset and none can be detected from
 #: the recording (e.g. an image sequence carries no intrinsic rate). Matches the
 #: historical default.
@@ -393,23 +398,6 @@ def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
     return files
 
 
-def _frame_read_device(config: dict) -> str:
-    """Where to decode frames for the detector. Defaults to the CPU.
-
-    CPU decode is within a few percent of GPU/NVDEC once each window is uploaded in
-    one shot (see :func:`deeperfly.pose2d.inference._window_to_device`) -- decode is
-    never the bottleneck, the forward is -- and it keeps the decoder off the GPU and
-    out of the CUDA-video dependency stack (see ``dev/bench_video.py``). Opt into
-    on-device (NVDEC) decode, which feeds the network zero-copy (a GPU-decoded frame
-    is preprocessed and forwarded without leaving the GPU), with
-    ``[detector] decode_device = "cuda"`` (alias ``"gpu"``, or ``"auto"``); it is
-    worth it only on the fastest GPUs. ``read_frames`` still falls back to the CPU
-    if no GPU video backend can actually decode here.
-    """
-    det = _pose2d_config(config)
-    return det.get("decode_device", "cpu")  # "cpu" | "cuda"/"gpu" | "auto"
-
-
 def _camera_patterns(config: dict) -> dict[str, str]:
     """``camera-name -> [inputs] glob pattern``, in ``[cameras]`` order.
 
@@ -453,26 +441,24 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     from . import video
 
     backend = _pose2d_config(config).get("video_backend", "auto")
-    device = _frame_read_device(config)  # match detection (CPU by default)
     # Size the principal point on the *transformed* frame -- the detector and the
     # overlays use the [preprocess.*]-transformed footage, so a rot90 that swaps
     # H/W must swap here too.
     transforms = video.parse_frame_transforms(config)
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args, config):
-        head = video.read_frames(src, backend=backend, device=device, indices=[0])
+        head = video.read_frames(src, backend=backend, indices=[0])
         head = transforms.get(name, video.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 
 
-def _prefetch_windows(sources, *, backend, device, chunk, transforms=None, depth=1):
+def _prefetch_windows(sources, *, backend, chunk, transforms=None, depth=1):
     """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
 
-    A background producer decodes the next window while the consumer detects the
-    current one, so decode overlaps the GPU forward instead of running before it.
-    The win is largest for CPU decode (it runs on otherwise-idle cores fully in
-    parallel with the GPU); GPU decode shares the device, so it overlaps less.
+    A background producer decodes the next window (on the CPU) while the consumer
+    detects the current one, so decode runs on otherwise-idle cores in parallel
+    with the GPU forward instead of serially before it.
 
     ``transforms`` is an optional per-source :class:`~deeperfly.video.FrameTransform`
     (aligned to ``sources``) applied to each decoded window before it is yielded,
@@ -501,7 +487,6 @@ def _prefetch_windows(sources, *, backend, device, chunk, transforms=None, depth
                         video.read_frames(
                             s,
                             backend=backend,
-                            device=device,
                             start=done,
                             stop=done + chunk,
                         )
@@ -534,10 +519,10 @@ def _prefetch_windows(sources, *, backend, device, chunk, transforms=None, depth
 def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     """Stream 2D detection over fixed-size frame windows -> ``(pts2d, conf, candidates)``.
 
-    Decodes and detects ``[detector] chunk_frames`` frames at a time per camera and
-    frees each window before the next, so peak frame memory is bounded by the chunk
-    size, **not** the recording length -- the key to handling long videos. On the
-    GPU path each window is decoded onto the device (NVDEC), detected zero-copy, and
+    Decodes (on the CPU) and detects ``[detector] chunk_frames`` frames at a time
+    per camera and frees each window before the next, so peak frame memory is
+    bounded by the chunk size, **not** the recording length -- the key to handling
+    long videos. Each window is uploaded to the detector device in one shot, then
     released. Per-window ``(V, w, ...)`` results are concatenated along time.
 
     End-of-file is taken from the decoder (a short or empty window), so it does not
@@ -550,7 +535,6 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
 
     det = _pose2d_config(config)
     backend = det.get("video_backend", "auto")
-    device = _frame_read_device(config)
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
     cam_sources = _camera_sources(args, config)
     sources = [src for _, src in cam_sources]
@@ -568,17 +552,16 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     # One-line summary instead of a per-camera/per-window read log (that spam is at
     # -vv now; see deeperfly.video.io). reader_name mirrors read_frames's dispatch
     # off the actual source (video file -> the decode backend; image folder/glob ->
-    # imageio/nvjpeg, *not* the video backend), so the reported decoder matches what
-    # really runs; guard since a forced GPU backend may be uninstalled.
+    # imageio, *not* the video backend), so the reported decoder matches what really
+    # runs; guard since a forced backend may be uninstalled.
     try:
-        reader = video.reader_name(sources[0], backend=backend, device=device)
+        reader = video.reader_name(sources[0], backend=backend)
     except Exception:  # noqa: BLE001
         reader = backend
     log.info(
-        "reading frames via '%s' backend: %d/read per camera (device=%s), forward batch %d",
+        "reading frames via '%s' backend: %d/read per camera, forward batch %d",
         reader,
         chunk,
-        device,
         batch_size,
     )
 
@@ -594,7 +577,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
                 bar.advance(task)
 
         for window, _ in _prefetch_windows(
-            sources, backend=backend, device=device, chunk=chunk, transforms=transforms
+            sources, backend=backend, chunk=chunk, transforms=transforms
         ):
             if want_candidates:
                 p, c, cand = inference.detect_candidates_sequence(
@@ -1080,7 +1063,9 @@ def _stage_visualization(
         return
 
     input_fps = _resolve_fps(args, config)
-    backend = _pose2d_config(config).get("video_backend", "auto")
+    # The visualization stage *writes* MP4s, so it has its own encoder backend,
+    # separate from [pipeline.pose2d].video_backend (which reads input footage).
+    backend = _visualization_config(config).get("video_backend", "auto")
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
@@ -1761,7 +1746,7 @@ def _fmt_bytes(n: int) -> str:
 def _by_priority(available, *orders) -> list[str]:
     """``available`` backend names in their ``backend="auto"`` preference order.
 
-    Walks each preference tuple in ``orders`` (e.g. the CPU then GPU read order),
+    Walks each preference tuple in ``orders`` (e.g. the read order),
     keeping the first occurrence of each installed backend, then appends any
     remaining installed ones (alphabetically) so nothing is dropped. Mirrors how
     ``select_reader``/``select_writer`` actually pick a backend, so the report
@@ -1838,8 +1823,8 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     Covers package version + location, the Python/OS, whether CPU/GPU inference
     is available (torch CUDA/MPS; JAX is CPU-only, for geometry), the installed
-    video read/write backends (flagging GPU/NVDEC decoders), whether the detector
-    weights have been downloaded and where, and the default config path. The
+    video read/write backends (all CPU decode), whether the detector weights have
+    been downloaded and where, and the default config path. The
     framework imports are lazy and each probe is guarded, so a missing or broken
     optional piece is reported rather than crashing the command.
     """
@@ -1848,7 +1833,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     from . import video
     from .pose2d import backends, download
-    from .video.base import CPU_READ_ORDER, GPU_READ_ORDER, WRITE_ORDER
+    from .video.base import READ_ORDER, WRITE_ORDER
 
     _doctor_header("deeperfly")
     try:
@@ -1902,10 +1887,8 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_header("video backends")
     read_avail = video.available_read_backends()
     write_avail = video.available_write_backends()
-    read = _by_priority(read_avail, CPU_READ_ORDER, GPU_READ_ORDER)
-    gpu_read = [b for b in GPU_READ_ORDER if b in read_avail]
+    read = _by_priority(read_avail, READ_ORDER)
     _doctor_row("read", ", ".join(read) or "none")
-    _doctor_row("GPU decoders", ", ".join(gpu_read) or "none (CPU decode only)")
     _doctor_row("write", ", ".join(_by_priority(write_avail, WRITE_ORDER)) or "none")
     missing = sorted(
         set(video.list_read_backends() + video.list_write_backends())

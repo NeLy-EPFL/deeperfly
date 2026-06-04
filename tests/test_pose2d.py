@@ -124,9 +124,9 @@ def test_preprocess_flip_commutes_with_resize():
 
 
 def test_preprocess_accepts_on_device_tensor():
-    # A GPU-decoded frame arrives as a torch.Tensor; preprocess must keep it on
-    # the tensor's device and produce the same result as the NumPy path.
-    # Exercised on the CPU here, so no GPU is required.
+    # The torchcodec reader hands frames over as a torch.Tensor; preprocess must
+    # keep them on the tensor's device and produce the same result as the NumPy
+    # path. Exercised on the CPU here, so no GPU is required.
     rng = np.random.default_rng(0)
     img = rng.integers(0, 256, size=(96, 128, 3), dtype=np.uint8)
     from_numpy = np.asarray(inference.preprocess(img))
@@ -135,8 +135,8 @@ def test_preprocess_accepts_on_device_tensor():
 
 
 def test_detect_accepts_tensor_frames(model):
-    # The whole detect() path must accept on-device (torch.Tensor) frames and match
-    # the NumPy result -- the zero-copy GPU decode handoff, verified on the CPU.
+    # The whole detect() path must accept torch.Tensor frames (as the torchcodec
+    # reader produces) and match the NumPy result -- verified on the CPU.
     sides, flips = inference.fly_camera_layout(["rh", "lf"])
     rng = np.random.default_rng(1)
     images = [rng.uniform(size=(96, 128, 3)).astype(np.float32) for _ in range(2)]

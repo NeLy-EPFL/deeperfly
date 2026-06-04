@@ -16,7 +16,6 @@ from ..base import (
     WriterBackend,
     register_reader,
     register_writer,
-    require_cpu,
 )
 
 
@@ -24,12 +23,10 @@ from ..base import (
 class PyAVReader(ReaderBackend):
     name = "pyav"
     requires = ("av",)
-    supports_gpu = False
     supports_seek = True
 
     @staticmethod
-    def _read_sequential(path, device, start, stop, step):
-        require_cpu(device, "pyav")
+    def _read_sequential(path, start, stop, step):
         import av
 
         out = []
@@ -46,8 +43,7 @@ class PyAVReader(ReaderBackend):
         return np.stack(out)
 
     @classmethod
-    def _read_indices(cls, path, device, indices):
-        require_cpu(device, "pyav")
+    def _read_indices(cls, path, indices):
         import av
 
         picked: dict[int, np.ndarray] = {}

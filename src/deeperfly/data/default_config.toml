@@ -126,17 +126,12 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 
 # Detector: the 2D pose detector and frame reader.
 [pipeline.pose2d]
-# frame decoder backend. "auto" = fastest installed *frame-accurate* decoder for
-# `decode_device` (CPU: pyav -- the in-process default -- then opencv/torchcodec/
-# video_reader_rs; GPU/NVDEC: torchcodec). Force one with e.g.
-# "torchcodec" | "video_reader_rs" | "pyav" | "opencv".
+# Frame decoder backend for reading input videos (all decode on the CPU). "auto" =
+# fastest installed *frame-accurate* decoder (pyav -- the in-process default --
+# then opencv/torchcodec/video_reader_rs). Force one with e.g.
+# "torchcodec" | "video_reader_rs" | "pyav" | "opencv". Each window is uploaded to
+# the detector device in one shot -- decode is not the bottleneck, the forward is.
 video_backend = "auto"
-# Where to decode. "cpu" (default) decodes on the CPU and uploads each window to
-# the GPU in one shot -- within a few percent of on-GPU NVDEC, since the detector
-# (not decode) is the bottleneck. "cuda" (or "auto") decodes on the GPU/NVDEC and
-# feeds the network zero-copy; worth it only on the fastest GPUs, needs the `cuda`
-# extra (torchcodec on CUDA), and falls back to the CPU otherwise.
-decode_device = "cpu"
 # Detector forward precision. "float32" (default) is the reference. "float16" runs
 # the forward under CUDA autocast -- ~1.5-2x faster on the GPU with negligible
 # keypoint drift (pose comes from arg-max + sub-pixel refinement of the heatmaps).
@@ -237,6 +232,11 @@ method = "gaussian"      # gaussian | one_euro
 # ---------------------------------------------------------------------------
 [pipeline.visualization]
 background = "black"
+# Encoder backend for *writing* the output videos (separate from
+# [pipeline.pose2d].video_backend, which reads input footage). "auto" = fastest
+# installed writer (pyav -- in-process H.264 -- then opencv). Force one with
+# "pyav" | "opencv".
+video_backend = "auto"
 # output_fps = 30        # explicit output fps for every video (per-video override below)
 # speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
 

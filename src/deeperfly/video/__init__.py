@@ -1,20 +1,17 @@
 """Frame I/O and MP4 rendering with pluggable backends.
 
-Reading and writing dispatch over a backend registry so you can choose where
-decoding happens and what frames live in. ``backend="auto"`` and ``device="auto"``
-(both defaults) pick the fastest available path: GPU/NVDEC decode when a GPU and a
-GPU backend are present, otherwise the fastest installed CPU decoder (``pyav``,
-the in-process core default).
+Reading and writing dispatch over a backend registry so you can choose the
+decoder/encoder. ``backend="auto"`` (the default) picks the fastest installed
+backend -- ``pyav``, the in-process core default, first. All decoding runs on
+the CPU.
 
-- CPU readers: ``pyav`` (default), ``opencv``, ``torchcodec``,
-  ``video_reader_rs``.
-- GPU reader (frames stay a device tensor): ``torchcodec``.
+- Readers: ``pyav`` (default), ``opencv``, ``torchcodec``, ``video_reader_rs``.
 - Writers: ``pyav`` (default; in-process H.264), ``opencv``.
 
 >>> from deeperfly import video
 >>> frames = video.read_video("clip.mp4")                       # auto: NumPy (host)
 >>> frames = video.read_video("clip.mp4", backend="pyav")       # frame-accurate
->>> frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")
+>>> frames = video.read_video("clip.mp4", backend="torchcodec") # torch tensor (CPU)
 >>> video.write_mp4(frames, "out.mp4", fps=30, backend="opencv")
 >>> video.available_read_backends()         # varies with installed extras
 ['opencv', 'pyav']
@@ -29,10 +26,8 @@ from __future__ import annotations
 from .base import (
     available_read_backends,
     available_write_backends,
-    cuda_available,
     list_read_backends,
     list_write_backends,
-    resolve_device,
     select_reader,
     select_writer,
     to_numpy,
@@ -67,8 +62,6 @@ __all__ = [
     "to_torch",
     "select_reader",
     "select_writer",
-    "resolve_device",
-    "cuda_available",
     "list_read_backends",
     "list_write_backends",
     "available_read_backends",

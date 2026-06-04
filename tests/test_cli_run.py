@@ -1121,15 +1121,13 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     rng = np.random.default_rng(1)
     win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)
 
-    def fake_read_frames(src, *, backend, device, start, stop):
+    def fake_read_frames(src, *, backend, start, stop):
         return win.copy() if start == 0 else np.empty((0, 4, 6, 3), np.uint8)
 
     monkeypatch.setattr(video, "read_frames", fake_read_frames)
     t = video.FrameTransform(fliplr=True, rot90=1)
     windows = list(
-        cli._prefetch_windows(
-            ["camA"], backend="auto", device="cpu", chunk=2, transforms=[t]
-        )
+        cli._prefetch_windows(["camA"], backend="auto", chunk=2, transforms=[t])
     )
     assert len(windows) == 1
     window, n = windows[0]
@@ -1149,7 +1147,7 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     monkeypatch.setattr(
         video,
         "read_frames",
-        lambda src, backend="auto", device="cpu", indices=None: head,
+        lambda src, backend="auto", indices=None: head,
     )
     cfg = {"preprocess": {"rh": {"rot90": 1}}, "pipeline": {"pose2d": {}}}
     sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)
