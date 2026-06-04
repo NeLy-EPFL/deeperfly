@@ -47,20 +47,28 @@ azimuth_deg = 120
 
 
 # ---------------------------------------------------------------------------
-# Inputs: how files under the recording dir/glob map to cameras. For each camera, deeperfly
-# looks for a video "<prefix>.<ext>" (mp4/avi/mov/...), then a subdirectory
-# "<prefix>/" of images, then the image sequence "<prefix>*" (e.g.
-# camera_0_img_000123.jpg). A camera with no entry here defaults to its own name
-# as the prefix. Edit these to match your recording's filenames.
+# Inputs: how files in the recording directory map to cameras. Each value is a
+# filename glob, matched in that directory:
+#   - a value that names a file ("camera_0.mp4", a known footage suffix) or carries
+#     its own wildcard ("camera_0/*", "cam*") is used as-is;
+#   - a bare name ("camera_0") is a prefix, i.e. "camera_0*", so it matches a video
+#     "camera_0.mp4" or an image sequence "camera_0_000123.jpg ...".
+# A camera's footage is either a single video file or an image sequence (sorted
+# naturally, so img2 precedes img10). If a camera's glob matches several *video*
+# files only the first is used (warned); several extensions keep the highest
+# priority one (mp4/avi/mov/mkv/webm/m4v, then png/jpg/.../webp). A directory is a
+# recording only when every camera matches footage and all cameras share the same
+# file and frame count. A camera with no entry here defaults to its own name as the
+# prefix. Edit these to match your recording's filenames.
 # ---------------------------------------------------------------------------
 [inputs]
-rh = "camera_0"
-rm = "camera_1"
-rf = "camera_2"
-f  = "camera_3"
-lf = "camera_4"
-lm = "camera_5"
-lh = "camera_6"
+rh = "camera_0.mp4"
+rm = "camera_1.mp4"
+rf = "camera_2.mp4"
+f  = "camera_3.mp4"
+lf = "camera_4.mp4"
+lm = "camera_5.mp4"
+lh = "camera_6.mp4"
 
 
 # ---------------------------------------------------------------------------

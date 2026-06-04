@@ -14,7 +14,7 @@ import pytest
 
 from deeperfly import cli
 from deeperfly.cameras import CameraGroup
-from deeperfly.cli import DEFAULT_CONFIG_PATH, _camera_source
+from deeperfly.cli import DEFAULT_CONFIG_PATH, _camera_files, _camera_patterns
 from deeperfly.skeleton import Skeleton
 
 
@@ -73,29 +73,62 @@ def test_template_skeleton_matches_fly():
 # -- [inputs] filename -> camera resolution ----------------------------------
 
 
-def test_camera_source_finds_video(tmp_path):
+def test_camera_files_finds_video(tmp_path):
+    # A bare name is a prefix, so "camera_0" globs "camera_0*" and matches the video.
     (tmp_path / "camera_0.mp4").write_bytes(b"x")
-    assert _camera_source(tmp_path, "camera_0") == tmp_path / "camera_0.mp4"
+    assert _camera_files(tmp_path, "camera_0") == [tmp_path / "camera_0.mp4"]
 
 
-def test_camera_source_finds_image_sequence(tmp_path):
+def test_camera_files_explicit_filename(tmp_path):
+    # A value naming a file is matched verbatim (not used as a prefix).
+    (tmp_path / "camera_0.mp4").write_bytes(b"x")
+    (tmp_path / "camera_0_extra.mp4").write_bytes(b"x")
+    assert _camera_files(tmp_path, "camera_0.mp4") == [tmp_path / "camera_0.mp4"]
+
+
+def test_camera_files_finds_image_sequence_natsorted(tmp_path):
+    # An image sequence is the whole set of files, sorted naturally (2 before 10).
+    for i in (0, 2, 10):
+        (tmp_path / f"camera_0_img_{i}.jpg").write_bytes(b"x")
+    assert _camera_files(tmp_path, "camera_0") == [
+        tmp_path / "camera_0_img_0.jpg",
+        tmp_path / "camera_0_img_2.jpg",
+        tmp_path / "camera_0_img_10.jpg",
+    ]
+
+
+def test_camera_files_subdir_via_explicit_glob(tmp_path):
+    # A subdirectory of images is addressed with an explicit "<name>/*" glob.
+    sub = tmp_path / "camera_0"
+    sub.mkdir()
+    (sub / "f0.png").write_bytes(b"x")
+    (sub / "f1.png").write_bytes(b"x")
+    assert _camera_files(tmp_path, "camera_0/*") == [sub / "f0.png", sub / "f1.png"]
+
+
+def test_camera_files_multiple_videos_keeps_first_and_warns(tmp_path, caplog):
+    # Video footage is one file per camera: only the first matching video is used.
     for i in range(3):
-        (tmp_path / f"camera_0_img_{i:06d}.jpg").write_bytes(b"x")
-    src = _camera_source(tmp_path, "camera_0")
-    assert str(src) == str(tmp_path / "camera_0*")
+        (tmp_path / f"camera_0_{i}.mp4").write_bytes(b"x")
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        files = _camera_files(tmp_path, "camera_0")
+    assert files == [tmp_path / "camera_0_0.mp4"]
+    assert any("using only the first" in r.message for r in caplog.records)
 
 
-def test_camera_source_finds_image_subdir(tmp_path):
-    (tmp_path / "camera_0").mkdir()
-    assert _camera_source(tmp_path, "camera_0") == tmp_path / "camera_0"
+def test_camera_files_mixed_extensions_keeps_priority(tmp_path):
+    # Video outranks image when both match the prefix.
+    (tmp_path / "camera_0.mp4").write_bytes(b"x")
+    (tmp_path / "camera_0.png").write_bytes(b"x")
+    assert _camera_files(tmp_path, "camera_0") == [tmp_path / "camera_0.mp4"]
 
 
-def test_camera_source_falls_back_to_name(tmp_path):
-    # An unmapped camera uses its own name as the prefix.
-    (tmp_path / "rh.mp4").write_bytes(b"x")
-    assert _camera_source(tmp_path, "rh") == tmp_path / "rh.mp4"
+def test_camera_files_missing_returns_empty(tmp_path):
+    # No raise: the caller decides what an absent camera means.
+    assert _camera_files(tmp_path, "camera_9") == []
 
 
-def test_camera_source_missing_raises(tmp_path):
-    with pytest.raises(SystemExit, match="no video or images for camera 'camera_9'"):
-        _camera_source(tmp_path, "camera_9")
+def test_camera_patterns_defaults_to_camera_name():
+    # An unmapped camera uses its own name as the pattern; [cameras] sets the order.
+    config = {"cameras": {"rh": {}, "lf": {}}, "inputs": {"rh": "cam0.mp4"}}
+    assert _camera_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

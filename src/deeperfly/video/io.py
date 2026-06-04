@@ -36,6 +36,12 @@ _JPEG_EXTS = (".jpg", ".jpeg")
 _VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")
 
 
+def _is_video_file(p: Path) -> bool:
+    """Whether ``p`` is an existing video file (so :func:`read_frames` decodes it as
+    a video rather than treating it as an image directory/glob/sequence)."""
+    return p.is_file() and p.suffix.lower() in _VIDEO_EXTS
+
+
 def read_video(
     path: str | Path,
     *,
@@ -249,8 +255,36 @@ def read_images(
     workers
         Decode thread count (default: number of CPUs, capped at the frame count).
     """
+    return _read_image_files(
+        list_image_files(pattern),
+        device=device,
+        indices=indices,
+        start=start,
+        stop=stop,
+        step=step,
+        workers=workers,
+    )
+
+
+def _read_image_files(
+    files: list[Path],
+    *,
+    device: str = "auto",
+    indices: list[int] | None = None,
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    workers: int | None = None,
+) -> Float[np.ndarray, "T H W 3"]:
+    """Decode an already-listed image sequence into ``(T, H, W, 3)`` uint8 RGB.
+
+    The shared tail of :func:`read_images` (which lists/sorts the files) and the
+    explicit-file-list path of :func:`read_frames` (which is handed the files a
+    recording resolved up front, preserving their natural order). ``files`` is
+    sliced by ``indices`` / ``start:stop:step`` exactly as :func:`read_images`.
+    """
     device = "cpu" if device == "auto" else canonical_device(device)  # "gpu" -> "cuda"
-    files = _subset(list_image_files(pattern), indices, start, stop, step)
+    files = _subset(list(files), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")
     out = (
@@ -270,7 +304,7 @@ def read_images(
 
 
 def read_frames(
-    path: str | Path,
+    source: str | Path | list[Path],
     *,
     backend: str = "auto",
     device: str = "auto",
@@ -282,13 +316,46 @@ def read_frames(
 ) -> Float[np.ndarray, "T H W 3"]:
     """Read frames from a video file **or** an image sequence into ``(T, H, W, 3)``.
 
-    Dispatches on ``path``: a video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes
-    to :func:`read_video` (``backend`` selects the decoder); a directory or glob
-    of images goes to :func:`read_images` (``workers`` sets decode parallelism).
-    Both honor ``device`` (CPU NumPy or GPU tensor) and the same frame selection.
+    Dispatches on ``source``:
+
+    - a single video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes to
+      :func:`read_video` (``backend`` selects the decoder);
+    - a directory or glob of images goes to :func:`read_images` (``workers`` sets
+      decode parallelism);
+    - an explicit list of footage files -- one video file, or an ordered image
+      sequence the caller has already resolved (``deeperfly run`` resolves each
+      camera's files up front, naturally sorted) -- is read in the given order
+      without re-listing the directory.
+
+    All honor ``device`` (CPU NumPy or GPU tensor) and the same frame selection.
     """
-    p = Path(path)
-    if p.is_file() and p.suffix.lower() in _VIDEO_EXTS:
+    if isinstance(source, (list, tuple)):
+        files = [Path(f) for f in source]
+        if not files:
+            raise ValueError("read_frames got an empty file list")
+        if _is_video_file(files[0]):
+            # A camera's video footage is a single file (the resolver keeps just the
+            # first when several match), so decode that one.
+            return read_video(
+                files[0],
+                backend=backend,
+                device=device,
+                start=start,
+                stop=stop,
+                step=step,
+                indices=indices,
+            )
+        return _read_image_files(
+            files,
+            device=device,
+            indices=indices,
+            start=start,
+            stop=stop,
+            step=step,
+            workers=workers,
+        )
+    p = Path(source)
+    if _is_video_file(p):
         return read_video(
             p,
             backend=backend,
@@ -299,7 +366,7 @@ def read_frames(
             indices=indices,
         )
     return read_images(
-        path,
+        source,
         device=device,
         indices=indices,
         start=start,
@@ -310,7 +377,7 @@ def read_frames(
 
 
 def reader_name(
-    path: str | Path, *, backend: str = "auto", device: str = "auto"
+    path: str | Path | list[Path], *, backend: str = "auto", device: str = "auto"
 ) -> str:
     """Name of the decoder :func:`read_frames` would actually use for ``path``.
 
@@ -321,18 +388,21 @@ def reader_name(
     - a video file (``.mp4`` / ``.avi`` ...) resolves through
       :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / a GPU
       backend, honoring ``backend`` and ``device``);
-    - an image directory or glob is decoded by :func:`read_images`, which ignores
-      the video backend: ``imageio`` on the CPU, or ``nvjpeg`` (torchvision) for an
-      all-JPEG set on a CUDA device (it falls back to CPU ``imageio`` only if that
-      torchvision build lacks GPU JPEG support).
+    - an image directory, glob or explicit file list is decoded by
+      :func:`read_images`, which ignores the video backend: ``imageio`` on the CPU,
+      or ``nvjpeg`` (torchvision) for an all-JPEG set on a CUDA device (it falls
+      back to CPU ``imageio`` only if that torchvision build lacks GPU JPEG support).
     """
-    p = Path(path)
-    if p.is_file() and p.suffix.lower() in _VIDEO_EXTS:
+    if isinstance(path, (list, tuple)):
+        files = [Path(f) for f in path]
+        if files and _is_video_file(files[0]):
+            return select_reader(backend, device=device).name
+    elif _is_video_file(Path(path)):
         return select_reader(backend, device=device).name
+    else:
+        files = list_image_files(path)
     dev = "cpu" if device == "auto" else canonical_device(device)  # match read_images
-    if is_gpu_device(dev) and all(
-        f.suffix.lower() in _JPEG_EXTS for f in list_image_files(path)
-    ):
+    if is_gpu_device(dev) and all(f.suffix.lower() in _JPEG_EXTS for f in files):
         return "nvjpeg"
     return "imageio"
 
@@ -371,7 +441,7 @@ def _count_imageio(p: Path) -> int:
     return int(n)
 
 
-def count_frames(path: str | Path) -> int | None:
+def count_frames(path: str | Path | list[Path]) -> int | None:
     """Frame count of a video file or image sequence -- ``None`` if unknown.
 
     Image sequences count their files exactly; videos read it from container
@@ -381,9 +451,19 @@ def count_frames(path: str | Path) -> int | None:
     hint** for a progress bar's total: callers
     stream frames and detect end-of-file from the decoder itself, so an off-by-a-few
     count (rare, container-dependent) or a ``None`` never affects correctness.
+
+    Accepts the same sources as :func:`read_frames`, including an explicit list of
+    footage files (one video, or an image sequence counted by its length).
     """
+    if isinstance(path, (list, tuple)):
+        files = [Path(f) for f in path]
+        if not files:
+            return 0
+        if not _is_video_file(files[0]):
+            return len(files)  # image sequence: one frame per file
+        return count_frames(files[0])  # video footage is a single file
     p = Path(path)
-    if not (p.is_file() and p.suffix.lower() in _VIDEO_EXTS):
+    if not _is_video_file(p):
         try:
             return len(list_image_files(path))
         except FileNotFoundError:
@@ -417,17 +497,23 @@ def _fps_opencv(p: Path) -> float | None:
     return float(fps) if fps and fps > 0 else None
 
 
-def video_fps(path: str | Path) -> float | None:
+def video_fps(path: str | Path | list[Path]) -> float | None:
     """Frame rate of a video file in frames/sec -- ``None`` if unknown.
 
     Read from container metadata (PyAV, the core default -- or OpenCV, also core,
     as a fallback); both are cheap and need no pixel decode. Image *sequences*
     carry no intrinsic frame rate, so they return ``None``. Used to detect the
     playback rate of a recording when ``[pipeline].fps`` is left unset and as the
-    base rate for the visualization ``speed`` factor.
+    base rate for the visualization ``speed`` factor. Accepts the same sources as
+    :func:`read_frames` (a list resolves to its single video file, else ``None``).
     """
+    if isinstance(path, (list, tuple)):
+        files = [Path(f) for f in path]
+        if files and _is_video_file(files[0]):
+            return video_fps(files[0])  # parts share a rate; read it from the first
+        return None
     p = Path(path)
-    if not (p.is_file() and p.suffix.lower() in _VIDEO_EXTS):
+    if not _is_video_file(p):
         return None
     for probe in (_fps_pyav, _fps_opencv):
         try:

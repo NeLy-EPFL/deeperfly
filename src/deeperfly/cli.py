@@ -43,6 +43,8 @@ import logging
 import os
 import sys
 import tomllib
+from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -262,7 +264,7 @@ def _detect_input_fps(args: argparse.Namespace, config: dict) -> float | None:
     from . import video
 
     try:
-        sources = [src for _, src in _camera_sources(args.input, config)]
+        sources = [src for _, src in _camera_sources(args, config)]
     except SystemExit:
         return None
     for src in sources:
@@ -349,27 +351,82 @@ def _smoothing_options(config: dict) -> tuple[str, dict]:
 # -- input -> camera frame resolution ----------------------------------------
 
 
-def _camera_source(root: str | Path, prefix: str) -> Path | str:
-    """Locate a camera's frames under ``root`` given its filename ``prefix``.
+def _footage_exts() -> tuple[str, ...]:
+    """Footage extensions deeperfly can read, in priority order (video before image).
 
-    Tries, in order, a video file ``<prefix>.<ext>``, a subdirectory
-    ``<prefix>/`` of images, then the image sequence glob ``<prefix>*`` (e.g.
-    ``camera_0_img_000123.jpg``). Returns a path/glob ready for
-    :func:`deeperfly.video.read_frames`; raises ``SystemExit`` if nothing matches.
+    Used to recognize a camera's frames and, when a recording folder mixes several,
+    to pick the one to keep (the earliest here wins). Imported lazily so this module
+    does not pull in the video stack just to resolve filenames.
     """
+    from .video.io import _IMAGE_EXTS, _VIDEO_EXTS
+
+    return _VIDEO_EXTS + _IMAGE_EXTS
+
+
+def _is_video_ext(suffix: str) -> bool:
+    """Whether a file ``suffix`` (e.g. ``.mp4``) is a video extension -- as opposed to
+    an image one. Video footage is a single file per camera; images form a sequence."""
     from .video.io import _VIDEO_EXTS
 
-    root = Path(root)
-    for ext in _VIDEO_EXTS:
-        cand = root / f"{prefix}{ext}"
-        if cand.exists():
-            return cand
-    subdir = root / prefix
-    if subdir.is_dir():
-        return subdir
-    if sorted(glob.glob(str(root / f"{prefix}*"))):
-        return str(root / f"{prefix}*")
-    raise SystemExit(f"no video or images for camera {prefix!r} under {root}")
+    return suffix.lower() in _VIDEO_EXTS
+
+
+def _camera_glob(pattern: str) -> str:
+    """A camera's ``[inputs]`` value as a filename glob.
+
+    A value that already names a file (a known footage suffix like
+    ``camera_0.mp4``) or carries its own wildcard (``camera_0/*``, ``cam*``) is used
+    verbatim; a bare name (``camera_0``) is treated as a *prefix*, so ``camera_0``
+    becomes ``camera_0*`` and matches both ``camera_0.mp4`` and an image sequence
+    ``camera_0_000123.jpg ...``.
+    """
+    has_wildcard = any(c in pattern for c in "*?[")
+    if has_wildcard or Path(pattern).suffix.lower() in _footage_exts():
+        return pattern
+    return f"{pattern}*"
+
+
+def _camera_files(root: Path, pattern: str) -> list[Path]:
+    """A camera's footage files under ``root`` matching its ``[inputs]`` ``pattern``.
+
+    Globs ``pattern`` (see :func:`_camera_glob`), keeps only files with a known
+    footage extension, and -- when several extensions match (e.g. a stray
+    ``camera_0.png`` next to ``camera_0.mp4``) -- keeps the single highest-priority
+    one. Naturally sorted (so ``img2`` precedes ``img10``). Video footage is a single
+    file, so if several videos match only the first is kept (warned); images stay as
+    the whole sequence. Empty when nothing footage-like matches, so the caller can
+    treat the camera as absent.
+    """
+    from natsort import natsorted
+
+    exts = _footage_exts()
+    files = [
+        p
+        for p in root.glob(_camera_glob(pattern))
+        if p.is_file() and p.suffix.lower() in exts
+    ]
+    present = {p.suffix.lower() for p in files}
+    if len(present) > 1:
+        keep = min(present, key=exts.index)
+        files = [p for p in files if p.suffix.lower() == keep]
+    return _first_if_video(root, pattern, natsorted(files))
+
+
+def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
+    """Reduce a camera's video footage to its first file (warning), leaving an image
+    sequence untouched -- a camera's video is one file, but images are a sequence."""
+    if len(files) > 1 and _is_video_ext(files[0].suffix):
+        log.warning(
+            "recording %s: camera %s matches %d video files %s; using only the first "
+            "(%s) -- video footage is a single file per camera",
+            root,
+            name,
+            len(files),
+            [p.name for p in files],
+            files[0].name,
+        )
+        return files[:1]
+    return files
 
 
 def _frame_read_device(config: dict) -> str:
@@ -393,16 +450,38 @@ def _frame_read_device(config: dict) -> str:
     return device  # "cuda"/"gpu" / "auto": opt-in on-device decode for the JAX backend
 
 
-def _camera_sources(
-    input_dir: str | Path, config: dict
-) -> list[tuple[str, Path | str]]:
-    """``(name, source)`` per camera (in camera order), mapped via ``[inputs]``."""
-    root = Path(input_dir)
+def _camera_patterns(config: dict) -> dict[str, str]:
+    """``camera-name -> [inputs] glob pattern``, in ``[cameras]`` order.
+
+    A camera with no ``[inputs]`` entry defaults to its own name as the pattern.
+    Falls back to the ``[inputs]`` keys when the config carries no ``[cameras]``
+    table (the recording-discovery configs in the tests do this).
+    """
     inputs = config.get("inputs", {})
-    return [
-        (name, _camera_source(root, inputs.get(name, name)))
-        for name in config.get("cameras", {})
-    ]
+    names = config.get("cameras", {}) or inputs
+    return {name: inputs.get(name, name) for name in names}
+
+
+def _camera_sources(
+    args: argparse.Namespace, config: dict
+) -> list[tuple[str, list[Path]]]:
+    """``(name, footage-files)`` per camera (in ``[cameras]`` order).
+
+    Prefers the files ``deeperfly run`` already resolved for this recording
+    (``args.sources``, see :func:`_resolve_recordings`) so the footage is globbed
+    once per run; otherwise -- a library caller that set only ``args.input`` -- it
+    resolves each camera from ``args.input`` with the ``[inputs]`` patterns. With
+    neither, every camera resolves to an empty list. Each source is the list passed
+    to :func:`deeperfly.video.read_frames` (a single video file, or an image sequence).
+    """
+    patterns = _camera_patterns(config)
+    pre = getattr(args, "sources", None)
+    if pre and all(name in pre for name in patterns):
+        return [(name, pre[name]) for name in patterns]
+    root = getattr(args, "input", None)
+    if root is None:
+        return [(name, []) for name in patterns]
+    return [(name, _camera_files(Path(root), pat)) for name, pat in patterns.items()]
 
 
 def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
@@ -420,7 +499,7 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     # H/W must swap here too.
     transforms = video.parse_frame_transforms(config)
     sizes: dict[str, tuple[int, int]] = {}
-    for name, src in _camera_sources(args.input, config):
+    for name, src in _camera_sources(args, config):
         head = video.read_frames(src, backend=backend, device=device, indices=[0])
         head = transforms.get(name, video.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
@@ -513,7 +592,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     backend = det.get("video_backend", "auto")
     device = _frame_read_device(config)
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
-    cam_sources = _camera_sources(args.input, config)
+    cam_sources = _camera_sources(args, config)
     sources = [src for _, src in cam_sources]
     # Apply each camera's [preprocess.*] transform to its decoded window, so the
     # detector sees the corrected orientation (and 2D points land in that frame).
@@ -798,13 +877,7 @@ def _stage_pose2d(
     # stage (BA, pictorial, triangulation) see the same visibility-masked points.
     pts2d = apply_visibility(pts2d, skeleton, cameras.names)
 
-    result = PoseResult(
-        cameras=cameras,
-        skeleton=skeleton,
-        pts2d=pts2d,
-        conf=conf,
-        meta={"input": str(Path(args.input).resolve())},
-    )
+    result = PoseResult(cameras=cameras, skeleton=skeleton, pts2d=pts2d, conf=conf)
     return result, candidates, None, image_sizes
 
 
@@ -966,11 +1039,11 @@ def _source_view_frames(
     """Per-view footage for the visualization stage's ``imshow`` panels.
 
     Uses ``in_memory`` frames (a list indexed by camera order) when available;
-    otherwise re-sources each requested view from a recording, resolving the root
-    in order: the run's own input recording (the positional argument) if it exists
-    -> the recording path stored in ``result.meta`` (if it still exists) -> error.
-    So a resume that needs the original frames just re-passes the recording:
-    ``deeperfly run <recording> -o <outdir>``.
+    otherwise the footage ``deeperfly run`` resolved for this recording up front
+    (``args.sources``). A resume that re-renders the videos just re-passes the
+    recording (``deeperfly run <recording> --overwrite visualization``), which
+    re-resolves the footage exactly the same way -- so nothing about the source
+    recording needs to be stored in the result. Errors if neither is available.
     """
     from . import video
 
@@ -981,6 +1054,7 @@ def _source_view_frames(
     # transformed-frame coordinates; the overlay footage must match (apply the
     # same per-camera [preprocess.*] transform).
     transforms = video.parse_frame_transforms(config)
+    backend = _pose2d_config(config).get("video_backend", "auto")
 
     def transform(v, frames):
         return transforms.get(v, video.FrameTransform()).apply(frames)
@@ -988,31 +1062,18 @@ def _source_view_frames(
     if in_memory is not None:
         return {v: transform(v, in_memory[names.index(v)]) for v in views}
 
-    inp = getattr(args, "input", None)
-    if inp and Path(inp).exists():
-        root = inp
-        log.info("sourcing overlay frames from the input recording %s", root)
-    elif (stored := (result.meta or {}).get("input")) and Path(stored).exists():
-        root = stored
-        log.info(
-            "sourcing overlay frames from the recording stored in the result %s", root
-        )
-    else:
-        raise SystemExit(
-            "image (imshow) panels need the original frames, but none are in memory "
-            "and no recording is available. Re-run with the recording as the input "
-            "('deeperfly run <recording> -o <outdir>'), or drop the imshow panels "
-            "from [[pipeline.visualization.videos]]."
-        )
-    inputs = config.get("inputs", {})
-    backend = _pose2d_config(config).get("video_backend", "auto")
-    return {
-        v: transform(
-            v,
-            video.read_frames(_camera_source(root, inputs.get(v, v)), backend=backend),
-        )
-        for v in views
-    }
+    sources = getattr(args, "sources", None) or {}
+    if all(sources.get(v) for v in views):
+        return {
+            v: transform(v, video.read_frames(sources[v], backend=backend))
+            for v in views
+        }
+    raise SystemExit(
+        "image (imshow) panels need the original frames, but none are in memory and "
+        "the run resolved no footage. Re-run with the recording as the input "
+        "('deeperfly run <recording> --overwrite visualization'), or drop the imshow "
+        "panels from [[pipeline.visualization.videos]]."
+    )
 
 
 def _stage_visualization(
@@ -1151,23 +1212,140 @@ def _has_glob(pattern: str) -> bool:
     return any(c in pattern for c in "*?[")
 
 
-def _is_recording(root: Path, config: dict) -> bool:
-    """Whether ``root`` directly holds footage for every configured camera.
+@dataclass(frozen=True)
+class Recording:
+    """One unit of work: a camera -> footage-files map and where its results go.
 
-    Used to pick the real recording directories out of a tree while recursing:
-    intermediate directories and ``deeperfly_outputs`` hold no per-camera footage,
-    so they are skipped.
+    ``sources`` maps a camera name to its naturally-sorted footage files -- a single
+    video file, or an image sequence -- already reconciled to one extension and
+    validated to share a file and frame count with the other cameras (so
+    :func:`deeperfly.video.read_frames` decodes them as one aligned clip). It is empty
+    only for a directory kept so a resume can reuse a cached result though its footage
+    is absent (see :func:`_resolve_recordings`).
+
+    ``outdir`` is the resolved output directory for this recording (see
+    :func:`_run_outdir`); it is the run's durable identity -- it holds the config
+    snapshot and the cached ``poses.h5``. The input recording directory is not
+    retained: it is only used to resolve ``sources`` and ``outdir`` up front. A resume
+    that re-renders just re-passes the recording, which re-resolves ``sources`` the
+    same way, so nothing about the source recording is stored in the result.
     """
-    cameras = config.get("cameras", {})
-    if not cameras:
+
+    sources: dict[str, list[Path]]
+    outdir: Path
+
+
+def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
+    """Whether every camera under ``root`` has the same file and frame count.
+
+    File counts are compared directly (cheap). Equal file counts already imply equal
+    frame counts for image sequences (one frame per file), so only *video* footage is
+    probed for its frame count, and only when the count is actually knowable -- an
+    unreadable / metadata-less file (count ``None``) is left out rather than falsely
+    rejecting the recording. Warns naming the offending counts when they differ.
+    """
+    file_counts = {n: len(ps) for n, ps in sources.items()}
+    if len(set(file_counts.values())) > 1:
+        log.warning(
+            "recording %s has an uneven file count across cameras %s; skipping it",
+            root,
+            file_counts,
+        )
         return False
-    inputs = config.get("inputs", {})
-    for name in cameras:
-        try:
-            _camera_source(root, inputs.get(name, name))
-        except SystemExit:
-            return False
+    sample = next((ps for ps in sources.values() if ps), [])
+    if not sample or not _is_video_ext(sample[0].suffix):
+        return True  # image sequence (or empty): the file count already settled it
+    from . import video
+
+    frame_counts = {n: video.count_frames(ps) for n, ps in sources.items()}
+    known = {c for c in frame_counts.values() if c is not None}
+    if len(known) > 1:
+        log.warning(
+            "recording %s has an uneven frame count across cameras %s; skipping it",
+            root,
+            frame_counts,
+        )
+        return False
     return True
+
+
+def _find_recording(root: Path, config: dict) -> dict[str, list[Path]] | None:
+    """``root``'s ``camera -> footage-files`` map if it is a recording, else ``None``.
+
+    A *recording* is a directory holding footage for every configured camera (its
+    ``[inputs]`` glob, see :func:`_camera_glob`); the footage is a single video file
+    or an image sequence. A directory matching *no* camera is silently not a
+    recording (an intermediate or output directory); the rest warn and skip:
+
+    - footage for only some cameras (a malformed recording, or a wrong ``[inputs]``);
+    - files matched but none with a known footage extension;
+    - several footage extensions in one folder (the highest-priority one is kept,
+      and any camera then left with nothing counts as missing);
+    - an unequal file or frame count across cameras (see :func:`_frame_counts_match`).
+    """
+    if not root.is_dir():
+        return None
+    from natsort import natsorted
+
+    exts = _footage_exts()
+    patterns = _camera_patterns(config)
+    # Raw matches (any file) per camera, so "no match" is distinguishable from
+    # "matched, but not footage".
+    raw = {
+        name: [p for p in root.glob(_camera_glob(pat)) if p.is_file()]
+        for name, pat in patterns.items()
+    }
+    present = {name: ps for name, ps in raw.items() if ps}
+    if not present:
+        return None  # nothing here looks like a camera's files: not a recording
+    missing = [name for name in patterns if name not in present]
+    if missing:
+        log.warning(
+            "recording %s has footage for only %s (missing %s); skipping it",
+            root,
+            sorted(present),
+            missing,
+        )
+        return None
+    sources = {
+        name: [p for p in ps if p.suffix.lower() in exts]
+        for name, ps in present.items()
+    }
+    no_ext = sorted(name for name, ps in sources.items() if not ps)
+    if no_ext:
+        log.warning(
+            "recording %s: camera(s) %s matched files but none with a known footage "
+            "extension %s; skipping it",
+            root,
+            no_ext,
+            list(exts),
+        )
+        return None
+    seen = {p.suffix.lower() for ps in sources.values() for p in ps}
+    if len(seen) > 1:
+        keep = min(seen, key=exts.index)
+        log.warning(
+            "recording %s mixes footage extensions %s; using %s",
+            root,
+            sorted(seen, key=exts.index),
+            keep,
+        )
+        sources = {
+            name: [p for p in ps if p.suffix.lower() == keep]
+            for name, ps in sources.items()
+        }
+        gone = sorted(name for name, ps in sources.items() if not ps)
+        if gone:
+            log.warning(
+                "recording %s has no %s footage for %s; skipping it", root, keep, gone
+            )
+            return None
+    sources = {
+        name: _first_if_video(root, name, natsorted(ps)) for name, ps in sources.items()
+    }
+    if not _frame_counts_match(root, sources):
+        return None
+    return sources
 
 
 def _expand_pattern(pattern: str) -> tuple[list[Path], bool]:
@@ -1186,57 +1364,80 @@ def _expand_pattern(pattern: str) -> tuple[list[Path], bool]:
     return [Path(pattern)], False
 
 
-def _dedup_paths(paths: list[Path]) -> list[Path]:
-    """Drop duplicate paths (overlapping patterns/roots can repeat one), keeping the
-    first occurrence so the run order stays predictable."""
+def _dedup_found(
+    found: Iterable[tuple[Path, dict[str, list[Path]]]],
+) -> list[tuple[Path, dict[str, list[Path]]]]:
+    """Drop ``(dir, sources)`` pairs whose directory repeats (overlapping inputs/roots
+    can match one twice), keeping the first occurrence so run order stays predictable."""
     seen: set = set()
-    out: list[Path] = []
-    for p in paths:
-        key = p.resolve()
+    out: list[tuple[Path, dict[str, list[Path]]]] = []
+    for d, src in found:
+        key = d.resolve()
         if key not in seen:
             seen.add(key)
-            out.append(p)
+            out.append((d, src))
     return out
 
 
+def _run_outdir(output: str | None, recording: Path, *, batch: bool) -> Path:
+    """Output directory for one recording.
+
+    Default (no ``-o``): the recording's own ``deeperfly_outputs``. With ``-o``:
+    that directory for a single recording, or a per-recording subdirectory under it
+    for a wildcard/recursive batch (so the runs don't overwrite each other).
+    """
+    if not output:
+        return _default_outdir(recording)
+    base = Path(output)
+    return base / recording.name if batch else base
+
+
+def _plan_recordings(
+    found: list[tuple[Path, dict[str, list[Path]]]], output: str | None
+) -> list[Recording]:
+    """Turn discovered ``(dir, sources)`` pairs into :class:`Recording`\\ s.
+
+    The output directory is resolved per recording (:func:`_run_outdir`); whether
+    this is a *batch* (several recordings, so ``-o`` nests per recording) is known
+    only here, once every input has been resolved.
+    """
+    batch = len(found) > 1
+    return [Recording(src, _run_outdir(output, d, batch=batch)) for d, src in found]
+
+
 def _resolve_recordings(
-    patterns: list[str], *, recursive: bool, config: dict
-) -> list[Path]:
-    """Expand the ``run`` inputs into the recording directories to process.
+    inputs: list[Path], *, recursive: bool, config: dict, output: str | None = None
+) -> list[Recording]:
+    """Expand the ``run`` inputs into the recordings to process (footage + output dir).
 
-    ``patterns`` is one or more input arguments, each a literal path or a wildcard
-    pattern expanded against the filesystem (:func:`_expand_pattern`); the shell
-    usually expands an unquoted ``*`` first, so the program also accepts the
-    already-expanded list of paths (``deeperfly run data/* data2/*``). A *recording*
-    is a directory holding footage for every configured camera (:func:`_is_recording`).
+    ``inputs`` is one or more input arguments, each a literal path or a wildcard
+    pattern expanded against the filesystem (:func:`_expand_pattern`). A *recording*
+    is a directory holding footage for every configured camera, resolved to a
+    ``camera -> files`` map by :func:`_find_recording` (which warns and skips a
+    malformed one). Each kept recording is paired with its output directory
+    (:func:`_run_outdir`, honoring ``output`` = ``-o``); the input directory is not
+    retained past this point. The behaviors:
 
-    Without ``--recursive``:
+    - A single literal path is taken as that one recording -- kept (with empty
+      sources) even when it is not valid footage, so a resume from its cached result
+      still works -- with a warning naming it when it is not a valid recording.
+    - Several inputs and/or a wildcard run as a batch: only the valid recordings are
+      kept (a wildcard's incidental non-recording matches are dropped silently);
+      nothing valid is a warned error.
+    - With ``--recursive`` each input is a *parent* directory whose subtree is walked
+      for recordings; an empty result is an error.
 
-    - A single literal path is taken as that one recording -- kept even when it is
-      not valid footage, so a resume from its cached result still works -- with a
-      warning naming the resolved path when it is not a valid recording.
-    - Otherwise (several inputs and/or a wildcard) it is a batch: every input is
-      expanded and only the valid recordings are kept (a wildcard naturally also
-      matches non-recordings like the output dir, skipped silently). A warning is
-      logged only when *nothing* across the inputs is a valid recording, and the run
-      then errors since it has nothing to do.
-
-    With ``--recursive`` each input is a *parent* directory (or a wildcard of parent
-    directories) whose subtree is walked for recordings; all recordings found under
-    all roots run. A literal input that is not a directory is warned and skipped.
-
-    Results are de-duplicated (overlapping inputs) keeping first-seen order; an empty
-    result is an error.
+    De-duplicated by directory (overlapping inputs) keeping first-seen order.
     """
     candidates: list[tuple[Path, bool]] = []
-    for pattern in patterns:
-        paths, is_glob = _expand_pattern(pattern)
+    for arg in inputs:
+        paths, is_glob = _expand_pattern(str(arg))
         if is_glob and not paths:
-            log.warning("input pattern %r matched no paths", pattern)
+            log.warning("input pattern %r matched no paths", str(arg))
         candidates += [(p, is_glob) for p in paths]
 
     if recursive:
-        recordings: list[Path] = []
+        found: list[tuple[Path, dict[str, list[Path]]]] = []
         for root, is_glob in candidates:
             if not root.is_dir():
                 if not is_glob:  # a literal parent the user named but that is absent
@@ -1246,57 +1447,48 @@ def _resolve_recordings(
                         root.resolve(),
                     )
                 continue
-            recordings += [
-                d
-                for d in [root, *sorted(root.rglob("*"))]
-                if d.is_dir() and _is_recording(d, config)
-            ]
-        recordings = _dedup_paths(recordings)
-        if not recordings:
+            for d in [root, *sorted(root.rglob("*"))]:
+                if d.is_dir() and (src := _find_recording(d, config)) is not None:
+                    found.append((d, src))
+        found = _dedup_found(found)
+        if not found:
             log.warning(
                 "no recordings found under %s (searched recursively); a recording is "
                 "a directory holding footage for every configured camera",
-                list(patterns),
+                [str(p) for p, _ in candidates] or [str(a) for a in inputs],
             )
             raise SystemExit("no recordings to run")
-        return recordings
+        return _plan_recordings(found, output)
 
     # Non-recursive. A single explicit path is honored as-is (resume-friendly): keep
     # it even when it is not valid footage, so resuming from its cache still works.
     if len(candidates) == 1 and not candidates[0][1]:
         path = candidates[0][0]
-        if not _is_recording(path, config):
+        src = _find_recording(path, config)
+        if src is None:
             log.warning(
                 "%s is not a valid recording directory -- it does not hold footage "
                 "for every configured camera (it can still resume from a cached "
                 "result in its output dir)",
                 path.resolve(),
             )
-        return [path]
+            src = {}
+        return _plan_recordings([(path, src)], output)
 
     # Several inputs and/or a wildcard: a batch. Keep only the valid recordings; only
     # warn (and error) when the inputs yield no valid recording at all.
-    recordings = _dedup_paths([p for p, _ in candidates if _is_recording(p, config)])
-    if not recordings:
+    found = _dedup_found(
+        (p, src)
+        for p, _ in candidates
+        if (src := _find_recording(p, config)) is not None
+    )
+    if not found:
         log.warning(
-            "none of the inputs is a valid recording directory (a directory "
-            "holding footage for every configured camera)",
+            "none of the inputs is a valid recording directory (a directory holding "
+            "footage for every configured camera)",
         )
         raise SystemExit("no valid recording directories among the inputs")
-    return recordings
-
-
-def _run_outdir(args: argparse.Namespace, recording: Path, *, batch: bool) -> Path:
-    """Output directory for one recording.
-
-    Default (no ``-o``): the recording's own ``deeperfly_outputs``. With ``-o``:
-    that directory for a single recording, or a per-recording subdirectory under
-    it for a wildcard/recursive batch (so the runs don't overwrite each other).
-    """
-    if not args.output:
-        return _default_outdir(recording)
-    base = Path(args.output)
-    return base / recording.name if batch else base
+    return _plan_recordings(found, output)
 
 
 def _has_2d(result: PoseResult | None) -> bool:
@@ -1308,24 +1500,40 @@ def _require_input_footage(args: argparse.Namespace, config: dict) -> None:
 
     Checked only when the ``pose2d`` stage will actually decode frames; a resume
     that reuses a cached 2D pose needs no footage, so the recording may legitimately
-    be absent then. Distinguishes a missing recording *directory* from one that is
-    present but lacks a configured camera's video/images -- the latter reuses
-    :func:`_camera_sources`, which raises naming the first missing camera. Raising
-    here keeps a fresh run that cannot read its input from leaving an empty
-    ``deeperfly_outputs`` behind.
+    be absent then. The footage was already resolved up front by
+    :func:`_resolve_recordings` (``args.sources``): a recording missing a camera's
+    files was warned there and arrives with that camera absent. A library caller that
+    set only ``args.input`` is validated directly (naming a missing recording
+    directory or camera). Raising here keeps a fresh run that cannot read its input
+    from leaving an empty ``deeperfly_outputs`` behind.
     """
-    root = Path(args.input)
-    if not root.exists():
+    patterns = _camera_patterns(config)
+    inp = getattr(args, "input", None)
+    if getattr(args, "sources", None) is None and inp is not None:
+        root = Path(inp)
+        if not root.exists():
+            raise SystemExit(
+                f"input recording {root} does not exist -- pass an existing directory "
+                "holding the per-camera video/images for this run"
+            )
+        if not root.is_dir():
+            raise SystemExit(
+                f"input recording {root} is not a directory -- the run input is a "
+                "directory of per-camera footage, not a single file"
+            )
+        for name, pat in patterns.items():
+            if not _camera_files(root, pat):
+                raise SystemExit(f"no video or images for camera {name!r} under {root}")
+        return
+
+    sources = getattr(args, "sources", None) or {}
+    missing = [name for name in patterns if not sources.get(name)]
+    if missing:
         raise SystemExit(
-            f"input recording {root} does not exist -- pass an existing directory "
-            "holding the per-camera video/images for this run"
+            f"this run needs footage for pose2d but the recording resolved no files "
+            f"for camera(s) {missing} (see the warning above) -- pass a recording that "
+            "holds video/images for every camera, or resume from a cached poses.h5"
         )
-    if not root.is_dir():
-        raise SystemExit(
-            f"input recording {root} is not a directory -- the run input is a "
-            "directory of per-camera footage, not a single file"
-        )
-    _camera_sources(args.input, config)  # raises SystemExit naming a missing camera
 
 
 def _run_one(args: argparse.Namespace, outdir: Path) -> None:
@@ -1509,27 +1717,35 @@ def _cmd_run(args: argparse.Namespace) -> None:
         Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     )
     recordings = _resolve_recordings(
-        args.inputs, recursive=args.recursive, config=discovery_config
+        args.inputs,
+        recursive=args.recursive,
+        config=discovery_config,
+        output=args.output,
     )
     batch = len(recordings) > 1
     if batch:
         log.info(
-            "matched %d recordings: %s", len(recordings), [str(r) for r in recordings]
+            "matched %d recordings (output dirs): %s",
+            len(recordings),
+            [str(r.outdir) for r in recordings],
         )
 
     failures: list[Path] = []
     for i, rec in enumerate(recordings, 1):
         if batch:
-            console.rule(Text(f"{rec}  ({i}/{len(recordings)})", style="bold cyan"))
+            console.rule(
+                Text(f"{rec.outdir}  ({i}/{len(recordings)})", style="bold cyan")
+            )
         run_args = copy.copy(args)
-        run_args.input = str(rec)
+        run_args.input = None  # the recording dir is not threaded; sources/outdir are
+        run_args.sources = rec.sources  # footage resolved up front by discovery
         try:
-            _run_one(run_args, _run_outdir(args, rec, batch=batch))
+            _run_one(run_args, rec.outdir)
         except (Exception, SystemExit) as exc:  # noqa: BLE001
             if not batch:
                 raise  # a single recording fails fast (unchanged behavior)
-            log.error("recording %s failed: %s", rec, exc)
-            failures.append(rec)
+            log.error("recording %s failed: %s", rec.outdir, exc)
+            failures.append(rec.outdir)
 
     if failures:
         raise SystemExit(
@@ -1829,7 +2045,7 @@ def init(
 @app.command()
 def run(
     inputs: Annotated[
-        list[str],
+        list[Path],
         typer.Argument(
             metavar="INPUT...",
             help="one or more recording dirs or wildcard patterns (per-camera videos "

@@ -134,10 +134,8 @@ def _stub_detect(monkeypatch, tmp_path):
     sizes = {n: (H, W) for n in FLY_CAMERAS}
     monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
     monkeypatch.setattr(cli, "_load_detector", lambda checkpoint, backend: object())
-    # The recording is stubbed away, so treat every input as a valid recording and
-    # skip the pre-run footage validation a real fresh pose2d run does (both are
-    # covered separately by the input-resolution tests below).
-    monkeypatch.setattr(cli, "_is_recording", lambda root, config: True)
+    # The recording footage is stubbed away, so skip the pre-run footage validation a
+    # real fresh pose2d run does (covered separately by the input-resolution tests).
     monkeypatch.setattr(cli, "_require_input_footage", lambda args, config: None)
 
     def fake_detect_2d(args, config, model, sides, flips, **kw):
@@ -146,6 +144,14 @@ def _stub_detect(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "_detect_2d", fake_detect_2d)
     return T
+
+
+def _make_fly_recording(d):
+    """A directory holding (empty) per-camera videos for the packaged 7-camera rig."""
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(len(FLY_CAMERAS)):
+        (d / f"camera_{i}.mp4").write_bytes(b"")
+    return d
 
 
 def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
@@ -164,8 +170,6 @@ def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
     res = PoseResult.load(outdir / "poses.h5")
     assert res.pts3d is None  # 2D only (no triangulation/pictorial)
     assert res.pts2d.shape == (7, T, 38, 2)
-    # the recording path is recorded so a later resume can recover the frames.
-    assert res.meta["input"] == str(rec.resolve())
     # the config used is snapshotted next to the results for reproducibility.
     assert (outdir / "config.toml").read_text() == cfg.read_text()
 
@@ -216,7 +220,7 @@ def test_run_errors_on_missing_recording_before_creating_outdir(tmp_path):
     """A fresh pose2d run whose recording does not exist fails up front, leaving no
     empty output dir behind."""
     outdir = tmp_path / "out"
-    with pytest.raises(SystemExit, match="does not exist"):
+    with pytest.raises(SystemExit, match="needs footage for pose2d"):
         cli.main(
             [
                 "run",
@@ -232,26 +236,26 @@ def test_run_errors_on_missing_recording_before_creating_outdir(tmp_path):
     assert not outdir.exists()  # validated before any deeperfly_outputs was made
 
 
-def test_run_errors_on_missing_camera_footage_before_creating_outdir(tmp_path):
-    """A recording that exists but lacks a configured camera's footage fails
-    (naming the camera) before the output dir is created."""
+def test_run_errors_on_missing_camera_footage_before_creating_outdir(tmp_path, caplog):
+    """A recording that exists but lacks a configured camera's footage is warned
+    (naming the camera) at discovery and fails before the output dir is created."""
     rec = tmp_path / "rec"
     rec.mkdir()
     (rec / "cam0.mp4").write_bytes(b"")  # cam0 present, cam1 missing
     outdir = tmp_path / "out"
-    with pytest.raises(SystemExit, match="cam1"):
-        cli.main(
-            [
-                "run",
-                str(rec),
-                "-c",
-                str(_footage_cfg(tmp_path)),
-                "-o",
-                str(outdir),
-                "--log-level",
-                "error",
-            ]
-        )
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="needs footage for pose2d"):
+            cli.main(
+                [
+                    "run",
+                    str(rec),
+                    "-c",
+                    str(_footage_cfg(tmp_path)),
+                    "-o",
+                    str(outdir),
+                ]
+            )
+    assert any("missing ['cam1']" in r.message for r in caplog.records)
     assert not outdir.exists()
 
 
@@ -288,24 +292,50 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
 _RES_CFG = {"cameras": {"cam0": {}, "cam1": {}}, "inputs": {}}
 
 
-def _make_recording(d):
-    """A directory holding (empty) footage files for the two configured cameras."""
+def _make_recording(d, *, ext="mp4", count=1):
+    """A directory holding (empty) footage files for the two configured cameras.
+
+    ``count`` files per camera (an image sequence when > 1); ``ext`` sets the
+    extension. Empty files, so discovery validates filenames without decoding.
+    """
     d.mkdir(parents=True, exist_ok=True)
-    (d / "cam0.mp4").write_bytes(b"")
-    (d / "cam1.mp4").write_bytes(b"")
+    for cam in ("cam0", "cam1"):
+        for i in range(count):
+            suffix = f"_{i}" if count > 1 else ""
+            (d / f"{cam}{suffix}.{ext}").write_bytes(b"")
     return d
 
 
-def _resolve(patterns, tmp_path, *, recursive=False):
+def _resolve(patterns, tmp_path, *, recursive=False, output=None):
     # globs are written relative to tmp_path, so resolve from there
     return cli._resolve_recordings(
-        [str(tmp_path / p) for p in patterns], recursive=recursive, config=_RES_CFG
+        [str(tmp_path / p) for p in patterns],
+        recursive=recursive,
+        config=_RES_CFG,
+        output=output,
     )
+
+
+def _rec_dir(rec):
+    """The recording directory, recovered from its resolved footage (flat layout)."""
+    files = next(iter(rec.sources.values()), [])
+    return files[0].parent if files else None
+
+
+def _rec_dirs(recordings):
+    return [_rec_dir(rec) for rec in recordings]
 
 
 def test_resolve_single_literal_recording(tmp_path):
     rec = _make_recording(tmp_path / "rec")
-    assert _resolve(["rec"], tmp_path) == [rec]
+    out = _resolve(["rec"], tmp_path)
+    # the per-camera footage is resolved up front and threaded to the run, alongside
+    # the resolved output directory (the input dir is not retained).
+    assert out[0].sources == {
+        "cam0": [rec / "cam0.mp4"],
+        "cam1": [rec / "cam1.mp4"],
+    }
+    assert out[0].outdir == rec / "deeperfly_outputs"
 
 
 def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
@@ -314,11 +344,44 @@ def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
     bad = tmp_path / "nope"  # does not exist -> no footage
     with caplog.at_level("WARNING", logger="deeperfly"):
         out = _resolve(["nope"], tmp_path)
-    assert out == [bad]
+    # kept with empty footage; its output dir still resolves so a cached resume works.
+    assert out[0].sources == {}
+    assert out[0].outdir == cli._default_outdir(bad)
     assert any(
         str(bad.resolve()) in r.message and "not a valid recording" in r.message
         for r in caplog.records
     )
+
+
+def test_resolve_image_sequence_recording(tmp_path):
+    """A camera's footage may be a multi-file image sequence (natsorted)."""
+    rec = _make_recording(tmp_path / "rec", ext="png", count=3)
+    out = _resolve(["rec"], tmp_path)
+    assert out[0].sources["cam0"] == [rec / f"cam0_{i}.png" for i in range(3)]
+
+
+def test_resolve_partial_cameras_warns_and_skips(tmp_path, caplog):
+    """A directory with footage for only some cameras is warned and skipped."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "cam0.mp4").write_bytes(b"")  # cam1 missing
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["rec"], tmp_path)
+    assert out[0].sources == {}  # not a valid recording -> kept empty for resume
+    assert any("missing ['cam1']" in r.message for r in caplog.records)
+
+
+def test_resolve_uneven_file_count_warns_and_skips(tmp_path, caplog):
+    """Image sequences with different file counts across cameras are skipped."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    for i in range(3):
+        (rec / f"cam0_{i}.png").write_bytes(b"")
+    (rec / "cam1_0.png").write_bytes(b"")  # only one frame for cam1
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["rec"], tmp_path)
+    assert out[0].sources == {}
+    assert any("uneven file count" in r.message for r in caplog.records)
 
 
 def test_resolve_wildcard_keeps_valid_skips_nonrecordings_quietly(tmp_path, caplog):
@@ -329,7 +392,7 @@ def test_resolve_wildcard_keeps_valid_skips_nonrecordings_quietly(tmp_path, capl
     (tmp_path / "deeperfly_outputs").mkdir()  # a non-recording the glob also matches
     with caplog.at_level("WARNING", logger="deeperfly"):
         out = _resolve(["*"], tmp_path)
-    assert sorted(p.name for p in out) == ["fly1", "fly2"]
+    assert sorted(p.name for p in _rec_dirs(out)) == ["fly1", "fly2"]
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
@@ -340,7 +403,7 @@ def test_resolve_multiple_inputs_batch_filters_quietly(tmp_path, caplog):
     (tmp_path / "fly2").mkdir()  # exists but no footage
     with caplog.at_level("WARNING", logger="deeperfly"):
         out = _resolve(["fly1", "fly2"], tmp_path)
-    assert out == [rec]
+    assert _rec_dirs(out) == [rec]
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
@@ -365,7 +428,27 @@ def test_resolve_recursive_multiple_and_glob_roots(tmp_path):
     _make_recording(tmp_path / "expA" / "fly1")
     _make_recording(tmp_path / "expB" / "sub" / "fly2")
     out = _resolve(["exp*"], tmp_path, recursive=True)
-    assert sorted(p.name for p in out) == ["fly1", "fly2"]
+    assert sorted(p.name for p in _rec_dirs(out)) == ["fly1", "fly2"]
+
+
+def test_resolve_output_dir_handling(tmp_path):
+    """Each recording's output directory is resolved up front into the Recording.
+
+    No -o: each recording writes into its own <recording>/deeperfly_outputs. With -o
+    and a single recording: that directory directly. With -o and a batch: a
+    per-recording subdirectory so the runs don't overwrite each other.
+    """
+    _make_recording(tmp_path / "fly1")
+    _make_recording(tmp_path / "fly2")
+    (out,) = _resolve(["fly1"], tmp_path)
+    assert out.outdir == tmp_path / "fly1" / "deeperfly_outputs"
+    (out,) = _resolve(["fly1"], tmp_path, output=str(tmp_path / "results"))
+    assert out.outdir == tmp_path / "results"
+    batch = _resolve(["*"], tmp_path, output=str(tmp_path / "results"))
+    assert {r.outdir for r in batch} == {
+        tmp_path / "results" / "fly1",
+        tmp_path / "results" / "fly2",
+    }
 
 
 def test_resolve_recursive_nondir_literal_warns_and_errors(tmp_path, caplog):
@@ -386,7 +469,11 @@ def test_run_batch_multiple_inputs(tmp_path, monkeypatch):
     cfg = _default_cfg(
         tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
     )
-    _stub_detect(monkeypatch, tmp_path)  # stubs _is_recording -> True, so both run
+    _stub_detect(
+        monkeypatch, tmp_path
+    )  # detection stubbed; footage only needs to exist
+    _make_fly_recording(tmp_path / "r1")
+    _make_fly_recording(tmp_path / "r2")
     out = tmp_path / "out"
     cli.main(
         [
@@ -1000,75 +1087,37 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
 # -- view frame recovery on resume -------------------------------------------
 
 
-def test_source_view_frames_root_order(result, tmp_path, monkeypatch):
+def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     from deeperfly import video
 
-    monkeypatch.setattr(cli, "_camera_source", lambda root, prefix: (root, prefix))
+    # read_frames echoes its source so we can see which footage each view used.
     monkeypatch.setattr(
         video, "read_frames", lambda src, backend="auto": ("frames", src)
     )
     cfg = {"inputs": {}, "pipeline": {"pose2d": {}}}
     names = result.cameras.names
+    v0, v1 = names[0], names[1]
+    res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
 
-    rec_a, rec_b = tmp_path / "recA", tmp_path / "recB"
-    rec_a.mkdir()
-    rec_b.mkdir()
-    res = PoseResult(
-        result.cameras,
-        result.skeleton,
-        result.pts2d,
-        conf=result.conf,
-        meta={"input": str(rec_a)},
-    )
-
-    # the run's own input (the positional recording) wins over the metadata path.
+    # 1) this run's already-resolved footage (args.sources) is used directly.
     got = cli._source_view_frames(
-        argparse.Namespace(input=str(rec_b)), cfg, res, [names[0]]
+        argparse.Namespace(sources={v0: ["f0"], v1: ["f1"]}), cfg, res, [v0, v1]
     )
-    assert got == {names[0]: ("frames", (str(rec_b), names[0]))}
+    assert got == {v0: ("frames", ["f0"]), v1: ("frames", ["f1"])}
 
-    # else fall back to the recording stored in the result; every view is sourced.
-    got = cli._source_view_frames(
-        argparse.Namespace(input=None), cfg, res, [names[1], names[2]]
-    )
-    assert got == {
-        names[1]: ("frames", (str(rec_a), names[1])),
-        names[2]: ("frames", (str(rec_a), names[2])),
-    }
+    # 2) no run footage -> error telling the user to re-pass the recording.
+    with pytest.raises(SystemExit, match="overwrite visualization"):
+        cli._source_view_frames(argparse.Namespace(sources={}), cfg, res, [v0])
 
-    # a stored path that no longer exists is skipped in favor of the input.
-    rec_c = tmp_path / "recC"
-    rec_c.mkdir()
-    stale_meta = PoseResult(
-        result.cameras,
-        result.skeleton,
-        result.pts2d,
-        meta={"input": str(tmp_path / "gone")},
-    )
-    got = cli._source_view_frames(
-        argparse.Namespace(input=str(rec_c)), cfg, stale_meta, [names[2]]
-    )
-    assert got == {names[2]: ("frames", (str(rec_c), names[2]))}
-
-    # in-memory frames (indexed by camera order) bypass the recording entirely.
-    bare_meta = PoseResult(result.cameras, result.skeleton, result.pts2d, meta={})
+    # 3) in-memory frames (indexed by camera order) bypass the recording entirely.
     mem = [f"mem{i}" for i in range(len(names))]
     got = cli._source_view_frames(
-        argparse.Namespace(input=None),
-        cfg,
-        bare_meta,
-        [names[2], names[0]],
-        in_memory=mem,
+        argparse.Namespace(sources=None), cfg, res, [names[2], v0], in_memory=mem
     )
-    assert got == {names[2]: "mem2", names[0]: "mem0"}
+    assert got == {names[2]: "mem2", v0: "mem0"}
 
-    # no imshow views -> nothing sourced (no recording needed).
-    ns = argparse.Namespace(input=None)
-    assert cli._source_view_frames(ns, cfg, bare_meta, []) == {}
-
-    # else error telling the user to re-run with the recording as the input.
-    with pytest.raises(SystemExit, match="recording"):
-        cli._source_view_frames(ns, cfg, bare_meta, [names[0]])
+    # 4) no imshow views -> nothing sourced.
+    assert cli._source_view_frames(argparse.Namespace(sources=None), cfg, res, []) == {}
 
 
 # -- per-camera [preprocess.*] frame transform wiring ------------------------
@@ -1082,8 +1131,9 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
     rng = np.random.default_rng(0)
     names = result.cameras.names
     raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
-    monkeypatch.setattr(cli, "_camera_source", lambda root, prefix: prefix)
-    monkeypatch.setattr(video, "read_frames", lambda src, backend="auto": raw[src])
+    # the run's resolved footage maps each view to one "file" (its name); read_frames
+    # returns that view's raw footage.
+    monkeypatch.setattr(video, "read_frames", lambda src, backend="auto": raw[src[0]])
 
     v0, v1 = names[0], names[1]
     cfg = {
@@ -1091,11 +1141,8 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
         "pipeline": {"pose2d": {}},
         "preprocess": {v0: {"rot90": 1, "fliplr": True}},
     }
-    rec = tmp_path / "rec"
-    rec.mkdir()
-    got = cli._source_view_frames(
-        argparse.Namespace(input=str(rec)), cfg, result, [v0, v1]
-    )
+    args = argparse.Namespace(sources={n: [n] for n in names})
+    got = cli._source_view_frames(args, cfg, result, [v0, v1])
     np.testing.assert_array_equal(
         got[v0], video.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
     )
