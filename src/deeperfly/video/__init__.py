@@ -4,14 +4,12 @@ Reading and writing dispatch over a backend registry so you can choose where
 decoding happens and what frames live in. ``backend="auto"`` and ``device="auto"``
 (both defaults) pick the fastest available path: GPU/NVDEC decode when a GPU and a
 GPU backend are present, otherwise the fastest installed CPU decoder (``pyav``,
-the in-process core default; the optional ``imageio``, which forks an ``ffmpeg``
-subprocess, is the last resort).
+the in-process core default).
 
-- CPU readers: ``pyav`` (default), ``opencv``, ``decord``, ``video_reader_rs``,
-  ``torchcodec``, ``imageio``.
-- GPU readers (frames stay a device tensor): ``torchcodec``, ``decord``,
-  ``dali``.
-- Writers: ``pyav`` (default; in-process H.264), ``imageio``, ``opencv``.
+- CPU readers: ``pyav`` (default), ``opencv``, ``torchcodec``,
+  ``video_reader_rs``.
+- GPU readers (frames stay a device tensor): ``torchcodec``, ``dali``.
+- Writers: ``pyav`` (default; in-process H.264), ``opencv``.
 
 >>> from deeperfly import video
 >>> frames = video.read_video("clip.mp4")                       # auto: NumPy (host)

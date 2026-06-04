@@ -2,10 +2,10 @@
 
 Finding (RTX 4090, 7-cam 480x960): **inference is the bottleneck** -- the 8-stack
 detector runs ~28 multi-camera frames/s and is compute-bound (batching frames does
-not help), while every decoder is far faster (torchcodec-CUDA ~2400 fps, decord
-~1200, DALI ~400). So decode backend and CPU parallelism barely move total
-throughput, and ``[detector] chunk_frames`` is a *memory* knob, not a speed one --
-keep it small to bound VRAM.
+not help), while every decoder is far faster (torchcodec-CUDA ~2400 fps, DALI
+~400). So decode backend and CPU parallelism barely move total throughput, and
+``[detector] chunk_frames`` is a *memory* knob, not a speed one -- keep it small to
+bound VRAM.
 
 ``bench_pipeline`` settles the follow-up question -- *is GPU decode worth it?* -- by
 timing the real streaming detect end to end for {cpu, cuda} x {serial, prefetch}.
@@ -77,22 +77,11 @@ def bench_decode(path: str, n: int) -> None:
 
         return n / _timeit(lambda: run_windows(read, chunk))
 
-    def decord(chunk, threads):
-        import decord as dc
-
-        def read(s, e):
-            dc.VideoReader(path, ctx=dc.cpu(0), num_threads=threads).get_batch(
-                range(s, e)
-            ).asnumpy()
-
-        return n / _timeit(lambda: run_windows(read, chunk))
-
     print(f"\n{'backend':12s} {'chunk':>5s} {'thr':>3s} {'frames/s':>9s}")
     with contextlib.redirect_stderr(io.StringIO()):
         for name, fnb, threads in (
             ("torchcodec", torchcodec, (1,)),
             ("dali", dali, (2,)),
-            ("decord", decord, (0,)),
         ):
             for chunk in (64, 256):
                 for thr in threads:

@@ -34,8 +34,8 @@ uv sync --group test --extra torchcodec    # one optional video backend (repeat 
 
 PyTorch, OpenCV and PyAV are core dependencies, so no extra is needed for the
 PyTorch detector backend or the default OpenCV/PyAV video stack. The other
-cross-platform video backends are each their own extra (`imageio`, `decord`,
-`video-reader-rs`, `torchcodec`); add the ones you want to exercise.
+cross-platform video backends are each their own extra (`video-reader-rs`,
+`torchcodec`); add the ones you want to exercise.
 
 ## Running the tests
 

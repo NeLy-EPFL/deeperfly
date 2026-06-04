@@ -9,8 +9,6 @@ for an alternative or faster decoder:
 | --- | :-: | :-: | --- | --- |
 | `pyav` | ✓ | ✓ | NumPy (CPU) | core (default) |
 | `opencv` | ✓ | ✓ | NumPy (CPU) | core |
-| `imageio` | ✓ | ✓ | NumPy (CPU) | `imageio` |
-| `decord` | ✓ | – | NumPy / `torch` (CPU/**CUDA**) | `decord` |
 | `video_reader_rs` | ✓ | – | NumPy (CPU) | `video-reader-rs` |
 | `torchcodec` | ✓ | – | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` / `cuda` |
 | `dali` | ✓ | – | `torch.Tensor` / NumPy (**CUDA**) | `dali` |

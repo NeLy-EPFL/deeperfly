@@ -41,7 +41,6 @@ dependencies = [
     "numpy>=2.4.6",
     "scipy>=1.14",
     "h5py>=3.11",
-    "equinox>=0.11",
     "platformdirs>=4.0",
     "rich>=14.0",
     "typer>=0.26",
@@ -76,12 +75,8 @@ cuda = [
 # Optional faster/alternative video read/write backends (deeperfly.video), each
 # selectable via `backend=...`. PyAV is core (the default), so it is not repeated
 # here. torch is already core, so torchcodec only needs its own bindings.
-# imageio *video* backend: imageio is core (image sequences), but its FFmpeg
-# plugin is opt-in -- PyAV covers the same ground in-process by default.
-imageio = ["imageio-ffmpeg>=0.5"]
-# decord/video-reader-rs publish Linux/Windows wheels only (no-op on macOS, where
+# video-reader-rs publishes Linux/Windows wheels only (no-op on macOS, where
 # pyav/opencv/torchcodec cover the same ground).
-decord = ["decord>=0.6; sys_platform != 'darwin'"]
 video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
 torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into torch tensors
 # NVIDIA DALI: frame-accurate GPU (NVDEC) decode. The wheel is CUDA-version
@@ -99,7 +94,6 @@ dev = [
 ]
 test = [
     "pytest>=9.0.3",
-    "imageio-ffmpeg>=0.5",                # exercises the (optional) imageio video backend
 ]
 
 # CUDA-13 PyTorch index, consulted only for packages routed here by

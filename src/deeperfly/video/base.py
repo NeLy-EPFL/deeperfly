@@ -14,9 +14,9 @@ Readers expose two access patterns:
   decoding up to ``max(indices)`` once and gathering, which is always correct.
 
 Frame contract: ``(T, H, W, 3)`` ``uint8`` RGB. CPU backends return NumPy;
-GPU backends (``torchcodec``, ``decord``, ``dali``) keep
-frames as a framework tensor on the requested device. :func:`to_numpy` collapses
-either to NumPy on the host; :func:`to_torch` hands GPU frames to torch zero-copy.
+GPU backends (``torchcodec``, ``dali``) keep frames as a framework tensor on the
+requested device. :func:`to_numpy` collapses either to NumPy on the host;
+:func:`to_torch` hands GPU frames to torch zero-copy.
 """
 
 from __future__ import annotations
@@ -35,28 +35,22 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 # win; "auto" walks the list for the device and picks the first *installed*
 # backend. CPU order leads with pyav, the in-process core default (it links FFmpeg
 # directly -- no subprocess), then the other in-process decoders (opencv /
-# video_reader_rs / torchcodec / decord), and keeps imageio last: it shells out to
-# the ``ffmpeg`` binary (a subprocess fork -- slower, and it trips Python 3.13's
-# os.fork()-in-a-multithreaded-process warning once JAX has started threads), so
-# it is only the optional forking fallback. GPU order leads with torchcodec -- the
-# most robust NVDEC path and the one that feeds torch zero-copy (see ``to_torch``);
-# every listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
+# torchcodec / video_reader_rs). GPU order leads with torchcodec -- the most robust
+# NVDEC path and the one that feeds torch zero-copy (see ``to_torch``); both listed
+# GPU decoders (torchcodec / DALI) are frame-accurate.
 CPU_READ_ORDER = (
     "pyav",
     "opencv",
     "torchcodec",
-    "decord",
     "video_reader_rs",
-    "imageio",
 )
 # torchcodec (fastest, when its CUDA build + NPP are present) -> DALI (robust
-# NVDEC, needs only the driver) -> decord (GPU only with a rare CUDA build).
-GPU_READ_ORDER = ("torchcodec", "dali", "decord")
-# Writers prefer pyav, the core default: like imageio it encodes H.264 (libx264),
-# but in-process -- imageio shells out to the ``ffmpeg`` binary (the os.fork()
-# subprocess warning again, now at render time). Fall back to imageio (libx264,
-# but forks) and then opencv (mp4v fourcc, last resort) when pyav is absent.
-WRITE_ORDER = ("pyav", "imageio", "opencv")
+# NVDEC, needs only the driver).
+GPU_READ_ORDER = ("torchcodec", "dali")
+# Writers prefer pyav, the core default: it encodes H.264 (libx264) in-process
+# (links FFmpeg directly -- no subprocess). Fall back to opencv (mp4v fourcc, last
+# resort) when pyav is absent.
+WRITE_ORDER = ("pyav", "opencv")
 
 
 def register_reader(cls: type["ReaderBackend"]) -> type["ReaderBackend"]:
@@ -323,15 +317,13 @@ def to_numpy(frames) -> np.ndarray:
         frames = frames.as_cpu()
     if hasattr(frames, "as_array"):  # DALI TensorList
         return np.asarray(frames.as_array())
-    if hasattr(frames, "asnumpy"):  # decord NDArray
-        return frames.asnumpy()
     return np.asarray(frames)
 
 
 def to_torch(frames):
     """Hand backend frames to torch, zero-copy where possible.
 
-    GPU tensors (e.g. from the ``torchcodec`` or ``decord`` readers) stay on the
+    GPU tensors (e.g. from the ``torchcodec`` or ``dali`` readers) stay on the
     device: a ``torch.Tensor`` passes through and any other DLPack-capable tensor
     is wrapped via the DLPack protocol, so torch reads the *same* device buffer
     with no host round-trip -- the fast path for feeding the detector::
@@ -346,10 +338,8 @@ def to_torch(frames):
 
     if isinstance(frames, torch.Tensor):
         return frames
-    if hasattr(frames, "__dlpack__"):  # decord / most array libs
+    if hasattr(frames, "__dlpack__"):  # DLPack-capable array (e.g. DALI tensor)
         return torch.from_dlpack(frames)
-    if hasattr(frames, "to_dlpack"):  # decord NDArray (older API)
-        return torch.from_dlpack(frames.to_dlpack())
     return torch.from_numpy(to_numpy(frames))
 
 

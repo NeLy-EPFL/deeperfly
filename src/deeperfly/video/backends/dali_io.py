@@ -9,7 +9,7 @@ come back as a GPU ``torch.Tensor`` (zero-copy via DLPack); otherwise they are
 copied to the host as NumPy.
 
 DALI's seeking is frame-accurate (its windows match
-decord/pyav/opencv/torchcodec exactly, bar a rounding bit in the YUV->RGB
+pyav/opencv/torchcodec exactly, bar a rounding bit in the YUV->RGB
 conversion), so it is safe in ``backend="auto"``.
 
 The CUDA-version-specific wheel is on PyPI -- install the one matching your CUDA

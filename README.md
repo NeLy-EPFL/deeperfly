@@ -56,10 +56,10 @@ inference
   detector          torch
 
 video backends
-  read              pyav, opencv, torchcodec, imageio
+  read              pyav, opencv, torchcodec
   GPU decoders      torchcodec
-  write             pyav, imageio, opencv
-  not installed     dali, decord, video_reader_rs
+  write             pyav, opencv
+  not installed     dali, video_reader_rs
 
 weights
   cache dir         /home/you/.cache/deeperfly/weights

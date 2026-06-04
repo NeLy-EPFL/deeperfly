@@ -50,8 +50,6 @@ def _to_torch_image(image):
         return image
     if hasattr(image, "__dlpack__"):  # most array libs -- same-device, zero-copy
         return torch.from_dlpack(image)
-    if hasattr(image, "to_dlpack"):  # decord NDArray (older API)
-        return torch.from_dlpack(image.to_dlpack())
     return torch.from_numpy(np.array(image))
 
 
@@ -73,8 +71,6 @@ def _window_to_device(window, device):
         return window.to(device)
     if hasattr(window, "__dlpack__"):
         return torch.from_dlpack(window).to(device)
-    if hasattr(window, "to_dlpack"):
-        return torch.from_dlpack(window.to_dlpack()).to(device)
     return torch.from_numpy(np.ascontiguousarray(window)).to(device)
 
 

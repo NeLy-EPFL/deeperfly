@@ -1,10 +1,10 @@
 """Tests for the pluggable video read/write backends.
 
-CPU backends that are installed (imageio, opencv, pyav, decord,
-video_reader_rs) are exercised for real; GPU backends (torchcodec, dali) are
-only checked for registration/availability since they need CUDA. Encoded video
-is lossy, so round-trips assert on frame count / shape / dtype and coarse color,
-not pixel values.
+CPU backends that are installed (opencv, pyav, video_reader_rs) are exercised for
+real; GPU backends (torchcodec, dali) are only checked for
+registration/availability since they need CUDA. Encoded video is lossy, so
+round-trips assert on frame count / shape / dtype and coarse color, not pixel
+values.
 """
 
 from __future__ import annotations
@@ -17,17 +17,13 @@ from deeperfly.video import base
 
 # Backends we can actually run on CPU here, restricted to what's installed.
 _CPU_CANDIDATES = (
-    "imageio",
     "opencv",
     "pyav",
-    "decord",
     "video_reader_rs",
     "torchcodec",
 )
 CPU_READERS = [b for b in _CPU_CANDIDATES if b in video.available_read_backends()]
-CPU_WRITERS = [
-    b for b in ("imageio", "opencv", "pyav") if b in video.available_write_backends()
-]
+CPU_WRITERS = [b for b in ("opencv", "pyav") if b in video.available_write_backends()]
 ROUND_TRIP = [b for b in CPU_READERS if b in CPU_WRITERS]
 
 
@@ -48,7 +44,7 @@ def _indexed_clip(n=12, h=32, w=32):
     return frames.astype(np.uint8)
 
 
-def _write_clip(tmp_path, frames, *, backend="imageio", name="clip.mp4"):
+def _write_clip(tmp_path, frames, *, backend="pyav", name="clip.mp4"):
     path = tmp_path / name
     video.write_mp4(frames, path, fps=10, backend=backend)
     return path
@@ -77,8 +73,8 @@ def _installed_gpu_readers():
 def _break_gpu_decode(monkeypatch, cls):
     """Make ``cls`` fail on a GPU device but decode normally on the CPU.
 
-    Mirrors the real failure mode (a torchcodec/decord build whose CUDA path is
-    missing) for backends that also serve CPU reads, so a CPU fallback still works.
+    Mirrors the real failure mode (a torchcodec build whose CUDA path is missing)
+    for backends that also serve CPU reads, so a CPU fallback still works.
     """
     monkeypatch.setattr(cls, "is_available", lambda: True)
     orig = cls._read_sequential
@@ -96,36 +92,26 @@ def _break_gpu_decode(monkeypatch, cls):
 
 def test_builtin_backends_registered():
     assert set(video.list_read_backends()) >= {
-        "imageio",
         "opencv",
         "pyav",
-        "decord",
         "video_reader_rs",
         "torchcodec",
         "dali",
     }
-    assert set(video.list_write_backends()) >= {"imageio", "opencv", "pyav"}
-
-
-def test_imageio_available_in_test_env():
-    assert "imageio" in video.available_read_backends()
-    assert "imageio" in video.available_write_backends()
+    assert set(video.list_write_backends()) >= {"opencv", "pyav"}
 
 
 def test_backend_capability_flags():
     assert base._READERS["torchcodec"].supports_gpu
     assert base._READERS["dali"].supports_gpu
-    assert base._READERS["decord"].supports_gpu
-    assert not base._READERS["imageio"].supports_gpu
     # seek-capable backends (dali decodes only the requested frame range)
-    for name in ("opencv", "pyav", "decord", "video_reader_rs", "torchcodec", "dali"):
+    for name in ("opencv", "pyav", "video_reader_rs", "torchcodec", "dali"):
         assert base._READERS[name].supports_seek, name
-    assert not base._READERS["imageio"].supports_seek
 
 
-# A frame-accurate CPU decoder to validate DALI against. decord and pyav both
-# wrap ffmpeg, like NVDEC, so they agree bar a YUV->RGB rounding bit.
-_DALI_REF_BACKENDS = ("decord", "pyav")
+# A frame-accurate CPU decoder to validate DALI against. pyav wraps ffmpeg, like
+# NVDEC, so they agree bar a YUV->RGB rounding bit.
+_DALI_REF_BACKENDS = ("pyav",)
 
 
 @pytest.mark.skipif(
@@ -166,7 +152,7 @@ def test_unknown_backend_raises():
 def test_cpu_backend_rejects_gpu_device(tmp_path):
     path = _write_clip(tmp_path, _gradient_clip(4))
     with pytest.raises(ValueError):
-        video.read_video(path, backend="imageio", device="cuda")
+        video.read_video(path, backend="pyav", device="cuda")
 
 
 def test_auto_select_returns_installed_backend():
@@ -174,12 +160,12 @@ def test_auto_select_returns_installed_backend():
     assert video.select_writer("auto").name in CPU_WRITERS
 
 
-def test_cpu_order_is_fastest_first_imageio_last():
-    # imageio forks an ffmpeg subprocess, so it must be the CPU last resort and
-    # never outrank an in-process decoder in the auto preference order.
-    assert base.CPU_READ_ORDER[-1] == "imageio"
-    for fast in ("decord", "video_reader_rs", "torchcodec", "pyav", "opencv"):
-        assert base.CPU_READ_ORDER.index(fast) < base.CPU_READ_ORDER.index("imageio")
+def test_cpu_order_leads_with_in_process_pyav():
+    # pyav links FFmpeg directly (no subprocess), so it is the in-process CPU
+    # default, ahead of the other decoders in the auto preference order.
+    assert base.CPU_READ_ORDER[0] == "pyav"
+    for other in ("opencv", "torchcodec", "video_reader_rs"):
+        assert base.CPU_READ_ORDER.index("pyav") < base.CPU_READ_ORDER.index(other)
     # GPU order leads with torchcodec and lists only frame-accurate decoders.
     assert base.GPU_READ_ORDER[0] == "torchcodec"
 
@@ -206,7 +192,7 @@ def test_gpu_alias_normalizes_to_cuda(monkeypatch):
     assert base.resolve_device("gpu", "torchcodec") == "cuda"
     # A "gpu" request still routes to a GPU-capable backend (CPU-only ones reject it).
     with pytest.raises(ValueError):
-        base.select_reader("imageio", device="gpu")
+        base.select_reader("pyav", device="gpu")
 
 
 def test_resolve_device_prefers_gpu_when_available(monkeypatch):
@@ -220,7 +206,7 @@ def test_resolve_device_prefers_gpu_when_available(monkeypatch):
     # A forced GPU-capable backend also resolves to cuda...
     assert base.resolve_device("auto", "torchcodec") == "cuda"
     # ...but a CPU-only forced backend stays on the CPU even with a GPU present.
-    assert base.resolve_device("auto", "imageio") == "cpu"
+    assert base.resolve_device("auto", "pyav") == "cpu"
 
 
 def test_auto_device_returns_host_numpy_even_for_gpu_decode(tmp_path, monkeypatch):
@@ -252,8 +238,8 @@ def test_gpu_reader_candidates_order_forced_and_cache(monkeypatch):
     assert names[:2] == ["torchcodec", "dali"]  # GPU order, torchcodec then dali
     # A forced backend yields only itself.
     assert [c.name for c in base.gpu_reader_candidates("dali")] == ["dali"]
-    base.remember_gpu_reader("decord")  # cached winner short-circuits "auto"
-    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["decord"]
+    base.remember_gpu_reader("dali")  # cached winner short-circuits "auto"
+    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["dali"]
 
 
 def test_gpu_auto_skips_broken_backend_and_caches_winner(tmp_path, monkeypatch, caplog):
@@ -267,12 +253,12 @@ def test_gpu_auto_skips_broken_backend_and_caches_winner(tmp_path, monkeypatch, 
     for cls in _installed_gpu_readers():  # only torchcodec + a stand-in are usable
         monkeypatch.setattr(cls, "is_available", lambda: False)
     monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
-    monkeypatch.setattr(base._READERS["decord"], "is_available", lambda: True)
+    monkeypatch.setattr(base._READERS["dali"], "is_available", lambda: True)
     monkeypatch.setattr(
         base._READERS["torchcodec"], "_read_sequential", staticmethod(_boom)
     )
     monkeypatch.setattr(
-        base._READERS["decord"],
+        base._READERS["dali"],
         "_read_sequential",
         staticmethod(lambda *a, **k: fake_gpu),
     )
@@ -280,7 +266,7 @@ def test_gpu_auto_skips_broken_backend_and_caches_winner(tmp_path, monkeypatch, 
     with caplog.at_level("INFO", logger="deeperfly.video"):
         out = video.read_video(path, backend="auto", device="cuda", stop=5)
     assert out is fake_gpu  # device tensor handed back (no host round-trip)
-    assert base._gpu_auto_reader == "decord"  # winner cached
+    assert base._gpu_auto_reader == "dali"  # winner cached
     assert any("torchcodec" in r.message for r in caplog.records)
 
     caplog.clear()
@@ -378,7 +364,7 @@ def test_video_reader_rs_installed_means_available():
 @pytest.mark.parametrize("backend", CPU_READERS)
 def test_reader_roundtrip(tmp_path, backend):
     frames = _gradient_clip(8, 64, 48)
-    path = _write_clip(tmp_path, frames)  # written by imageio (reliable)
+    path = _write_clip(tmp_path, frames)  # written by pyav (the core default)
     out = video.read_video(path, backend=backend, device="cpu")
     assert out.shape[0] == frames.shape[0]
     assert out.shape[1:] == (64, 48, 3)
@@ -417,7 +403,7 @@ def test_random_access_matches_sequential(tmp_path, backend):
 def test_writer_roundtrip(tmp_path, backend):
     frames = _gradient_clip(8, 64, 48)
     path = _write_clip(tmp_path, frames, backend=backend, name=f"{backend}.mp4")
-    back = video.read_video(path, backend="imageio")
+    back = video.read_video(path, backend="pyav")
     assert back.shape[0] >= frames.shape[0] - 1  # codecs may drop/add a frame
     assert back.shape[1:] == (64, 48, 3)
 
