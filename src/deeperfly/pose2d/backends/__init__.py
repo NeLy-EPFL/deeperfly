@@ -33,19 +33,36 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     """Final-stack heatmaps for ``(N, 3, H, W)`` inputs, always as NumPy.
 
     Returns NumPy so downstream :func:`~deeperfly.pose2d.inference.heatmap_to_points`
-    decoding is independent of where the forward ran.
+    decoding is independent of where the forward ran. Used by the candidate path,
+    which needs whole heatmaps; the plain detect path uses :func:`predict_points`.
     """
     from . import torch as backend
 
     return np.asarray(backend.predict_heatmaps(model, inputs))
 
 
-def set_precision(model, precision: str = "float32") -> None:
-    """Set the detector forward precision: ``"float32"`` (default) or ``"float16"``.
+def predict_points(
+    model, inputs: np.ndarray, *, method: str = "weighted", radius: int = 2
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fused forward + heatmap decode: normalized ``(N, J, 2)`` peaks and ``(N, J)`` conf.
 
-    ``"float16"`` runs under CUDA autocast (faster, negligible keypoint drift);
-    a no-op on CPU/MPS. Stored on the model, so the next :func:`predict_heatmaps`
-    honors it.
+    The arg-max decode runs on the forward's device, so only the small peak arrays
+    cross to the host -- not the full heatmap, and not a host-side float64 arg-max.
+    Equivalent to ``heatmap_to_points(predict_heatmaps(...))`` to float32 epsilon;
+    ``method`` / ``radius`` select the sub-pixel refinement.
+    """
+    from . import torch as backend
+
+    xy, conf = backend.predict_points(model, inputs, method=method, radius=radius)
+    return np.asarray(xy), np.asarray(conf)
+
+
+def set_precision(model, precision: str = "float32") -> None:
+    """Set the detector forward precision: ``"float32"``, ``"float16"``, or ``"bfloat16"``.
+
+    ``"float16"`` / ``"bfloat16"`` run under CUDA autocast (faster, negligible
+    keypoint drift; bfloat16 trades a little speed for a wider, overflow-proof
+    range); a no-op on CPU/MPS. Stored on the model, so the next forward honors it.
     """
     from . import torch as backend
 
@@ -144,6 +161,7 @@ def infer_num_stacks(state_dict) -> int:
 __all__ = [
     "load_detector",
     "predict_heatmaps",
+    "predict_points",
     "detector_device",
     "set_precision",
     "infer_num_stacks",

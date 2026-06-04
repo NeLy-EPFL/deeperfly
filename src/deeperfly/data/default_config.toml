@@ -139,7 +139,8 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 [pipeline.pose2d]
 # Forward precision. "float32" (default) is the reference; "float16" runs under
 # CUDA autocast -- ~1.5-2x faster on the GPU with negligible keypoint drift.
-# Ignored on CPU/MPS, which stay float32.
+# "bfloat16" is about as fast with a wider range (no overflow) at slightly lower
+# precision. Ignored on CPU/MPS, which stay float32.
 precision = "float32"
 # Frames decoded + detected at a time, per camera (streaming), so long videos run
 # in constant memory. A *memory* knob, not a speed one: lower it for high-res /

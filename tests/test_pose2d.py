@@ -87,6 +87,26 @@ def test_heatmap_to_points_argmax_and_conf():
         np.testing.assert_allclose(conf[0], [5.0, 3.0])
 
 
+def test_predict_points_matches_heatmaps_decode(model):
+    # The fused forward+decode (arg-max on the forward's device) must match the
+    # reference "predict_heatmaps then heatmap_to_points" path to float32 epsilon,
+    # for every sub-pixel method. Exercised on the CPU here, so no GPU is required.
+    inputs = torch.randn(3, 3, 256, 512)
+    hm = backends.predict_heatmaps(model, inputs)
+    for method in ("argmax", "weighted", "taylor"):
+        ref_pts, ref_conf = inference.heatmap_to_points(hm, method=method)
+        pts, conf = backends.predict_points(model, inputs, method=method)
+        np.testing.assert_allclose(pts, ref_pts, atol=1e-4)
+        np.testing.assert_allclose(conf, ref_conf, atol=1e-4)
+
+
+def test_set_precision_accepts_and_rejects(model):
+    for p in ("float32", "float16", "bfloat16"):
+        backends.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
+    with pytest.raises(ValueError, match="unknown detector precision"):
+        backends.set_precision(model, "int8")
+
+
 def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
     hh, ww = 64, 128
     ys, xs = np.mgrid[0:hh, 0:ww]
@@ -167,19 +187,20 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
     # Batching the forward across (frame, pass) only regroups inputs, so it must
     # yield the same skeletons as the per-frame path -- even when a batch straddles
     # frame boundaries (batch_size not a multiple of the passes-per-frame). Stub the
-    # forward with a deterministic, sharply-peaked response keyed on each input's
+    # fused forward+decode with a deterministic single peak keyed on each input's
     # content (identical however rows are batched). That isolates the batching
     # plumbing from any batch-size-dependent conv arithmetic, which on the real
     # *untrained* model perturbs near-flat heatmaps enough to flip arg-max peaks.
-    def fake_predict(_model, inputs):
+    def fake_predict_points(_model, inputs, *, method="weighted", radius=2):
         x = np.asarray(inputs.cpu() if hasattr(inputs, "cpu") else inputs)
-        hm = np.zeros((x.shape[0], inference.N_SIDE_JOINTS, 64, 128), np.float32)
+        pts = np.zeros((x.shape[0], inference.N_SIDE_JOINTS, 2), np.float32)
+        conf = np.ones((x.shape[0], inference.N_SIDE_JOINTS), np.float32)
         for i in range(x.shape[0]):
             r, c = divmod(int(abs(x[i]).sum() * 1e3) % (64 * 128), 128)
-            hm[i, :, r, c] = 1.0  # one unambiguous peak -> arg-max is stable
-        return hm
+            pts[i, :, 0], pts[i, :, 1] = c / 128, r / 64  # decode of a lone spike
+        return pts, conf
 
-    monkeypatch.setattr(backends, "predict_heatmaps", fake_predict)
+    monkeypatch.setattr(backends, "predict_points", fake_predict_points)
     sides, flips = inference.fly_camera_layout(["rh", "lf"])
     rng = np.random.default_rng(3)
     frames = [rng.uniform(size=(5, 64, 64, 3)).astype(np.float32) for _ in range(2)]

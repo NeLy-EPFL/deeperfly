@@ -11,9 +11,11 @@ recording:
    physical view, so the front image bridges the two body sides.
 2. :func:`preprocess` each pass (mirror-flip if required, resize to 256x512,
    subtract the training mean) -- matching DeepFly2D.
-3. :func:`deeperfly.pose2d.backends.predict_heatmaps` (batched) -> heatmaps.
-4. :func:`heatmap_to_points` -> normalized sub-pixel peaks + confidence.
-5. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
+3. :func:`deeperfly.pose2d.backends.predict_points` (batched) -- forward + on-device
+   arg-max decode -> normalized sub-pixel peaks + confidence (the same decode as
+   :func:`heatmap_to_points`, kept on the GPU so only the peaks come back). The
+   candidate path instead pulls whole heatmaps via ``predict_heatmaps``.
+4. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
    38-point skeleton (right -> 19..37, mirrored left -> 0..18 with the x flip
    undone) and scale to original pixels.
 
@@ -381,8 +383,10 @@ def detect(
     inputs = torch.stack(
         [preprocess(images[views[i]], flip=pass_flips[i]) for i in range(len(views))]
     )
-    points_norm, conf = heatmap_to_points(
-        backends.predict_heatmaps(model, inputs), method=method, radius=radius
+    # Fused forward + decode: the arg-max runs on the forward's device, so only the
+    # small peak arrays leave the GPU (see backends.predict_points).
+    points_norm, conf = backends.predict_points(
+        model, inputs, method=method, radius=radius
     )
     image_size = [_image_wh(im) for im in images]  # (w, h) without materializing
     return assemble_skeleton(
@@ -461,9 +465,7 @@ def detect_sequence(
         inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
             [preprocess(frames[views[p]][t], flip=pass_flips[p]) for (t, p) in grp]
         )
-        pg, cg = heatmap_to_points(
-            backends.predict_heatmaps(model, inputs), method=method, radius=radius
-        )
+        pg, cg = backends.predict_points(model, inputs, method=method, radius=radius)
         for j, (t, p) in enumerate(grp):
             pn[t, p], cc[t, p] = pg[j], cg[j]
         covered = (i + len(grp)) // n_passes  # frames now fully forwarded

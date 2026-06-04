@@ -4,8 +4,9 @@ A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
 conversion (load them with :func:`deeperfly.pose2d.backends.torch.load_model`).
 Stacked ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps
-out (:func:`predict_heatmaps`), which is what
-:func:`deeperfly.pose2d.inference.detect` drives.
+out (:func:`predict_heatmaps`). The plain detect path
+(:func:`deeperfly.pose2d.inference.detect`) instead drives :func:`predict_points`,
+which decodes the peaks on-device and returns only those.
 """
 
 from __future__ import annotations
@@ -213,20 +214,25 @@ def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
 
 
 #: Detector forward precision -> autocast dtype (``None`` = run in float32).
-_PRECISIONS = {"float32": None, "float16": torch.float16}
+_PRECISIONS = {
+    "float32": None,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
 
 
 def set_precision(model: HourglassNet, precision: str = "float32") -> None:
     """Record the forward precision ``predict_heatmaps`` should run the model in.
 
-    ``"float32"`` (default, the reference) or ``"float16"`` (CUDA autocast). Stored
-    on the model so the forward picks it up without threading it through every call.
+    ``"float32"`` (default, the reference), ``"float16"`` or ``"bfloat16"`` (CUDA
+    autocast). float16 is fastest; bfloat16 trades a touch of that speed for the
+    wider exponent range of float32, so it can't overflow. Stored on the model so
+    the forward picks it up without threading it through every call.
     """
     precision = (precision or "float32").lower()
     if precision not in _PRECISIONS:
-        raise ValueError(
-            f"unknown detector precision {precision!r}; use 'float32' or 'float16'"
-        )
+        opts = ", ".join(repr(p) for p in _PRECISIONS)
+        raise ValueError(f"unknown detector precision {precision!r}; use one of {opts}")
     # A real detector (nn.Module) carries a __dict__; bare test stubs don't (and
     # never run the real forward), so there's nothing to set on them.
     if hasattr(model, "__dict__"):
@@ -244,19 +250,163 @@ def _autocast_dtype(model: HourglassNet, dev: "torch.device"):
     return _PRECISIONS.get(getattr(model, "_deeperfly_precision", "float32"))
 
 
-@torch.inference_mode()
-def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
-    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
+def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
+    """Run the detector and return the final-stack heatmaps, on-device as float32.
+
+    Shared by :func:`predict_heatmaps` (which copies them to host) and
+    :func:`predict_points` (which decodes peaks on-device first). Applies the
+    ``torch.compile`` gating and autocast precision recorded by
+    :func:`set_precision`; the result is upcast to float32 so the heatmap contract
+    holds even under fp16/bf16 autocast.
+    """
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
     fn = _forward_fn(model, dev, x.shape[0])
     dtype = _autocast_dtype(model, dev)
-    if dtype is not None:  # fp16 autocast on CUDA; conv runs half, reductions float32
+    if dtype is not None:  # fp16/bf16 autocast on CUDA; conv runs low, reductions f32
         with torch.autocast(dev.type, dtype=dtype):
             out = fn(x)[-1]
     else:
         out = fn(x)[-1]
-    if dev.type == "cuda":
+    return out.float()
+
+
+@torch.inference_mode()
+def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
+    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
+    out = _forward_last(model, inputs)
+    if out.device.type == "cuda":
         torch.cuda.synchronize()
-    # Upcast so the heatmap contract stays float32 even under fp16 autocast.
-    return out.float().cpu().numpy()
+    return out.cpu().numpy()
+
+
+@torch.inference_mode()
+def predict_points(
+    model: HourglassNet,
+    inputs: np.ndarray,
+    *,
+    method: str = "weighted",
+    radius: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fused forward + on-device heatmap decode: ``(points_norm, conf)`` as NumPy.
+
+    The arg-max peak decode (:func:`deeperfly.pose2d.inference.heatmap_to_points`)
+    runs on the *same device as the forward*, so only the tiny ``(N, J, 2)`` peaks
+    and ``(N, J)`` confidences leave the GPU -- never the full ``(N, J, h, w)``
+    heatmap, and never a float64 arg-max over the whole grid on the host. Results
+    match the NumPy decode to float32 epsilon; ``method`` / ``radius`` select the
+    sub-pixel refinement exactly as the NumPy path does.
+
+    The candidate path (:func:`deeperfly.pose2d.inference.detect_candidates_sequence`)
+    still uses :func:`predict_heatmaps`, since it needs the whole heatmap.
+    """
+    out = _forward_last(model, inputs)  # (N, J, h, w) on device, float32
+    xy, conf = _decode_peaks(out, method=method, radius=radius)
+    if out.device.type == "cuda":
+        torch.cuda.synchronize()
+    return xy.cpu().numpy(), conf.cpu().numpy()
+
+
+def _decode_peaks(
+    heatmaps: "torch.Tensor", *, method: str = "weighted", radius: int = 2
+) -> tuple["torch.Tensor", "torch.Tensor"]:
+    """Torch port of :func:`deeperfly.pose2d.inference.heatmap_to_points`.
+
+    ``heatmaps`` is ``(*lead, h, w)`` on any device; returns normalized ``(x, y)``
+    peaks ``(*lead, 2)`` and raw peak confidence ``(*lead,)``, both on the input's
+    device. Mirrors the NumPy decoder's arg-max + sub-pixel refinement so the fused
+    GPU path is numerically equivalent.
+    """
+    *lead, hh, ww = heatmaps.shape
+    flat = heatmaps.reshape(-1, hh * ww)  # (M, h*w)
+    conf, idx = flat.max(dim=-1)  # (M,) peak value, (M,) flat index
+    row, col = idx // ww, idx % ww
+    cx, cy = _refine_peaks(
+        flat.reshape(-1, hh, ww), row, col, method=method, radius=radius
+    )
+    xy = torch.stack([cx / ww, cy / hh], dim=-1)  # (M, 2)
+    return xy.reshape(*lead, 2), conf.reshape(*lead)
+
+
+def _refine_peaks(
+    hm: "torch.Tensor",
+    row: "torch.Tensor",
+    col: "torch.Tensor",
+    *,
+    method: str = "weighted",
+    radius: int = 2,
+) -> tuple["torch.Tensor", "torch.Tensor"]:
+    """Refine one integer peak per ``(M, h, w)`` heatmap to sub-pixel ``(cx, cy)``.
+
+    The torch counterpart of :func:`deeperfly.pose2d.inference.refine_peaks` (single
+    peak per channel): ``"argmax"`` keeps the cell, ``"weighted"`` takes the
+    intensity-weighted centroid of the ``(2*radius+1)`` window, ``"taylor"`` does the
+    DARK Newton step on the log-heatmap. See that function for the derivation.
+    """
+    m, hh, ww = hm.shape
+    fcol, frow = col.float(), row.float()
+    if method == "argmax":
+        return fcol, frow
+    if method not in ("weighted", "taylor"):
+        raise ValueError(f"unknown sub-pixel method {method!r}")
+    if method == "taylor" and radius < 2:
+        raise ValueError("taylor refinement needs radius >= 2")
+
+    off = torch.arange(-radius, radius + 1, device=hm.device)
+    dr, dc = (a.reshape(-1) for a in torch.meshgrid(off, off, indexing="ij"))  # (PP,)
+    nr, nc = row[:, None] + dr, col[:, None] + dc  # (M, PP) window cells
+    inb = (nr >= 0) & (nr < hh) & (nc >= 0) & (nc < ww)
+    flat = hm.reshape(m, hh * ww)
+    gidx = nr.clamp(0, hh - 1) * ww + nc.clamp(0, ww - 1)
+    patch = flat.gather(1, gidx)  # (M, PP) values around the peak
+    drf, dcf = dr.float(), dc.float()
+
+    if method == "weighted":
+        w = torch.where(inb, patch.clamp_min(0.0), torch.zeros_like(patch))
+        mass = w.sum(-1)
+        ok = mass > 0
+        denom = torch.where(ok, mass, torch.ones_like(mass))  # avoid 0/0
+        offc = torch.where(ok, (w * dcf).sum(-1) / denom, torch.zeros_like(mass))
+        offr = torch.where(ok, (w * drf).sum(-1) / denom, torch.zeros_like(mass))
+        return fcol + offc, frow + offr
+
+    # "taylor": fit the log-heatmap's local quadratic and Newton-step to its peak.
+    p = 2 * radius + 1
+    b = torch.log(patch.clamp_min(1e-10)).reshape(m, p, p)  # (M, P_, P_)
+    ib = inb.reshape(m, p, p)
+    c = radius  # centre tap; b[:, c + i, c + j] is row+i, col+j
+    dx = 0.5 * (b[:, c, c + 1] - b[:, c, c - 1])
+    dy = 0.5 * (b[:, c + 1, c] - b[:, c - 1, c])
+    dxx = 0.25 * (b[:, c, c + 2] - 2 * b[:, c, c] + b[:, c, c - 2])
+    dyy = 0.25 * (b[:, c + 2, c] - 2 * b[:, c, c] + b[:, c - 2, c])
+    dxy = 0.25 * (
+        b[:, c + 1, c + 1]
+        - b[:, c + 1, c - 1]
+        - b[:, c - 1, c + 1]
+        + b[:, c - 1, c - 1]
+    )
+    det = dxx * dyy - dxy * dxy
+    taps = (  # every tap the derivatives touch must be in-bounds
+        ib[:, c, c + 1]
+        & ib[:, c, c - 1]
+        & ib[:, c + 1, c]
+        & ib[:, c - 1, c]
+        & ib[:, c, c + 2]
+        & ib[:, c, c - 2]
+        & ib[:, c + 2, c]
+        & ib[:, c - 2, c]
+        & ib[:, c + 1, c + 1]
+        & ib[:, c + 1, c - 1]
+        & ib[:, c - 1, c + 1]
+        & ib[:, c - 1, c - 1]
+    )
+    good = taps & (det > 0) & (dxx < 0)  # a real local maximum
+    denom = torch.where(good, det, torch.ones_like(det))
+    z = torch.zeros_like(det)
+    ox = torch.where(
+        good, torch.clamp(-(dyy * dx - dxy * dy) / denom, -radius, radius), z
+    )
+    oy = torch.where(
+        good, torch.clamp(-(-dxy * dx + dxx * dy) / denom, -radius, radius), z
+    )
+    return fcol + ox, frow + oy
