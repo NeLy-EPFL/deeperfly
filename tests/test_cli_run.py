@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from deeperfly import cli
+from deeperfly.cameras import CameraGroup
 from deeperfly.io import PoseResult
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
@@ -128,11 +129,16 @@ def test_resolve_config_snapshot_used_silently_without_cli(tmp_path, caplog):
 
 
 def _stub_detect(monkeypatch, tmp_path):
-    """Stub frame sizing + detection so detect needs no files or weights."""
+    """Stub frame sizing + detection so detect needs no files, weights or recording."""
     T, H, W = 3, 16, 16
     sizes = {n: (H, W) for n in FLY_CAMERAS}
     monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
     monkeypatch.setattr(cli, "_load_detector", lambda checkpoint, backend: object())
+    # The recording is stubbed away, so treat every input as a valid recording and
+    # skip the pre-run footage validation a real fresh pose2d run does (both are
+    # covered separately by the input-resolution tests below).
+    monkeypatch.setattr(cli, "_is_recording", lambda root, config: True)
+    monkeypatch.setattr(cli, "_require_input_footage", lambda args, config: None)
 
     def fake_detect_2d(args, config, model, sides, flips, **kw):
         v = len(FLY_CAMERAS)
@@ -190,6 +196,213 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
     rec.mkdir()
     cli.main(["run", str(rec), "-c", str(cfg), "--log-level", "error"])
     assert (rec / "deeperfly_outputs" / "poses.h5").exists()
+
+
+# -- input footage validated before the output dir is created ----------------
+
+
+def _footage_cfg(tmp_path):
+    """A minimal two-camera config whose pose2d run reads real footage."""
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[cameras.cam0]\n[cameras.cam1]\n"
+        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+    return cfg
+
+
+def test_run_errors_on_missing_recording_before_creating_outdir(tmp_path):
+    """A fresh pose2d run whose recording does not exist fails up front, leaving no
+    empty output dir behind."""
+    outdir = tmp_path / "out"
+    with pytest.raises(SystemExit, match="does not exist"):
+        cli.main(
+            [
+                "run",
+                str(tmp_path / "ghost"),
+                "-c",
+                str(_footage_cfg(tmp_path)),
+                "-o",
+                str(outdir),
+                "--log-level",
+                "error",
+            ]
+        )
+    assert not outdir.exists()  # validated before any deeperfly_outputs was made
+
+
+def test_run_errors_on_missing_camera_footage_before_creating_outdir(tmp_path):
+    """A recording that exists but lacks a configured camera's footage fails
+    (naming the camera) before the output dir is created."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "cam0.mp4").write_bytes(b"")  # cam0 present, cam1 missing
+    outdir = tmp_path / "out"
+    with pytest.raises(SystemExit, match="cam1"):
+        cli.main(
+            [
+                "run",
+                str(rec),
+                "-c",
+                str(_footage_cfg(tmp_path)),
+                "-o",
+                str(outdir),
+                "--log-level",
+                "error",
+            ]
+        )
+    assert not outdir.exists()
+
+
+def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
+    """A resume that reuses the cached 2D (pose2d off) does not require the
+    recording, so a missing input is fine."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
+        outdir / "poses.h5"
+    )
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
+        "do_triangulation = true\ndo_visualization = false\n"
+    )
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "ghost"),  # no recording on disk
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert PoseResult.load(outdir / "poses.h5").pts3d is not None
+
+
+# -- input resolution: multiple inputs, wildcards, --recursive ----------------
+
+_RES_CFG = {"cameras": {"cam0": {}, "cam1": {}}, "inputs": {}}
+
+
+def _make_recording(d):
+    """A directory holding (empty) footage files for the two configured cameras."""
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cam0.mp4").write_bytes(b"")
+    (d / "cam1.mp4").write_bytes(b"")
+    return d
+
+
+def _resolve(patterns, tmp_path, *, recursive=False):
+    # globs are written relative to tmp_path, so resolve from there
+    return cli._resolve_recordings(
+        [str(tmp_path / p) for p in patterns], recursive=recursive, config=_RES_CFG
+    )
+
+
+def test_resolve_single_literal_recording(tmp_path):
+    rec = _make_recording(tmp_path / "rec")
+    assert _resolve(["rec"], tmp_path) == [rec]
+
+
+def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
+    """A single explicit path is kept even when it is not valid footage (so a resume
+    from its cache still works), with a warning naming the resolved path."""
+    bad = tmp_path / "nope"  # does not exist -> no footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["nope"], tmp_path)
+    assert out == [bad]
+    assert any(
+        str(bad.resolve()) in r.message and "not a valid recording" in r.message
+        for r in caplog.records
+    )
+
+
+def test_resolve_wildcard_keeps_valid_skips_nonrecordings_quietly(tmp_path, caplog):
+    """A wildcard keeps the valid recordings and silently drops its incidental
+    non-recording matches (no warning while at least one is valid)."""
+    _make_recording(tmp_path / "fly1")
+    _make_recording(tmp_path / "fly2")
+    (tmp_path / "deeperfly_outputs").mkdir()  # a non-recording the glob also matches
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["*"], tmp_path)
+    assert sorted(p.name for p in out) == ["fly1", "fly2"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_resolve_multiple_inputs_batch_filters_quietly(tmp_path, caplog):
+    """Several inputs run as a batch: an invalid one is skipped without warning as
+    long as another is valid (matches a shell-expanded wildcard)."""
+    rec = _make_recording(tmp_path / "fly1")
+    (tmp_path / "fly2").mkdir()  # exists but no footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        out = _resolve(["fly1", "fly2"], tmp_path)
+    assert out == [rec]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_resolve_batch_no_valid_warns_and_errors(tmp_path, caplog):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()  # neither holds footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="no valid recording"):
+            _resolve(["*"], tmp_path)
+    assert any("none of the inputs" in r.message for r in caplog.records)
+
+
+def test_resolve_wildcard_no_match_warns_and_errors(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit):
+            _resolve(["none*"], tmp_path)
+    assert any("matched no paths" in r.message for r in caplog.records)
+
+
+def test_resolve_recursive_multiple_and_glob_roots(tmp_path):
+    """--recursive searches each (possibly wildcard) parent for nested recordings."""
+    _make_recording(tmp_path / "expA" / "fly1")
+    _make_recording(tmp_path / "expB" / "sub" / "fly2")
+    out = _resolve(["exp*"], tmp_path, recursive=True)
+    assert sorted(p.name for p in out) == ["fly1", "fly2"]
+
+
+def test_resolve_recursive_nondir_literal_warns_and_errors(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        with pytest.raises(SystemExit, match="no recordings"):
+            _resolve(["ghost"], tmp_path, recursive=True)
+    assert any("is not a directory" in r.message for r in caplog.records)
+
+
+def test_resolve_recursive_no_recordings_errors(tmp_path):
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit, match="no recordings"):
+        _resolve(["empty"], tmp_path, recursive=True)
+
+
+def test_run_batch_multiple_inputs(tmp_path, monkeypatch):
+    """Two input recordings run as a batch into per-recording output subdirs."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _stub_detect(monkeypatch, tmp_path)  # stubs _is_recording -> True, so both run
+    out = tmp_path / "out"
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "r1"),
+            str(tmp_path / "r2"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(out),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert (out / "r1" / "poses.h5").exists()
+    assert (out / "r2" / "poses.h5").exists()
 
 
 def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
@@ -436,6 +649,110 @@ def test_overwrite_cascades_to_downstream_stages(result, tmp_path, monkeypatch):
     assert triangulated == [True]
     res = PoseResult.load(outdir / "poses.h5")
     assert res.pts3d is not None and res.pts3d.shape[0] == T
+
+
+def test_overwrite_bundle_adjustment_rebuilds_config_rig(result, tmp_path, monkeypatch):
+    """--overwrite bundle_adjustment on a BA-refined cache re-runs BA from the
+    *config* rig, not the already-refined cached cameras.
+
+    The cached poses.h5 stores the previous BA *output*; feeding it back to BA as
+    the starting point would begin at the prior optimum, so edited
+    [pipeline.bundle_adjustment] params barely move it. The stage must instead
+    rebuild the un-refined config rig (the regression behind "--overwrite does
+    nothing" after editing the BA config).
+    """
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(
+        result.cameras,
+        result.skeleton,
+        result.pts2d,
+        conf=result.conf,
+        meta={"bundle_adjustment": True},  # cached cameras are a previous BA output
+    ).save(outdir / "poses.h5")
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+
+    # a recognizable rig the config rebuild yields (distinct from the cached one).
+    fresh = CameraGroup.from_arrays(
+        result.cameras.names,
+        result.cameras.rvecs,
+        result.cameras.tvecs * 2.0,
+        result.cameras.intrs,
+        result.cameras.dists,
+    )
+    monkeypatch.setattr(cli, "_config_camera_rig", lambda args, config: fresh)
+    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    seen: dict = {}
+
+    def spy_ba(config, res):
+        seen["is_fresh"] = res.cameras is fresh
+        return res
+
+    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--overwrite",
+            "bundle_adjustment",
+            "--log-level",
+            "error",
+        ]
+    )
+    assert seen["is_fresh"]  # BA started from the rebuilt config rig, not the cache
+
+
+def test_recompute_bundle_adjustment_keeps_unrefined_cached_rig(
+    result, tmp_path, monkeypatch
+):
+    """Cached cameras that were never BA-refined are legitimate input: a BA
+    recompute keeps them and does not rebuild the config rig."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
+        outdir / "poses.h5"
+    )  # no bundle_adjustment marker
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
+        "do_triangulation = false\ndo_visualization = false\n"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_config_camera_rig",
+        lambda args, config: pytest.fail("must not rebuild an un-refined rig"),
+    )
+    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    seen: dict = {}
+
+    def spy_ba(config, res):
+        seen["is_cached"] = res.cameras.names == result.cameras.names
+        return res
+
+    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--overwrite",
+            "bundle_adjustment",
+            "--log-level",
+            "error",
+        ]
+    )
+    assert seen["is_cached"]  # BA refined the stored cameras, no config rebuild
 
 
 def test_overwrite_unknown_stage_errors(tmp_path):
