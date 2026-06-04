@@ -20,8 +20,10 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 uv tool install deeperfly[cuda]
 ```
 
-The `cuda` extra adds GPU acceleration for the 2D detector and is strongly
-recommended on systems with NVIDIA GPUs; omit `[cuda]` for CPU-only use. On Apple Silicon, replace `cuda` with `mps` to use the Metal backend for the JAX-based detector.
+The 2D detector (PyTorch) uses the GPU automatically on NVIDIA (CUDA) and Apple
+Silicon (Metal/MPS) with no extra. The `cuda` extra adds the fastest GPU/NVDEC
+video decoder (torchcodec-on-CUDA) and is recommended on NVIDIA systems; omit
+`[cuda]` for CPU-only use or to decode video on the CPU.
 
 To use deeperfly as a library, add it to your project instead:
 
@@ -49,9 +51,9 @@ system
 
 inference
   torch             2.6.0+cu124  (CUDA: NVIDIA GeForce RTX 4090)
-  jax               0.4.38  (backend: gpu; devices: cuda:0)
+  jax               0.4.38  (backend: cpu; devices: cpu:0)
   GPU inference     available (24.0 GiB memory)
-  detectors         jax (default), torch
+  detector          torch
 
 video backends
   read              pyav, opencv, torchcodec, imageio
@@ -61,8 +63,7 @@ video backends
 
 weights
   cache dir         /home/you/.cache/deeperfly/weights
-  PyTorch           downloaded (96.2 MiB) -- sh8_deepfly.pth
-  JAX               downloaded (24.1 MiB) -- sh8_deepfly.eqx
+  detector          downloaded (96.2 MiB) -- sh8_deepfly.pth
 
 config
   default config    /home/you/.venv/.../site-packages/deeperfly/data/default_config.toml
@@ -159,7 +160,7 @@ for full walkthroughs.
 ## Documentation
 
 - [docs/library.md](docs/library.md) — the Python API: bundle adjustment, the pipeline, video I/O.
-- [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), detector backends.
+- [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), the detector.
 - [docs/video.md](docs/video.md) — video decoding backends and on-GPU decode.
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.

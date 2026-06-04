@@ -124,9 +124,8 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
                          # playback rate for the videos (see [pipeline.visualization]).
 
 
-# Detector: the 2D pose backend and frame reader.
+# Detector: the 2D pose detector and frame reader.
 [pipeline.pose2d]
-backend = "jax"          # jax | torch
 # frame decoder backend. "auto" = fastest installed *frame-accurate* decoder for
 # `decode_device` (CPU: pyav -- the in-process default -- then opencv/torchcodec/
 # decord/video_reader_rs before the optional imageio; GPU/NVDEC: torchcodec then

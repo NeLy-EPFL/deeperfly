@@ -40,7 +40,6 @@ import argparse
 import copy
 import glob
 import logging
-import os
 import sys
 import tomllib
 from collections.abc import Iterable
@@ -66,31 +65,7 @@ from rich.progress import (
 from rich.text import Text
 
 
-def _prep_gpu_memory_policy() -> None:
-    """Cap JAX's GPU memory pool so the detector can share VRAM with on-device
-    video frames, *before* anything initializes the JAX backend.
-
-    ``deeperfly run`` decodes each camera's frames onto the GPU (NVDEC) when the
-    JAX detector runs there; JAX's default ~75% preallocation then collides with
-    those frame tensors and XLA logs alarming ``CUDA_ERROR_OUT_OF_MEMORY`` lines
-    (it recovers, but they look like a crash). The detector's forward pass is
-    small, so half the GPU is ample and leaves room for the frames. This must run
-    before any import initializes the JAX backend (e.g. ``import .geometry`` ->
-    ``import ._jax_cpu``, which calls ``jax.devices`` and would lock in the memory
-    policy), and uses an import-free GPU probe so it does not pull in or initialize
-    torch/JAX. Only for ``run``; honors an override.
-    """
-    if not (len(sys.argv) > 1 and sys.argv[1] == "run"):
-        return
-    if any(k.startswith("XLA_PYTHON_CLIENT_") for k in os.environ):
-        return  # respect a user-chosen JAX memory policy
-    if glob.glob("/dev/nvidia[0-9]*"):  # an NVIDIA GPU is present
-        os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
-
-
-_prep_gpu_memory_policy()  # before the imports below initialize the JAX backend
-
-import numpy as np  # noqa: E402  (must follow the GPU memory policy above)
+import numpy as np  # noqa: E402
 
 from .cameras import CameraGroup  # noqa: E402
 from .io import PoseResult  # noqa: E402
@@ -209,34 +184,23 @@ def _configure_logging(level_name: str) -> None:
         logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
 
 
-def _load_detector(checkpoint: str | None, backend: str):
-    """Load the JAX detector (native .eqx) or the PyTorch detector (.pth).
+def _load_detector(checkpoint: str | None):
+    """Load the PyTorch detector from a ``.pth`` checkpoint.
 
-    With no explicit ``checkpoint`` the cached weights are used, provisioning them
-    on demand: the PyTorch checkpoint is downloaded, and for the JAX backend it is
-    also converted to a native checkpoint (:func:`ensure_jax_weights`). An explicit
-    but missing ``checkpoint`` is an error (we never write to a user-named path).
+    With no explicit ``checkpoint`` the cached weights are used, downloading the
+    released DeepFly2D checkpoint on demand. An explicit but missing ``checkpoint``
+    is an error (we never write to a user-named path).
     """
     from .pose2d import backends
+    from .pose2d.download import download_torch_weights
 
-    if backend == "torch":
-        from .pose2d.download import download_torch_weights
-
-        path = checkpoint or download_torch_weights()
-        return backends.load_detector("torch", path)
-
-    from .pose2d.download import ensure_jax_weights
-
-    if checkpoint is not None:
-        if not Path(checkpoint).exists():
-            raise SystemExit(
-                f"no JAX checkpoint at {checkpoint}. Remove [detector].checkpoint "
-                "to use the auto-provisioned cache, or point it at a valid .eqx."
-            )
-        path: str | Path = checkpoint
-    else:
-        path = ensure_jax_weights()
-    return backends.load_detector("jax", path)
+    if checkpoint is not None and not Path(checkpoint).exists():
+        raise SystemExit(
+            f"no detector checkpoint at {checkpoint}. Remove [detector].checkpoint "
+            "to use the auto-provisioned cache, or point it at a valid .pth."
+        )
+    path = checkpoint or download_torch_weights()
+    return backends.load_detector(path)
 
 
 # -- config-driven option resolution -----------------------------------------
@@ -436,18 +400,14 @@ def _frame_read_device(config: dict) -> str:
     one shot (see :func:`deeperfly.pose2d.inference._window_to_device`) -- decode is
     never the bottleneck, the forward is -- and it keeps the decoder off the GPU and
     out of the CUDA-video dependency stack (see ``dev/bench_video.py``). Opt into
-    on-device (NVDEC) decode, which feeds the JAX network zero-copy via DLPack, with
+    on-device (NVDEC) decode, which feeds the network zero-copy (a GPU-decoded frame
+    is preprocessed and forwarded without leaving the GPU), with
     ``[detector] decode_device = "cuda"`` (alias ``"gpu"``, or ``"auto"``); it is
     worth it only on the fastest GPUs. ``read_frames`` still falls back to the CPU
-    if no GPU video backend can actually decode here. The torch detector backend
-    always decodes on the CPU (it copies inputs to host internally, so GPU decode
-    would not help).
+    if no GPU video backend can actually decode here.
     """
     det = _pose2d_config(config)
-    device = det.get("decode_device", "cpu")
-    if device == "cpu" or det.get("backend", "jax") != "jax":
-        return "cpu"
-    return device  # "cuda"/"gpu" / "auto": opt-in on-device decode for the JAX backend
+    return det.get("decode_device", "cpu")  # "cpu" | "cuda"/"gpu" | "auto"
 
 
 def _camera_patterns(config: dict) -> dict[str, str]:
@@ -841,14 +801,9 @@ def _stage_pose2d(
     skeleton = Skeleton.from_config(config) if "skeleton" in config else Skeleton.fly()
 
     det = _pose2d_config(config)
-    backend = det.get("backend", "jax")
-    log.info(
-        "loading %s detector (checkpoint: %s)",
-        backend,
-        det.get("checkpoint") or "cached",
-    )
-    model = _load_detector(det.get("checkpoint"), backend)
-    log.info("%s detector ready on device %s", backend, backends.detector_device(model))
+    log.info("loading detector (checkpoint: %s)", det.get("checkpoint") or "cached")
+    model = _load_detector(det.get("checkpoint"))
+    log.info("detector ready on device %s", backends.detector_device(model))
 
     k = config.get("pipeline", {}).get("pictorial_structures", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)
@@ -1874,14 +1829,13 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     """Report the installation and what this machine can actually run.
 
     Covers package version + location, the Python/OS, whether CPU/GPU inference
-    is available (torch CUDA/MPS and the JAX backend), the installed video
-    read/write backends (flagging GPU/NVDEC decoders), whether the detector
+    is available (torch CUDA/MPS; JAX is CPU-only, for geometry), the installed
+    video read/write backends (flagging GPU/NVDEC decoders), whether the detector
     weights have been downloaded and where, and the default config path. The
     framework imports are lazy and each probe is guarded, so a missing or broken
     optional piece is reported rather than crashing the command.
     """
     import importlib.metadata
-    import importlib.util
     import platform
 
     from . import video
@@ -1926,11 +1880,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     else:
         _doctor_row("jax", "not installed")
 
-    gpu = (
-        "cuda" in torch_info
-        or torch_info.get("mps")
-        or (jax_info.get("backend") not in (None, "cpu"))
-    )
+    gpu = "cuda" in torch_info or torch_info.get("mps")
     mem = backends.gpu_memory_bytes()
     if gpu:
         _doctor_row(
@@ -1939,12 +1889,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         )
     else:
         _doctor_row("GPU inference", "not available -- CPU only")
-    detectors = ", ".join(
-        f"{b} (default)" if b == backends.DEFAULT_BACKEND else b
-        for b in backends.BACKENDS
-        if importlib.util.find_spec(b) is not None
-    )
-    _doctor_row("detectors", detectors or "none")
+    _doctor_row("detector", "torch" if torch_info["installed"] else "none")
 
     _doctor_header("video backends")
     read_avail = video.available_read_backends()
@@ -1964,15 +1909,12 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     _doctor_header("weights")
     _doctor_row("cache dir", download.cache_dir())
-    for label, path in (
-        ("PyTorch", download.torch_weights_path()),
-        ("JAX", download.jax_weights_path()),
-    ):
-        if path.exists():
-            state = f"downloaded ({_fmt_bytes(path.stat().st_size)}) -- {path.name}"
-        else:
-            state = f"not downloaded -- would cache as {path.name}"
-        _doctor_row(label, state)
+    path = download.torch_weights_path()
+    if path.exists():
+        state = f"downloaded ({_fmt_bytes(path.stat().st_size)}) -- {path.name}"
+    else:
+        state = f"not downloaded -- would cache as {path.name}"
+    _doctor_row("detector", state)
 
     _doctor_header("config")
     _doctor_row("default config", DEFAULT_CONFIG_PATH)

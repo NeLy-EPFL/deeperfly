@@ -16,12 +16,11 @@ Geometry functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``,
 ``rmat``, ...) first and any camera parameters after, in the canonical order
 ``rvecs, tvecs, intrs, dists``. All functions are JIT- and grad-friendly.
 
-The batched public functions are :func:`cpu_jit`-wrapped, so they run on the CPU
-and return CPU-resident arrays regardless of the process-wide default device --
-the tiny camera-algebra arrays don't benefit from a GPU, and pinning them to the
-CPU keeps a host-side geometry user clear of JAX's GPU VRAM preallocation (see
-:mod:`deeperfly._jax_cpu`). The ``*_one`` variants operate on a single
-observation (no leading batch axes) and are designed to be composed with
+The batched public functions are :func:`cpu_jit`-wrapped (see
+:mod:`deeperfly._jax_cpu`); deeperfly installs only CPU JAX, so this camera-algebra
+runs on the CPU -- the tiny arrays don't benefit from a GPU. The ``*_one`` variants
+operate on a single observation (no leading batch axes) and are designed to be
+composed with
 :func:`jax.vmap` and :func:`jax.jacfwd` for bundle adjustment; the batched
 public functions are themselves thin :func:`jax.vmap` wrappers around them.
 """

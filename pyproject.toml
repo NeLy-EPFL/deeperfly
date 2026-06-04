@@ -28,12 +28,13 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 dependencies = [
-    # Geometry/BA core (float64, JIT- and grad-friendly). CPU JAX is portable on
-    # every platform; NVIDIA CUDA acceleration is opt-in via the `cuda` extra below.
+    # Geometry/BA core (float64, JIT- and grad-friendly), kept on the CPU -- the
+    # arrays are tiny, so a GPU never helps. CPU JAX is portable on every platform
+    # and is the only JAX deeperfly installs (the detector is PyTorch).
     "jax>=0.10.1",
-    # The 2D detector runs on either backend (JAX/Equinox or PyTorch); torch also
-    # converts the original DeepFly2D weights and auto-uses Metal (MPS) on Apple
-    # Silicon -- the only accelerated detector path on macOS.
+    # The 2D detector (PyTorch). torch loads the original DeepFly2D weights
+    # directly, uses CUDA on NVIDIA GPUs (its PyPI wheel already bundles CUDA), and
+    # auto-uses Metal (MPS) on Apple Silicon -- so no extra is needed for either.
     "torch>=2.2",
     "torchvision>=0.17",
     "jaxtyping>=0.3.10",
@@ -60,23 +61,17 @@ Issues = "https://github.com/NeLy-EPFL/deeperfly/issues"
 deeperfly = "deeperfly.cli:main"
 
 [project.optional-dependencies]
-# NVIDIA CUDA acceleration: CUDA-13 JAX (detector on the GPU) plus the fastest
-# GPU/NVDEC decoder, torchcodec-on-CUDA. CUDA wheels exist for Linux x86-64 only,
-# so the markers make this a clean no-op elsewhere. Install with `deeperfly[cuda]`.
-# (torch's PyPI wheel already bundles CUDA 13; [tool.uv.sources] routes torchcodec
-# to the PyTorch CUDA index, and nvidia-npp gives it GPU colour conversion -- its
-# libs are dlopen'd, so no LD_LIBRARY_PATH is needed.)
+# NVIDIA CUDA acceleration for video decode: the fastest GPU/NVDEC decoder,
+# torchcodec-on-CUDA, plus GPU colour conversion. The detector itself runs on the
+# GPU through torch's own CUDA wheel, so no JAX-CUDA is needed here. CUDA wheels
+# exist for Linux x86-64 only, so the markers make this a clean no-op elsewhere.
+# Install with `deeperfly[cuda]`. (torch's PyPI wheel already bundles CUDA 13;
+# [tool.uv.sources] routes torchcodec to the PyTorch CUDA index, and nvidia-npp
+# gives it GPU colour conversion -- its libs are dlopen'd, so no LD_LIBRARY_PATH
+# is needed.)
 cuda = [
-    "jax[cuda13]>=0.10.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torchcodec>=0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "nvidia-npp>=13; sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
-# Apple Metal (MPS) acceleration for the JAX detector via the jax-mps plugin
-# (experimental, float32-only -- geometry/BA stay float64 on CPU). Apple Silicon
-# only. The torch backend already auto-uses Metal on macOS, so use this only to
-# stay on the JAX backend. Install with `deeperfly[mps]`.
-mps = [
-    "jax-mps>=0.10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 # Optional faster/alternative video read/write backends (deeperfly.video), each
 # selectable via `backend=...`. PyAV is core (the default), so it is not repeated

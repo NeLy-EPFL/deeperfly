@@ -14,21 +14,12 @@ The example rig's principal point assumes a 1024x512 sensor; these frames are
 960x480, so the principal point is recentered to the real image center (the
 intrinsics are otherwise the idealized example values and stay fixed in BA).
 
-Throughput. The 8-stack hourglass forward is the floor (~230 img/s in float32 on
-an RTX 4090, and batching past one synchronized frame does not help -- it already
-saturates the GPU). Two float32-exact tricks close the gap to that floor:
-
-* The JAX path fuses preprocessing (flip + resize + mean-subtract), the forward
-  pass and the sub-pixel peak decode (``--decode``) into a single jitted, vmapped
-  call, so each frame uploads only raw uint8 and downloads only the 19x2 peaks --
-  no per-image resize round-trips and no multi-MB heatmap transfer.
-* Image decode is prefetched on worker threads (``--workers``) so disk + JPEG
-  decode overlap the GPU compute instead of serializing in front of it.
-
-Together these take this recording from ~19 to ~31 frame/s. (Half precision would
-roughly double the forward, but bf16/f16 shift even high-confidence peaks by
-several pixels -- not worth it for a sub-3px pipeline -- so inference stays
-float32.)
+Throughput. The 8-stack hourglass forward (PyTorch) is the floor; batching past one
+synchronized frame barely helps -- it already saturates the GPU. Image decode is
+prefetched on worker threads (``--workers``) so disk + JPEG decode overlap the GPU
+compute instead of serializing in front of it. Inference stays float32 (bf16/f16
+shift even high-confidence peaks by several pixels -- not worth it for a sub-3px
+pipeline).
 """
 
 from __future__ import annotations
@@ -51,112 +42,39 @@ from deeperfly.skeleton import Skeleton
 CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]  # camera 0..6
 
 
-def load_detector(backend: str, checkpoint: str | None):
-    from deeperfly.pose2d.download import jax_weights_path, torch_weights_path
+def load_detector(checkpoint: str | None):
+    from deeperfly.pose2d.download import torch_weights_path
 
-    default = torch_weights_path() if backend == "torch" else jax_weights_path()
-    return backends.load_detector(backend, checkpoint or default)
+    return backends.load_detector(checkpoint or torch_weights_path())
 
 
-def build_detector(model, backend: str, sides, flips, *, method="weighted", radius=2):
+def build_detector(model, sides, flips, *, method="weighted", radius=2):
     """Return ``detect(batch) -> (pts (K,V,38,2) px, conf (K,V,38))``.
 
     ``batch`` is ``K`` synchronized frames as ``(K, V, H, W)`` uint8 (grayscale,
-    as in this rig). The JAX backend fuses preprocess + forward + sub-pixel decode
-    over all ``K*V`` images in one jitted vmap, so only uint8 goes up and only the
-    peaks come down -- the decode (``method`` / ``radius``, see
-    :func:`inference.heatmap_to_points`) runs on-device via
-    :func:`inference.refine_peaks_jax`. At ``K=1`` this is bit-identical to
-    :func:`inference.detect`; at larger ``K`` the batched conv uses different
-    kernels, so results match only at the float32 level (~1e-5 in confidence) --
-    enough to flip the arg-max on the rare near-tie joint (~0.05%), which is
-    harmless here (those points are low-confidence and get dropped by
-    reprojection-outlier rejection downstream). ``K`` sets the GPU batch (see
-    ``--batch``); the jit recompiles once per distinct ``K`` (steady chunk +
-    smaller final remainder = two compiles). The torch backend reuses
-    :func:`inference.detect` per frame.
+    as in this rig). Each frame runs through :func:`inference.detect`, which stacks
+    its passes (the front camera twice, for both body sides) into one forward and
+    decodes the peaks (``method`` / ``radius``, see
+    :func:`inference.heatmap_to_points`).
     """
     n_views = len(sides)
 
-    if backend != "jax":
-
-        def detect_torch(batch):
-            k = batch.shape[0]
-            pts = np.empty((k, n_views, 38, 2))
-            conf = np.empty((k, n_views, 38))
-            for i in range(k):
-                pts[i], conf[i] = inference.detect(
-                    model,
-                    [batch[i, v] for v in range(n_views)],
-                    sides,
-                    flips,
-                    method=method,
-                    radius=radius,
-                )
-            return pts, conf
-
-        return detect_torch
-
-    import equinox as eqx
-    import jax
-    import jax.numpy as jnp
-
-    out_h, out_w = inference.IMG_SIZE
-    mean = inference.MEAN
-
-    @eqx.filter_jit
-    def _peaks(m, imgs_u8, fl):  # imgs_u8: (N, H, W) uint8; fl: (N,) bool
-        def one(img, flip):
-            x = img.astype(jnp.float32) / 255.0
-            x = jnp.stack([x, x, x], axis=-1)  # grayscale -> 3 channels
-            x = jnp.where(flip, x[:, ::-1, :], x)  # mirror far-side cameras
-            x = jax.image.resize(x, (out_h, out_w, 3), method="linear", antialias=True)
-            x = jnp.transpose(x, (2, 0, 1)) - mean
-            hm = m.heatmaps(x)  # (J, h, w)
-            j, h, w = hm.shape
-            flat = hm.reshape(j, h * w)
-            idx = jnp.argmax(flat, axis=-1)
-            conf = jnp.max(flat, axis=-1)
-            row, col = idx // w, idx % w  # arg-max cell per joint
-            # Sub-pixel decode stays on-device (the GPU twin of the host path), so
-            # nothing leaves the accelerator until the final (J, 2) peaks.
-            cx, cy = inference.refine_peaks_jax(
-                hm, row, col, method=method, radius=radius
+    def detect_torch(batch):
+        k = batch.shape[0]
+        pts = np.empty((k, n_views, 38, 2))
+        conf = np.empty((k, n_views, 38))
+        for i in range(k):
+            pts[i], conf[i] = inference.detect(
+                model,
+                [batch[i, v] for v in range(n_views)],
+                sides,
+                flips,
+                method=method,
+                radius=radius,
             )
-            return jnp.stack([cx / w, cy / h], axis=-1), conf
+        return pts, conf
 
-        return jax.vmap(one)(imgs_u8, fl)
-
-    # Expand the per-camera layout into passes once (the front camera -> two
-    # passes, so it covers both body sides); `views` maps each pass back to its
-    # physical camera. p passes/frame (p = V + 1 for the canonical fly rig).
-    pass_views, pass_sides, pass_flips = inference.expand_passes(sides, flips)
-    p = len(pass_views)
-
-    def detect_jax(batch):
-        k, v, h, w = batch.shape
-        # Per frame, the p passes pick cameras `pass_views` (front appears twice);
-        # frame-major image index = frame*p + pass.
-        imgs = batch[:, pass_views, :, :].reshape(k * p, h, w)
-        fl = jnp.asarray(pass_flips * k)
-        pts_norm, conf = _peaks(model, jnp.asarray(imgs), fl)
-        image_size = [(w, h)] * (k * v)
-        # Scatter every frame's passes into its own V-camera block: frame i, pass
-        # j -> output row i*V + pass_views[j] (so the front camera's two passes
-        # land on the same row, filling both halves).
-        global_views = [i * v + pass_views[j] for i in range(k) for j in range(p)]
-        pts, cf = inference.assemble_skeleton(
-            np.asarray(pts_norm),
-            np.asarray(conf),
-            pass_sides * k,
-            pass_flips * k,
-            image_size,
-            views=global_views,
-            n_views=k * v,
-        )
-        return pts.reshape(k, v, 38, 2), cf.reshape(k, v, 38)
-
-    return detect_jax
+    return detect_torch
 
 
 def detect_pictorial(
@@ -252,7 +170,6 @@ def main() -> None:
     ap.add_argument("--images", default="data/images")
     ap.add_argument("--config", default="examples/cameras.toml")
     ap.add_argument("--out", default="results/fly_pose.h5")
-    ap.add_argument("--backend", choices=["jax", "torch"], default="jax")
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--frames", type=int, default=None, help="num frames (default all)")
     ap.add_argument("--stride", type=int, default=1)
@@ -327,7 +244,7 @@ def main() -> None:
     n_views = len(CAMERA_NAMES)
     skeleton = Skeleton.fly()
     sides, flips = inference.fly_camera_layout(CAMERA_NAMES)
-    model = load_detector(args.backend, args.checkpoint)
+    model = load_detector(args.checkpoint)
     n_pts = skeleton.n_points
 
     def load_stack(fid: int) -> np.ndarray:
@@ -356,7 +273,6 @@ def main() -> None:
     else:
         detect_batch = build_detector(
             model,
-            args.backend,
             sides,
             flips,
             method=args.decode,
@@ -431,7 +347,6 @@ def main() -> None:
         fps=args.fps,
         meta={
             "source": str(root),
-            "backend": args.backend,
             "triangulation": args.triangulation,
             "pictorial": args.pictorial,
             "n_frames_input": n_t,

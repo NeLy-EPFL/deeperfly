@@ -1,112 +1,75 @@
-"""Tests for the JAX 2D pose detector backend (no torch required).
+"""Tests for the 2D pose detector (PyTorch) and the shared orchestration.
 
-Architecture/shape, weight-conversion mechanics (via a torch-free round trip),
-heatmap decoding and the single-side -> full-skeleton assembly are all checked
-here. Numerical equivalence against the original PyTorch backend lives in
-``test_pose2d_torch.py`` (skipped when torch is absent).
+Architecture/shape, the torch weight round-trip, heatmap decoding, preprocessing
+and the single-side -> full-skeleton assembly are checked here.
 """
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
+import torch
 
 from deeperfly.pose2d import backends, inference
-from deeperfly.pose2d.backends.jax import HourglassNet, weights
+from deeperfly.pose2d.backends.torch import HourglassNet, load_model
 
 
 @pytest.fixture
 def model() -> HourglassNet:
     # A small 2-stack model keeps these mechanics tests fast; the published
-    # config is 8 stacks (see test_deepfly2d_default_is_sh8).
-    return HourglassNet.deepfly2d(key=jax.random.PRNGKey(0), num_stacks=2)
+    # config is 8 stacks (see test_default_is_sh8).
+    return HourglassNet(num_stacks=2).eval()
 
 
 # -- model -------------------------------------------------------------------
 
 
 def test_forward_shapes(model):
-    x = jax.random.normal(jax.random.PRNGKey(1), (3, 256, 512))
-    outs = model(x)
+    x = torch.randn(1, 3, 256, 512)
+    with torch.inference_mode():
+        outs = model(x)
     assert len(outs) == 2  # one heatmap stack per hourglass
-    assert outs[-1].shape == (19, 64, 128)
-    assert model.heatmaps(x).shape == (19, 64, 128)
+    assert tuple(outs[-1].shape) == (1, 19, 64, 128)
 
 
-def test_deepfly2d_default_is_sh8():
+def test_default_is_sh8():
     # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
-    # weight conversion / load_model build a matching architecture.
-    assert HourglassNet.deepfly2d(key=jax.random.PRNGKey(0)).num_stacks == 8
+    # load_model builds a matching architecture for the published weights.
+    assert HourglassNet().num_stacks == 8
 
 
 def test_batched_inference(model):
-    inputs = jax.random.normal(jax.random.PRNGKey(2), (3, 3, 256, 512))
+    inputs = torch.randn(3, 3, 256, 512)
     hm = backends.predict_heatmaps(model, inputs)
     assert hm.shape == (3, 19, 64, 128)
+    assert isinstance(hm, np.ndarray)  # backend always returns host NumPy
 
 
-# -- weight conversion -------------------------------------------------------
-
-
-def test_conversion_roundtrip_is_exact(model):
-    sd = weights.export_state_dict(model)
-    converted = weights.convert_state_dict(
-        sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(9), num_stacks=2)
-    )
-    x = jax.random.normal(jax.random.PRNGKey(3), (3, 256, 512))
-    np.testing.assert_array_equal(
-        np.asarray(model.heatmaps(x)), np.asarray(converted.heatmaps(x))
-    )
-
-
-def test_auto_batch_size_fits_vram_and_clamps(monkeypatch):
-    # No GPU -> the minimum batch.
-    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: None)
-    assert backends.auto_batch_size(min_batch=3) == 3
-    # Plenty of VRAM -> capped at max_batch.
-    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: 80 * 1024**3)
-    assert backends.auto_batch_size((256, 512), max_batch=16) == 16
-    # Fixed VRAM: larger images need more memory per image -> a smaller batch.
-    monkeypatch.setattr(backends, "gpu_memory_bytes", lambda device=None: 2 * 1024**3)
-    small_img = backends.auto_batch_size((128, 128), max_batch=64)
-    big_img = backends.auto_batch_size((512, 512), max_batch=64)
-    assert 1 <= big_img <= small_img
+# -- weight I/O --------------------------------------------------------------
 
 
 def test_infer_num_stacks_counts_score_heads(model):
-    sd = weights.export_state_dict(model)
+    sd = {k: v.detach().numpy() for k, v in model.state_dict().items()}
     assert backends.infer_num_stacks(sd) == 2
-    # num_batches_tracked counters are ignored, not treated as unused keys.
-    sd["bn1.num_batches_tracked"] = np.zeros((), dtype=np.int64)
-    weights.convert_state_dict(
-        sd, HourglassNet.deepfly2d(key=jax.random.PRNGKey(5), num_stacks=2)
-    )
 
 
-def test_conversion_missing_key_raises(model):
-    sd = weights.export_state_dict(model)
-    del sd["conv1.weight"]
-    with pytest.raises(KeyError, match="missing weight 'conv1.weight'"):
-        weights.convert_state_dict(sd, model)
-
-
-def test_conversion_unused_key_raises(model):
-    sd = weights.export_state_dict(model)
-    sd["bogus.weight"] = np.zeros((1,))
-    with pytest.raises(KeyError, match="unused state_dict keys"):
-        weights.convert_state_dict(sd, model)
+def test_infer_num_stacks_rejects_foreign_state_dict():
+    with pytest.raises(KeyError, match="not a HourglassNet"):
+        backends.infer_num_stacks({"conv.weight": np.zeros((1,))})
 
 
 def test_checkpoint_save_load(model, tmp_path):
-    path = tmp_path / "model.eqx"
-    weights.save_checkpoint(model, path)
-    loaded = weights.load_model(path, key=jax.random.PRNGKey(7), num_stacks=2)
-    x = jax.random.normal(jax.random.PRNGKey(4), (3, 256, 512))
-    np.testing.assert_array_equal(
-        np.asarray(model.heatmaps(x)), np.asarray(loaded.heatmaps(x))
-    )
+    # The torch backend loads the original DeepFly2D state_dict directly; saving
+    # and reloading must reproduce the same forward (architecture inferred from
+    # the checkpoint's score heads).
+    path = tmp_path / "model.pth"
+    torch.save(model.state_dict(), path)
+    loaded = load_model(path, dev="cpu")  # match the CPU fixture for comparison
+    x = torch.randn(1, 3, 256, 512)
+    with torch.inference_mode():
+        np.testing.assert_allclose(
+            np.asarray(model(x)[-1]), np.asarray(loaded(x)[-1]), atol=1e-6
+        )
 
 
 # -- heatmap decoding --------------------------------------------------------
@@ -118,7 +81,7 @@ def test_heatmap_to_points_argmax_and_conf():
     hm[0, 1, 30, 100] = 3.0
     # A lone spike has no neighbourhood mass, so every method returns its cell.
     for method in ("argmax", "weighted", "taylor"):
-        points, conf = inference.heatmap_to_points(jnp.asarray(hm), method=method)
+        points, conf = inference.heatmap_to_points(hm, method=method)
         np.testing.assert_allclose(points[0, 0], [20 / 128, 10 / 64])
         np.testing.assert_allclose(points[0, 1], [100 / 128, 30 / 64])
         np.testing.assert_allclose(conf[0], [5.0, 3.0])
@@ -142,38 +105,13 @@ def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
     assert tx < 1e-2 and ty < 1e-2  # Taylor is near-exact on a clean Gaussian
 
 
-def test_refine_peaks_jax_matches_numpy():
-    # The on-device decode (fused fast path) must equal the host refine_peaks.
-    rng = np.random.default_rng(1)
-    hh, ww, j = 64, 128, 19
-    ys, xs = np.mgrid[0:hh, 0:ww]
-    hm = np.zeros((j, hh, ww), np.float32)
-    for jj in range(j):
-        r, c = rng.uniform(3, hh - 3), rng.uniform(3, ww - 3)
-        hm[jj] = np.exp(-((ys - r) ** 2 + (xs - c) ** 2) / 2.0)
-    hm += 0.01 * rng.standard_normal(hm.shape).astype(np.float32)
-
-    flat = hm.reshape(j, -1)
-    idx = np.argmax(flat, axis=-1)
-    row, col = idx // ww, idx % ww
-    for method in ("argmax", "weighted", "taylor"):
-        cx_np, cy_np = inference.refine_peaks(
-            hm, row[:, None], col[:, None], method=method
-        )
-        cx_jx, cy_jx = inference.refine_peaks_jax(
-            jnp.asarray(hm), jnp.asarray(row), jnp.asarray(col), method=method
-        )
-        np.testing.assert_allclose(np.asarray(cx_jx), cx_np[:, 0], atol=1e-4)
-        np.testing.assert_allclose(np.asarray(cy_jx), cy_np[:, 0], atol=1e-4)
-
-
 # -- preprocessing -----------------------------------------------------------
 
 
 def test_preprocess_shape_and_mean():
     gray = np.full((200, 100, 3), 128, dtype=np.uint8)  # 128/255 ~ 0.502
     out = inference.preprocess(gray)
-    assert out.shape == (3, 256, 512)
+    assert tuple(out.shape) == (3, 256, 512)
     np.testing.assert_allclose(np.asarray(out), 128 / 255 - inference.MEAN, atol=1e-4)
 
 
@@ -185,11 +123,10 @@ def test_preprocess_flip_commutes_with_resize():
     np.testing.assert_allclose(a, b, atol=1e-5)
 
 
-def test_preprocess_accepts_on_device_tensor_via_dlpack():
-    # A GPU-decoded frame arrives as a torch.Tensor; preprocess must bridge it to
-    # JAX (DLPack) and produce the same result as the NumPy path. Exercised on the
-    # CPU here (DLPack works host-side too), so no GPU is required.
-    torch = pytest.importorskip("torch")
+def test_preprocess_accepts_on_device_tensor():
+    # A GPU-decoded frame arrives as a torch.Tensor; preprocess must keep it on
+    # the tensor's device and produce the same result as the NumPy path.
+    # Exercised on the CPU here, so no GPU is required.
     rng = np.random.default_rng(0)
     img = rng.integers(0, 256, size=(96, 128, 3), dtype=np.uint8)
     from_numpy = np.asarray(inference.preprocess(img))
@@ -200,7 +137,6 @@ def test_preprocess_accepts_on_device_tensor_via_dlpack():
 def test_detect_accepts_tensor_frames(model):
     # The whole detect() path must accept on-device (torch.Tensor) frames and match
     # the NumPy result -- the zero-copy GPU decode handoff, verified on the CPU.
-    torch = pytest.importorskip("torch")
     sides, flips = inference.fly_camera_layout(["rh", "lf"])
     rng = np.random.default_rng(1)
     images = [rng.uniform(size=(96, 128, 3)).astype(np.float32) for _ in range(2)]
@@ -223,8 +159,8 @@ def test_detect_sequence_chunking_is_equivalent(model):
     a = 4  # split time into windows [0:4) and [4:7)
     p0, c0 = inference.detect_sequence(model, [f[:a] for f in frames], sides, flips)
     p1, c1 = inference.detect_sequence(model, [f[a:] for f in frames], sides, flips)
-    np.testing.assert_array_equal(np.concatenate([p0, p1], axis=1), full_pts)
-    np.testing.assert_array_equal(np.concatenate([c0, c1], axis=1), full_conf)
+    np.testing.assert_allclose(np.concatenate([p0, p1], axis=1), full_pts, atol=1e-5)
+    np.testing.assert_allclose(np.concatenate([c0, c1], axis=1), full_conf, atol=1e-5)
 
 
 def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
@@ -233,12 +169,10 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
     # frame boundaries (batch_size not a multiple of the passes-per-frame). Stub the
     # forward with a deterministic, sharply-peaked response keyed on each input's
     # content (identical however rows are batched). That isolates the batching
-    # plumbing from XLA's batch-size-dependent conv arithmetic, which on the real
+    # plumbing from any batch-size-dependent conv arithmetic, which on the real
     # *untrained* model perturbs near-flat heatmaps enough to flip arg-max peaks.
-    from deeperfly.pose2d import backends
-
     def fake_predict(_model, inputs):
-        x = np.asarray(inputs)  # (N, 3, 256, 512) preprocessed passes
+        x = np.asarray(inputs.cpu() if hasattr(inputs, "cpu") else inputs)
         hm = np.zeros((x.shape[0], inference.N_SIDE_JOINTS, 64, 128), np.float32)
         for i in range(x.shape[0]):
             r, c = divmod(int(abs(x[i]).sum() * 1e3) % (64 * 128), 128)

@@ -3,16 +3,16 @@
 Public surface:
 
 - :mod:`deeperfly.geometry` -- low-level projection / triangulation / Rodrigues
-  primitives (JIT- and grad-friendly JAX, pinned to the CPU so importing them
-  never makes JAX preallocate GPU VRAM; see :mod:`deeperfly._jax_cpu`). Also
-  used by bundle adjustment, which needs autodiff for the Jacobian.
+  primitives (JIT- and grad-friendly JAX on the CPU; see :mod:`deeperfly._jax_cpu`).
+  Also used by bundle adjustment, which needs autodiff for the Jacobian.
 - :class:`deeperfly.cameras.Camera` / :class:`deeperfly.cameras.CameraGroup` --
   camera models and config-driven rigs (built on :mod:`deeperfly.geometry`).
 - :func:`deeperfly.bundle_adjustment.bundle_adjust` and
   :func:`deeperfly.bundle_adjustment.bundle_adjust_from_config` -- bundle
-  adjustment over a ``CameraGroup`` (also CPU-pinned).
+  adjustment over a ``CameraGroup`` (also on the CPU).
 
-Only the detector (:mod:`deeperfly.pose2d`) uses the GPU when one is available.
+JAX (CPU) powers that geometry; the 2D detector (:mod:`deeperfly.pose2d`) is
+PyTorch and uses the GPU when one is available.
 """
 
 from __future__ import annotations

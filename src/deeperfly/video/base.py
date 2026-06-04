@@ -16,7 +16,7 @@ Readers expose two access patterns:
 Frame contract: ``(T, H, W, 3)`` ``uint8`` RGB. CPU backends return NumPy;
 GPU backends (``torchcodec``, ``decord``, ``dali``) keep
 frames as a framework tensor on the requested device. :func:`to_numpy` collapses
-either to NumPy on the host; :func:`to_jax` hands GPU frames to JAX zero-copy.
+either to NumPy on the host; :func:`to_torch` hands GPU frames to torch zero-copy.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 # the ``ffmpeg`` binary (a subprocess fork -- slower, and it trips Python 3.13's
 # os.fork()-in-a-multithreaded-process warning once JAX has started threads), so
 # it is only the optional forking fallback. GPU order leads with torchcodec -- the
-# most robust NVDEC path and the one that feeds JAX zero-copy (see ``to_jax``);
+# most robust NVDEC path and the one that feeds torch zero-copy (see ``to_torch``);
 # every listed GPU decoder (torchcodec / DALI / decord) is frame-accurate.
 CPU_READ_ORDER = (
     "pyav",
@@ -116,9 +116,9 @@ def require_cpu(device, name: str) -> None:
 def cuda_available() -> bool:
     """Whether a CUDA GPU is usable, for resolving ``device="auto"``.
 
-    Probes torch (a core dependency, so always importable regardless of the 2D
-    detector backend). The probe does not initialize JAX; ``torch.cuda`` is cheap
-    once torch is loaded and any import cost is paid once per process.
+    Probes torch (a core dependency, so always importable). The probe does not
+    initialize JAX; ``torch.cuda`` is cheap once torch is loaded and any import
+    cost is paid once per process.
     """
     try:
         import torch
@@ -328,28 +328,29 @@ def to_numpy(frames) -> np.ndarray:
     return np.asarray(frames)
 
 
-def to_jax(frames):
-    """Hand backend frames to JAX, zero-copy where possible.
+def to_torch(frames):
+    """Hand backend frames to torch, zero-copy where possible.
 
-    GPU tensors (e.g. from the ``torchcodec`` or ``decord`` readers) are wrapped
-    via the DLPack protocol, so on a shared GPU JAX reads the *same* device
-    buffer with no host round-trip -- the fast path for feeding a JAX detector::
+    GPU tensors (e.g. from the ``torchcodec`` or ``decord`` readers) stay on the
+    device: a ``torch.Tensor`` passes through and any other DLPack-capable tensor
+    is wrapped via the DLPack protocol, so torch reads the *same* device buffer
+    with no host round-trip -- the fast path for feeding the detector::
 
         frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")
-        x = video.to_jax(frames)          # jax.Array on the GPU, zero-copy
+        x = video.to_torch(frames)        # torch.Tensor on the GPU, zero-copy
 
-    NumPy input is moved onto JAX's default device the usual way. Keep a
-    reference to the producer tensor until JAX has consumed it.
+    NumPy input is wrapped on the host the usual way. Keep a reference to the
+    producer tensor until torch has consumed it.
     """
-    import jax.numpy as jnp
+    import torch
 
-    if isinstance(frames, np.ndarray):
-        return jnp.asarray(frames)
-    if hasattr(frames, "__dlpack__"):  # torch / decord / most array libs
-        return jnp.from_dlpack(frames)
+    if isinstance(frames, torch.Tensor):
+        return frames
+    if hasattr(frames, "__dlpack__"):  # decord / most array libs
+        return torch.from_dlpack(frames)
     if hasattr(frames, "to_dlpack"):  # decord NDArray (older API)
-        return jnp.from_dlpack(frames.to_dlpack())
-    return jnp.asarray(to_numpy(frames))
+        return torch.from_dlpack(frames.to_dlpack())
+    return torch.from_numpy(to_numpy(frames))
 
 
 def list_read_backends() -> list[str]:

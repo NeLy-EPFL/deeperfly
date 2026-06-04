@@ -104,18 +104,17 @@ def bench_decode(path: str, n: int) -> None:
 
 def bench_inference(path: str, t: int) -> None:
     """Detector throughput (multi-cam frames/s) and forward-pass scaling with batch."""
-    import jax.numpy as jnp
     import numpy as np
 
     from deeperfly import video
     from deeperfly.pose2d import backends, inference
-    from deeperfly.pose2d.download import ensure_jax_weights
+    from deeperfly.pose2d.download import download_torch_weights
 
-    model = backends.load_detector("jax", ensure_jax_weights())
+    model = backends.load_detector(download_torch_weights())
 
     print(f"\n{'fwd batch':>9s} {'img/s':>7s}")
     for b in (8, 32, 64):
-        x = jnp.zeros((b, 3, 256, 512), jnp.float32)
+        x = np.zeros((b, 3, 256, 512), np.float32)
         np.asarray(backends.predict_heatmaps(model, x))  # compile
         fps = (
             b
@@ -156,9 +155,9 @@ def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
     from deeperfly import video
     from deeperfly.cli import _prefetch_windows
     from deeperfly.pose2d import backends, inference
-    from deeperfly.pose2d.download import ensure_jax_weights
+    from deeperfly.pose2d.download import download_torch_weights
 
-    model = backends.load_detector("jax", ensure_jax_weights())
+    model = backends.load_detector(download_torch_weights())
     sides, flips = inference.fly_camera_layout(
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )

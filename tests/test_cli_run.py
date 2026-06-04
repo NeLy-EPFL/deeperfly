@@ -133,7 +133,7 @@ def _stub_detect(monkeypatch, tmp_path):
     T, H, W = 3, 16, 16
     sizes = {n: (H, W) for n in FLY_CAMERAS}
     monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
-    monkeypatch.setattr(cli, "_load_detector", lambda checkpoint, backend: object())
+    monkeypatch.setattr(cli, "_load_detector", lambda checkpoint: object())
     # The recording footage is stubbed away, so skip the pre-run footage validation a
     # real fresh pose2d run does (covered separately by the input-resolution tests).
     monkeypatch.setattr(cli, "_require_input_footage", lambda args, config: None)
@@ -899,68 +899,34 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
 # -- automatic weight provisioning -------------------------------------------
 
 
-def test_ensure_jax_weights_cache_hit(tmp_path, monkeypatch):
-    from deeperfly.pose2d import download
-
-    dst = tmp_path / "weights.eqx"
-    dst.write_bytes(b"cached")
-    monkeypatch.setattr(
-        download,
-        "download_torch_weights",
-        lambda **k: pytest.fail("should not download on a cache hit"),
-    )
-    assert download.ensure_jax_weights(dst) == dst
-
-
-def test_ensure_jax_weights_cache_miss_converts(tmp_path, monkeypatch):
-    from deeperfly.pose2d import download
-    from deeperfly.pose2d.backends import jax as jaxb
-    from deeperfly.pose2d.backends import torch as torchb
-    import deeperfly.pose2d.backends as backends
-
-    dst = tmp_path / "weights.eqx"
-    order = []
-    monkeypatch.setattr(
-        download,
-        "download_torch_weights",
-        lambda **k: (order.append("download"), tmp_path / "src.pth")[1],
-    )
-    monkeypatch.setattr(
-        torchb,
-        "state_dict_from_torch_checkpoint",
-        lambda src: (order.append("read"), {})[1],
-    )
-    monkeypatch.setattr(backends, "infer_num_stacks", lambda sd: 8)
-
-    class _FakeNet:
-        @staticmethod
-        def deepfly2d(*, key, num_stacks):
-            return "model"
-
-    monkeypatch.setattr(jaxb, "HourglassNet", _FakeNet)
-    monkeypatch.setattr(
-        jaxb, "convert_state_dict", lambda sd, m: (order.append("convert"), m)[1]
-    )
-    monkeypatch.setattr(
-        jaxb,
-        "save_checkpoint",
-        lambda m, p: (order.append("save"), open(p, "wb").write(b"x"))[0],
-    )
-
-    out = download.ensure_jax_weights(dst)
-    assert out == dst and dst.exists()
-    assert order == ["download", "read", "convert", "save"]
-
-
-def test_load_detector_jax_provisions(tmp_path, monkeypatch):
+def test_load_detector_downloads_cached(tmp_path, monkeypatch):
+    # With no explicit checkpoint, _load_detector downloads the cached torch
+    # weights and loads the detector from them.
     from deeperfly.pose2d import backends, download
 
-    sentinel = tmp_path / "w.eqx"
-    monkeypatch.setattr(download, "ensure_jax_weights", lambda: sentinel)
+    sentinel = tmp_path / "sh8_deepfly.pth"
+    monkeypatch.setattr(download, "download_torch_weights", lambda: sentinel)
+    monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
+    assert cli._load_detector(None) == ("loaded", sentinel)
+
+
+def test_load_detector_explicit_checkpoint(tmp_path, monkeypatch):
+    from deeperfly.pose2d import backends, download
+
     monkeypatch.setattr(
-        backends, "load_detector", lambda backend, path: (backend, path)
+        download,
+        "download_torch_weights",
+        lambda: pytest.fail("should not download when a checkpoint is given"),
     )
-    assert cli._load_detector(None, "jax") == ("jax", sentinel)
+    monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
+    ckpt = tmp_path / "custom.pth"
+    ckpt.write_bytes(b"weights")
+    assert cli._load_detector(str(ckpt)) == ("loaded", str(ckpt))
+
+
+def test_load_detector_missing_checkpoint_raises(tmp_path):
+    with pytest.raises(SystemExit, match="no detector checkpoint"):
+        cli._load_detector(str(tmp_path / "nope.pth"))
 
 
 # -- doctor (installation / runtime report) ----------------------------------
@@ -975,9 +941,9 @@ def test_fmt_bytes_units():
 def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
     """`deeperfly doctor` prints each section and reflects the weights cache.
 
-    The weights cache is redirected to a temp dir with only the PyTorch
-    checkpoint present, so the report shows one weight downloaded and the other
-    not. COLUMNS is widened so rich does not wrap the lines we assert on.
+    The weights cache is redirected to a temp dir with the detector checkpoint
+    present, so the report shows it downloaded. COLUMNS is widened so rich does
+    not wrap the lines we assert on.
     """
     from deeperfly.pose2d import download
 
@@ -997,9 +963,9 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
         "config",
     ):
         assert section in out
-    assert "GPU inference" in out and "detectors" in out
-    assert "downloaded" in out  # the PyTorch checkpoint we created
-    assert f"not downloaded -- would cache as {download.JAX_WEIGHTS_NAME}" in out
+    assert "GPU inference" in out and "detector" in out
+    assert "downloaded" in out  # the detector checkpoint we created
+    assert download.TORCH_WEIGHTS_NAME in out
     assert str(cli.DEFAULT_CONFIG_PATH) in out
 
 

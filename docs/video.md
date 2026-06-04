@@ -23,7 +23,7 @@ from deeperfly import video
 
 frames = video.read_frames(path)                        # video file or image dir; auto NumPy (host)
 frames = video.read_video("clip.mp4", indices=[0, 50])  # random access
-frames = video.read_video("clip.mp4", device="cuda")    # on-GPU tensor (NVDEC), zero-copy to JAX via to_jax
+frames = video.read_video("clip.mp4", device="cuda")    # on-GPU tensor (NVDEC), zero-copy to torch via to_torch
 video.write_mp4(frames, "out.mp4", fps=30)
 ```
 

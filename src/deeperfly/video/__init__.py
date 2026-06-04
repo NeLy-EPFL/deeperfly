@@ -37,8 +37,8 @@ from .base import (
     resolve_device,
     select_reader,
     select_writer,
-    to_jax,
     to_numpy,
+    to_torch,
 )
 from .io import (
     count_frames,
@@ -66,7 +66,7 @@ __all__ = [
     "FrameTransform",
     "parse_frame_transforms",
     "to_numpy",
-    "to_jax",
+    "to_torch",
     "select_reader",
     "select_writer",
     "resolve_device",

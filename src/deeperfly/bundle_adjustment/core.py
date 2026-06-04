@@ -5,8 +5,8 @@
   :func:`jax.vmap` + :func:`jax.jacrev` on
   :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
   SciPy matrix using the precomputed sparsity pattern. Like the geometry layer,
-  these kernels are pinned to the CPU (:func:`deeperfly._jax_cpu.cpu_jit`): the
-  problems are small, and it keeps bundle adjustment off the GPU's memory.
+  these kernels are :func:`cpu_jit`-wrapped and run on CPU JAX (the only JAX
+  deeperfly installs): the problems are small and don't benefit from a GPU.
 
   The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
 ``pts2d``) is defined in :mod:`deeperfly.bundle_adjustment.state`; build it with

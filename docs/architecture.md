@@ -18,7 +18,7 @@ still on, so disabling the finished stages also resumes a partial run.
 
 | Stage | Module | Notes |
 | --- | --- | --- |
-| 2D pose | `pose2d/` (`backends/{jax,torch}/`) | Stacked hourglass in two backends behind one interface; JAX/Equinox by default, PyTorch runs the original weights directly. |
+| 2D pose | `pose2d/` (`backends/torch/`) | Stacked hourglass (PyTorch) running the original DeepFly2D weights directly; CUDA / Metal automatically. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
 | Triangulation | `triangulate.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT. |
 | 3D correction | `correction.py` / `pictorial.py` | Triangulation (ransac/greedy/dlt), optionally after pictorial-structures peak recovery; temporal smoothing. |
@@ -61,24 +61,17 @@ triangulators can only *veto*. It needs the full-heatmap detect path (slower); i
 committed per-view 2D then feeds the chosen `triangulation` (a plain `dlt` pass
 keeps the PS estimate as-is). On clean recordings it is a no-op.
 
-## 2D detector backends
+## 2D detector
 
-The detector ships two interchangeable backends under
-`pose2d/backends/{jax,torch}/`, each exposing the same `HourglassNet` /
-`load_model` / `predict_heatmaps`, both installed by default and selectable with
-`[pipeline.pose2d].backend`. The PyTorch backend runs the published `sh8` weights
-directly; the JAX backend (default) runs the same weights from a native checkpoint
-that `deeperfly run` downloads and converts on first use, validated to match the
-PyTorch reference numerically (`tests/test_pose2d_torch.py`). JAX is faster on GPU
-— benchmark on your hardware:
+The detector is a faithful PyTorch copy of the original DeepFly2D stacked
+hourglass, under `pose2d/backends/torch/` (exposed through `pose2d/backends/` as
+`HourglassNet` / `load_model` / `predict_heatmaps`). It loads the published `sh8`
+weights directly, with no conversion; `deeperfly run` downloads them on first use.
+The shared orchestration in `pose2d/inference.py` preprocesses frames in torch, so
+a GPU-decoded frame is normalized, resized and forwarded without leaving the GPU.
 
-```bash
-uv run python dev/bench_pose2d.py --batch 7 --frames 8
-```
-
-On NVIDIA GPUs both backends use CUDA automatically (JAX via the `cuda` extra). On
-Apple Silicon the PyTorch backend auto-uses Metal (MPS) with no setup; to
-accelerate the *JAX* backend on macOS instead, install `deeperfly[mps]` (the
-experimental [`jax-mps`](https://github.com/tillahoffmann/jax-mps) plugin) — the
-float32 detector then runs on Metal while geometry and bundle adjustment stay in
-float64 on the CPU.
+On NVIDIA GPUs the detector uses CUDA automatically through torch's own CUDA
+wheel; on Apple Silicon it auto-uses Metal (MPS) with no setup. For large CUDA
+batches the forward is wrapped with `torch.compile` (see
+`pose2d/backends/torch/model.py`). Geometry and bundle adjustment are the only
+JAX in deeperfly and run in float64 on the CPU.

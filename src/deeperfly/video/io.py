@@ -67,7 +67,7 @@ def read_video(
         GPU backend works, else on the CPU -- and always returns host ``NumPy``
         (the portable path). ``"cpu"`` forces a NumPy result. A CUDA device
         (``"cuda"`` / ``"cuda:0"``) returns a GPU-resident ``torch.Tensor`` (ready
-        for :func:`~deeperfly.video.to_jax`, zero-copy): with ``backend="auto"``
+        for :func:`~deeperfly.video.to_torch`, zero-copy): with ``backend="auto"``
         it tries each installed GPU backend until one decodes and gracefully falls
         back to a CPU NumPy read if none can; with a forced ``backend`` it is
         strict and raises if that backend cannot decode on the GPU.
@@ -207,7 +207,7 @@ def _read_images_gpu(files: list[Path], device: str, workers: int | None):
     JPEGs go through nvJPEG (``torchvision.io.decode_jpeg`` on CUDA) when that
     build is available; PNG/other formats (or a torchvision without GPU JPEG) are
     decoded on the CPU in parallel and moved to the device. Either way the result
-    is a GPU tensor, ready for :func:`~deeperfly.video.to_jax` (zero-copy).
+    is a GPU tensor, ready for :func:`~deeperfly.video.to_torch` (zero-copy).
     """
     import torch
     from torchvision.io import ImageReadMode, decode_jpeg, read_file
@@ -249,7 +249,7 @@ def read_images(
         CPU decode -- already fast, so "auto" does not move image decode to the
         GPU. An explicit CUDA device (``"cuda"`` / ``"cuda:0"``) returns a
         GPU-resident ``torch.Tensor`` (JPEGs via nvJPEG when available), ready for
-        :func:`~deeperfly.video.to_jax`.
+        :func:`~deeperfly.video.to_torch`.
     indices, start, stop, step
         Select a subset, mirroring :func:`read_video` (``indices`` wins).
     workers

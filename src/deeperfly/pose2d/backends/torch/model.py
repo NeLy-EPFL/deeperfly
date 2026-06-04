@@ -1,13 +1,11 @@
-"""Stacked-hourglass 2D pose network in PyTorch -- the reference backend.
+"""Stacked-hourglass 2D pose network in PyTorch.
 
 A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
 conversion (load them with :func:`deeperfly.pose2d.backends.torch.load_model`).
-It exposes the same contract as the JAX backend -- stacked ``(N, 3, H, W)`` float
-inputs in, final-stack ``(N, J, h, w)`` heatmaps out (:func:`predict_heatmaps`) --
-so :func:`deeperfly.pose2d.inference.detect` works with either, and the two can
-be benchmarked head to head. JAX is the default (faster on GPU); pick this one
-with ``--backend torch``.
+Stacked ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps
+out (:func:`predict_heatmaps`), which is what
+:func:`deeperfly.pose2d.inference.detect` drives.
 """
 
 from __future__ import annotations
@@ -169,8 +167,7 @@ def device() -> str:
 
     On Apple Silicon ``"mps"`` runs the hourglass forward on the GPU via Metal
     Performance Shaders (~6x over CPU for sh8); output matches CPU to float32
-    epsilon. JAX has no comparable Metal path, so this is the only accelerated
-    detector backend on macOS.
+    epsilon, so the detector is accelerated on macOS with no setup.
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -182,17 +179,16 @@ def device() -> str:
 def _as_torch(inputs) -> "torch.Tensor":
     """Coerce ``(N, 3, H, W)`` inputs to a torch tensor, on-device when possible.
 
-    The shared preprocess path stacks on-device, so ``inputs`` is usually a
-    ``jax.Array`` on the GPU; bridge it via DLPack so it stays on the device
-    (zero-copy) instead of round-tripping through host memory like ``np.array``
-    would. ``predict_heatmaps`` runs under ``inference_mode``, so the inference
-    tensor DLPack yields is accepted by the forward. Host NumPy is copied to a
-    writable tensor (``torch.from_numpy`` warns on the immutable array
-    ``np.array`` produces).
+    The shared preprocess path already stacks into a torch tensor on the detector
+    device, so ``inputs`` is usually a ``torch.Tensor`` that passes straight
+    through (a GPU-decoded frame thus reaches the forward without ever leaving the
+    GPU). Any other DLPack-capable on-device array is bridged zero-copy; host NumPy
+    is copied to a writable tensor (``torch.from_numpy`` warns on the immutable
+    array ``np.array`` produces).
     """
     if isinstance(inputs, torch.Tensor):
         return inputs
-    if hasattr(inputs, "__dlpack__"):  # jax.Array / other on-device array -- zero-copy
+    if hasattr(inputs, "__dlpack__"):  # other on-device array -- zero-copy
         return torch.from_dlpack(inputs)
     return torch.from_numpy(np.array(inputs))  # host array -> writable copy
 
@@ -204,9 +200,9 @@ _COMPILED: dict[int, "torch.nn.Module"] = {}
 def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     """The model, ``torch.compile``-d for production CUDA runs (else eager).
 
-    The eager forward is ~1.8x slower than the JAX backend; ``torch.compile``
-    closes that gap (matches JAX on an RTX 4090 -- see ``dev/bench_video.py``).
-    Gated to CUDA and to the large batches a real ``deeperfly run`` uses: on CPU
+    ``torch.compile`` roughly halves the eager forward time on CUDA (see
+    ``dev/bench_video.py``). Gated to CUDA and to the large batches a real
+    ``deeperfly run`` uses: on CPU
     the speedup is small, and for the tiny batches in tests the one-off compile
     latency would dwarf the work (and the remainder sub-batch stays eager rather
     than forcing a second compile).

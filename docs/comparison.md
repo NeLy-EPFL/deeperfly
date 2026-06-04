@@ -5,7 +5,7 @@
 
 | Upstream project | Role | `deeperfly` counterpart |
 | --- | --- | --- |
-| [DeepFly2D](https://github.com/NeLy-EPFL/DeepFly2D) | 2D pose: a PyTorch stacked-hourglass detector | [`pose2d/`](../src/deeperfly/pose2d) — the same network in two backends (JAX/Equinox + PyTorch) |
+| [DeepFly2D](https://github.com/NeLy-EPFL/DeepFly2D) | 2D pose: a PyTorch stacked-hourglass detector | [`pose2d/`](../src/deeperfly/pose2d) — a faithful PyTorch port running the original weights directly |
 | [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline.py`](../src/deeperfly/pipeline.py), [`triangulate.py`](../src/deeperfly/triangulate.py), [`pictorial.py`](../src/deeperfly/pictorial.py), [`correction.py`](../src/deeperfly/correction.py) |
 | [PyBundleAdjustment](https://github.com/semihgunel/PyBundleAdjustment) | scipy-based bundle adjustment for calibration | [`bundle_adjustment/`](../src/deeperfly/bundle_adjustment) |
 

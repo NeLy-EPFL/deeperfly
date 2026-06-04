@@ -3,8 +3,8 @@
 TorchCodec (https://github.com/pytorch/torchcodec) decodes via FFmpeg and can
 place frames directly on a CUDA device (NVDEC), so the result never round-trips
 through host memory. Frames stay a ``torch.Tensor`` on the requested device;
-use :func:`deeperfly.video.to_numpy` to bring them to the host, or
-:func:`deeperfly.video.to_jax` to hand them to JAX zero-copy via DLPack.
+use :func:`deeperfly.video.to_numpy` to bring them to the host (they are already
+torch tensors, fed to the detector zero-copy).
 
 Random access uses TorchCodec's native ``get_frames_at`` (true seeking).
 

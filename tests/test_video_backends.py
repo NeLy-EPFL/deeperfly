@@ -337,7 +337,7 @@ def test_is_gpu_device_and_device_id():
     assert base.device_id("cuda") == 0
 
 
-# -- to_numpy / to_jax -------------------------------------------------------
+# -- to_numpy / to_torch -----------------------------------------------------
 
 
 def test_to_numpy_passthrough():
@@ -345,19 +345,19 @@ def test_to_numpy_passthrough():
     assert video.to_numpy(a) is a
 
 
-def test_to_jax_from_numpy():
+def test_to_torch_from_numpy():
     a = _gradient_clip(3, 8, 8)
-    x = video.to_jax(a)
+    x = video.to_torch(a)
     assert tuple(x.shape) == a.shape
     np.testing.assert_array_equal(np.asarray(x), a)
 
 
-def test_to_jax_dlpack_from_torch():
-    # DLPack handoff works host-side too, exercising the zero-copy path.
+def test_to_torch_passthrough_from_torch():
+    # An already-on-device torch tensor passes through untouched (zero-copy).
     torch = pytest.importorskip("torch")
     t = torch.arange(24, dtype=torch.uint8).reshape(2, 2, 2, 3)
-    x = video.to_jax(t)
-    np.testing.assert_array_equal(np.asarray(x), t.numpy())
+    x = video.to_torch(t)
+    assert x is t
 
 
 # -- readers -----------------------------------------------------------------
@@ -506,22 +506,19 @@ def test_read_images_missing_raises(tmp_path):
 
 
 def _gpu_decode_available() -> bool:
-    """GPU decode needs a torch CUDA build *and* a JAX GPU backend.
+    """GPU decode needs a torch CUDA build.
 
-    The test decodes JPEGs to a CUDA ``torch.Tensor`` and then hands it to JAX
-    zero-copy (``to_jax``), so it must skip whenever either side lacks CUDA --
-    e.g. on a GPU box run under ``JAX_PLATFORMS=cpu``, where torch sees the GPU
-    but JAX does not.
+    The test decodes JPEGs to a CUDA ``torch.Tensor`` and hands it to ``to_torch``
+    (zero-copy), so it skips without a torch CUDA device.
     """
     try:
-        import jax
         import torch
     except Exception:
         return False
-    return torch.cuda.is_available() and jax.default_backend() == "gpu"
+    return torch.cuda.is_available()
 
 
-@pytest.mark.skipif(not _gpu_decode_available(), reason="needs torch + JAX CUDA")
+@pytest.mark.skipif(not _gpu_decode_available(), reason="needs torch CUDA")
 def test_read_images_gpu_decode(tmp_path):
     import torch
 
@@ -533,5 +530,5 @@ def test_read_images_gpu_decode(tmp_path):
     # solid frames survive JPEG, so identity is preserved per frame
     means = out.float().mean((1, 2, 3)).cpu().numpy()
     assert np.all(np.diff(means) > 0)
-    x = video.to_jax(out)  # GPU tensor -> jax.Array (zero-copy path)
-    assert x.shape == (5, 32, 48, 3)
+    x = video.to_torch(out)  # GPU tensor stays on device (zero-copy passthrough)
+    assert x.is_cuda and tuple(x.shape) == (5, 32, 48, 3)
