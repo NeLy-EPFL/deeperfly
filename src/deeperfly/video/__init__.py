@@ -24,10 +24,13 @@ read/write does not pull in matplotlib.
 from __future__ import annotations
 
 from .base import (
+    available_image_readers,
     available_read_backends,
     available_write_backends,
+    list_image_readers,
     list_read_backends,
     list_write_backends,
+    select_image_reader,
     select_reader,
     select_writer,
     to_numpy,
@@ -62,10 +65,13 @@ __all__ = [
     "to_torch",
     "select_reader",
     "select_writer",
+    "select_image_reader",
     "list_read_backends",
     "list_write_backends",
+    "list_image_readers",
     "available_read_backends",
     "available_write_backends",
+    "available_image_readers",
     "figure_to_array",
     "render_pose3d_video",
     "render_overlay_video",

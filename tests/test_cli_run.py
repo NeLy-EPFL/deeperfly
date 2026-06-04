@@ -958,11 +958,12 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
         "deeperfly",
         "system",
         "inference",
-        "video backends",
+        "frame I/O backends",
         "weights",
         "config",
     ):
         assert section in out
+    assert "video read" in out and "image read" in out  # the new I/O rows
     assert "GPU inference" in out and "detector" in out
     assert "downloaded" in out  # the detector checkpoint we created
     assert download.TORCH_WEIGHTS_NAME in out
@@ -1057,9 +1058,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     from deeperfly import video
 
     # read_frames echoes its source so we can see which footage each view used.
-    monkeypatch.setattr(
-        video, "read_frames", lambda src, backend="auto": ("frames", src)
-    )
+    monkeypatch.setattr(video, "read_frames", lambda src, **kw: ("frames", src))
     cfg = {"inputs": {}, "pipeline": {"pose2d": {}}}
     names = result.cameras.names
     v0, v1 = names[0], names[1]
@@ -1099,7 +1098,7 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
     raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
     # the run's resolved footage maps each view to one "file" (its name); read_frames
     # returns that view's raw footage.
-    monkeypatch.setattr(video, "read_frames", lambda src, backend="auto": raw[src[0]])
+    monkeypatch.setattr(video, "read_frames", lambda src, **kw: raw[src[0]])
 
     v0, v1 = names[0], names[1]
     cfg = {
@@ -1121,7 +1120,7 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     rng = np.random.default_rng(1)
     win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)
 
-    def fake_read_frames(src, *, backend, start, stop):
+    def fake_read_frames(src, *, backend, start, stop, **kw):
         return win.copy() if start == 0 else np.empty((0, 4, 6, 3), np.uint8)
 
     monkeypatch.setattr(video, "read_frames", fake_read_frames)
@@ -1147,7 +1146,7 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     monkeypatch.setattr(
         video,
         "read_frames",
-        lambda src, backend="auto", indices=None: head,
+        lambda src, indices=None, **kw: head,
     )
     cfg = {"preprocess": {"rh": {"rot90": 1}}, "pipeline": {"pose2d": {}}}
     sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)

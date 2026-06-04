@@ -17,6 +17,8 @@ import numpy as np
 from jaxtyping import Float
 
 from .base import (
+    available_image_readers,
+    select_image_reader,
     select_reader,
     select_writer,
     to_numpy,
@@ -105,15 +107,42 @@ def _workers(n: int, workers: int | None) -> int:
     return max(1, min(n, workers or (os.cpu_count() or 4)))
 
 
-def _read_images_cpu(files: list[Path], workers: int | None) -> np.ndarray:
-    """Parallel CPU decode -> ``(T, H, W, 3)`` uint8 NumPy."""
-    import imageio.v3 as iio
+def _read_images_cpu(
+    files: list[Path], workers: int | None, image_backend: str = "auto"
+) -> np.ndarray:
+    """Parallel CPU decode -> ``(T, H, W, 3)`` uint8 NumPy.
 
-    def one(f: Path) -> np.ndarray:
-        return _to_rgb_uint8(np.asarray(iio.imread(f)))
+    ``image_backend`` is ``"auto"`` | ``"opencv"`` | ``"imageio"`` (see
+    :func:`~deeperfly.video.base.select_image_reader`). OpenCV is the core default;
+    ``"auto"`` uses it and, only when it cannot decode a file, falls back to imageio
+    if the optional extra is installed (broad-format support, one install away).
+    """
+    name = select_image_reader(image_backend)
+    if name == "imageio":
+        import imageio.v3 as iio
+
+        def decode(f: Path) -> np.ndarray:
+            return _to_rgb_uint8(np.asarray(iio.imread(f)))
+    else:
+        import cv2
+
+        fallback = image_backend == "auto" and "imageio" in available_image_readers()
+
+        def decode(f: Path) -> np.ndarray:
+            img = cv2.imread(str(f), cv2.IMREAD_COLOR_RGB)  # (H, W, 3) RGB uint8
+            if img is not None:
+                return _to_rgb_uint8(img)
+            if fallback:
+                import imageio.v3 as iio
+
+                return _to_rgb_uint8(np.asarray(iio.imread(f)))
+            raise OSError(
+                f"failed to decode image: {f} (OpenCV returned None; install the "
+                "optional 'imageio' extra for broader format support)"
+            )
 
     with ThreadPoolExecutor(max_workers=_workers(len(files), workers)) as pool:
-        frames = list(pool.map(one, files))
+        frames = list(pool.map(decode, files))
     return np.stack(frames)
 
 
@@ -125,6 +154,7 @@ def read_images(
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Read a directory (or glob) of images, sorted by name, into ``(T, H, W, 3)``.
 
@@ -138,6 +168,10 @@ def read_images(
         Select a subset, mirroring :func:`read_video` (``indices`` wins).
     workers
         Decode thread count (default: number of CPUs, capped at the frame count).
+    image_backend
+        ``"auto"`` | ``"opencv"`` | ``"imageio"`` -- the still-image decoder. OpenCV
+        is the core default; ``"auto"`` uses it and falls back to imageio (optional
+        extra) only for files OpenCV cannot decode.
     """
     return _read_image_files(
         list_image_files(pattern),
@@ -146,6 +180,7 @@ def read_images(
         stop=stop,
         step=step,
         workers=workers,
+        image_backend=image_backend,
     )
 
 
@@ -157,6 +192,7 @@ def _read_image_files(
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Decode an already-listed image sequence into ``(T, H, W, 3)`` uint8 RGB.
 
@@ -168,10 +204,11 @@ def _read_image_files(
     files = _subset(list(files), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")
-    out = _read_images_cpu(files, workers)
+    out = _read_images_cpu(files, workers, image_backend)
     log.debug(  # per-read detail (one line per camera per window) -- only at -vv
-        "read %d images (imageio) -> %d frames %dx%d",
+        "read %d images (%s) -> %d frames %dx%d",
         len(files),
+        select_image_reader(image_backend),
         out.shape[0],
         out.shape[1],
         out.shape[2],
@@ -188,21 +225,24 @@ def read_frames(
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Read frames from a video file **or** an image sequence into ``(T, H, W, 3)``.
 
     Dispatches on ``source``:
 
     - a single video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes to
-      :func:`read_video` (``backend`` selects the decoder);
-    - a directory or glob of images goes to :func:`read_images` (``workers`` sets
-      decode parallelism);
+      :func:`read_video` (``backend`` selects the video decoder);
+    - a directory or glob of images goes to :func:`read_images` (``image_backend``
+      selects the image decoder, ``workers`` sets decode parallelism);
     - an explicit list of footage files -- one video file, or an ordered image
       sequence the caller has already resolved (``deeperfly run`` resolves each
       camera's files up front, naturally sorted) -- is read in the given order
       without re-listing the directory.
 
-    All return host NumPy and honor the same frame selection.
+    ``backend`` applies to video sources and ``image_backend`` to image sequences;
+    each is ignored by the other. All return host NumPy and honor the same frame
+    selection.
     """
     if isinstance(source, (list, tuple)):
         files = [Path(f) for f in source]
@@ -226,6 +266,7 @@ def read_frames(
             stop=stop,
             step=step,
             workers=workers,
+            image_backend=image_backend,
         )
     p = Path(source)
     if _is_video_file(p):
@@ -244,10 +285,16 @@ def read_frames(
         stop=stop,
         step=step,
         workers=workers,
+        image_backend=image_backend,
     )
 
 
-def reader_name(path: str | Path | list[Path], *, backend: str = "auto") -> str:
+def reader_name(
+    path: str | Path | list[Path],
+    *,
+    backend: str = "auto",
+    image_backend: str = "auto",
+) -> str:
     """Name of the decoder :func:`read_frames` would actually use for ``path``.
 
     Mirrors :func:`read_frames`'s dispatch so logs/diagnostics report the decoder
@@ -258,7 +305,9 @@ def reader_name(path: str | Path | list[Path], *, backend: str = "auto") -> str:
       :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / ...,
       honoring ``backend``);
     - an image directory, glob or explicit file list is decoded by
-      :func:`read_images`, which ignores the video backend and uses ``imageio``.
+      :func:`read_images`, which ignores the video backend and resolves
+      ``image_backend`` via :func:`~deeperfly.video.base.select_image_reader`
+      (``opencv`` by default).
     """
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
@@ -266,7 +315,7 @@ def reader_name(path: str | Path | list[Path], *, backend: str = "auto") -> str:
             return select_reader(backend).name
     elif _is_video_file(Path(path)):
         return select_reader(backend).name
-    return "imageio"
+    return select_image_reader(image_backend)
 
 
 def _count_opencv(p: Path) -> int:

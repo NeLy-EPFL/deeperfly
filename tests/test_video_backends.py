@@ -193,10 +193,16 @@ def test_non_uint8_frames_are_clipped(tmp_path):
 
 
 def _write_images(tmp_path, frames, *, ext="png", name="f"):
-    import imageio.v3 as iio
+    import cv2
 
     for i, fr in enumerate(frames):
-        iio.imwrite(tmp_path / f"{name}_{i:03d}.{ext}", fr)
+        # read_images returns RGB but cv2 encodes its input as BGR, so flip color
+        # frames first -- cv2 then stores them as correct RGB in the file and the
+        # lossless round-trip is the identity (for any decoder). Grayscale (2-D)
+        # frames are written as-is.
+        if fr.ndim == 3:
+            fr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(tmp_path / f"{name}_{i:03d}.{ext}"), fr)
     return tmp_path
 
 
@@ -216,6 +222,25 @@ def test_read_images_parallel_rgb(tmp_path):
     np.testing.assert_array_equal(out, frames)  # PNG is lossless
     # worker count must not change the result
     np.testing.assert_array_equal(video.read_images(tmp_path, workers=1), out)
+
+
+@pytest.mark.parametrize("image_backend", ["auto", "opencv", "imageio"])
+def test_read_images_backend_selection(tmp_path, image_backend):
+    # The image reader is selectable ("auto"/"opencv" core; "imageio" optional). PNG is
+    # lossless, so every decoder must return the identical RGB array.
+    if image_backend == "imageio" and "imageio" not in video.available_image_readers():
+        pytest.skip("imageio extra not installed")
+    frames = _gradient_clip(4, 24, 32)
+    _write_images(tmp_path, frames, ext="png")
+    out = video.read_images(tmp_path, image_backend=image_backend)
+    assert out.shape == (4, 24, 32, 3) and out.dtype == np.uint8
+    np.testing.assert_array_equal(out, frames)
+
+
+def test_unknown_image_backend_raises(tmp_path):
+    _write_images(tmp_path, _gradient_clip(2, 16, 16), ext="png")
+    with pytest.raises(ValueError, match="unknown image reader"):
+        video.read_images(tmp_path, image_backend="nope")
 
 
 def test_read_images_grayscale_broadcasts_to_rgb(tmp_path):

@@ -75,13 +75,11 @@ def test_write_read_mp4_roundtrip(tmp_path, rng):
 
 
 def test_read_images(tmp_path, rng):
-    import imageio.v2 as imageio
+    import cv2
 
     for i in range(3):
-        imageio.imwrite(
-            tmp_path / f"frame_{i:03d}.png",
-            rng.integers(0, 255, (16, 16, 3), dtype=np.uint8),
-        )
+        img = rng.integers(0, 255, (16, 16, 3), dtype=np.uint8)
+        cv2.imwrite(str(tmp_path / f"frame_{i:03d}.png"), img)
     frames = video.read_images(tmp_path)
     assert frames.shape == (3, 16, 16, 3)
 

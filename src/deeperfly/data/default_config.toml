@@ -91,6 +91,30 @@ lh = "camera_6.mp4"
 
 
 # ---------------------------------------------------------------------------
+# Frame I/O backends (shared across stages -- not stage-specific). The same
+# decoder/encoder choices apply wherever the run reads input footage (the 2D
+# detector, the visualizer's imshow panels) or writes output videos. All decoding
+# and encoding runs on the CPU.
+# ---------------------------------------------------------------------------
+[io.video]
+# Decoder for reading input *video* files. "auto" = fastest installed frame-accurate
+# decoder (pyav -- the in-process default -- then opencv/torchcodec/video_reader_rs).
+# Force one with "pyav" | "opencv" | "torchcodec" | "video_reader_rs".
+reader = "auto"
+# Encoder for *writing* the visualization MP4s. "auto" = fastest installed writer
+# (pyav -- in-process H.264 -- then opencv). Force one with "pyav" | "opencv".
+writer = "auto"
+
+[io.image]
+# Decoder for reading image *sequences* (a folder/glob of jpg/png/... per camera).
+# "auto" / "opencv" use OpenCV (a core dependency, fast); "imageio" uses the optional
+# `imageio` extra (`pip install deeperfly[imageio]`) for broader format support, which
+# "auto" also falls back to for any file OpenCV cannot decode.
+reader = "auto"
+# workers = 0   # decode threads (0 = auto, one per CPU; decode releases the GIL)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline: the run is a linear sequence of stages, each its own on/off switch
 # in [pipeline] (do_<stage>) with its own parameter sub-table below:
 #
@@ -124,14 +148,8 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
                          # playback rate for the videos (see [pipeline.visualization]).
 
 
-# Detector: the 2D pose detector and frame reader.
+# Detector: the 2D pose detector. The frame decoder is configured in [io.video] above.
 [pipeline.pose2d]
-# Frame decoder backend for reading input videos (all decode on the CPU). "auto" =
-# fastest installed *frame-accurate* decoder (pyav -- the in-process default --
-# then opencv/torchcodec/video_reader_rs). Force one with e.g.
-# "torchcodec" | "video_reader_rs" | "pyav" | "opencv". Each window is uploaded to
-# the detector device in one shot -- decode is not the bottleneck, the forward is.
-video_backend = "auto"
 # Detector forward precision. "float32" (default) is the reference. "float16" runs
 # the forward under CUDA autocast -- ~1.5-2x faster on the GPU with negligible
 # keypoint drift (pose comes from arg-max + sub-pixel refinement of the heatmaps).
@@ -232,11 +250,8 @@ method = "gaussian"      # gaussian | one_euro
 # ---------------------------------------------------------------------------
 [pipeline.visualization]
 background = "black"
-# Encoder backend for *writing* the output videos (separate from
-# [pipeline.pose2d].video_backend, which reads input footage). "auto" = fastest
-# installed writer (pyav -- in-process H.264 -- then opencv). Force one with
-# "pyav" | "opencv".
-video_backend = "auto"
+# The output-video encoder and the input-footage decoder are configured in
+# [io.video] (writer / reader) above -- shared across stages, not set here.
 # output_fps = 30        # explicit output fps for every video (per-video override below)
 # speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
 

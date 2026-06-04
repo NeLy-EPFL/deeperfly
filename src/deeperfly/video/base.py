@@ -219,3 +219,48 @@ def available_read_backends() -> list[str]:
 def available_write_backends() -> list[str]:
     _ensure_backends()
     return sorted(n for n, c in _WRITERS.items() if c.is_available())
+
+
+# Still-image decode (image sequences, not video files). Unlike the video readers
+# above these aren't full backend classes -- the work is a per-file decode -- so the
+# registry is just a preference order plus a name resolver. ``opencv`` is the core
+# default (fast, always installed); ``imageio`` is an optional extra used as a broad
+# -format fallback (see ``deeperfly.video.io._read_images_cpu``).
+IMAGE_READ_ORDER = ("opencv", "imageio")
+_IMAGE_READER_REQUIRES = {"opencv": ("cv2",), "imageio": ("imageio",)}
+
+
+def list_image_readers() -> list[str]:
+    """All known image-reader names (installed or not)."""
+    return sorted(IMAGE_READ_ORDER)
+
+
+def available_image_readers() -> list[str]:
+    """Image-reader names whose dependencies are importable in this environment."""
+    return sorted(n for n in IMAGE_READ_ORDER if _have(*_IMAGE_READER_REQUIRES[n]))
+
+
+def select_image_reader(backend: str = "auto") -> str:
+    """Resolve an image-reader name (or ``"auto"``).
+
+    ``"auto"`` walks :data:`IMAGE_READ_ORDER` and returns the first installed reader
+    (``opencv`` is a core dependency, so this is normally ``"opencv"``). An explicit
+    name is validated and checked for availability.
+    """
+    if backend == "auto":
+        for name in IMAGE_READ_ORDER:
+            if _have(*_IMAGE_READER_REQUIRES[name]):
+                return name
+        raise RuntimeError(
+            f"no image reader available; install one of {list(IMAGE_READ_ORDER)}"
+        )
+    if backend not in _IMAGE_READER_REQUIRES:
+        raise ValueError(
+            f"unknown image reader {backend!r}; choose from {list_image_readers()}"
+        )
+    if not _have(*_IMAGE_READER_REQUIRES[backend]):
+        raise RuntimeError(
+            f"image reader {backend!r} needs {_IMAGE_READER_REQUIRES[backend]}; "
+            "install it (e.g. the optional 'imageio' extra)"
+        )
+    return backend

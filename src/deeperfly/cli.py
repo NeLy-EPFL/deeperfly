@@ -207,13 +207,32 @@ def _load_detector(checkpoint: str | None):
 
 
 def _pose2d_config(config: dict) -> dict:
-    """The ``[pipeline.pose2d]`` detector/decoder sub-table (empty if absent)."""
+    """The ``[pipeline.pose2d]`` detector sub-table (empty if absent)."""
     return config.get("pipeline", {}).get("pose2d", {})
 
 
-def _visualization_config(config: dict) -> dict:
-    """The ``[pipeline.visualization]`` sub-table (empty if absent)."""
-    return config.get("pipeline", {}).get("visualization", {})
+# Frame I/O backends live in a shared, stage-independent ``[io]`` section -- the same
+# reader/writer/image-reader choices apply wherever a stage reads input footage or
+# writes output videos (the detector, the visualizer, ...), so they are not duplicated
+# per stage.
+def _video_reader(config: dict) -> str:
+    """``[io.video].reader`` -- input video decoder (default ``"auto"``)."""
+    return config.get("io", {}).get("video", {}).get("reader", "auto")
+
+
+def _video_writer(config: dict) -> str:
+    """``[io.video].writer`` -- output MP4 encoder (default ``"auto"``)."""
+    return config.get("io", {}).get("video", {}).get("writer", "auto")
+
+
+def _image_reader(config: dict) -> str:
+    """``[io.image].reader`` -- image-sequence decoder (default ``"auto"``)."""
+    return config.get("io", {}).get("image", {}).get("reader", "auto")
+
+
+def _image_workers(config: dict) -> int | None:
+    """``[io.image].workers`` -- decode threads; 0/unset -> auto (CPU count)."""
+    return int(config.get("io", {}).get("image", {}).get("workers", 0)) or None
 
 
 #: Frame rate used when ``[pipeline].fps`` is unset and none can be detected from
@@ -440,20 +459,32 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     """
     from . import video
 
-    backend = _pose2d_config(config).get("video_backend", "auto")
+    backend = _video_reader(config)
+    image_backend = _image_reader(config)
     # Size the principal point on the *transformed* frame -- the detector and the
     # overlays use the [preprocess.*]-transformed footage, so a rot90 that swaps
     # H/W must swap here too.
     transforms = video.parse_frame_transforms(config)
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args, config):
-        head = video.read_frames(src, backend=backend, indices=[0])
+        head = video.read_frames(
+            src, backend=backend, image_backend=image_backend, indices=[0]
+        )
         head = transforms.get(name, video.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 
 
-def _prefetch_windows(sources, *, backend, chunk, transforms=None, depth=1):
+def _prefetch_windows(
+    sources,
+    *,
+    backend,
+    chunk,
+    transforms=None,
+    depth=1,
+    image_backend="auto",
+    workers=None,
+):
     """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
 
     A background producer decodes the next window (on the CPU) while the consumer
@@ -487,6 +518,8 @@ def _prefetch_windows(sources, *, backend, chunk, transforms=None, depth=1):
                         video.read_frames(
                             s,
                             backend=backend,
+                            image_backend=image_backend,
+                            workers=workers,
                             start=done,
                             stop=done + chunk,
                         )
@@ -534,7 +567,9 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     from .pose2d import auto_batch_size, inference
 
     det = _pose2d_config(config)
-    backend = det.get("video_backend", "auto")
+    backend = _video_reader(config)
+    image_backend = _image_reader(config)
+    workers = _image_workers(config)
     chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
     cam_sources = _camera_sources(args, config)
     sources = [src for _, src in cam_sources]
@@ -551,11 +586,13 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
 
     # One-line summary instead of a per-camera/per-window read log (that spam is at
     # -vv now; see deeperfly.video.io). reader_name mirrors read_frames's dispatch
-    # off the actual source (video file -> the decode backend; image folder/glob ->
-    # imageio, *not* the video backend), so the reported decoder matches what really
-    # runs; guard since a forced backend may be uninstalled.
+    # off the actual source (video file -> the video decode backend; image folder/glob
+    # -> the image reader, not the video backend), so the reported decoder matches what
+    # really runs; guard since a forced backend may be uninstalled.
     try:
-        reader = video.reader_name(sources[0], backend=backend)
+        reader = video.reader_name(
+            sources[0], backend=backend, image_backend=image_backend
+        )
     except Exception:  # noqa: BLE001
         reader = backend
     log.info(
@@ -577,7 +614,12 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
                 bar.advance(task)
 
         for window, _ in _prefetch_windows(
-            sources, backend=backend, chunk=chunk, transforms=transforms
+            sources,
+            backend=backend,
+            chunk=chunk,
+            transforms=transforms,
+            image_backend=image_backend,
+            workers=workers,
         ):
             if want_candidates:
                 p, c, cand = inference.detect_candidates_sequence(
@@ -1000,7 +1042,9 @@ def _source_view_frames(
     # transformed-frame coordinates; the overlay footage must match (apply the
     # same per-camera [preprocess.*] transform).
     transforms = video.parse_frame_transforms(config)
-    backend = _pose2d_config(config).get("video_backend", "auto")
+    backend = _video_reader(config)
+    image_backend = _image_reader(config)
+    workers = _image_workers(config)
 
     def transform(v, frames):
         return transforms.get(v, video.FrameTransform()).apply(frames)
@@ -1011,7 +1055,15 @@ def _source_view_frames(
     sources = getattr(args, "sources", None) or {}
     if all(sources.get(v) for v in views):
         return {
-            v: transform(v, video.read_frames(sources[v], backend=backend))
+            v: transform(
+                v,
+                video.read_frames(
+                    sources[v],
+                    backend=backend,
+                    image_backend=image_backend,
+                    workers=workers,
+                ),
+            )
             for v in views
         }
     raise SystemExit(
@@ -1063,9 +1115,9 @@ def _stage_visualization(
         return
 
     input_fps = _resolve_fps(args, config)
-    # The visualization stage *writes* MP4s, so it has its own encoder backend,
-    # separate from [pipeline.pose2d].video_backend (which reads input footage).
-    backend = _visualization_config(config).get("video_backend", "auto")
+    # The visualization stage *writes* MP4s -- the output encoder is [io.video].writer
+    # (the shared I/O config), distinct from [io.video].reader used to read footage.
+    backend = _video_writer(config)
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
@@ -1833,7 +1885,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     from . import video
     from .pose2d import backends, download
-    from .video.base import READ_ORDER, WRITE_ORDER
+    from .video.base import IMAGE_READ_ORDER, READ_ORDER, WRITE_ORDER
 
     _doctor_header("deeperfly")
     try:
@@ -1884,16 +1936,26 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         _doctor_row("GPU inference", "not available -- CPU only")
     _doctor_row("detector", "torch" if torch_info["installed"] else "none")
 
-    _doctor_header("video backends")
+    _doctor_header("frame I/O backends")
     read_avail = video.available_read_backends()
     write_avail = video.available_write_backends()
-    read = _by_priority(read_avail, READ_ORDER)
-    _doctor_row("read", ", ".join(read) or "none")
-    _doctor_row("write", ", ".join(_by_priority(write_avail, WRITE_ORDER)) or "none")
+    image_avail = video.available_image_readers()
+    _doctor_row("video read", ", ".join(_by_priority(read_avail, READ_ORDER)) or "none")
+    _doctor_row(
+        "video write", ", ".join(_by_priority(write_avail, WRITE_ORDER)) or "none"
+    )
+    _doctor_row(
+        "image read", ", ".join(_by_priority(image_avail, IMAGE_READ_ORDER)) or "none"
+    )
     missing = sorted(
-        set(video.list_read_backends() + video.list_write_backends())
+        set(
+            video.list_read_backends()
+            + video.list_write_backends()
+            + video.list_image_readers()
+        )
         - set(read_avail)
         - set(write_avail)
+        - set(image_avail)
     )
     if missing:
         _doctor_row("not installed", ", ".join(missing))

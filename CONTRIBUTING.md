@@ -5,7 +5,7 @@ the pipeline works, see [docs/architecture.md](docs/architecture.md).
 
 ## Requirements
 
-- Python ≥ 3.13
+- Python ≥ 3.11 (development and CI target 3.14; a `.python-version` pins it)
 - [uv](https://docs.astral.sh/uv/) for dependency management
 
 ## Development install

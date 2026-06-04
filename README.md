@@ -17,10 +17,12 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install deeperfly --torch-backend=auto
+uv tool install deeperfly --python 3.14 --torch-backend=auto
 ```
 
-`--torch-backend=auto` lets uv pick the PyTorch wheel that matches this machine:
+`--python 3.14` installs the tool on the latest CPython (deeperfly itself supports
+Python ≥ 3.11, so it also runs as a library on older interpreters). `--torch-backend=auto`
+lets uv pick the PyTorch wheel that matches this machine:
 the CUDA build matching the installed driver on an NVIDIA GPU, or the lean
 CPU-only wheel where there's no GPU (so a CPU box skips the multi-gigabyte CUDA
 download). The 2D detector (PyTorch) then uses the GPU automatically on NVIDIA
@@ -42,9 +44,9 @@ UV_TORCH_BACKEND=auto uv add deeperfly
 ## Checking your install
 
 `deeperfly doctor` reports what this machine can actually run — inference backends,
-video read/write backends (CPU decode, in `backend="auto"` preference order),
-detector weights, and the default config path. Run it after installing to check
-that everything is set up correctly.
+frame I/O backends (video read/write and image read, CPU decode, in `"auto"`
+preference order), detector weights, and the default config path. Run it after
+installing to check that everything is set up correctly.
 ```bash
 deeperfly doctor
 ```
@@ -52,10 +54,10 @@ deeperfly doctor
 ```
 deeperfly
   version           0.1.0
-  location          /home/you/.venv/lib/python3.13/site-packages/deeperfly
+  location          /home/you/.venv/lib/python3.14/site-packages/deeperfly
 
 system
-  python            3.13.1 (CPython)
+  python            3.14.0 (CPython)
   platform          Linux-7.0.0-15-generic-x86_64-with-glibc2.39
 
 inference
@@ -64,10 +66,11 @@ inference
   GPU inference     available (24.0 GiB memory)
   detector          torch
 
-video backends
-  read              pyav, opencv, torchcodec
-  write             pyav, opencv
-  not installed     video_reader_rs
+frame I/O backends
+  video read        pyav, opencv, torchcodec
+  video write       pyav, opencv
+  image read        opencv
+  not installed     imageio, video_reader_rs
 
 weights
   cache dir         /home/you/.cache/deeperfly/weights
