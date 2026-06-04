@@ -95,13 +95,13 @@ def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
 
     Times the serial loop (decode a window, then forward it) against the prefetched
     loop (decode the next window on the CPU in a background thread while the GPU
-    forwards the current one). The forward is batched to the GPU via
-    :func:`auto_batch_size`, exactly as the CLI runs it.
+    forwards the current one). The forward batch is ``DEFAULT_FWD_BATCH``, exactly
+    as the CLI runs it.
     """
     import time
 
     from deeperfly import video
-    from deeperfly.cli import _prefetch_windows
+    from deeperfly.cli import DEFAULT_FWD_BATCH, _prefetch_windows
     from deeperfly.pose2d import backends, inference
     from deeperfly.pose2d.download import download_torch_weights
 
@@ -110,7 +110,7 @@ def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    bs = backends.auto_batch_size(inference.IMG_SIZE)
+    bs = DEFAULT_FWD_BATCH
 
     def serial():
         done = 0

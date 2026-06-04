@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from . import backends, download, inference
 from .backends import (
-    auto_batch_size,
     gpu_memory_bytes,
     infer_num_stacks,
     load_detector,
@@ -39,7 +38,6 @@ __all__ = [
     "load_detector",
     "predict_heatmaps",
     "infer_num_stacks",
-    "auto_batch_size",
     "gpu_memory_bytes",
     "preprocess",
     "heatmap_to_points",

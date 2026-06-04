@@ -96,6 +96,11 @@ STAGE_DEFAULTS = {
 #: bottleneck). 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
 DEFAULT_CHUNK_FRAMES = 64
 
+#: Images per detector forward (the GPU batch), overridable via ``[detector]
+#: batch_size``. The 8-stack network is compute-bound, so throughput plateaus by
+#: ~16 on a fast GPU -- 16 saturates speed while keeping forward VRAM ~0.8 GB.
+DEFAULT_FWD_BATCH = 16
+
 #: rich output: status/results to stdout, logs and the progress bar to stderr, so
 #: piping stdout stays clean and progress never clobbers a log line.
 console = Console()
@@ -541,7 +546,7 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     """
     from . import video
     from .pictorial import Candidates
-    from .pose2d import auto_batch_size, inference
+    from .pose2d import inference
 
     det = _pose2d_config(config)
     backend = _video_reader(config)
@@ -557,9 +562,9 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
         transforms_by_name.get(name, video.FrameTransform()) for name, _ in cam_sources
     ]
     total = video.count_frames(sources[0]) if sources else 0
-    # Size the forward to the GPU so each window is a few big batches, not one
-    # batch per frame -- this only changes dispatch granularity, not the result.
-    batch_size = auto_batch_size(inference.IMG_SIZE)
+    # Forward each window in batches of this many images (a few big batches per
+    # window, not one per frame) -- a speed/VRAM knob that doesn't change the result.
+    batch_size = max(1, int(det.get("batch_size", DEFAULT_FWD_BATCH)))
 
     # One-line summary instead of a per-window read log (that's at -vv now).
     # reader_name mirrors read_frames's dispatch off the actual source, so the

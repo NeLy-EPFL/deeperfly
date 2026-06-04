@@ -141,11 +141,16 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 # CUDA autocast -- ~1.5-2x faster on the GPU with negligible keypoint drift.
 # "bfloat16" is about as fast with a wider range (no overflow) at slightly lower
 # precision. Ignored on CPU/MPS, which stay float32.
-precision = "float32"
+precision = "bfloat16"
 # Frames decoded + detected at a time, per camera (streaming), so long videos run
 # in constant memory. A *memory* knob, not a speed one: lower it for high-res /
 # many cameras / small GPUs.
 chunk_frames = 64
+# GPU forward batch: images pushed through the detector at once. The 8-stack
+# network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
+# saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
+# benchmark shows a gain on your hardware. Ignored on CPU (one pass-group at a time).
+batch_size = 16
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
