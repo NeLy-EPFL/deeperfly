@@ -4,7 +4,9 @@
   LSMR). The per-observation residual and its Jacobian are computed via
   :func:`jax.vmap` + :func:`jax.jacrev` on
   :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
-  SciPy matrix using the precomputed sparsity pattern.
+  SciPy matrix using the precomputed sparsity pattern. Like the geometry layer,
+  these kernels are pinned to the CPU (:func:`deeperfly._jax_cpu.cpu_jit`): the
+  problems are small, and it keeps bundle adjustment off the GPU's memory.
 
   The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
 ``pts2d``) is defined in :mod:`deeperfly.bundle_adjustment.state`; build it with
@@ -22,9 +24,8 @@ from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
+from .._jax_cpu import cpu_jit
 from ..geometry import project_full_one
-
-jax.config.update("jax_enable_x64", True)
 
 
 class BASolution(NamedTuple):
@@ -42,8 +43,8 @@ class BASolution(NamedTuple):
 # of project_full_one's arguments and we keep cols_per_obs aligned with it below.
 # project_full_one maps 13 inputs (pt3d+rvec+tvec+intr+dist) -> 2 outputs, so
 # reverse-mode (jacrev) costs ~1 pass per output instead of jacfwd's ~1 per input.
-_project_per_obs = jax.jit(jax.vmap(project_full_one))
-_jac_per_obs = jax.jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
+_project_per_obs = cpu_jit(jax.vmap(project_full_one))
+_jac_per_obs = cpu_jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
@@ -52,8 +53,8 @@ def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
 
 
 # Bone length and its Jacobian w.r.t. each endpoint, vmapped over bones.
-_bone_len_per = jax.jit(jax.vmap(_bone_length_one))
-_bone_jac_per = jax.jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
+_bone_len_per = cpu_jit(jax.vmap(_bone_length_one))
+_bone_jac_per = cpu_jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
 
 
 def bundle_adjust(
@@ -154,12 +155,14 @@ def bundle_adjust(
         return rvecs, tvecs, intrs, dists, pts3d
 
     def _project_obs(rvecs, tvecs, intrs, dists, pts3d):
+        # ``cpu_jit`` commits these slices to the CPU; pass NumPy straight in so
+        # nothing is ever staged on the GPU's default device.
         return _project_per_obs(
-            jnp.asarray(pts3d[obs_pt]),
-            jnp.asarray(rvecs[obs_view]),
-            jnp.asarray(tvecs[obs_view]),
-            jnp.asarray(intrs[obs_view]),
-            jnp.asarray(dists[obs_view]),
+            pts3d[obs_pt],
+            rvecs[obs_view],
+            tvecs[obs_view],
+            intrs[obs_view],
+            dists[obs_view],
         )
 
     n_resid = 2 * n_obs + n_bones
@@ -172,9 +175,7 @@ def bundle_adjust(
         ).ravel()
         if not use_bones:
             return reproj
-        lengths = np.asarray(
-            _bone_len_per(jnp.asarray(pts3d[bone_i]), jnp.asarray(pts3d[bone_j]))
-        )
+        lengths = np.asarray(_bone_len_per(pts3d[bone_i], pts3d[bone_j]))
         bone_resid = bone_weight * (lengths - bone_targets)
         return np.concatenate([reproj, bone_resid])
 
@@ -238,11 +239,11 @@ def bundle_adjust(
     def jac(x):
         rvecs, tvecs, intrs, dists, pts3d = unpack(x)
         jac_blocks = _jac_per_obs(
-            jnp.asarray(pts3d[obs_pt]),
-            jnp.asarray(rvecs[obs_view]),
-            jnp.asarray(tvecs[obs_view]),
-            jnp.asarray(intrs[obs_view]),
-            jnp.asarray(dists[obs_view]),
+            pts3d[obs_pt],
+            rvecs[obs_view],
+            tvecs[obs_view],
+            intrs[obs_view],
+            dists[obs_view],
         )
         # Each block is (n_obs, 2, *param_dim); concatenate along the last
         # axis to align with cols_per_obs above. Weight rows by sqrt(weight).
@@ -250,9 +251,7 @@ def bundle_adjust(
         jac_full = jac_full * sqrt_w[:, None, None]
         data = np.concatenate([jac_full[:, 0, :][valid], jac_full[:, 1, :][valid]])
         if use_bones:
-            dpi, dpj = _bone_jac_per(
-                jnp.asarray(pts3d[bone_i]), jnp.asarray(pts3d[bone_j])
-            )
+            dpi, dpj = _bone_jac_per(pts3d[bone_i], pts3d[bone_j])
             bone_jac = bone_weight * np.concatenate(
                 [np.asarray(dpi), np.asarray(dpj)], axis=1
             )  # (B, 6)
