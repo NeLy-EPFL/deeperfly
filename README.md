@@ -16,7 +16,7 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/NeLy-EPFL/deeperfly --python 3.14 --torch-backend=auto
+uv tool install git+https://github.com/NeLy-EPFL/deeperfly --python 3.13 --torch-backend=auto
 ```
 
 ## Checking your install
