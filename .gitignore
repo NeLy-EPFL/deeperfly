@@ -12,17 +12,17 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Images and videos
+*.png
 *.jpg
+*.jpeg
+*.mp4
+*.avi
 
 # Pipeline outputs (do not commit binary artifacts)
-results/
-results_/
+deeperfly_outputs/
 *.h5
-*.mp4
-*.png
 
 # Scratch / working files (not for version control)
 scratch/
-
-# ...except the committed example recording (overrides the *.mp4 rule above)
-!examples/data/*.mp4
