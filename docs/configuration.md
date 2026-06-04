@@ -130,7 +130,8 @@ worst-reprojecting view; `dlt` is plain least-squares with no outlier handling.
 ```toml
 [pipeline.pose2d]
 precision    = "float32"   # "float16" runs under CUDA autocast: ~1.5-2x faster,
-                           # negligible drift; ignored on CPU/MPS
+                           # negligible drift. "bfloat16" is as fast with a wider
+                           # range (no overflow); ignored on CPU/MPS
 chunk_frames = 64          # frames decoded + detected at a time, per camera
 # checkpoint = "/path/to/weights"   # defaults to the cached weights
 ```

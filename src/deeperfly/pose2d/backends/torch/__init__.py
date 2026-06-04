@@ -13,6 +13,7 @@ from .model import (
     HourglassNet,
     device,
     predict_heatmaps,
+    predict_points,
     set_precision,
 )
 from .weights import load_model, state_dict_from_torch_checkpoint
@@ -22,6 +23,7 @@ __all__ = [
     "Bottleneck",
     "device",
     "predict_heatmaps",
+    "predict_points",
     "set_precision",
     "load_model",
     "state_dict_from_torch_checkpoint",
