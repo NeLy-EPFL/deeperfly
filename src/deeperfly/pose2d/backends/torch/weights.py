@@ -3,8 +3,6 @@
 The released checkpoint is a plain PyTorch ``state_dict`` (possibly wrapped by
 Lightning/DataParallel), so this backend loads it directly into the
 :class:`~deeperfly.pose2d.backends.torch.model.HourglassNet` -- no conversion.
-:func:`state_dict_from_torch_checkpoint` is also what the JAX backend's
-``convert_state_dict`` consumes when producing a native ``.eqx`` checkpoint.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ def state_dict_from_torch_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
     """Load a DeepFly2D checkpoint into a native ``HourglassNet`` state-dict.
 
     Strips Lightning/DataParallel ``module.`` / ``model.`` prefixes and returns
-    plain NumPy arrays (so it doubles as the source for the JAX conversion).
+    plain NumPy arrays.
     """
     raw = torch.load(path, map_location="cpu", weights_only=True)
     sd = raw["state_dict"] if "state_dict" in raw else raw

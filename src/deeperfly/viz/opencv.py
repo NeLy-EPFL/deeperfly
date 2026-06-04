@@ -1,19 +1,14 @@
 """OpenCV pose-overlay primitives drawn straight into RGB image buffers.
 
-Each primitive draws onto a caller-supplied ``canvas`` (an ``(H, W, 3)`` uint8
-RGB array) at a pixel offset ``(x0, y0)``, so a compositor can layer several --
-an image, then a skeleton on top -- into one frame (see
-:mod:`deeperfly.viz.compose`). Drawing goes directly into the array with ``cv2``
-(no figure canvas), which is far faster than the matplotlib backend for video.
+Each primitive draws onto a caller-supplied ``canvas`` (an ``(H, W, 3)`` uint8 RGB
+array) at a pixel offset ``(x0, y0)``, so a compositor can layer several -- an
+image, then a skeleton on top -- into one frame (see
+:mod:`deeperfly.viz.compose`). Drawing goes directly into the array with ``cv2``,
+far faster than matplotlib for video.
 
-For 3D, bones (and joints) are ordered back-to-front by their camera-space depth
--- the painter's algorithm -- so nearer limbs occlude farther ones. Depth is the
-camera-frame ``z`` of each point (``R @ X + t``), matching the projection in
-:func:`deeperfly.geometry.project_full`; points behind the camera are dropped.
-
-Buffers are treated as RGB (deeperfly's video-I/O convention) and color tuples
-are written in that order, so output stays RGB. OpenCV (``cv2``) is a core
-dependency, so these primitives are always available.
+For 3D, bones and joints are ordered back-to-front by camera-space depth (the
+painter's algorithm), so nearer limbs occlude farther ones; points behind the
+camera are dropped. Buffers are RGB throughout.
 """
 
 from __future__ import annotations
@@ -245,11 +240,10 @@ def draw_skeleton_2d(
 ) -> np.ndarray:
     """Draw a single view's 2D joints + bones onto ``canvas`` at ``(x0, y0)``.
 
-    ``pts2d`` is ``(N, 2)`` in that view's image pixels; NaN joints (and the
-    bones touching them) are skipped. ``scale`` multiplies the pixel coordinates
-    (match an ``imshow`` of the same view drawn with the same ``scale``); pass an
-    ``(sx, sy)`` pair to scale the axes independently. ``conf`` (``(N,)``)
-    modulates joint opacity. No depth ordering -- 2D detections carry no depth.
+    ``pts2d`` is ``(N, 2)`` in that view's image pixels; NaN joints (and their
+    bones) are skipped. ``scale`` multiplies the pixel coordinates (match an
+    ``imshow`` of the same view); pass an ``(sx, sy)`` pair to scale axes
+    independently. ``conf`` (``(N,)``) modulates joint opacity. No depth ordering.
     """
     sx, sy = _xy_scale(scale)
     return _draw(
@@ -286,13 +280,11 @@ def draw_skeleton_3d(
 ) -> np.ndarray:
     """Reproject a 3D skeleton into ``camera`` and draw it onto ``canvas``.
 
-    ``pts3d`` is ``(N, 3)`` in world coordinates; it is projected through
-    ``camera`` (distortion included) and drawn at ``(x0, y0)``, with the pixel
-    coordinates multiplied by ``scale`` (match an ``imshow`` of the same view at
-    the same ``scale``); pass an ``(sx, sy)`` pair to scale the axes
-    independently. Bones and joints are ordered back-to-front by camera-space
-    depth so nearer limbs occlude farther ones; points behind the camera are
-    dropped.
+    ``pts3d`` is ``(N, 3)`` in world coordinates, projected through ``camera``
+    (distortion included) and drawn at ``(x0, y0)``, the pixels multiplied by
+    ``scale`` (match an ``imshow`` of the same view; an ``(sx, sy)`` pair scales
+    axes independently). Bones and joints are depth-ordered back-to-front; points
+    behind the camera are dropped.
     """
     pts3d = np.asarray(pts3d, dtype=float)
     pts2d = np.asarray(camera.project(pts3d), dtype=float).copy()

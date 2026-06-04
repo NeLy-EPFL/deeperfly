@@ -1,23 +1,15 @@
-"""Stacked-hourglass 2D pose detector for DeepFly2D, with two backends.
+"""Stacked-hourglass 2D pose detector for DeepFly2D (PyTorch).
 
-The detector ships two interchangeable backends behind one interface, in
-:mod:`~deeperfly.pose2d.backends`:
-
-* :mod:`~deeperfly.pose2d.backends.jax` -- the **default** Equinox port; runs the
-  published ``sh8`` weights as a pure JAX PyTree and is the faster backend on GPU.
-* :mod:`~deeperfly.pose2d.backends.torch` -- a faithful copy of the original
-  DeepFly2D network that loads the released DeepFly2D weights directly.
-
-Both expose ``HourglassNet`` / ``load_model`` / ``predict_heatmaps`` and the same
-heatmap contract, so the shared orchestration in
+The detector is a faithful copy of the original DeepFly2D network in PyTorch
+(:mod:`~deeperfly.pose2d.backends`); it loads the released DeepFly2D weights
+directly and uses CUDA / Metal (MPS) automatically. The shared orchestration in
 :mod:`~deeperfly.pose2d.inference` (``preprocess`` -> ``predict_heatmaps`` ->
-``heatmap_to_points`` -> ``assemble_skeleton`` -> ``detect``) and everything
-downstream (calibration, triangulation) are identical whichever you pick. Choose
-one with :func:`~deeperfly.pose2d.backends.load_detector` (or ``--backend``).
+``heatmap_to_points`` -> ``assemble_skeleton`` -> ``detect``) drives it, and
+everything downstream (calibration, triangulation) consumes its output.
 :mod:`~deeperfly.pose2d.download` fetches/caches the pretrained weights.
 
-``HourglassNet`` re-exported here is the JAX (default) network; reach the PyTorch
-one as ``pose2d.backends.torch.HourglassNet``.
+The detector network is :class:`pose2d.backends.torch.HourglassNet`; it is not
+re-exported here so that ``import deeperfly.pose2d`` never imports torch.
 """
 
 from __future__ import annotations
@@ -30,7 +22,6 @@ from .backends import (
     load_detector,
     predict_heatmaps,
 )
-from .backends.jax import HourglassNet
 from .inference import (
     assemble_skeleton,
     detect,
@@ -42,7 +33,6 @@ from .inference import (
 )
 
 __all__ = [
-    "HourglassNet",
     "backends",
     "download",
     "inference",

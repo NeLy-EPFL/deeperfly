@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..base import ReaderBackend, register_reader, require_cpu
+from ..base import ReaderBackend, register_reader
 
 _ffmpeg_preloaded = False
 
@@ -75,7 +75,6 @@ def _reader(vr, path):
 class VideoReaderRsReader(ReaderBackend):
     name = "video_reader_rs"
     requires = ("video_reader",)
-    supports_gpu = False
     supports_seek = True
 
     @classmethod
@@ -91,8 +90,7 @@ class VideoReaderRsReader(ReaderBackend):
         return True
 
     @staticmethod
-    def _read_sequential(path, device, start, stop, step):
-        require_cpu(device, "video_reader_rs")
+    def _read_sequential(path, start, stop, step):
         vr = _load()
 
         reader = _reader(vr, path)
@@ -104,8 +102,7 @@ class VideoReaderRsReader(ReaderBackend):
         return arr[::step] if step != 1 else arr
 
     @classmethod
-    def _read_indices(cls, path, device, indices):
-        require_cpu(device, "video_reader_rs")
+    def _read_indices(cls, path, indices):
         vr = _load()
 
         reader = _reader(vr, path)
@@ -113,4 +110,4 @@ class VideoReaderRsReader(ReaderBackend):
             return np.asarray(reader.get_batch(list(indices)))
         if hasattr(vr, "get_batch"):
             return np.asarray(vr.get_batch(str(path), list(indices)))
-        return super()._read_indices(path, device, indices)  # decode-and-gather
+        return super()._read_indices(path, indices)  # decode-and-gather

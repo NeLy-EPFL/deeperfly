@@ -2,19 +2,15 @@
 
 Finding (RTX 4090, 7-cam 480x960): **inference is the bottleneck** -- the 8-stack
 detector runs ~28 multi-camera frames/s and is compute-bound (batching frames does
-not help), while every decoder is far faster (torchcodec-CUDA ~2400 fps, decord
-~1200, DALI ~400). So decode backend and CPU parallelism barely move total
-throughput, and ``[detector] chunk_frames`` is a *memory* knob, not a speed one --
-keep it small to bound VRAM.
+not help), while every (CPU) decoder is far faster. So the decode backend and CPU
+parallelism barely move total throughput, and ``[detector] chunk_frames`` is a
+*memory* knob, not a speed one -- keep it small to bound VRAM.
 
-``bench_pipeline`` settles the follow-up question -- *is GPU decode worth it?* -- by
-timing the real streaming detect end to end for {cpu, cuda} x {serial, prefetch}.
-Finding (RTX 4090, 7-cam 480x960): with frames uploaded once per window rather than
-once per pass (see ``inference._window_to_device`` -- the per-pass version decoded
-~30x slower than the forward) and a prefetch thread overlapping decode with the
-forward, **CPU decode reaches ~22 mcam-fps vs ~23 for CUDA/NVDEC** -- a ~6% edge
-that does not justify the torchcodec-CUDA + nvidia-npp dependency stack. Prefetch
-adds ~11% to either decoder. So plain CPU decode is the sensible default.
+This is also why deeperfly decodes on the CPU only: an earlier sweep over GPU/NVDEC
+decode (torchcodec-CUDA + nvidia-npp) reached ~23 mcam-fps end to end vs ~22 for
+plain CPU decode -- a ~6% edge that did not justify the CUDA-video dependency stack,
+so it was dropped. ``bench_pipeline`` times the real streaming detect (serial vs a
+prefetch thread overlapping CPU decode with the GPU forward).
 
 Run::
 
@@ -39,83 +35,37 @@ def _timeit(fn, reps=2):
 
 
 def bench_decode(path: str, n: int) -> None:
-    """Decode-in-windows throughput (frames/s) per backend x chunk x threads."""
-    import torch
+    """Decode-in-windows throughput (frames/s) per (CPU) backend x chunk."""
+    from deeperfly import video
 
-    def run_windows(read, chunk):
+    def run_windows(backend, chunk):
         for s in range(0, n, chunk):
-            read(s, min(s + chunk, n))
-            torch.cuda.synchronize()
+            video.read_video(path, backend=backend, start=s, stop=min(s + chunk, n))
 
-    def dali(chunk, threads):
-        from nvidia.dali import fn, pipeline_def
-
-        def read(s, e):
-            @pipeline_def(batch_size=1, num_threads=threads, device_id=0)
-            def pl():
-                data, _ = fn.readers.file(files=[path])
-                return fn.decoders.video(
-                    data, device="mixed", pad_mode="none", start_frame=s, end_frame=e
-                )
-
-            p = pl()
-            p.build()
-            (o,) = p.run()
-            return torch.from_dlpack(o[0])
-
-        return n / _timeit(lambda: run_windows(read, chunk))
-
-    def torchcodec(chunk, threads):
-        from torchcodec.decoders import VideoDecoder
-
-        from deeperfly.video.backends.torchcodec_io import _preload_npp
-
-        _preload_npp()
-
-        def read(s, e):
-            return VideoDecoder(path, device="cuda", num_ffmpeg_threads=threads)[s:e]
-
-        return n / _timeit(lambda: run_windows(read, chunk))
-
-    def decord(chunk, threads):
-        import decord as dc
-
-        def read(s, e):
-            dc.VideoReader(path, ctx=dc.cpu(0), num_threads=threads).get_batch(
-                range(s, e)
-            ).asnumpy()
-
-        return n / _timeit(lambda: run_windows(read, chunk))
-
-    print(f"\n{'backend':12s} {'chunk':>5s} {'thr':>3s} {'frames/s':>9s}")
+    print(f"\n{'backend':16s} {'chunk':>5s} {'frames/s':>9s}")
     with contextlib.redirect_stderr(io.StringIO()):
-        for name, fnb, threads in (
-            ("torchcodec", torchcodec, (1,)),
-            ("dali", dali, (2,)),
-            ("decord", decord, (0,)),
-        ):
+        for backend in video.available_read_backends():
             for chunk in (64, 256):
-                for thr in threads:
-                    try:
-                        print(f"{name:12s} {chunk:5d} {thr:3d} {fnb(chunk, thr):9.0f}")
-                    except Exception as e:  # noqa: BLE001
-                        print(f"{name:12s} {chunk:5d} {thr:3d}  err {str(e)[:40]}")
+                try:
+                    fps = n / _timeit(lambda: run_windows(backend, chunk))
+                    print(f"{backend:16s} {chunk:5d} {fps:9.0f}")
+                except Exception as e:  # noqa: BLE001
+                    print(f"{backend:16s} {chunk:5d}  err {str(e)[:40]}")
 
 
 def bench_inference(path: str, t: int) -> None:
     """Detector throughput (multi-cam frames/s) and forward-pass scaling with batch."""
-    import jax.numpy as jnp
     import numpy as np
 
     from deeperfly import video
     from deeperfly.pose2d import backends, inference
-    from deeperfly.pose2d.download import ensure_jax_weights
+    from deeperfly.pose2d.download import download_torch_weights
 
-    model = backends.load_detector("jax", ensure_jax_weights())
+    model = backends.load_detector(download_torch_weights())
 
     print(f"\n{'fwd batch':>9s} {'img/s':>7s}")
     for b in (8, 32, 64):
-        x = jnp.zeros((b, 3, 256, 512), jnp.float32)
+        x = np.zeros((b, 3, 256, 512), np.float32)
         np.asarray(backends.predict_heatmaps(model, x))  # compile
         fps = (
             b
@@ -129,10 +79,7 @@ def bench_inference(path: str, t: int) -> None:
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    frames = [
-        video.read_video(p, backend="auto", device="cuda", start=0, stop=t)
-        for p in paths
-    ]
+    frames = [video.read_video(p, backend="auto", start=0, stop=t) for p in paths]
     inference.detect_sequence(model, [f[:4] for f in frames], sides, flips)  # warmup
     dt = _timeit(
         lambda: np.asarray(inference.detect_sequence(model, frames, sides, flips)[0]),
@@ -144,34 +91,32 @@ def bench_inference(path: str, t: int) -> None:
 
 
 def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
-    """End-to-end streaming detect throughput: decode device x prefetch overlap.
+    """End-to-end streaming detect throughput: serial vs prefetch overlap.
 
-    For each ``{cpu, cuda}`` decode device, times the serial loop (decode a window,
-    then forward it) against the prefetched loop (decode the next window in a
-    background thread while the GPU forwards the current one). The forward is
-    batched to the GPU via :func:`auto_batch_size`, exactly as the CLI runs it.
+    Times the serial loop (decode a window, then forward it) against the prefetched
+    loop (decode the next window on the CPU in a background thread while the GPU
+    forwards the current one). The forward is batched to the GPU via
+    :func:`auto_batch_size`, exactly as the CLI runs it.
     """
     import time
 
     from deeperfly import video
     from deeperfly.cli import _prefetch_windows
     from deeperfly.pose2d import backends, inference
-    from deeperfly.pose2d.download import ensure_jax_weights
+    from deeperfly.pose2d.download import download_torch_weights
 
-    model = backends.load_detector("jax", ensure_jax_weights())
+    model = backends.load_detector(download_torch_weights())
     sides, flips = inference.fly_camera_layout(
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
     bs = backends.auto_batch_size(inference.IMG_SIZE)
 
-    def serial(device):
+    def serial():
         done = 0
         while done < t:
             window = [
-                video.read_frames(
-                    p, device=device, start=done, stop=min(done + chunk, t)
-                )
+                video.read_frames(p, start=done, stop=min(done + chunk, t))
                 for p in paths
             ]
             n = len(window[0])
@@ -181,30 +126,25 @@ def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
             done += n
         return done
 
-    def prefetch(device):
+    def prefetch():
         done = 0
-        for window, n in _prefetch_windows(
-            paths, backend="auto", device=device, chunk=chunk
-        ):
+        for window, n in _prefetch_windows(paths, backend="auto", chunk=chunk):
             inference.detect_sequence(model, window, sides, flips, batch_size=bs)
             done += n
             if done >= t:
                 break
         return done
 
-    print(
-        f"\n{'decode':6s} {'mode':9s} {'mcam fps':>9s}  (chunk={chunk}, fwd batch={bs})"
-    )
-    for device in ("cuda", "cpu"):
-        for name, fn in (("serial", serial), ("prefetch", prefetch)):
-            try:
-                fn(device)  # warmup: JIT compile + decoder init
-                t0 = time.perf_counter()
-                done = fn(device)
-                dt = time.perf_counter() - t0
-                print(f"{device:6s} {name:9s} {done / dt:9.1f}")
-            except Exception as e:  # noqa: BLE001
-                print(f"{device:6s} {name:9s}  err {str(e)[:48]}")
+    print(f"\n{'mode':9s} {'mcam fps':>9s}  (chunk={chunk}, fwd batch={bs})")
+    for name, fn in (("serial", serial), ("prefetch", prefetch)):
+        try:
+            fn()  # warmup: JIT compile + decoder init
+            t0 = time.perf_counter()
+            done = fn()
+            dt = time.perf_counter() - t0
+            print(f"{name:9s} {done / dt:9.1f}")
+        except Exception as e:  # noqa: BLE001
+            print(f"{name:9s}  err {str(e)[:48]}")
 
 
 if __name__ == "__main__":

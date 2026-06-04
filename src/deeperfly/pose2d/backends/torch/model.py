@@ -1,13 +1,11 @@
-"""Stacked-hourglass 2D pose network in PyTorch -- the reference backend.
+"""Stacked-hourglass 2D pose network in PyTorch.
 
 A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
 conversion (load them with :func:`deeperfly.pose2d.backends.torch.load_model`).
-It exposes the same contract as the JAX backend -- stacked ``(N, 3, H, W)`` float
-inputs in, final-stack ``(N, J, h, w)`` heatmaps out (:func:`predict_heatmaps`) --
-so :func:`deeperfly.pose2d.inference.detect` works with either, and the two can
-be benchmarked head to head. JAX is the default (faster on GPU); pick this one
-with ``--backend torch``.
+Stacked ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps
+out (:func:`predict_heatmaps`), which is what
+:func:`deeperfly.pose2d.inference.detect` drives.
 """
 
 from __future__ import annotations
@@ -169,8 +167,7 @@ def device() -> str:
 
     On Apple Silicon ``"mps"`` runs the hourglass forward on the GPU via Metal
     Performance Shaders (~6x over CPU for sh8); output matches CPU to float32
-    epsilon. JAX has no comparable Metal path, so this is the only accelerated
-    detector backend on macOS.
+    epsilon, so the detector is accelerated on macOS with no setup.
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -182,17 +179,14 @@ def device() -> str:
 def _as_torch(inputs) -> "torch.Tensor":
     """Coerce ``(N, 3, H, W)`` inputs to a torch tensor, on-device when possible.
 
-    The shared preprocess path stacks on-device, so ``inputs`` is usually a
-    ``jax.Array`` on the GPU; bridge it via DLPack so it stays on the device
-    (zero-copy) instead of round-tripping through host memory like ``np.array``
-    would. ``predict_heatmaps`` runs under ``inference_mode``, so the inference
-    tensor DLPack yields is accepted by the forward. Host NumPy is copied to a
-    writable tensor (``torch.from_numpy`` warns on the immutable array
-    ``np.array`` produces).
+    ``inputs`` is usually already a ``torch.Tensor`` on the detector device (so a
+    GPU-decoded frame reaches the forward without leaving the GPU) and passes
+    straight through. Any other DLPack-capable on-device array is bridged
+    zero-copy; host NumPy is copied to a writable tensor.
     """
     if isinstance(inputs, torch.Tensor):
         return inputs
-    if hasattr(inputs, "__dlpack__"):  # jax.Array / other on-device array -- zero-copy
+    if hasattr(inputs, "__dlpack__"):  # other on-device array -- zero-copy
         return torch.from_dlpack(inputs)
     return torch.from_numpy(np.array(inputs))  # host array -> writable copy
 
@@ -204,12 +198,10 @@ _COMPILED: dict[int, "torch.nn.Module"] = {}
 def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     """The model, ``torch.compile``-d for production CUDA runs (else eager).
 
-    The eager forward is ~1.8x slower than the JAX backend; ``torch.compile``
-    closes that gap (matches JAX on an RTX 4090 -- see ``dev/bench_video.py``).
-    Gated to CUDA and to the large batches a real ``deeperfly run`` uses: on CPU
-    the speedup is small, and for the tiny batches in tests the one-off compile
-    latency would dwarf the work (and the remainder sub-batch stays eager rather
-    than forcing a second compile).
+    ``torch.compile`` roughly halves the eager CUDA forward time (see
+    ``dev/bench_video.py``). Gated to CUDA and large batches: on CPU the speedup is
+    small, and for tiny test batches the one-off compile latency would dwarf the
+    work.
     """
     if dev.type != "cuda" or batch < 16:
         return model
@@ -220,12 +212,51 @@ def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     return fn
 
 
+#: Detector forward precision -> autocast dtype (``None`` = run in float32).
+_PRECISIONS = {"float32": None, "float16": torch.float16}
+
+
+def set_precision(model: HourglassNet, precision: str = "float32") -> None:
+    """Record the forward precision ``predict_heatmaps`` should run the model in.
+
+    ``"float32"`` (default, the reference) or ``"float16"`` (CUDA autocast). Stored
+    on the model so the forward picks it up without threading it through every call.
+    """
+    precision = (precision or "float32").lower()
+    if precision not in _PRECISIONS:
+        raise ValueError(
+            f"unknown detector precision {precision!r}; use 'float32' or 'float16'"
+        )
+    # A real detector (nn.Module) carries a __dict__; bare test stubs don't (and
+    # never run the real forward), so there's nothing to set on them.
+    if hasattr(model, "__dict__"):
+        model._deeperfly_precision = precision
+
+
+def _autocast_dtype(model: HourglassNet, dev: "torch.device"):
+    """Autocast dtype for the forward, or ``None`` to run in float32.
+
+    Honors the precision set by :func:`set_precision`, but only on CUDA: fp16
+    autocast is where the win is, and CPU/MPS stay on the float32 reference path.
+    """
+    if dev.type != "cuda":
+        return None
+    return _PRECISIONS.get(getattr(model, "_deeperfly_precision", "float32"))
+
+
 @torch.inference_mode()
 def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
     """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
-    out = _forward_fn(model, dev, x.shape[0])(x)[-1]
+    fn = _forward_fn(model, dev, x.shape[0])
+    dtype = _autocast_dtype(model, dev)
+    if dtype is not None:  # fp16 autocast on CUDA; conv runs half, reductions float32
+        with torch.autocast(dev.type, dtype=dtype):
+            out = fn(x)[-1]
+    else:
+        out = fn(x)[-1]
     if dev.type == "cuda":
         torch.cuda.synchronize()
-    return out.cpu().numpy()
+    # Upcast so the heatmap contract stays float32 even under fp16 autocast.
+    return out.float().cpu().numpy()

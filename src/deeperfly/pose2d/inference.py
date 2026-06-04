@@ -1,34 +1,30 @@
-"""Backend-agnostic orchestration: run the detector and assemble 2D skeletons.
+"""Orchestration: run the detector and assemble 2D skeletons.
 
-This layer is shared by both backends (:mod:`deeperfly.pose2d.backends`) -- it
-preprocesses images, decodes heatmaps and scatters per-camera detections into the
-full skeleton, dispatching the actual forward pass to whichever backend owns the
-model. Pipeline for one recording:
+Sits above the detector backend (:mod:`deeperfly.pose2d.backends`): preprocesses
+images (in torch, so a GPU-decoded frame never leaves the GPU), decodes heatmaps,
+and scatters per-camera detections into the full skeleton. Pipeline for one
+recording:
 
-1. :func:`expand_passes` -- turn the per-camera ``(side, flip)`` layout into a
-   flat list of forward *passes*. A side-camera is one pass; the **front camera
-   is two passes** (un-flipped -> right legs, mirror-flipped -> left legs) that
-   share one physical view, so the front image bridges the two body sides.
-2. :func:`preprocess` each pass (mirror-flip where required, resize to 256x512,
+1. :func:`expand_passes` -- turn the per-camera ``(side, flip)`` layout into a flat
+   list of forward *passes*. A side camera is one pass; the **front camera is two
+   passes** (un-flipped -> right legs, mirror-flipped -> left legs) sharing one
+   physical view, so the front image bridges the two body sides.
+2. :func:`preprocess` each pass (mirror-flip if required, resize to 256x512,
    subtract the training mean) -- matching DeepFly2D.
-3. :func:`deeperfly.pose2d.backends.predict_heatmaps` (dispatched, batched) ->
-   per-joint heatmaps as NumPy.
-4. :func:`heatmap_to_points` -> normalized sub-pixel peak locations + confidence.
+3. :func:`deeperfly.pose2d.backends.predict_heatmaps` (batched) -> heatmaps.
+4. :func:`heatmap_to_points` -> normalized sub-pixel peaks + confidence.
 5. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
-   38-point skeleton (right pass -> indices 19..37, mirrored left pass -> 0..18
-   with the x flip undone) and scale to original-image pixels. The front camera's
-   two passes fill *both* halves of its row, so it observes left and right joints.
+   38-point skeleton (right -> 19..37, mirrored left -> 0..18 with the x flip
+   undone) and scale to original pixels.
 
-The single-side ordering of the 19 detector channels matches the skeleton's
-per-side ordering, so the mapping is a direct slice.
+The 19 detector channels match the skeleton's per-side ordering, so the mapping is
+a direct slice.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, Int
 
@@ -37,39 +33,39 @@ MEAN = 0.22  # DeepFly2D subtracts this scalar from the [0, 1] image
 N_SIDE_JOINTS = 19  # detector channels (one body side)
 
 
-def _to_jax_image(image) -> Array:
-    """Image -> ``jnp`` array, staying on-device for GPU inputs (zero-copy).
+def _to_torch_image(image):
+    """Image -> torch tensor, staying on-device for GPU inputs (zero-copy).
 
-    A GPU-decoded frame arrives as a ``torch.Tensor`` (or other DLPack-capable
-    array) already on the CUDA device; hand it to JAX via DLPack so it never round
-    -trips through host memory. A ``jax.Array`` passes through untouched; NumPy
-    (and anything else) is uploaded the usual way.
+    A ``torch.Tensor`` passes through untouched. A GPU-decoded frame from another
+    array library arrives DLPack-capable already on the device; bridge it zero-copy
+    so it never round-trips through host memory. NumPy is copied to a writable
+    tensor (``torch.from_numpy`` warns on the immutable array ``np.array`` makes).
     """
-    if isinstance(image, jax.Array):
+    import torch
+
+    if isinstance(image, torch.Tensor):
         return image
-    if hasattr(image, "__dlpack__"):  # torch / most array libs -- same-device
-        return jnp.from_dlpack(image)
-    if hasattr(image, "to_dlpack"):  # decord NDArray (older API)
-        return jnp.from_dlpack(image.to_dlpack())
-    return jnp.asarray(image)
+    if hasattr(image, "__dlpack__"):  # most array libs -- same-device, zero-copy
+        return torch.from_dlpack(image)
+    return torch.from_numpy(np.array(image))
 
 
-def _window_to_device(window):
-    """Move one camera's ``(T, H, W, 3)`` window onto the JAX device *once*.
+def _window_to_device(window, device):
+    """Move one camera's ``(T, H, W, 3)`` window onto the detector ``device`` once.
 
-    A CPU decoder returns the whole window as a single host NumPy array. Without
-    this, :func:`preprocess` would re-upload a frame for *every* pass that reads it
-    (the front camera twice, and once per frame in the batched path) -- hundreds of
-    tiny synchronous host->device copies that serialize behind the per-batch
-    heatmap pull, decoding ~30x slower than the on-device forward itself. Uploading
-    the window in one transfer collapses that to a single copy; per-frame
-    :func:`preprocess` then just re-slices on-device. On-device inputs (a
-    ``jax.Array`` or a GPU/DLPack tensor) are already zero-copy, so they pass
-    through untouched.
+    Without this, :func:`preprocess` would re-upload a frame for every pass that
+    reads it -- many tiny synchronous host->device copies. Uploading the whole
+    window in one transfer collapses that to a single copy; per-frame
+    :func:`preprocess` then just re-slices on-device. An already-on-device window
+    (a GPU-decoded tensor) is moved only if needed.
     """
-    if isinstance(window, np.ndarray):
-        return jnp.asarray(window)
-    return window
+    import torch
+
+    if isinstance(window, torch.Tensor):
+        return window.to(device)
+    if hasattr(window, "__dlpack__"):
+        return torch.from_dlpack(window).to(device)
+    return torch.from_numpy(np.ascontiguousarray(window)).to(device)
 
 
 def _image_wh(image) -> tuple[int, int]:
@@ -87,30 +83,31 @@ def preprocess(
     img_size: tuple[int, int] = IMG_SIZE,
     mean: float = MEAN,
 ) -> Float[Array, "3 Hh Ww"]:
-    """Image (HWC, uint8 or float[0,1]) -> normalized CHW network input.
+    """Image (HWC, uint8 or float[0,1]) -> normalized CHW network input (torch).
 
     Accepts a NumPy array or an on-device tensor (e.g. a GPU-decoded
-    ``torch.Tensor``); on-device inputs are bridged to JAX zero-copy
-    (:func:`_to_jax_image`), so a GPU-decoded frame is normalized and resized on
-    the GPU and never leaves it. Mirror-side cameras are horizontally flipped so
-    the fly faces the trained orientation. Uses bilinear (anti-aliased) resize;
-    this is close to but not bit-identical with DeepFly2D's skimage resize --
-    argmax peak picking is robust to the difference.
+    ``torch.Tensor``); on-device inputs stay on the device (:func:`_to_torch_image`),
+    so a GPU-decoded frame is normalized and resized on the GPU and never leaves it.
+    Mirror-side cameras are horizontally flipped so the fly faces the trained
+    orientation. Uses bilinear (anti-aliased) resize; this is close to but not
+    bit-identical with DeepFly2D's skimage resize -- argmax peak picking is robust
+    to the difference.
     """
-    img = _to_jax_image(image)
-    if jnp.issubdtype(img.dtype, jnp.integer):
-        img = img.astype(jnp.float32) / 255.0
-    else:
-        img = img.astype(jnp.float32)
+    import torch
+    import torch.nn.functional as F
+
+    img = _to_torch_image(image)
+    img = img.float() / 255.0 if not torch.is_floating_point(img) else img.float()
     if img.ndim == 2:
-        img = jnp.stack([img] * 3, axis=-1)
+        img = img.unsqueeze(-1).expand(-1, -1, 3)
     img = img[..., :3]
     if flip:
-        img = img[:, ::-1]
-    img = jax.image.resize(
-        img, (img_size[0], img_size[1], 3), method="linear", antialias=True
-    )
-    return jnp.transpose(img, (2, 0, 1)) - mean
+        img = torch.flip(img, dims=(1,))  # mirror left<->right (width axis)
+    chw = img.permute(2, 0, 1).contiguous()
+    resized = F.interpolate(
+        chw[None], size=img_size, mode="bilinear", align_corners=False, antialias=True
+    )[0]
+    return resized - mean
 
 
 SubpixelMethod = str  # "argmax" | "weighted" | "taylor"
@@ -210,70 +207,6 @@ def refine_peaks(
     return fcol + ox, frow + oy
 
 
-def refine_peaks_jax(
-    hm: Float[Array, "*lead Hh Ww"],
-    row: Int[Array, "*lead"],
-    col: Int[Array, "*lead"],
-    *,
-    method: SubpixelMethod = "weighted",
-    radius: int = 2,
-) -> tuple[Float[Array, "*lead"], Float[Array, "*lead"]]:
-    """On-device (``jnp``) twin of :func:`refine_peaks` for one peak per heatmap.
-
-    Same three estimators and conventions, but pure JAX so a fused
-    forward+decode kernel can refine on the accelerator without shipping
-    heatmaps to the host (``hm`` is ``(*lead, Hh, Ww)`` with one arg-max peak
-    ``(row, col)`` per map, e.g. ``*lead = (J,)`` under :func:`jax.vmap`). Kept
-    numerically equal to :func:`refine_peaks` (guarded by a test).
-    """
-    hm = jnp.asarray(hm)
-    hh, ww = hm.shape[-2:]
-    fcol, frow = col.astype(hm.dtype), row.astype(hm.dtype)
-    if method == "argmax":
-        return fcol, frow
-    if method not in ("weighted", "taylor"):
-        raise ValueError(f"unknown sub-pixel method {method!r}")
-    if method == "taylor" and radius < 2:
-        raise ValueError("taylor refinement needs radius >= 2")
-    ys, xs = jnp.arange(hh), jnp.arange(ww)
-
-    if method == "weighted":
-        near = (jnp.abs(ys[:, None] - row[..., None, None]) <= radius) & (
-            jnp.abs(xs - col[..., None, None]) <= radius
-        )  # (*lead, Hh, Ww) window around each peak
-        w = jnp.where(near, jnp.maximum(hm, 0.0), 0.0)
-        mass = w.sum((-2, -1))
-        ok = mass > 0
-        denom = jnp.where(ok, mass, 1.0)  # 0/0 guard; the cell is kept below
-        cx = jnp.where(ok, (w * xs).sum((-2, -1)) / denom, fcol)
-        cy = jnp.where(ok, (w * ys[:, None]).sum((-2, -1)) / denom, frow)
-        return cx, cy
-
-    # "taylor": one Newton step on the log-heatmap from gathered ring taps.
-    flat = hm.reshape(*hm.shape[:-2], hh * ww)
-
-    def tap(dr, dc):  # log-heatmap at (row+dr, col+dc), edges clamped
-        r, cc = jnp.clip(row + dr, 0, hh - 1), jnp.clip(col + dc, 0, ww - 1)
-        v = jnp.take_along_axis(flat, (r * ww + cc)[..., None], axis=-1)[..., 0]
-        return jnp.log(jnp.maximum(v, 1e-10))
-
-    b0 = tap(0, 0)
-    dx = 0.5 * (tap(0, 1) - tap(0, -1))
-    dy = 0.5 * (tap(1, 0) - tap(-1, 0))
-    dxx = 0.25 * (tap(0, 2) - 2 * b0 + tap(0, -2))
-    dyy = 0.25 * (tap(2, 0) - 2 * b0 + tap(-2, 0))
-    dxy = 0.25 * (tap(1, 1) - tap(1, -1) - tap(-1, 1) + tap(-1, -1))
-    det = dxx * dyy - dxy * dxy
-    inb = (row >= 2) & (row < hh - 2) & (col >= 2) & (col < ww - 2)
-    good = inb & (det > 0) & (dxx < 0)
-    denom = jnp.where(good, det, 1.0)
-    ox = jnp.where(good, jnp.clip(-(dyy * dx - dxy * dy) / denom, -radius, radius), 0.0)
-    oy = jnp.where(
-        good, jnp.clip(-(-dxy * dx + dxx * dy) / denom, -radius, radius), 0.0
-    )
-    return fcol + ox, frow + oy
-
-
 def heatmap_to_points(
     heatmaps: Float[np.ndarray, "*batch J Hh Ww"],
     *,
@@ -316,14 +249,13 @@ def expand_passes(
     """Expand a per-camera ``(side, flip)`` layout into per-*pass* lists.
 
     A *pass* is one detector forward run. Most cameras are a single pass; a camera
-    whose side is ``"both"`` (the front camera) becomes **two** passes that share
-    its physical view index: ``("right", flip=False)`` populating skeleton indices
-    ``19..37`` and ``("left", flip=True)`` -- the mirror-flipped image -- populating
-    ``0..18``. So the one front image yields detections for both body sides,
-    making it the cross-side bridge the rig calibration relies on.
+    whose side is ``"both"`` (the front camera) becomes **two** passes sharing its
+    physical view: ``("right", flip=False)`` -> skeleton indices ``19..37`` and
+    ``("left", flip=True)`` (mirror-flipped) -> ``0..18``. So the one front image
+    yields both body sides, bridging them for calibration.
 
-    Returns ``(views, pass_sides, pass_flips)`` -- the physical view index, side
-    and flip for each pass, ready for :func:`assemble_skeleton` (``views=...``).
+    Returns ``(views, pass_sides, pass_flips)`` -- the physical view index, side and
+    flip per pass, ready for :func:`assemble_skeleton` (``views=...``).
     """
     views: list[int] = []
     pass_sides: list[str] = []
@@ -402,13 +334,11 @@ def assemble_skeleton(
 def fly_camera_layout(camera_names: list[str]) -> tuple[list[str], list[bool]]:
     """Default ``(sides, flips)`` for the canonical 7-camera fly rig.
 
-    Left cameras (names starting ``l``) image the left side and are mirror-
-    flipped so the fly faces the trained orientation; right cameras image the
-    right side un-flipped. The **front camera** (name starting ``f``) gets side
-    ``"both"``: :func:`expand_passes` runs it twice (un-flipped -> right legs,
-    flipped -> left legs) so it observes joints on both sides and bridges them in
-    one world frame. Override for rigs whose front camera should feed a single
-    side only.
+    Left cameras (names starting ``l``) image the left side, mirror-flipped so the
+    fly faces the trained orientation; right cameras image the right side
+    un-flipped. The **front camera** (name starting ``f``) gets side ``"both"`` --
+    :func:`expand_passes` runs it twice so it observes both sides. Override for rigs
+    whose front camera should feed a single side.
     """
     sides, flips = [], []
     for name in camera_names:
@@ -436,18 +366,19 @@ def detect(
 ) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
     """Detect one multi-camera frame -> ``(V, 38, 2)`` pixels and ``(V, 38)`` conf.
 
-    ``model`` is a detector from either backend (:mod:`deeperfly.pose2d.backends`):
-    :func:`~deeperfly.pose2d.backends.predict_heatmaps` dispatches on its type, so
-    this function is identical for the JAX and PyTorch paths. ``method`` / ``radius``
-    pick the heatmap decode (see :func:`heatmap_to_points`). A ``"both"`` camera is
-    run twice (:func:`expand_passes`) so the front image fills both body sides.
+    ``model`` is the detector (:mod:`deeperfly.pose2d.backends`). ``method`` /
+    ``radius`` pick the heatmap decode (see :func:`heatmap_to_points`). A ``"both"``
+    camera is run twice (:func:`expand_passes`) so the front image fills both body
+    sides.
     """
-    from . import backends  # lazy: dispatch never imports the unused framework
+    import torch
+
+    from . import backends  # lazy: importing pose2d never imports torch
 
     views, pass_sides, pass_flips = expand_passes(sides, flips)
-    # Keep the batch on-device: stacking the (jnp) preprocessed passes avoids a
-    # host round-trip, so GPU-decoded frames feed the JAX forward pass zero-copy.
-    inputs = jnp.stack(
+    # Stack the preprocessed passes into one batch; preprocess keeps each frame on
+    # its own device, so GPU-decoded frames feed the forward pass zero-copy.
+    inputs = torch.stack(
         [preprocess(images[views[i]], flip=pass_flips[i]) for i in range(len(views))]
     )
     points_norm, conf = heatmap_to_points(
@@ -480,20 +411,20 @@ def detect_sequence(
 
     ``batch_size`` controls how many detector *passes* go through one forward.
     ``None`` (the default) detects one multi-camera frame at a time (batch =
-    passes-per-frame, ~8 for the fly rig) -- the simple per-frame path. A larger
-    ``batch_size`` flattens the whole window into ``(T*passes, 3, Hh, Ww)`` and
-    forwards it in groups of ``batch_size``, collapsing ``T`` separate dispatches
-    into ``ceil(T*passes / batch_size)``; size it to the GPU via
+    passes-per-frame, ~8 for the fly rig). A larger ``batch_size`` flattens the
+    window into ``(T*passes, 3, Hh, Ww)`` and forwards it in groups of
+    ``batch_size``; size it to the GPU via
     :func:`~deeperfly.pose2d.backends.auto_batch_size`. Results are numerically
-    identical (the detector is per-row independent), only the dispatch granularity
-    differs.
+    identical -- only the dispatch granularity differs.
 
-    ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress bar)
-    so callers can show a progress bar; it defaults to the identity, keeping the
-    library UI-free. It is advanced once per *completed* frame in either mode.
+    ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress bar),
+    advanced once per *completed* frame; it defaults to the identity.
     """
+    from . import backends
+
     n_views, n_frames = len(frames), len(frames[0])
-    frames = [_window_to_device(f) for f in frames]  # one host->device copy per cam
+    device = backends.detector_device(model)
+    frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
     pts = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS, 2))
     conf = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS))
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
@@ -511,9 +442,9 @@ def detect_sequence(
 
     # Batched: forward all (frame, pass) inputs in groups of ``batch_size``,
     # bounding memory to one group of heatmaps. Pairs are time-major, so frame t
-    # owns the contiguous pair block [t*P, (t+1)*P) -- which lets us tick progress
-    # per completed frame and assemble per frame once every pass has landed.
-    from . import backends
+    # owns the contiguous block [t*P, (t+1)*P) -- letting us tick progress and
+    # assemble per frame once every pass has landed.
+    import torch
 
     views, pass_sides, pass_flips = expand_passes(sides, flips)
     n_passes = len(views)
@@ -527,7 +458,7 @@ def detect_sequence(
     ticked = 0  # frames whose progress tick has fired
     for i in range(0, len(pairs), bs):
         grp = pairs[i : i + bs]
-        inputs = jnp.stack(  # on-device batch (zero-copy for GPU-decoded frames)
+        inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
             [preprocess(frames[views[p]][t], flip=pass_flips[p]) for (t, p) in grp]
         )
         pg, cg = heatmap_to_points(
@@ -568,8 +499,7 @@ def detect_candidates_sequence(
 ):
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
 
-    Runs the detector via the full-heatmap path (not the fused arg-max fast path)
-    so the same forward yields the single-peak ``(pts2d, conf)`` -- used by
+    The same forward yields the single-peak ``(pts2d, conf)`` -- used by
     calibration and the reproject reconstructor -- and a
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
     (view, joint), consumed by the pictorial-structures corrector. The front
@@ -577,11 +507,14 @@ def detect_candidates_sequence(
     and its candidates cover both body sides. Returns
     ``(pts2d (V, T, 38, 2), conf (V, T, 38), candidates)``.
     """
+    import torch
+
     from .. import pictorial
     from . import backends
 
     n_views, n_frames = len(frames), len(frames[0])
-    frames = [_window_to_device(f) for f in frames]  # one host->device copy per cam
+    device = backends.detector_device(model)
+    frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
     n_pts = 2 * N_SIDE_JOINTS
     views, pass_sides, pass_flips = expand_passes(sides, flips)
     pts = np.empty((n_views, n_frames, n_pts, 2))
@@ -591,7 +524,7 @@ def detect_candidates_sequence(
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
     for t in steps:
         images = [frames[v][t] for v in range(n_views)]
-        inputs = jnp.stack(  # on-device batch (zero-copy for GPU-decoded frames)
+        inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
             [
                 preprocess(images[views[i]], flip=pass_flips[i])
                 for i in range(len(views))

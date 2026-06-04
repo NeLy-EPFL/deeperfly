@@ -1,16 +1,14 @@
 """Bundle adjustment with JAX-accelerated residuals and Jacobians.
 
-- :func:`bundle_adjust` wraps :func:`scipy.optimize.least_squares` (TRF +
-  LSMR). The per-observation residual and its Jacobian are computed via
-  :func:`jax.vmap` + :func:`jax.jacrev` on
-  :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
-  SciPy matrix using the precomputed sparsity pattern. Like the geometry layer,
-  these kernels are pinned to the CPU (:func:`deeperfly._jax_cpu.cpu_jit`): the
-  problems are small, and it keeps bundle adjustment off the GPU's memory.
+:func:`bundle_adjust` wraps :func:`scipy.optimize.least_squares` (TRF + LSMR). The
+per-observation residual and its Jacobian come from :func:`jax.vmap` +
+:func:`jax.jacrev` on :func:`deeperfly.geometry.project_full_one`, re-assembled
+into a sparse SciPy matrix via the precomputed sparsity pattern. The kernels are
+:func:`jax.jit`-wrapped and run on CPU JAX; the problems are small.
 
-  The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
-``pts2d``) is defined in :mod:`deeperfly.bundle_adjustment.state`; build it with
-that module's :func:`build_state`.
+The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
+``pts2d``) lives in :mod:`deeperfly.bundle_adjustment.state`; build it with
+:func:`build_state`.
 """
 
 from __future__ import annotations
@@ -24,7 +22,6 @@ from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
-from .._jax_cpu import cpu_jit
 from ..geometry import project_full_one
 
 
@@ -39,12 +36,11 @@ class BASolution(NamedTuple):
 
 
 # Per-observation projection and its Jacobian w.r.t. all five parameter groups
-# (pt3d, rvec, tvec, intr, dist). The Jacobian tuple is returned in the order
-# of project_full_one's arguments and we keep cols_per_obs aligned with it below.
-# project_full_one maps 13 inputs (pt3d+rvec+tvec+intr+dist) -> 2 outputs, so
-# reverse-mode (jacrev) costs ~1 pass per output instead of jacfwd's ~1 per input.
-_project_per_obs = cpu_jit(jax.vmap(project_full_one))
-_jac_per_obs = cpu_jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
+# (pt3d, rvec, tvec, intr, dist), returned in project_full_one's argument order
+# (kept aligned with cols_per_obs below). project_full_one maps 13 inputs -> 2
+# outputs, so reverse-mode (jacrev) costs ~1 pass per output, not per input.
+_project_per_obs = jax.jit(jax.vmap(project_full_one))
+_jac_per_obs = jax.jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
@@ -53,8 +49,8 @@ def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
 
 
 # Bone length and its Jacobian w.r.t. each endpoint, vmapped over bones.
-_bone_len_per = cpu_jit(jax.vmap(_bone_length_one))
-_bone_jac_per = cpu_jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
+_bone_len_per = jax.jit(jax.vmap(_bone_length_one))
+_bone_jac_per = jax.jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
 
 
 def bundle_adjust(
@@ -155,8 +151,8 @@ def bundle_adjust(
         return rvecs, tvecs, intrs, dists, pts3d
 
     def _project_obs(rvecs, tvecs, intrs, dists, pts3d):
-        # ``cpu_jit`` commits these slices to the CPU; pass NumPy straight in so
-        # nothing is ever staged on the GPU's default device.
+        # Pass NumPy straight in and let the jit kernel convert once, rather than
+        # pre-staging intermediate JAX arrays.
         return _project_per_obs(
             pts3d[obs_pt],
             rvecs[obs_view],
@@ -220,12 +216,10 @@ def bundle_adjust(
         cols = np.concatenate([cols, bone_cols_nz])
 
     # The (rows, cols) pattern is constant across iterations -- only the values
-    # change -- so build the canonical CSR layout (indptr/indices) once and map
-    # each COO entry to its CSR data slot. Sorting ``row * n_free + col`` groups
-    # entries by row then column, which is exactly CSR's sorted order; the inverse
-    # map then scatters each iteration's values into that fixed structure with a
-    # single np.bincount (which sums any duplicate (row, col) entries, just as the
-    # old coo->csr conversion did, but without re-sorting every call).
+    # change -- so build the canonical CSR layout (indptr/indices) once and map each
+    # COO entry to its CSR data slot. Sorting ``row * n_free + col`` is exactly CSR's
+    # sorted order; the inverse map then scatters each iteration's values into that
+    # fixed structure with one np.bincount (summing any duplicate (row, col) entries).
     coo_key = rows.astype(np.int64) * n_free + cols
     uniq_key, coo_to_csr = np.unique(coo_key, return_inverse=True)
     coo_to_csr = coo_to_csr.reshape(-1)  # numpy version-proof: keep 1D

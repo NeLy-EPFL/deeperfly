@@ -1,30 +1,26 @@
 """Pictorial-structures (PS) multi-view 2D->3D correction (DeepFly3D-style).
 
-This is the optional, accuracy-oriented alternative to the default
-reprojection-outlier rejection in :func:`deeperfly.pipeline.reconstruct`. Where
-that path can only *veto* a bad per-view detection (drop the worst-reprojecting
-observation and re-triangulate), pictorial structures can *recover* the correct
-joint when the detector's arg-max landed on the wrong heatmap peak -- the classic
-Drosophila failure cases (self-occlusion, crossing legs, left/right confusion).
+The optional, accuracy-oriented alternative to the default reprojection-outlier
+rejection in :func:`deeperfly.pipeline.reconstruct`. Where that path can only
+*veto* a bad detection, PS can *recover* the correct joint when the detector's
+arg-max landed on the wrong heatmap peak (self-occlusion, crossing legs,
+left/right confusion).
 
-The idea, following Gunel et al. (DeepFly3D, 2019):
+Following Gunel et al. (DeepFly3D, 2019):
 
 1. Keep the **top-K candidate peaks** per (view, joint), not just the arg-max
-   (:func:`extract_candidates`). Full heatmaps are never retained for a sequence.
-2. For each joint, build a pool of multi-view-consistent **3D hypotheses** by
+   (:func:`extract_candidates`).
+2. Per joint, build a pool of multi-view-consistent **3D hypotheses** by
    triangulating candidate pairs across views, refitting from inlier views, and
-   scoring by summed heatmap confidence (:func:`_joint_hypotheses`, batched per
-   frame in :func:`solve_frame`).
-3. Choose one hypothesis per joint by **exact dynamic programming** along each
-   limb (:func:`_chain_dp`). The fly skeleton's 2D bones form a forest of simple
-   chains (each leg a 5-joint path, each stripe a 3-marker path), so the MAP over
-   the bone-length-coupled graphical model is exact -- no loopy belief
-   propagation. An optional causal temporal term penalizes 3D jumps.
+   scoring by summed heatmap confidence (batched per frame in :func:`solve_frame`).
+3. Choose one hypothesis per joint by **exact dynamic programming** along each limb
+   (:func:`_chain_dp`). The fly skeleton's 2D bones form a forest of simple chains,
+   so the MAP over the bone-length-coupled model is exact -- no loopy belief
+   propagation. An optional temporal term penalizes 3D jumps.
 
 Everything is plain NumPy over a :class:`~deeperfly.cameras.CameraGroup` and
-:class:`~deeperfly.skeleton.Skeleton`, mirroring :mod:`deeperfly.triangulate` /
-:mod:`deeperfly.pipeline`. The detector forward and heatmap decode happen
-upstream; this module only consumes candidate peaks + calibrated cameras.
+:class:`~deeperfly.skeleton.Skeleton`. The detector forward and heatmap decode
+happen upstream; this module consumes only candidate peaks + calibrated cameras.
 """
 
 from __future__ import annotations
@@ -88,15 +84,12 @@ def peak_candidates(
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
     """Top-``k`` local-maxima peaks per heatmap channel (normalized ``(x, y)`` + score).
 
-    A pixel is a peak if it is the maximum of its ``(2*radius+1)`` neighborhood
-    and exceeds ``threshold``; the strongest ``k`` peaks are returned, ordered by
-    score and padded with ``NaN`` / ``0`` when fewer than ``k`` exist. Each peak
-    cell is then refined to sub-pixel by ``method`` (the same
-    :func:`~deeperfly.pose2d.inference.refine_peaks` the single-peak decoder uses,
-    over the same ``radius`` window), so the candidates fed to PS carry the same
-    localization as the arg-max. Coordinates are normalized to ``[0, 1]`` like
-    :func:`~deeperfly.pose2d.inference.heatmap_to_points`; the score stays the raw
-    peak value.
+    A pixel is a peak if it is the maximum of its ``(2*radius+1)`` neighborhood and
+    exceeds ``threshold``; the strongest ``k`` are returned, score-ordered, padded
+    with ``NaN`` / ``0`` when fewer exist. Each is refined to sub-pixel by
+    ``method`` (the same :func:`~deeperfly.pose2d.inference.refine_peaks` the
+    single-peak decoder uses), so candidates carry the arg-max's localization.
+    Coordinates are normalized to ``[0, 1]``; the score is the raw peak value.
     """
     from scipy.ndimage import maximum_filter
 
@@ -239,9 +232,8 @@ def skeleton_chains(skeleton: Skeleton) -> list[list[int]]:
     """Decompose the 2D bones into ordered simple chains (paths).
 
     Each connected component of :attr:`Skeleton.bones` is a path (max degree 2),
-    so it is returned as an ordered joint list walked from an endpoint; isolated
-    points (no 2D bone, e.g. the antennae) come back as singletons. This ordering
-    is what :func:`_chain_dp` runs exact Viterbi over.
+    returned as an ordered joint list walked from an endpoint; isolated points come
+    back as singletons. :func:`_chain_dp` runs exact Viterbi over this ordering.
     """
     adj: dict[int, list[int]] = defaultdict(list)
     for a, b in skeleton.bones:

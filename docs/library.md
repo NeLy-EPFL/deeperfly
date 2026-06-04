@@ -1,14 +1,12 @@
 # Library usage
 
-deeperfly is a Python library as well as a CLI. The public API lives at the top
-level (`from deeperfly import ...`): `Camera`, `CameraGroup`, `Skeleton`,
-`PoseResult`, `bundle_adjust`, `bundle_adjust_from_config`, `run_from_points2d`,
-and the `geometry`, `triangulate`, `correction`, `pictorial`, `pipeline`
-submodules.
+The public API lives at the top level (`from deeperfly import ...`): `Camera`,
+`CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
+`bundle_adjust_from_config`, `run_from_points2d`, and the `geometry`,
+`triangulate`, `correction`, `pictorial`, `pipeline` submodules.
 
-Sections of a `config.toml` are independently usable, so you can load just the
-part you need: `CameraGroup.from_config` reads only the cameras,
-`Skeleton.from_config` only the `[skeleton]` section.
+Sections of a `config.toml` are independently usable: `CameraGroup.from_config`
+reads only the cameras, `Skeleton.from_config` only `[skeleton]`.
 
 ## Geometry / bundle adjustment only
 
@@ -38,14 +36,14 @@ reconstruction: `triangulation` is `ransac` (default), `greedy` or `dlt`, and
 ## Video I/O
 
 `deeperfly.video` reads and writes frames through a pluggable backend registry;
-see [video.md](video.md) for the backends and on-GPU decode.
+see [video.md](video.md) for the backends.
 
 ```python
 from deeperfly import video
 
-frames = video.read_frames(path)                        # video file or image dir; auto NumPy (host)
+frames = video.read_frames(path)                        # video file or image dir; NumPy (host)
 frames = video.read_video("clip.mp4", indices=[0, 50])  # random access
-frames = video.read_video("clip.mp4", device="cuda")    # on-GPU tensor (NVDEC), zero-copy to JAX via to_jax
+frames = video.read_video("clip.mp4", backend="torchcodec")  # torch tensor (CPU)
 video.write_mp4(frames, "out.mp4", fps=30)
 ```
 

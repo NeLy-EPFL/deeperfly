@@ -2,7 +2,7 @@
 
 Thin dispatchers over the backend registry (:mod:`deeperfly.video.base`). The
 ``backend`` argument selects an implementation (``"auto"`` picks the first
-installed one); ``device`` lets GPU-capable readers keep frames on the device.
+installed one). All decoding runs on the CPU.
 """
 
 from __future__ import annotations
@@ -17,13 +17,8 @@ import numpy as np
 from jaxtyping import Float
 
 from .base import (
-    GPU_READ_ORDER,
-    canonical_device,
-    gpu_reader_candidates,
-    is_gpu_device,
-    mark_gpu_auto_failed,
-    remember_gpu_reader,
-    resolve_device,
+    available_image_readers,
+    select_image_reader,
     select_reader,
     select_writer,
     to_numpy,
@@ -32,7 +27,6 @@ from .base import (
 log = logging.getLogger("deeperfly.video")
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp")
-_JPEG_EXTS = (".jpg", ".jpeg")
 _VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")
 
 
@@ -46,31 +40,19 @@ def read_video(
     path: str | Path,
     *,
     backend: str = "auto",
-    device: str = "auto",
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
     indices: list[int] | None = None,
 ) -> Float[np.ndarray, "T H W 3"]:
-    """Decode a video file to ``(T, H, W, 3)`` RGB frames.
+    """Decode a video file to ``(T, H, W, 3)`` RGB frames (host NumPy).
 
     Parameters
     ----------
     backend
-        ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"imageio"`` | ``"decord"`` |
-        ``"video_reader_rs"`` | ``"torchcodec"`` | ``"dali"``. ``"auto"`` picks
-        the fastest installed backend for the resolved ``device`` (GPU order
-        leads with NVDEC; CPU order leads with in-process decoders -- pyav, the
-        core default -- and keeps imageio last).
-    device
-        ``"auto"`` (the default) decodes on the GPU when one is present *and* a
-        GPU backend works, else on the CPU -- and always returns host ``NumPy``
-        (the portable path). ``"cpu"`` forces a NumPy result. A CUDA device
-        (``"cuda"`` / ``"cuda:0"``) returns a GPU-resident ``torch.Tensor`` (ready
-        for :func:`~deeperfly.video.to_jax`, zero-copy): with ``backend="auto"``
-        it tries each installed GPU backend until one decodes and gracefully falls
-        back to a CPU NumPy read if none can; with a forced ``backend`` it is
-        strict and raises if that backend cannot decode on the GPU.
+        ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"video_reader_rs"`` |
+        ``"torchcodec"``. ``"auto"`` picks the fastest installed backend -- the
+        order leads with the in-process decoders (pyav, the core default).
     start, stop, step
         Sequential frame slice, like ``range(start, stop, step)``.
     indices
@@ -78,82 +60,18 @@ def read_video(
         Seek-capable backends fetch just these frames; others decode up to
         ``max(indices)`` and gather.
     """
-    # "auto" device is the portable convenience path: it may hardware-decode on
-    # the GPU but always hands back host NumPy. A CUDA device keeps the frames an
-    # on-device tensor for zero-copy handoff. "auto" *backend* is best-effort -- a
-    # GPU decode failure falls back to the CPU; a forced backend is strict.
-    want_host = device == "auto"
-    best_effort = backend == "auto"
-    device = resolve_device(device, backend)
-    read_kw = dict(start=start, stop=stop, step=step, indices=indices)
-
-    if is_gpu_device(device):
-        try:
-            reader, frames = _read_on_gpu(path, backend, device, read_kw)
-        except Exception as exc:
-            if not best_effort:
-                raise  # a forced GPU backend surfaces its failure
-            log.warning(
-                "GPU video decode unavailable (%s); using CPU decode for this and "
-                "subsequent reads",
-                exc,
-            )
-            mark_gpu_auto_failed()  # stop steering "auto" at the GPU this process
-            device = "cpu"
-            reader = select_reader(backend, device=device)
-            frames = reader.read(path, device=device, **read_kw)
-    else:
-        reader = select_reader(backend, device=device)
-        frames = reader.read(path, device=device, **read_kw)
-
-    out = frames if is_gpu_device(device) and not want_host else to_numpy(frames)
+    reader = select_reader(backend)
+    frames = reader.read(path, start=start, stop=stop, step=step, indices=indices)
+    out = to_numpy(frames)
     log.debug(  # per-read detail (one line per camera per window) -- only at -vv
-        "read video %s via '%s' backend -> %d frames %dx%d (device=%s)",
+        "read video %s via '%s' backend -> %d frames %dx%d",
         Path(path).name,
         reader.name,
         out.shape[0],
         out.shape[1],
         out.shape[2],
-        device,
     )
     return out
-
-
-def _read_on_gpu(path, backend, device, read_kw):
-    """Decode ``path`` on ``device`` (a GPU), returning ``(reader, frames)``.
-
-    A forced ``backend`` is validated and used strictly. ``backend="auto"`` walks
-    the installed GPU backends (:func:`~deeperfly.video.base.gpu_reader_candidates`)
-    until one actually decodes -- skipping builds whose CUDA support is missing --
-    then caches the winner so later reads go straight to it.
-    """
-    if backend != "auto":
-        reader = select_reader(backend, device=device)  # validates install + GPU
-        return reader, reader.read(path, device=device, **read_kw)
-
-    candidates = gpu_reader_candidates("auto")
-    if not candidates:
-        raise RuntimeError(
-            f"no GPU video backend installed; install one of {list(GPU_READ_ORDER)}"
-        )
-    errors = []
-    for cls in candidates:
-        try:
-            frames = cls.read(path, device=device, **read_kw)
-        except Exception as exc:
-            errors.append(f"{cls.name}: {exc}")
-            if len(candidates) > 1:
-                # Normal auto-probing (a backend's CUDA build may be missing); the
-                # next candidate may work, so keep this quiet unless -v / -vv.
-                log.info(
-                    "GPU decode via '%s' backend failed (%s); trying next",
-                    cls.name,
-                    exc,
-                )
-            continue
-        remember_gpu_reader(cls.name)  # probe once: stick with the winner
-        return cls, frames
-    raise RuntimeError("GPU video decode failed (" + "; ".join(errors) + ")")
 
 
 def list_image_files(pattern: str | Path) -> list[Path]:
@@ -189,92 +107,92 @@ def _workers(n: int, workers: int | None) -> int:
     return max(1, min(n, workers or (os.cpu_count() or 4)))
 
 
-def _read_images_cpu(files: list[Path], workers: int | None) -> np.ndarray:
-    """Parallel CPU decode -> ``(T, H, W, 3)`` uint8 NumPy."""
-    import imageio.v3 as iio
+def _read_images_cpu(
+    files: list[Path], workers: int | None, image_backend: str = "auto"
+) -> np.ndarray:
+    """Parallel CPU decode -> ``(T, H, W, 3)`` uint8 NumPy.
 
-    def one(f: Path) -> np.ndarray:
-        return _to_rgb_uint8(np.asarray(iio.imread(f)))
+    ``image_backend`` is ``"auto"`` | ``"opencv"`` | ``"imageio"`` (see
+    :func:`~deeperfly.video.base.select_image_reader`). OpenCV is the core default;
+    ``"auto"`` uses it and, only when it cannot decode a file, falls back to imageio
+    if the optional extra is installed (broad-format support, one install away).
+    """
+    name = select_image_reader(image_backend)
+    if name == "imageio":
+        import imageio.v3 as iio
+
+        def decode(f: Path) -> np.ndarray:
+            return _to_rgb_uint8(np.asarray(iio.imread(f)))
+    else:
+        import cv2
+
+        fallback = image_backend == "auto" and "imageio" in available_image_readers()
+
+        def decode(f: Path) -> np.ndarray:
+            img = cv2.imread(str(f), cv2.IMREAD_COLOR_RGB)  # (H, W, 3) RGB uint8
+            if img is not None:
+                return _to_rgb_uint8(img)
+            if fallback:
+                import imageio.v3 as iio
+
+                return _to_rgb_uint8(np.asarray(iio.imread(f)))
+            raise OSError(
+                f"failed to decode image: {f} (OpenCV returned None; install the "
+                "optional 'imageio' extra for broader format support)"
+            )
 
     with ThreadPoolExecutor(max_workers=_workers(len(files), workers)) as pool:
-        frames = list(pool.map(one, files))
+        frames = list(pool.map(decode, files))
     return np.stack(frames)
-
-
-def _read_images_gpu(files: list[Path], device: str, workers: int | None):
-    """GPU decode -> ``(T, H, W, 3)`` uint8 ``torch.Tensor`` on ``device``.
-
-    JPEGs go through nvJPEG (``torchvision.io.decode_jpeg`` on CUDA) when that
-    build is available; PNG/other formats (or a torchvision without GPU JPEG) are
-    decoded on the CPU in parallel and moved to the device. Either way the result
-    is a GPU tensor, ready for :func:`~deeperfly.video.to_jax` (zero-copy).
-    """
-    import torch
-    from torchvision.io import ImageReadMode, decode_jpeg, read_file
-
-    n_workers = _workers(len(files), workers)
-    if all(f.suffix.lower() in _JPEG_EXTS for f in files):
-        try:
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                raw = list(
-                    pool.map(lambda f: read_file(str(f)), files)
-                )  # parallel reads
-            decoded = decode_jpeg(raw, mode=ImageReadMode.RGB, device=device)  # nvJPEG
-            return torch.stack(decoded).permute(0, 2, 3, 1).contiguous()  # (T,H,W,3)
-        except RuntimeError:
-            pass  # no GPU JPEG support in this torchvision build -> CPU fallback
-    return torch.as_tensor(_read_images_cpu(files, workers), device=device)
 
 
 def read_images(
     pattern: str | Path,
     *,
-    device: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Read a directory (or glob) of images, sorted by name, into ``(T, H, W, 3)``.
 
     Decoding is parallel across threads (JPEG/PNG decoders release the GIL), so
     throughput scales with cores. Grayscale frames are broadcast to 3 channels and
-    alpha is dropped; the result is ``uint8`` RGB.
+    alpha is dropped; the result is host ``uint8`` RGB NumPy.
 
     Parameters
     ----------
-    device
-        ``"auto"`` (the default) and ``"cpu"`` return host NumPy via the parallel
-        CPU decode -- already fast, so "auto" does not move image decode to the
-        GPU. An explicit CUDA device (``"cuda"`` / ``"cuda:0"``) returns a
-        GPU-resident ``torch.Tensor`` (JPEGs via nvJPEG when available), ready for
-        :func:`~deeperfly.video.to_jax`.
     indices, start, stop, step
         Select a subset, mirroring :func:`read_video` (``indices`` wins).
     workers
         Decode thread count (default: number of CPUs, capped at the frame count).
+    image_backend
+        ``"auto"`` | ``"opencv"`` | ``"imageio"`` -- the still-image decoder. OpenCV
+        is the core default; ``"auto"`` uses it and falls back to imageio (optional
+        extra) only for files OpenCV cannot decode.
     """
     return _read_image_files(
         list_image_files(pattern),
-        device=device,
         indices=indices,
         start=start,
         stop=stop,
         step=step,
         workers=workers,
+        image_backend=image_backend,
     )
 
 
 def _read_image_files(
     files: list[Path],
     *,
-    device: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Decode an already-listed image sequence into ``(T, H, W, 3)`` uint8 RGB.
 
@@ -283,22 +201,17 @@ def _read_image_files(
     recording resolved up front, preserving their natural order). ``files`` is
     sliced by ``indices`` / ``start:stop:step`` exactly as :func:`read_images`.
     """
-    device = "cpu" if device == "auto" else canonical_device(device)  # "gpu" -> "cuda"
     files = _subset(list(files), indices, start, stop, step)
     if not files:
         raise ValueError("no frames selected (check indices / start:stop:step)")
-    out = (
-        _read_images_gpu(files, device, workers)
-        if is_gpu_device(device)
-        else _read_images_cpu(files, workers)
-    )
+    out = _read_images_cpu(files, workers, image_backend)
     log.debug(  # per-read detail (one line per camera per window) -- only at -vv
-        "read %d images (imageio) -> %d frames %dx%d (device=%s)",
+        "read %d images (%s) -> %d frames %dx%d",
         len(files),
+        select_image_reader(image_backend),
         out.shape[0],
         out.shape[1],
         out.shape[2],
-        device,
     )
     return out
 
@@ -307,27 +220,29 @@ def read_frames(
     source: str | Path | list[Path],
     *,
     backend: str = "auto",
-    device: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
     workers: int | None = None,
+    image_backend: str = "auto",
 ) -> Float[np.ndarray, "T H W 3"]:
     """Read frames from a video file **or** an image sequence into ``(T, H, W, 3)``.
 
     Dispatches on ``source``:
 
     - a single video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes to
-      :func:`read_video` (``backend`` selects the decoder);
-    - a directory or glob of images goes to :func:`read_images` (``workers`` sets
-      decode parallelism);
+      :func:`read_video` (``backend`` selects the video decoder);
+    - a directory or glob of images goes to :func:`read_images` (``image_backend``
+      selects the image decoder, ``workers`` sets decode parallelism);
     - an explicit list of footage files -- one video file, or an ordered image
       sequence the caller has already resolved (``deeperfly run`` resolves each
       camera's files up front, naturally sorted) -- is read in the given order
       without re-listing the directory.
 
-    All honor ``device`` (CPU NumPy or GPU tensor) and the same frame selection.
+    ``backend`` applies to video sources and ``image_backend`` to image sequences;
+    each is ignored by the other. All return host NumPy and honor the same frame
+    selection.
     """
     if isinstance(source, (list, tuple)):
         files = [Path(f) for f in source]
@@ -339,7 +254,6 @@ def read_frames(
             return read_video(
                 files[0],
                 backend=backend,
-                device=device,
                 start=start,
                 stop=stop,
                 step=step,
@@ -347,19 +261,18 @@ def read_frames(
             )
         return _read_image_files(
             files,
-            device=device,
             indices=indices,
             start=start,
             stop=stop,
             step=step,
             workers=workers,
+            image_backend=image_backend,
         )
     p = Path(source)
     if _is_video_file(p):
         return read_video(
             p,
             backend=backend,
-            device=device,
             start=start,
             stop=stop,
             step=step,
@@ -367,17 +280,20 @@ def read_frames(
         )
     return read_images(
         source,
-        device=device,
         indices=indices,
         start=start,
         stop=stop,
         step=step,
         workers=workers,
+        image_backend=image_backend,
     )
 
 
 def reader_name(
-    path: str | Path | list[Path], *, backend: str = "auto", device: str = "auto"
+    path: str | Path | list[Path],
+    *,
+    backend: str = "auto",
+    image_backend: str = "auto",
 ) -> str:
     """Name of the decoder :func:`read_frames` would actually use for ``path``.
 
@@ -386,31 +302,20 @@ def reader_name(
     applies to video *files*):
 
     - a video file (``.mp4`` / ``.avi`` ...) resolves through
-      :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / a GPU
-      backend, honoring ``backend`` and ``device``);
+      :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / ...,
+      honoring ``backend``);
     - an image directory, glob or explicit file list is decoded by
-      :func:`read_images`, which ignores the video backend: ``imageio`` on the CPU,
-      or ``nvjpeg`` (torchvision) for an all-JPEG set on a CUDA device (it falls
-      back to CPU ``imageio`` only if that torchvision build lacks GPU JPEG support).
+      :func:`read_images`, which ignores the video backend and resolves
+      ``image_backend`` via :func:`~deeperfly.video.base.select_image_reader`
+      (``opencv`` by default).
     """
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
         if files and _is_video_file(files[0]):
-            return select_reader(backend, device=device).name
+            return select_reader(backend).name
     elif _is_video_file(Path(path)):
-        return select_reader(backend, device=device).name
-    else:
-        files = list_image_files(path)
-    dev = "cpu" if device == "auto" else canonical_device(device)  # match read_images
-    if is_gpu_device(dev) and all(f.suffix.lower() in _JPEG_EXTS for f in files):
-        return "nvjpeg"
-    return "imageio"
-
-
-def _count_decord(p: Path) -> int:
-    import decord
-
-    return len(decord.VideoReader(str(p), ctx=decord.cpu(0)))
+        return select_reader(backend).name
+    return select_image_reader(image_backend)
 
 
 def _count_opencv(p: Path) -> int:
@@ -430,27 +335,15 @@ def _count_pyav(p: Path) -> int:
         return int(container.streams.video[0].frames)
 
 
-def _count_imageio(p: Path) -> int:
-    # Optional fallback (imageio + bundled ffmpeg); reached only if the core pyav
-    # probe and the optional decord/opencv probes above all miss.
-    # count_frames_and_secs counts packets via `ffmpeg -c copy` (no pixel decode),
-    # so it is exact and fast (~0.1 s here).
-    import imageio_ffmpeg
-
-    n, _secs = imageio_ffmpeg.count_frames_and_secs(str(p))
-    return int(n)
-
-
 def count_frames(path: str | Path | list[Path]) -> int | None:
     """Frame count of a video file or image sequence -- ``None`` if unknown.
 
     Image sequences count their files exactly; videos read it from container
-    metadata (PyAV, the core default, always installed -- or decord / OpenCV when
-    present) or, failing those, ffmpeg's packet count (the optional imageio
-    backend) -- all cheap, with no full pixel decode. This is a **best-effort
-    hint** for a progress bar's total: callers
-    stream frames and detect end-of-file from the decoder itself, so an off-by-a-few
-    count (rare, container-dependent) or a ``None`` never affects correctness.
+    metadata (PyAV, the core default, always installed -- or OpenCV when present)
+    -- both cheap, with no full pixel decode. This is a **best-effort hint** for a
+    progress bar's total: callers stream frames and detect end-of-file from the
+    decoder itself, so an off-by-a-few count (rare, container-dependent) or a
+    ``None`` never affects correctness.
 
     Accepts the same sources as :func:`read_frames`, including an explicit list of
     footage files (one video, or an image sequence counted by its length).
@@ -468,7 +361,7 @@ def count_frames(path: str | Path | list[Path]) -> int | None:
             return len(list_image_files(path))
         except FileNotFoundError:
             return None
-    for probe in (_count_decord, _count_opencv, _count_pyav, _count_imageio):
+    for probe in (_count_pyav, _count_opencv):
         try:
             n = probe(p)
         except Exception:  # backend missing or metadata absent -> try the next
@@ -538,8 +431,8 @@ def write_mp4(
 
     ``frames`` may be NumPy or a GPU tensor; non-``uint8`` input is clipped to
     ``[0, 255]``. ``backend`` is ``"auto"`` (pyav, the core default) | ``"pyav"``
-    | ``"imageio"`` | ``"opencv"``; ``codec`` overrides the backend default
-    (libx264 for pyav/imageio, the ``mp4v`` fourcc for opencv).
+    | ``"opencv"``; ``codec`` overrides the backend default (libx264 for pyav, the
+    ``mp4v`` fourcc for opencv).
     """
     writer = select_writer(backend)
     frames = to_numpy(frames)

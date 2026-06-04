@@ -1,4 +1,4 @@
-"""Multi-view geometry primitives (JAX, pinned to the CPU).
+"""Multi-view geometry primitives (CPU-only JAX).
 
 Conventions:
 
@@ -12,18 +12,14 @@ Conventions:
   ordering ``[k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4]``.
 - A projection matrix ``pmat`` is the 3x4 product ``K @ [R | t]``.
 
-Geometry functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``,
-``rmat``, ...) first and any camera parameters after, in the canonical order
-``rvecs, tvecs, intrs, dists``. All functions are JIT- and grad-friendly.
+Functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``, ...) first
+and camera parameters after, in the canonical order ``rvecs, tvecs, intrs,
+dists``. All are JIT- and grad-friendly.
 
-The batched public functions are :func:`cpu_jit`-wrapped, so they run on the CPU
-and return CPU-resident arrays regardless of the process-wide default device --
-the tiny camera-algebra arrays don't benefit from a GPU, and pinning them to the
-CPU keeps a host-side geometry user clear of JAX's GPU VRAM preallocation (see
-:mod:`deeperfly._jax_cpu`). The ``*_one`` variants operate on a single
-observation (no leading batch axes) and are designed to be composed with
-:func:`jax.vmap` and :func:`jax.jacfwd` for bundle adjustment; the batched
-public functions are themselves thin :func:`jax.vmap` wrappers around them.
+The batched public functions are :func:`jax.jit`-wrapped thin :func:`jax.vmap`
+wrappers around the ``*_one`` single-observation variants, which compose with
+:func:`jax.vmap` / :func:`jax.jacfwd` for bundle adjustment. deeperfly installs
+only CPU JAX -- the tiny arrays don't benefit from a GPU.
 """
 
 from __future__ import annotations
@@ -32,7 +28,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from ._jax_cpu import cpu_jit
+# The geometry / BA math needs float64 to stay accurate (scipy's least-squares
+# loop is double too, and the Taylor thresholds below are tuned for it). x64 must
+# be enabled before the first JAX array exists; every JAX path imports geometry,
+# so enabling it here covers the whole package.
+jax.config.update("jax_enable_x64", True)
 
 # Below this squared rotation angle, sin/cos are evaluated via Taylor series
 # to avoid catastrophic cancellation in ``1 - cos theta``.
@@ -196,7 +196,7 @@ def project_full_one(
 # -- batched / composed functions -------------------------------------------
 
 
-@cpu_jit
+@jax.jit
 def intr_to_kmat(
     intr: Float[Array, "*batch P"],
 ) -> Float[Array, "*batch 3 3"]:
@@ -221,7 +221,7 @@ def intr_to_kmat(
     return kmat
 
 
-@cpu_jit
+@jax.jit
 def rvec_to_rmat(
     rvec: Float[Array, "*batch 3"],
 ) -> Float[Array, "*batch 3 3"]:
@@ -250,7 +250,7 @@ def rvec_to_rmat(
     return out.reshape(*rvec.shape[:-1], 3, 3)
 
 
-@cpu_jit
+@jax.jit
 def rmat_to_rvec(
     rmat: Float[Array, "*batch 3 3"],
 ) -> Float[Array, "*batch 3"]:
@@ -276,7 +276,7 @@ def rmat_to_rvec(
     return out.reshape(*rmat.shape[:-2], 3)
 
 
-@cpu_jit
+@jax.jit
 def project_pmat(
     pts3d: Float[Array, "*pts 3"],
     pmats: Float[Array, "*cams 3 4"],
@@ -303,7 +303,7 @@ def project_pmat(
     return pts2d.reshape(output_shape)
 
 
-@cpu_jit
+@jax.jit
 def triangulate_dlt(
     pts2d: Float[Array, "V *pts 2"],
     pmats: Float[Array, "V 3 4"],
@@ -341,7 +341,7 @@ def triangulate_dlt(
     return jnp.where((valid.sum(axis=-1) < 2)[..., None], jnp.nan, pts3d)
 
 
-@cpu_jit
+@jax.jit
 def distort(
     pts2d: Float[Array, "V *pts 2"],
     dists: Float[Array, "V K"],
@@ -384,7 +384,7 @@ def distort(
     return out.reshape(pts2d.shape)
 
 
-@cpu_jit
+@jax.jit
 def project_full(
     pts3d: Float[Array, "*pts 3"],
     rvecs: Float[Array, "V 3"],

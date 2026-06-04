@@ -13,7 +13,6 @@ from ..base import (
     WriterBackend,
     register_reader,
     register_writer,
-    require_cpu,
 )
 
 
@@ -21,12 +20,10 @@ from ..base import (
 class OpenCVReader(ReaderBackend):
     name = "opencv"
     requires = ("cv2",)
-    supports_gpu = False
     supports_seek = True
 
     @staticmethod
-    def _read_sequential(path, device, start, stop, step):
-        require_cpu(device, "opencv")
+    def _read_sequential(path, start, stop, step):
         import cv2
 
         cap = cv2.VideoCapture(str(path))
@@ -51,8 +48,7 @@ class OpenCVReader(ReaderBackend):
         return np.stack(out)
 
     @classmethod
-    def _read_indices(cls, path, device, indices):
-        require_cpu(device, "opencv")
+    def _read_indices(cls, path, indices):
         import cv2
 
         cap = cv2.VideoCapture(str(path))
