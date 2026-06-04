@@ -14,9 +14,9 @@ Readers expose two access patterns:
   decoding up to ``max(indices)`` once and gathering, which is always correct.
 
 Frame contract: ``(T, H, W, 3)`` ``uint8`` RGB. CPU backends return NumPy;
-GPU backends (``torchcodec``, ``dali``) keep frames as a framework tensor on the
-requested device. :func:`to_numpy` collapses either to NumPy on the host;
-:func:`to_torch` hands GPU frames to torch zero-copy.
+the GPU backend (``torchcodec``) keeps frames as a torch tensor on the requested
+device. :func:`to_numpy` collapses either to NumPy on the host; :func:`to_torch`
+hands GPU frames to torch zero-copy.
 """
 
 from __future__ import annotations
@@ -35,18 +35,16 @@ _WRITERS: dict[str, type["WriterBackend"]] = {}
 # win; "auto" walks the list for the device and picks the first *installed*
 # backend. CPU order leads with pyav, the in-process core default (it links FFmpeg
 # directly -- no subprocess), then the other in-process decoders (opencv /
-# torchcodec / video_reader_rs). GPU order leads with torchcodec -- the most robust
-# NVDEC path and the one that feeds torch zero-copy (see ``to_torch``); both listed
-# GPU decoders (torchcodec / DALI) are frame-accurate.
+# torchcodec / video_reader_rs). torchcodec is the sole GPU backend: it does
+# frame-accurate NVDEC decode and feeds torch zero-copy (see ``to_torch``).
 CPU_READ_ORDER = (
     "pyav",
     "opencv",
     "torchcodec",
     "video_reader_rs",
 )
-# torchcodec (fastest, when its CUDA build + NPP are present) -> DALI (robust
-# NVDEC, needs only the driver).
-GPU_READ_ORDER = ("torchcodec", "dali")
+# torchcodec is the only GPU decoder (NVDEC when its CUDA build + NPP are present).
+GPU_READ_ORDER = ("torchcodec",)
 # Writers prefer pyav, the core default: it encodes H.264 (libx264) in-process
 # (links FFmpeg directly -- no subprocess). Fall back to opencv (mp4v fourcc, last
 # resort) when pyav is absent.
@@ -308,25 +306,21 @@ def select_writer(backend: str = "auto") -> type[WriterBackend]:
 
 
 def to_numpy(frames) -> np.ndarray:
-    """Collapse backend frames (NumPy / torch / DALI tensor) to a NumPy array."""
+    """Collapse backend frames (NumPy / torch tensor) to a NumPy array."""
     if isinstance(frames, np.ndarray):
         return frames
     if hasattr(frames, "detach"):  # torch.Tensor
         return frames.detach().cpu().numpy()
-    if hasattr(frames, "as_cpu"):  # DALI TensorList(GPU)
-        frames = frames.as_cpu()
-    if hasattr(frames, "as_array"):  # DALI TensorList
-        return np.asarray(frames.as_array())
     return np.asarray(frames)
 
 
 def to_torch(frames):
     """Hand backend frames to torch, zero-copy where possible.
 
-    GPU tensors (e.g. from the ``torchcodec`` or ``dali`` readers) stay on the
-    device: a ``torch.Tensor`` passes through and any other DLPack-capable tensor
-    is wrapped via the DLPack protocol, so torch reads the *same* device buffer
-    with no host round-trip -- the fast path for feeding the detector::
+    GPU tensors (e.g. from the ``torchcodec`` reader) stay on the device: a
+    ``torch.Tensor`` passes through and any other DLPack-capable tensor is wrapped
+    via the DLPack protocol, so torch reads the *same* device buffer with no host
+    round-trip -- the fast path for feeding the detector::
 
         frames = video.read_video("clip.mp4", backend="torchcodec", device="cuda")
         x = video.to_torch(frames)        # torch.Tensor on the GPU, zero-copy
@@ -338,7 +332,7 @@ def to_torch(frames):
 
     if isinstance(frames, torch.Tensor):
         return frames
-    if hasattr(frames, "__dlpack__"):  # DLPack-capable array (e.g. DALI tensor)
+    if hasattr(frames, "__dlpack__"):  # DLPack-capable on-device array
         return torch.from_dlpack(frames)
     return torch.from_numpy(to_numpy(frames))
 

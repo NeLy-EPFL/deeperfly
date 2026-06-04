@@ -128,15 +128,20 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 [pipeline.pose2d]
 # frame decoder backend. "auto" = fastest installed *frame-accurate* decoder for
 # `decode_device` (CPU: pyav -- the in-process default -- then opencv/torchcodec/
-# video_reader_rs; GPU/NVDEC: torchcodec then dali). Force one with e.g.
-# "dali" | "torchcodec" | "video_reader_rs" | "pyav" | "opencv".
+# video_reader_rs; GPU/NVDEC: torchcodec). Force one with e.g.
+# "torchcodec" | "video_reader_rs" | "pyav" | "opencv".
 video_backend = "auto"
 # Where to decode. "cpu" (default) decodes on the CPU and uploads each window to
 # the GPU in one shot -- within a few percent of on-GPU NVDEC, since the detector
 # (not decode) is the bottleneck. "cuda" (or "auto") decodes on the GPU/NVDEC and
-# feeds the network zero-copy; worth it only on the fastest GPUs, needs a CUDA
-# video backend (the `cuda`/`dali` extras), and falls back to the CPU otherwise.
+# feeds the network zero-copy; worth it only on the fastest GPUs, needs the `cuda`
+# extra (torchcodec on CUDA), and falls back to the CPU otherwise.
 decode_device = "cpu"
+# Detector forward precision. "float32" (default) is the reference. "float16" runs
+# the forward under CUDA autocast -- ~1.5-2x faster on the GPU with negligible
+# keypoint drift (pose comes from arg-max + sub-pixel refinement of the heatmaps).
+# Ignored on CPU/MPS, which stay float32.
+precision = "float32"
 # Frames decoded + detected at a time, per camera (streaming), so long videos run
 # in constant memory. A *memory* knob, not a speed one (detection is the
 # bottleneck): lower it for high-res / many cameras / small GPUs.

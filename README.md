@@ -17,18 +17,28 @@ deeperfly is both a command-line tool and a Python library. Install the CLI with
 [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install deeperfly[cuda]
+uv tool install deeperfly[cuda] --torch-backend=auto      # NVIDIA GPU
+uv tool install deeperfly --torch-backend=auto            # CPU-only box
 ```
 
-The 2D detector (PyTorch) uses the GPU automatically on NVIDIA (CUDA) and Apple
-Silicon (Metal/MPS) with no extra. The `cuda` extra adds the fastest GPU/NVDEC
-video decoder (torchcodec-on-CUDA) and is recommended on NVIDIA systems; omit
-`[cuda]` for CPU-only use or to decode video on the CPU.
+`--torch-backend=auto` lets uv pick the PyTorch wheels (torch **and** the
+`torchcodec` video decoder) that match this machine: the CUDA build matching the
+installed driver on an NVIDIA GPU, or the lean CPU-only wheels where there's no
+GPU (so a CPU box skips the multi-gigabyte CUDA download). The 2D detector
+(PyTorch) then uses the GPU automatically on NVIDIA (CUDA) and Apple Silicon
+(Metal/MPS).
 
-To use deeperfly as a library, add it to your project instead:
+The `cuda` extra adds the fastest GPU/NVDEC video decoder (`torchcodec`-on-CUDA);
+it needs `--torch-backend=auto` to fetch the CUDA build. Omit both the extra and
+the flag for plain CPU decode — decode is not the bottleneck (the detector is), so
+CPU decode is within a few percent end to end.
+
+To use deeperfly as a library, add it to your project instead. `uv add` has no
+`--torch-backend` flag, so set it for the environment (or add
+`[tool.uv]`\ `torch-backend = "auto"` to your `pyproject.toml`):
 
 ```bash
-uv add deeperfly[cuda]
+UV_TORCH_BACKEND=auto uv add deeperfly[cuda]   # NVIDIA GPU (or drop [cuda] on CPU)
 ```
 
 ## Checking your install
@@ -59,7 +69,7 @@ video backends
   read              pyav, opencv, torchcodec
   GPU decoders      torchcodec
   write             pyav, opencv
-  not installed     dali, video_reader_rs
+  not installed     video_reader_rs
 
 weights
   cache dir         /home/you/.cache/deeperfly/weights

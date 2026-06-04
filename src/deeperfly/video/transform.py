@@ -61,7 +61,7 @@ class FrameTransform:
             if self.rot90:
                 frames = frames.rot90(self.rot90, dims=(-3, -2))
             return frames
-        arr = to_numpy(frames)  # NumPy already; DALI -> host (rare path)
+        arr = to_numpy(frames)  # NumPy already (the CPU-decode path)
         if self.fliplr:
             arr = np.flip(arr, axis=-2)
         if self.flipud:

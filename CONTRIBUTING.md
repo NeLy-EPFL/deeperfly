@@ -27,15 +27,21 @@ Layer GPU acceleration and faster video backends on top as needed (see
 [docs/video.md](docs/video.md) for the backends):
 
 ```bash
-uv sync --group test --extra cuda          # NVIDIA CUDA (Linux x86-64)
-uv sync --group test --extra mps           # Apple Metal for the JAX detector
+uv sync --group test --extra cuda          # NVIDIA CUDA video-decode deps (Linux x86-64)
 uv sync --group test --extra torchcodec    # one optional video backend (repeat --extra for more)
 ```
 
 PyTorch, OpenCV and PyAV are core dependencies, so no extra is needed for the
-PyTorch detector backend or the default OpenCV/PyAV video stack. The other
-cross-platform video backends are each their own extra (`video-reader-rs`,
-`torchcodec`); add the ones you want to exercise.
+PyTorch detector backend (it uses CUDA / Apple Metal automatically) or the default
+OpenCV/PyAV video stack. The other cross-platform video backends are each their own
+extra (`video-reader-rs`, `torchcodec`); add the ones you want to exercise.
+
+`uv sync` installs the CPU `torchcodec` wheel from the lock. GPU/NVDEC decode needs
+the CUDA build, which uv selects only at install time via `--torch-backend` — fetch
+it into the synced env with `uv pip install --torch-backend=auto torchcodec` (see
+the [README](README.md) for the mechanism). Plain CPU decode needs nothing extra
+and is within a few percent end to end, since the detector — not decode — is the
+bottleneck.
 
 ## Running the tests
 
@@ -43,9 +49,8 @@ cross-platform video backends are each their own extra (`video-reader-rs`,
 uv run --group test pytest
 ```
 
-The suite includes PyTorch-equivalence tests for the JAX detector and OpenCV
-cross-checks for the geometry. Some tests download and convert the detector
-weights on first run.
+The suite covers the PyTorch detector and OpenCV cross-checks for the geometry.
+Some tests download the detector weights on first run.
 
 ## Linting and formatting
 

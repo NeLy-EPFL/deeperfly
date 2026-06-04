@@ -40,6 +40,18 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     return np.asarray(backend.predict_heatmaps(model, inputs))
 
 
+def set_precision(model, precision: str = "float32") -> None:
+    """Set the detector forward precision: ``"float32"`` (default) or ``"float16"``.
+
+    ``"float16"`` runs the forward under CUDA autocast (faster, negligible keypoint
+    drift); it is a no-op on CPU/MPS. Stored on the model, so the next
+    :func:`predict_heatmaps` honors it.
+    """
+    from . import torch as backend
+
+    backend.set_precision(model, precision)
+
+
 def detector_device(model) -> str:
     """Device the detector's parameters live on (e.g. ``"cuda:0"``, ``"cpu"``).
 
@@ -138,6 +150,7 @@ __all__ = [
     "load_detector",
     "predict_heatmaps",
     "detector_device",
+    "set_precision",
     "infer_num_stacks",
     "gpu_memory_bytes",
     "auto_batch_size",

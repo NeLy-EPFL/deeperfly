@@ -216,12 +216,54 @@ def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     return fn
 
 
+#: Detector forward precision -> autocast dtype (``None`` = run in float32).
+_PRECISIONS = {"float32": None, "float16": torch.float16}
+
+
+def set_precision(model: HourglassNet, precision: str = "float32") -> None:
+    """Record the forward precision ``predict_heatmaps`` should run the model in.
+
+    ``"float32"`` (default, the reference) or ``"float16"`` (CUDA autocast). Stored
+    on the model so the forward picks it up without threading it through every call
+    -- the same model-keyed pattern as the ``torch.compile`` cache and
+    :func:`~deeperfly.pose2d.backends.detector_device`.
+    """
+    precision = (precision or "float32").lower()
+    if precision not in _PRECISIONS:
+        raise ValueError(
+            f"unknown detector precision {precision!r}; use 'float32' or 'float16'"
+        )
+    # A real detector (nn.Module) carries a __dict__; bare test stubs don't and
+    # never run the real forward, so there's nothing to configure on them (mirrors
+    # how detector_device tolerates a parameterless stub).
+    if hasattr(model, "__dict__"):
+        model._deeperfly_precision = precision
+
+
+def _autocast_dtype(model: HourglassNet, dev: "torch.device"):
+    """Autocast dtype for the forward, or ``None`` to run in float32.
+
+    Honors the precision set by :func:`set_precision`, but only on CUDA: fp16
+    autocast is where the win is, and CPU/MPS stay on the float32 reference path.
+    """
+    if dev.type != "cuda":
+        return None
+    return _PRECISIONS.get(getattr(model, "_deeperfly_precision", "float32"))
+
+
 @torch.inference_mode()
 def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
     """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
-    out = _forward_fn(model, dev, x.shape[0])(x)[-1]
+    fn = _forward_fn(model, dev, x.shape[0])
+    dtype = _autocast_dtype(model, dev)
+    if dtype is not None:  # fp16 autocast on CUDA; conv runs half, reductions float32
+        with torch.autocast(dev.type, dtype=dtype):
+            out = fn(x)[-1]
+    else:
+        out = fn(x)[-1]
     if dev.type == "cuda":
         torch.cuda.synchronize()
-    return out.cpu().numpy()
+    # Upcast so the heatmap contract stays float32 even under fp16 autocast.
+    return out.float().cpu().numpy()

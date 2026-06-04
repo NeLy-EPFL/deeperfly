@@ -8,7 +8,13 @@ uses CUDA / Metal (MPS) automatically when a GPU is present.
 
 from __future__ import annotations
 
-from .model import Bottleneck, HourglassNet, device, predict_heatmaps
+from .model import (
+    Bottleneck,
+    HourglassNet,
+    device,
+    predict_heatmaps,
+    set_precision,
+)
 from .weights import load_model, state_dict_from_torch_checkpoint
 
 __all__ = [
@@ -16,6 +22,7 @@ __all__ = [
     "Bottleneck",
     "device",
     "predict_heatmaps",
+    "set_precision",
     "load_model",
     "state_dict_from_torch_checkpoint",
 ]

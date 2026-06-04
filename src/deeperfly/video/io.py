@@ -58,9 +58,9 @@ def read_video(
     ----------
     backend
         ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"video_reader_rs"`` |
-        ``"torchcodec"`` | ``"dali"``. ``"auto"`` picks the fastest installed
-        backend for the resolved ``device`` (GPU order leads with NVDEC; CPU order
-        leads with in-process decoders -- pyav, the core default).
+        ``"torchcodec"``. ``"auto"`` picks the fastest installed backend for the
+        resolved ``device`` (GPU uses torchcodec/NVDEC; CPU order leads with
+        in-process decoders -- pyav, the core default).
     device
         ``"auto"`` (the default) decodes on the GPU when one is present *and* a
         GPU backend works, else on the CPU -- and always returns host ``NumPy``

@@ -803,7 +803,15 @@ def _stage_pose2d(
     det = _pose2d_config(config)
     log.info("loading detector (checkpoint: %s)", det.get("checkpoint") or "cached")
     model = _load_detector(det.get("checkpoint"))
-    log.info("detector ready on device %s", backends.detector_device(model))
+    precision = det.get("precision", "float32")
+    backends.set_precision(
+        model, precision
+    )  # float16 -> CUDA autocast (no-op on CPU/MPS)
+    log.info(
+        "detector ready on device %s (precision: %s)",
+        backends.detector_device(model),
+        precision,
+    )
 
     k = config.get("pipeline", {}).get("pictorial_structures", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)

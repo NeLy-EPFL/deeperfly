@@ -1,10 +1,9 @@
 """Tests for the pluggable video read/write backends.
 
 CPU backends that are installed (opencv, pyav, video_reader_rs) are exercised for
-real; GPU backends (torchcodec, dali) are only checked for
-registration/availability since they need CUDA. Encoded video is lossy, so
-round-trips assert on frame count / shape / dtype and coarse color, not pixel
-values.
+real; the GPU backend (torchcodec) is only checked for registration/availability
+since it needs CUDA. Encoded video is lossy, so round-trips assert on frame count /
+shape / dtype and coarse color, not pixel values.
 """
 
 from __future__ import annotations
@@ -96,48 +95,35 @@ def test_builtin_backends_registered():
         "pyav",
         "video_reader_rs",
         "torchcodec",
-        "dali",
     }
     assert set(video.list_write_backends()) >= {"opencv", "pyav"}
 
 
 def test_backend_capability_flags():
     assert base._READERS["torchcodec"].supports_gpu
-    assert base._READERS["dali"].supports_gpu
-    # seek-capable backends (dali decodes only the requested frame range)
-    for name in ("opencv", "pyav", "video_reader_rs", "torchcodec", "dali"):
+    for name in ("opencv", "pyav", "video_reader_rs", "torchcodec"):
         assert base._READERS[name].supports_seek, name
 
 
-# A frame-accurate CPU decoder to validate DALI against. pyav wraps ffmpeg, like
-# NVDEC, so they agree bar a YUV->RGB rounding bit.
-_DALI_REF_BACKENDS = ("pyav",)
-
-
 @pytest.mark.skipif(
-    "dali" not in video.available_read_backends()
-    or not base.cuda_available()
-    or not any(b in video.available_read_backends() for b in _DALI_REF_BACKENDS),
-    reason="needs NVIDIA DALI, a CUDA GPU and a frame-accurate CPU reference decoder",
+    "torchcodec" not in video.available_read_backends() or not base.cuda_available(),
+    reason="needs torchcodec and a CUDA GPU",
 )
-def test_dali_windowed_decode_is_frame_accurate(tmp_path):
-    # DALI must decode *only* the requested window (bounded memory) and match a
-    # reference FFmpeg decoder frame-for-frame (bar a YUV->RGB rounding bit).
-    # Random access and chunk boundaries must agree too.
-    ref_backend = next(
-        b for b in _DALI_REF_BACKENDS if b in video.available_read_backends()
-    )
+def test_torchcodec_windowed_decode_is_frame_accurate(tmp_path):
+    # The GPU decoder must decode *only* the requested window (bounded memory) and
+    # match a reference FFmpeg decoder (pyav) frame-for-frame, bar a YUV->RGB
+    # rounding bit. Random access and chunk boundaries must agree too.
     frames = _indexed_clip(12, 64, 64)  # NVDEC needs a minimum frame size
     path = _write_clip(tmp_path, frames)
-    ref = video.read_video(path, backend=ref_backend, device="cpu").astype(np.int16)
+    ref = video.read_video(path, backend="pyav", device="cpu").astype(np.int16)
     win = video.to_numpy(
-        video.read_video(path, backend="dali", device="cuda", start=4, stop=9)
+        video.read_video(path, backend="torchcodec", device="cuda", start=4, stop=9)
     )
     assert win.shape[0] == 5  # decoded only the window, not all 12 frames
     assert np.abs(win.astype(np.int16) - ref[4:9]).max() <= 4  # frame-accurate
     idx = [0, 7, 3]
     pick = video.to_numpy(
-        video.read_video(path, backend="dali", device="cuda", indices=idx)
+        video.read_video(path, backend="torchcodec", device="cuda", indices=idx)
     )
     assert np.abs(pick.astype(np.int16) - ref[idx]).max() <= 4  # seek-accurate
 
@@ -232,47 +218,33 @@ def test_auto_device_returns_host_numpy_even_for_gpu_decode(tmp_path, monkeypatc
 
 
 def test_gpu_reader_candidates_order_forced_and_cache(monkeypatch):
-    for cls in (base._READERS["torchcodec"], base._READERS["dali"]):
-        monkeypatch.setattr(cls, "is_available", lambda: True)
-    names = [c.name for c in base.gpu_reader_candidates("auto")]
-    assert names[:2] == ["torchcodec", "dali"]  # GPU order, torchcodec then dali
+    monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
+    # torchcodec is the sole GPU backend.
+    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["torchcodec"]
     # A forced backend yields only itself.
-    assert [c.name for c in base.gpu_reader_candidates("dali")] == ["dali"]
-    base.remember_gpu_reader("dali")  # cached winner short-circuits "auto"
-    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["dali"]
+    assert [c.name for c in base.gpu_reader_candidates("torchcodec")] == ["torchcodec"]
+    base.remember_gpu_reader("torchcodec")  # cached winner short-circuits "auto"
+    assert [c.name for c in base.gpu_reader_candidates("auto")] == ["torchcodec"]
 
 
-def test_gpu_auto_skips_broken_backend_and_caches_winner(tmp_path, monkeypatch, caplog):
-    # torchcodec is "installed" but its CUDA decode fails; the auto path must skip
-    # it, land on a working GPU backend, return the on-device tensor, and remember
-    # the winner so the next read does not retry the broken one.
+def test_gpu_auto_decode_caches_winner(tmp_path, monkeypatch):
+    # A successful auto GPU decode returns the on-device tensor and remembers the
+    # winning backend, so later reads go straight to it without re-probing.
     torch = pytest.importorskip("torch")
     path = _write_clip(tmp_path, _gradient_clip(5, 32, 32))
     fake_gpu = torch.zeros((5, 32, 32, 3), dtype=torch.uint8)
 
-    for cls in _installed_gpu_readers():  # only torchcodec + a stand-in are usable
-        monkeypatch.setattr(cls, "is_available", lambda: False)
+    monkeypatch.setattr(base, "cuda_available", lambda: True)
     monkeypatch.setattr(base._READERS["torchcodec"], "is_available", lambda: True)
-    monkeypatch.setattr(base._READERS["dali"], "is_available", lambda: True)
     monkeypatch.setattr(
-        base._READERS["torchcodec"], "_read_sequential", staticmethod(_boom)
-    )
-    monkeypatch.setattr(
-        base._READERS["dali"],
+        base._READERS["torchcodec"],
         "_read_sequential",
         staticmethod(lambda *a, **k: fake_gpu),
     )
 
-    with caplog.at_level("INFO", logger="deeperfly.video"):
-        out = video.read_video(path, backend="auto", device="cuda", stop=5)
+    out = video.read_video(path, backend="auto", device="cuda", stop=5)
     assert out is fake_gpu  # device tensor handed back (no host round-trip)
-    assert base._gpu_auto_reader == "dali"  # winner cached
-    assert any("torchcodec" in r.message for r in caplog.records)
-
-    caplog.clear()
-    out2 = video.read_video(path, backend="auto", device="cuda", stop=5)
-    assert out2 is fake_gpu
-    assert not any("torchcodec" in r.message for r in caplog.records)  # cache used
+    assert base._gpu_auto_reader == "torchcodec"  # winner cached
 
 
 def test_auto_falls_back_to_cpu_when_all_gpu_backends_fail(

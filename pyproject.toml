@@ -64,10 +64,12 @@ deeperfly = "deeperfly.cli:main"
 # torchcodec-on-CUDA, plus GPU colour conversion. The detector itself runs on the
 # GPU through torch's own CUDA wheel, so no JAX-CUDA is needed here. CUDA wheels
 # exist for Linux x86-64 only, so the markers make this a clean no-op elsewhere.
-# Install with `deeperfly[cuda]`. (torch's PyPI wheel already bundles CUDA 13;
-# [tool.uv.sources] routes torchcodec to the PyTorch CUDA index, and nvidia-npp
-# gives it GPU colour conversion -- its libs are dlopen'd, so no LD_LIBRARY_PATH
-# is needed.)
+# Install with `deeperfly[cuda] --torch-backend=auto`: uv then picks the CUDA build
+# of torch *and* torchcodec matching the machine's driver (see the README). Without
+# that flag torchcodec resolves to its CPU-only PyPI wheel, so GPU/NVDEC decode is
+# off and decoding falls back to the CPU (the detector still uses the GPU).
+# nvidia-npp gives torchcodec GPU colour conversion -- its libs are dlopen'd, so no
+# LD_LIBRARY_PATH is needed.
 cuda = [
     "torchcodec>=0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "nvidia-npp>=13; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -79,9 +81,6 @@ cuda = [
 # pyav/opencv/torchcodec cover the same ground).
 video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
 torchcodec = ["torchcodec>=0.1"]      # decodes (optionally on GPU/NVDEC) into torch tensors
-# NVIDIA DALI: frame-accurate GPU (NVDEC) decode. The wheel is CUDA-version
-# specific; this pins the CUDA 13 build to match `cuda`. Linux x86-64 only.
-dali = ["nvidia-dali-cuda130>=2.1; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [build-system]
 requires = ["uv_build>=0.11.16,<0.12.0"]
@@ -96,20 +95,10 @@ test = [
     "pytest>=9.0.3",
 ]
 
-# CUDA-13 PyTorch index, consulted only for packages routed here by
-# [tool.uv.sources] below (never for anything else).
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
-# Route torchcodec to the CUDA-13 PyTorch index on Linux x86-64 (its PyPI wheel is
-# CPU-only); elsewhere it stays on PyPI. Platform-only marker, so the lock keeps
-# both a +cu130 stanza (Linux x86-64) and a PyPI stanza (macOS/Windows/ARM). torch
-# itself stays on PyPI -- its wheel already bundles CUDA 13, so the cu130 torchcodec
-# is ABI-compatible.
-[tool.uv.sources]
-torchcodec = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+# No PyTorch CUDA index / torchcodec source pin: GPU wheels are selected at install
+# time with uv's `--torch-backend=auto` (or `UV_TORCH_BACKEND=auto`), which picks
+# the CUDA build of torch *and* torchcodec matching the machine's driver -- on a
+# CPU-only box it picks the lean CPU wheels instead. See the README install notes.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

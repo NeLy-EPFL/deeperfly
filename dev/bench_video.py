@@ -2,8 +2,8 @@
 
 Finding (RTX 4090, 7-cam 480x960): **inference is the bottleneck** -- the 8-stack
 detector runs ~28 multi-camera frames/s and is compute-bound (batching frames does
-not help), while every decoder is far faster (torchcodec-CUDA ~2400 fps, DALI
-~400). So decode backend and CPU parallelism barely move total throughput, and
+not help), while every decoder is far faster (torchcodec-CUDA ~2400 fps). So decode
+backend and CPU parallelism barely move total throughput, and
 ``[detector] chunk_frames`` is a *memory* knob, not a speed one -- keep it small to
 bound VRAM.
 
@@ -47,24 +47,6 @@ def bench_decode(path: str, n: int) -> None:
             read(s, min(s + chunk, n))
             torch.cuda.synchronize()
 
-    def dali(chunk, threads):
-        from nvidia.dali import fn, pipeline_def
-
-        def read(s, e):
-            @pipeline_def(batch_size=1, num_threads=threads, device_id=0)
-            def pl():
-                data, _ = fn.readers.file(files=[path])
-                return fn.decoders.video(
-                    data, device="mixed", pad_mode="none", start_frame=s, end_frame=e
-                )
-
-            p = pl()
-            p.build()
-            (o,) = p.run()
-            return torch.from_dlpack(o[0])
-
-        return n / _timeit(lambda: run_windows(read, chunk))
-
     def torchcodec(chunk, threads):
         from torchcodec.decoders import VideoDecoder
 
@@ -79,10 +61,7 @@ def bench_decode(path: str, n: int) -> None:
 
     print(f"\n{'backend':12s} {'chunk':>5s} {'thr':>3s} {'frames/s':>9s}")
     with contextlib.redirect_stderr(io.StringIO()):
-        for name, fnb, threads in (
-            ("torchcodec", torchcodec, (1,)),
-            ("dali", dali, (2,)),
-        ):
+        for name, fnb, threads in (("torchcodec", torchcodec, (1,)),):
             for chunk in (64, 256):
                 for thr in threads:
                     try:

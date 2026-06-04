@@ -11,7 +11,6 @@ for an alternative or faster decoder:
 | `opencv` | ✓ | ✓ | NumPy (CPU) | core |
 | `video_reader_rs` | ✓ | – | NumPy (CPU) | `video-reader-rs` |
 | `torchcodec` | ✓ | – | `torch.Tensor` (CPU/**CUDA**) | `torchcodec` / `cuda` |
-| `dali` | ✓ | – | `torch.Tensor` / NumPy (**CUDA**) | `dali` |
 
 Image *sequences* (a directory or glob of PNG/JPG/…) are always read via
 `imageio` (core), independent of the video backend above.

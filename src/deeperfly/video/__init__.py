@@ -8,7 +8,7 @@ the in-process core default).
 
 - CPU readers: ``pyav`` (default), ``opencv``, ``torchcodec``,
   ``video_reader_rs``.
-- GPU readers (frames stay a device tensor): ``torchcodec``, ``dali``.
+- GPU reader (frames stay a device tensor): ``torchcodec``.
 - Writers: ``pyav`` (default; in-process H.264), ``opencv``.
 
 >>> from deeperfly import video
