@@ -3,8 +3,8 @@
 Public surface:
 
 - :mod:`deeperfly.geometry` -- low-level projection / triangulation / Rodrigues
-  primitives (JIT- and grad-friendly JAX on the CPU; see :mod:`deeperfly._jax_cpu`).
-  Also used by bundle adjustment, which needs autodiff for the Jacobian.
+  primitives (JIT- and grad-friendly JAX on the CPU). Also used by bundle
+  adjustment, which needs autodiff for the Jacobian.
 - :class:`deeperfly.cameras.Camera` / :class:`deeperfly.cameras.CameraGroup` --
   camera models and config-driven rigs (built on :mod:`deeperfly.geometry`).
 - :func:`deeperfly.bundle_adjustment.bundle_adjust` and

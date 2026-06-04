@@ -5,7 +5,7 @@
   :func:`jax.vmap` + :func:`jax.jacrev` on
   :func:`deeperfly.geometry.project_full_one`, then re-assembled into a sparse
   SciPy matrix using the precomputed sparsity pattern. Like the geometry layer,
-  these kernels are :func:`cpu_jit`-wrapped and run on CPU JAX (the only JAX
+  these kernels are :func:`jax.jit`-wrapped and run on CPU JAX (the only JAX
   deeperfly installs): the problems are small and don't benefit from a GPU.
 
   The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
@@ -24,7 +24,6 @@ from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
-from .._jax_cpu import cpu_jit
 from ..geometry import project_full_one
 
 
@@ -43,8 +42,8 @@ class BASolution(NamedTuple):
 # of project_full_one's arguments and we keep cols_per_obs aligned with it below.
 # project_full_one maps 13 inputs (pt3d+rvec+tvec+intr+dist) -> 2 outputs, so
 # reverse-mode (jacrev) costs ~1 pass per output instead of jacfwd's ~1 per input.
-_project_per_obs = cpu_jit(jax.vmap(project_full_one))
-_jac_per_obs = cpu_jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
+_project_per_obs = jax.jit(jax.vmap(project_full_one))
+_jac_per_obs = jax.jit(jax.vmap(jax.jacrev(project_full_one, argnums=(0, 1, 2, 3, 4))))
 
 
 def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
@@ -53,8 +52,8 @@ def _bone_length_one(pi: Float[jnp.ndarray, "3"], pj: Float[jnp.ndarray, "3"]):
 
 
 # Bone length and its Jacobian w.r.t. each endpoint, vmapped over bones.
-_bone_len_per = cpu_jit(jax.vmap(_bone_length_one))
-_bone_jac_per = cpu_jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
+_bone_len_per = jax.jit(jax.vmap(_bone_length_one))
+_bone_jac_per = jax.jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
 
 
 def bundle_adjust(
@@ -155,8 +154,8 @@ def bundle_adjust(
         return rvecs, tvecs, intrs, dists, pts3d
 
     def _project_obs(rvecs, tvecs, intrs, dists, pts3d):
-        # ``cpu_jit`` commits these slices to the CPU; pass NumPy straight in so
-        # nothing is ever staged on the GPU's default device.
+        # ``jax.jit`` traces these slices on CPU JAX; pass NumPy straight in and let
+        # the kernel convert once, rather than pre-staging intermediate JAX arrays.
         return _project_per_obs(
             pts3d[obs_pt],
             rvecs[obs_view],
