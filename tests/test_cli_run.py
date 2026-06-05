@@ -1118,20 +1118,43 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     from deeperfly import video
 
     rng = np.random.default_rng(1)
-    win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)
+    win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)  # one short block of 2 frames
 
-    def fake_read_frames(src, *, backend, start, stop, **kw):
-        return win.copy() if start == 0 else np.empty((0, 4, 6, 3), np.uint8)
+    def fake_stream_frames(src, *, backend, image_backend, workers, block):
+        yield win.copy()  # a single < block block -> last (and only) window
 
-    monkeypatch.setattr(video, "read_frames", fake_read_frames)
+    monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
     t = video.FrameTransform(fliplr=True, rot90=1)
     windows = list(
-        cli._prefetch_windows(["camA"], backend="auto", chunk=2, transforms=[t])
+        cli._prefetch_windows(["camA"], backend="auto", block=8, transforms=[t])
     )
     assert len(windows) == 1
     window, n = windows[0]
     assert n == 2
     np.testing.assert_array_equal(window[0], t.apply(win))
+
+
+def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
+    from deeperfly import video
+
+    # Two full blocks (block=2) then a short one ends the stream; two synced cameras
+    # must stay aligned and concatenate in order.
+    a = np.arange(5 * 2 * 2 * 3, dtype=np.uint8).reshape(5, 2, 2, 3)
+    b = a + 100
+
+    def fake_stream_frames(src, *, backend, image_backend, workers, block):
+        full = a if src == "A" else b
+        for pos in range(0, len(full), block):
+            yield full[pos : pos + block]
+
+    monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
+    windows = list(cli._prefetch_windows(["A", "B"], backend="auto", block=2))
+    # 5 frames at block=2 -> blocks of 2, 2, 1; the short last block stops the stream.
+    assert [n for _, n in windows] == [2, 2, 1]
+    cam_a = np.concatenate([w[0] for w, _ in windows])
+    cam_b = np.concatenate([w[1] for w, _ in windows])
+    np.testing.assert_array_equal(cam_a, a)
+    np.testing.assert_array_equal(cam_b, b)
 
 
 def test_camera_image_sizes_uses_transformed_dims(monkeypatch):

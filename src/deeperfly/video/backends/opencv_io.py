@@ -23,26 +23,32 @@ class OpenCVReader(ReaderBackend):
     supports_seek = True
 
     @staticmethod
-    def _read_sequential(path, start, stop, step):
+    def stream(path, *, start=0, step=1, stop=None):
+        """Single open-and-walk decode: one ``VideoCapture`` for the whole stream.
+
+        ``stop`` is an internal bound used by :meth:`_read_sequential`; the public
+        streaming contract is open-ended, so callers omit it.
+        """
         import cv2
 
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             raise FileNotFoundError(f"opencv could not open {path!r}")
-        out = []
         i = 0
         try:
-            while True:
-                if stop is not None and i >= stop:
-                    break
+            while stop is None or i < stop:
                 ok, frame = cap.read()
                 if not ok:
                     break
                 if i >= start and (i - start) % step == 0:
-                    out.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    yield cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 i += 1
         finally:
             cap.release()
+
+    @classmethod
+    def _read_sequential(cls, path, start, stop, step):
+        out = list(cls.stream(path, start=start, step=step, stop=stop))
         if not out:
             raise ValueError(f"opencv decoded no frames from {path!r}")
         return np.stack(out)

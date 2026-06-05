@@ -143,6 +143,32 @@ def test_reader_sequential_slice(tmp_path, backend):
 
 
 @pytest.mark.parametrize("backend", READERS)
+def test_stream_matches_full_read(tmp_path, backend):
+    # A continuous stream() is one forward decode of the whole file: it must yield
+    # exactly the frames of a full read, in order (same decoder -> exact pixels).
+    frames = _indexed_clip(20, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    reader = base._READERS[backend]
+    full = video.to_numpy(video.read_video(path, backend=backend))
+    streamed = np.stack([video.to_numpy(f) for f in reader.stream(path)])
+    assert streamed.shape == full.shape
+    np.testing.assert_array_equal(streamed, full)
+
+
+@pytest.mark.parametrize("backend", READERS)
+def test_stream_frames_blocks_concatenate_to_full_read(tmp_path, backend):
+    # stream_frames groups one continuous decode into <= block chunks that
+    # concatenate back to the whole recording (what the streaming consumer sees).
+    frames = _indexed_clip(20, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    blocks = list(video.stream_frames(path, backend=backend, block=7))
+    full = video.to_numpy(video.read_video(path, backend=backend))
+    assert all(len(b) == 7 for b in blocks[:-1])  # only the last block may be short
+    assert sum(len(b) for b in blocks) == len(full)
+    np.testing.assert_array_equal(np.concatenate(blocks), full)
+
+
+@pytest.mark.parametrize("backend", READERS)
 def test_random_access_matches_sequential(tmp_path, backend):
     # Random access must return the *same frames* (in order) as a full read,
     # whether the backend seeks or falls back to decode-and-gather.
@@ -272,6 +298,16 @@ def test_read_frames_dispatches_dir_vs_video(tmp_path):
     np.testing.assert_array_equal(from_dir, frames)
     mp4 = _write_clip(tmp_path, frames, name="clip.mp4")
     assert video.read_frames(mp4).shape[0] == 6  # routed to read_video
+
+
+def test_stream_frames_image_sequence_blocks(tmp_path):
+    # The image branch of stream_frames yields the sorted sequence in <= block
+    # chunks (PNG is lossless, so frame identity and counts are exact).
+    frames = _indexed_clip(7, 16, 16)
+    _write_images(tmp_path, frames, ext="png")
+    blocks = list(video.stream_frames(tmp_path, block=3))
+    assert [len(b) for b in blocks] == [3, 3, 1]
+    np.testing.assert_array_equal(np.concatenate(blocks), frames)
 
 
 def test_read_images_missing_raises(tmp_path):

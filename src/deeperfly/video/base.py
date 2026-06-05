@@ -66,6 +66,11 @@ def _have(*modules: str) -> bool:
     return True
 
 
+#: Frames per block when the default :meth:`ReaderBackend.stream` walks a source
+#: in chunks (seek-based backends seek to each block, so this stays linear).
+STREAM_BLOCK = 256
+
+
 class ReaderBackend(abc.ABC):
     """Decode an encoded video into ``(T, H, W, 3)`` frames (on the CPU)."""
 
@@ -91,6 +96,36 @@ class ReaderBackend(abc.ABC):
     @abc.abstractmethod
     def _read_sequential(path, start, stop, step):
         """Decode ``range(start, stop, step)`` to ``(T, H, W, 3)`` uint8."""
+
+    @classmethod
+    def stream(cls, path, *, start=0, step=1):
+        """Yield single ``(H, W, 3)`` frames from one forward pass to end-of-stream.
+
+        The streaming counterpart to :meth:`read`: a *pull-based, forward-only*
+        decode that opens the source once and walks it to the end, instead of
+        materializing a bounded ``[start, stop)`` slice. A consumer that wants the
+        whole recording gets it in a single linear decode (no per-window re-open),
+        and decides for itself how far to pull -- the natural fit for streaming
+        detection, and the same contract a future *live-camera* source would
+        satisfy (frames arrive forward in time, the total is unknown, there is no
+        seek). Hence no ``stop`` and no frame count here.
+
+        The default drives :meth:`_read_sequential` in blocks of
+        :data:`STREAM_BLOCK`: correct and linear for seek-based backends (they seek
+        to each block's start). Backends whose sequential decode rescans from frame
+        0 (pyav, opencv) override this with a true single open-and-walk generator,
+        so a full read stays linear rather than quadratic.
+        """
+        pos = start
+        while True:
+            try:
+                block = cls._read_sequential(path, pos, pos + STREAM_BLOCK * step, step)
+            except ValueError:  # decoded no frames -> past end-of-stream
+                return
+            yield from block
+            if len(block) < STREAM_BLOCK:  # a short block is the last one
+                return
+            pos += STREAM_BLOCK * step
 
     @classmethod
     def _read_indices(cls, path, indices: Sequence[int]):

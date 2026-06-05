@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -287,6 +288,76 @@ def read_frames(
         workers=workers,
         image_backend=image_backend,
     )
+
+
+def _stream_source(source: str | Path | list[Path]) -> tuple[str, object]:
+    """Resolve a :func:`stream_frames` source to ``("video", path)`` or
+    ``("images", [files])`` -- the streaming-side mirror of :func:`read_frames`'s
+    dispatch (a single video file vs. an ordered image sequence).
+
+    A future *live-camera* source plugs in as a third kind here (e.g.
+    ``("camera", handle)``) with a matching branch in :func:`stream_frames`; the
+    forward-only stream it yields then flows through the unchanged prefetch loop.
+    """
+    if isinstance(source, (list, tuple)):
+        files = [Path(f) for f in source]
+        if not files:
+            raise ValueError("stream_frames got an empty file list")
+        return ("video", files[0]) if _is_video_file(files[0]) else ("images", files)
+    p = Path(source)
+    if _is_video_file(p):
+        return "video", p
+    return "images", list_image_files(source)
+
+
+def stream_frames(
+    source: str | Path | list[Path],
+    *,
+    backend: str = "auto",
+    image_backend: str = "auto",
+    workers: int | None = None,
+    block: int = 64,
+) -> Iterator[Float[np.ndarray, "T H W 3"]]:
+    """Yield ``(T, H, W, 3)`` uint8 RGB blocks (``T <= block``) from one forward pass.
+
+    The streaming counterpart to :func:`read_frames`: instead of decoding a fixed
+    ``[start, stop)`` slice, open ``source`` once and walk it forward to the end,
+    emitting frames in groups of up to ``block``. A whole recording is therefore
+    **one linear decode per source** -- no per-window re-open or re-seek -- which
+    is what streaming detection wants. ``block`` only sets the grouping
+    granularity (the unit a consumer pulls and batches); it does *not* bound how
+    far decode runs ahead -- that backpressure is the consumer's to impose (e.g.
+    the bounded queue in :func:`deeperfly.cli._prefetch_windows`).
+
+    Dispatches on ``source`` exactly like :func:`read_frames`: a video file streams
+    through ``backend`` (:meth:`~deeperfly.video.base.ReaderBackend.stream`, a
+    single open-and-walk decode); an image directory / glob / explicit list streams
+    block by block through ``image_backend`` / ``workers`` (each block decoded in
+    parallel).
+
+    The forward-only, count-free contract is deliberately the one a *live camera*
+    source also satisfies (frames arrive forward in time, no total, no seek), so a
+    future capture backend slots in as another :func:`_stream_source` branch --
+    yielding frames as they arrive -- without the prefetch/detector machinery
+    downstream needing to change.
+    """
+    if block < 1:
+        raise ValueError(f"block must be >= 1, got {block}")
+    kind, target = _stream_source(source)
+    if kind == "video":
+        reader = select_reader(backend)
+        buf: list[np.ndarray] = []
+        for frame in reader.stream(target):
+            buf.append(to_numpy(frame))
+            if len(buf) >= block:
+                yield np.stack(buf)
+                buf = []
+        if buf:
+            yield np.stack(buf)
+        return
+    files = target  # "images": an ordered file list, decoded block by block
+    for pos in range(0, len(files), block):
+        yield _read_images_cpu(files[pos : pos + block], workers, image_backend)
 
 
 def reader_name(

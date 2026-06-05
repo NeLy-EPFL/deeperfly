@@ -142,9 +142,10 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 # "bfloat16" is about as fast with a wider range (no overflow) at slightly lower
 # precision. Ignored on CPU/MPS, which stay float32.
 precision = "bfloat16"
-# Frames decoded + detected at a time, per camera (streaming), so long videos run
-# in constant memory. A *memory* knob, not a speed one: lower it for high-res /
-# many cameras / small GPUs.
+# Frames grouped per block, per camera. Each video is decoded in one continuous
+# pass; this only sets how many frames are handed to the detector at a time, so
+# long videos run in constant memory. A *memory* knob, not a speed one: lower it
+# for high-res / many cameras / small GPUs.
 chunk_frames = 64
 # GPU forward batch: images pushed through the detector at once. The 8-stack
 # network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16

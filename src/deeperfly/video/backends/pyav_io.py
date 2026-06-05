@@ -26,10 +26,15 @@ class PyAVReader(ReaderBackend):
     supports_seek = True
 
     @staticmethod
-    def _read_sequential(path, start, stop, step):
+    def stream(path, *, start=0, step=1, stop=None):
+        """Single open-and-walk decode: one pass for the whole stream (no re-open).
+
+        ``stop`` is an internal bound used by :meth:`_read_sequential`; the public
+        :class:`~deeperfly.video.base.ReaderBackend` streaming contract is
+        open-ended (decode to end-of-stream), so callers omit it.
+        """
         import av
 
-        out = []
         with av.open(str(path)) as container:
             for i, frame in enumerate(container.decode(video=0)):
                 if i < start:
@@ -37,7 +42,11 @@ class PyAVReader(ReaderBackend):
                 if stop is not None and i >= stop:
                     break
                 if (i - start) % step == 0:
-                    out.append(frame.to_ndarray(format="rgb24"))
+                    yield frame.to_ndarray(format="rgb24")
+
+    @classmethod
+    def _read_sequential(cls, path, start, stop, step):
+        out = list(cls.stream(path, start=start, step=step, stop=stop))
         if not out:
             raise ValueError(f"pyav decoded no frames from {path!r}")
         return np.stack(out)
