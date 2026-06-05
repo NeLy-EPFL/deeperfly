@@ -90,11 +90,20 @@ STAGE_DEFAULTS = {
     "visualization": True,
 }
 
-#: Frames decoded + detected per streaming window, per camera (overridable via
-#: ``[detector] chunk_frames``). Bounds peak frame memory, so long recordings run
-#: in constant memory. A *memory* knob, not a speed one (detection is the
-#: bottleneck). 64 holds ~0.6 GB of frames for a 7-camera 480x960 rig.
-DEFAULT_CHUNK_FRAMES = 64
+#: Images per detector forward (the GPU batch), overridable via ``[detector]
+#: batch_size``. The 8-stack network is compute-bound, so throughput plateaus by
+#: ~16 on a fast GPU -- 16 saturates speed while keeping forward VRAM ~0.8 GB.
+DEFAULT_FWD_BATCH = 16
+
+#: Decode buffer, in multiples of ``batch_size`` (overridable via ``[detector]
+#: decode_buffer``). Each camera is decoded in one continuous pass into a queue one
+#: ``batch_size``-frame block at a time; the reader runs ahead and pauses once this
+#: many blocks are queued, so it never outruns the GPU or grows memory without
+#: bound. Peak frame memory is ``~(decode_buffer + 2) * batch_size`` frames/camera.
+#: Deeper absorbs more decode jitter (slow seeks, network/remote storage) so the
+#: GPU never starves; since decode is usually faster than the forward, a handful of
+#: batches is plenty for local files. 8 * 16 holds ~1.2 GB for a 7-cam 480x960 rig.
+DEFAULT_DECODE_BUFFER = 8
 
 #: rich output: status/results to stdout, logs and the progress bar to stderr, so
 #: piping stdout stays clean and progress never clobbers a log line.
@@ -459,25 +468,41 @@ def _prefetch_windows(
     sources,
     *,
     backend,
-    chunk,
+    block,
     transforms=None,
     depth=1,
     image_backend="auto",
     workers=None,
 ):
-    """Yield ``(window, n)`` decoded frame windows, decoding ``depth`` ahead.
+    """Yield ``(window, n)`` multi-camera frame blocks from continuous decode.
 
-    A background producer decodes the next window (CPU) while the consumer detects
-    the current one, so decode runs in parallel with the GPU forward instead of
-    serially before it.
+    A background producer opens **one continuous forward decoder per source**
+    (:func:`deeperfly.video.stream_frames`) and walks them all together, grouping
+    ``block`` frames at a time into a multi-camera ``window`` (a list of
+    ``(T, H, W, 3)`` arrays, one per source). Each source is decoded in a single
+    linear pass -- no per-window re-open or re-seek -- overlapped with the GPU
+    forward.
+
+    ``depth`` bounds the queue: when it is full the producer blocks on ``put`` and
+    the (lazy) decoders suspend mid-stream, so a decoder faster than the GPU runs
+    at most ``depth`` blocks ahead rather than filling memory. Peak frame memory is
+    therefore ``~(depth + 2)`` blocks (queue + the one the producer is blocked
+    enqueueing + the one the consumer is forwarding), independent of recording
+    length. A deeper queue absorbs more decode jitter; the detector sets ``block``
+    to the forward batch and ``depth`` to ``[detector] decode_buffer`` (see
+    :data:`DEFAULT_DECODE_BUFFER`).
 
     ``transforms`` is an optional per-source
     :class:`~deeperfly.video.FrameTransform` (aligned to ``sources``) applied to
-    each window before yielding, so detection sees the ``[preprocess.*]``
+    each block before yielding, so detection sees the ``[preprocess.*]``
     orientation.
 
-    EOF: a short or empty window ends the stream; a read failure on the *first*
-    window propagates (anything later is treated as past the end).
+    The producer treats each source as an opaque forward stream -- it never asks
+    for a frame count or a seek -- so an unbounded *live-camera* source (a future
+    :func:`deeperfly.video.stream_frames` branch) drives this loop unchanged.
+
+    EOF: the first source to run out (a short or exhausted block) ends the stream;
+    a read failure before any window is emitted propagates, later ones are EOF.
     """
     import queue
     import threading
@@ -490,34 +515,33 @@ def _prefetch_windows(
     DONE = object()
 
     def produce():
-        done = 0
-        while True:
-            try:
-                window = [
-                    transforms[i].apply(
-                        video.read_frames(
-                            s,
-                            backend=backend,
-                            image_backend=image_backend,
-                            workers=workers,
-                            start=done,
-                            stop=done + chunk,
-                        )
-                    )
-                    for i, s in enumerate(sources)
-                ]
-            except Exception as exc:  # noqa: BLE001
-                q.put(("err", exc) if done == 0 else DONE)
-                return
-            n = len(window[0])
-            if n == 0:
-                q.put(DONE)
-                return
-            q.put(("win", window, n))
-            done += n
-            if n < chunk:  # a short window is the last one
-                q.put(DONE)
-                return
+        emitted = False
+        try:
+            streams = [
+                video.stream_frames(
+                    s,
+                    backend=backend,
+                    image_backend=image_backend,
+                    workers=workers,
+                    block=block,
+                )
+                for s in sources
+            ]
+            while True:
+                blocks = [next(s, None) for s in streams]
+                # A source ran dry (None) or yielded nothing -> end of recording.
+                if any(b is None or len(b) == 0 for b in blocks):
+                    q.put(DONE)
+                    return
+                n = min(len(b) for b in blocks)  # align cameras (synced rigs match)
+                window = [t.apply(b[:n]) for t, b in zip(transforms, blocks)]
+                q.put(("win", window, n))
+                emitted = True
+                if any(len(b) < block for b in blocks):  # a short block is the last
+                    q.put(DONE)
+                    return
+        except Exception as exc:  # noqa: BLE001
+            q.put(("err", exc) if not emitted else DONE)
 
     threading.Thread(target=produce, daemon=True).start()
     while True:
@@ -530,38 +554,41 @@ def _prefetch_windows(
 
 
 def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
-    """Stream 2D detection over fixed-size windows -> ``(pts2d, conf, candidates)``.
+    """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
 
-    Decodes (CPU) and detects ``[detector] chunk_frames`` frames at a time per
-    camera and frees each window before the next, so peak frame memory is bounded
-    by the chunk size, not the recording length. Per-window results are
-    concatenated along time. End-of-file comes from the decoder (a short or empty
-    window), so it doesn't depend on :func:`deeperfly.video.count_frames` being
-    exact -- that is only the progress-bar total.
+    Decodes each camera in one continuous forward pass (CPU), handing the detector
+    one ``[detector] batch_size``-frame block at a time and freeing it before the
+    next, so peak frame memory is bounded by the decode buffer, not the recording
+    length. Per-block results are concatenated along time. End-of-file comes from
+    the decoder (a short or exhausted block), so it doesn't depend on
+    :func:`deeperfly.video.count_frames` being exact -- that is only the
+    progress-bar total.
     """
     from . import video
     from .pictorial import Candidates
-    from .pose2d import auto_batch_size, inference
+    from .pose2d import inference
 
     det = _pose2d_config(config)
     backend = _video_reader(config)
     image_backend = _image_reader(config)
     workers = _image_workers(config)
-    chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
+    # Two knobs: the GPU forward batch (images/forward), and the decode buffer in
+    # multiples of it. A block holds one batch of frames; the reader keeps up to
+    # `depth` of them queued (>= 1 so the queue stays bounded -- 0 is unbounded).
+    batch_size = max(1, int(det.get("batch_size", DEFAULT_FWD_BATCH)))
+    depth = max(1, int(det.get("decode_buffer", DEFAULT_DECODE_BUFFER)))
+    block = batch_size
     cam_sources = _camera_sources(args, config)
     sources = [src for _, src in cam_sources]
-    # Apply each camera's [preprocess.*] transform to its decoded window, so the
+    # Apply each camera's [preprocess.*] transform to its decoded block, so the
     # detector sees the corrected orientation (and 2D points land in that frame).
     transforms_by_name = video.parse_frame_transforms(config)
     transforms = [
         transforms_by_name.get(name, video.FrameTransform()) for name, _ in cam_sources
     ]
     total = video.count_frames(sources[0]) if sources else 0
-    # Size the forward to the GPU so each window is a few big batches, not one
-    # batch per frame -- this only changes dispatch granularity, not the result.
-    batch_size = auto_batch_size(inference.IMG_SIZE)
 
-    # One-line summary instead of a per-window read log (that's at -vv now).
+    # One-line summary instead of a per-block read log (that's at -vv now).
     # reader_name mirrors read_frames's dispatch off the actual source, so the
     # reported decoder matches what really runs; guard a forced-but-uninstalled one.
     try:
@@ -571,10 +598,12 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     except Exception:  # noqa: BLE001
         reader = backend
     log.info(
-        "reading frames via '%s' backend: %d/read per camera, forward batch %d",
+        "streaming frames via '%s' backend: forward batch %d, decode buffer %d "
+        "batches (%d frames/camera)",
         reader,
-        chunk,
         batch_size,
+        depth,
+        depth * batch_size,
     )
 
     pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
@@ -591,8 +620,9 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
         for window, _ in _prefetch_windows(
             sources,
             backend=backend,
-            chunk=chunk,
+            block=block,
             transforms=transforms,
+            depth=depth,
             image_backend=image_backend,
             workers=workers,
         ):
@@ -815,15 +845,15 @@ def _stage_pose2d(
     k = config.get("pipeline", {}).get("pictorial_structures", {}).get("k", 5)
     sides, flips = inference.fly_camera_layout(cameras.names)
     n_passes = len(inference.expand_passes(sides, flips)[0])
-    chunk = max(1, int(det.get("chunk_frames", DEFAULT_CHUNK_FRAMES)))
+    batch_size = max(1, int(det.get("batch_size", DEFAULT_FWD_BATCH)))
     log.info(
         "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
-        "streaming in chunks of %d frames",
+        "forward batch %d frames",
         len(image_sizes),
         n_passes,
         inference.IMG_SIZE[0],
         inference.IMG_SIZE[1],
-        chunk,
+        batch_size,
     )
     pts2d, conf, candidates = _detect_2d(
         args,

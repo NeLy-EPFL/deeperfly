@@ -279,12 +279,15 @@ def main() -> None:
             radius=args.decode_radius,
         )
 
-        # GPU batch (synchronized frames per forward). 'auto' fits VRAM; for this
-        # 8-stack net throughput plateaus at a small batch on a fast GPU, so sizing
-        # is mainly to fit smaller GPUs (avoid OOM) -- see backends.auto_batch_size.
+        # GPU batch (synchronized frames per forward). 'auto' uses the CLI's
+        # default image batch; for this 8-stack net throughput plateaus at a small
+        # batch on a fast GPU, so a modest batch saturates speed -- see
+        # cli.DEFAULT_FWD_BATCH.
         if args.batch == "auto":
+            from deeperfly.cli import DEFAULT_FWD_BATCH
+
             vram = backends.gpu_memory_bytes()
-            batch = max(1, backends.auto_batch_size(inference.IMG_SIZE) // n_views)
+            batch = max(1, DEFAULT_FWD_BATCH // n_views)
             where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
             print(
                 f"batch: {batch} frame(s)/forward ({batch * n_views} imgs, auto, {where})"

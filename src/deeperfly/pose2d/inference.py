@@ -417,9 +417,8 @@ def detect_sequence(
     ``None`` (the default) detects one multi-camera frame at a time (batch =
     passes-per-frame, ~8 for the fly rig). A larger ``batch_size`` flattens the
     window into ``(T*passes, 3, Hh, Ww)`` and forwards it in groups of
-    ``batch_size``; size it to the GPU via
-    :func:`~deeperfly.pose2d.backends.auto_batch_size`. Results are numerically
-    identical -- only the dispatch granularity differs.
+    ``batch_size`` (the CLI sets it from ``[pipeline.pose2d] batch_size``). Results
+    are numerically identical -- only the dispatch granularity differs.
 
     ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress bar),
     advanced once per *completed* frame; it defaults to the identity.

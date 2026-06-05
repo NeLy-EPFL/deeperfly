@@ -1,10 +1,10 @@
-"""Benchmark video decode vs detector inference, to size the streaming window.
+"""Benchmark video decode vs detector inference, to size the decode buffer.
 
 Finding (RTX 4090, 7-cam 480x960): **inference is the bottleneck** -- the 8-stack
 detector runs ~28 multi-camera frames/s and is compute-bound (batching frames does
 not help), while every (CPU) decoder is far faster. So the decode backend and CPU
-parallelism barely move total throughput, and ``[detector] chunk_frames`` is a
-*memory* knob, not a speed one -- keep it small to bound VRAM.
+parallelism barely move total throughput, and ``[detector] decode_buffer`` is a
+*memory* knob, not a speed one -- keep it modest to bound RAM.
 
 This is also why deeperfly decodes on the CPU only: an earlier sweep over GPU/NVDEC
 decode (torchcodec-CUDA + nvidia-npp) reached ~23 mcam-fps end to end vs ~22 for
@@ -35,22 +35,34 @@ def _timeit(fn, reps=2):
 
 
 def bench_decode(path: str, n: int) -> None:
-    """Decode-in-windows throughput (frames/s) per (CPU) backend x chunk."""
+    """Decode throughput (frames/s) per (CPU) backend: windowed reads vs streaming.
+
+    ``windows`` re-opens the file for each ``[s, s+chunk)`` slice -- pyav/opencv
+    rescan from frame 0, so this is quadratic in the number of windows. ``stream``
+    is one continuous forward pass (:func:`deeperfly.video.stream_frames`), the
+    path the detector now uses; the gap between them is the re-decode that went
+    away.
+    """
     from deeperfly import video
 
     def run_windows(backend, chunk):
         for s in range(0, n, chunk):
             video.read_video(path, backend=backend, start=s, stop=min(s + chunk, n))
 
-    print(f"\n{'backend':16s} {'chunk':>5s} {'frames/s':>9s}")
+    def run_stream(backend, block):
+        for _ in video.stream_frames(path, backend=backend, block=block):
+            pass
+
+    print(f"\n{'backend':16s} {'mode':>8s} {'block':>5s} {'frames/s':>9s}")
     with contextlib.redirect_stderr(io.StringIO()):
         for backend in video.available_read_backends():
-            for chunk in (64, 256):
-                try:
-                    fps = n / _timeit(lambda: run_windows(backend, chunk))
-                    print(f"{backend:16s} {chunk:5d} {fps:9.0f}")
-                except Exception as e:  # noqa: BLE001
-                    print(f"{backend:16s} {chunk:5d}  err {str(e)[:40]}")
+            for mode, run in (("windows", run_windows), ("stream", run_stream)):
+                for block in (64, 256):
+                    try:
+                        fps = n / _timeit(lambda: run(backend, block))
+                        print(f"{backend:16s} {mode:>8s} {block:5d} {fps:9.0f}")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"{backend:16s} {mode:>8s} {block:5d}  err {str(e)[:34]}")
 
 
 def bench_inference(path: str, t: int) -> None:
@@ -90,18 +102,18 @@ def bench_inference(path: str, t: int) -> None:
     )
 
 
-def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
+def bench_pipeline(path: str, t: int, block: int = 64) -> None:
     """End-to-end streaming detect throughput: serial vs prefetch overlap.
 
-    Times the serial loop (decode a window, then forward it) against the prefetched
-    loop (decode the next window on the CPU in a background thread while the GPU
-    forwards the current one). The forward is batched to the GPU via
-    :func:`auto_batch_size`, exactly as the CLI runs it.
+    Both walk one continuous decode per camera. ``serial`` forwards each block as it
+    is decoded; ``prefetch`` decodes the next block on the CPU in a background thread
+    while the GPU forwards the current one. The forward batch is ``DEFAULT_FWD_BATCH``,
+    exactly as the CLI runs it.
     """
     import time
 
     from deeperfly import video
-    from deeperfly.cli import _prefetch_windows
+    from deeperfly.cli import DEFAULT_FWD_BATCH, _prefetch_windows
     from deeperfly.pose2d import backends, inference
     from deeperfly.pose2d.download import download_torch_weights
 
@@ -110,32 +122,34 @@ def bench_pipeline(path: str, t: int, chunk: int = 64) -> None:
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    bs = backends.auto_batch_size(inference.IMG_SIZE)
+    bs = DEFAULT_FWD_BATCH
 
     def serial():
         done = 0
-        while done < t:
-            window = [
-                video.read_frames(p, start=done, stop=min(done + chunk, t))
-                for p in paths
-            ]
-            n = len(window[0])
-            if n == 0:
+        streams = [video.stream_frames(p, block=block) for p in paths]
+        while True:
+            blocks = [next(s, None) for s in streams]
+            if any(b is None for b in blocks):
                 break
-            inference.detect_sequence(model, window, sides, flips, batch_size=bs)
+            n = min(len(b) for b in blocks)
+            inference.detect_sequence(
+                model, [b[:n] for b in blocks], sides, flips, batch_size=bs
+            )
             done += n
+            if done >= t:
+                break
         return done
 
     def prefetch():
         done = 0
-        for window, n in _prefetch_windows(paths, backend="auto", chunk=chunk):
+        for window, n in _prefetch_windows(paths, backend="auto", block=block):
             inference.detect_sequence(model, window, sides, flips, batch_size=bs)
             done += n
             if done >= t:
                 break
         return done
 
-    print(f"\n{'mode':9s} {'mcam fps':>9s}  (chunk={chunk}, fwd batch={bs})")
+    print(f"\n{'mode':9s} {'mcam fps':>9s}  (block={block}, fwd batch={bs})")
     for name, fn in (("serial", serial), ("prefetch", prefetch)):
         try:
             fn()  # warmup: JIT compile + decoder init
