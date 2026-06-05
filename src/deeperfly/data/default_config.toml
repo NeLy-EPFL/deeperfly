@@ -153,7 +153,7 @@ batch_size = 16
 # GPU or grows memory without bound (peak ~(decode_buffer + 2) * batch_size frames
 # per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
 # network/remote storage); lower it to shave memory.
-decode_buffer = 8
+decode_buffer = 4
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
