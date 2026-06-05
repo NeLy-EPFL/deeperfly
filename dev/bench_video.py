@@ -1,10 +1,10 @@
-"""Benchmark video decode vs detector inference, to size the streaming window.
+"""Benchmark video decode vs detector inference, to size the decode buffer.
 
 Finding (RTX 4090, 7-cam 480x960): **inference is the bottleneck** -- the 8-stack
 detector runs ~28 multi-camera frames/s and is compute-bound (batching frames does
 not help), while every (CPU) decoder is far faster. So the decode backend and CPU
-parallelism barely move total throughput, and ``[detector] chunk_frames`` is a
-*memory* knob, not a speed one -- keep it small to bound VRAM.
+parallelism barely move total throughput, and ``[detector] decode_buffer`` is a
+*memory* knob, not a speed one -- keep it modest to bound RAM.
 
 This is also why deeperfly decodes on the CPU only: an earlier sweep over GPU/NVDEC
 decode (torchcodec-CUDA + nvidia-npp) reached ~23 mcam-fps end to end vs ~22 for

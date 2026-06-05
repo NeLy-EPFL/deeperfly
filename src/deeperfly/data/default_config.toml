@@ -142,16 +142,18 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
 # "bfloat16" is about as fast with a wider range (no overflow) at slightly lower
 # precision. Ignored on CPU/MPS, which stay float32.
 precision = "bfloat16"
-# Frames grouped per block, per camera. Each video is decoded in one continuous
-# pass; this only sets how many frames are handed to the detector at a time, so
-# long videos run in constant memory. A *memory* knob, not a speed one: lower it
-# for high-res / many cameras / small GPUs.
-chunk_frames = 64
 # GPU forward batch: images pushed through the detector at once. The 8-stack
 # network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
 # saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
 # benchmark shows a gain on your hardware. Ignored on CPU (one pass-group at a time).
 batch_size = 16
+# Video decode buffer, in multiples of batch_size. Each camera is decoded in one
+# continuous pass into a queue, one batch_size-frame block at a time; the reader
+# runs ahead and pauses once this many blocks are queued, so it never outruns the
+# GPU or grows memory without bound (peak ~(decode_buffer + 2) * batch_size frames
+# per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
+# network/remote storage); lower it to shave memory.
+decode_buffer = 8
 # checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
