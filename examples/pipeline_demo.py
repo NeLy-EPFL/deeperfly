@@ -1,20 +1,29 @@
 """Synthetic end-to-end demo of the deeperfly 3D pipeline (no weights needed).
 
 Generates a moving 38-point fly, projects it through the example 7-camera rig,
-adds detector-like noise and a gross outlier, then runs the geometry pipeline
-(visibility masking -> triangulation -> outlier rejection -> smoothing) and
-writes an HDF5 result plus a 3D-skeleton video.
+adds detector-like noise and a gross outlier, then runs the geometry pipeline one
+stage at a time -- visibility masking -> (optional) calibration -> robust
+triangulation -> temporal smoothing -> a saved HDF5 result plus a 3D-skeleton
+video.
+
+The stages below mirror :func:`deeperfly.pipeline.run_from_points2d` (the function
+``deeperfly run`` calls); here each is its own small function over arrays, so every
+intermediate is visible and independently testable.
 
     uv run python examples/pipeline_demo.py
 """
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import numpy as np
 
-from deeperfly import CameraGroup, Skeleton, run_from_points2d
+from deeperfly import CameraGroup, PoseResult, Skeleton
+from deeperfly.correction import smooth_one_euro
+from deeperfly.pipeline import calibrate, reconstruct_ransac
+from deeperfly.triangulate import apply_visibility
 
 HERE = Path(__file__).parent
 
@@ -26,25 +35,93 @@ def fly_motion(rng, n_frames=30, n_pts=38):
     return base[None] + wiggle  # (T, N, 3)
 
 
-def main():
-    rng = np.random.default_rng(0)
-    cameras = CameraGroup.from_config(HERE / "cameras.toml")
-    skeleton = Skeleton.fly()
+def synthesize_detections(cameras, rng, n_frames=30):
+    """Ground-truth 3D motion + noisy per-view 2D, with one gross outlier.
 
-    pts3d_true = fly_motion(rng)
+    Returns ``(pts3d_true, pts2d, conf)``: the truth we score against, the
+    ``(V, T, N, 2)`` detections the pipeline consumes, and detector-like
+    confidences. The outlier lands on a right-leg claw the camera actually sees, so
+    it survives visibility masking and is left for the triangulator to reject.
+    """
+    pts3d_true = fly_motion(rng, n_frames)
     pts2d = np.array(cameras.project(pts3d_true))  # (V, T, N, 2)
     pts2d += rng.normal(scale=0.15, size=pts2d.shape)  # sub-pixel detector noise
-    pts2d[2, 5, 9] += [250.0, -200.0]  # a gross outlier
+    pts2d[2, 5, 23] += [250.0, -200.0]  # a gross outlier RANSAC must reject (rf claw)
     conf = rng.uniform(0.5, 1.0, size=pts2d.shape[:3])
+    return pts3d_true, pts2d, conf
 
-    result = run_from_points2d(
+
+def mask_unseen(cameras, skeleton, pts2d):
+    """Stage 1 -- NaN out the (camera, point) pairs the rig cannot see."""
+    return apply_visibility(pts2d, skeleton, cameras.names)
+
+
+def calibrate_cameras(cameras, skeleton, pts2d, conf):
+    """Stage 2 (optional) -- refine the rig with fly-as-target bundle adjustment."""
+    cameras, _ = calibrate(cameras, pts2d, conf, skeleton)
+    return cameras
+
+
+def reconstruct_3d(cameras, pts2d):
+    """Stage 3 -- robust 2D->3D via per-point RANSAC consensus.
+
+    Returns ``(pts3d, cleaned_pts2d, reproj_error)``; the gross outlier never
+    enters the consensus set, so it is dropped from ``cleaned_pts2d``.
+    """
+    return reconstruct_ransac(cameras, pts2d, threshold=15.0, min_inliers=2)
+
+
+def smooth_track(pts3d, fps):
+    """Stage 4 -- NaN-aware 1-Euro temporal smoothing of the 3D track."""
+    return smooth_one_euro(pts3d, fps)
+
+
+def assemble_result(
+    cameras, skeleton, pts2d, conf, pts3d, pts3d_smoothed, reproj, *, fps, meta=None
+):
+    """Stage 5 -- bundle the stage outputs into a saveable :class:`PoseResult`."""
+    return PoseResult(
+        cameras=cameras,
+        skeleton=skeleton,
+        pts2d=pts2d,
+        conf=conf,
+        pts3d=pts3d,
+        pts3d_smoothed=pts3d_smoothed,
+        reproj_error=reproj,
+        meta={"fps": fps, "triangulation": "ransac", **(meta or {})},
+    )
+
+
+def main():
+    fps = 100.0
+    do_calibrate = False  # the synthetic cameras are already the ground-truth rig
+    rng = np.random.default_rng(0)
+    config = tomllib.loads((HERE / "cameras.toml").read_text())
+    # The synthetic rig has no real frames, so give each camera a nominal (H, W):
+    # from_config then fixes its principal point at the image center, exactly as
+    # `deeperfly run` does from the footage. View order follows [cameras.*] in the
+    # config (rh, rm, rf, f, lf, lm, lh), so camera index 2 is the front-right view.
+    image_sizes = {name: (512, 1024) for name in config["cameras"]}
+    cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
+    skeleton = Skeleton.fly()
+
+    pts3d_true, pts2d, conf = synthesize_detections(cameras, rng)
+
+    # The pipeline, one stage at a time (this is what run_from_points2d does):
+    pts2d = mask_unseen(cameras, skeleton, pts2d)
+    if do_calibrate:
+        cameras = calibrate_cameras(cameras, skeleton, pts2d, conf)
+    pts3d, pts2d, reproj = reconstruct_3d(cameras, pts2d)
+    pts3d_smoothed = smooth_track(pts3d, fps)
+    result = assemble_result(
         cameras,
         skeleton,
         pts2d,
         conf,
-        do_calibrate=False,
-        smooth="one_euro",
-        fps=100.0,
+        pts3d,
+        pts3d_smoothed,
+        reproj,
+        fps=fps,
         meta={"source": "pipeline_demo"},
     )
 
