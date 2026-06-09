@@ -21,7 +21,7 @@ wheels/
 *.avi
 
 # Pipeline outputs (do not commit binary artifacts)
-deeperfly_outputs/
+deeperfly_outputs*/
 *.h5
 
 # Scratch / working files (not for version control)
