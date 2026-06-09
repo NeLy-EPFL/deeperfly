@@ -113,12 +113,6 @@ class FrameReader(ABC):
     def close(self) -> None:
         """Release any resources held by the reader (no-op by default)."""
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """The decoder this reader actually uses (e.g. ``"pyav"``/``"opencv"``), for
-        logs and diagnostics."""
-
     @abstractmethod
     def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
         """Decode frames into a NumPy array.

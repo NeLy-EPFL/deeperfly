@@ -90,34 +90,6 @@ def _fmt_bytes(n: int) -> str:
     return f"{size:.1f} TiB"
 
 
-def _by_priority(available, *orders) -> list[str]:
-    """``available`` reader names in their ``"auto"`` preference order.
-
-    Walks each preference tuple in ``orders``, keeping the first occurrence of each
-    installed reader, then appends any remaining installed ones (alphabetically).
-    Mirrors how ``select_image_reader`` picks a reader, so the report lists the
-    highest-priority installed decoder first.
-
-    Parameters
-    ----------
-    available
-        The installed backend names.
-    *orders
-        One or more preference tuples (most preferred first).
-
-    Returns
-    -------
-    list of str
-        ``available`` re-ordered by preference.
-    """
-    avail = set(available)
-    ranked: list[str] = []
-    for order in orders:
-        ranked += [b for b in order if b in avail and b not in ranked]
-    ranked += sorted(b for b in avail if b not in ranked)
-    return ranked
-
-
 def _doctor_header(title: str) -> None:
     """Print a blank line then a section title (its own colored line).
 
@@ -185,7 +157,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     """Report the installation and what this machine can run.
 
     Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS), the
-    frame I/O (PyAV for video, the image-sequence readers), whether the detector
+    frame I/O (PyAV for video, OpenCV for image sequences), whether the detector
     weights are downloaded and where, and the default config path. Imports are lazy
     and each probe guarded, so a missing or broken piece is reported rather than
     crashing.
@@ -197,10 +169,9 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         other command workers).
     """
     import importlib.metadata
+    import importlib.util
     import platform
 
-    from .. import io
-    from ..io import IMAGE_READ_ORDER
     from ..pose2d import detector, download
 
     _doctor_header("deeperfly")
@@ -244,14 +215,10 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("detector", "torch" if torch_info["installed"] else "none")
 
     _doctor_header("frame I/O")
-    image_avail = io.available_image_readers()
-    _doctor_row("video read/write", "pyav")
-    _doctor_row(
-        "image read", ", ".join(_by_priority(image_avail, IMAGE_READ_ORDER)) or "none"
-    )
-    missing = sorted(set(io.list_image_readers()) - set(image_avail))
-    if missing:
-        _doctor_row("not installed", ", ".join(missing))
+    have_av = importlib.util.find_spec("av") is not None
+    have_cv2 = importlib.util.find_spec("cv2") is not None
+    _doctor_row("video read/write", "pyav" if have_av else "av not installed")
+    _doctor_row("image read", "opencv" if have_cv2 else "opencv not installed")
 
     _doctor_header("weights")
     _doctor_row("cache dir", download.cache_dir())

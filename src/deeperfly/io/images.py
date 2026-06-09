@@ -1,15 +1,14 @@
-"""Image-sequence reading: :class:`ImageSequenceReader` plus the still-image registry.
+"""Image-sequence reading: :class:`ImageSequenceReader` (OpenCV).
 
-Image *sequences* (not video files) are decoded per file by OpenCV, resolved by
-:func:`select_image_reader`. Decoding is parallel across threads (JPEG/PNG decoders
-release the GIL) and yields host ``(T, H, W, 3)`` uint8 RGB NumPy: grayscale frames
-broadcast to 3 channels, alpha is dropped.
+Image *sequences* (not video files) are decoded per file by OpenCV. Decoding is
+parallel across threads (JPEG/PNG decoders release the GIL) and yields host
+``(T, H, W, 3)`` uint8 RGB NumPy: grayscale frames broadcast to 3 channels,
+alpha is dropped.
 """
 
 from __future__ import annotations
 
 import glob
-import importlib.util
 import logging
 import os
 from collections.abc import Iterator
@@ -22,66 +21,6 @@ from jaxtyping import Float
 from .base import IMAGE_EXTS, FrameReader
 
 log = logging.getLogger("deeperfly.io")
-
-
-def _have(*modules: str) -> bool:
-    """True if every module can be located without importing the heavy parts."""
-    for mod in modules:
-        try:
-            if importlib.util.find_spec(mod) is None:
-                return False
-        except (ImportError, ValueError):
-            return False
-    return True
-
-
-IMAGE_READ_ORDER = ("opencv",)
-_IMAGE_READER_REQUIRES = {"opencv": ("cv2",)}
-
-
-def list_image_readers() -> list[str]:
-    """All known image-reader names (installed or not)."""
-    return sorted(IMAGE_READ_ORDER)
-
-
-def available_image_readers() -> list[str]:
-    """Image-reader names whose dependencies are importable in this environment."""
-    return sorted(n for n in IMAGE_READ_ORDER if _have(*_IMAGE_READER_REQUIRES[n]))
-
-
-def select_image_reader(backend: str = "auto") -> str:
-    """Resolve an image-reader name (or ``"auto"``).
-
-    Parameters
-    ----------
-    backend
-        ``"auto"`` or ``"opencv"``.
-
-    Returns
-    -------
-    str
-        The resolved image-reader name (always ``"opencv"``).
-
-    Raises
-    ------
-    ValueError
-        If ``backend`` names no known image reader.
-    RuntimeError
-        If OpenCV is unavailable.
-    """
-    if backend == "auto":
-        if _have(*_IMAGE_READER_REQUIRES["opencv"]):
-            return "opencv"
-        raise RuntimeError("no image reader available; install opencv-python")
-    if backend not in _IMAGE_READER_REQUIRES:
-        raise ValueError(
-            f"unknown image reader {backend!r}; choose from {list_image_readers()}"
-        )
-    if not _have(*_IMAGE_READER_REQUIRES[backend]):
-        raise RuntimeError(
-            f"image reader {backend!r} needs {_IMAGE_READER_REQUIRES[backend]}"
-        )
-    return backend
 
 
 def list_image_files(pattern: str | Path) -> list[Path]:
@@ -139,10 +78,6 @@ class ImageSequenceReader(FrameReader):
         """Build a reader for a directory or glob, listing/sorting its files by name."""
         return cls(list_image_files(pattern), workers=workers)
 
-    @property
-    def name(self) -> str:
-        return "opencv"
-
     # -- decode (parallel per-file, CPU) -------------------------------------
 
     @staticmethod
@@ -154,13 +89,6 @@ class ImageSequenceReader(FrameReader):
             arr = np.repeat(arr, 3, axis=-1)
         arr = arr[..., :3]  # drop alpha / extra channels
         return arr if arr.dtype == np.uint8 else np.clip(arr, 0, 255).astype(np.uint8)
-
-    @staticmethod
-    def _select(files: list[Path], indices, start, stop, step) -> list[Path]:
-        """Pick frames by explicit ``indices`` or a ``range(start, stop, step)`` slice."""
-        if indices is not None:
-            return [files[int(i)] for i in indices]
-        return files[start : stop if stop is not None else len(files) : step]
 
     def _n_workers(self, n: int) -> int:
         return max(1, min(n, self.workers or (os.cpu_count() or 4)))
@@ -181,26 +109,19 @@ class ImageSequenceReader(FrameReader):
 
     def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
         if isinstance(key, int):
-            files = [self.files[key]]
-            out = self._decode(files)[0]
+            out = self._decode([self.files[key]])[0]
         elif isinstance(key, list):
             if not key:
                 raise ValueError("index list must be non-empty")
-            files = self._select(self.files, key, 0, None, 1)
-            out = self._decode(files)
+            out = self._decode([self.files[int(i)] for i in key])
         elif isinstance(key, slice):
-            start, stop, step = key.start or 0, key.stop, key.step or 1
-            files = self._select(self.files, None, start, stop, step)
+            files = self.files[key]
             if not files:
                 raise ValueError("no frames selected (check slice)")
             out = self._decode(files)
         else:
             raise TypeError(f"invalid index type {type(key).__name__!r}")
-        log.debug(
-            "read images (%s) -> %s",
-            self.name,
-            out.shape,
-        )
+        log.debug("read images -> %s", out.shape)
         return out
 
     def stream_frames(
@@ -210,8 +131,7 @@ class ImageSequenceReader(FrameReader):
         stop: int | None = None,
         step: int = 1,
     ) -> Iterator[Float[np.ndarray, "H W 3"]]:
-        files = self._select(self.files, None, start, stop, step)
-        for f in files:
+        for f in self.files[start:stop:step]:
             yield self._decode([f])[0]
 
     def stream_blocks(
@@ -224,7 +144,7 @@ class ImageSequenceReader(FrameReader):
     ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
         if block_size < 1:
             raise ValueError(f"block_size must be >= 1, got {block_size}")
-        files = self._select(self.files, None, start, stop, step)
+        files = self.files[start:stop:step]
         for pos in range(0, len(files), block_size):
             yield self._decode(files[pos : pos + block_size])
 

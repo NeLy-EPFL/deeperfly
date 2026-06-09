@@ -346,8 +346,8 @@ def detect_2d(
         transforms_by_name.get(name, preprocessing.FrameTransform())
         for name, _ in cam_sources
     ]
-    # One head reader for the first camera serves both the progress-bar total and
-    # the reported decoder name -- the source kind is resolved once here.
+    # One head reader for the first camera serves the progress-bar total -- the
+    # source kind is resolved once here.
     head = io.open_reader(cam_files[0]) if cam_files else None
     total = head.count() if head is not None else 0
 

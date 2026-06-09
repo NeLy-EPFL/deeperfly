@@ -173,12 +173,11 @@ def test_writer_accepts_iterator_of_blocks(tmp_path):
     assert io.VideoReader(path)[:].shape[0] == len(frames)
 
 
-def test_video_reader_name_and_fps(tmp_path):
-    # open_reader resolves a video file to a VideoReader; name/fps come from metadata.
+def test_video_reader_fps(tmp_path):
+    # open_reader resolves a video file to a VideoReader; fps comes from metadata.
     path = _write_clip(tmp_path, _gradient_clip(8, 16, 16))
     reader = io.open_reader(path)
     assert isinstance(reader, io.VideoReader)
-    assert reader.name == "pyav"
     assert reader.fps() == pytest.approx(10.0, abs=0.5)
 
 
@@ -221,11 +220,10 @@ def test_open_reader_missing_source_raises(tmp_path):
         io.open_reader(tmp_path / "missing.mp4")
 
 
-def test_image_reader_name_and_no_fps(tmp_path):
+def test_image_reader_no_fps(tmp_path):
     _write_images(tmp_path, _gradient_clip(3, 16, 16), ext="png")
     reader = io.open_reader(tmp_path)
     assert isinstance(reader, io.ImageSequenceReader)
-    assert reader.name == "opencv"  # core default
     assert reader.fps() is None  # image sequences carry no frame rate
 
 

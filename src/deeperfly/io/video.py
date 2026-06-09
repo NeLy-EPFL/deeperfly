@@ -35,10 +35,6 @@ class VideoReader(FrameReader):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
-    @property
-    def name(self) -> str:
-        return "pyav"
-
     # -- decode (in-process FFmpeg, CPU) -------------------------------------
 
     def _decode_stream(self, *, start=0, step=1, stop=None):
