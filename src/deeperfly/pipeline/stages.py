@@ -461,7 +461,6 @@ def source_view_frames(
     # transformed-frame coordinates; the overlay footage must match (apply the
     # same per-camera preprocess transform).
     transforms = config.frame_transforms()
-    image_backend = config.io.image_reader
     workers = config.io.image_workers
 
     def transform(v, frames):
@@ -475,11 +474,7 @@ def source_view_frames(
         return {
             v: transform(
                 v,
-                io.open_reader(
-                    sources[v],
-                    image_backend=image_backend,
-                    workers=workers,
-                ).read(),
+                io.open_reader(sources[v], workers=workers)[:],
             )
             for v in views
         }

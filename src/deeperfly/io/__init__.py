@@ -6,16 +6,17 @@ Footage is read through a small class hierarchy rooted at
 - :class:`~deeperfly.io.video.VideoReader` -- frame-accurate decode of a video file
   to ``(T, H, W, 3)`` uint8 RGB NumPy (PyAV, in-process FFmpeg, CPU).
 - :class:`~deeperfly.io.images.ImageSequenceReader` -- parallel decode of an image
-  sequence (OpenCV core, optional imageio fallback).
+  sequence (OpenCV).
 
 :func:`open_reader` resolves a source (video file, image directory/glob, or explicit
-footage file list) to the right reader **once**; callers then ``read`` / ``stream`` /
-``count`` / ``fps`` against that object. :class:`~deeperfly.io.video.VideoWriter`
-encodes frames to H.264, one frame or one array at a time.
+footage file list) to the right reader **once**; callers then index (``reader[:]``,
+``reader[i]``, ``reader[[0,3,5]]``) or stream (``stream_frames`` / ``stream_blocks``)
+against that object. :class:`~deeperfly.io.video.VideoWriter` encodes frames to H.264,
+one frame or one array at a time.
 
 >>> from deeperfly import io
 >>> reader = io.open_reader("clip.mp4")
->>> frames = reader.read()                 # (T, H, W, 3) uint8, host NumPy
+>>> frames = reader[:]                     # (T, H, W, 3) uint8, host NumPy
 >>> with io.VideoWriter("out.mp4", fps=30) as writer:
 ...     writer.write_frames(frames)            # a batch or iterable; or write_frame()
 
@@ -50,7 +51,6 @@ from .video import VideoReader, VideoWriter
 def open_reader(
     source: str | Path | list[Path],
     *,
-    image_backend: str = "auto",
     workers: int | None = None,
 ) -> FrameReader:
     """Open the right :class:`FrameReader` for a footage source.
@@ -60,8 +60,8 @@ def open_reader(
     - a single video file (``.mp4`` / ``.avi`` / ``.mov`` ...) -> a
       :class:`~deeperfly.io.video.VideoReader` (PyAV);
     - a directory or glob of images -> an
-      :class:`~deeperfly.io.images.ImageSequenceReader` (``image_backend`` selects
-      the decoder, ``workers`` sets decode parallelism);
+      :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV, ``workers`` sets
+      decode parallelism);
     - an explicit list of footage files -- one video file, or an ordered image
       sequence the caller has already resolved (``deeperfly run`` resolves each
       camera's files up front, naturally sorted) -- is read in the given order
@@ -72,9 +72,6 @@ def open_reader(
     source
         A video file, an image directory/glob, or an explicit list of footage
         files (one video, or an ordered image sequence).
-    image_backend
-        The still-image decoder (``"auto"`` | ``"opencv"`` | ``"imageio"``); applies
-        to image sources, ignored for video.
     workers
         Decode thread count for image sequences.
 
@@ -97,13 +94,11 @@ def open_reader(
         # first when several match), so decode that one.
         if is_video_file(files[0]):
             return VideoReader(files[0])
-        return ImageSequenceReader(files, image_backend=image_backend, workers=workers)
+        return ImageSequenceReader(files, workers=workers)
     p = Path(source)
     if is_video_file(p):
         return VideoReader(p)
-    return ImageSequenceReader.from_pattern(
-        source, image_backend=image_backend, workers=workers
-    )
+    return ImageSequenceReader.from_pattern(source, workers=workers)
 
 
 __all__ = [

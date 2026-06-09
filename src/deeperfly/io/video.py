@@ -27,7 +27,7 @@ log = logging.getLogger("deeperfly.io")
 class VideoReader(FrameReader):
     """Frame-accurate decode of a single video file via PyAV.
 
-    Sequential reads walk the file forward; ``read(indices=...)`` seeks per target
+    Sequential reads walk the file forward; indexing with a list seeks per target
     frame (keyframe + decode forward). ``count`` / ``fps`` read container metadata
     -- both cheap, no full pixel decode.
     """
@@ -42,11 +42,7 @@ class VideoReader(FrameReader):
     # -- decode (in-process FFmpeg, CPU) -------------------------------------
 
     def _decode_stream(self, *, start=0, step=1, stop=None):
-        """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode.
-
-        ``stop`` is an internal bound; the public :meth:`stream` contract is
-        open-ended (decode to end-of-stream), so it omits it.
-        """
+        """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode."""
         import av
 
         with av.open(str(self.path)) as container:
@@ -94,37 +90,49 @@ class VideoReader(FrameReader):
                 f"pyav could not seek to frame {exc} of {str(self.path)!r}"
             ) from None
 
-    def read(
-        self,
-        *,
-        indices: list[int] | None = None,
-        start: int = 0,
-        stop: int | None = None,
-        step: int = 1,
-    ) -> Float[np.ndarray, "T H W 3"]:
-        if indices is not None:
-            idx = [int(i) for i in indices]
+    def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
+        if isinstance(key, int):
+            out = self._decode_range(key, key + 1, 1)[0]
+        elif isinstance(key, list):
+            idx = [int(i) for i in key]
             if not idx:
-                raise ValueError("indices must be a non-empty sequence")
+                raise ValueError("index list must be non-empty")
             out = self._decode_indices(idx)
-        else:
+        elif isinstance(key, slice):
+            start, stop, step = key.start or 0, key.stop, key.step or 1
             out = self._decode_range(int(start), stop, int(step))
-        log.debug(  # per-read detail (one line per camera per window) -- only at -vv
-            "read video %s via pyav -> %d frames %dx%d",
+        else:
+            raise TypeError(f"invalid index type {type(key).__name__!r}")
+        log.debug(
+            "read video %s via pyav -> %s",
             self.path.name,
-            out.shape[0],
-            out.shape[1],
-            out.shape[2],
+            out.shape,
         )
         return out
 
-    def stream(self, *, block: int = 64) -> Iterator[Float[np.ndarray, "T H W 3"]]:
-        if block < 1:
-            raise ValueError(f"block must be >= 1, got {block}")
+    def stream_frames(
+        self,
+        *,
+        start: int = 0,
+        stop: int | None = None,
+        step: int = 1,
+    ) -> Iterator[Float[np.ndarray, "H W 3"]]:
+        yield from self._decode_stream(start=start, stop=stop, step=step)
+
+    def stream_blocks(
+        self,
+        *,
+        start: int = 0,
+        stop: int | None = None,
+        step: int = 1,
+        block_size: int = 64,
+    ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
+        if block_size < 1:
+            raise ValueError(f"block_size must be >= 1, got {block_size}")
         buf: list[np.ndarray] = []
-        for frame in self._decode_stream():
+        for frame in self._decode_stream(start=start, stop=stop, step=step):
             buf.append(frame)
-            if len(buf) >= block:
+            if len(buf) >= block_size:
                 yield np.stack(buf)
                 buf = []
         if buf:

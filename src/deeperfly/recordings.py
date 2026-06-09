@@ -148,7 +148,7 @@ def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
     return files
 
 
-def camera_patterns(config: Config | dict) -> dict[str, str]:
+def camera_patterns(config: Config) -> dict[str, str]:
     """``camera-name -> footage glob`` (the per-camera ``input`` key), in config order.
 
     A camera with no ``input`` entry defaults to its own name as the pattern.
@@ -156,15 +156,14 @@ def camera_patterns(config: Config | dict) -> dict[str, str]:
     Parameters
     ----------
     config
-        A :class:`~deeperfly.config.Config` or a parsed config ``dict`` (the
-        recording-discovery configs in the tests do this).
+        A :class:`~deeperfly.config.Config`.
 
     Returns
     -------
     dict of str to str
         ``camera_name -> footage glob`` in config order.
     """
-    return Config.coerce(config).camera_patterns()
+    return config.camera_patterns()
 
 
 def camera_sources(
@@ -224,14 +223,13 @@ def camera_image_sizes(
     """
     from . import io, preprocessing
 
-    image_backend = config.io.image_reader
     # Size the principal point on the *transformed* frame -- the detector and the
     # overlays use the preprocess-transformed footage, so a rot90 that swaps
     # H/W must swap here too.
     transforms = config.frame_transforms()
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in camera_sources(config, sources=sources, input=input):
-        head = io.open_reader(src, image_backend=image_backend).read(indices=[0])
+        head = io.open_reader(src)[[0]]
         head = transforms.get(name, preprocessing.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes

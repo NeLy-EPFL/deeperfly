@@ -168,13 +168,12 @@ def prefetch_windows(
     block,
     transforms=None,
     depth=1,
-    image_backend="auto",
     workers=None,
 ):
     """Yield ``(window, n)`` multi-camera frame blocks from continuous decode.
 
     A background producer opens **one continuous forward decoder per source**
-    (:meth:`deeperfly.io.FrameReader.stream`) and walks them all together, grouping
+    (:meth:`deeperfly.io.FrameReader.stream_blocks`) and walks them all together, grouping
     ``block`` frames at a time into a multi-camera ``window`` (a list of
     ``(T, H, W, 3)`` arrays, one per source). Each source is decoded in a single
     linear pass -- no per-window re-open or re-seek -- overlapped with the GPU
@@ -211,8 +210,6 @@ def prefetch_windows(
         ``[cameras.*.preprocess]`` orientation.
     depth
         Queue depth bounding how far the decoder runs ahead of the GPU.
-    image_backend
-        Image-sequence reader backend name.
     workers
         Optional worker count for image-sequence decode.
 
@@ -242,11 +239,7 @@ def prefetch_windows(
         emitted = False
         try:
             streams = [
-                io.open_reader(
-                    s,
-                    image_backend=image_backend,
-                    workers=workers,
-                ).stream(block=block)
+                io.open_reader(s, workers=workers).stream_blocks(block_size=block)
                 for s in sources
             ]
             while True:
@@ -337,7 +330,6 @@ def detect_2d(
     from . import inference
 
     pose2d = config.pose2d
-    image_backend = config.io.image_reader
     workers = config.io.image_workers
     # Two knobs: the GPU forward batch (images/forward), and the decode buffer in
     # multiples of it. A block holds one batch of frames; the reader keeps up to
@@ -356,22 +348,11 @@ def detect_2d(
     ]
     # One head reader for the first camera serves both the progress-bar total and
     # the reported decoder name -- the source kind is resolved once here.
-    head = (
-        io.open_reader(cam_files[0], image_backend=image_backend) if cam_files else None
-    )
+    head = io.open_reader(cam_files[0]) if cam_files else None
     total = head.count() if head is not None else 0
 
-    # One-line summary instead of a per-block read log (that's at -vv now).
-    # The reader's name reports the decoder that actually runs off the real source;
-    # guard a forced-but-uninstalled image backend.
-    try:
-        reader = head.name if head is not None else image_backend
-    except Exception:  # noqa: BLE001
-        reader = image_backend
     log.info(
-        "streaming frames via '%s' backend: forward batch %d, decode buffer %d "
-        "batches (%d frames/camera)",
-        reader,
+        "streaming frames: forward batch %d, decode buffer %d batches (%d frames/camera)",
         batch_size,
         depth,
         depth * batch_size,
@@ -386,7 +367,6 @@ def detect_2d(
             block=block,
             transforms=transforms,
             depth=depth,
-            image_backend=image_backend,
             workers=workers,
         ):
             if want_candidates:

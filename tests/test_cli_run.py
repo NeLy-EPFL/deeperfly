@@ -1071,16 +1071,17 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
 
 
 def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     from deeperfly import io
 
-    # open_reader().read() echoes its source so we see which footage each view used.
-    monkeypatch.setattr(
-        io,
-        "open_reader",
-        lambda src, **kw: SimpleNamespace(read=lambda **rkw: ("frames", src)),
-    )
+    # open_reader()[key] echoes its source so we see which footage each view used.
+    class _FakeReader:
+        def __init__(self, src):
+            self._src = src
+
+        def __getitem__(self, key):
+            return ("frames", self._src)
+
+    monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
     cfg = Config.from_dict({"pipeline": {"pose2d": {}}})
     names = result.cameras.names
     v0, v1 = names[0], names[1]
@@ -1113,20 +1114,22 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
 def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
     # Overlay footage must get the same per-camera transform the detector saw, so
     # 2D/3D overlays (now in transformed-frame coords) land on matching frames.
-    from types import SimpleNamespace
-
     from deeperfly import io, preprocessing
 
     rng = np.random.default_rng(0)
     names = result.cameras.names
     raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
+
     # the run's resolved footage maps each view to one "file" (its name); the reader
     # returns that view's raw footage.
-    monkeypatch.setattr(
-        io,
-        "open_reader",
-        lambda src, **kw: SimpleNamespace(read=lambda **rkw: raw[src[0]]),
-    )
+    class _FakeReader:
+        def __init__(self, src):
+            self._src = src
+
+        def __getitem__(self, key):
+            return raw[self._src[0]]
+
+    monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
 
     v0, v1 = names[0], names[1]
     cameras = {n: {"input": n} for n in names}
@@ -1150,10 +1153,10 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)  # one short block of 2 frames
 
     def fake_open_reader(src, **kw):
-        def stream(*, block):
+        def stream_blocks(*, block_size):
             yield win.copy()  # a single < block block -> last (and only) window
 
-        return SimpleNamespace(stream=stream)
+        return SimpleNamespace(stream_blocks=stream_blocks)
 
     monkeypatch.setattr(io, "open_reader", fake_open_reader)
     t = preprocessing.FrameTransform(fliplr=True, rot90=1)
@@ -1177,11 +1180,11 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
     def fake_open_reader(src, **kw):
         full = a if src == "A" else b
 
-        def stream(*, block):
-            for pos in range(0, len(full), block):
-                yield full[pos : pos + block]
+        def stream_blocks(*, block_size):
+            for pos in range(0, len(full), block_size):
+                yield full[pos : pos + block_size]
 
-        return SimpleNamespace(stream=stream)
+        return SimpleNamespace(stream_blocks=stream_blocks)
 
     monkeypatch.setattr(io, "open_reader", fake_open_reader)
     windows = list(pose2d_stream.prefetch_windows(["A", "B"], block=2))
@@ -1196,8 +1199,6 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
 def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     # A rot90 swaps H/W, so the inferred principal point must use the transformed
     # size; an untransformed camera keeps its raw (H, W).
-    from types import SimpleNamespace
-
     from deeperfly import io
 
     monkeypatch.setattr(
@@ -1206,11 +1207,12 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
         lambda config, **kw: [("rh", "A"), ("lf", "B")],
     )
     head = np.zeros((1, 4, 6, 3), np.uint8)
-    monkeypatch.setattr(
-        io,
-        "open_reader",
-        lambda src, **kw: SimpleNamespace(read=lambda **rkw: head),
-    )
+
+    class _FakeReader:
+        def __getitem__(self, key):
+            return head
+
+    monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader())
     cfg = Config.from_dict(
         {
             "cameras": {"rh": {"preprocess": {"rot90": 1}}, "lf": {}},

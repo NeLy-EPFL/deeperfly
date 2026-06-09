@@ -2,9 +2,10 @@
 
 A :class:`FrameReader` is the common interface over the two ways deeperfly reads
 footage -- a video file (:class:`~deeperfly.io.video.VideoReader`, PyAV) or an
-image sequence (:class:`~deeperfly.io.images.ImageSequenceReader`, OpenCV/imageio).
+image sequence (:class:`~deeperfly.io.images.ImageSequenceReader`, OpenCV).
 :func:`~deeperfly.io.open_reader` resolves a source to the right subclass **once**;
-callers then ``read`` / ``stream`` / ``count`` / ``fps`` against that object.
+callers then index (``reader[:]``, ``reader[i]``, ``reader[[0,3,5]]``) or stream
+(``stream_frames`` / ``stream_blocks``) against that object.
 
 :func:`to_numpy` / :func:`to_torch` adapt decoded frames for callers that want a
 NumPy array or a torch tensor. :data:`VIDEO_EXTS` / :data:`IMAGE_EXTS` and
@@ -81,12 +82,21 @@ class FrameReader(ABC):
     """Reads ``(T, H, W, 3)`` uint8 RGB frames from one footage source.
 
     The two concrete readers -- :class:`~deeperfly.io.video.VideoReader` (PyAV) and
-    :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV/imageio) -- resolve
+    :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV) -- resolve
     their source kind at construction, so the per-call dispatch the old free
     functions repeated happens once. :func:`~deeperfly.io.open_reader` is the
     factory that picks the subclass.
 
     All decoding runs on the CPU and yields host ``(T, H, W, 3)`` uint8 RGB NumPy.
+
+    Index with ``reader[key]`` to decode frames into an array:
+
+    - ``reader[5]`` -- single frame, ``(H, W, 3)``
+    - ``reader[[0, 3, 5]]`` -- explicit indices (random-access), ``(T, H, W, 3)``
+    - ``reader[2:8:2]`` -- sequential slice, ``(T, H, W, 3)``
+    - ``reader[:]`` -- full decode, ``(T, H, W, 3)``
+
+    Use :meth:`stream_frames` / :meth:`stream_blocks` for lazy forward iteration.
 
     Readers can be used as context managers (symmetric with
     :class:`~deeperfly.io.video.VideoWriter`); :meth:`close` releases any held
@@ -110,49 +120,61 @@ class FrameReader(ABC):
         logs and diagnostics."""
 
     @abstractmethod
-    def read(
-        self,
-        *,
-        indices: list[int] | None = None,
-        start: int = 0,
-        stop: int | None = None,
-        step: int = 1,
-    ) -> Float[np.ndarray, "T H W 3"]:
-        """Decode a frame selection into a stacked ``(T, H, W, 3)`` uint8 RGB array.
+    def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
+        """Decode frames into a NumPy array.
 
         Parameters
         ----------
-        indices
-            Explicit frame indices (random access); overrides ``start/stop/step``.
-        start, stop, step
-            Sequential frame slice, like ``range(start, stop, step)``.
-
-        Returns
-        -------
-        np.ndarray
-            The decoded ``(T, H, W, 3)`` uint8 RGB frames (host NumPy).
+        key
+            - ``int`` -- single frame index; returns ``(H, W, 3)`` uint8 RGB.
+            - ``list[int]`` -- explicit frame indices (random-access / seeking);
+              returns ``(T, H, W, 3)`` in the requested order.
+            - ``slice`` -- sequential range ``slice(start, stop, step)``;
+              returns ``(T, H, W, 3)``. ``reader[:]`` decodes everything.
         """
 
     @abstractmethod
-    def stream(self, *, block: int = 64) -> Iterator[Float[np.ndarray, "T H W 3"]]:
-        """Yield ``(T, H, W, 3)`` uint8 RGB blocks (``T <= block``) from one forward pass.
-
-        Instead of decoding a fixed ``[start, stop)`` slice, walk the source forward
-        to the end, emitting frames in groups of up to ``block``. A whole recording
-        is therefore one linear decode -- no per-window re-open or re-seek -- which
-        is what streaming detection wants. ``block`` only sets the grouping
-        granularity; it does not bound how far decode runs ahead (the consumer
-        imposes that backpressure).
+    def stream_frames(
+        self,
+        *,
+        start: int = 0,
+        stop: int | None = None,
+        step: int = 1,
+    ) -> Iterator[Float[np.ndarray, "H W 3"]]:
+        """Yield individual ``(H, W, 3)`` uint8 RGB frames from one forward pass.
 
         Parameters
         ----------
-        block
+        start, stop, step
+            Frame range, like ``range(start, stop, step)``.
+        """
+
+    @abstractmethod
+    def stream_blocks(
+        self,
+        *,
+        start: int = 0,
+        stop: int | None = None,
+        step: int = 1,
+        block_size: int = 64,
+    ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
+        """Yield ``(T, H, W, 3)`` uint8 RGB blocks from one forward pass.
+
+        Instead of decoding a fixed ``[start, stop)`` slice, walk the source forward
+        and emit frames in groups of up to ``block_size``. A whole recording is
+        therefore one linear decode -- no per-window re-open or re-seek.
+
+        Parameters
+        ----------
+        start, stop, step
+            Frame range, like ``range(start, stop, step)``.
+        block_size
             Maximum frames per yielded block.
 
         Yields
         ------
         np.ndarray
-            ``(T, H, W, 3)`` uint8 RGB blocks with ``T <= block``.
+            ``(T, H, W, 3)`` uint8 RGB blocks with ``T <= block_size``.
         """
 
     @abstractmethod
