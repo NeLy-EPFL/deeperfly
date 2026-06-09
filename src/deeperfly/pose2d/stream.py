@@ -65,7 +65,7 @@ def load_detector(checkpoint: str | None):
         If an explicit ``checkpoint`` path does not exist (we never write to a
         user-named path).
     """
-    from . import backends
+    from . import detector
     from .download import download_torch_weights
 
     if checkpoint is not None and not Path(checkpoint).exists():
@@ -74,7 +74,7 @@ def load_detector(checkpoint: str | None):
             "to use the auto-provisioned cache, or point it at a valid .pth."
         )
     path = checkpoint or download_torch_weights()
-    return backends.load_detector(path)
+    return detector.load_detector(path)
 
 
 # -- frame-rate resolution ---------------------------------------------------

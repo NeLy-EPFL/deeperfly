@@ -1,15 +1,15 @@
-"""The PyTorch 2D detector backend and its shared helpers.
+"""The torch-free seam in front of the PyTorch 2D detector.
 
-deeperfly ships the stacked-hourglass detector in PyTorch
-(:mod:`~deeperfly.pose2d.backends.torch`): a faithful copy of the DeepFly2D
-network that loads the released weights directly, running on CUDA (NVIDIA) and
-Metal/MPS (Apple Silicon) automatically.
+deeperfly ships the stacked-hourglass detector in PyTorch -- a faithful copy of
+the DeepFly2D network (:mod:`~deeperfly.pose2d.model`) that loads the released
+weights directly (:mod:`~deeperfly.pose2d.weights`), running on CUDA (NVIDIA)
+and Metal/MPS (Apple Silicon) automatically.
 
-The detector sits behind a small interface (:func:`load_detector`,
+This module is the small interface in front of it (:func:`load_detector`,
 :func:`predict_heatmaps`, :func:`detector_device`), so the orchestration in
-:mod:`deeperfly.pose2d.inference` never touches the backend directly, plus the
-GPU-memory helper (:func:`gpu_memory_bytes`) and
-:func:`infer_num_stacks`. The backend imports lazily, so importing
+:mod:`deeperfly.pose2d.inference` never touches the torch modules directly,
+plus the GPU-memory helper (:func:`gpu_memory_bytes`) and
+:func:`infer_num_stacks`. The torch modules import lazily, so importing
 :mod:`deeperfly.pose2d` never imports torch.
 """
 
@@ -26,15 +26,15 @@ def load_detector(checkpoint=None, **kwargs):
     checkpoint
         Path to a ``.pth`` checkpoint, or ``None`` for a freshly initialized model.
     **kwargs
-        Forwarded to the backend's ``load_model`` (e.g. ``dev``).
+        Forwarded to :func:`deeperfly.pose2d.weights.load_model` (e.g. ``dev``).
 
     Returns
     -------
     The loaded detector model.
     """
-    from . import torch as backend
+    from . import weights
 
-    return backend.load_model(checkpoint, **kwargs)
+    return weights.load_model(checkpoint, **kwargs)
 
 
 def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
@@ -56,9 +56,9 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     np.ndarray
         The final-stack heatmaps as host NumPy.
     """
-    from . import torch as backend
+    from . import model as _model
 
-    return np.asarray(backend.predict_heatmaps(model, inputs))
+    return _model.predict_heatmaps(model, inputs)
 
 
 def predict_points(
@@ -87,10 +87,9 @@ def predict_points(
     conf : np.ndarray
         Per-joint confidence of shape ``(N, J)``.
     """
-    from . import torch as backend
+    from . import model as _model
 
-    xy, conf = backend.predict_points(model, inputs, method=method, radius=radius)
-    return np.asarray(xy), np.asarray(conf)
+    return _model.predict_points(model, inputs, method=method, radius=radius)
 
 
 def set_precision(model, precision: str = "float32") -> None:
@@ -107,9 +106,9 @@ def set_precision(model, precision: str = "float32") -> None:
     precision
         ``"float32"``, ``"float16"`` or ``"bfloat16"``.
     """
-    from . import torch as backend
+    from . import model as _model
 
-    backend.set_precision(model, precision)
+    _model.set_precision(model, precision)
 
 
 def detector_device(model) -> str:

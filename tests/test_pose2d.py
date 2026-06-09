@@ -10,8 +10,9 @@ import numpy as np
 import pytest
 import torch
 
-from deeperfly.pose2d import backends, inference
-from deeperfly.pose2d.backends.torch import HourglassNet, load_model
+from deeperfly.pose2d import detector, inference
+from deeperfly.pose2d.model import HourglassNet
+from deeperfly.pose2d.weights import load_model
 
 
 @pytest.fixture
@@ -40,7 +41,7 @@ def test_default_is_sh8():
 
 def test_batched_inference(model):
     inputs = torch.randn(3, 3, 256, 512)
-    hm = backends.predict_heatmaps(model, inputs)
+    hm = detector.predict_heatmaps(model, inputs)
     assert hm.shape == (3, 19, 64, 128)
     assert isinstance(hm, np.ndarray)  # backend always returns host NumPy
 
@@ -50,12 +51,12 @@ def test_batched_inference(model):
 
 def test_infer_num_stacks_counts_score_heads(model):
     sd = {k: v.detach().numpy() for k, v in model.state_dict().items()}
-    assert backends.infer_num_stacks(sd) == 2
+    assert detector.infer_num_stacks(sd) == 2
 
 
 def test_infer_num_stacks_rejects_foreign_state_dict():
     with pytest.raises(KeyError, match="not a HourglassNet"):
-        backends.infer_num_stacks({"conv.weight": np.zeros((1,))})
+        detector.infer_num_stacks({"conv.weight": np.zeros((1,))})
 
 
 def test_checkpoint_save_load(model, tmp_path):
@@ -92,19 +93,19 @@ def test_predict_points_matches_heatmaps_decode(model):
     # reference "predict_heatmaps then heatmap_to_points" path to float32 epsilon,
     # for every sub-pixel method. Exercised on the CPU here, so no GPU is required.
     inputs = torch.randn(3, 3, 256, 512)
-    hm = backends.predict_heatmaps(model, inputs)
+    hm = detector.predict_heatmaps(model, inputs)
     for method in ("argmax", "weighted", "taylor"):
         ref_pts, ref_conf = inference.heatmap_to_points(hm, method=method)
-        pts, conf = backends.predict_points(model, inputs, method=method)
+        pts, conf = detector.predict_points(model, inputs, method=method)
         np.testing.assert_allclose(pts, ref_pts, atol=1e-4)
         np.testing.assert_allclose(conf, ref_conf, atol=1e-4)
 
 
 def test_set_precision_accepts_and_rejects(model):
     for p in ("float32", "float16", "bfloat16"):
-        backends.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
+        detector.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
     with pytest.raises(ValueError, match="unknown detector precision"):
-        backends.set_precision(model, "int8")
+        detector.set_precision(model, "int8")
 
 
 def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
@@ -200,7 +201,7 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
             pts[i, :, 0], pts[i, :, 1] = c / 128, r / 64  # decode of a lone spike
         return pts, conf
 
-    monkeypatch.setattr(backends, "predict_points", fake_predict_points)
+    monkeypatch.setattr(detector, "predict_points", fake_predict_points)
     sides, flips = inference.fly_camera_layout(["rh", "lf"])
     rng = np.random.default_rng(3)
     frames = [rng.uniform(size=(5, 64, 64, 3)).astype(np.float32) for _ in range(2)]

@@ -168,7 +168,7 @@ def inspect(
 
 @app.command()
 def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
-    """Report installation/runtime: accelerators, video backends, weights."""
+    """Report installation/runtime: accelerators, frame I/O, weights."""
     _configure_logging(log_level.value)
     _cmd_doctor(argparse.Namespace())
 

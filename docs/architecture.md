@@ -16,11 +16,11 @@ still on — so disabling the finished stages resumes a partial run.
 
 | Stage | Module | Notes |
 | --- | --- | --- |
-| 2D pose | `pose2d/` (`backends/torch/`) | Stacked hourglass (PyTorch) running the original DeepFly2D weights directly; CUDA / Metal automatically. |
+| 2D pose | `pose2d/` (`model.py`, `weights.py`) | Stacked hourglass (PyTorch) running the original DeepFly2D weights directly; CUDA / Metal automatically. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
 | Triangulation | `triangulation.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT, optionally after pictorial-structures peak recovery (`pictorial.py`). |
 | Visualization | `visualization/`, `io/` | OpenCV 2D overlays + reprojected 3D skeleton, composited to MP4. |
-| Result I/O | `io.py` | Self-contained HDF5 `PoseResult`. |
+| Result I/O | `results.py` | Self-contained HDF5 `PoseResult`. |
 | Skeleton | `skeleton.py` + `data/skeleton_fly.toml` | 38 points, 10 limbs, 28 bones, per-camera visibility. |
 
 ## 3D correction: triangulation (± pictorial)
@@ -60,13 +60,14 @@ it is a no-op.
 ## 2D detector
 
 The detector is a faithful PyTorch copy of the original DeepFly2D stacked
-hourglass, under `pose2d/backends/torch/` (exposed through `pose2d/backends/` as
-`HourglassNet` / `load_model` / `predict_heatmaps`). It loads the published `sh8`
-weights directly, with no conversion; `deeperfly run` downloads them on first use.
+hourglass: `pose2d/model.py` (`HourglassNet`, `predict_heatmaps`) and
+`pose2d/weights.py` (`load_model`), behind the torch-free `pose2d/detector.py`
+seam. It loads the published `sh8` weights directly, with no conversion;
+`deeperfly run` downloads them on first use.
 `pose2d/inference.py` preprocesses frames in torch, so a GPU-decoded frame is
 normalized, resized and forwarded without leaving the GPU.
 
 The detector uses CUDA automatically on NVIDIA and Metal (MPS) on Apple Silicon,
 with no setup. For large CUDA batches the forward is wrapped with `torch.compile`
-(see `pose2d/backends/torch/model.py`). Geometry and bundle adjustment are the
+(see `pose2d/model.py`). Geometry and bundle adjustment are the
 only JAX in deeperfly and run in float64 on the CPU.

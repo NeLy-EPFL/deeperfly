@@ -2,7 +2,7 @@
 
 A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
-conversion (load them with :func:`deeperfly.pose2d.backends.torch.load_model`).
+conversion (load them with :func:`deeperfly.pose2d.weights.load_model`).
 Stacked ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps
 out (:func:`predict_heatmaps`). The plain detect path
 (:func:`deeperfly.pose2d.inference.detect`) instead drives :func:`predict_points`,

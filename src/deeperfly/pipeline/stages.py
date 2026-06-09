@@ -156,7 +156,7 @@ def stage_pose2d(
     image_sizes : dict
         ``camera_name -> (height, width)`` of the preprocessed frames.
     """
-    from ..pose2d import backends, inference
+    from ..pose2d import detector, inference
     from ..triangulation import apply_visibility
 
     transforms = config.frame_transforms()
@@ -191,12 +191,12 @@ def stage_pose2d(
     log.info("loading detector (checkpoint: %s)", pose2d.checkpoint or "cached")
     model = load_detector(pose2d.checkpoint)
     precision = pose2d.precision
-    backends.set_precision(
+    detector.set_precision(
         model, precision
     )  # float16 -> CUDA autocast (no-op on CPU/MPS)
     log.info(
         "detector ready on device %s (precision: %s)",
-        backends.detector_device(model),
+        detector.detector_device(model),
         precision,
     )
 

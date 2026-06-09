@@ -1,8 +1,8 @@
-"""Weight I/O for the PyTorch backend: read the original DeepFly2D checkpoint.
+"""Weight I/O for the PyTorch detector: read the original DeepFly2D checkpoint.
 
 The released checkpoint is a plain PyTorch ``state_dict`` (possibly wrapped by
-Lightning/DataParallel), so this backend loads it directly into the
-:class:`~deeperfly.pose2d.backends.torch.model.HourglassNet` -- no conversion.
+Lightning/DataParallel), so it loads directly into the
+:class:`~deeperfly.pose2d.model.HourglassNet` -- no conversion.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def load_model(
     HourglassNet
         The detector model in eval mode on ``dev``.
     """
-    from .. import infer_num_stacks  # shared across backends, torch-free import
+    from .detector import infer_num_stacks
 
     if checkpoint is None:
         return HourglassNet().eval().to(dev or device())

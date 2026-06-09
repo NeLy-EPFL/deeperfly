@@ -918,23 +918,23 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
 def test_load_detector_downloads_cached(tmp_path, monkeypatch):
     # With no explicit checkpoint, load_detector downloads the cached torch
     # weights and loads the detector from them.
-    from deeperfly.pose2d import backends, download
+    from deeperfly.pose2d import detector, download
 
     sentinel = tmp_path / "sh8_deepfly.pth"
     monkeypatch.setattr(download, "download_torch_weights", lambda: sentinel)
-    monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
+    monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
     assert pose2d_stream.load_detector(None) == ("loaded", sentinel)
 
 
 def test_load_detector_explicit_checkpoint(tmp_path, monkeypatch):
-    from deeperfly.pose2d import backends, download
+    from deeperfly.pose2d import detector, download
 
     monkeypatch.setattr(
         download,
         "download_torch_weights",
         lambda: pytest.fail("should not download when a checkpoint is given"),
     )
-    monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
+    monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
     ckpt = tmp_path / "custom.pth"
     ckpt.write_bytes(b"weights")
     assert pose2d_stream.load_detector(str(ckpt)) == ("loaded", str(ckpt))

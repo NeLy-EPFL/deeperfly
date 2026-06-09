@@ -1,6 +1,6 @@
 """Orchestration: run the detector and assemble 2D skeletons.
 
-Sits above the detector backend (:mod:`deeperfly.pose2d.backends`): preprocesses
+Sits above the detector seam (:mod:`deeperfly.pose2d.detector`): preprocesses
 images (in torch, so a GPU-decoded frame never leaves the GPU), decodes heatmaps,
 and scatters per-camera detections into the full skeleton. Pipeline for one
 recording:
@@ -11,7 +11,7 @@ recording:
    physical view, so the front image bridges the two body sides.
 2. :func:`preprocess` each pass (mirror-flip if required, resize to 256x512,
    subtract the training mean) -- matching DeepFly2D.
-3. :func:`deeperfly.pose2d.backends.predict_points` (batched) -- forward + on-device
+3. :func:`deeperfly.pose2d.detector.predict_points` (batched) -- forward + on-device
    arg-max decode -> normalized sub-pixel peaks + confidence (the same decode as
    :func:`heatmap_to_points`, kept on the GPU so only the peaks come back). The
    candidate path instead pulls whole heatmaps via ``predict_heatmaps``.
@@ -460,7 +460,7 @@ def detect(
     Parameters
     ----------
     model
-        The detector (:mod:`deeperfly.pose2d.backends`).
+        The detector (see :mod:`deeperfly.pose2d.detector`).
     images
         One ``(H, W, 3)`` frame per physical view.
     sides, flips
@@ -477,7 +477,7 @@ def detect(
     """
     import torch
 
-    from . import backends  # lazy: importing pose2d never imports torch
+    from . import detector  # lazy: importing pose2d never imports torch
 
     views, pass_sides, pass_flips = expand_passes(sides, flips)
     # Stack the preprocessed passes into one batch; preprocess keeps each frame on
@@ -486,8 +486,8 @@ def detect(
         [preprocess(images[views[i]], flip=pass_flips[i]) for i in range(len(views))]
     )
     # Fused forward + decode: the arg-max runs on the forward's device, so only the
-    # small peak arrays leave the GPU (see backends.predict_points).
-    points_norm, conf = backends.predict_points(
+    # small peak arrays leave the GPU (see detector.predict_points).
+    points_norm, conf = detector.predict_points(
         model, inputs, method=method, radius=radius
     )
     image_size = [_image_wh(im) for im in images]  # (w, h) without materializing
@@ -547,10 +547,10 @@ def detect_sequence(
     conf : np.ndarray
         Per-point confidence of shape ``(V, T, 38)``.
     """
-    from . import backends
+    from . import detector
 
     n_views, n_frames = len(frames), len(frames[0])
-    device = backends.detector_device(model)
+    device = detector.detector_device(model)
     frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
     pts = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS, 2))
     conf = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS))
@@ -588,7 +588,7 @@ def detect_sequence(
         inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
             [preprocess(frames[views[p]][t], flip=pass_flips[p]) for (t, p) in grp]
         )
-        pg, cg = backends.predict_points(model, inputs, method=method, radius=radius)
+        pg, cg = detector.predict_points(model, inputs, method=method, radius=radius)
         for j, (t, p) in enumerate(grp):
             pn[t, p], cc[t, p] = pg[j], cg[j]
         covered = (i + len(grp)) // n_passes  # frames now fully forwarded
@@ -658,10 +658,10 @@ def detect_candidates_sequence(
     import torch
 
     from .. import pictorial
-    from . import backends
+    from . import detector
 
     n_views, n_frames = len(frames), len(frames[0])
-    device = backends.detector_device(model)
+    device = detector.detector_device(model)
     frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
     n_pts = 2 * N_SIDE_JOINTS
     views, pass_sides, pass_flips = expand_passes(sides, flips)
@@ -678,7 +678,7 @@ def detect_candidates_sequence(
                 for i in range(len(views))
             ]
         )
-        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))  # (P,J,Hh,Ww)
+        heatmaps = detector.predict_heatmaps(model, inputs)  # (P,J,Hh,Ww)
         image_size = [_image_wh(im) for im in images]  # (w, h), no host copy
         points_norm, c = heatmap_to_points(heatmaps, method=method, radius=radius)
         pts[:, t], conf[:, t] = assemble_skeleton(

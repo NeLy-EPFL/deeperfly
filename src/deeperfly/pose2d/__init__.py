@@ -1,26 +1,22 @@
 """Stacked-hourglass 2D pose detector for DeepFly2D (PyTorch).
 
 The detector is a faithful copy of the original DeepFly2D network in PyTorch
-(:mod:`~deeperfly.pose2d.backends`); it loads the released DeepFly2D weights
-directly and uses CUDA / Metal (MPS) automatically. The shared orchestration in
-:mod:`~deeperfly.pose2d.inference` (``preprocess`` -> ``predict_heatmaps`` ->
-``heatmap_to_points`` -> ``assemble_skeleton`` -> ``detect``) drives it, and
-everything downstream (calibration, triangulation) consumes its output.
-:mod:`~deeperfly.pose2d.download` fetches/caches the pretrained weights.
+(:mod:`~deeperfly.pose2d.model`); it loads the released DeepFly2D weights
+directly (:mod:`~deeperfly.pose2d.weights`) and uses CUDA / Metal (MPS)
+automatically. The shared orchestration in :mod:`~deeperfly.pose2d.inference`
+(``preprocess`` -> ``predict_heatmaps`` -> ``heatmap_to_points`` ->
+``assemble_skeleton`` -> ``detect``) drives it through the torch-free seam
+(:mod:`~deeperfly.pose2d.detector`), and everything downstream (calibration,
+triangulation) consumes its output. :mod:`~deeperfly.pose2d.download`
+fetches/caches the pretrained weights.
 
-The detector network is :class:`pose2d.backends.torch.HourglassNet`; it is not
-re-exported here so that ``import deeperfly.pose2d`` never imports torch.
+The torch modules (:mod:`~deeperfly.pose2d.model`, :mod:`~deeperfly.pose2d.weights`)
+are not imported here so that ``import deeperfly.pose2d`` never imports torch.
 """
 
 from __future__ import annotations
 
-from . import backends, download, inference
-from .backends import (
-    gpu_memory_bytes,
-    infer_num_stacks,
-    load_detector,
-    predict_heatmaps,
-)
+from . import detector, download, inference
 from .inference import (
     assemble_skeleton,
     detect,
@@ -32,13 +28,9 @@ from .inference import (
 )
 
 __all__ = [
-    "backends",
+    "detector",
     "download",
     "inference",
-    "load_detector",
-    "predict_heatmaps",
-    "infer_num_stacks",
-    "gpu_memory_bytes",
     "preprocess",
     "heatmap_to_points",
     "assemble_skeleton",

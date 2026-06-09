@@ -201,7 +201,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     from .. import io
     from ..io import IMAGE_READ_ORDER
-    from ..pose2d import backends, download
+    from ..pose2d import detector, download
 
     _doctor_header("deeperfly")
     try:
@@ -233,7 +233,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         _doctor_row("torch", "not installed")
 
     gpu = "cuda" in torch_info or torch_info.get("mps")
-    mem = backends.gpu_memory_bytes()
+    mem = detector.gpu_memory_bytes()
     if gpu:
         _doctor_row(
             "GPU inference",
