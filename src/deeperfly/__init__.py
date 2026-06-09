@@ -20,6 +20,7 @@ from __future__ import annotations
 from . import correction, geometry, pictorial, pipeline, triangulate
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
+from .config import Config
 from .io import PoseResult
 from .pipeline import run_from_points2d
 from .skeleton import Skeleton
@@ -32,6 +33,7 @@ __all__ = [
     "pictorial",
     "Camera",
     "CameraGroup",
+    "Config",
     "Skeleton",
     "PoseResult",
     "bundle_adjust",

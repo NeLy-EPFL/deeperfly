@@ -15,12 +15,11 @@ intermediate is visible and independently testable.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import numpy as np
 
-from deeperfly import CameraGroup, PoseResult, Skeleton
+from deeperfly import Config, PoseResult, Skeleton
 from deeperfly.correction import smooth_one_euro
 from deeperfly.pipeline import calibrate, reconstruct_ransac
 from deeperfly.triangulate import apply_visibility
@@ -96,13 +95,14 @@ def main():
     fps = 100.0
     do_calibrate = False  # the synthetic cameras are already the ground-truth rig
     rng = np.random.default_rng(0)
-    config = tomllib.loads((HERE / "cameras.toml").read_text())
+    config = Config.read(HERE / "cameras.toml")
     # The synthetic rig has no real frames, so give each camera a nominal (H, W):
-    # from_config then fixes its principal point at the image center, exactly as
+    # camera_group then fixes its principal point at the image center, exactly as
     # `deeperfly run` does from the footage. View order follows [cameras.*] in the
     # config (rh, rm, rf, f, lf, lm, lh), so camera index 2 is the front-right view.
-    image_sizes = {name: (512, 1024) for name in config["cameras"]}
-    cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
+    _, camera_specs = config.camera_table()
+    image_sizes = {name: (512, 1024) for name in camera_specs}
+    cameras = config.camera_group(image_sizes=image_sizes)
     skeleton = Skeleton.fly()
 
     pts3d_true, pts2d, conf = synthesize_detections(cameras, rng)

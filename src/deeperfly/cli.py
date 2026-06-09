@@ -33,7 +33,6 @@ import copy
 import glob
 import logging
 import sys
-import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -60,50 +59,13 @@ from rich.text import Text
 import numpy as np  # noqa: E402
 
 from .cameras import CameraGroup  # noqa: E402
-from .io import PoseResult  # noqa: E402
-
-#: Packaged template emitted by ``deeperfly init`` (also the run-config example).
-DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
-
-
-#: The linear pipeline stages, in run order. Each is independently toggled by a
-#: ``[pipeline].do_<stage>`` boolean (see :func:`_stage_flags`) and parameterized
-#: by its own ``[pipeline.<stage>]`` sub-table.
-STAGES = (
-    "pose2d",
-    "bundle_adjustment",
-    "pictorial_structures",
-    "triangulation",
-    "smoothing",
-    "visualization",
+from .config import (  # noqa: E402
+    DEFAULT_CONFIG_PATH,
+    STAGE_DEFAULTS,  # noqa: F401  re-exported for tests (cli.STAGE_DEFAULTS)
+    STAGES,
+    Config,
 )
-
-#: Default for each ``do_<stage>`` when the key is omitted: detection,
-#: calibration, triangulation and visualization run by default; pictorial
-#: structures and smoothing are opt-in.
-STAGE_DEFAULTS = {
-    "pose2d": True,
-    "bundle_adjustment": True,
-    "pictorial_structures": False,
-    "triangulation": True,
-    "smoothing": False,
-    "visualization": True,
-}
-
-#: Images per detector forward (the GPU batch), overridable via ``[detector]
-#: batch_size``. The 8-stack network is compute-bound, so throughput plateaus by
-#: ~16 on a fast GPU -- 16 saturates speed while keeping forward VRAM ~0.8 GB.
-DEFAULT_FWD_BATCH = 16
-
-#: Decode buffer, in multiples of ``batch_size`` (overridable via ``[detector]
-#: decode_buffer``). Each camera is decoded in one continuous pass into a queue one
-#: ``batch_size``-frame block at a time; the reader runs ahead and pauses once this
-#: many blocks are queued, so it never outruns the GPU or grows memory without
-#: bound. Peak frame memory is ``~(decode_buffer + 2) * batch_size`` frames/camera.
-#: Deeper absorbs more decode jitter (slow seeks, network/remote storage) so the
-#: GPU never starves; since decode is usually faster than the forward, a handful of
-#: batches is plenty for local files. 8 * 16 holds ~1.2 GB for a 7-cam 480x960 rig.
-DEFAULT_DECODE_BUFFER = 8
+from .io import PoseResult  # noqa: E402
 
 #: rich output: status/results to stdout, logs and the progress bar to stderr, so
 #: piping stdout stays clean and progress never clobbers a log line.
@@ -149,11 +111,6 @@ def _frame_progress() -> Progress:
     )
 
 
-def _load_config(path: str | Path) -> dict:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
 def _configure_logging(level_name: str) -> None:
     """Configure the root log level from a ``--log-level`` name (default ``info``).
 
@@ -190,41 +147,14 @@ def _load_detector(checkpoint: str | None):
 
     if checkpoint is not None and not Path(checkpoint).exists():
         raise SystemExit(
-            f"no detector checkpoint at {checkpoint}. Remove [detector].checkpoint "
+            f"no detector checkpoint at {checkpoint}. Remove [pipeline.pose2d].checkpoint "
             "to use the auto-provisioned cache, or point it at a valid .pth."
         )
     path = checkpoint or download_torch_weights()
     return backends.load_detector(path)
 
 
-# -- config-driven option resolution -----------------------------------------
-
-
-def _pose2d_config(config: dict) -> dict:
-    """The ``[pipeline.pose2d]`` detector sub-table (empty if absent)."""
-    return config.get("pipeline", {}).get("pose2d", {})
-
-
-# Frame I/O backends live in a shared ``[io]`` section -- the same reader/writer/
-# image-reader choices apply across every stage, not duplicated per stage.
-def _video_reader(config: dict) -> str:
-    """``[io.video].reader`` -- input video decoder (default ``"auto"``)."""
-    return config.get("io", {}).get("video", {}).get("reader", "auto")
-
-
-def _video_writer(config: dict) -> str:
-    """``[io.video].writer`` -- output MP4 encoder (default ``"auto"``)."""
-    return config.get("io", {}).get("video", {}).get("writer", "auto")
-
-
-def _image_reader(config: dict) -> str:
-    """``[io.image].reader`` -- image-sequence decoder (default ``"auto"``)."""
-    return config.get("io", {}).get("image", {}).get("reader", "auto")
-
-
-def _image_workers(config: dict) -> int | None:
-    """``[io.image].workers`` -- decode threads; 0/unset -> auto (CPU count)."""
-    return int(config.get("io", {}).get("image", {}).get("workers", 0)) or None
+# -- frame-rate resolution ---------------------------------------------------
 
 
 #: Frame rate used when ``[pipeline].fps`` is unset and none can be detected from
@@ -233,7 +163,7 @@ def _image_workers(config: dict) -> int | None:
 _FPS_FALLBACK = 100.0
 
 
-def _detect_input_fps(args: argparse.Namespace, config: dict) -> float | None:
+def _detect_input_fps(args: argparse.Namespace, config: Config) -> float | None:
     """First detectable per-camera video frame rate, or ``None``.
 
     Walks the configured camera sources and returns the first video file's frame
@@ -257,7 +187,7 @@ def _detect_input_fps(args: argparse.Namespace, config: dict) -> float | None:
     return None
 
 
-def _resolve_fps(args: argparse.Namespace, config: dict) -> float:
+def _resolve_fps(args: argparse.Namespace, config: Config) -> float:
     """The recording's frame rate, for one_euro smoothing and the visualization base.
 
     Uses ``[pipeline].fps`` when set; otherwise detects it from the input videos
@@ -265,9 +195,8 @@ def _resolve_fps(args: argparse.Namespace, config: dict) -> float:
     is available -- e.g. an image sequence, or a cache-only resume with no
     recording -- logging a hint to set ``[pipeline].fps`` explicitly.
     """
-    fps = config.get("pipeline", {}).get("fps")
-    if fps is not None:
-        return float(fps)
+    if config.fps is not None:
+        return config.fps
     detected = _detect_input_fps(args, config)
     if detected is not None:
         log.info("detected input fps %.4g from the recording", detected)
@@ -278,54 +207,6 @@ def _resolve_fps(args: argparse.Namespace, config: dict) -> float:
         _FPS_FALLBACK,
     )
     return _FPS_FALLBACK
-
-
-def _bundle_adjustment_kwargs(config: dict) -> dict:
-    """Options for :func:`deeperfly.pipeline.calibrate` from ``[pipeline.bundle_adjustment]``.
-
-    Reads ``keypoints`` (-> ``ba_keypoints``), ``fixed``, ``shared`` and the solver
-    sub-table (e.g. ``[pipeline.bundle_adjustment.least_squares_scipy]``, forwarded
-    as solver kwargs like ``max_nfev`` / ``loss``). Anything omitted falls through
-    to ``calibrate``'s own defaults.
-    """
-    ba = config.get("pipeline", {}).get("bundle_adjustment", {})
-    out: dict = {}
-    if "keypoints" in ba:
-        out["ba_keypoints"] = ba["keypoints"]
-    if "fixed" in ba:
-        out["fixed"] = ba["fixed"]
-    if "shared" in ba:
-        out["shared"] = ba["shared"]
-    sub = ba
-    for part in ba.get("solver", "least_squares_scipy").split("."):
-        sub = sub.get(part, {}) if isinstance(sub, dict) else {}
-    out.update(sub)  # e.g. max_nfev, loss
-    return out
-
-
-def _pictorial_kwargs(config: dict) -> dict:
-    """Keyword args for :func:`deeperfly.pictorial.reconstruct` from ``[pipeline.pictorial_structures]``."""
-    ps = config.get("pipeline", {}).get("pictorial_structures", {})
-    return {"temporal": ps.get("temporal", False), "lam": ps.get("lam", 1.0)}
-
-
-def _triangulation_options(config: dict) -> dict:
-    """Method + thresholds for the triangulation stage from ``[pipeline.triangulation]``."""
-    tri = config.get("pipeline", {}).get("triangulation", {})
-    return {
-        "method": tri.get("method", "ransac"),
-        "ransac_threshold": tri.get("ransac_threshold", 15.0),
-        "min_inliers": tri.get("min_inliers", 2),
-        "reproj_threshold": tri.get("reproj_threshold", 40.0),
-        "max_drops": tri.get("max_drops", 5),
-    }
-
-
-def _smoothing_options(config: dict) -> tuple[str, dict]:
-    """``(method, extra_kwargs)`` for the smoothing stage from ``[pipeline.smoothing]``."""
-    sm = dict(config.get("pipeline", {}).get("smoothing", {}))
-    method = sm.pop("method", "gaussian")
-    return method, sm
 
 
 # -- input -> camera frame resolution ----------------------------------------
@@ -352,7 +233,7 @@ def _is_video_ext(suffix: str) -> bool:
 
 
 def _camera_glob(pattern: str) -> str:
-    """A camera's ``[inputs]`` value as a filename glob.
+    """A camera's ``input`` value as a filename glob.
 
     A value that already names a file (a known footage suffix like
     ``camera_0.mp4``) or carries its own wildcard (``camera_0/*``, ``cam*``) is used
@@ -367,7 +248,7 @@ def _camera_glob(pattern: str) -> str:
 
 
 def _camera_files(root: Path, pattern: str) -> list[Path]:
-    """A camera's footage files under ``root`` matching its ``[inputs]`` ``pattern``.
+    """A camera's footage files under ``root`` matching its ``input`` ``pattern``.
 
     Globs ``pattern`` (see :func:`_camera_glob`), keeps files with a known footage
     extension, and -- when several extensions match -- keeps the highest-priority
@@ -407,30 +288,27 @@ def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
     return files
 
 
-def _camera_patterns(config: dict) -> dict[str, str]:
-    """``camera-name -> [inputs] glob pattern``, in ``[cameras]`` order.
+def _camera_patterns(config: Config | dict) -> dict[str, str]:
+    """``camera-name -> footage glob`` (the per-camera ``input`` key), in config order.
 
-    A camera with no ``[inputs]`` entry defaults to its own name as the pattern.
-    Falls back to the ``[inputs]`` keys when the config carries no ``[cameras]``
-    table (the recording-discovery configs in the tests do this).
+    A camera with no ``input`` entry defaults to its own name as the pattern. Accepts
+    a parsed dict too (the recording-discovery configs in the tests do this).
     """
-    inputs = config.get("inputs", {})
-    names = config.get("cameras", {}) or inputs
-    return {name: inputs.get(name, name) for name in names}
+    return Config.coerce(config).camera_patterns()
 
 
 def _camera_sources(
-    args: argparse.Namespace, config: dict
+    args: argparse.Namespace, config: Config
 ) -> list[tuple[str, list[Path]]]:
     """``(name, footage-files)`` per camera (in ``[cameras]`` order).
 
     Prefers the files ``deeperfly run`` already resolved (``args.sources``) so
     footage is globbed once per run; otherwise resolves each camera from
-    ``args.input`` with the ``[inputs]`` patterns (a library caller). With neither,
-    every camera resolves to an empty list. Each source is the list passed to
-    :func:`deeperfly.video.read_frames`.
+    ``args.input`` with the per-camera ``input`` globs (a library caller). With
+    neither, every camera resolves to an empty list. Each source is the list passed
+    to :func:`deeperfly.video.read_frames`.
     """
-    patterns = _camera_patterns(config)
+    patterns = config.camera_patterns()
     pre = getattr(args, "sources", None)
     if pre and all(name in pre for name in patterns):
         return [(name, pre[name]) for name in patterns]
@@ -440,7 +318,7 @@ def _camera_sources(
     return [(name, _camera_files(Path(root), pat)) for name, pat in patterns.items()]
 
 
-def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
+def _camera_image_sizes(args, config: Config) -> dict[str, tuple[int, int]]:
     """``name -> (height, width)`` from a single frame per camera.
 
     Used to infer each view's principal point. Reads only frame 0 (host), so it is
@@ -448,12 +326,12 @@ def _camera_image_sizes(args, config: dict) -> dict[str, tuple[int, int]]:
     """
     from . import video
 
-    backend = _video_reader(config)
-    image_backend = _image_reader(config)
+    backend = config.io.video_reader
+    image_backend = config.io.image_reader
     # Size the principal point on the *transformed* frame -- the detector and the
-    # overlays use the [preprocess.*]-transformed footage, so a rot90 that swaps
+    # overlays use the preprocess-transformed footage, so a rot90 that swaps
     # H/W must swap here too.
-    transforms = video.parse_frame_transforms(config)
+    transforms = config.frame_transforms()
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in _camera_sources(args, config):
         head = video.read_frames(
@@ -489,12 +367,12 @@ def _prefetch_windows(
     therefore ``~(depth + 2)`` blocks (queue + the one the producer is blocked
     enqueueing + the one the consumer is forwarding), independent of recording
     length. A deeper queue absorbs more decode jitter; the detector sets ``block``
-    to the forward batch and ``depth`` to ``[detector] decode_buffer`` (see
-    :data:`DEFAULT_DECODE_BUFFER`).
+    to the forward batch and ``depth`` to ``[pipeline.pose2d] decode_buffer`` (see
+    :class:`~deeperfly.config.Pose2dParams`).
 
     ``transforms`` is an optional per-source
     :class:`~deeperfly.video.FrameTransform` (aligned to ``sources``) applied to
-    each block before yielding, so detection sees the ``[preprocess.*]``
+    each block before yielding, so detection sees the ``[cameras.*.preprocess]``
     orientation.
 
     The producer treats each source as an opaque forward stream -- it never asks
@@ -553,12 +431,12 @@ def _prefetch_windows(
         yield item[1], item[2]
 
 
-def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
+def _detect_2d(args, config: Config, model, sides, flips, *, want_candidates, k):
     """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
 
     Decodes each camera in one continuous forward pass (CPU), handing the detector
-    one ``[detector] batch_size``-frame block at a time and freeing it before the
-    next, so peak frame memory is bounded by the decode buffer, not the recording
+    one ``[pipeline.pose2d] batch_size``-frame block at a time and freeing it before
+    the next, so peak frame memory is bounded by the decode buffer, not the recording
     length. Per-block results are concatenated along time. End-of-file comes from
     the decoder (a short or exhausted block), so it doesn't depend on
     :func:`deeperfly.video.count_frames` being exact -- that is only the
@@ -568,21 +446,21 @@ def _detect_2d(args, config: dict, model, sides, flips, *, want_candidates, k):
     from .pictorial import Candidates
     from .pose2d import inference
 
-    det = _pose2d_config(config)
-    backend = _video_reader(config)
-    image_backend = _image_reader(config)
-    workers = _image_workers(config)
+    pose2d = config.pose2d
+    backend = config.io.video_reader
+    image_backend = config.io.image_reader
+    workers = config.io.image_workers
     # Two knobs: the GPU forward batch (images/forward), and the decode buffer in
     # multiples of it. A block holds one batch of frames; the reader keeps up to
     # `depth` of them queued (>= 1 so the queue stays bounded -- 0 is unbounded).
-    batch_size = max(1, int(det.get("batch_size", DEFAULT_FWD_BATCH)))
-    depth = max(1, int(det.get("decode_buffer", DEFAULT_DECODE_BUFFER)))
+    batch_size = pose2d.batch_size
+    depth = pose2d.decode_buffer
     block = batch_size
     cam_sources = _camera_sources(args, config)
     sources = [src for _, src in cam_sources]
-    # Apply each camera's [preprocess.*] transform to its decoded block, so the
-    # detector sees the corrected orientation (and 2D points land in that frame).
-    transforms_by_name = video.parse_frame_transforms(config)
+    # Apply each camera's preprocess transform to its decoded block, so the detector
+    # sees the corrected orientation (and 2D points land in that frame).
+    transforms_by_name = config.frame_transforms()
     transforms = [
         transforms_by_name.get(name, video.FrameTransform()) for name, _ in cam_sources
     ]
@@ -673,52 +551,6 @@ def _default_outdir(inp: str | Path) -> Path:
     return base / "deeperfly_outputs"
 
 
-#: Keys removed in the per-stage refactor, mapped to their new home so an old
-#: config fails with a fix-it message instead of being silently ignored.
-_REMOVED_PIPELINE_KEYS = {
-    "calibrate": "do_bundle_adjustment",
-    "do_calibrate": "do_bundle_adjustment",
-    "do_pictorial": "do_pictorial_structures",
-    "do_visualize": "do_visualization",
-    "triangulation": "[pipeline.triangulation].method",
-    "ransac_threshold": "[pipeline.triangulation].ransac_threshold",
-    "min_inliers": "[pipeline.triangulation].min_inliers",
-    "smooth": "do_smoothing + [pipeline.smoothing].method",
-}
-
-
-def _stage_flags(config: dict) -> dict[str, bool]:
-    """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
-
-    Each stage (:data:`STAGES`) has its own boolean defaulting to
-    :data:`STAGE_DEFAULTS`: an enabled stage runs (so a "resume" is just disabling
-    the stages already done, whose cached results in the output dir then feed the
-    enabled ones); a disabled stage never executes but its cached output, if
-    present, still feeds downstream. Unknown ``do_*`` keys -- and keys removed in
-    the per-stage refactor (the old ``[stages]`` table, ``[pipeline].calibrate`` /
-    ``triangulation`` / ``smooth``) -- fail loudly, pointing at the new location.
-    """
-    if "stages" in config:
-        raise SystemExit(
-            "[stages] was removed; the stage toggles now live in [pipeline] as "
-            + ", ".join(f"do_{n}" for n in STAGES)
-        )
-    pipe = config.get("pipeline", {})
-    for old, new in _REMOVED_PIPELINE_KEYS.items():
-        # A scalar at the old key is the removed usage; a sub-table (dict) of the
-        # same name -- e.g. the new [pipeline.triangulation] -- is fine.
-        if old in pipe and not isinstance(pipe[old], dict):
-            raise SystemExit(f"[pipeline].{old} was removed; use {new}")
-    valid = {f"do_{name}" for name in STAGES}
-    unknown = {k for k in pipe if k.startswith("do_")} - valid
-    if unknown:
-        raise SystemExit(
-            f"[pipeline] has unknown stage toggle(s) {', '.join(sorted(unknown))}; "
-            f"the stages are {', '.join(STAGES)}"
-        )
-    return {n: bool(pipe.get(f"do_{n}", STAGE_DEFAULTS[n])) for n in STAGES}
-
-
 #: Sentinel injected by :func:`_normalize_overwrite_argv` for a bare ``--overwrite``
 #: (no stage names), meaning "recompute every stage".
 _OVERWRITE_ALL = "__all__"
@@ -744,18 +576,16 @@ def _overwrite_stages(overwrite: list[str] | None) -> set[str]:
     return set(overwrite)
 
 
-def _visualization_cached(config: dict, outdir: Path) -> bool:
+def _visualization_cached(config: Config, outdir: Path) -> bool:
     """Whether every ``[[pipeline.visualization.videos]]`` MP4 already exists in ``outdir``."""
-    from .viz import compose
-
-    specs = compose.read_video_specs(config)
+    specs = config.videos
     return bool(specs) and all(
         (outdir / f"{spec.video_name}.mp4").exists() for spec in specs
     )
 
 
 def _stage_cached(
-    stage: str, cached: PoseResult | None, config: dict, outdir: Path
+    stage: str, cached: PoseResult | None, config: Config, outdir: Path
 ) -> bool:
     """Whether ``stage``'s output already exists in the output dir (so it can be reused).
 
@@ -785,7 +615,7 @@ def _stage_cached(
 
 
 def _stage_pose2d(
-    args: argparse.Namespace, config: dict, *, want_candidates: bool
+    args: argparse.Namespace, config: Config, *, want_candidates: bool
 ) -> tuple[PoseResult, object | None, None, dict]:
     """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
 
@@ -796,22 +626,20 @@ def _stage_pose2d(
     so the third slot is ``None``; a visualization stage re-sources the overlay
     cameras it needs.
     """
-    from . import video
     from .pose2d import backends, inference
-    from .skeleton import Skeleton
     from .triangulate import apply_visibility
 
-    transforms = video.parse_frame_transforms(config)
+    transforms = config.frame_transforms()
     image_sizes = _camera_image_sizes(args, config)
     log.info(
-        "input image sizes (h, w, after [preprocess.*]): %s",
+        "input image sizes (h, w, after preprocess): %s",
         {n: tuple(s) for n, s in image_sizes.items()},
     )
-    cameras = CameraGroup.from_config(config, image_sizes=image_sizes)
+    cameras = config.camera_group(image_sizes=image_sizes)
     unknown = set(transforms) - set(cameras.names)
     if unknown:
         log.warning(
-            "[preprocess.*] entries for unknown cameras are ignored: %s",
+            "preprocess entries for unknown cameras are ignored: %s",
             sorted(unknown),
         )
     active = {
@@ -827,12 +655,12 @@ def _stage_pose2d(
                 for n, t in active.items()
             },
         )
-    skeleton = Skeleton.from_config(config) if "skeleton" in config else Skeleton.fly()
+    skeleton = config.skeleton()
 
-    det = _pose2d_config(config)
-    log.info("loading detector (checkpoint: %s)", det.get("checkpoint") or "cached")
-    model = _load_detector(det.get("checkpoint"))
-    precision = det.get("precision", "float32")
+    pose2d = config.pose2d
+    log.info("loading detector (checkpoint: %s)", pose2d.checkpoint or "cached")
+    model = _load_detector(pose2d.checkpoint)
+    precision = pose2d.precision
     backends.set_precision(
         model, precision
     )  # float16 -> CUDA autocast (no-op on CPU/MPS)
@@ -842,10 +670,10 @@ def _stage_pose2d(
         precision,
     )
 
-    k = config.get("pipeline", {}).get("pictorial_structures", {}).get("k", 5)
+    k = config.pictorial.k
     sides, flips = inference.fly_camera_layout(cameras.names)
     n_passes = len(inference.expand_passes(sides, flips)[0])
-    batch_size = max(1, int(det.get("batch_size", DEFAULT_FWD_BATCH)))
+    batch_size = pose2d.batch_size
     log.info(
         "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
         "forward batch %d frames",
@@ -872,7 +700,7 @@ def _stage_pose2d(
     return result, candidates, None, image_sizes
 
 
-def _config_camera_rig(args: argparse.Namespace, config: dict) -> CameraGroup:
+def _config_camera_rig(args: argparse.Namespace, config: Config) -> CameraGroup:
     """The un-refined camera rig straight from the config -- the BA stage's *input*.
 
     On a resume that reuses the cached 2D, ``result.cameras`` are the *previous* BA
@@ -883,10 +711,10 @@ def _config_camera_rig(args: argparse.Namespace, config: dict) -> CameraGroup:
     ``pose2d`` does, so principal-point inference matches.
     """
     image_sizes = _camera_image_sizes(args, config)
-    return CameraGroup.from_config(config, image_sizes=image_sizes)
+    return config.camera_group(image_sizes=image_sizes)
 
 
-def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
+def _stage_bundle_adjustment(config: Config, result: PoseResult) -> PoseResult:
     """Refine ``result.cameras`` with bundle adjustment (fly-as-calibration-target).
 
     Calibrates on the arg-max 2D in ``result`` and replaces its cameras in place.
@@ -902,12 +730,16 @@ def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
         result.n_frames,
         result.n_views,
     )
+    ba = config.bundle_adjustment
     result.cameras, _ = calibrate(
         result.cameras,
         result.pts2d,
         result.conf,
         result.skeleton,
-        **_bundle_adjustment_kwargs(config),
+        ba_keypoints=ba.keypoints,
+        fixed=ba.fixed,
+        shared=ba.shared,
+        **ba.least_squares,
     )
     result.meta["bundle_adjustment"] = True  # marks the cameras as BA-refined (cache)
 
@@ -925,7 +757,7 @@ def _stage_bundle_adjustment(config: dict, result: PoseResult) -> PoseResult:
 
 
 def _stage_pictorial_structures(
-    config: dict, result: PoseResult, candidates: object
+    config: Config, result: PoseResult, candidates: object
 ) -> PoseResult:
     """DeepFly3D pictorial-structures recovery over the detector's top-K candidates.
 
@@ -936,6 +768,7 @@ def _stage_pictorial_structures(
     """
     from . import pictorial
 
+    ps = config.pictorial
     log.info(
         "pictorial structures: recovering peaks (%d frames, %d views)",
         result.n_frames,
@@ -946,14 +779,15 @@ def _stage_pictorial_structures(
         result.skeleton,
         candidates,
         result.pts2d,
-        **_pictorial_kwargs(config),
+        temporal=ps.temporal,
+        lam=ps.lam,
     )
     result.pts2d, result.pts3d, result.reproj_error = pts2d, pts3d, reproj
     result.meta["pictorial"] = True
     return result
 
 
-def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
+def _stage_triangulation(config: Config, result: PoseResult) -> PoseResult:
     """Triangulate the 2D in ``result`` to 3D by the configured method.
 
     Sets ``result.pts3d`` (and the cleaned ``result.pts2d`` / ``reproj_error`` for
@@ -965,8 +799,8 @@ def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
     from .pipeline import _resolve_triangulation, reconstruct, reconstruct_ransac
     from .triangulate import reprojection_error, triangulate
 
-    opts = _triangulation_options(config)
-    method = _resolve_triangulation(opts["method"])
+    opts = config.triangulation
+    method = _resolve_triangulation(opts.method)
     log.info(
         "triangulation: method=%s (%d frames, %d views)",
         method,
@@ -977,15 +811,15 @@ def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
         pts3d, pts2d, reproj = reconstruct_ransac(
             result.cameras,
             result.pts2d,
-            threshold=opts["ransac_threshold"],
-            min_inliers=opts["min_inliers"],
+            threshold=opts.ransac_threshold,
+            min_inliers=opts.min_inliers,
         )
     elif method == "greedy":
         pts3d, pts2d, reproj = reconstruct(
             result.cameras,
             result.pts2d,
-            reproj_threshold=opts["reproj_threshold"],
-            max_drops=opts["max_drops"],
+            reproj_threshold=opts.reproj_threshold,
+            max_drops=opts.max_drops,
         )
     else:  # "dlt": plain least-squares triangulation, no outlier handling
         pts2d = result.pts2d
@@ -997,12 +831,13 @@ def _stage_triangulation(config: dict, result: PoseResult) -> PoseResult:
 
 
 def _stage_smoothing(
-    args: argparse.Namespace, config: dict, result: PoseResult
+    args: argparse.Namespace, config: Config, result: PoseResult
 ) -> PoseResult:
     """Temporal smoothing of ``result.pts3d`` -> ``result.pts3d_smoothed``."""
     from .correction import smooth_gaussian, smooth_one_euro
 
-    method, kwargs = _smoothing_options(config)
+    smoothing = config.smoothing
+    method, kwargs = smoothing.method, smoothing.kwargs
     fps = _resolve_fps(args, config)
     log.info("smoothing: method=%s", method)
     if method == "gaussian":
@@ -1019,7 +854,7 @@ def _stage_smoothing(
 
 def _source_view_frames(
     args: argparse.Namespace,
-    config: dict,
+    config: Config,
     result: PoseResult,
     views: list[str],
     in_memory: list | None = None,
@@ -1038,11 +873,11 @@ def _source_view_frames(
     names = result.cameras.names
     # The detector ran on transformed frames, so the 2D/3D overlays live in
     # transformed-frame coordinates; the overlay footage must match (apply the
-    # same per-camera [preprocess.*] transform).
-    transforms = video.parse_frame_transforms(config)
-    backend = _video_reader(config)
-    image_backend = _image_reader(config)
-    workers = _image_workers(config)
+    # same per-camera preprocess transform).
+    transforms = config.frame_transforms()
+    backend = config.io.video_reader
+    image_backend = config.io.image_reader
+    workers = config.io.image_workers
 
     def transform(v, frames):
         return transforms.get(v, video.FrameTransform()).apply(frames)
@@ -1074,7 +909,7 @@ def _source_view_frames(
 
 def _stage_visualization(
     args: argparse.Namespace,
-    config: dict,
+    config: Config,
     result: PoseResult,
     frames: list | None,
     outdir: Path,
@@ -1092,7 +927,7 @@ def _stage_visualization(
     from . import video
     from .viz import compose
 
-    specs = compose.read_video_specs(config)
+    specs = config.videos
     if not specs:
         log.info(
             "no [[pipeline.visualization.videos]] in the config; nothing to render"
@@ -1115,7 +950,7 @@ def _stage_visualization(
     input_fps = _resolve_fps(args, config)
     # The visualization stage *writes* MP4s -- the output encoder is [io.video].writer
     # (the shared I/O config), distinct from [io.video].reader used to read footage.
-    backend = _video_writer(config)
+    backend = config.io.video_writer
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
@@ -1153,55 +988,15 @@ def _cmd_init(args: argparse.Namespace) -> None:
         raise SystemExit(f"{dst} already exists (pass --force to overwrite)")
     dst.write_text(DEFAULT_CONFIG_PATH.read_text())
     console.print(f"[green]wrote[/green] {dst}")
-    # markup=False: the message shows literal [inputs]/[cameras] config sections,
-    # which rich would otherwise try to parse as style tags.
+    # markup=False: the message shows literal [cameras] config sections, which rich
+    # would otherwise try to parse as style tags.
     console.print(
-        "next: edit [inputs]/[cameras] to match your rig, then "
+        "next: edit [cameras] to match your rig, then "
         f"'deeperfly run <recording> -c {dst}' "
         "(outputs land in <recording>/deeperfly_outputs/; override with -o <dir>)",
         markup=False,
         highlight=False,
     )
-
-
-def _resolve_config(cli_config: str | None, outdir: Path) -> tuple[dict, Path]:
-    """Pick the config for one run, preferring the snapshot already in ``outdir``.
-
-    A previous run snapshots its config to ``<outdir>/config.toml``; that snapshot
-    owns the cached results and the stage toggles that drive a resume, so it wins
-    even over an explicit ``-c`` (notifying that it's ignored). To change it, edit
-    that file or point ``-o`` at a fresh dir. With no snapshot, ``-c`` is used if
-    given, else the packaged default.
-    """
-    snapshot = outdir / "config.toml"
-    if snapshot.exists():
-        if cli_config is not None:
-            log.warning(
-                "using the config already in %s (ignoring -c %s); edit that file to "
-                "change the run (e.g. to toggle [pipeline].do_<stage>), or point -o at "
-                "a new dir",
-                snapshot,
-                cli_config,
-            )
-        log.info("using config %s (snapshot in the output dir)", snapshot)
-        return _load_config(snapshot), snapshot
-    if cli_config:
-        path = Path(cli_config)
-        log.info("using config %s (from -c)", path)
-    else:
-        path = DEFAULT_CONFIG_PATH
-        log.info("using config %s (packaged default; pass -c to override)", path)
-    return _load_config(path), path
-
-
-def _save_config_snapshot(config_path: Path, outdir: Path) -> None:
-    """Snapshot the run config into ``<outdir>/config.toml`` for reproducibility.
-
-    A no-op rewrite when the config already came from there (see
-    :func:`_resolve_config`); otherwise it records the ``-c``/default config that
-    produced this run's results so a later resume reuses the very same config.
-    """
-    (outdir / "config.toml").write_text(config_path.read_text())
 
 
 def _has_glob(pattern: str) -> bool:
@@ -1262,15 +1057,15 @@ def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
     return True
 
 
-def _find_recording(root: Path, config: dict) -> dict[str, list[Path]] | None:
+def _find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     """``root``'s ``camera -> footage-files`` map if it is a recording, else ``None``.
 
     A *recording* is a directory holding footage for every configured camera (its
-    ``[inputs]`` glob); the footage is a single video file or an image sequence. A
+    ``input`` glob); the footage is a single video file or an image sequence. A
     directory matching *no* camera is silently not a recording (an intermediate or
     output dir); the rest warn and skip:
 
-    - footage for only some cameras (a malformed recording, or a wrong ``[inputs]``);
+    - footage for only some cameras (a malformed recording, or a wrong ``input``);
     - files matched but none with a known footage extension;
     - several footage extensions in one folder (the highest-priority one is kept,
       and any camera then left with nothing counts as missing);
@@ -1396,7 +1191,7 @@ def _plan_recordings(
 
 
 def _resolve_recordings(
-    inputs: list[Path], *, recursive: bool, config: dict, output: str | None = None
+    inputs: list[Path], *, recursive: bool, config: Config, output: str | None = None
 ) -> list[Recording]:
     """Expand the ``run`` inputs into the recordings to process (footage + output dir).
 
@@ -1485,7 +1280,7 @@ def _has_2d(result: PoseResult | None) -> bool:
     return result is not None and result.pts2d is not None
 
 
-def _require_input_footage(args: argparse.Namespace, config: dict) -> None:
+def _require_input_footage(args: argparse.Namespace, config: Config) -> None:
     """Fail (before any output dir is created) if the run's recording is unreadable.
 
     Checked only when ``pose2d`` will actually decode frames; a resume that reuses
@@ -1526,9 +1321,10 @@ def _require_input_footage(args: argparse.Namespace, config: dict) -> None:
 def _run_one(args: argparse.Namespace, outdir: Path) -> None:
     """Run the config's enabled stages for a single recording.
 
-    The config is resolved against ``outdir`` (see :func:`_resolve_config`) and its
-    ``[pipeline].do_<stage>`` toggles decide which stages run (:func:`_stage_flags`).
-    An enabled stage reuses its result if it's already in the output dir,
+    The config is resolved against ``outdir`` (see :meth:`Config.read_for_run`) and
+    its ``[pipeline].do_<stage>`` toggles decide which stages run
+    (:meth:`Config.stage_flags`). An enabled stage reuses its result if it's already
+    in the output dir,
     recomputing only when missing or ``--overwrite`` selects it; recomputing a stage
     cascades to every enabled stage downstream (their inputs changed).
 
@@ -1539,8 +1335,8 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
     whose input is missing is skipped with the reason logged. A disabled stage never
     runs but its cached output still feeds downstream.
     """
-    config, config_path = _resolve_config(args.config, outdir)
-    stages = _stage_flags(config)  # validates before we touch the output dir
+    config = Config.read_for_run(args.config, outdir)
+    stages = config.stage_flags()  # config validated at construction
     overwrite = _overwrite_stages(getattr(args, "overwrite", None))
 
     # `cached` is the result already in the output dir; `result` starts there, a
@@ -1560,7 +1356,7 @@ def _run_one(args: argparse.Namespace, outdir: Path) -> None:
 
     outdir.mkdir(parents=True, exist_ok=True)
     log.info("output directory: %s", outdir)
-    _save_config_snapshot(config_path, outdir)
+    config.save_snapshot(outdir)
     log.info(
         "stages: %s",
         ", ".join(f"{n}={'on' if stages[n] else 'off'}" for n in STAGES),
@@ -1690,10 +1486,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
     if not args.inputs:
         raise SystemExit("give at least one recording directory (or wildcard) to run")
     # Only used to recognize recording directories while resolving the inputs; each
-    # run then resolves its own config against its output dir (_resolve_config).
-    discovery_config = _load_config(
-        Path(args.config) if args.config else DEFAULT_CONFIG_PATH
-    )
+    # run then resolves its own config against its output dir (Config.read_for_run).
+    discovery_config = Config.read(args.config) if args.config else Config.default()
     recordings = _resolve_recordings(
         args.inputs,
         recursive=args.recursive,

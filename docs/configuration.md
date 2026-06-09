@@ -10,23 +10,28 @@ The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
 their defaults.
 
-## Map input files to cameras — `[inputs]`
+## Map input files to cameras — `input` under `[cameras.*]`
 
-The one section almost every recording needs. Each key is a camera name (from
-`[cameras.*]`); each value is a filename glob matched inside the recording
-directory:
+The one setting almost every recording needs. Each camera's footage is given by
+its `input` key — a filename glob matched inside the recording directory — right
+beside that camera's geometry:
 
 ```toml
-[inputs]
-rh = "camera_0.mp4"   # a named file, used as-is
-rm = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
-lf = "cam*/*"         # your own wildcard, used as-is
+[cameras.rh]
+azimuth_deg = -120
+input = "camera_0.mp4"   # a named file, used as-is
+[cameras.rm]
+azimuth_deg = -90
+input = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
+[cameras.lf]
+azimuth_deg = 45
+input = "cam*/*"         # your own wildcard, used as-is
 ```
 
 A camera's footage is one video file or a naturally-sorted image sequence
 (`camera_1_000123.jpg ...`). A directory is a valid recording only when every
 camera matches footage with the same file and frame count. A camera with no
-entry defaults to its own name.
+`input` defaults to its own name.
 
 ## Choose which stages run — `[pipeline]`
 
@@ -129,15 +134,19 @@ worst-reprojecting view; `dlt` is plain least-squares with no outlier handling.
 
 ```toml
 [pipeline.pose2d]
-precision    = "float32"   # "float16" runs under CUDA autocast: ~1.5-2x faster,
-                           # negligible drift. "bfloat16" is as fast with a wider
-                           # range (no overflow); ignored on CPU/MPS
-chunk_frames = 64          # frames decoded + detected at a time, per camera
+precision     = "bfloat16"  # the default: as fast as float16 under CUDA autocast
+                            # (~1.5-2x over float32) with a wider range (no overflow).
+                            # "float32" is the reference; ignored on CPU/MPS
+batch_size    = 16          # GPU forward batch (images/forward); throughput plateaus
+                            # by ~16 on a fast GPU
+decode_buffer = 4           # decode queue depth, in multiples of batch_size
 # checkpoint = "/path/to/weights"   # defaults to the cached weights
 ```
 
-`chunk_frames` is a *memory* knob, not a speed one: lower it for high-res
-footage, many cameras, or a small GPU. The frame decoder lives in `[io.video]`.
+`batch_size` is the GPU forward batch; `decode_buffer` is a *memory* knob (peak
+frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
+GPU fed when decode is jittery, lower it to shave memory. The frame decoder lives
+in `[io.video]`.
 
 ## Frame I/O backends — `[io]`
 
@@ -156,14 +165,14 @@ reader = "auto"   # auto/opencv (core) | imageio (optional, broader formats)
 `"auto"` picks the fastest installed backend. See [video.md](video.md) for what
 each backend supports and how to install the optional ones.
 
-## Per-camera preprocessing — `[preprocess]`
+## Per-camera preprocessing — `[cameras.<camera>.preprocess]`
 
 Optional per-camera geometric correction applied right after decoding — for a
 camera mounted sideways/upside-down or with a mirrored sensor. The transformed
 frame becomes canonical for the whole run; nothing maps back to the raw footage.
 
 ```toml
-[preprocess.rh]
+[cameras.rh.preprocess]
 fliplr = false   # left-right flip
 flipud = false   # up-down flip
 rot90  = 0       # counter-clockwise 90-degree turns (0-3)
@@ -173,32 +182,31 @@ Applied in that order. Cameras with no table are left untouched.
 
 ## Bundle adjustment — `[pipeline.bundle_adjustment]`
 
-Calibration uses the fly itself as the target. The defaults suit the standard
-rig; you rarely need to change them.
+Calibration uses the fly itself as the target, solved with
+`scipy.optimize.least_squares` — its kwargs (`max_nfev`, `loss`, ...) sit
+directly in the table. The defaults suit the standard rig; you rarely need to
+change them.
 
 ```toml
 [pipeline.bundle_adjustment]
-solver    = "least_squares_scipy"
 keypoints = [ "..." ]   # skeleton points that drive calibration (default: the 30 leg points)
 fixed     = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
 shared    = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
-
-[pipeline.bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
-max_nfev = 2000
-loss     = "linear"
+max_nfev  = 2000        # forwarded to scipy.optimize.least_squares
+loss      = "linear"
 ```
 
 See [library.md](library.md) for calling the bundle adjuster directly.
 
-## Camera rig geometry — `[camera_defaults]` and `[cameras.*]`
+## Camera rig geometry — `[cameras.defaults]` and `[cameras.*]`
 
-The cameras orbit an object near the world origin. `[camera_defaults]` is merged
+The cameras orbit an object near the world origin. `[cameras.defaults]` is merged
 into every camera; each `[cameras.<name>]` overrides it (the default rig sets
-just `azimuth_deg` per view). The shipped values describe the standard DeepFly3D
-7-camera rig — leave them unless your rig differs.
+just `azimuth_deg` and `input` per view). The shipped values describe the
+standard DeepFly3D 7-camera rig — leave them unless your rig differs.
 
 ```toml
-[camera_defaults]
+[cameras.defaults]
 focal_length_px = [22388.125, 22388.125]
 distance        = 107.463
 elevation_deg   = 0.0
@@ -206,6 +214,7 @@ elevation_deg   = 0.0
 
 [cameras.f]
 azimuth_deg = 0
+input = "camera_3.mp4"
 ```
 
 ## Skeleton — `[skeleton]`

@@ -15,12 +15,15 @@ within-leg/stripe bones. Load it with :meth:`Skeleton.fly`.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from jaxtyping import Bool, Int
+
+if TYPE_CHECKING:
+    from .config import Config
 
 _DATA_DIR = Path(__file__).parent / "data"
 _FLY_TOML = _DATA_DIR / "skeleton_fly.toml"
@@ -65,12 +68,12 @@ class Skeleton:
         return cls.from_config(_FLY_TOML)
 
     @classmethod
-    def from_config(cls, config: dict | str | Path) -> Skeleton:
-        """Build a skeleton from a config dict or a path to a TOML file."""
-        if not isinstance(config, dict):
-            with open(config, "rb") as f:
-                config = tomllib.load(f)
-        spec = config["skeleton"]
+    def from_config(cls, config: "Config | dict | str | Path") -> Skeleton:
+        """Build a skeleton from a :class:`~deeperfly.config.Config`, a config dict
+        or a path to a TOML file."""
+        from .config import Config
+
+        spec = Config.coerce(config).data["skeleton"]
         n = len(spec["joint_names"])
         limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
         palette = {str(k): str(v) for k, v in spec.get("palette", {}).items()}

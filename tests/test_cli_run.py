@@ -1,7 +1,8 @@
 """Tests for the unified ``deeperfly run`` command and its plumbing.
 
-Covers the per-stage flags (:func:`cli._stage_flags`), config resolution (the
-output-dir snapshot wins over ``-c``, else ``-c``, else the packaged default), the
+Covers the per-stage flags (:meth:`Config.stage_flags`), config resolution
+(:meth:`Config.read_for_run`: the output-dir snapshot wins over ``-c``, else
+``-c``, else the packaged default), the
 stage execution -- an enabled stage runs and recomputes, a disabled one is reused
 from the cached ``poses.h5``, and an enabled stage whose input is missing is
 skipped with a reason -- the default ``<input>/deeperfly_outputs``, automatic
@@ -18,7 +19,7 @@ import re
 import numpy as np
 import pytest
 
-from deeperfly import cli
+from deeperfly import Config, cli
 from deeperfly.cameras import CameraGroup
 from deeperfly.io import PoseResult
 
@@ -55,8 +56,8 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
 
 def test_stage_flags_defaults():
     """An empty config uses STAGE_DEFAULTS; the packaged default matches it."""
-    assert cli._stage_flags({}) == cli.STAGE_DEFAULTS
-    assert cli._stage_flags(cli._load_config(cli.DEFAULT_CONFIG_PATH)) == {
+    assert Config.from_dict({}).stage_flags() == cli.STAGE_DEFAULTS
+    assert Config.default().stage_flags() == {
         "pose2d": True,
         "bundle_adjustment": True,
         "pictorial_structures": False,
@@ -67,42 +68,46 @@ def test_stage_flags_defaults():
 
 
 def test_stage_flags_toggles_and_validates():
-    flags = cli._stage_flags({"pipeline": {"do_pose2d": False, "do_smoothing": True}})
+    flags = Config.from_dict(
+        {"pipeline": {"do_pose2d": False, "do_smoothing": True}}
+    ).stage_flags()
     assert flags["pose2d"] is False and flags["smoothing"] is True
     assert flags["triangulation"] is True  # untouched default
     with pytest.raises(SystemExit, match="unknown stage toggle"):
-        cli._stage_flags({"pipeline": {"do_detekt": True}})
+        Config.from_dict({"pipeline": {"do_detekt": True}})  # validated at construction
 
 
 def test_stage_flags_rejects_removed_keys():
     """Old [stages] / [pipeline] keys fail with a pointer to the new location."""
     with pytest.raises(SystemExit, match="do_bundle_adjustment"):
-        cli._stage_flags({"pipeline": {"calibrate": True}})
+        Config.from_dict({"pipeline": {"calibrate": True}})
     with pytest.raises(SystemExit, match="do_visualization"):
-        cli._stage_flags({"pipeline": {"do_visualize": True}})
+        Config.from_dict({"pipeline": {"do_visualize": True}})
     with pytest.raises(SystemExit, match=r"triangulation"):
-        cli._stage_flags({"pipeline": {"triangulation": "ransac"}})
+        Config.from_dict({"pipeline": {"triangulation": "ransac"}})
     with pytest.raises(SystemExit, match="stages"):
-        cli._stage_flags({"stages": {"detect": True}})
+        Config.from_dict({"stages": {"detect": True}})
     # the new [pipeline.triangulation] sub-table is *not* mistaken for the removed
     # scalar key.
-    assert cli._stage_flags({"pipeline": {"triangulation": {"method": "dlt"}}})
+    assert Config.from_dict(
+        {"pipeline": {"triangulation": {"method": "dlt"}}}
+    ).stage_flags()
 
 
 # -- config resolution -------------------------------------------------------
 
 
 def test_resolve_config_default_when_no_cli_and_no_snapshot(tmp_path):
-    config, path = cli._resolve_config(None, tmp_path)
-    assert path == cli.DEFAULT_CONFIG_PATH
-    assert config == cli._load_config(cli.DEFAULT_CONFIG_PATH)
+    config = Config.read_for_run(None, tmp_path)
+    assert config.source == cli.DEFAULT_CONFIG_PATH
+    assert config.data == Config.default().data
 
 
 def test_resolve_config_uses_cli_when_no_snapshot(tmp_path):
     cfg = tmp_path / "mine.toml"
     cfg.write_text("[pipeline]\ndo_pose2d = false\n")
-    config, path = cli._resolve_config(str(cfg), tmp_path)
-    assert path == cfg and config["pipeline"] == {"do_pose2d": False}
+    config = Config.read_for_run(str(cfg), tmp_path)
+    assert config.source == cfg and config.data["pipeline"] == {"do_pose2d": False}
 
 
 def test_resolve_config_snapshot_wins_over_cli_and_notifies(tmp_path, caplog):
@@ -111,8 +116,10 @@ def test_resolve_config_snapshot_wins_over_cli_and_notifies(tmp_path, caplog):
     other = tmp_path / "other.toml"
     other.write_text("[pipeline]\ndo_triangulation = true\n")
     with caplog.at_level("WARNING"):
-        config, path = cli._resolve_config(str(other), tmp_path)
-    assert path == snapshot and config["pipeline"] == {"do_triangulation": False}
+        config = Config.read_for_run(str(other), tmp_path)
+    assert config.source == snapshot and config.data["pipeline"] == {
+        "do_triangulation": False
+    }
     assert any("ignoring -c" in r.message for r in caplog.records)
 
 
@@ -120,8 +127,10 @@ def test_resolve_config_snapshot_used_silently_without_cli(tmp_path, caplog):
     snapshot = tmp_path / "config.toml"
     snapshot.write_text("[pipeline]\ndo_visualization = false\n")
     with caplog.at_level("WARNING"):
-        config, path = cli._resolve_config(None, tmp_path)
-    assert path == snapshot and config["pipeline"] == {"do_visualization": False}
+        config = Config.read_for_run(None, tmp_path)
+    assert config.source == snapshot and config.data["pipeline"] == {
+        "do_visualization": False
+    }
     assert not [r for r in caplog.records if "ignoring" in r.message]
 
 
@@ -289,7 +298,7 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
 
 # -- input resolution: multiple inputs, wildcards, --recursive ----------------
 
-_RES_CFG = {"cameras": {"cam0": {}, "cam1": {}}, "inputs": {}}
+_RES_CFG = Config.from_dict({"cameras": {"cam0": {}, "cam1": {}}})
 
 
 def _make_recording(d, *, ext="mp4", count=1):
@@ -1059,7 +1068,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
 
     # read_frames echoes its source so we can see which footage each view used.
     monkeypatch.setattr(video, "read_frames", lambda src, **kw: ("frames", src))
-    cfg = {"inputs": {}, "pipeline": {"pose2d": {}}}
+    cfg = Config.from_dict({"pipeline": {"pose2d": {}}})
     names = result.cameras.names
     v0, v1 = names[0], names[1]
     res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
@@ -1101,11 +1110,9 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
     monkeypatch.setattr(video, "read_frames", lambda src, **kw: raw[src[0]])
 
     v0, v1 = names[0], names[1]
-    cfg = {
-        "inputs": {n: n for n in names},
-        "pipeline": {"pose2d": {}},
-        "preprocess": {v0: {"rot90": 1, "fliplr": True}},
-    }
+    cameras = {n: {"input": n} for n in names}
+    cameras[v0] = {"input": v0, "preprocess": {"rot90": 1, "fliplr": True}}
+    cfg = Config.from_dict({"cameras": cameras, "pipeline": {"pose2d": {}}})
     args = argparse.Namespace(sources={n: [n] for n in names})
     got = cli._source_view_frames(args, cfg, result, [v0, v1])
     np.testing.assert_array_equal(
@@ -1171,7 +1178,12 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
         "read_frames",
         lambda src, indices=None, **kw: head,
     )
-    cfg = {"preprocess": {"rh": {"rot90": 1}}, "pipeline": {"pose2d": {}}}
+    cfg = Config.from_dict(
+        {
+            "cameras": {"rh": {"preprocess": {"rot90": 1}}, "lf": {}},
+            "pipeline": {"pose2d": {}},
+        }
+    )
     sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)
     assert sizes["rh"] == (6, 4)  # (H, W) swapped by the quarter-turn
     assert sizes["lf"] == (4, 6)  # identity

@@ -279,10 +279,11 @@ def test_bundle_adjust_from_config(rig):
         },
         "pipeline": {
             "bundle_adjustment": {
-                "solver": "least_squares_scipy",
                 "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
                 "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-                "least_squares_scipy": {"max_nfev": 2000, "loss": "linear"},
+                # scipy least_squares kwargs sit flat in the table (no solver sub-table).
+                "max_nfev": 2000,
+                "loss": "linear",
             },
         },
     }
@@ -294,7 +295,9 @@ def test_bundle_adjust_from_config(rig):
     assert np.allclose(opt.tvecs[f], rig["tvecs"][f])
 
 
-def test_bundle_adjust_from_config_rejects_unknown_solver(rig):
+def test_bundle_adjust_from_config_rejects_removed_solver_key(rig):
+    # solver selection was removed (scipy least_squares is the only solver); a stale
+    # `solver` key is a migration error, not a silently-forwarded kwarg.
     config = {
         "cameras": {
             "a": {
@@ -306,5 +309,5 @@ def test_bundle_adjust_from_config_rejects_unknown_solver(rig):
         },
         "pipeline": {"bundle_adjustment": {"solver": "ceres"}},
     }
-    with pytest.raises(ValueError, match="unsupported solver"):
+    with pytest.raises(SystemExit, match="solver"):
         bundle_adjust_from_config(config, np.zeros((1, 1, 2)))

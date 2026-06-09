@@ -6,7 +6,7 @@ after they are read, for a camera mounted sideways/upside-down or with a mirrore
 sensor. The transformed frame is the canonical frame for the whole run (detector,
 principal point, calibration, overlays); nothing maps back to the raw footage.
 
-Configured per camera under ``[preprocess.<camera>]`` (see
+Configured per camera under ``[cameras.<camera>.preprocess]`` (see
 :func:`parse_frame_transforms`). Applied in a fixed order: :func:`numpy.fliplr`,
 then :func:`numpy.flipud`, then :func:`numpy.rot90` ``rot90`` times (CCW).
 """
@@ -14,10 +14,14 @@ then :func:`numpy.flipud`, then :func:`numpy.rot90` ``rot90`` times (CCW).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .base import to_numpy
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 _ALLOWED_KEYS = ("fliplr", "flipud", "rot90")
 
@@ -65,28 +69,35 @@ class FrameTransform:
         return np.ascontiguousarray(arr)
 
 
-def parse_frame_transforms(config: dict) -> dict[str, FrameTransform]:
-    """Build ``camera name -> FrameTransform`` from the ``[preprocess.*]`` tables.
+def parse_frame_transforms(
+    config: "Config | dict | str | Path",
+) -> dict[str, FrameTransform]:
+    """Build ``camera name -> FrameTransform`` from the per-camera preprocess tables.
 
-    Each ``[preprocess.<camera>]`` table takes ``fliplr`` / ``flipud`` (bool) and
-    ``rot90`` (int quarter-turns, CCW). Cameras with no table are absent from the
+    Each ``[cameras.<camera>.preprocess]`` table takes ``fliplr`` / ``flipud`` (bool)
+    and ``rot90`` (int quarter-turns, CCW). Cameras with no table are absent from the
     dict (callers treat a missing camera as the identity). Raises on an unknown
     key or a non-integer ``rot90`` so config typos fail loudly.
     """
-    section = config.get("preprocess", {})
+    from ..config import Config
+
+    _, cameras = Config.coerce(config).camera_table()
     out: dict[str, FrameTransform] = {}
-    for name, spec in section.items():
+    for name, cam in cameras.items():
+        spec = cam.get("preprocess")
+        if not spec:
+            continue
         extra = set(spec) - set(_ALLOWED_KEYS)
         if extra:
             raise ValueError(
-                f"[preprocess.{name}] has unknown key(s) {sorted(extra)}; "
+                f"[cameras.{name}.preprocess] has unknown key(s) {sorted(extra)}; "
                 f"allowed: {list(_ALLOWED_KEYS)}"
             )
         rot90 = spec.get("rot90", 0)
         if isinstance(rot90, bool) or not isinstance(rot90, int):
             raise ValueError(
-                f"[preprocess.{name}].rot90 must be an integer quarter-turn count "
-                f"(e.g. 0/1/2/3), got {rot90!r}"
+                f"[cameras.{name}.preprocess].rot90 must be an integer quarter-turn "
+                f"count (e.g. 0/1/2/3), got {rot90!r}"
             )
         out[name] = FrameTransform(
             fliplr=bool(spec.get("fliplr", False)),

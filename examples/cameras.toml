@@ -1,7 +1,7 @@
 # Example rig: an array of cameras orbiting an object near the world origin.
-# `[camera_defaults]` is merged into every camera; per-camera keys override it.
+# `[cameras.defaults]` is merged into every camera; per-camera keys override it.
 
-[camera_defaults]
+[cameras.defaults]
 focal_length_px = [22388.125, 22388.125]    # scalar is also allowed when fx == fy
 
 # optional; omit to auto-detect each view's image center ((w-1)/2, (h-1)/2)
@@ -28,26 +28,3 @@ azimuth_deg = 45
 azimuth_deg = 90
 [cameras.lh]
 azimuth_deg = 120
-
-[bundle_adjustment]
-solver = "least_squares_scipy"
-# Indices of the keypoints (into [skeleton]) that drive camera calibration. The
-# leg joints are the most reliable detections, so the default uses leg points
-# only. Omit this key entirely to calibrate on all keypoints.
-keypoints = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-    19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
-]
-fixed = [
-    "*.intr",     # keep all intrinsics fixed
-    "f.rvec",     # anchor the front camera's orientation ...
-    "f.tvec",     # ... and position (fixes the world gauge)
-    "rm.tvec[2]",
-]
-shared = [
-    ["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"],
-]
-
-[bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
-max_nfev = 2000
-loss = "linear"

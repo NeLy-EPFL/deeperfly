@@ -8,7 +8,7 @@ image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
 A :class:`CameraGroup` is an ordered collection of named cameras, typically built
 from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
 *only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
-``CameraGroup`` with a separate ``[bundle_adjustment]`` section.
+``CameraGroup`` with a separate ``[pipeline.bundle_adjustment]`` section.
 
 Orientation and position accept whatever combination is convenient -- a Rodrigues
 vector, a rotation matrix, a forward/up axis pair, or an orbit around a
@@ -19,9 +19,9 @@ don't conflict. Everything resolves to a single ``(rvec, tvec)``; see
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from jaxtyping import Float
@@ -34,12 +34,24 @@ from .geometry import (
     triangulate_dlt,
 )
 
+if TYPE_CHECKING:
+    from .config import Config
+
 # Default world "up" used to disambiguate look-at / orbit orientations.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
 
 # Keys recognized by the extrinsic resolver, grouped by the quantity they fix.
 _ROTATION_KEYS = ("rvec", "rotation_matrix", "forward")
 _CENTER_KEYS = ("position", "center", "eye")
+
+# Per-camera keys owned by other stages (footage glob, frame preprocessing), not
+# the rig geometry -- dropped before a spec reaches :meth:`Camera.from_spec`.
+_NON_RIG_KEYS = ("input", "preprocess")
+
+
+def _rig_keys(spec: dict) -> dict:
+    """A camera spec with the non-rig keys (``input`` / ``preprocess``) removed."""
+    return {k: v for k, v in spec.items() if k not in _NON_RIG_KEYS}
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:
@@ -283,29 +295,32 @@ class CameraGroup:
     @classmethod
     def from_config(
         cls,
-        config: dict | str | Path,
+        config: "Config | dict | str | Path",
         image_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> CameraGroup:
-        """Build a group from a config dict or a path to a TOML file.
+        """Build a group from a :class:`~deeperfly.config.Config`, a config dict or
+        a path to a TOML file.
 
-        Reads ``[camera_defaults]`` and ``[cameras.<name>]``; per-camera keys
-        override the defaults. Any ``[bundle_adjustment]`` section is ignored
-        here -- this class is bundle-adjustment-unaware.
+        Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
+        override the defaults. The per-camera ``input`` (footage glob) and
+        ``preprocess`` (frame transform) keys belong to other stages and are ignored
+        here, as is any foreign section -- this class is rig-only.
 
         ``image_sizes`` maps a camera name to its ``(height, width)`` and is
         used to infer that camera's principal point (image center) when neither
-        the camera spec nor ``[camera_defaults]`` specifies ``principal_point_px``.
+        the camera spec nor ``[cameras.defaults]`` specifies ``principal_point_px``.
         """
-        if not isinstance(config, dict):
-            with open(config, "rb") as f:
-                config = tomllib.load(f)
-        defaults = config.get("camera_defaults", {})
+        from .config import Config
+
+        defaults, specs = Config.coerce(config).camera_table()
         image_sizes = image_sizes or {}
         cameras = {
             name: Camera.from_spec(
-                {**defaults, **spec}, name=name, image_size=image_sizes.get(name)
+                _rig_keys({**defaults, **spec}),
+                name=name,
+                image_size=image_sizes.get(name),
             )
-            for name, spec in config.get("cameras", {}).items()
+            for name, spec in specs.items()
         }
         if not cameras:
             raise ValueError("config defines no cameras")

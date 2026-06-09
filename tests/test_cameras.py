@@ -27,17 +27,20 @@ from helpers import (
 def config() -> dict:
     """Config dict equivalent to examples/cameras.toml (cameras only)."""
     return {
-        "camera_defaults": {
-            "focal_length_px": [FOCAL_PX, FOCAL_PX],
-            "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
-            "distortion_coefficients": [],
-            "look_at": [0.0, 0.0, 0.0],
-            "distance": DISTANCE_MM,
-            "elevation_deg": 0.0,
-            "roll_deg": 0.0,
-        },
         "cameras": {
-            name: {"azimuth_deg": az} for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+            "defaults": {
+                "focal_length_px": [FOCAL_PX, FOCAL_PX],
+                "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
+                "distortion_coefficients": [],
+                "look_at": [0.0, 0.0, 0.0],
+                "distance": DISTANCE_MM,
+                "elevation_deg": 0.0,
+                "roll_deg": 0.0,
+            },
+            **{
+                name: {"azimuth_deg": az}
+                for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+            },
         },
     }
 
@@ -210,7 +213,7 @@ def test_group_from_config_dict(config):
 
 def test_group_from_config_toml_file(tmp_path):
     toml = """
-    [camera_defaults]
+    [cameras.defaults]
     focal_length_px = 800.0
     principal_point_px = [320.0, 240.0]
 
@@ -237,8 +240,8 @@ def test_group_empty_config_raises():
 def test_group_from_config_infers_principal_point_per_view():
     # Defaults omit principal_point_px; each view's center comes from image_sizes.
     config = {
-        "camera_defaults": {"focal_length_px": 800.0},
         "cameras": {
+            "defaults": {"focal_length_px": 800.0},
             "left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]},
             "right": {"rvec": [0, 0, 0], "tvec": [1.0, 0, 5.0]},
         },
@@ -255,8 +258,10 @@ def test_group_from_config_infers_principal_point_per_view():
 
 def test_group_from_config_missing_principal_point_no_sizes_raises():
     config = {
-        "camera_defaults": {"focal_length_px": 800.0},
-        "cameras": {"left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]}},
+        "cameras": {
+            "defaults": {"focal_length_px": 800.0},
+            "left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]},
+        },
     }
     with pytest.raises(ValueError, match="principal_point_px"):
         CameraGroup.from_config(config)

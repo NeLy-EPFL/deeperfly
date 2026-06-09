@@ -45,7 +45,6 @@ Primitives live in :mod:`deeperfly.viz.opencv`; MP4 writing uses the PyAV stack.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
@@ -57,6 +56,7 @@ from . import opencv as _cv
 
 if TYPE_CHECKING:
     from ..cameras import CameraGroup
+    from ..config import Config
     from ..skeleton import Skeleton
 
 #: Panel keys consumed by the compositor itself; everything else is forwarded to
@@ -253,8 +253,8 @@ def _layout_key(panel: dict, options: dict, key: str):
     return value
 
 
-def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
-    """Parse ``[[pipeline.visualization.videos]]`` from a config dict or TOML path.
+def read_video_specs(config: "Config | dict | str | Path") -> list[VideoSpec]:
+    """Parse ``[[pipeline.visualization.videos]]`` from a Config, dict or TOML path.
 
     Per-op kwargs are merged into each panel's ``options`` from least to most
     specific: global ``[pipeline.visualization.kwargs]``, the video entry's
@@ -263,10 +263,9 @@ def read_video_specs(config: dict | str | Path) -> list[VideoSpec]:
     :class:`Panel` fields rather than forwarded. The canvas background comes from
     ``pipeline.visualization.background`` (default ``"black"``).
     """
-    if not isinstance(config, dict):
-        with open(config, "rb") as f:
-            config = tomllib.load(f)
-    viz = config.get("pipeline", {}).get("visualization", {})
+    from ..config import Config
+
+    viz = Config.coerce(config).visualization
     global_kwargs = viz.get("kwargs", {})
     background = viz.get("background", "black")
     global_fps = (viz.get("output_fps"), viz.get("speed"))

@@ -29,7 +29,8 @@ def test_init_writes_parseable_config(tmp_path):
     # The written file is the packaged template, verbatim.
     assert dst.read_text() == DEFAULT_CONFIG_PATH.read_text()
     # Every section round-trips through its loader.
-    sizes = {n: (512, 1024) for n in config["cameras"]}
+    cameras = {n: spec for n, spec in config["cameras"].items() if n != "defaults"}
+    sizes = {n: (512, 1024) for n in cameras}
     assert CameraGroup.from_config(config, image_sizes=sizes).names == [
         "rh",
         "rm",
@@ -40,7 +41,8 @@ def test_init_writes_parseable_config(tmp_path):
         "lh",
     ]
     assert Skeleton.from_config(config).n_points == 38
-    assert set(config["inputs"]) == set(config["cameras"])
+    # Each camera carries its own footage glob (`input`).
+    assert all("input" in spec for spec in cameras.values())
 
 
 def test_init_refuses_to_clobber(tmp_path):
@@ -129,6 +131,6 @@ def test_camera_files_missing_returns_empty(tmp_path):
 
 
 def test_camera_patterns_defaults_to_camera_name():
-    # An unmapped camera uses its own name as the pattern; [cameras] sets the order.
-    config = {"cameras": {"rh": {}, "lf": {}}, "inputs": {"rh": "cam0.mp4"}}
+    # A camera with no `input` uses its own name as the pattern; [cameras] sets order.
+    config = {"cameras": {"rh": {"input": "cam0.mp4"}, "lf": {}}}
     assert _camera_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

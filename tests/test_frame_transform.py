@@ -90,7 +90,13 @@ def test_torch_path_stays_torch_and_matches_numpy():
 
 
 def test_parse_frame_transforms_reads_tables():
-    cfg = {"preprocess": {"rh": {"fliplr": True, "rot90": 3}, "lf": {"flipud": True}}}
+    cfg = {
+        "cameras": {
+            "rh": {"preprocess": {"fliplr": True, "rot90": 3}},
+            "lf": {"preprocess": {"flipud": True}},
+            "rm": {},  # a camera with no preprocess table
+        }
+    }
     d = parse_frame_transforms(cfg)
     assert d["rh"] == FrameTransform(fliplr=True, rot90=3)
     assert d["lf"] == FrameTransform(flipud=True)
@@ -112,4 +118,4 @@ def test_parse_frame_transforms_empty_when_section_missing():
 )
 def test_parse_frame_transforms_rejects_bad_config(spec):
     with pytest.raises(ValueError):
-        parse_frame_transforms({"preprocess": {"rh": spec}})
+        parse_frame_transforms({"cameras": {"rh": {"preprocess": spec}}})
