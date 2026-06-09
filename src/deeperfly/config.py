@@ -16,8 +16,7 @@ inside their typed parent.
 
 ``Config`` also owns the resume contract: it keeps the original TOML *text* so a
 run can snapshot it into the output dir byte-for-byte (see
-:meth:`Config.save_snapshot`), and validates removed/renamed sections with a fix-it
-message (:func:`_validate`).
+:meth:`Config.save_snapshot`).
 """
 
 from __future__ import annotations
@@ -107,9 +106,8 @@ class PictorialParams:
 
 @dataclass(frozen=True)
 class IoParams:
-    """``[io.image]`` -- image-sequence decoder choices (video I/O uses PyAV)."""
+    """``[io.image]`` -- image-sequence decode parallelism (video I/O uses PyAV)."""
 
-    image_reader: str = "auto"
     image_workers: int | None = None
 
 
@@ -175,102 +173,16 @@ def _params(data: dict, path: tuple[str, ...], cls):
     return cls(**{k: v for k, v in sub.items() if k in fields})
 
 
-#: Removed ``[pipeline]`` scalar keys (the pre-per-stage layout), mapped to their
-#: new home so an old config fails with a fix-it message, not a silent ignore.
-_REMOVED_PIPELINE_KEYS = {
-    "calibrate": "do_bundle_adjustment",
-    "do_calibrate": "do_bundle_adjustment",
-    "do_pictorial": "do_pictorial_structures",
-    "do_visualize": "do_visualization",
-    "triangulation": "[pipeline.triangulation].method",
-    "ransac_threshold": "[pipeline.triangulation].ransac_threshold",
-    "min_inliers": "[pipeline.triangulation].min_inliers",
-    "smooth": "nothing -- temporal smoothing was removed",
-}
-
-
-def _validate(data: dict) -> None:
-    """Reject removed/renamed sections with a pointer to the new layout.
-
-    Run once at construction so both the CLI and the library ``from_config`` paths
-    catch a stale config the same way.
-
-    Parameters
-    ----------
-    data
-        The parsed config mapping to validate.
-
-    Raises
-    ------
-    SystemExit
-        On a removed/renamed section, with a clean fix-it message (no traceback)
-        -- these are migration errors the user must fix.
-    """
-    # Per-camera consolidation: rig defaults, input globs and frame preprocessing
-    # now live inside [cameras.<name>] (and [cameras.defaults]).
-    if "camera_defaults" in data:
-        raise SystemExit(
-            "[camera_defaults] was renamed; put the shared camera keys under "
-            "[cameras.defaults]"
-        )
-    if "inputs" in data:
-        raise SystemExit(
-            "[inputs] was removed; give each camera its footage glob as "
-            '`input = "..."` inside its [cameras.<name>] table'
-        )
-    if "preprocess" in data:
-        raise SystemExit(
-            "[preprocess.<camera>] was moved; put the flip/rot90 keys under "
-            "[cameras.<camera>.preprocess]"
-        )
-
-    # Bundle adjustment is scipy least_squares only -- no solver selection.
-    ba = data.get("pipeline", {}).get("bundle_adjustment", {})
-    if "solver" in ba or "least_squares_scipy" in ba:
-        raise SystemExit(
-            "[pipeline.bundle_adjustment].solver / its solver sub-table were removed; "
-            "scipy least_squares is the only solver -- put its kwargs (max_nfev, loss, "
-            "...) directly under [pipeline.bundle_adjustment]"
-        )
-
-    # Pipeline stage toggles.
-    if "stages" in data:
-        raise SystemExit(
-            "[stages] was removed; the stage toggles now live in [pipeline] as "
-            + ", ".join(f"do_{n}" for n in STAGES)
-        )
-    pipe = data.get("pipeline", {})
-    # Temporal smoothing was removed wholesale -- reject its old stage toggle and
-    # sub-table with a clear message rather than the generic unknown-toggle one.
-    if "do_smoothing" in pipe or "smoothing" in pipe:
-        raise SystemExit(
-            "temporal smoothing was removed; drop do_smoothing and the "
-            "[pipeline.smoothing] table from the config"
-        )
-    for old, new in _REMOVED_PIPELINE_KEYS.items():
-        # A scalar at the old key is the removed usage; a sub-table (dict) of the
-        # same name -- e.g. the new [pipeline.triangulation] -- is fine.
-        if old in pipe and not isinstance(pipe[old], dict):
-            raise SystemExit(f"[pipeline].{old} was removed; use {new}")
-    valid = {f"do_{name}" for name in STAGES}
-    unknown = {k for k in pipe if k.startswith("do_")} - valid
-    if unknown:
-        raise SystemExit(
-            f"[pipeline] has unknown stage toggle(s) {', '.join(sorted(unknown))}; "
-            f"the stages are {', '.join(STAGES)}"
-        )
-
-
 # -- the Config class --------------------------------------------------------
 
 
 class Config:
     """A loaded, validated deeperfly run configuration.
 
-    Construct via :meth:`read` (from a TOML file), :meth:`from_dict` (a parsed
-    mapping) or :meth:`coerce` (anything the old ``from_config`` accepted). The
-    parsed mapping is :attr:`data`; :attr:`text` is the original TOML text when read
-    from a file (``None`` for a dict), used to snapshot the config byte-for-byte.
+    Construct via :meth:`from_toml` (from a TOML file) or :meth:`from_dict` (a
+    parsed mapping). The parsed mapping is :attr:`data`; :attr:`text` is the original
+    TOML text when read from a file (``None`` for a dict), used to snapshot the config
+    byte-for-byte.
     """
 
     def __init__(
@@ -279,12 +191,11 @@ class Config:
         self.data = data
         self.text = text
         self.source = source
-        _validate(data)
 
     # -- construction --------------------------------------------------------
 
     @classmethod
-    def read(cls, path: str | Path) -> "Config":
+    def from_toml(cls, path: str | Path) -> "Config":
         """Load a config from a TOML file (preserving its text for snapshots).
 
         Parameters
@@ -318,31 +229,9 @@ class Config:
         return cls(data)
 
     @classmethod
-    def coerce(cls, config: "Config | dict | str | Path") -> "Config":
-        """Accept a ``Config`` / parsed dict / path -- the one loader for every
-        ``from_config``.
-
-        Parameters
-        ----------
-        config
-            An existing :class:`Config` (returned unchanged), a parsed ``dict``,
-            or a path to a config TOML file.
-
-        Returns
-        -------
-        Config
-            The corresponding config.
-        """
-        if isinstance(config, cls):
-            return config
-        if isinstance(config, dict):
-            return cls.from_dict(config)
-        return cls.read(config)
-
-    @classmethod
     def default(cls) -> "Config":
         """The packaged default config (:data:`DEFAULT_CONFIG_PATH`)."""
-        return cls.read(DEFAULT_CONFIG_PATH)
+        return cls.from_toml(DEFAULT_CONFIG_PATH)
 
     @classmethod
     def read_for_run(cls, cli_config: str | None, outdir: Path) -> "Config":
@@ -378,14 +267,14 @@ class Config:
                     cli_config,
                 )
             log.info("using config %s (snapshot in the output dir)", snapshot)
-            return cls.read(snapshot)
+            return cls.from_toml(snapshot)
         if cli_config:
             path = Path(cli_config)
             log.info("using config %s (from -c)", path)
         else:
             path = DEFAULT_CONFIG_PATH
             log.info("using config %s (packaged default; pass -c to override)", path)
-        return cls.read(path)
+        return cls.from_toml(path)
 
     # -- typed per-stage subgroups ------------------------------------------
 
@@ -405,8 +294,6 @@ class Config:
     def io(self) -> IoParams:
         im = _dig(self.data, ("io", "image"))
         present: dict = {}
-        if "reader" in im:
-            present["image_reader"] = im["reader"]
         if "workers" in im:
             present["image_workers"] = int(im["workers"]) or None
         return IoParams(**present)
@@ -434,9 +321,6 @@ class Config:
 
     def stage_flags(self) -> dict[str, bool]:
         """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
-
-        Unknown or removed toggles already failed in :func:`_validate` at
-        construction.
 
         Returns
         -------
