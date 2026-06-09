@@ -165,7 +165,6 @@ def resolve_fps(
 def prefetch_windows(
     sources,
     *,
-    backend,
     block,
     transforms=None,
     depth=1,
@@ -204,8 +203,6 @@ def prefetch_windows(
     sources
         One footage source per camera (each passed to
         :func:`deeperfly.video.stream_frames`).
-    backend
-        Video reader backend name.
     block
         Frames per yielded window (the detector's forward batch).
     transforms
@@ -247,7 +244,6 @@ def prefetch_windows(
             streams = [
                 video.stream_frames(
                     s,
-                    backend=backend,
                     image_backend=image_backend,
                     workers=workers,
                     block=block,
@@ -342,7 +338,6 @@ def detect_2d(
     from . import inference
 
     pose2d = config.pose2d
-    backend = config.io.video_reader
     image_backend = config.io.image_reader
     workers = config.io.image_workers
     # Two knobs: the GPU forward batch (images/forward), and the decode buffer in
@@ -365,11 +360,9 @@ def detect_2d(
     # reader_name mirrors read_frames's dispatch off the actual source, so the
     # reported decoder matches what really runs; guard a forced-but-uninstalled one.
     try:
-        reader = video.reader_name(
-            cam_files[0], backend=backend, image_backend=image_backend
-        )
+        reader = video.reader_name(cam_files[0], image_backend=image_backend)
     except Exception:  # noqa: BLE001
-        reader = backend
+        reader = image_backend
     log.info(
         "streaming frames via '%s' backend: forward batch %d, decode buffer %d "
         "batches (%d frames/camera)",
@@ -385,7 +378,6 @@ def detect_2d(
     with make_progress(total, "detect 2D") as wrap:
         for window, _ in prefetch_windows(
             cam_files,
-            backend=backend,
             block=block,
             transforms=transforms,
             depth=depth,

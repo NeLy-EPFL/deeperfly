@@ -35,15 +35,14 @@ reconstruction: `triangulation` is `ransac` (default), `greedy` or `dlt`, and
 
 ## Video I/O
 
-`deeperfly.video` reads and writes frames through a pluggable backend registry;
-see [video.md](video.md) for the backends.
+`deeperfly.video` reads and writes frames through `pyav` (in-process FFmpeg, CPU);
+see [video.md](video.md) for details.
 
 ```python
 from deeperfly import video
 
 frames = video.read_frames(path)                        # video file or image dir; NumPy (host)
 frames = video.read_video("clip.mp4", indices=[0, 50])  # random access
-frames = video.read_video("clip.mp4", backend="torchcodec")  # torch tensor (CPU)
 video.write_mp4(frames, "out.mp4", fps=30)
 ```
 

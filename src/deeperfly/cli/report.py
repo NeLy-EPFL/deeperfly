@@ -91,12 +91,12 @@ def _fmt_bytes(n: int) -> str:
 
 
 def _by_priority(available, *orders) -> list[str]:
-    """``available`` backend names in their ``backend="auto"`` preference order.
+    """``available`` reader names in their ``"auto"`` preference order.
 
     Walks each preference tuple in ``orders``, keeping the first occurrence of each
-    installed backend, then appends any remaining installed ones (alphabetically).
-    Mirrors how ``select_reader``/``select_writer`` pick a backend, so the report
-    lists the highest-priority installed decoder first.
+    installed reader, then appends any remaining installed ones (alphabetically).
+    Mirrors how ``select_image_reader`` picks a reader, so the report lists the
+    highest-priority installed decoder first.
 
     Parameters
     ----------
@@ -185,9 +185,10 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     """Report the installation and what this machine can run.
 
     Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS), the
-    installed video backends, whether the detector weights are downloaded and
-    where, and the default config path. Imports are lazy and each probe guarded, so
-    a missing or broken piece is reported rather than crashing.
+    frame I/O (PyAV for video, the image-sequence readers), whether the detector
+    weights are downloaded and where, and the default config path. Imports are lazy
+    and each probe guarded, so a missing or broken piece is reported rather than
+    crashing.
 
     Parameters
     ----------
@@ -200,7 +201,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     from .. import video
     from ..pose2d import backends, download
-    from ..video.base import IMAGE_READ_ORDER, READ_ORDER, WRITE_ORDER
+    from ..video.base import IMAGE_READ_ORDER
 
     _doctor_header("deeperfly")
     try:
@@ -242,27 +243,13 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         _doctor_row("GPU inference", "not available -- CPU only")
     _doctor_row("detector", "torch" if torch_info["installed"] else "none")
 
-    _doctor_header("frame I/O backends")
-    read_avail = video.available_read_backends()
-    write_avail = video.available_write_backends()
+    _doctor_header("frame I/O")
     image_avail = video.available_image_readers()
-    _doctor_row("video read", ", ".join(_by_priority(read_avail, READ_ORDER)) or "none")
-    _doctor_row(
-        "video write", ", ".join(_by_priority(write_avail, WRITE_ORDER)) or "none"
-    )
+    _doctor_row("video read/write", "pyav")
     _doctor_row(
         "image read", ", ".join(_by_priority(image_avail, IMAGE_READ_ORDER)) or "none"
     )
-    missing = sorted(
-        set(
-            video.list_read_backends()
-            + video.list_write_backends()
-            + video.list_image_readers()
-        )
-        - set(read_avail)
-        - set(write_avail)
-        - set(image_avail)
-    )
+    missing = sorted(set(video.list_image_readers()) - set(image_avail))
     if missing:
         _doctor_row("not installed", ", ".join(missing))
 

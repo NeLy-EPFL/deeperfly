@@ -107,7 +107,7 @@ skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
 The generated config ships two montage videos (`pose2d`, `pose3d`) wired to the
 7-camera rig; reorder, drop, or add `panels` to change the layout. Draw-op
 kwargs merge across three levels (global → per-video → per-panel), most specific
-winning. The output encoder and input decoder come from `[io.video]`.
+winning. Video frames are read and written with PyAV.
 
 ## Triangulation — `[pipeline.triangulation]`
 
@@ -140,18 +140,14 @@ decode_buffer = 4           # decode queue depth, in multiples of batch_size
 
 `batch_size` is the GPU forward batch; `decode_buffer` is a *memory* knob (peak
 frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
-GPU fed when decode is jittery, lower it to shave memory. The frame decoder lives
-in `[io.video]`.
+GPU fed when decode is jittery, lower it to shave memory.
 
-## Frame I/O backends — `[io]`
+## Frame I/O — `[io]`
 
-Decoder/encoder choices shared across every stage (all decode/encode is CPU):
+Video files are read and written with PyAV (in-process FFmpeg, on the CPU); only
+the image-sequence decoder is configurable:
 
 ```toml
-[io.video]
-reader = "auto"   # auto | pyav | opencv | torchcodec | video_reader_rs
-writer = "auto"   # auto | pyav | opencv
-
 [io.image]
 reader = "auto"   # auto/opencv (core) | imageio (optional, broader formats)
 # workers = 0     # decode threads (0 = one per CPU)

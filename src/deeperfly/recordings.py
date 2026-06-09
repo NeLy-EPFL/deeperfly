@@ -224,7 +224,6 @@ def camera_image_sizes(
     """
     from . import video
 
-    backend = config.io.video_reader
     image_backend = config.io.image_reader
     # Size the principal point on the *transformed* frame -- the detector and the
     # overlays use the preprocess-transformed footage, so a rot90 that swaps
@@ -232,9 +231,7 @@ def camera_image_sizes(
     transforms = config.frame_transforms()
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in camera_sources(config, sources=sources, input=input):
-        head = video.read_frames(
-            src, backend=backend, image_backend=image_backend, indices=[0]
-        )
+        head = video.read_frames(src, image_backend=image_backend, indices=[0])
         head = transforms.get(name, video.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes

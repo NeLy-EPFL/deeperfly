@@ -1,8 +1,9 @@
 """Top-level frame I/O: ``read_video`` / ``read_images`` / ``write_mp4``.
 
-Thin dispatchers over the backend registry (:mod:`deeperfly.video.base`). The
-``backend`` argument selects an implementation (``"auto"`` picks the first
-installed one). All decoding runs on the CPU.
+Video files are read and written with PyAV (in-process FFmpeg) directly in this
+module; image *sequences* are decoded by OpenCV (or the optional imageio fallback,
+resolved in :mod:`deeperfly.video.base`). All decoding runs on the CPU and yields
+``(T, H, W, 3)`` uint8 RGB NumPy.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import logging
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +22,6 @@ from jaxtyping import Float
 from .base import (
     available_image_readers,
     select_image_reader,
-    select_reader,
-    select_writer,
     to_numpy,
 )
 
@@ -37,44 +37,127 @@ def _is_video_file(p: Path) -> bool:
     return p.is_file() and p.suffix.lower() in _VIDEO_EXTS
 
 
+# -- PyAV decode / encode (in-process FFmpeg, CPU) ---------------------------
+# PyAV is the sole video backend: it links FFmpeg directly and its wheel bundles
+# FFmpeg, so no system install is needed. ``av`` is imported lazily so importing
+# this module stays cheap.
+
+
+def _decode_stream(path, *, start=0, step=1, stop=None):
+    """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode.
+
+    ``stop`` is an internal bound; the public :func:`stream_frames` contract is
+    open-ended (decode to end-of-stream), so its callers omit it.
+    """
+    import av
+
+    with av.open(str(path)) as container:
+        for i, frame in enumerate(container.decode(video=0)):
+            if i < start:
+                continue
+            if stop is not None and i >= stop:
+                break
+            if (i - start) % step == 0:
+                yield frame.to_ndarray(format="rgb24")
+
+
+def _decode_range(path, start, stop, step) -> np.ndarray:
+    """Decode ``range(start, stop, step)`` to a stacked ``(T, H, W, 3)`` uint8 array."""
+    out = list(_decode_stream(path, start=start, step=step, stop=stop))
+    if not out:
+        raise ValueError(f"pyav decoded no frames from {str(path)!r}")
+    return np.stack(out)
+
+
+def _decode_indices(path, indices) -> np.ndarray:
+    """Random access: seek to the keyframe at/before each target, decode forward to it.
+
+    Recovers each frame's index from its PTS and returns the frames in the order
+    ``indices`` requests.
+    """
+    import av
+
+    picked: dict[int, np.ndarray] = {}
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        rate = stream.average_rate or stream.guessed_rate
+        time_base = stream.time_base
+        for target in sorted(set(indices)):
+            # PTS (in time_base units) of the target frame; seek to its keyframe.
+            ts = int(target / rate / time_base)
+            container.seek(ts, stream=stream, backward=True, any_frame=False)
+            for frame in container.decode(stream):
+                idx = int(round(float(frame.pts * time_base * rate)))
+                if idx >= target:
+                    picked[target] = frame.to_ndarray(format="rgb24")
+                    break
+    try:
+        return np.stack([picked[int(i)] for i in indices])
+    except KeyError as exc:  # a seek overshot / frame missing
+        raise ValueError(
+            f"pyav could not seek to frame {exc} of {str(path)!r}"
+        ) from None
+
+
+def _encode_mp4(frames, path, *, fps=30.0, codec=None, pix_fmt="yuv420p") -> None:
+    """Encode ``(T, H, W, 3)`` uint8 RGB frames to an MP4 (H.264 / libx264)."""
+    import av
+
+    frames = np.asarray(frames)
+    # yuv420p subsampling needs even dimensions.
+    h, w = frames.shape[1] & ~1, frames.shape[2] & ~1
+    frames = frames[:, :h, :w]
+    rate = Fraction(fps).limit_denominator(1_000_000)
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream(codec or "libx264", rate=rate)
+        stream.width = w
+        stream.height = h
+        stream.pix_fmt = pix_fmt
+        for frame in frames:
+            vframe = av.VideoFrame.from_ndarray(
+                np.ascontiguousarray(frame), format="rgb24"
+            )
+            for packet in stream.encode(vframe):
+                container.mux(packet)
+        for packet in stream.encode():  # flush
+            container.mux(packet)
+
+
 def read_video(
     path: str | Path,
     *,
-    backend: str = "auto",
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
     indices: list[int] | None = None,
 ) -> Float[np.ndarray, "T H W 3"]:
-    """Decode a video file to ``(T, H, W, 3)`` RGB frames (host NumPy).
+    """Decode a video file to ``(T, H, W, 3)`` RGB frames (host NumPy) via PyAV.
 
     Parameters
     ----------
     path
         The video file to decode.
-    backend
-        ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"video_reader_rs"`` |
-        ``"torchcodec"``. ``"auto"`` picks the fastest installed backend -- the
-        order leads with the in-process decoders (pyav, the core default).
     start, stop, step
         Sequential frame slice, like ``range(start, stop, step)``.
     indices
         Explicit frame indices for random access (overrides ``start/stop/step``).
-        Seek-capable backends fetch just these frames; others decode up to
-        ``max(indices)`` and gather.
+        PyAV seeks to fetch just these frames.
 
     Returns
     -------
     np.ndarray
         The decoded ``(T, H, W, 3)`` uint8 RGB frames (host NumPy).
     """
-    reader = select_reader(backend)
-    frames = reader.read(path, start=start, stop=stop, step=step, indices=indices)
-    out = to_numpy(frames)
+    if indices is not None:
+        idx = [int(i) for i in indices]
+        if not idx:
+            raise ValueError("indices must be a non-empty sequence")
+        out = _decode_indices(path, idx)
+    else:
+        out = _decode_range(path, int(start), stop, int(step))
     log.debug(  # per-read detail (one line per camera per window) -- only at -vv
-        "read video %s via '%s' backend -> %d frames %dx%d",
+        "read video %s via pyav -> %d frames %dx%d",
         Path(path).name,
-        reader.name,
         out.shape[0],
         out.shape[1],
         out.shape[2],
@@ -270,7 +353,6 @@ def _read_image_files(
 def read_frames(
     source: str | Path | list[Path],
     *,
-    backend: str = "auto",
     indices: list[int] | None = None,
     start: int = 0,
     stop: int | None = None,
@@ -283,7 +365,7 @@ def read_frames(
     Dispatches on ``source``:
 
     - a single video file (``.mp4`` / ``.avi`` / ``.mov`` ...) goes to
-      :func:`read_video` (``backend`` selects the video decoder);
+      :func:`read_video` (PyAV);
     - a directory or glob of images goes to :func:`read_images` (``image_backend``
       selects the image decoder, ``workers`` sets decode parallelism);
     - an explicit list of footage files -- one video file, or an ordered image
@@ -296,8 +378,6 @@ def read_frames(
     source
         A video file, an image directory/glob, or an explicit list of footage
         files (one video, or an ordered image sequence).
-    backend
-        The video decoder (applies to video sources; ignored for images).
     indices, start, stop, step
         Frame selection, as in :func:`read_video` / :func:`read_images`.
     workers
@@ -324,7 +404,6 @@ def read_frames(
             # first when several match), so decode that one.
             return read_video(
                 files[0],
-                backend=backend,
                 start=start,
                 stop=stop,
                 step=step,
@@ -343,7 +422,6 @@ def read_frames(
     if _is_video_file(p):
         return read_video(
             p,
-            backend=backend,
             start=start,
             stop=stop,
             step=step,
@@ -400,7 +478,6 @@ def _stream_source(source: str | Path | list[Path]) -> tuple[str, object]:
 def stream_frames(
     source: str | Path | list[Path],
     *,
-    backend: str = "auto",
     image_backend: str = "auto",
     workers: int | None = None,
     block: int = 64,
@@ -417,10 +494,9 @@ def stream_frames(
     the bounded queue in :func:`deeperfly.pose2d.stream.prefetch_windows`).
 
     Dispatches on ``source`` exactly like :func:`read_frames`: a video file streams
-    through ``backend`` (:meth:`~deeperfly.video.base.ReaderBackend.stream`, a
-    single open-and-walk decode); an image directory / glob / explicit list streams
-    block by block through ``image_backend`` / ``workers`` (each block decoded in
-    parallel).
+    through PyAV (a single open-and-walk decode); an image directory / glob /
+    explicit list streams block by block through ``image_backend`` / ``workers``
+    (each block decoded in parallel).
 
     The forward-only, count-free contract is deliberately the one a *live camera*
     source also satisfies (frames arrive forward in time, no total, no seek), so a
@@ -432,8 +508,6 @@ def stream_frames(
     ----------
     source
         A video file, image directory/glob, or explicit footage file list.
-    backend
-        Video decoder for a video source.
     image_backend
         Still-image decoder for an image sequence.
     workers
@@ -455,10 +529,9 @@ def stream_frames(
         raise ValueError(f"block must be >= 1, got {block}")
     kind, target = _stream_source(source)
     if kind == "video":
-        reader = select_reader(backend)
         buf: list[np.ndarray] = []
-        for frame in reader.stream(target):
-            buf.append(to_numpy(frame))
+        for frame in _decode_stream(target):
+            buf.append(frame)
             if len(buf) >= block:
                 yield np.stack(buf)
                 buf = []
@@ -473,29 +546,22 @@ def stream_frames(
 def reader_name(
     path: str | Path | list[Path],
     *,
-    backend: str = "auto",
     image_backend: str = "auto",
 ) -> str:
     """Name of the decoder :func:`read_frames` would actually use for ``path``.
 
     Mirrors :func:`read_frames`'s dispatch so logs/diagnostics report the decoder
-    that really runs rather than the video backend registry's choice (which only
-    applies to video *files*):
+    that really runs:
 
-    - a video file (``.mp4`` / ``.avi`` ...) resolves through
-      :func:`~deeperfly.video.base.select_reader` (``pyav`` / ``opencv`` / ...,
-      honoring ``backend``);
+    - a video file (``.mp4`` / ``.avi`` ...) is read by PyAV, so this is ``"pyav"``;
     - an image directory, glob or explicit file list is decoded by
-      :func:`read_images`, which ignores the video backend and resolves
-      ``image_backend`` via :func:`~deeperfly.video.base.select_image_reader`
-      (``opencv`` by default).
+      :func:`read_images`, which resolves ``image_backend`` via
+      :func:`~deeperfly.video.base.select_image_reader` (``opencv`` by default).
 
     Parameters
     ----------
     path
         A video file, image directory/glob, or explicit footage file list.
-    backend
-        The requested video backend.
     image_backend
         The requested image backend.
 
@@ -507,9 +573,9 @@ def reader_name(
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
         if files and _is_video_file(files[0]):
-            return select_reader(backend).name
+            return "pyav"
     elif _is_video_file(Path(path)):
-        return select_reader(backend).name
+        return "pyav"
     return select_image_reader(image_backend)
 
 
@@ -638,11 +704,10 @@ def write_mp4(
     path: str | Path,
     fps: float = 30.0,
     *,
-    backend: str = "auto",
     codec: str | None = None,
     **kwargs,
 ) -> None:
-    """Write ``(T, H, W, 3)`` frames to an MP4.
+    """Write ``(T, H, W, 3)`` frames to an MP4 via PyAV (H.264 / libx264).
 
     Parameters
     ----------
@@ -653,25 +718,20 @@ def write_mp4(
         Destination MP4 path.
     fps
         Output frame rate.
-    backend
-        ``"auto"`` (pyav, the core default) | ``"pyav"`` | ``"opencv"``.
     codec
-        Overrides the backend default codec (libx264 for pyav, the ``mp4v``
-        fourcc for opencv).
+        Overrides the default codec (``libx264``).
     **kwargs
-        Extra keyword arguments forwarded to the writer backend.
+        Extra keyword arguments forwarded to the encoder (e.g. ``pix_fmt``).
     """
-    writer = select_writer(backend)
     frames = to_numpy(frames)
     if frames.dtype != np.uint8:
         frames = np.clip(frames, 0, 255).astype(np.uint8)
     log.info(
-        "writing %s via '%s' backend: %d frames %dx%d @ %g fps",
+        "writing %s via pyav: %d frames %dx%d @ %g fps",
         Path(path).name,
-        writer.name,
         frames.shape[0],
         frames.shape[1],
         frames.shape[2],
         fps,
     )
-    writer.write(frames, path, fps=fps, codec=codec, **kwargs)
+    _encode_mp4(frames, path, fps=fps, codec=codec, **kwargs)

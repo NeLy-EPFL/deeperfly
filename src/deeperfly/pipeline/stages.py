@@ -461,7 +461,6 @@ def source_view_frames(
     # transformed-frame coordinates; the overlay footage must match (apply the
     # same per-camera preprocess transform).
     transforms = config.frame_transforms()
-    backend = config.io.video_reader
     image_backend = config.io.image_reader
     workers = config.io.image_workers
 
@@ -478,7 +477,6 @@ def source_view_frames(
                 v,
                 video.read_frames(
                     sources[v],
-                    backend=backend,
                     image_backend=image_backend,
                     workers=workers,
                 ),
@@ -551,9 +549,7 @@ def render_videos(
         return
 
     input_fps = resolve_fps(config, sources=sources)
-    # The visualization stage *writes* MP4s -- the output encoder is [io.video].writer
-    # (the shared I/O config), distinct from [io.video].reader used to read footage.
-    backend = config.io.video_writer
+    # The visualization stage *writes* MP4s with PyAV (H.264 / libx264).
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
@@ -574,7 +570,7 @@ def render_videos(
         log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
         with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
             clip = compose.render_video(spec, src, progress=wrap)
-        video.write_mp4(clip, path, fps=fps, backend=backend)
+        video.write_mp4(clip, path, fps=fps)
         log.info("wrote %s", path)
 
 

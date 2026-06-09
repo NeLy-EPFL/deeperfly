@@ -1,8 +1,8 @@
-"""Tests for the pluggable video read/write backends.
+"""Tests for video read/write (PyAV) and image-sequence decoding.
 
-All backends decode on the CPU; installed ones (opencv, pyav, video_reader_rs,
-torchcodec) are exercised for real. Encoded video is lossy, so round-trips assert
-on frame count / shape / dtype and coarse color, not pixel values.
+PyAV is the only video backend -- it decodes and encodes H.264 on the CPU.
+Encoded video is lossy, so round-trips assert on frame count / shape / dtype and
+coarse color, not pixel values.
 """
 
 from __future__ import annotations
@@ -11,18 +11,6 @@ import numpy as np
 import pytest
 
 from deeperfly import video
-from deeperfly.video import base
-
-# Backends we can actually run here, restricted to what's installed.
-_CANDIDATES = (
-    "opencv",
-    "pyav",
-    "video_reader_rs",
-    "torchcodec",
-)
-READERS = [b for b in _CANDIDATES if b in video.available_read_backends()]
-WRITERS = [b for b in ("opencv", "pyav") if b in video.available_write_backends()]
-ROUND_TRIP = [b for b in READERS if b in WRITERS]
 
 
 def _gradient_clip(n=8, h=64, w=48):
@@ -42,48 +30,10 @@ def _indexed_clip(n=12, h=32, w=32):
     return frames.astype(np.uint8)
 
 
-def _write_clip(tmp_path, frames, *, backend="pyav", name="clip.mp4"):
+def _write_clip(tmp_path, frames, *, name="clip.mp4"):
     path = tmp_path / name
-    video.write_mp4(frames, path, fps=10, backend=backend)
+    video.write_mp4(frames, path, fps=10)
     return path
-
-
-# -- registry / selection ----------------------------------------------------
-
-
-def test_builtin_backends_registered():
-    assert set(video.list_read_backends()) >= {
-        "opencv",
-        "pyav",
-        "video_reader_rs",
-        "torchcodec",
-    }
-    assert set(video.list_write_backends()) >= {"opencv", "pyav"}
-
-
-def test_backend_capability_flags():
-    for name in ("opencv", "pyav", "video_reader_rs", "torchcodec"):
-        assert base._READERS[name].supports_seek, name
-
-
-def test_unknown_backend_raises():
-    with pytest.raises(ValueError):
-        video.read_video("nope.mp4", backend="does-not-exist")
-    with pytest.raises(ValueError):
-        video.write_mp4(np.zeros((1, 4, 4, 3), np.uint8), "x.mp4", backend="nope")
-
-
-def test_auto_select_returns_installed_backend():
-    assert video.select_reader("auto").name in READERS
-    assert video.select_writer("auto").name in WRITERS
-
-
-def test_read_order_leads_with_in_process_pyav():
-    # pyav links FFmpeg directly (no subprocess), so it is the in-process default,
-    # ahead of the other decoders in the auto preference order.
-    assert base.READ_ORDER[0] == "pyav"
-    for other in ("opencv", "torchcodec", "video_reader_rs"):
-        assert base.READ_ORDER.index("pyav") < base.READ_ORDER.index(other)
 
 
 # -- to_numpy / to_torch -----------------------------------------------------
@@ -109,74 +59,45 @@ def test_to_torch_passthrough_from_torch():
     assert x is t
 
 
-# -- readers -----------------------------------------------------------------
+# -- video read / write (PyAV) -----------------------------------------------
 
 
-def test_video_reader_rs_installed_means_available():
-    # video_reader-rs's wheel bundles FFmpeg libs that lack an inter-lib RUNPATH,
-    # so `import video_reader` dies on a transitive dep unless we pre-dlopen them.
-    # When the package is on disk, the backend must therefore advertise itself --
-    # otherwise the preload regressed and the install is silently unusable.
-    import importlib.util
-
-    if importlib.util.find_spec("video_reader") is None:
-        pytest.skip("video_reader-rs not installed")
-    assert "video_reader_rs" in video.available_read_backends()
-
-
-@pytest.mark.parametrize("backend", READERS)
-def test_reader_roundtrip(tmp_path, backend):
+def test_reader_roundtrip(tmp_path):
     frames = _gradient_clip(8, 64, 48)
-    path = _write_clip(tmp_path, frames)  # written by pyav (the core default)
-    out = video.read_video(path, backend=backend)
+    path = _write_clip(tmp_path, frames)
+    out = video.read_video(path)
     assert out.shape[0] == frames.shape[0]
     assert out.shape[1:] == (64, 48, 3)
     assert out.dtype == np.uint8
 
 
-@pytest.mark.parametrize("backend", READERS)
-def test_reader_sequential_slice(tmp_path, backend):
+def test_reader_sequential_slice(tmp_path):
     frames = _gradient_clip(10, 32, 32)
     path = _write_clip(tmp_path, frames)
-    out = video.read_video(path, backend=backend, start=2, stop=8, step=2)
+    out = video.read_video(path, start=2, stop=8, step=2)
     assert out.shape[0] == len(range(2, 8, 2))  # 3 frames
 
 
-@pytest.mark.parametrize("backend", READERS)
-def test_stream_matches_full_read(tmp_path, backend):
-    # A continuous stream() is one forward decode of the whole file: it must yield
-    # exactly the frames of a full read, in order (same decoder -> exact pixels).
-    frames = _indexed_clip(20, 32, 32)
-    path = _write_clip(tmp_path, frames)
-    reader = base._READERS[backend]
-    full = video.to_numpy(video.read_video(path, backend=backend))
-    streamed = np.stack([video.to_numpy(f) for f in reader.stream(path)])
-    assert streamed.shape == full.shape
-    np.testing.assert_array_equal(streamed, full)
-
-
-@pytest.mark.parametrize("backend", READERS)
-def test_stream_frames_blocks_concatenate_to_full_read(tmp_path, backend):
+def test_stream_frames_blocks_concatenate_to_full_read(tmp_path):
     # stream_frames groups one continuous decode into <= block chunks that
     # concatenate back to the whole recording (what the streaming consumer sees).
     frames = _indexed_clip(20, 32, 32)
     path = _write_clip(tmp_path, frames)
-    blocks = list(video.stream_frames(path, backend=backend, block=7))
-    full = video.to_numpy(video.read_video(path, backend=backend))
+    blocks = list(video.stream_frames(path, block=7))
+    full = video.read_video(path)
     assert all(len(b) == 7 for b in blocks[:-1])  # only the last block may be short
     assert sum(len(b) for b in blocks) == len(full)
     np.testing.assert_array_equal(np.concatenate(blocks), full)
 
 
-@pytest.mark.parametrize("backend", READERS)
-def test_random_access_matches_sequential(tmp_path, backend):
-    # Random access must return the *same frames* (in order) as a full read,
-    # whether the backend seeks or falls back to decode-and-gather.
+def test_random_access_matches_sequential(tmp_path):
+    # Random access (PyAV seeks to each frame) must return the *same frames*, in the
+    # requested order, as selecting them from a full read.
     frames = _indexed_clip(12, 32, 32)
     path = _write_clip(tmp_path, frames)
     idx = [0, 5, 3, 9, 5]
-    full = video.read_video(path, backend=backend)
-    picked = video.read_video(path, backend=backend, indices=idx)
+    full = video.read_video(path)
+    picked = video.read_video(path, indices=idx)
     assert picked.shape[0] == len(idx)
     np.testing.assert_allclose(
         picked.reshape(len(idx), -1).mean(1),
@@ -185,27 +106,29 @@ def test_random_access_matches_sequential(tmp_path, backend):
     )
 
 
-# -- writers -----------------------------------------------------------------
-
-
-@pytest.mark.parametrize("backend", WRITERS)
-def test_writer_roundtrip(tmp_path, backend):
+def test_writer_roundtrip(tmp_path):
     frames = _gradient_clip(8, 64, 48)
-    path = _write_clip(tmp_path, frames, backend=backend, name=f"{backend}.mp4")
-    back = video.read_video(path, backend="pyav")
+    path = _write_clip(tmp_path, frames)
+    back = video.read_video(path)
     assert back.shape[0] >= frames.shape[0] - 1  # codecs may drop/add a frame
     assert back.shape[1:] == (64, 48, 3)
 
 
-@pytest.mark.parametrize("backend", ROUND_TRIP)
-def test_color_channel_order_preserved(tmp_path, backend):
-    # Solid red clip: a BGR/RGB mixup in a backend would surface here.
+def test_color_channel_order_preserved(tmp_path):
+    # Solid red clip: a BGR/RGB mixup would surface here.
     red = np.zeros((6, 32, 32, 3), np.uint8)
     red[..., 0] = 220
-    path = _write_clip(tmp_path, red, backend=backend, name=f"{backend}_red.mp4")
-    out = video.read_video(path, backend=backend)
+    path = _write_clip(tmp_path, red, name="red.mp4")
+    out = video.read_video(path)
     mean = out.reshape(-1, 3).mean(0)
     assert mean[0] > mean[1] and mean[0] > mean[2]
+
+
+def test_read_video_no_frames_raises(tmp_path):
+    # An out-of-range slice decodes nothing -> a clear error, not an empty array.
+    path = _write_clip(tmp_path, _gradient_clip(4, 16, 16))
+    with pytest.raises(ValueError):
+        video.read_video(path, start=100)
 
 
 def test_non_uint8_frames_are_clipped(tmp_path):

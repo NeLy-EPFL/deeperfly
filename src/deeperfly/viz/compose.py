@@ -516,7 +516,6 @@ def render_videos(
     outdir: str | Path,
     *,
     fps: float = 30.0,
-    backend: str = "auto",
 ) -> list[Path]:
     """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
@@ -530,8 +529,6 @@ def render_videos(
         The directory the MP4s are written to (created if missing).
     fps
         Output frame rate.
-    backend
-        Video writer backend name.
 
     Returns
     -------
@@ -546,6 +543,6 @@ def render_videos(
     for spec in read_video_specs(config):
         frames = render_video(spec, src)
         path = outdir / f"{spec.video_name}.mp4"
-        write_mp4(frames, path, fps=fps, backend=backend)
+        write_mp4(frames, path, fps=fps)
         paths.append(path)
     return paths

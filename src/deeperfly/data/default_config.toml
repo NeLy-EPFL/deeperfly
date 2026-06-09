@@ -82,17 +82,9 @@ input = "camera_6.mp4"
 
 
 # ===========================================================================
-# Frame I/O backends, shared across stages. The same decoder/encoder choices apply
-# wherever the run reads footage or writes output videos. All decode/encode is CPU.
+# Frame I/O, shared across stages. Video files are read and written with PyAV
+# (in-process FFmpeg, on the CPU); only the image-sequence decoder is configurable.
 # ===========================================================================
-[io.video]
-# Input *video* decoder. "auto" = fastest installed (pyav, then opencv/torchcodec/
-# video_reader_rs). Force one with "pyav" | "opencv" | "torchcodec" | "video_reader_rs".
-reader = "auto"
-# Output MP4 encoder. "auto" = fastest installed (pyav, then opencv). Force one
-# with "pyav" | "opencv".
-writer = "auto"
-
 [io.image]
 # Image *sequence* decoder (a folder/glob of jpg/png/... per camera). "auto" /
 # "opencv" use OpenCV (core, fast); "imageio" uses the optional `imageio` extra for
@@ -129,7 +121,7 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
                          # videos' base playback rate.
 
 
-# Detector: the 2D pose detector. The frame decoder is configured in [io.video] above.
+# Detector: the 2D pose detector. Video frames are decoded with PyAV (on the CPU).
 [pipeline.pose2d]
 # Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
 # -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
@@ -223,7 +215,7 @@ min_inliers = 2          # min agreeing views to accept a point (ransac)
 # ---------------------------------------------------------------------------
 [pipeline.visualization]
 background = "black"
-# The output encoder and input decoder are set in [io.video] (writer / reader) above.
+# Output MP4s are encoded with PyAV (H.264 / libx264, on the CPU).
 # output_fps = 30        # explicit output fps for every video (per-video override below)
 # speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
 

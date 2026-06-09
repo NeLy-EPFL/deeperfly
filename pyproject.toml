@@ -59,10 +59,6 @@ Issues = "https://github.com/NeLy-EPFL/deeperfly/issues"
 deeperfly = "deeperfly.cli:main"
 
 [project.optional-dependencies]
-# Optional alternative video read/write backends (deeperfly.video), each
-# selectable via `backend=...`.
-video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
-torchcodec = ["torchcodec>=0.1"]      # CPU decode straight into torch tensors
 # Optional image-sequence decoder: OpenCV (a core dependency) reads jpg/png/... by
 # default; install this for broader format support via `[io.image].reader = "imageio"`
 # (and as the "auto" fallback for files OpenCV cannot decode).

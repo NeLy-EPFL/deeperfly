@@ -107,10 +107,8 @@ class PictorialParams:
 
 @dataclass(frozen=True)
 class IoParams:
-    """``[io.video]`` + ``[io.image]`` -- shared decode/encode backend choices."""
+    """``[io.image]`` -- image-sequence decoder choices (video I/O uses PyAV)."""
 
-    video_reader: str = "auto"
-    video_writer: str = "auto"
     image_reader: str = "auto"
     image_workers: int | None = None
 
@@ -405,13 +403,8 @@ class Config:
 
     @property
     def io(self) -> IoParams:
-        v = _dig(self.data, ("io", "video"))
         im = _dig(self.data, ("io", "image"))
         present: dict = {}
-        if "reader" in v:
-            present["video_reader"] = v["reader"]
-        if "writer" in v:
-            present["video_writer"] = v["writer"]
         if "reader" in im:
             present["image_reader"] = im["reader"]
         if "workers" in im:
