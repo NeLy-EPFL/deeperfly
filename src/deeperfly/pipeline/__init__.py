@@ -9,7 +9,7 @@ The pure array functions live in :mod:`deeperfly.pipeline.core` (re-exported her
 - :func:`reconstruct_ransac` -- the default: triangulate each point from its largest
   multi-view consensus set (RANSAC) instead of a contaminated fit.
 - :func:`run_from_points2d` -- the whole pipeline from a 2D sequence to a saved
-  :class:`~deeperfly.io.PoseResult`.
+  :class:`~deeperfly.results.PoseResult`.
 
 On top of those, the *staged* run (shared by the CLI and a library caller):
 

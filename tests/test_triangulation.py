@@ -7,7 +7,7 @@ import pytest
 
 from deeperfly.cameras import CameraGroup
 from deeperfly.skeleton import Skeleton
-from deeperfly.triangulate import (
+from deeperfly.triangulation import (
     apply_visibility,
     reprojection_error,
     triangulate,

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from deeperfly.cameras import CameraGroup
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.pipeline import (
     _resolve_triangulation,
     calibrate,
@@ -140,7 +140,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
     observations are present.
     """
     from deeperfly import geometry as geom
-    from deeperfly.triangulate import apply_visibility
+    from deeperfly.triangulation import apply_visibility
 
     names = rig["names"]
     pts3d = fly_motion(rng, n_frames=16)

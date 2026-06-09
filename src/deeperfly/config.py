@@ -32,8 +32,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .cameras import CameraGroup
     from .skeleton import Skeleton
-    from .video import FrameTransform
-    from .viz.compose import VideoSpec
+    from .preprocessing import FrameTransform
+    from .visualization.compose import VideoSpec
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
@@ -457,7 +457,7 @@ class Config:
     @property
     def videos(self) -> "list[VideoSpec]":
         """The output-video specs (``[[pipeline.visualization.videos]]``)."""
-        from .viz.compose import read_video_specs
+        from .visualization.compose import read_video_specs
 
         return read_video_specs(self)
 
@@ -487,7 +487,7 @@ class Config:
 
     def frame_transforms(self) -> "dict[str, FrameTransform]":
         """Per-camera frame preprocessing (``[cameras.<name>.preprocess]``)."""
-        from .video import parse_frame_transforms
+        from .preprocessing import parse_frame_transforms
 
         return parse_frame_transforms(self)
 

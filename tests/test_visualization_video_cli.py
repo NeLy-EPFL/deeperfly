@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly import cli, pipeline, video
-from deeperfly.io import PoseResult
-from deeperfly.viz import compose
+from deeperfly import cli, io, pipeline
+from deeperfly.results import PoseResult
+from deeperfly.visualization import compose
 
 # `cameras`, `fly` and `result` fixtures live in conftest.py (shared with
 # test_cli_run.py).
@@ -23,8 +23,9 @@ from deeperfly.viz import compose
 def test_write_read_mp4_roundtrip(tmp_path, rng):
     frames = rng.integers(0, 255, size=(8, 64, 48, 3), dtype=np.uint8)
     path = tmp_path / "clip.mp4"
-    video.write_mp4(frames, path, fps=10)
-    back = video.read_video(path)
+    with io.VideoWriter(path, fps=10) as writer:
+        writer.write_frames(frames)
+    back = io.VideoReader(path).read()
     assert back.shape[0] == 8
     assert back.shape[1:3] == (64, 48)
 
@@ -35,17 +36,23 @@ def test_read_images(tmp_path, rng):
     for i in range(3):
         img = rng.integers(0, 255, (16, 16, 3), dtype=np.uint8)
         cv2.imwrite(str(tmp_path / f"frame_{i:03d}.png"), img)
-    frames = video.read_images(tmp_path)
+    frames = io.open_reader(tmp_path).read()
     assert frames.shape == (3, 16, 16, 3)
 
 
 def test_video_fps_roundtrip(tmp_path, rng):
+    import cv2
+
     frames = rng.integers(0, 255, size=(8, 32, 32, 3), dtype=np.uint8)
     path = tmp_path / "clip.mp4"
-    video.write_mp4(frames, path, fps=12)
-    assert abs(video.video_fps(path) - 12) < 0.5
-    # an image sequence / non-video path carries no intrinsic frame rate.
-    assert video.video_fps(tmp_path / "frames") is None
+    with io.VideoWriter(path, fps=12) as writer:
+        writer.write_frames(frames)
+    assert abs(io.open_reader(path).fps() - 12) < 0.5
+    # an image sequence carries no intrinsic frame rate.
+    img_dir = tmp_path / "frames"
+    img_dir.mkdir()
+    cv2.imwrite(str(img_dir / "frame_000.png"), frames[0])
+    assert io.open_reader(img_dir).fps() is None
 
 
 # -- visualization output fps (output_fps / speed) ---------------------------
@@ -150,7 +157,7 @@ def test_cli_run_visualization_only(result, tmp_path):
             "error",
         ]
     )
-    assert video.read_video(outdir / "pose3d.mp4").shape[0] == result.n_frames
+    assert io.VideoReader(outdir / "pose3d.mp4").read().shape[0] == result.n_frames
 
 
 def _viz_only_cfg(tmp_path):
@@ -214,4 +221,4 @@ def test_overwrite_visualization_rerenders(result, tmp_path):
             "error",
         ]
     )
-    assert video.read_video(outdir / "pose3d.mp4").shape[0] == result.n_frames
+    assert io.VideoReader(outdir / "pose3d.mp4").read().shape[0] == result.n_frames

@@ -27,9 +27,9 @@ from scipy.optimize import OptimizeResult
 
 from .. import pictorial
 from ..cameras import CameraGroup
-from ..io import PoseResult
+from ..results import PoseResult
 from ..skeleton import Skeleton
-from ..triangulate import (
+from ..triangulation import (
     apply_visibility,
     reprojection_error,
     triangulate,
@@ -258,7 +258,7 @@ def reconstruct_ransac(
 
     Unlike :func:`reconstruct`, which deletes the worst view from a contaminated
     fit, this builds each point from the *largest set of mutually consistent
-    views* (:func:`deeperfly.triangulate.triangulate_ransac`), so a badly
+    views* (:func:`deeperfly.triangulation.triangulate_ransac`), so a badly
     mislocated detection never enters the fit. NaN views never count as inliers.
 
     Parameters

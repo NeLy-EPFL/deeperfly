@@ -9,7 +9,7 @@ import numpy as np
 from rich.text import Text
 
 from ..config import DEFAULT_CONFIG_PATH
-from ..io import PoseResult
+from ..results import PoseResult
 from .console import _info_line, console
 
 
@@ -199,9 +199,9 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     import importlib.metadata
     import platform
 
-    from .. import video
+    from .. import io
+    from ..io import IMAGE_READ_ORDER
     from ..pose2d import backends, download
-    from ..video.base import IMAGE_READ_ORDER
 
     _doctor_header("deeperfly")
     try:
@@ -244,12 +244,12 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("detector", "torch" if torch_info["installed"] else "none")
 
     _doctor_header("frame I/O")
-    image_avail = video.available_image_readers()
+    image_avail = io.available_image_readers()
     _doctor_row("video read/write", "pyav")
     _doctor_row(
         "image read", ", ".join(_by_priority(image_avail, IMAGE_READ_ORDER)) or "none"
     )
-    missing = sorted(set(video.list_image_readers()) - set(image_avail))
+    missing = sorted(set(io.list_image_readers()) - set(image_avail))
     if missing:
         _doctor_row("not installed", ", ".join(missing))
 

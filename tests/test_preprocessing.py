@@ -13,7 +13,7 @@ import itertools
 import numpy as np
 import pytest
 
-from deeperfly.video import FrameTransform, parse_frame_transforms
+from deeperfly.preprocessing import FrameTransform, parse_frame_transforms
 
 
 def _clip(rng, t=2, h=4, w=6):
@@ -64,7 +64,7 @@ def test_rot90_swaps_height_and_width():
 
 
 def test_apply_returns_contiguous_numpy():
-    # cv2 (the viz draw path) needs contiguous arrays; np.flip/np.rot90 yield views.
+    # cv2 (the visualization draw path) needs contiguous arrays; np.flip/np.rot90 yield views.
     rng = np.random.default_rng(3)
     out = FrameTransform(fliplr=True, rot90=1).apply(_clip(rng))
     assert out.flags["C_CONTIGUOUS"]

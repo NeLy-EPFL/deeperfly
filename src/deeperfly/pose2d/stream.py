@@ -92,7 +92,7 @@ def detect_input_fps(
     """First detectable per-camera video frame rate, or ``None``.
 
     Walks the configured camera sources and returns the first video file's frame
-    rate (:func:`deeperfly.video.video_fps`); image-sequence cameras have none.
+    rate (:meth:`deeperfly.io.VideoReader.fps`); image-sequence cameras have none.
     Guarded so a missing recording (a cache-only resume) yields ``None`` rather
     than raising.
 
@@ -108,7 +108,7 @@ def detect_input_fps(
     float or None
         The first detectable video frame rate, or ``None``.
     """
-    from .. import video
+    from .. import io
 
     try:
         cam_sources = [
@@ -118,7 +118,7 @@ def detect_input_fps(
         return None
     for src in cam_sources:
         try:
-            fps = video.video_fps(src)
+            fps = io.open_reader(src).fps()
         except Exception:  # noqa: BLE001
             fps = None
         if fps:
@@ -174,7 +174,7 @@ def prefetch_windows(
     """Yield ``(window, n)`` multi-camera frame blocks from continuous decode.
 
     A background producer opens **one continuous forward decoder per source**
-    (:func:`deeperfly.video.stream_frames`) and walks them all together, grouping
+    (:meth:`deeperfly.io.FrameReader.stream`) and walks them all together, grouping
     ``block`` frames at a time into a multi-camera ``window`` (a list of
     ``(T, H, W, 3)`` arrays, one per source). Each source is decoded in a single
     linear pass -- no per-window re-open or re-seek -- overlapped with the GPU
@@ -190,24 +190,24 @@ def prefetch_windows(
     :class:`~deeperfly.config.Pose2dParams`).
 
     ``transforms`` is an optional per-source
-    :class:`~deeperfly.video.FrameTransform` (aligned to ``sources``) applied to
-    each block before yielding, so detection sees the ``[cameras.*.preprocess]``
-    orientation.
+    :class:`~deeperfly.preprocessing.FrameTransform` (aligned to ``sources``)
+    applied to each block before yielding, so detection sees the
+    ``[cameras.*.preprocess]`` orientation.
 
     The producer treats each source as an opaque forward stream -- it never asks
     for a frame count or a seek -- so an unbounded *live-camera* source (a future
-    :func:`deeperfly.video.stream_frames` branch) drives this loop unchanged.
+    :class:`~deeperfly.io.base.FrameReader` subclass) drives this loop unchanged.
 
     Parameters
     ----------
     sources
-        One footage source per camera (each passed to
-        :func:`deeperfly.video.stream_frames`).
+        One footage source per camera (each opened with
+        :func:`deeperfly.io.open_reader` and streamed).
     block
         Frames per yielded window (the detector's forward batch).
     transforms
-        Optional per-source :class:`~deeperfly.video.FrameTransform` (aligned to
-        ``sources``) applied to each block, so detection sees the
+        Optional per-source :class:`~deeperfly.preprocessing.FrameTransform`
+        (aligned to ``sources``) applied to each block, so detection sees the
         ``[cameras.*.preprocess]`` orientation.
     depth
         Queue depth bounding how far the decoder runs ahead of the GPU.
@@ -231,10 +231,10 @@ def prefetch_windows(
     import queue
     import threading
 
-    from .. import video
+    from .. import io, preprocessing
 
     if transforms is None:
-        transforms = [video.FrameTransform()] * len(sources)
+        transforms = [preprocessing.FrameTransform()] * len(sources)
     q: queue.Queue = queue.Queue(maxsize=depth)
     DONE = object()
 
@@ -242,12 +242,11 @@ def prefetch_windows(
         emitted = False
         try:
             streams = [
-                video.stream_frames(
+                io.open_reader(
                     s,
                     image_backend=image_backend,
                     workers=workers,
-                    block=block,
-                )
+                ).stream(block=block)
                 for s in sources
             ]
             while True:
@@ -295,7 +294,7 @@ def detect_2d(
     the next, so peak frame memory is bounded by the decode buffer, not the recording
     length. Per-block results are concatenated along time. End-of-file comes from
     the decoder (a short or exhausted block), so it doesn't depend on
-    :func:`deeperfly.video.count_frames` being exact -- that is only the
+    :meth:`deeperfly.io.FrameReader.count` being exact -- that is only the
     progress-bar total.
 
     Parameters
@@ -333,7 +332,7 @@ def detect_2d(
     SystemExit
         If the detector received no frames.
     """
-    from .. import video
+    from .. import io, preprocessing
     from ..pictorial import Candidates
     from . import inference
 
@@ -352,15 +351,21 @@ def detect_2d(
     # sees the corrected orientation (and 2D points land in that frame).
     transforms_by_name = config.frame_transforms()
     transforms = [
-        transforms_by_name.get(name, video.FrameTransform()) for name, _ in cam_sources
+        transforms_by_name.get(name, preprocessing.FrameTransform())
+        for name, _ in cam_sources
     ]
-    total = video.count_frames(cam_files[0]) if cam_files else 0
+    # One head reader for the first camera serves both the progress-bar total and
+    # the reported decoder name -- the source kind is resolved once here.
+    head = (
+        io.open_reader(cam_files[0], image_backend=image_backend) if cam_files else None
+    )
+    total = head.count() if head is not None else 0
 
     # One-line summary instead of a per-block read log (that's at -vv now).
-    # reader_name mirrors read_frames's dispatch off the actual source, so the
-    # reported decoder matches what really runs; guard a forced-but-uninstalled one.
+    # The reader's name reports the decoder that actually runs off the real source;
+    # guard a forced-but-uninstalled image backend.
     try:
-        reader = video.reader_name(cam_files[0], image_backend=image_backend)
+        reader = head.name if head is not None else image_backend
     except Exception:  # noqa: BLE001
         reader = image_backend
     log.info(

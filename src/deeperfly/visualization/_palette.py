@@ -2,8 +2,8 @@
 
 Each point takes its limb's color from the skeleton ``palette``
 (``limb_name -> hex``), falling back to ``tab10`` for limbs without an entry. The
-OpenCV overlay and compositor (:mod:`deeperfly.viz.opencv`,
-:mod:`deeperfly.viz.compose`) draw straight into image arrays, so the colors live
+OpenCV overlay and compositor (:mod:`deeperfly.visualization.opencv`,
+:mod:`deeperfly.visualization.compose`) draw straight into image arrays, so the colors live
 here as plain NumPy with no matplotlib dependency.
 """
 

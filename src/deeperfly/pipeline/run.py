@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from ..config import STAGES, Config
-from ..io import PoseResult
+from ..results import PoseResult
 from ..recordings import require_input_footage
 from . import stages
 

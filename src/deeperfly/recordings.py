@@ -21,16 +21,16 @@ def _footage_exts() -> tuple[str, ...]:
 
     Recognizes a camera's frames and, when a folder mixes several, picks the one to
     keep (earliest wins). Imported lazily so resolving filenames doesn't pull in the
-    video stack.
+    I/O stack.
 
     Returns
     -------
     tuple of str
         Lowercase extensions (with the dot), video kinds before image kinds.
     """
-    from .video.io import _IMAGE_EXTS, _VIDEO_EXTS
+    from .io import IMAGE_EXTS, VIDEO_EXTS
 
-    return _VIDEO_EXTS + _IMAGE_EXTS
+    return VIDEO_EXTS + IMAGE_EXTS
 
 
 def _is_video_ext(suffix: str) -> bool:
@@ -48,9 +48,9 @@ def _is_video_ext(suffix: str) -> bool:
     bool
         ``True`` for a known video extension.
     """
-    from .video.io import _VIDEO_EXTS
+    from .io import VIDEO_EXTS
 
-    return suffix.lower() in _VIDEO_EXTS
+    return suffix.lower() in VIDEO_EXTS
 
 
 def _camera_glob(pattern: str) -> str:
@@ -190,7 +190,7 @@ def camera_sources(
     -------
     list of (str, list of Path)
         ``(name, footage-files)`` per camera in ``[cameras]`` order; each source
-        is the list passed to :func:`deeperfly.video.read_frames`.
+        is the list passed to :func:`deeperfly.io.open_reader`.
     """
     patterns = config.camera_patterns()
     if sources and all(name in sources for name in patterns):
@@ -222,7 +222,7 @@ def camera_image_sizes(
     dict of str to tuple of int
         ``camera_name -> (height, width)`` of the preprocess-transformed frame.
     """
-    from . import video
+    from . import io, preprocessing
 
     image_backend = config.io.image_reader
     # Size the principal point on the *transformed* frame -- the detector and the
@@ -231,8 +231,8 @@ def camera_image_sizes(
     transforms = config.frame_transforms()
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in camera_sources(config, sources=sources, input=input):
-        head = video.read_frames(src, image_backend=image_backend, indices=[0])
-        head = transforms.get(name, video.FrameTransform()).apply(head)
+        head = io.open_reader(src, image_backend=image_backend).read(indices=[0])
+        head = transforms.get(name, preprocessing.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 
@@ -322,9 +322,9 @@ def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
     sample = next((ps for ps in sources.values() if ps), [])
     if not sample or not _is_video_ext(sample[0].suffix):
         return True  # image sequence (or empty): the file count already settled it
-    from . import video
+    from . import io
 
-    frame_counts = {n: video.count_frames(ps) for n, ps in sources.items()}
+    frame_counts = {n: io.open_reader(ps).count() for n, ps in sources.items()}
     known = {c for c in frame_counts.values() if c is not None}
     if len(known) > 1:
         log.warning(

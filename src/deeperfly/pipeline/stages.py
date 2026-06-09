@@ -9,7 +9,7 @@ import numpy as np
 
 from ..cameras import CameraGroup
 from ..config import STAGES, Config
-from ..io import PoseResult
+from ..results import PoseResult
 from ..pose2d.stream import _null_progress, detect_2d, load_detector, resolve_fps
 from ..recordings import camera_image_sizes
 
@@ -157,7 +157,7 @@ def stage_pose2d(
         ``camera_name -> (height, width)`` of the preprocessed frames.
     """
     from ..pose2d import backends, inference
-    from ..triangulate import apply_visibility
+    from ..triangulation import apply_visibility
 
     transforms = config.frame_transforms()
     image_sizes = camera_image_sizes(config, sources=sources, input=input)
@@ -281,7 +281,7 @@ def stage_bundle_adjustment(config: Config, result: PoseResult) -> PoseResult:
     PoseResult
         ``result`` with refined cameras and a ``bundle_adjustment`` meta marker.
     """
-    from ..triangulate import reprojection_error, triangulate
+    from ..triangulation import reprojection_error, triangulate
     from .core import calibrate
 
     log.info(
@@ -381,7 +381,7 @@ def stage_triangulation(config: Config, result: PoseResult) -> PoseResult:
     PoseResult
         ``result`` with 3D points and a ``triangulation`` meta marker.
     """
-    from ..triangulate import reprojection_error, triangulate
+    from ..triangulation import reprojection_error, triangulate
     from .core import _resolve_triangulation, reconstruct, reconstruct_ransac
 
     opts = config.triangulation
@@ -452,7 +452,7 @@ def source_view_frames(
     SystemExit
         If neither in-memory frames nor resolved footage are available.
     """
-    from .. import video
+    from .. import io, preprocessing
 
     if not views:
         return {}
@@ -465,7 +465,7 @@ def source_view_frames(
     workers = config.io.image_workers
 
     def transform(v, frames):
-        return transforms.get(v, video.FrameTransform()).apply(frames)
+        return transforms.get(v, preprocessing.FrameTransform()).apply(frames)
 
     if in_memory is not None:
         return {v: transform(v, in_memory[names.index(v)]) for v in views}
@@ -475,11 +475,11 @@ def source_view_frames(
         return {
             v: transform(
                 v,
-                video.read_frames(
+                io.open_reader(
                     sources[v],
                     image_backend=image_backend,
                     workers=workers,
-                ),
+                ).read(),
             )
             for v in views
         }
@@ -502,7 +502,7 @@ def render_videos(
 ) -> None:
     """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
-    Each video is composited by :mod:`deeperfly.viz.compose` from its panels (see
+    Each video is composited by :mod:`deeperfly.visualization.compose` from its panels (see
     the config's ``[pipeline.visualization]`` section), overwriting any existing MP4
     (the visualization stage recomputes when enabled; disable it to keep prior
     renders). A video whose panels reproject the 3D skeleton is skipped with a
@@ -525,8 +525,8 @@ def render_videos(
     progress
         Optional progress factory threaded into the per-video compositor.
     """
-    from .. import video
-    from ..viz import compose
+    from .. import io
+    from ..visualization import compose
 
     specs = config.videos
     if not specs:
@@ -568,9 +568,11 @@ def render_videos(
         path = outdir / f"{spec.video_name}.mp4"
         fps = spec.resolve_fps(input_fps)
         log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
+        # Composite and encode frame by frame, so a long clip is never fully held
+        # in memory (peak is one frame plus the encoder's buffers).
         with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
-            clip = compose.render_video(spec, src, progress=wrap)
-        video.write_mp4(clip, path, fps=fps)
+            with io.VideoWriter(path, fps=fps) as writer:
+                writer.write_frames(compose.stream_video(spec, src, progress=wrap))
         log.info("wrote %s", path)
 
 

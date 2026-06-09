@@ -13,10 +13,10 @@ import pytest
 
 from deeperfly import pictorial
 from deeperfly.cameras import CameraGroup
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.pipeline import _bone_prior, reconstruct, run_from_points2d
 from deeperfly.skeleton import Skeleton
-from deeperfly.triangulate import apply_visibility
+from deeperfly.triangulation import apply_visibility
 
 
 @pytest.fixture

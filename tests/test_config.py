@@ -20,7 +20,7 @@ from deeperfly.config import (
     Pose2dParams,
     TriangulationParams,
 )
-from deeperfly.viz.compose import VideoSpec
+from deeperfly.visualization.compose import VideoSpec
 
 
 # -- defaults: one source of truth -------------------------------------------

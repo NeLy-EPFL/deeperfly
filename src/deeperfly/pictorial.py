@@ -34,7 +34,7 @@ from jaxtyping import Float
 
 from .cameras import CameraGroup
 from .skeleton import Skeleton
-from .triangulate import reprojection_error
+from .triangulation import reprojection_error
 
 # Defaults (all overridable through the pipeline / CLI).
 DEFAULT_K = 5  # candidate peaks kept per (view, joint)
@@ -224,7 +224,7 @@ def apply_visibility(
 ) -> tuple[np.ndarray, np.ndarray]:
     """NaN out candidates for (camera, point) pairs the rig cannot see.
 
-    Mirrors :func:`deeperfly.triangulate.apply_visibility` but for the candidate
+    Mirrors :func:`deeperfly.triangulation.apply_visibility` but for the candidate
     arrays (an extra trailing ``K`` axis). Broadcasts the ``(V, N)`` visibility
     mask over any middle (e.g. time) axes.
 
@@ -287,7 +287,7 @@ def bone_length_targets(
     """
     import warnings
 
-    from .triangulate import triangulate
+    from .triangulation import triangulate
 
     pts3d0 = triangulate(cameras, pts2d)  # (F, N, 3)
     i, j = skeleton.bone_index_pairs()

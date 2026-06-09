@@ -27,11 +27,11 @@ The end-to-end pipeline is reusable without the CLI:
 
 from __future__ import annotations
 
-from . import geometry, pictorial, pipeline, recordings, triangulate
+from . import geometry, pictorial, pipeline, recordings, triangulation
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
 from .config import Config
-from .io import PoseResult
+from .results import PoseResult
 from .pipeline import run_from_points2d, run_recording
 from .pose2d.stream import detect_2d, load_detector
 from .recordings import Recording, resolve_recordings
@@ -39,7 +39,7 @@ from .skeleton import Skeleton
 
 __all__ = [
     "geometry",
-    "triangulate",
+    "triangulation",
     "pipeline",
     "pictorial",
     "recordings",

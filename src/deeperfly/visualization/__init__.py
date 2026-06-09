@@ -3,9 +3,9 @@
 Drawing is done with OpenCV (a core dependency), so it stays figure-free and
 fast; the two submodules are imported on demand:
 
-- :mod:`deeperfly.viz.opencv` -- fast overlays drawn straight into image arrays
-  with ``cv2``, with painter's-algorithm depth ordering for 3D.
-- :mod:`deeperfly.viz.compose` -- a config-driven panel compositor that layers
+- :mod:`deeperfly.visualization.opencv` -- fast overlays drawn straight into image
+  arrays with ``cv2``, with painter's-algorithm depth ordering for 3D.
+- :mod:`deeperfly.visualization.compose` -- a config-driven panel compositor that layers
   the OpenCV primitives into video frames (one MP4 per
   ``[[pipeline.visualization.videos]]`` entry).
 """

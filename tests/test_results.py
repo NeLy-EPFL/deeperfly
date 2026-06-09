@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from deeperfly.cameras import CameraGroup
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.skeleton import Skeleton
 
 

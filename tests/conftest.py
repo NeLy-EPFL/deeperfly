@@ -13,7 +13,7 @@ import pytest
 
 from deeperfly import geometry as geom
 from deeperfly.cameras import CameraGroup
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.skeleton import Skeleton
 from helpers import (
     AZIMUTHS_DEG,

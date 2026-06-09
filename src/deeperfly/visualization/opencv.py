@@ -3,7 +3,7 @@
 Each primitive draws onto a caller-supplied ``canvas`` (an ``(H, W, 3)`` uint8 RGB
 array) at a pixel offset ``(x0, y0)``, so a compositor can layer several -- an
 image, then a skeleton on top -- into one frame (see
-:mod:`deeperfly.viz.compose`). Drawing goes directly into the array with ``cv2``,
+:mod:`deeperfly.visualization.compose`). Drawing goes directly into the array with ``cv2``,
 far faster than matplotlib for video.
 
 For 3D, bones and joints are ordered back-to-front by camera-space depth (the

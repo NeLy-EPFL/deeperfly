@@ -40,14 +40,14 @@ to the video's ``width`` / ``height`` when given, else the panels' bounding box.
 Its background is ``black`` unless ``pipeline.visualization.background`` is set; a
 panel's ``background`` key repaints just its tile.
 
-Primitives live in :mod:`deeperfly.viz.opencv`; MP4 writing uses the PyAV stack.
+Primitives live in :mod:`deeperfly.visualization.opencv`; MP4 writing uses the PyAV stack.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator
 
 import numpy as np
 from jaxtyping import Float
@@ -479,6 +479,42 @@ def compose_frame(spec: VideoSpec, src: Sources, t: int) -> np.ndarray:
     return canvas
 
 
+def stream_video(
+    spec: VideoSpec,
+    src: Sources,
+    *,
+    n_frames: int | None = None,
+    progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
+) -> Iterator[Float[np.ndarray, "H W 3"]]:
+    """Composite ``spec`` frame by frame, yielding each ``(H, W, 3)`` uint8 frame.
+
+    The streaming counterpart of :func:`render_video`: a consumer (e.g.
+    :class:`deeperfly.io.VideoWriter`) encodes each frame as it is composited, so a
+    long clip never has to be held in memory as one ``(T, H, W, 3)`` array.
+
+    Parameters
+    ----------
+    spec
+        The video spec.
+    src
+        The data sources the panels draw from.
+    n_frames
+        How many frames to render (defaults to ``src.n_frames()``).
+    progress
+        Optional wrapper of the per-frame iterator (e.g. a rich progress bar);
+        defaults to the identity, keeping this library UI-free.
+
+    Yields
+    ------
+    np.ndarray
+        Each composited ``(H, W, 3)`` uint8 RGB frame, in order.
+    """
+    n = src.n_frames() if n_frames is None else n_frames
+    steps = range(n) if progress is None else progress(range(n))
+    for t in steps:
+        yield compose_frame(spec, src, t)
+
+
 def render_video(
     spec: VideoSpec,
     src: Sources,
@@ -487,6 +523,9 @@ def render_video(
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ) -> Float[np.ndarray, "T H W 3"]:
     """Composite every frame of ``spec`` into a ``(T, H, W, 3)`` uint8 stack.
+
+    The eager counterpart of :func:`stream_video`, for callers that want the whole
+    clip as one array; stream the frames instead when memory matters.
 
     Parameters
     ----------
@@ -505,9 +544,7 @@ def render_video(
     np.ndarray
         The composited ``(T, H, W, 3)`` uint8 stack.
     """
-    n = src.n_frames() if n_frames is None else n_frames
-    steps = range(n) if progress is None else progress(range(n))
-    return np.stack([compose_frame(spec, src, t) for t in steps])
+    return np.stack(list(stream_video(spec, src, n_frames=n_frames, progress=progress)))
 
 
 def render_videos(
@@ -535,14 +572,15 @@ def render_videos(
     list of Path
         The written MP4 paths.
     """
-    from ..video import write_mp4
+    from ..io import VideoWriter
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for spec in read_video_specs(config):
-        frames = render_video(spec, src)
         path = outdir / f"{spec.video_name}.mp4"
-        write_mp4(frames, path, fps=fps)
+        # Stream frame by frame into the encoder -- never hold the whole clip.
+        with VideoWriter(path, fps=fps) as writer:
+            writer.write_frames(stream_video(spec, src))
         paths.append(path)
     return paths

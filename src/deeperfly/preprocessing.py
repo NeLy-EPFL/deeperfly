@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .base import to_numpy
+from .io.base import to_numpy
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from .config import Config
 
 _ALLOWED_KEYS = ("fliplr", "flipud", "rot90")
 
@@ -105,7 +105,7 @@ def parse_frame_transforms(
         On an unknown preprocess key or a non-integer ``rot90`` (so config typos
         fail loudly).
     """
-    from ..config import Config
+    from .config import Config
 
     _, cameras = Config.coerce(config).camera_table()
     out: dict[str, FrameTransform] = {}

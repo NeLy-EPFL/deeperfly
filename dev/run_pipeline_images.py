@@ -33,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-from deeperfly import video
+from deeperfly import io
 from deeperfly.cameras import CameraGroup
 from deeperfly.pipeline import run_from_points2d
 from deeperfly.pose2d import backends, inference
@@ -231,7 +231,7 @@ def main() -> None:
     # Cameras: recenter the principal point onto the real 960x480 image center.
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
-    probe = video.read_frames([root / f"camera_0_img_{frame_ids[0]:06d}.jpg"])[0]
+    probe = io.open_reader([root / f"camera_0_img_{frame_ids[0]:06d}.jpg"]).read()[0]
     h, w = probe.shape[:2]
     cfg.setdefault("camera_defaults", {})["principal_point_px"] = [
         (w - 1) / 2,
@@ -249,9 +249,9 @@ def main() -> None:
 
     def load_stack(fid: int) -> np.ndarray:
         """The synchronized cameras for one frame as a single (V, H, W, 3) array."""
-        return video.read_frames(
+        return io.open_reader(
             [root / f"camera_{c}_img_{fid:06d}.jpg" for c in range(n_views)]
-        )
+        ).read()
 
     candidates = None
     t0 = time.perf_counter()

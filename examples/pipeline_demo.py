@@ -20,7 +20,7 @@ import numpy as np
 
 from deeperfly import Config, PoseResult, Skeleton
 from deeperfly.pipeline import calibrate, reconstruct_ransac
-from deeperfly.triangulate import apply_visibility
+from deeperfly.triangulation import apply_visibility
 
 HERE = Path(__file__).parent
 
@@ -84,11 +84,11 @@ def assemble_result(cameras, skeleton, pts2d, conf, pts3d, reproj, *, fps, meta=
 def render_pose3d_video(result, path, *, view="f", fps=15):
     """Reproject the 3D skeleton into one camera view and write it to an MP4.
 
-    Uses the OpenCV panel compositor (:mod:`deeperfly.viz.compose`) -- the same
-    renderer ``deeperfly run`` drives from ``[[pipeline.visualization.videos]]``.
+    Uses the OpenCV panel compositor (:mod:`deeperfly.visualization.compose`) -- the
+    same renderer ``deeperfly run`` drives from ``[[pipeline.visualization.videos]]``.
     """
-    from deeperfly import video
-    from deeperfly.viz import compose
+    from deeperfly import io
+    from deeperfly.visualization import compose
 
     spec = compose.VideoSpec(
         video_name=Path(path).stem,
@@ -100,7 +100,8 @@ def render_pose3d_video(result, path, *, view="f", fps=15):
         frames={},
         pts3d=result.pts3d,
     )
-    video.write_mp4(compose.render_video(spec, src), path, fps=fps)
+    with io.VideoWriter(path, fps=fps) as writer:
+        writer.write_frames(compose.stream_video(spec, src))
 
 
 def main():

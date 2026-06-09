@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.viz import compose
-from deeperfly.viz import opencv as cv
-from deeperfly.viz._palette import point_colors_rgb
+from deeperfly.visualization import compose
+from deeperfly.visualization import opencv as cv
+from deeperfly.visualization._palette import point_colors_rgb
 
 # `cameras`, `fly`, `result`, `rng` fixtures live in conftest.py.
 

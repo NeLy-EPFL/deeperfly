@@ -23,7 +23,7 @@ from deeperfly.cameras import CameraGroup
 from deeperfly.cli.app import _normalize_overwrite_argv
 from deeperfly.cli.report import _fmt_bytes
 from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.pose2d import stream as pose2d_stream
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
@@ -1071,10 +1071,16 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
 
 
 def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
-    from deeperfly import video
+    from types import SimpleNamespace
 
-    # read_frames echoes its source so we can see which footage each view used.
-    monkeypatch.setattr(video, "read_frames", lambda src, **kw: ("frames", src))
+    from deeperfly import io
+
+    # open_reader().read() echoes its source so we see which footage each view used.
+    monkeypatch.setattr(
+        io,
+        "open_reader",
+        lambda src, **kw: SimpleNamespace(read=lambda **rkw: ("frames", src)),
+    )
     cfg = Config.from_dict({"pipeline": {"pose2d": {}}})
     names = result.cameras.names
     v0, v1 = names[0], names[1]
@@ -1107,14 +1113,20 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
 def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
     # Overlay footage must get the same per-camera transform the detector saw, so
     # 2D/3D overlays (now in transformed-frame coords) land on matching frames.
-    from deeperfly import video
+    from types import SimpleNamespace
+
+    from deeperfly import io, preprocessing
 
     rng = np.random.default_rng(0)
     names = result.cameras.names
     raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
-    # the run's resolved footage maps each view to one "file" (its name); read_frames
+    # the run's resolved footage maps each view to one "file" (its name); the reader
     # returns that view's raw footage.
-    monkeypatch.setattr(video, "read_frames", lambda src, **kw: raw[src[0]])
+    monkeypatch.setattr(
+        io,
+        "open_reader",
+        lambda src, **kw: SimpleNamespace(read=lambda **rkw: raw[src[0]]),
+    )
 
     v0, v1 = names[0], names[1]
     cameras = {n: {"input": n} for n in names}
@@ -1124,22 +1136,27 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
         cfg, result, [v0, v1], sources={n: [n] for n in names}
     )
     np.testing.assert_array_equal(
-        got[v0], video.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
+        got[v0], preprocessing.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
     )
     np.testing.assert_array_equal(got[v1], raw[v1])  # no table -> untouched
 
 
 def test_prefetch_windows_applies_per_source_transform(monkeypatch):
-    from deeperfly import video
+    from types import SimpleNamespace
+
+    from deeperfly import io, preprocessing
 
     rng = np.random.default_rng(1)
     win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)  # one short block of 2 frames
 
-    def fake_stream_frames(src, *, image_backend, workers, block):
-        yield win.copy()  # a single < block block -> last (and only) window
+    def fake_open_reader(src, **kw):
+        def stream(*, block):
+            yield win.copy()  # a single < block block -> last (and only) window
 
-    monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
-    t = video.FrameTransform(fliplr=True, rot90=1)
+        return SimpleNamespace(stream=stream)
+
+    monkeypatch.setattr(io, "open_reader", fake_open_reader)
+    t = preprocessing.FrameTransform(fliplr=True, rot90=1)
     windows = list(pose2d_stream.prefetch_windows(["camA"], block=8, transforms=[t]))
     assert len(windows) == 1
     window, n = windows[0]
@@ -1148,19 +1165,25 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
 
 
 def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
-    from deeperfly import video
+    from types import SimpleNamespace
+
+    from deeperfly import io
 
     # Two full blocks (block=2) then a short one ends the stream; two synced cameras
     # must stay aligned and concatenate in order.
     a = np.arange(5 * 2 * 2 * 3, dtype=np.uint8).reshape(5, 2, 2, 3)
     b = a + 100
 
-    def fake_stream_frames(src, *, image_backend, workers, block):
+    def fake_open_reader(src, **kw):
         full = a if src == "A" else b
-        for pos in range(0, len(full), block):
-            yield full[pos : pos + block]
 
-    monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
+        def stream(*, block):
+            for pos in range(0, len(full), block):
+                yield full[pos : pos + block]
+
+        return SimpleNamespace(stream=stream)
+
+    monkeypatch.setattr(io, "open_reader", fake_open_reader)
     windows = list(pose2d_stream.prefetch_windows(["A", "B"], block=2))
     # 5 frames at block=2 -> blocks of 2, 2, 1; the short last block stops the stream.
     assert [n for _, n in windows] == [2, 2, 1]
@@ -1173,7 +1196,9 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
 def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     # A rot90 swaps H/W, so the inferred principal point must use the transformed
     # size; an untransformed camera keeps its raw (H, W).
-    from deeperfly import video
+    from types import SimpleNamespace
+
+    from deeperfly import io
 
     monkeypatch.setattr(
         recordings,
@@ -1182,9 +1207,9 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     )
     head = np.zeros((1, 4, 6, 3), np.uint8)
     monkeypatch.setattr(
-        video,
-        "read_frames",
-        lambda src, indices=None, **kw: head,
+        io,
+        "open_reader",
+        lambda src, **kw: SimpleNamespace(read=lambda **rkw: head),
     )
     cfg = Config.from_dict(
         {

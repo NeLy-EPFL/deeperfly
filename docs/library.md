@@ -3,7 +3,7 @@
 The public API lives at the top level (`from deeperfly import ...`): `Camera`,
 `CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
 `bundle_adjust_from_config`, `run_from_points2d`, and the `geometry`,
-`triangulate`, `pictorial`, `pipeline` submodules.
+`triangulation`, `pictorial`, `pipeline` submodules.
 
 Sections of a `config.toml` are independently usable: `CameraGroup.from_config`
 reads only the cameras, `Skeleton.from_config` only `[skeleton]`.
@@ -33,17 +33,19 @@ reconstruction: `triangulation` is `ransac` (default), `greedy` or `dlt`, and
 `do_pictorial=True` runs pictorial-structures peak recovery first (see
 [architecture.md](architecture.md)).
 
-## Video I/O
+## Frame I/O
 
-`deeperfly.video` reads and writes frames through `pyav` (in-process FFmpeg, CPU);
-see [video.md](video.md) for details.
+`deeperfly.io` reads and writes frames through `pyav` (in-process FFmpeg, CPU);
+`open_reader(source)` returns a `VideoReader` or `ImageSequenceReader` you then
+`read` / `stream`. See [video.md](video.md) for details.
 
 ```python
-from deeperfly import video
+from deeperfly import io
 
-frames = video.read_frames(path)                        # video file or image dir; NumPy (host)
-frames = video.read_video("clip.mp4", indices=[0, 50])  # random access
-video.write_mp4(frames, "out.mp4", fps=30)
+frames = io.open_reader(path).read()                          # video file or image dir
+frames = io.VideoReader("clip.mp4").read(indices=[0, 50])     # random access
+with io.VideoWriter("out.mp4", fps=30) as writer:
+    writer.write_frames(frames)                               # or write_frame() per frame
 ```
 
 ## Examples

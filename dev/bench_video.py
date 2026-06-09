@@ -20,7 +20,6 @@ Run::
 from __future__ import annotations
 
 import contextlib
-import io
 import sys
 import time
 
@@ -39,17 +38,18 @@ def bench_decode(path: str, n: int) -> None:
 
     ``windows`` re-opens the file for each ``[s, s+chunk)`` slice -- PyAV rescans
     from frame 0, so this is quadratic in the number of windows. ``stream`` is one
-    continuous forward pass (:func:`deeperfly.video.stream_frames`), the path the
+    continuous forward pass (:meth:`deeperfly.io.FrameReader.stream`), the path the
     detector now uses; the gap between them is the re-decode that went away.
     """
-    from deeperfly import video
+    from deeperfly import io
 
     def run_windows(chunk):
+        reader = io.VideoReader(path)
         for s in range(0, n, chunk):
-            video.read_video(path, start=s, stop=min(s + chunk, n))
+            reader.read(start=s, stop=min(s + chunk, n))
 
     def run_stream(block):
-        for _ in video.stream_frames(path, block=block):
+        for _ in io.VideoReader(path).stream(block=block):
             pass
 
     print(f"\n{'mode':>8s} {'block':>5s} {'frames/s':>9s}")
@@ -67,7 +67,7 @@ def bench_inference(path: str, t: int) -> None:
     """Detector throughput (multi-cam frames/s) and forward-pass scaling with batch."""
     import numpy as np
 
-    from deeperfly import video
+    from deeperfly import io
     from deeperfly.pose2d import backends, inference
     from deeperfly.pose2d.download import download_torch_weights
 
@@ -89,7 +89,7 @@ def bench_inference(path: str, t: int) -> None:
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    frames = [video.read_video(p, start=0, stop=t) for p in paths]
+    frames = [io.VideoReader(p).read(start=0, stop=t) for p in paths]
     inference.detect_sequence(model, [f[:4] for f in frames], sides, flips)  # warmup
     dt = _timeit(
         lambda: np.asarray(inference.detect_sequence(model, frames, sides, flips)[0]),
@@ -110,7 +110,7 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
     """
     import time
 
-    from deeperfly import video
+    from deeperfly import io
     from deeperfly.config import Config
     from deeperfly.pose2d import backends, inference
     from deeperfly.pose2d.download import download_torch_weights
@@ -125,7 +125,7 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
 
     def serial():
         done = 0
-        streams = [video.stream_frames(p, block=block) for p in paths]
+        streams = [io.VideoReader(p).stream(block=block) for p in paths]
         while True:
             blocks = [next(s, None) for s in streams]
             if any(b is None for b in blocks):
