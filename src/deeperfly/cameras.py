@@ -1,9 +1,10 @@
-"""Cameras and camera rigs (bundle-adjustment-unaware).
+"""Classes for cameras and camera rigs.
 
 A :class:`Camera` bundles the parameters to project a 3D world point to a 2D
 image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
-``R(rvec) @ X + tvec``; the camera looks down its ``+z`` row, ``+y`` image-down,
-``+x`` image-right; the camera center is ``-R.T @ tvec``.
+``R(rvec) @ X + tvec``; the rows of ``R`` are the +x (image-right), +y
+(image-down), and +z (camera-forward) axes; and intrinsics packed as
+``[fx, fy, cx, cy]`` or ``[f, cx, cy]`` with ``fx = fy = f``.
 
 A :class:`CameraGroup` is an ordered collection of named cameras, typically built
 from a TOML config (see :meth:`CameraGroup.from_config`). The config describes

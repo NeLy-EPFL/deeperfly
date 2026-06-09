@@ -1,4 +1,4 @@
-"""Multi-view geometry primitives (CPU-only JAX).
+"""Multi-view geometry primitives with JAX.
 
 Conventions:
 
@@ -7,14 +7,15 @@ Conventions:
 - Camera extrinsics are an axis-angle rotation vector ``rvec`` and a
   translation vector ``tvec``. A 3D world point ``X`` is mapped to camera
   coordinates as ``R(rvec) @ X + tvec``.
-- Camera intrinsics ``intr`` are packed as ``[fx, ..., fy, cx, cy]`` (see
-  :func:`intr_to_kmat`); distortion coefficients ``dists`` follow OpenCV's
+- Camera intrinsics ``intr`` are packed as ``[fx, fy, cx, cy]`` (or
+  ``[f, cx, cy]`` with ``fx = fy = f``) (see :func:`intr_to_kmat`);
+  distortion coefficients ``dists`` follow OpenCV's
   ordering ``[k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4]``.
 - A projection matrix ``pmat`` is the 3x4 product ``K @ [R | t]``.
 
-Functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``, ...) first
-and camera parameters after, in the canonical order ``rvecs, tvecs, intrs,
-dists``. All are JIT- and grad-friendly.
+Functions take their primary operand (``pts3d``, ``pts2d``) first and camera
+parameters after, in the canonical order ``rvecs, tvecs, intrs, dists``.
+All are JIT- and grad-friendly.
 
 The batched public functions are :func:`jax.jit`-wrapped thin :func:`jax.vmap`
 wrappers around the ``*_one`` single-observation variants, which compose with
