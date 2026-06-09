@@ -95,5 +95,4 @@ def test_optional_fields_absent(cameras, rng, tmp_path):
     loaded = PoseResult.load(path)
     assert loaded.conf is None
     assert loaded.pts3d is None
-    assert loaded.pts3d_smoothed is None
     assert loaded.reproj_error is None

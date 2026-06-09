@@ -84,7 +84,22 @@ class ReaderBackend(abc.ABC):
 
     @classmethod
     def read(cls, path, *, start=0, stop=None, step=1, indices=None):
-        """Sequential range, or random access when ``indices`` is given."""
+        """Sequential range, or random access when ``indices`` is given.
+
+        Parameters
+        ----------
+        path
+            The video file to decode.
+        start, stop, step
+            Sequential frame slice (used when ``indices`` is ``None``).
+        indices
+            Explicit frame indices for random access (overrides the slice).
+
+        Returns
+        -------
+        np.ndarray
+            The decoded ``(T, H, W, 3)`` uint8 frames.
+        """
         if indices is not None:
             idx = [int(i) for i in indices]
             if not idx:
@@ -115,6 +130,20 @@ class ReaderBackend(abc.ABC):
         to each block's start). Backends whose sequential decode rescans from frame
         0 (pyav, opencv) override this with a true single open-and-walk generator,
         so a full read stays linear rather than quadratic.
+
+        Parameters
+        ----------
+        path
+            The video file to decode.
+        start
+            First frame to emit.
+        step
+            Stride between emitted frames.
+
+        Yields
+        ------
+        np.ndarray
+            Single ``(H, W, 3)`` uint8 RGB frames, in order.
         """
         pos = start
         while True:
@@ -158,6 +187,23 @@ def select_reader(backend: str = "auto") -> type[ReaderBackend]:
     """Resolve a reader backend by name (or ``"auto"``).
 
     ``"auto"`` walks :data:`READ_ORDER` and returns the first installed backend.
+
+    Parameters
+    ----------
+    backend
+        A reader name, or ``"auto"``.
+
+    Returns
+    -------
+    type[ReaderBackend]
+        The resolved backend class.
+
+    Raises
+    ------
+    ValueError
+        If ``backend`` names no known reader.
+    RuntimeError
+        If the named (or every auto-order) backend is unavailable.
     """
     _ensure_backends()
     if backend != "auto":
@@ -183,7 +229,25 @@ def select_reader(backend: str = "auto") -> type[ReaderBackend]:
 
 
 def select_writer(backend: str = "auto") -> type[WriterBackend]:
-    """Resolve a writer backend by name (or ``"auto"``)."""
+    """Resolve a writer backend by name (or ``"auto"``).
+
+    Parameters
+    ----------
+    backend
+        A writer name, or ``"auto"``.
+
+    Returns
+    -------
+    type[WriterBackend]
+        The resolved backend class.
+
+    Raises
+    ------
+    ValueError
+        If ``backend`` names no known writer.
+    RuntimeError
+        If the named (or every auto-order) backend is unavailable.
+    """
     _ensure_backends()
     if backend != "auto":
         try:
@@ -207,7 +271,18 @@ def select_writer(backend: str = "auto") -> type[WriterBackend]:
 
 
 def to_numpy(frames) -> np.ndarray:
-    """Collapse backend frames (NumPy / torch tensor) to a NumPy array."""
+    """Collapse backend frames (NumPy / torch tensor) to a NumPy array.
+
+    Parameters
+    ----------
+    frames
+        A NumPy array or a torch tensor (or any array-like).
+
+    Returns
+    -------
+    np.ndarray
+        The frames as a host NumPy array.
+    """
     if isinstance(frames, np.ndarray):
         return frames
     if hasattr(frames, "detach"):  # torch.Tensor
@@ -221,6 +296,16 @@ def to_torch(frames):
     A ``torch.Tensor`` (e.g. from the ``torchcodec`` reader) passes through
     untouched, and any other DLPack-capable array is wrapped via the DLPack
     protocol; NumPy input is wrapped on the host the usual way.
+
+    Parameters
+    ----------
+    frames
+        A torch tensor, a DLPack-capable array, or a NumPy array.
+
+    Returns
+    -------
+    torch.Tensor
+        The frames as a torch tensor (zero-copy where possible).
     """
     import torch
 
@@ -275,8 +360,24 @@ def select_image_reader(backend: str = "auto") -> str:
     """Resolve an image-reader name (or ``"auto"``).
 
     ``"auto"`` walks :data:`IMAGE_READ_ORDER` and returns the first installed reader
-    (``opencv`` is a core dependency, so this is normally ``"opencv"``). An explicit
-    name is validated and checked for availability.
+    (``opencv`` is a core dependency, so this is normally ``"opencv"``).
+
+    Parameters
+    ----------
+    backend
+        An image-reader name, or ``"auto"``.
+
+    Returns
+    -------
+    str
+        The resolved image-reader name.
+
+    Raises
+    ------
+    ValueError
+        If ``backend`` names no known image reader.
+    RuntimeError
+        If the named (or every auto-order) reader is unavailable.
     """
     if backend == "auto":
         for name in IMAGE_READ_ORDER:

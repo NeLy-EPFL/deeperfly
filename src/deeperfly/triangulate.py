@@ -29,9 +29,27 @@ def apply_visibility(
 ) -> Float[np.ndarray, "V *pts 2"]:
     """Return a copy of ``pts2d`` with invisible (camera, point) entries NaN'd.
 
-    ``camera_names`` labels the leading view axis of ``pts2d`` and is matched
-    against :attr:`Skeleton.visibility`. Cameras unknown to the skeleton keep
-    all their points (see :meth:`Skeleton.visibility_mask`).
+    Parameters
+    ----------
+    pts2d
+        2D observations of shape ``(V, *pts, 2)``; the leading axis is views.
+    skeleton
+        Skeleton whose :attr:`~deeperfly.skeleton.Skeleton.visibility` decides
+        which points each named camera can see.
+    camera_names
+        Names labelling the leading view axis, matched against the skeleton's
+        visibility. Cameras unknown to the skeleton keep all their points (see
+        :meth:`Skeleton.visibility_mask`).
+
+    Returns
+    -------
+    np.ndarray
+        A copy of ``pts2d`` with invisible ``(camera, point)`` entries set to NaN.
+
+    Raises
+    ------
+    ValueError
+        If the view or point counts of ``pts2d`` disagree with the skeleton.
     """
     pts2d = np.array(pts2d, dtype=float)
     mask = skeleton.visibility_mask(camera_names)  # (V, N)
@@ -56,6 +74,18 @@ def triangulate(
 
     Points seen by fewer than two cameras come back as ``NaN``. Forwards to
     :meth:`CameraGroup.triangulate`.
+
+    Parameters
+    ----------
+    cameras
+        The camera rig.
+    pts2d
+        2D observations of shape ``(V, *pts, 2)``, NaN for missing.
+
+    Returns
+    -------
+    np.ndarray
+        Triangulated 3D points of shape ``(*pts, 3)``.
     """
     return cameras.triangulate(pts2d)
 
@@ -71,6 +101,20 @@ def reprojection_error(
     ``pts2d``. Entries are ``NaN`` wherever the observation or the 3D point is
     ``NaN`` (unobserved / un-triangulated), so callers can ignore them with
     ``np.nanmean`` / ``np.nanmax``.
+
+    Parameters
+    ----------
+    cameras
+        The camera rig.
+    pts3d
+        Triangulated 3D points of shape ``(*pts, 3)``.
+    pts2d
+        2D observations of shape ``(V, *pts, 2)``.
+
+    Returns
+    -------
+    np.ndarray
+        Reprojection error of shape ``(V, *pts)`` in pixels (NaN where undefined).
     """
     proj = cameras.project(np.asarray(pts3d))  # (V, *pts, 2)
     return np.linalg.norm(proj - np.asarray(pts2d), axis=-1)
@@ -102,6 +146,10 @@ def triangulate_ransac(
 
     Parameters
     ----------
+    cameras
+        The camera rig.
+    pts2d
+        2D observations of shape ``(V, *pts, 2)``, NaN for missing.
     threshold
         Inlier reprojection-error cutoff in pixels (the greedy
         :func:`deeperfly.pipeline.reconstruct` uses a looser 40 px to *drop*
@@ -111,9 +159,16 @@ def triangulate_ransac(
 
     Returns
     -------
-    ``(pts3d, inliers)`` -- ``pts3d`` of shape ``(*pts, 3)`` and ``inliers`` a
-    boolean ``(V, *pts)`` mask of the views kept per point. NaN out the original
-    outliers with ``np.where(inliers[..., None], pts2d, np.nan)``.
+    pts3d : np.ndarray
+        Triangulated points of shape ``(*pts, 3)`` (NaN below ``min_inliers``).
+    inliers : np.ndarray
+        Boolean ``(V, *pts)`` mask of the views kept per point. NaN out the
+        original outliers with ``np.where(inliers[..., None], pts2d, np.nan)``.
+
+    Raises
+    ------
+    ValueError
+        If ``min_inliers`` is less than 2.
     """
     if min_inliers < 2:
         raise ValueError(f"min_inliers must be >= 2, got {min_inliers}")

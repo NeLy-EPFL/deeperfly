@@ -107,22 +107,23 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
 
     Both walk one continuous decode per camera. ``serial`` forwards each block as it
     is decoded; ``prefetch`` decodes the next block on the CPU in a background thread
-    while the GPU forwards the current one. The forward batch is ``DEFAULT_FWD_BATCH``,
-    exactly as the CLI runs it.
+    while the GPU forwards the current one. The forward batch is the configured
+    ``[pipeline.pose2d] batch_size``, exactly as the CLI runs it.
     """
     import time
 
     from deeperfly import video
-    from deeperfly.cli import DEFAULT_FWD_BATCH, _prefetch_windows
+    from deeperfly.config import Config
     from deeperfly.pose2d import backends, inference
     from deeperfly.pose2d.download import download_torch_weights
+    from deeperfly.pose2d.stream import prefetch_windows
 
     model = backends.load_detector(download_torch_weights())
     sides, flips = inference.fly_camera_layout(
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    bs = DEFAULT_FWD_BATCH
+    bs = Config.from_dict({}).pose2d.batch_size
 
     def serial():
         done = 0
@@ -142,7 +143,7 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
 
     def prefetch():
         done = 0
-        for window, n in _prefetch_windows(paths, backend="auto", block=block):
+        for window, n in prefetch_windows(paths, backend="auto", block=block):
             inference.detect_sequence(model, window, sides, flips, batch_size=bs)
             done += n
             if done >= t:

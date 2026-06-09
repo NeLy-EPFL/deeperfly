@@ -3,7 +3,7 @@
 The public API lives at the top level (`from deeperfly import ...`): `Camera`,
 `CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
 `bundle_adjust_from_config`, `run_from_points2d`, and the `geometry`,
-`triangulate`, `correction`, `pictorial`, `pipeline` submodules.
+`triangulate`, `pictorial`, `pipeline` submodules.
 
 Sections of a `config.toml` are independently usable: `CameraGroup.from_config`
 reads only the cameras, `Skeleton.from_config` only `[skeleton]`.
@@ -24,7 +24,7 @@ result, optimized, points = bundle_adjust(group, pts2d, fixed=["*.intr"])
 from deeperfly import CameraGroup, Skeleton, run_from_points2d
 
 cameras = CameraGroup.from_config("examples/cameras.toml")
-result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf, smooth="one_euro")
+result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```
 

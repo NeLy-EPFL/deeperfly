@@ -45,7 +45,6 @@ dependencies = [
     "platformdirs>=4.0",
     "rich>=14.0",
     "typer>=0.26",
-    "matplotlib>=3.10",
     "av>=13",
     "opencv-python-headless>=4.13",
     "natsort>=8.4.0",
@@ -76,6 +75,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "matplotlib>=3.10",   # ad-hoc plotting in the example notebooks (not used by the package)
 ]
 test = [
     "pytest>=9.0.3",

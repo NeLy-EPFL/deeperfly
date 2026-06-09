@@ -62,7 +62,22 @@ def initialize_pts3d(
     tvecs: Float[Array, "V 3"],
     intrs: Float[Array, "V P"] | Float[Array, "P"],
 ) -> Float[Array, "*pts 3"]:
-    """Triangulate initial 3D points from 2D observations and camera poses."""
+    """Triangulate initial 3D points from 2D observations and camera poses.
+
+    Parameters
+    ----------
+    pts2d
+        Observed 2D points of shape ``(V, *pts, 2)``, NaN for missing.
+    rvecs, tvecs
+        Per-camera extrinsics of shape ``(V, 3)``.
+    intrs
+        Packed intrinsics of shape ``(V, P)`` or ``(P,)`` (shared).
+
+    Returns
+    -------
+    Array
+        Triangulated 3D points of shape ``(*pts, 3)``.
+    """
     kmat = intr_to_kmat(intrs)
     rtmat = jnp.concatenate(
         (jnp.asarray(rvec_to_rmat(rvecs)), tvecs[..., None]), axis=-1
@@ -110,7 +125,8 @@ def build_state(
 
     Returns
     -------
-    A :class:`BAState` ready to splat into ``bundle_adjust``.
+    BAState
+        The packed state ready to splat into ``bundle_adjust``.
     """
     rvecs, tvecs, intrs, dists = (
         np.asarray(a, dtype=float) for a in (rvecs, tvecs, intrs, dists)

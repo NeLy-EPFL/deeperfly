@@ -3,8 +3,7 @@
 Generates a moving 38-point fly, projects it through the example 7-camera rig,
 adds detector-like noise and a gross outlier, then runs the geometry pipeline one
 stage at a time -- visibility masking -> (optional) calibration -> robust
-triangulation -> temporal smoothing -> a saved HDF5 result plus a 3D-skeleton
-video.
+triangulation -> a saved HDF5 result plus a 3D-skeleton video.
 
 The stages below mirror :func:`deeperfly.pipeline.run_from_points2d` (the function
 ``deeperfly run`` calls); here each is its own small function over arrays, so every
@@ -20,7 +19,6 @@ from pathlib import Path
 import numpy as np
 
 from deeperfly import Config, PoseResult, Skeleton
-from deeperfly.correction import smooth_one_euro
 from deeperfly.pipeline import calibrate, reconstruct_ransac
 from deeperfly.triangulate import apply_visibility
 
@@ -70,25 +68,39 @@ def reconstruct_3d(cameras, pts2d):
     return reconstruct_ransac(cameras, pts2d, threshold=15.0, min_inliers=2)
 
 
-def smooth_track(pts3d, fps):
-    """Stage 4 -- NaN-aware 1-Euro temporal smoothing of the 3D track."""
-    return smooth_one_euro(pts3d, fps)
-
-
-def assemble_result(
-    cameras, skeleton, pts2d, conf, pts3d, pts3d_smoothed, reproj, *, fps, meta=None
-):
-    """Stage 5 -- bundle the stage outputs into a saveable :class:`PoseResult`."""
+def assemble_result(cameras, skeleton, pts2d, conf, pts3d, reproj, *, fps, meta=None):
+    """Stage 4 -- bundle the stage outputs into a saveable :class:`PoseResult`."""
     return PoseResult(
         cameras=cameras,
         skeleton=skeleton,
         pts2d=pts2d,
         conf=conf,
         pts3d=pts3d,
-        pts3d_smoothed=pts3d_smoothed,
         reproj_error=reproj,
         meta={"fps": fps, "triangulation": "ransac", **(meta or {})},
     )
+
+
+def render_pose3d_video(result, path, *, view="f", fps=15):
+    """Reproject the 3D skeleton into one camera view and write it to an MP4.
+
+    Uses the OpenCV panel compositor (:mod:`deeperfly.viz.compose`) -- the same
+    renderer ``deeperfly run`` drives from ``[[pipeline.visualization.videos]]``.
+    """
+    from deeperfly import video
+    from deeperfly.viz import compose
+
+    spec = compose.VideoSpec(
+        video_name=Path(path).stem,
+        panels=[compose.Panel(plot="skeleton_3d", view=view)],
+    )
+    src = compose.Sources(
+        skeleton=result.skeleton,
+        camera_group=result.cameras,
+        frames={},
+        pts3d=result.pts3d,
+    )
+    video.write_mp4(compose.render_video(spec, src), path, fps=fps)
 
 
 def main():
@@ -112,14 +124,12 @@ def main():
     if do_calibrate:
         cameras = calibrate_cameras(cameras, skeleton, pts2d, conf)
     pts3d, pts2d, reproj = reconstruct_3d(cameras, pts2d)
-    pts3d_smoothed = smooth_track(pts3d, fps)
     result = assemble_result(
         cameras,
         skeleton,
         pts2d,
         conf,
         pts3d,
-        pts3d_smoothed,
         reproj,
         fps=fps,
         meta={"source": "pipeline_demo"},
@@ -137,13 +147,8 @@ def main():
         f"3D recovery RMSE vs truth: {np.sqrt(np.nanmean((result.pts3d - pts3d_true) ** 2)):.4f} mm"
     )
 
-    try:
-        from deeperfly import video
-
-        video.render_pose3d_video(result, HERE / "demo_pose3d.mp4", fps=15)
-        print(f"wrote {HERE / 'demo_pose3d.mp4'}")
-    except Exception as exc:  # noqa: BLE001 -- viz is optional
-        print(f"(skipped video: {exc})")
+    render_pose3d_video(result, HERE / "demo_pose3d.mp4", fps=15)
+    print(f"wrote {HERE / 'demo_pose3d.mp4'}")
 
 
 if __name__ == "__main__":

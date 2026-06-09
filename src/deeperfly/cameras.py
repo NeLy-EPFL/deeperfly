@@ -64,6 +64,18 @@ def _orbit_direction(azimuth_deg: float, elevation_deg: float) -> np.ndarray:
     At ``azimuth=elevation=0`` this is ``[1, 0, 0]``; azimuth rotates in the
     world xy-plane and elevation lifts toward ``+z`` -- matching the rig laid
     out by the ``get_rmat`` helper used elsewhere in the project.
+
+    Parameters
+    ----------
+    azimuth_deg
+        Rotation in the world xy-plane, in degrees.
+    elevation_deg
+        Lift toward ``+z``, in degrees.
+
+    Returns
+    -------
+    np.ndarray
+        A unit direction vector of shape ``(3,)``.
     """
     az = np.deg2rad(azimuth_deg)
     el = np.deg2rad(elevation_deg)
@@ -75,6 +87,18 @@ def _look_rotation(forward: np.ndarray, up: np.ndarray) -> np.ndarray:
 
     ``z`` (optical axis) is ``forward``; ``x`` (image right) is
     ``normalize(cross(z, up))``; ``y`` (image down) is ``cross(z, x)``.
+
+    Parameters
+    ----------
+    forward
+        Optical-axis direction (need not be normalized).
+    up
+        World up vector used to disambiguate the roll.
+
+    Returns
+    -------
+    np.ndarray
+        A ``(3, 3)`` rotation matrix whose rows are the camera axes.
     """
     z = _normalize(forward)
     x = _normalize(np.cross(z, up))
@@ -99,11 +123,24 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     explicit ``position`` (aka ``center`` / ``eye``) or an orbit
     ``look_at + distance * dir(azimuth, elevation)``; alternatively ``tvec`` may
     be given directly. ``roll_deg`` (default 0) composes on top of any rotation
-    as a turn about the optical axis. Conflicting sources raise ``ValueError``.
+    as a turn about the optical axis.
+
+    Parameters
+    ----------
+    spec
+        A camera spec dict mixing any non-conflicting orientation/position keys
+        (see the summary above).
 
     Returns
     -------
-    ``(rvec, tvec)`` as ``(3,)`` float arrays.
+    rvec, tvec : np.ndarray
+        The axis-angle rotation and translation, each a ``(3,)`` float array.
+
+    Raises
+    ------
+    ValueError
+        If conflicting orientation/position keys are given, or neither a
+        rotation nor a position source can be resolved.
     """
     up = np.asarray(spec.get("up", _WORLD_UP), dtype=float)
 
@@ -185,8 +222,27 @@ def _parse_intrinsics(
 
     ``principal_point_px`` is optional: when the spec omits it, the principal
     point is placed at the image center ``((w - 1) / 2, (h - 1) / 2)`` using
-    ``image_size`` (a ``(height, width)`` pair, as in a NumPy image array). It
-    is an error to omit both.
+    ``image_size``.
+
+    Parameters
+    ----------
+    spec
+        Camera spec with ``focal_length_px`` (scalar or ``[fx, fy]``) and an
+        optional ``principal_point_px`` / ``distortion_coefficients``.
+    image_size
+        ``(height, width)`` (as in a NumPy image array) used to infer the
+        principal point when ``principal_point_px`` is absent.
+
+    Returns
+    -------
+    intr, dist : np.ndarray
+        Packed intrinsics ``[fx, fy, cx, cy]`` and the distortion coefficients.
+
+    Raises
+    ------
+    ValueError
+        If a required intrinsic is missing (and cannot be inferred) or
+        ``focal_length_px`` is not a scalar or 2-vector.
     """
     try:
         focal = np.atleast_1d(np.asarray(spec["focal_length_px"], dtype=float))
@@ -237,8 +293,20 @@ class Camera:
     ) -> Camera:
         """Build a camera from a config dict (see :func:`resolve_extrinsics`).
 
-        ``image_size`` is an optional ``(height, width)`` pair used to infer the
-        principal point (image center) when the spec omits ``principal_point_px``.
+        Parameters
+        ----------
+        spec
+            Camera spec dict (extrinsics + intrinsics keys).
+        name
+            Optional camera name stored on the result.
+        image_size
+            Optional ``(height, width)`` pair used to infer the principal point
+            (image center) when the spec omits ``principal_point_px``.
+
+        Returns
+        -------
+        Camera
+            The constructed camera.
         """
         rvec, tvec = resolve_extrinsics(spec)
         intr, dist = _parse_intrinsics(spec, image_size=image_size)
@@ -260,7 +328,18 @@ class Camera:
     def project(
         self, pts3d: Float[np.ndarray, "*pts 3"]
     ) -> Float[np.ndarray, "*pts 2"]:
-        """Project world points to this camera's image plane."""
+        """Project world points to this camera's image plane.
+
+        Parameters
+        ----------
+        pts3d
+            World points of shape ``(*pts, 3)``.
+
+        Returns
+        -------
+        np.ndarray
+            Image points of shape ``(*pts, 2)``.
+        """
         out = project_full(
             np.asarray(pts3d),
             self.rvec[None],
@@ -298,17 +377,32 @@ class CameraGroup:
         config: "Config | dict | str | Path",
         image_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> CameraGroup:
-        """Build a group from a :class:`~deeperfly.config.Config`, a config dict or
-        a path to a TOML file.
+        """Build a group from a config object, dict or TOML path.
 
         Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
         override the defaults. The per-camera ``input`` (footage glob) and
-        ``preprocess`` (frame transform) keys belong to other stages and are ignored
-        here, as is any foreign section -- this class is rig-only.
+        ``preprocess`` (frame transform) keys belong to other stages and are
+        ignored here, as is any foreign section -- this class is rig-only.
 
-        ``image_sizes`` maps a camera name to its ``(height, width)`` and is
-        used to infer that camera's principal point (image center) when neither
-        the camera spec nor ``[cameras.defaults]`` specifies ``principal_point_px``.
+        Parameters
+        ----------
+        config
+            A :class:`~deeperfly.config.Config`, a parsed config ``dict`` or a
+            path to a TOML file.
+        image_sizes
+            Maps a camera name to its ``(height, width)``, used to infer that
+            camera's principal point (image center) when neither the camera spec
+            nor ``[cameras.defaults]`` specifies ``principal_point_px``.
+
+        Returns
+        -------
+        CameraGroup
+            The configured rig.
+
+        Raises
+        ------
+        ValueError
+            If the config defines no cameras.
         """
         from .config import Config
 
@@ -335,7 +429,24 @@ class CameraGroup:
         intrs: Float[np.ndarray, "V 4"],
         dists: Float[np.ndarray, "V K"],
     ) -> CameraGroup:
-        """Build a group from stacked per-camera arrays (e.g. BA output)."""
+        """Build a group from stacked per-camera arrays (e.g. BA output).
+
+        Parameters
+        ----------
+        names
+            Camera names, in order, labelling the leading axis of the arrays.
+        rvecs, tvecs
+            Stacked extrinsics of shape ``(V, 3)``.
+        intrs
+            Stacked packed intrinsics of shape ``(V, 4)``.
+        dists
+            Stacked distortion coefficients of shape ``(V, K)``.
+
+        Returns
+        -------
+        CameraGroup
+            The rig assembled from the arrays.
+        """
         rvecs, tvecs, intrs, dists = map(np.asarray, (rvecs, tvecs, intrs, dists))
         cameras = {
             name: Camera(
@@ -373,7 +484,18 @@ class CameraGroup:
     def project(
         self, pts3d: Float[np.ndarray, "*pts 3"]
     ) -> Float[np.ndarray, "V *pts 2"]:
-        """Project world points through every camera (shape ``(V, *pts, 2)``)."""
+        """Project world points through every camera.
+
+        Parameters
+        ----------
+        pts3d
+            World points of shape ``(*pts, 3)``.
+
+        Returns
+        -------
+        np.ndarray
+            Image points of shape ``(V, *pts, 2)``.
+        """
         out = project_full(
             np.asarray(pts3d), self.rvecs, self.tvecs, self.intrs, self.dists
         )
@@ -382,7 +504,18 @@ class CameraGroup:
     def triangulate(
         self, pts2d: Float[np.ndarray, "V *pts 2"]
     ) -> Float[np.ndarray, "*pts 3"]:
-        """Triangulate 3D points from 2D observations and this group's cameras."""
+        """Triangulate 3D points from 2D observations and this group's cameras.
+
+        Parameters
+        ----------
+        pts2d
+            2D observations of shape ``(V, *pts, 2)``, NaN for missing.
+
+        Returns
+        -------
+        np.ndarray
+            Triangulated points of shape ``(*pts, 3)`` (NaN below two views).
+        """
         rtmat = np.concatenate(
             (np.asarray(rvec_to_rmat(self.rvecs)), self.tvecs[..., None]), axis=-1
         )

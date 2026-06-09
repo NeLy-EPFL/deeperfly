@@ -4,7 +4,7 @@ A run is driven by a single self-contained `config.toml`. `deeperfly init
 config.toml` writes a fully commented copy to edit in place; `deeperfly run
 recording/` with no `-c` falls back to the packaged defaults. A single file
 carries everything a run needs — the camera rig, which file belongs to which
-camera, the detector, the pipeline, correction and smoothing.
+camera, the detector, the pipeline and the visualization.
 
 The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
@@ -43,14 +43,12 @@ do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
 do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
 do_triangulation        = true   # triangulate 2D -> 3D
-do_smoothing            = false  # temporal smoothing of the 3D track (opt-in)
 do_visualization        = true   # render the videos
 # fps = 100.0   # optional; omit to detect from the input videos
 ```
 
-Each enabled stage has its own `[pipeline.<stage>]` parameter table (below). The
-two opt-in stages — pictorial structures and smoothing — are the most common
-toggles to flip on.
+Each enabled stage has its own `[pipeline.<stage>]` parameter table (below).
+Pictorial structures is the opt-in stage most commonly flipped on.
 
 ## Resume and recompute — caching and `--overwrite`
 
@@ -74,18 +72,15 @@ A run reuses the `config.toml` saved in the output directory (it owns the cached
 results), so `-o out/` alone resumes; pass `-c` only for a fresh output
 directory, and edit `out/config.toml` to change a run in place.
 
-## Tune the opt-in stages — pictorial structures and smoothing
+## Tune the opt-in stage — pictorial structures
 
-These run only when their `do_<stage>` switch is on.
+This runs only when its `do_pictorial_structures` switch is on.
 
 ```toml
 [pipeline.pictorial_structures]   # peak recovery before triangulation
 k        = 5       # candidate peaks per joint
 temporal = false   # add a temporal-consistency term
 lam      = 1.0     # bone-length prior weight
-
-[pipeline.smoothing]
-method = "gaussian"   # gaussian | one_euro
 ```
 
 Pictorial structures needs `do_pose2d` in the same run (candidate peaks aren't

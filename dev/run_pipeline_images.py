@@ -279,15 +279,15 @@ def main() -> None:
             radius=args.decode_radius,
         )
 
-        # GPU batch (synchronized frames per forward). 'auto' uses the CLI's
-        # default image batch; for this 8-stack net throughput plateaus at a small
+        # GPU batch (synchronized frames per forward). 'auto' uses the configured
+        # forward batch; for this 8-stack net throughput plateaus at a small
         # batch on a fast GPU, so a modest batch saturates speed -- see
-        # cli.DEFAULT_FWD_BATCH.
+        # [pipeline.pose2d] batch_size.
         if args.batch == "auto":
-            from deeperfly.cli import DEFAULT_FWD_BATCH
+            from deeperfly.config import Config
 
             vram = backends.gpu_memory_bytes()
-            batch = max(1, DEFAULT_FWD_BATCH // n_views)
+            batch = max(1, Config.from_dict({}).pose2d.batch_size // n_views)
             where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
             print(
                 f"batch: {batch} frame(s)/forward ({batch * n_views} imgs, auto, {where})"

@@ -46,8 +46,8 @@ deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
-calibrate the cameras, triangulate to 3D, correct and smooth, then render a
-skeleton video. Outputs land in `recording/deeperfly_outputs/` (override with
+calibrate the cameras, triangulate to 3D, then render a skeleton video. Outputs
+land in `recording/deeperfly_outputs/` (override with
 `-o`): `poses.h5`, the rendered video, and a copy of the config used.
 
 The config is optional — `deeperfly run recording/` uses sensible defaults.
@@ -75,7 +75,7 @@ UV_TORCH_BACKEND=auto uv add git+https://github.com/NeLy-EPFL/deeperfly
 from deeperfly import CameraGroup, Skeleton, run_from_points2d
 
 cameras = CameraGroup.from_config("examples/cameras.toml")
-result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf, smooth="one_euro")
+result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```
 

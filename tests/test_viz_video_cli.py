@@ -1,6 +1,7 @@
-"""Smoke tests for the headless visualization, video and CLI layers.
+"""Smoke tests for the video and CLI layers (OpenCV overlays live in
+test_viz_opencv.py).
 
-These check that figures render and MP4s round-trip, not pixel-level output.
+These check that MP4s round-trip and the CLI renders, not pixel-level output.
 """
 
 from __future__ import annotations
@@ -8,58 +9,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly import cli, video, viz
+from deeperfly import cli, pipeline, video
 from deeperfly.io import PoseResult
 from deeperfly.viz import compose
 
 # `cameras`, `fly` and `result` fixtures live in conftest.py (shared with
 # test_cli_run.py).
-
-
-# -- viz ---------------------------------------------------------------------
-
-
-def test_plot_skeleton_2d_runs(result):
-    ax = viz.plot_skeleton_2d(
-        result.pts2d[0, 0], result.skeleton, conf=result.conf[0, 0]
-    )
-    assert ax.has_data()
-
-
-def test_plot_skeleton_3d_runs(result):
-    ax = viz.plot_skeleton_3d(result.pts3d[0], result.skeleton)
-    assert ax.has_data()
-
-
-def test_overlay_grid_runs(result):
-    fig = viz.overlay_grid(
-        result.pts2d[:, 0], result.skeleton, camera_names=result.cameras.names
-    )
-    assert len(fig.axes) >= result.n_views
-
-
-def test_limb_palette_colors(fly):
-    import matplotlib.colors as mc
-
-    colors = viz.limb_colors(fly)
-    for limb, hexc in fly.palette.items():
-        # each of the limb's joints takes that limb's color from the skeleton palette
-        idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == limb]
-        assert idx, limb
-        for i in idx:
-            np.testing.assert_allclose(colors[i], mc.to_rgba(hexc))
-
-
-def test_background_modes(result):
-    import matplotlib.colors as mc
-
-    for bg, face in (("white", "#ffffff"), ("black", "#000000")):
-        ax = viz.plot_skeleton_3d(result.pts3d[0], result.skeleton, background=bg)
-        assert mc.to_hex(ax.get_figure().get_facecolor()) == face
-        ax2 = viz.plot_skeleton_2d(result.pts2d[0, 0], result.skeleton, background=bg)
-        assert mc.to_hex(ax2.get_figure().get_facecolor()) == face
-    with pytest.raises(ValueError, match="background must be one of"):
-        viz.plot_skeleton_3d(result.pts3d[0], result.skeleton, background="navy")
 
 
 # -- video -------------------------------------------------------------------
@@ -82,12 +37,6 @@ def test_read_images(tmp_path, rng):
         cv2.imwrite(str(tmp_path / f"frame_{i:03d}.png"), img)
     frames = video.read_images(tmp_path)
     assert frames.shape == (3, 16, 16, 3)
-
-
-def test_render_pose3d_video(result, tmp_path):
-    path = tmp_path / "pose3d.mp4"
-    video.render_pose3d_video(result, path, fps=5)
-    assert video.read_video(path).shape[0] == result.n_frames
 
 
 def test_video_fps_roundtrip(tmp_path, rng):
@@ -225,7 +174,9 @@ def test_visualization_reused_when_mp4_exists(result, tmp_path, monkeypatch):
     cfg = _viz_only_cfg(tmp_path)
     (outdir / "pose3d.mp4").write_bytes(b"already rendered")  # pretend a prior render
     monkeypatch.setattr(
-        cli, "_stage_visualization", lambda *a, **k: pytest.fail("should reuse the MP4")
+        pipeline.stages,
+        "render_videos",
+        lambda *a, **k: pytest.fail("should reuse the MP4"),
     )
     cli.main(
         [

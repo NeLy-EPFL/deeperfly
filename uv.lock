@@ -288,7 +288,6 @@ dependencies = [
     { name = "h5py" },
     { name = "jax" },
     { name = "jaxtyping" },
-    { name = "matplotlib" },
     { name = "natsort" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
@@ -314,6 +313,7 @@ video-reader-rs = [
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
+    { name = "matplotlib" },
 ]
 test = [
     { name = "imageio" },
@@ -327,7 +327,6 @@ requires-dist = [
     { name = "imageio", marker = "extra == 'imageio'", specifier = ">=2.34" },
     { name = "jax", specifier = ">=0.10.1" },
     { name = "jaxtyping", specifier = ">=0.3.10" },
-    { name = "matplotlib", specifier = ">=3.10" },
     { name = "natsort", specifier = ">=8.4.0" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "opencv-python-headless", specifier = ">=4.13" },
@@ -343,7 +342,10 @@ requires-dist = [
 provides-extras = ["video-reader-rs", "torchcodec", "imageio"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ipykernel", specifier = ">=7.2.0" }]
+dev = [
+    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "matplotlib", specifier = ">=3.10" },
+]
 test = [
     { name = "imageio", specifier = ">=2.34" },
     { name = "pytest", specifier = ">=9.0.3" },

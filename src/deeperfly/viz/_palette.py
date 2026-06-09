@@ -1,9 +1,10 @@
 """Per-point RGB colors from a skeleton's limb palette, with no plotting deps.
 
-Shared by both visualization backends so the OpenCV path does not pull in
-matplotlib. Mirrors :func:`deeperfly.viz.matplotlib.limb_colors`: each point
-takes its limb's color from the skeleton ``palette`` (``limb_name -> hex``),
-falling back to ``tab10`` for limbs without an entry.
+Each point takes its limb's color from the skeleton ``palette``
+(``limb_name -> hex``), falling back to ``tab10`` for limbs without an entry. The
+OpenCV overlay and compositor (:mod:`deeperfly.viz.opencv`,
+:mod:`deeperfly.viz.compose`) draw straight into image arrays, so the colors live
+here as plain NumPy with no matplotlib dependency.
 """
 
 from __future__ import annotations
@@ -31,7 +32,23 @@ TAB10 = np.array(
 
 
 def _hex_to_rgb(value: str) -> tuple[float, float, float]:
-    """Parse a ``#rgb`` / ``#rrggbb`` hex color to RGB floats in ``[0, 1]``."""
+    """Parse a ``#rgb`` / ``#rrggbb`` hex color to RGB floats in ``[0, 1]``.
+
+    Parameters
+    ----------
+    value
+        A ``#rgb`` or ``#rrggbb`` hex color string.
+
+    Returns
+    -------
+    tuple of float
+        The ``(r, g, b)`` channels in ``[0, 1]``.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not a 3- or 6-digit hex color.
+    """
     h = value.lstrip("#")
     if len(h) == 3:
         h = "".join(c * 2 for c in h)
@@ -43,7 +60,21 @@ def _hex_to_rgb(value: str) -> tuple[float, float, float]:
 def point_colors_rgb(
     skeleton: Skeleton, palette: dict[str, str] | None = None
 ) -> np.ndarray:
-    """``(N, 3)`` RGB floats in ``[0, 1]``, one per tracked point, by limb."""
+    """``(N, 3)`` RGB floats in ``[0, 1]``, one per tracked point, by limb.
+
+    Parameters
+    ----------
+    skeleton
+        Skeleton supplying the per-point limb ids and the palette.
+    palette
+        Optional ``limb_name -> hex`` override of the skeleton palette.
+
+    Returns
+    -------
+    np.ndarray
+        ``(N, 3)`` RGB floats in ``[0, 1]`` (``tab10`` fallback for limbs absent
+        from the palette).
+    """
     palette = skeleton.palette if palette is None else palette
     out = np.empty((skeleton.n_points, 3))
     for n in range(skeleton.n_points):

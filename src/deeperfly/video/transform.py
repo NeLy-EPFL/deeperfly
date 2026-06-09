@@ -48,7 +48,18 @@ class FrameTransform:
         return not self.fliplr and not self.flipud and self.rot90 == 0
 
     def apply(self, frames):
-        """Apply the transform to a frame batch, on the ``(H, W)`` axes (-3, -2)."""
+        """Apply the transform to a frame batch, on the ``(H, W)`` axes (-3, -2).
+
+        Parameters
+        ----------
+        frames
+            A ``(T, H, W, C)`` or ``(H, W, C)`` batch (NumPy array or torch
+            tensor; the array type/device is preserved where possible).
+
+        Returns
+        -------
+        The transformed batch (the input unchanged for the identity transform).
+        """
         if self.is_identity():
             return frames
         if hasattr(frames, "rot90") and hasattr(frames, "flip"):  # torch.Tensor
@@ -75,9 +86,24 @@ def parse_frame_transforms(
     """Build ``camera name -> FrameTransform`` from the per-camera preprocess tables.
 
     Each ``[cameras.<camera>.preprocess]`` table takes ``fliplr`` / ``flipud`` (bool)
-    and ``rot90`` (int quarter-turns, CCW). Cameras with no table are absent from the
-    dict (callers treat a missing camera as the identity). Raises on an unknown
-    key or a non-integer ``rot90`` so config typos fail loudly.
+    and ``rot90`` (int quarter-turns, CCW).
+
+    Parameters
+    ----------
+    config
+        A :class:`~deeperfly.config.Config`, parsed ``dict`` or config TOML path.
+
+    Returns
+    -------
+    dict of str to FrameTransform
+        ``camera_name -> FrameTransform`` for cameras with a preprocess table;
+        cameras without one are absent (callers treat them as the identity).
+
+    Raises
+    ------
+    ValueError
+        On an unknown preprocess key or a non-integer ``rot90`` (so config typos
+        fail loudly).
     """
     from ..config import Config
 

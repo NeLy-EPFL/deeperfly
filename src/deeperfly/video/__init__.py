@@ -1,4 +1,4 @@
-"""Frame I/O and MP4 rendering with pluggable backends.
+"""Frame I/O and MP4 writing with pluggable backends.
 
 Reading and writing dispatch over a backend registry so you can choose the
 decoder/encoder. ``backend="auto"`` (the default) picks the fastest installed
@@ -16,9 +16,9 @@ the CPU.
 >>> video.available_read_backends()         # varies with installed extras
 ['opencv', 'pyav']
 
-The rendering helpers (``render_pose3d_video`` / ``render_overlay_video`` /
-``figure_to_array``) require the ``viz`` extra and are imported lazily, so plain
-read/write does not pull in matplotlib.
+Pose overlays and 3D reconstructions are rendered to MP4 by
+:mod:`deeperfly.viz.compose` (the OpenCV panel compositor), which builds on these
+read/write primitives.
 """
 
 from __future__ import annotations
@@ -49,8 +49,6 @@ from .io import (
 )
 from .transform import FrameTransform, parse_frame_transforms
 
-_LAZY = {"figure_to_array", "render_pose3d_video", "render_overlay_video"}
-
 __all__ = [
     "read_video",
     "read_images",
@@ -74,15 +72,4 @@ __all__ = [
     "available_read_backends",
     "available_write_backends",
     "available_image_readers",
-    "figure_to_array",
-    "render_pose3d_video",
-    "render_overlay_video",
 ]
-
-
-def __getattr__(name: str):  # PEP 562: defer matplotlib-dependent helpers
-    if name in _LAZY:
-        from . import render
-
-        return getattr(render, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

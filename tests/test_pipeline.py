@@ -220,14 +220,11 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
         conf,
         do_calibrate=False,
         max_drops=3,
-        smooth="one_euro",
         fps=100.0,
-        smooth_kwargs={"mincutoff": 0.5},
         meta={"source": "synthetic"},
     )
     assert isinstance(result, PoseResult)
     assert result.pts3d.shape == pts3d.shape
-    assert result.pts3d_smoothed is not None
     assert not np.isnan(result.pts3d).any()  # every fly point recoverable
     assert np.nanmax(result.reproj_error) < 40.0
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.05)

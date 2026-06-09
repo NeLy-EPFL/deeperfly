@@ -1,4 +1,4 @@
-"""End-to-end orchestration: 2D points -> calibration -> 3D -> correction.
+"""End-to-end orchestration: 2D points -> calibration -> 3D.
 
 Pure functions over arrays, so every stage is testable in isolation and the 2D
 detector stays pluggable (a callable producing ``(pts2d, conf)``):
@@ -25,18 +25,17 @@ import numpy as np
 from jaxtyping import Float
 from scipy.optimize import OptimizeResult
 
-from . import pictorial
-from .cameras import CameraGroup
-from .correction import smooth_gaussian, smooth_one_euro
-from .io import PoseResult
-from .skeleton import Skeleton
-from .triangulate import (
+from .. import pictorial
+from ..cameras import CameraGroup
+from ..io import PoseResult
+from ..skeleton import Skeleton
+from ..triangulate import (
     apply_visibility,
     reprojection_error,
     triangulate,
     triangulate_ransac,
 )
-from .bundle_adjustment import bundle_adjust
+from ..bundle_adjustment import bundle_adjust
 
 
 def _subsample(n_frames: int, max_frames: int | None) -> np.ndarray:
@@ -55,8 +54,23 @@ def _bone_prior(
 
     Targets are the median bone length across frames from an initial
     triangulation -- a soft, robust prior (shared with the pictorial-structures
-    corrector via :func:`deeperfly.pictorial.bone_length_targets`). ``pts2d`` has
-    ``F`` frames; the returned pairs index the flattened ``F * N`` point axis.
+    corrector via :func:`deeperfly.pictorial.bone_length_targets`).
+
+    Parameters
+    ----------
+    cameras
+        Rig used for the initial triangulation that sets the target lengths.
+    pts2d
+        2D observations of shape ``(V, F, N, 2)`` (``F`` flattened frames).
+    skeleton
+        Skeleton supplying the bone (edge) list.
+
+    Returns
+    -------
+    pairs : np.ndarray
+        ``(B, 2)`` index pairs into the flattened ``F * N`` point axis.
+    targets : np.ndarray
+        Per-bone target lengths, tiled across the ``F`` frames.
     """
     n_frames, n_pts = pts2d.shape[1], pts2d.shape[2]
     i, j, targets = pictorial.bone_length_targets(cameras, pts2d, skeleton)
@@ -86,16 +100,45 @@ def calibrate(
 
     Frames are flattened into one point cloud; detector confidences become
     per-observation weights; a robust loss and an optional bone-length prior
-    stabilize the fit. ``fixed`` / ``shared`` anchor the gauge as in
-    :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+    stabilize the fit.
 
-    ``ba_keypoints`` (skeleton point indices) restricts which keypoints drive the
-    refinement -- observations of unselected points are masked out. Defaults to
-    every point; pass e.g. the leg-joint indices to calibrate on the sharp limb
-    corners alone. Only the camera fit is restricted -- all points are still
-    triangulated afterward by :func:`reconstruct`.
+    Parameters
+    ----------
+    cameras
+        Initial camera rig to refine.
+    pts2d
+        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+    conf
+        Per-observation confidences ``(V, T, N)`` used as weights, or ``None``
+        for uniform weights.
+    skeleton
+        Skeleton supplying the bone-length prior (used when ``bone_prior``).
+    ba_keypoints
+        Skeleton point indices that drive the refinement -- observations of
+        unselected points are masked out. ``None`` (default) uses every point;
+        pass e.g. the leg-joint indices to calibrate on the sharp limb corners
+        alone. Only the camera fit is restricted; all points are still
+        triangulated afterward by :func:`reconstruct`.
+    fixed, shared
+        Camera parameter groups held fixed or tied together to anchor the gauge,
+        as in :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+    bone_prior
+        Whether to add the soft bone-length prior to the residual.
+    bone_weight, loss, f_scale, max_nfev
+        Solver knobs forwarded to
+        :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+    max_frames
+        Subsample to at most this many evenly spaced frames before fitting;
+        ``None`` uses every frame.
+    **solver_kwargs
+        Extra keyword arguments forwarded to ``scipy.optimize.least_squares``.
 
-    Returns the refined :class:`CameraGroup` and the raw scipy result.
+    Returns
+    -------
+    cameras : CameraGroup
+        The refined rig.
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
     """
     pts2d = np.asarray(pts2d, dtype=float)
     n_views, n_frames, n_pts = pts2d.shape[:3]
@@ -162,7 +205,25 @@ def reconstruct(
     drops only the **single worst** view of each still-offending point (keeping at
     least two) and re-triangulates, removing outliers one at a time.
 
-    Returns ``(pts3d, cleaned_pts2d, reproj_error)``.
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    pts2d
+        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+    reproj_threshold
+        Per-view reprojection error (px) above which a view may be dropped.
+    max_drops
+        Maximum number of drop-and-retriangulate passes.
+
+    Returns
+    -------
+    pts3d : np.ndarray
+        Triangulated points ``(T, N, 3)``.
+    cleaned_pts2d : np.ndarray
+        ``pts2d`` with dropped observations set to NaN ``(V, T, N, 2)``.
+    reproj_error : np.ndarray
+        Per-observation reprojection error ``(V, T, N)``.
     """
     pts2d = np.array(pts2d, dtype=float)
     n_views = pts2d.shape[0]
@@ -200,9 +261,26 @@ def reconstruct_ransac(
     views* (:func:`deeperfly.triangulate.triangulate_ransac`), so a badly
     mislocated detection never enters the fit. NaN views never count as inliers.
 
-    The returned 2D array is the input with every non-inlier observation set to
-    ``NaN``, matching :func:`reconstruct`'s ``(pts3d, cleaned_pts2d,
-    reproj_error)`` contract.
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    pts2d
+        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+    threshold
+        Inlier reprojection threshold (px) for the consensus set.
+    min_inliers
+        Minimum number of agreeing views for a point to be triangulated.
+
+    Returns
+    -------
+    pts3d : np.ndarray
+        Triangulated points ``(T, N, 3)``.
+    cleaned_pts2d : np.ndarray
+        ``pts2d`` with every non-inlier observation set to NaN, matching
+        :func:`reconstruct`'s contract.
+    reproj_error : np.ndarray
+        Per-observation reprojection error ``(V, T, N)``.
     """
     pts2d = np.array(pts2d, dtype=float)
     pts3d, inliers = triangulate_ransac(
@@ -223,6 +301,21 @@ def _resolve_triangulation(triangulation: str) -> str:
 
     Canonical names ``"ransac"`` / ``"greedy"`` / ``"dlt"``; ``"reproject"`` and
     ``"none"`` are aliases for ``"greedy"`` and ``"dlt"``.
+
+    Parameters
+    ----------
+    triangulation
+        A method name or legacy alias.
+
+    Returns
+    -------
+    str
+        One of ``"ransac"``, ``"greedy"`` or ``"dlt"``.
+
+    Raises
+    ------
+    ValueError
+        If ``triangulation`` is not a known method or alias.
     """
     method = _TRIANGULATION_ALIASES.get(triangulation, triangulation)
     if method not in _TRIANGULATORS:
@@ -246,38 +339,61 @@ def run_from_points2d(
     min_inliers: int = 2,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
-    smooth: str | None = None,
     fps: float = 100.0,
-    smooth_kwargs: dict | None = None,
     meta: dict | None = None,
 ) -> PoseResult:
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
     Steps: apply skeleton visibility -> (optional) calibrate cameras ->
-    reconstruct 3D -> (optional) temporal smoothing.
+    reconstruct 3D.
 
-    The 2D->3D reconstruction is two orthogonal choices:
+    Parameters
+    ----------
+    cameras
+        The camera rig (refined in place when ``do_calibrate``).
+    skeleton
+        Skeleton used for visibility masking and the bone-length prior.
+    pts2d
+        Detector 2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+    conf
+        Per-observation confidences ``(V, T, N)``, or ``None``.
+    do_calibrate
+        Whether to refine the cameras with bundle adjustment first.
+    calibrate_kwargs
+        Extra keyword arguments forwarded to :func:`calibrate`.
+    triangulation
+        Reconstruction strategy (:func:`_resolve_triangulation`): ``"ransac"``
+        (default, largest multi-view consensus set; ``ransac_threshold`` /
+        ``min_inliers``), ``"greedy"`` (DLT dropping the worst-reprojecting view;
+        ``reproj_threshold`` / ``max_drops``; ``"reproject"`` alias), or ``"dlt"``
+        (plain least squares, no outlier handling; ``"none"`` alias).
+    do_pictorial
+        When ``True``, first run pictorial-structures peak recovery over the
+        detector's top-K ``candidates`` (:func:`deeperfly.pictorial.reconstruct`,
+        accepting ``ps_kwargs`` like ``temporal`` / ``lam`` / ``max_hyp``), then
+        feed its committed 2D into ``triangulation`` (``"dlt"`` keeps the PS
+        estimate). Calibration always uses the arg-max ``pts2d``.
+    candidates
+        The detector's top-K candidate peaks; required when ``do_pictorial``.
+    ps_kwargs
+        Extra keyword arguments forwarded to the pictorial-structures corrector.
+    ransac_threshold, min_inliers, reproj_threshold, max_drops
+        Per-strategy triangulation knobs (see ``triangulation`` above).
+    fps
+        The recording's frame rate, recorded in the result ``meta``.
+    meta
+        Extra key/value pairs merged into the result ``meta``.
 
-    * ``triangulation`` (:func:`_resolve_triangulation`):
+    Returns
+    -------
+    PoseResult
+        The calibrated cameras, committed 2D, triangulated 3D and diagnostics.
 
-      * ``"ransac"`` (default) -- each point from its largest multi-view
-        consensus set (:func:`reconstruct_ransac`); ``ransac_threshold`` /
-        ``min_inliers``.
-      * ``"greedy"`` -- DLT, greedily dropping the worst-reprojecting view of each
-        offending point (:func:`reconstruct`); ``reproj_threshold`` /
-        ``max_drops``. (``"reproject"`` alias.)
-      * ``"dlt"`` -- plain least-squares, no outlier handling (``"none"`` alias).
-
-    * ``do_pictorial`` -- when ``True``, first run pictorial-structures peak
-      recovery over the detector's top-K candidates
-      (:func:`deeperfly.pictorial.reconstruct`; requires ``candidates``, accepts
-      ``ps_kwargs`` like ``temporal`` / ``lam`` / ``max_hyp``), then feed its
-      committed 2D into ``triangulation`` (``"dlt"`` keeps the PS estimate).
-      Calibration always uses the arg-max ``pts2d``.
-
-    ``smooth`` is ``None``, ``"gaussian"`` or ``"one_euro"``; ``smooth_kwargs`` is
-    forwarded to the matching :mod:`deeperfly.correction` function (``one_euro``
-    also receives ``fps``).
+    Raises
+    ------
+    ValueError
+        If ``do_pictorial`` is set but no ``candidates`` are given, or
+        ``triangulation`` is unknown.
     """
     method = _resolve_triangulation(triangulation)  # validate before calibrating
     names = cameras.names
@@ -312,22 +428,12 @@ def run_from_points2d(
         pts3d = triangulate(cameras, pts2d)
         reproj = reprojection_error(cameras, pts3d, pts2d)
 
-    pts3d_smoothed = None
-    sk = smooth_kwargs or {}
-    if smooth == "gaussian":
-        pts3d_smoothed = smooth_gaussian(pts3d, **sk)
-    elif smooth == "one_euro":
-        pts3d_smoothed = smooth_one_euro(pts3d, fps, **sk)
-    elif smooth is not None:
-        raise ValueError(f"unknown smooth mode {smooth!r}")
-
     return PoseResult(
         cameras=cameras,
         skeleton=skeleton,
         pts2d=pts2d,
         conf=conf,
         pts3d=pts3d,
-        pts3d_smoothed=pts3d_smoothed,
         reproj_error=reproj,
         meta={
             "fps": fps,

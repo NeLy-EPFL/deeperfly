@@ -13,15 +13,18 @@ so these need neither real weights nor video files.
 
 from __future__ import annotations
 
-import argparse
 import re
 
 import numpy as np
 import pytest
 
-from deeperfly import Config, cli
+from deeperfly import Config, cli, pipeline, recordings
 from deeperfly.cameras import CameraGroup
+from deeperfly.cli.app import _normalize_overwrite_argv
+from deeperfly.cli.report import _fmt_bytes
+from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
 from deeperfly.io import PoseResult
+from deeperfly.pose2d import stream as pose2d_stream
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
@@ -30,12 +33,12 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
     """Write the packaged default config with the given ``do_<stage>`` flags flipped.
 
     Pass any subset of stage names (``pose2d``, ``bundle_adjustment``,
-    ``pictorial_structures``, ``triangulation``, ``smoothing``, ``visualization``) as
-    keyword booleans. The full default is needed by tests that run the ``pose2d``
+    ``pictorial_structures``, ``triangulation``, ``visualization``) as keyword
+    booleans. The full default is needed by tests that run the ``pose2d``
     stage (it builds the camera rig from ``[cameras]``); tests that resume from a
     cached result use small hand-written configs instead.
     """
-    text = cli.DEFAULT_CONFIG_PATH.read_text()
+    text = DEFAULT_CONFIG_PATH.read_text()
     for stage, on in flags.items():
         # Anchor to the start of a line so a `do_<stage> = ...` example inside a
         # comment is not matched ahead of the real [pipeline] flag.
@@ -56,22 +59,21 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
 
 def test_stage_flags_defaults():
     """An empty config uses STAGE_DEFAULTS; the packaged default matches it."""
-    assert Config.from_dict({}).stage_flags() == cli.STAGE_DEFAULTS
+    assert Config.from_dict({}).stage_flags() == STAGE_DEFAULTS
     assert Config.default().stage_flags() == {
         "pose2d": True,
         "bundle_adjustment": True,
         "pictorial_structures": False,
         "triangulation": True,
-        "smoothing": False,
         "visualization": True,
     }
 
 
 def test_stage_flags_toggles_and_validates():
     flags = Config.from_dict(
-        {"pipeline": {"do_pose2d": False, "do_smoothing": True}}
+        {"pipeline": {"do_pose2d": False, "do_pictorial_structures": True}}
     ).stage_flags()
-    assert flags["pose2d"] is False and flags["smoothing"] is True
+    assert flags["pose2d"] is False and flags["pictorial_structures"] is True
     assert flags["triangulation"] is True  # untouched default
     with pytest.raises(SystemExit, match="unknown stage toggle"):
         Config.from_dict({"pipeline": {"do_detekt": True}})  # validated at construction
@@ -99,7 +101,7 @@ def test_stage_flags_rejects_removed_keys():
 
 def test_resolve_config_default_when_no_cli_and_no_snapshot(tmp_path):
     config = Config.read_for_run(None, tmp_path)
-    assert config.source == cli.DEFAULT_CONFIG_PATH
+    assert config.source == DEFAULT_CONFIG_PATH
     assert config.data == Config.default().data
 
 
@@ -141,17 +143,21 @@ def _stub_detect(monkeypatch, tmp_path):
     """Stub frame sizing + detection so detect needs no files, weights or recording."""
     T, H, W = 3, 16, 16
     sizes = {n: (H, W) for n in FLY_CAMERAS}
-    monkeypatch.setattr(cli, "_camera_image_sizes", lambda args, config: sizes)
-    monkeypatch.setattr(cli, "_load_detector", lambda checkpoint: object())
+    monkeypatch.setattr(
+        pipeline.stages, "camera_image_sizes", lambda config, **kw: sizes
+    )
+    monkeypatch.setattr(pipeline.stages, "load_detector", lambda checkpoint: object())
     # The recording footage is stubbed away, so skip the pre-run footage validation a
     # real fresh pose2d run does (covered separately by the input-resolution tests).
-    monkeypatch.setattr(cli, "_require_input_footage", lambda args, config: None)
+    monkeypatch.setattr(
+        pipeline.run, "require_input_footage", lambda config, **kw: None
+    )
 
-    def fake_detect_2d(args, config, model, sides, flips, **kw):
+    def fake_detect_2d(config, model, sides, flips, **kw):
         v = len(FLY_CAMERAS)
         return np.zeros((v, T, 38, 2)), np.ones((v, T, 38)), None
 
-    monkeypatch.setattr(cli, "_detect_2d", fake_detect_2d)
+    monkeypatch.setattr(pipeline.stages, "detect_2d", fake_detect_2d)
     return T
 
 
@@ -189,14 +195,18 @@ def test_run_without_config_uses_default(tmp_path, monkeypatch):
     # The default runs pose2d + bundle_adjustment + triangulation + visualization; stub
     # the compute/render stages so the run needs no real BA, triangulation or video
     # frames -- this test is about config resolution.
-    monkeypatch.setattr(cli, "_stage_bundle_adjustment", lambda config, result: result)
-    monkeypatch.setattr(cli, "_stage_triangulation", lambda config, result: result)
-    monkeypatch.setattr(cli, "_stage_visualization", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pipeline.stages, "stage_bundle_adjustment", lambda config, result: result
+    )
+    monkeypatch.setattr(
+        pipeline.stages, "stage_triangulation", lambda config, result: result
+    )
+    monkeypatch.setattr(pipeline.stages, "render_videos", lambda *a, **k: None)
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
     cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
     assert (outdir / "poses.h5").exists()
-    assert (outdir / "config.toml").read_text() == cli.DEFAULT_CONFIG_PATH.read_text()
+    assert (outdir / "config.toml").read_text() == DEFAULT_CONFIG_PATH.read_text()
 
 
 def test_default_outdir_inside_input(tmp_path, monkeypatch):
@@ -317,7 +327,7 @@ def _make_recording(d, *, ext="mp4", count=1):
 
 def _resolve(patterns, tmp_path, *, recursive=False, output=None):
     # globs are written relative to tmp_path, so resolve from there
-    return cli._resolve_recordings(
+    return recordings.resolve_recordings(
         [str(tmp_path / p) for p in patterns],
         recursive=recursive,
         config=_RES_CFG,
@@ -355,7 +365,7 @@ def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
         out = _resolve(["nope"], tmp_path)
     # kept with empty footage; its output dir still resolves so a cached resume works.
     assert out[0].sources == {}
-    assert out[0].outdir == cli._default_outdir(bad)
+    assert out[0].outdir == recordings.default_outdir(bad)
     assert any(
         str(bad.resolve()) in r.message and "not a valid recording" in r.message
         for r in caplog.records
@@ -514,7 +524,7 @@ def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
         "do_triangulation = true\ndo_visualization = false\n"
     )
     monkeypatch.setattr(
-        cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d is off")
+        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d is off")
     )
     cli.main(
         [
@@ -548,26 +558,6 @@ def test_triangulation_skipped_without_2d(tmp_path, caplog):
     )
 
 
-def test_smoothing_skipped_without_3d(result, tmp_path, caplog):
-    """smoothing on but the cached result has no 3D -> skip + reason."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
-    )  # 2D only
-    cfg = tmp_path / "cfg.toml"
-    cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_smoothing = true\ndo_visualization = false\n"
-    )
-    with caplog.at_level("WARNING"):
-        cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
-    assert any(
-        "skipping smoothing" in r.message and "no 3D pose" in r.message
-        for r in caplog.records
-    )
-
-
 def test_visualization_only_from_cached_result(result, tmp_path, monkeypatch):
     """Every compute stage off, visualization on -> render from the cached 3D result."""
     outdir = tmp_path / "out"
@@ -578,13 +568,17 @@ def test_visualization_only_from_cached_result(result, tmp_path, monkeypatch):
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
         "do_triangulation = false\ndo_visualization = true\n"
     )
-    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("no pose2d"))
     monkeypatch.setattr(
-        cli, "_stage_triangulation", lambda *a, **k: pytest.fail("no triangulation")
+        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("no pose2d")
+    )
+    monkeypatch.setattr(
+        pipeline.stages,
+        "stage_triangulation",
+        lambda *a, **k: pytest.fail("no triangulation"),
     )
     called: list[bool] = []
     monkeypatch.setattr(
-        cli, "_stage_visualization", lambda *a, **k: called.append(True)
+        pipeline.stages, "render_videos", lambda *a, **k: called.append(True)
     )
     cli.main(
         [
@@ -619,7 +613,7 @@ def test_visualization_skipped_without_result(tmp_path, caplog):
 
 def test_normalize_overwrite_argv():
     """`--overwrite` accepts bare (all) or space-separated stage names."""
-    norm = cli._normalize_overwrite_argv
+    norm = _normalize_overwrite_argv
     # bare -> the "all" sentinel; only `run` is rewritten.
     assert norm(["run", "rec", "--overwrite"]) == [
         "run",
@@ -647,11 +641,14 @@ def test_normalize_overwrite_argv():
 
 
 def test_overwrite_stages_parsing():
-    assert cli._overwrite_stages(None) == set()
-    assert cli._overwrite_stages([cli._OVERWRITE_ALL]) == set(cli.STAGES)
-    assert cli._overwrite_stages(["pose2d", "smoothing"]) == {"pose2d", "smoothing"}
+    assert pipeline.overwrite_stages(None) == set()
+    assert pipeline.overwrite_stages([pipeline._OVERWRITE_ALL]) == set(STAGES)
+    assert pipeline.overwrite_stages(["pose2d", "visualization"]) == {
+        "pose2d",
+        "visualization",
+    }
     with pytest.raises(SystemExit, match="unknown stage"):
-        cli._overwrite_stages(["pose2d", "nope"])
+        pipeline.overwrite_stages(["pose2d", "nope"])
 
 
 def test_enabled_pose2d_reused_when_cached(result, tmp_path, monkeypatch):
@@ -664,7 +661,9 @@ def test_enabled_pose2d_reused_when_cached(result, tmp_path, monkeypatch):
     )
     _stub_detect(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d should be reused")
+        pipeline.stages,
+        "stage_pose2d",
+        lambda *a, **k: pytest.fail("pose2d should be reused"),
     )
     cli.main(
         [
@@ -718,14 +717,16 @@ def test_overwrite_cascades_to_downstream_stages(result, tmp_path, monkeypatch):
     cfg = _default_cfg(tmp_path, visualization=False)
     T = _stub_detect(monkeypatch, tmp_path)  # fresh 2D has 3 frames
     triangulated: list[bool] = []
-    real_triangulate = cli._stage_triangulation
+    real_triangulate = pipeline.stage_triangulation
 
     def spy_triangulate(config, res):
         triangulated.append(True)
         return real_triangulate(config, res)
 
-    monkeypatch.setattr(cli, "_stage_bundle_adjustment", lambda config, res: res)
-    monkeypatch.setattr(cli, "_stage_triangulation", spy_triangulate)
+    monkeypatch.setattr(
+        pipeline.stages, "stage_bundle_adjustment", lambda config, res: res
+    )
+    monkeypatch.setattr(pipeline.stages, "stage_triangulation", spy_triangulate)
     cli.main(
         [
             "run",
@@ -780,15 +781,19 @@ def test_overwrite_bundle_adjustment_rebuilds_config_rig(result, tmp_path, monke
         result.cameras.intrs,
         result.cameras.dists,
     )
-    monkeypatch.setattr(cli, "_config_camera_rig", lambda args, config: fresh)
-    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    monkeypatch.setattr(
+        pipeline.stages, "config_camera_rig", lambda config, **kw: fresh
+    )
+    monkeypatch.setattr(
+        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d off")
+    )
     seen: dict = {}
 
     def spy_ba(config, res):
         seen["is_fresh"] = res.cameras is fresh
         return res
 
-    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    monkeypatch.setattr(pipeline.stages, "stage_bundle_adjustment", spy_ba)
     cli.main(
         [
             "run",
@@ -822,18 +827,20 @@ def test_recompute_bundle_adjustment_keeps_unrefined_cached_rig(
         "do_triangulation = false\ndo_visualization = false\n"
     )
     monkeypatch.setattr(
-        cli,
-        "_config_camera_rig",
-        lambda args, config: pytest.fail("must not rebuild an un-refined rig"),
+        pipeline.stages,
+        "config_camera_rig",
+        lambda config, **kw: pytest.fail("must not rebuild an un-refined rig"),
     )
-    monkeypatch.setattr(cli, "_stage_pose2d", lambda *a, **k: pytest.fail("pose2d off"))
+    monkeypatch.setattr(
+        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d off")
+    )
     seen: dict = {}
 
     def spy_ba(config, res):
         seen["is_cached"] = res.cameras.names == result.cameras.names
         return res
 
-    monkeypatch.setattr(cli, "_stage_bundle_adjustment", spy_ba)
+    monkeypatch.setattr(pipeline.stages, "stage_bundle_adjustment", spy_ba)
     cli.main(
         [
             "run",
@@ -909,14 +916,14 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
 
 
 def test_load_detector_downloads_cached(tmp_path, monkeypatch):
-    # With no explicit checkpoint, _load_detector downloads the cached torch
+    # With no explicit checkpoint, load_detector downloads the cached torch
     # weights and loads the detector from them.
     from deeperfly.pose2d import backends, download
 
     sentinel = tmp_path / "sh8_deepfly.pth"
     monkeypatch.setattr(download, "download_torch_weights", lambda: sentinel)
     monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
-    assert cli._load_detector(None) == ("loaded", sentinel)
+    assert pose2d_stream.load_detector(None) == ("loaded", sentinel)
 
 
 def test_load_detector_explicit_checkpoint(tmp_path, monkeypatch):
@@ -930,21 +937,21 @@ def test_load_detector_explicit_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(backends, "load_detector", lambda path: ("loaded", path))
     ckpt = tmp_path / "custom.pth"
     ckpt.write_bytes(b"weights")
-    assert cli._load_detector(str(ckpt)) == ("loaded", str(ckpt))
+    assert pose2d_stream.load_detector(str(ckpt)) == ("loaded", str(ckpt))
 
 
 def test_load_detector_missing_checkpoint_raises(tmp_path):
     with pytest.raises(SystemExit, match="no detector checkpoint"):
-        cli._load_detector(str(tmp_path / "nope.pth"))
+        pose2d_stream.load_detector(str(tmp_path / "nope.pth"))
 
 
 # -- doctor (installation / runtime report) ----------------------------------
 
 
 def test_fmt_bytes_units():
-    assert cli._fmt_bytes(512) == "512 B"
-    assert cli._fmt_bytes(1536) == "1.5 KiB"
-    assert cli._fmt_bytes(2 * 1024**3) == "2.0 GiB"
+    assert _fmt_bytes(512) == "512 B"
+    assert _fmt_bytes(1536) == "1.5 KiB"
+    assert _fmt_bytes(2 * 1024**3) == "2.0 GiB"
 
 
 def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
@@ -976,7 +983,7 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
     assert "GPU inference" in out and "detector" in out
     assert "downloaded" in out  # the detector checkpoint we created
     assert download.TORCH_WEIGHTS_NAME in out
-    assert str(cli.DEFAULT_CONFIG_PATH) in out
+    assert str(DEFAULT_CONFIG_PATH) in out
 
 
 # -- pictorial structures skipped (no candidates) on resume ------------------
@@ -1073,25 +1080,25 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     v0, v1 = names[0], names[1]
     res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
 
-    # 1) this run's already-resolved footage (args.sources) is used directly.
-    got = cli._source_view_frames(
-        argparse.Namespace(sources={v0: ["f0"], v1: ["f1"]}), cfg, res, [v0, v1]
+    # 1) this run's already-resolved footage (sources) is used directly.
+    got = pipeline.source_view_frames(
+        cfg, res, [v0, v1], sources={v0: ["f0"], v1: ["f1"]}
     )
     assert got == {v0: ("frames", ["f0"]), v1: ("frames", ["f1"])}
 
     # 2) no run footage -> error telling the user to re-pass the recording.
     with pytest.raises(SystemExit, match="overwrite visualization"):
-        cli._source_view_frames(argparse.Namespace(sources={}), cfg, res, [v0])
+        pipeline.source_view_frames(cfg, res, [v0], sources={})
 
     # 3) in-memory frames (indexed by camera order) bypass the recording entirely.
     mem = [f"mem{i}" for i in range(len(names))]
-    got = cli._source_view_frames(
-        argparse.Namespace(sources=None), cfg, res, [names[2], v0], in_memory=mem
+    got = pipeline.source_view_frames(
+        cfg, res, [names[2], v0], sources=None, in_memory=mem
     )
     assert got == {names[2]: "mem2", v0: "mem0"}
 
     # 4) no imshow views -> nothing sourced.
-    assert cli._source_view_frames(argparse.Namespace(sources=None), cfg, res, []) == {}
+    assert pipeline.source_view_frames(cfg, res, [], sources=None) == {}
 
 
 # -- per-camera [preprocess.*] frame transform wiring ------------------------
@@ -1113,8 +1120,9 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
     cameras = {n: {"input": n} for n in names}
     cameras[v0] = {"input": v0, "preprocess": {"rot90": 1, "fliplr": True}}
     cfg = Config.from_dict({"cameras": cameras, "pipeline": {"pose2d": {}}})
-    args = argparse.Namespace(sources={n: [n] for n in names})
-    got = cli._source_view_frames(args, cfg, result, [v0, v1])
+    got = pipeline.source_view_frames(
+        cfg, result, [v0, v1], sources={n: [n] for n in names}
+    )
     np.testing.assert_array_equal(
         got[v0], video.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
     )
@@ -1133,7 +1141,9 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
     t = video.FrameTransform(fliplr=True, rot90=1)
     windows = list(
-        cli._prefetch_windows(["camA"], backend="auto", block=8, transforms=[t])
+        pose2d_stream.prefetch_windows(
+            ["camA"], backend="auto", block=8, transforms=[t]
+        )
     )
     assert len(windows) == 1
     window, n = windows[0]
@@ -1155,7 +1165,7 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
             yield full[pos : pos + block]
 
     monkeypatch.setattr(video, "stream_frames", fake_stream_frames)
-    windows = list(cli._prefetch_windows(["A", "B"], backend="auto", block=2))
+    windows = list(pose2d_stream.prefetch_windows(["A", "B"], backend="auto", block=2))
     # 5 frames at block=2 -> blocks of 2, 2, 1; the short last block stops the stream.
     assert [n for _, n in windows] == [2, 2, 1]
     cam_a = np.concatenate([w[0] for w, _ in windows])
@@ -1170,7 +1180,9 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     from deeperfly import video
 
     monkeypatch.setattr(
-        cli, "_camera_sources", lambda root, config: [("rh", "A"), ("lf", "B")]
+        recordings,
+        "camera_sources",
+        lambda config, **kw: [("rh", "A"), ("lf", "B")],
     )
     head = np.zeros((1, 4, 6, 3), np.uint8)
     monkeypatch.setattr(
@@ -1184,6 +1196,6 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
             "pipeline": {"pose2d": {}},
         }
     )
-    sizes = cli._camera_image_sizes(argparse.Namespace(input="x"), cfg)
+    sizes = recordings.camera_image_sizes(cfg, input="x")
     assert sizes["rh"] == (6, 4)  # (H, W) swapped by the quarter-turn
     assert sizes["lf"] == (4, 6)  # identity

@@ -20,6 +20,16 @@ def state_dict_from_torch_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
 
     Strips Lightning/DataParallel ``module.`` / ``model.`` prefixes and returns
     plain NumPy arrays.
+
+    Parameters
+    ----------
+    path
+        Path to a ``.pth`` checkpoint.
+
+    Returns
+    -------
+    dict of str to np.ndarray
+        The cleaned state-dict (NumPy arrays keyed by native parameter name).
     """
     raw = torch.load(path, map_location="cpu", weights_only=True)
     sd = raw["state_dict"] if "state_dict" in raw else raw
@@ -37,8 +47,19 @@ def load_model(
     """Build the DeepFly2D net and (optionally) load the original DeepFly2D weights.
 
     The number of stacks is taken from the checkpoint (the published weights are
-    ``sh8`` = 8 stacks), so the architecture always matches before the strict
-    load. With ``checkpoint=None`` a freshly initialized model is returned.
+    ``sh8`` = 8 stacks), so the architecture always matches before the strict load.
+
+    Parameters
+    ----------
+    checkpoint
+        Path to a ``.pth`` checkpoint, or ``None`` for a freshly initialized model.
+    dev
+        Target device string (defaults to the backend's auto-selected device).
+
+    Returns
+    -------
+    HourglassNet
+        The detector model in eval mode on ``dev``.
     """
     from .. import infer_num_stacks  # shared across backends, torch-free import
 

@@ -94,6 +94,23 @@ def preprocess(
     orientation. Uses bilinear (anti-aliased) resize; this is close to but not
     bit-identical with DeepFly2D's skimage resize -- argmax peak picking is robust
     to the difference.
+
+    Parameters
+    ----------
+    image
+        An ``(H, W, 3)`` frame (NumPy array or on-device torch tensor).
+    flip
+        Whether to mirror left/right (for a mirror-side camera).
+    img_size
+        Target ``(height, width)`` of the network input.
+    mean
+        Mean subtracted from the normalized image.
+
+    Returns
+    -------
+    Array
+        The normalized ``(3, Hh, Ww)`` CHW network input (a torch tensor on the
+        input's device).
     """
     import torch
     import torch.nn.functional as F
@@ -143,6 +160,27 @@ def refine_peaks(
 
     Costs a handful of small gathers/reductions over the arg-max neighbourhood --
     negligible next to the forward pass.
+
+    Parameters
+    ----------
+    hm
+        ``M`` heatmaps of shape ``(M, Hh, Ww)``.
+    row, col
+        Integer peak cells of shape ``(M, P)`` to refine.
+    method
+        ``"argmax"`` | ``"weighted"`` | ``"taylor"`` (see above).
+    radius
+        Half-width of the refinement window in heatmap pixels.
+
+    Returns
+    -------
+    cx, cy : np.ndarray
+        The sub-pixel peak coordinates of shape ``(M, P)`` (heatmap pixels).
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``method``, or ``"taylor"`` with ``radius < 2``.
     """
     hm = np.asarray(hm, dtype=float)
     m, hh, ww = hm.shape
@@ -227,6 +265,22 @@ def heatmap_to_points(
     Coordinates keep the same ``col / Ww``, ``row / Hh`` normalization as a plain
     arg-max (DeepFly2D's ``heatmap2points``) and ``(x, y)`` ordering for the
     geometry layer, so a single-pixel spike still decodes to exactly its cell.
+
+    Parameters
+    ----------
+    heatmaps
+        Heatmaps of shape ``(*batch, J, Hh, Ww)``.
+    method
+        Sub-pixel refinement (see :func:`refine_peaks`).
+    radius
+        Refinement window half-width.
+
+    Returns
+    -------
+    points : np.ndarray
+        Normalized ``(x, y)`` peaks in ``[0, 1]`` of shape ``(*batch, J, 2)``.
+    conf : np.ndarray
+        The raw peak value per joint of shape ``(*batch, J)``.
     """
     hm = np.asarray(heatmaps, dtype=float)
     *lead, hh, ww = hm.shape  # lead = (*batch, J)
@@ -256,8 +310,19 @@ def expand_passes(
     ``("left", flip=True)`` (mirror-flipped) -> ``0..18``. So the one front image
     yields both body sides, bridging them for calibration.
 
-    Returns ``(views, pass_sides, pass_flips)`` -- the physical view index, side and
-    flip per pass, ready for :func:`assemble_skeleton` (``views=...``).
+    Parameters
+    ----------
+    sides, flips
+        Per-camera body side and mirror flag.
+
+    Returns
+    -------
+    views : list of int
+        The physical view index per pass.
+    pass_sides : list of str
+        The body side per pass.
+    pass_flips : list of bool
+        The mirror flag per pass (ready for :func:`assemble_skeleton`).
     """
     views: list[int] = []
     pass_sides: list[str] = []
@@ -306,6 +371,15 @@ def assemble_skeleton(
         passes may share a view -- that is how the front camera fills both halves.
     n_views
         Number of physical views in the output (default: ``max(views) + 1``).
+    n_points
+        Total skeleton points in the output.
+
+    Returns
+    -------
+    pts : np.ndarray
+        Assembled 2D pixels of shape ``(V, N, 2)`` (NaN where unfilled).
+    conf : np.ndarray
+        Assembled confidence of shape ``(V, N)`` (``0`` where unfilled).
     """
     points_norm = np.asarray(points_norm, dtype=float)
     conf = np.asarray(conf, dtype=float)
@@ -341,6 +415,18 @@ def fly_camera_layout(camera_names: list[str]) -> tuple[list[str], list[bool]]:
     un-flipped. The **front camera** (name starting ``f``) gets side ``"both"`` --
     :func:`expand_passes` runs it twice so it observes both sides. Override for rigs
     whose front camera should feed a single side.
+
+    Parameters
+    ----------
+    camera_names
+        The rig's camera names, in order.
+
+    Returns
+    -------
+    sides : list of str
+        ``"left"`` / ``"right"`` / ``"both"`` per camera.
+    flips : list of bool
+        The mirror flag per camera.
     """
     sides, flips = [], []
     for name in camera_names:
@@ -368,10 +454,26 @@ def detect(
 ) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
     """Detect one multi-camera frame -> ``(V, 38, 2)`` pixels and ``(V, 38)`` conf.
 
-    ``model`` is the detector (:mod:`deeperfly.pose2d.backends`). ``method`` /
-    ``radius`` pick the heatmap decode (see :func:`heatmap_to_points`). A ``"both"``
-    camera is run twice (:func:`expand_passes`) so the front image fills both body
-    sides.
+    A ``"both"`` camera is run twice (:func:`expand_passes`) so the front image
+    fills both body sides.
+
+    Parameters
+    ----------
+    model
+        The detector (:mod:`deeperfly.pose2d.backends`).
+    images
+        One ``(H, W, 3)`` frame per physical view.
+    sides, flips
+        Per-camera body side and mirror flag.
+    method, radius
+        Heatmap decode options (see :func:`heatmap_to_points`).
+
+    Returns
+    -------
+    pts : np.ndarray
+        2D pixels of shape ``(V, 38, 2)``.
+    conf : np.ndarray
+        Per-point confidence of shape ``(V, 38)``.
     """
     import torch
 
@@ -420,8 +522,30 @@ def detect_sequence(
     ``batch_size`` (the CLI sets it from ``[pipeline.pose2d] batch_size``). Results
     are numerically identical -- only the dispatch granularity differs.
 
-    ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress bar),
-    advanced once per *completed* frame; it defaults to the identity.
+    Parameters
+    ----------
+    model
+        The detector.
+    frames
+        One ``(T, H, W, 3)`` window per physical view.
+    sides, flips
+        Per-camera body side and mirror flag.
+    method, radius
+        Heatmap decode options.
+    batch_size
+        Detector passes per forward. ``None`` detects one frame at a time
+        (batch = passes/frame); a larger value flattens the window and forwards in
+        groups of ``batch_size`` (numerically identical, only dispatch differs).
+    progress
+        Optional wrapper of the per-frame iterator, advanced once per *completed*
+        frame; defaults to the identity.
+
+    Returns
+    -------
+    pts : np.ndarray
+        2D pixels of shape ``(V, T, 38, 2)``.
+    conf : np.ndarray
+        Per-point confidence of shape ``(V, T, 38)``.
     """
     from . import backends
 
@@ -505,8 +629,31 @@ def detect_candidates_sequence(
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
     (view, joint), consumed by the pictorial-structures corrector. The front
     camera is run as two passes (:func:`expand_passes`), so both its arg-max pose
-    and its candidates cover both body sides. Returns
-    ``(pts2d (V, T, 38, 2), conf (V, T, 38), candidates)``.
+    and its candidates cover both body sides.
+
+    Parameters
+    ----------
+    model
+        The detector.
+    frames
+        One ``(T, H, W, 3)`` window per physical view.
+    sides, flips
+        Per-camera body side and mirror flag.
+    k
+        Number of candidate peaks kept per (view, joint).
+    method, radius
+        Heatmap decode options.
+    progress
+        Optional wrapper of the per-frame iterator.
+
+    Returns
+    -------
+    pts2d : np.ndarray
+        Arg-max 2D pixels of shape ``(V, T, 38, 2)``.
+    conf : np.ndarray
+        Per-point confidence of shape ``(V, T, 38)``.
+    candidates : deeperfly.pictorial.Candidates
+        The top-``k`` candidate peak set.
     """
     import torch
 

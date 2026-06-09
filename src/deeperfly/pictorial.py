@@ -89,7 +89,27 @@ def peak_candidates(
     with ``NaN`` / ``0`` when fewer exist. Each is refined to sub-pixel by
     ``method`` (the same :func:`~deeperfly.pose2d.inference.refine_peaks` the
     single-peak decoder uses), so candidates carry the arg-max's localization.
-    Coordinates are normalized to ``[0, 1]``; the score is the raw peak value.
+
+    Parameters
+    ----------
+    heatmaps
+        Heatmaps of shape ``(*chan, Hh, Ww)``.
+    k
+        Number of peaks to keep per channel.
+    radius
+        NMS / sub-pixel-window half-width, in heatmap pixels.
+    threshold
+        Ignore peaks weaker than this.
+    method
+        Sub-pixel refinement: ``"argmax"`` | ``"weighted"`` | ``"taylor"``.
+
+    Returns
+    -------
+    xy : np.ndarray
+        Peak coordinates of shape ``(*chan, K, 2)`` normalized to ``[0, 1]``
+        (NaN-padded).
+    score : np.ndarray
+        Raw peak values of shape ``(*chan, K)`` (``0`` where padded).
     """
     from scipy.ndimage import maximum_filter
 
@@ -145,10 +165,31 @@ def extract_candidates(
     scales to original pixels, and places a right pass's 19 channels into skeleton
     indices ``19..37`` and a left pass's into ``0..18``.
 
-    ``heatmaps`` is one stack per *pass* (see
-    :func:`deeperfly.pose2d.inference.expand_passes`); ``views`` gives the physical
-    view index per pass (default identity), so the front camera's two passes write
-    both halves of its row. ``image_size`` is indexed by physical view.
+    Parameters
+    ----------
+    heatmaps
+        One detector stack per *pass* of shape ``(P, J, Hh, Ww)`` (see
+        :func:`deeperfly.pose2d.inference.expand_passes`).
+    sides, flips
+        Per-pass body side (``"left"`` / ``"right"``) and mirror flag.
+    image_size
+        ``(width, height)`` per physical view, indexed by ``views``.
+    k
+        Candidate peaks kept per channel.
+    views
+        Physical view index per pass (default identity), so the front camera's
+        two passes write both halves of its row.
+    n_views, n_points, n_side_joints
+        Output rig sizes; ``n_views`` defaults to ``max(views) + 1``.
+    **peak_kwargs
+        Forwarded to :func:`peak_candidates`.
+
+    Returns
+    -------
+    cand_xy : np.ndarray
+        Candidate pixels of shape ``(V, N, K, 2)`` (NaN where absent).
+    cand_score : np.ndarray
+        Candidate scores of shape ``(V, N, K)`` (``0`` where absent).
     """
     xy_norm, score = peak_candidates(heatmaps, k, **peak_kwargs)  # (P, J, K, 2/.)
     n_passes = len(sides)
@@ -186,6 +227,22 @@ def apply_visibility(
     Mirrors :func:`deeperfly.triangulate.apply_visibility` but for the candidate
     arrays (an extra trailing ``K`` axis). Broadcasts the ``(V, N)`` visibility
     mask over any middle (e.g. time) axes.
+
+    Parameters
+    ----------
+    cand_xy
+        Candidate pixels of shape ``(V, *rest, N, K, 2)``.
+    cand_score
+        Candidate scores of shape ``(V, *rest, N, K)``.
+    skeleton
+        Skeleton supplying the per-camera visibility.
+    camera_names
+        Names labelling the leading view axis.
+
+    Returns
+    -------
+    cand_xy, cand_score : np.ndarray
+        Copies with invisible entries set to NaN (``xy``) and ``0`` (``score``).
     """
     cand_xy = np.array(cand_xy, dtype=float)
     cand_score = np.array(cand_score, dtype=float)
@@ -207,10 +264,26 @@ def bone_length_targets(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Median bone length per skeleton bone, from an initial triangulation.
 
-    Returns the bone endpoint index arrays ``(i, j)`` (columns of
-    :attr:`Skeleton.bones`) and the per-bone target length ``targets`` (``(B,)``).
-    Shared by bundle-adjustment calibration (:func:`deeperfly.pipeline._bone_prior`)
-    and PS so the two agree on the anatomical prior.
+    Shared by bundle-adjustment calibration
+    (:func:`deeperfly.pipeline._bone_prior`) and PS so the two agree on the
+    anatomical prior.
+
+    Parameters
+    ----------
+    cameras
+        The rig used for the initial triangulation.
+    pts2d
+        2D observations of shape ``(V, F, N, 2)``.
+    skeleton
+        Skeleton supplying the bone (edge) list.
+
+    Returns
+    -------
+    i, j : np.ndarray
+        Bone endpoint index arrays (the columns of :attr:`Skeleton.bones`).
+    targets : np.ndarray
+        Per-bone median target length of shape ``(B,)`` (NaN for a bone never
+        triangulated).
     """
     import warnings
 
@@ -234,6 +307,16 @@ def skeleton_chains(skeleton: Skeleton) -> list[list[int]]:
     Each connected component of :attr:`Skeleton.bones` is a path (max degree 2),
     returned as an ordered joint list walked from an endpoint; isolated points come
     back as singletons. :func:`_chain_dp` runs exact Viterbi over this ordering.
+
+    Parameters
+    ----------
+    skeleton
+        Skeleton whose bones are decomposed.
+
+    Returns
+    -------
+    list of list of int
+        Ordered joint-index chains (singletons for isolated points).
     """
     adj: dict[int, list[int]] = defaultdict(list)
     for a, b in skeleton.bones:
@@ -297,12 +380,29 @@ def _frame_hypotheses(
 ):
     """All multi-view 3D hypotheses for one frame's joints, scored by evidence.
 
-    Returns ``(X, evidence, n_inlier, obs)`` where ``X`` is ``(N, M, 3)`` refit
-    3D hypotheses (``M = C(V,2) K^2``), ``evidence`` ``(N, M)`` is the summed
-    heatmap confidence of supporting views, ``n_inlier`` ``(N, M)`` counts them,
-    and ``obs`` ``(V, N, M, 2)`` are the per-view candidate observations chosen for
-    each hypothesis (``NaN`` for non-supporting views). All geometry is two
-    batched triangulate + project calls over the whole frame.
+    All geometry is two batched triangulate + project calls over the whole frame.
+
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    cand_xy, cand_score
+        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+    inlier_px
+        A view supports a hypothesis if a candidate reprojects within this many
+        pixels.
+
+    Returns
+    -------
+    X : np.ndarray
+        Refit 3D hypotheses of shape ``(N, M, 3)`` (``M = C(V, 2) K^2``).
+    evidence : np.ndarray
+        Summed heatmap confidence of supporting views ``(N, M)``.
+    n_inlier : np.ndarray
+        Supporting-view count per hypothesis ``(N, M)``.
+    obs : np.ndarray
+        Per-view chosen candidate observations ``(V, N, M, 2)`` (NaN for
+        non-supporting views).
     """
     v, n, k, _ = cand_xy.shape
     vv, ww, aa, bb = _combo_index(v, k)
@@ -333,9 +433,25 @@ def _score_hypotheses(
 ):
     """Reproject hypotheses and gather per-view nearest-candidate support.
 
-    Returns ``(obs, evidence, n_inlier)``: ``obs`` ``(V, N, M, 2)`` is the nearest
-    in-threshold candidate per view (else ``NaN``), ``evidence`` ``(N, M)`` the
-    summed score of supporting views, ``n_inlier`` ``(N, M)`` their count.
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    x
+        3D hypotheses of shape ``(N, M, 3)``.
+    cand_xy, cand_score
+        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+    inlier_px
+        Inlier reprojection threshold in pixels.
+
+    Returns
+    -------
+    obs : np.ndarray
+        Nearest in-threshold candidate per view ``(V, N, M, 2)`` (else NaN).
+    evidence : np.ndarray
+        Summed score of supporting views ``(N, M)``.
+    n_inlier : np.ndarray
+        Supporting-view count ``(N, M)``.
     """
     v, n, k, _ = cand_xy.shape
     proj = np.asarray(cameras.project(x))  # (V, N, M, 2)
@@ -373,6 +489,24 @@ def _prune_joint(
     suppresses any within ``nms_radius`` (3D) of an already-kept one. Only the
     ``max_pool`` strongest candidates are considered (the rest are near-duplicate
     triangulations of the same peaks), which bounds the greedy NMS cost per frame.
+
+    Parameters
+    ----------
+    x_n
+        Candidate 3D positions of shape ``(M, 3)`` for one joint.
+    evidence_n, n_in_n
+        Per-hypothesis evidence and supporting-view count of shape ``(M,)``.
+    max_hyp
+        Maximum hypotheses kept.
+    nms_radius
+        3D suppression radius.
+    max_pool
+        Cap on the strongest hypotheses considered.
+
+    Returns
+    -------
+    np.ndarray
+        The kept hypothesis indices.
     """
     valid = np.flatnonzero((n_in_n >= 2) & np.isfinite(x_n).all(-1))
     if valid.size == 0:
@@ -408,8 +542,25 @@ def _chain_dp(
 
     Minimizes ``sum_j unary[j][c_j] + lam * sum_bones huber((len - target)/scale)``.
     Joints with no hypotheses are skipped (left for the caller to NaN), splitting
-    the chain into independently-solved runs. Returns ``{joint: chosen_index}``
-    only for joints that had hypotheses.
+    the chain into independently-solved runs.
+
+    Parameters
+    ----------
+    chain
+        Ordered joint indices forming a simple path.
+    pos
+        ``joint -> (S, 3)`` candidate 3D positions.
+    unary
+        ``joint -> (S,)`` per-hypothesis unary cost.
+    target_map
+        ``(i, j) -> target bone length`` keyed by sorted endpoint pair.
+    lam, scale, huber
+        Bone-length prior weight, length scale and Huber knee.
+
+    Returns
+    -------
+    dict of int to int
+        ``{joint: chosen_index}`` for joints that had hypotheses.
     """
     present = [j for j in chain if unary[j].size > 0]
     if not present:
@@ -471,8 +622,33 @@ def solve_frame(
 
     Generates per-joint 3D hypotheses, prunes them, and runs exact chain DP with
     the bone-length prior (and an optional temporal term against ``prev_pts3d``).
-    Returns the chosen 3D points ``(N, 3)`` and the per-view 2D observations PS
-    committed to ``(V, N, 2)`` (``NaN`` where unsolved / unsupported).
+
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    skeleton
+        Skeleton (kept for symmetry with the sequence call).
+    cand_xy, cand_score
+        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+    target_map
+        ``(i, j) -> target bone length`` for the prior.
+    chains
+        Pre-computed skeleton chains (:func:`skeleton_chains`).
+    scale
+        Characteristic bone length scaling the prior and NMS radius.
+    max_hyp, inlier_px, lam, huber, mu
+        Pruning and cost knobs (see the module defaults).
+    prev_pts3d
+        Previous frame's 3D for the temporal term, or ``None``.
+
+    Returns
+    -------
+    pts3d : np.ndarray
+        Chosen 3D points of shape ``(N, 3)`` (NaN where unsolved).
+    obs : np.ndarray
+        Per-view 2D observations PS committed to ``(V, N, 2)`` (NaN where
+        unsupported).
     """
     v, n, k, _ = cand_xy.shape
     x_all, evidence, n_in, obs_all = _frame_hypotheses(
@@ -541,8 +717,34 @@ def reconstruct(
 
     The bone-length prior is estimated once from an arg-max triangulation of up to
     ``bone_max_frames`` frames; PS then runs per frame (optionally threading the
-    previous frame's 3D for the temporal term). Returns ``(pts3d, pts2d, reproj)``
-    with the same shapes/contract as :func:`deeperfly.pipeline.reconstruct`.
+    previous frame's 3D for the temporal term). Same shapes/contract as
+    :func:`deeperfly.pipeline.reconstruct`.
+
+    Parameters
+    ----------
+    cameras
+        The calibrated rig.
+    skeleton
+        Skeleton supplying chains, visibility and the bone-length prior.
+    candidates
+        The detector's top-K candidate peaks for the sequence.
+    pts2d_argmax
+        Arg-max 2D of shape ``(V, T, N, 2)`` used to estimate the prior.
+    bone_max_frames
+        Frames subsampled to estimate the prior (``None`` uses all).
+    temporal
+        Whether to add the inter-frame temporal term.
+    max_hyp, inlier_px, lam, huber, mu
+        Per-frame pruning and cost knobs.
+
+    Returns
+    -------
+    pts3d : np.ndarray
+        Corrected 3D of shape ``(T, N, 3)``.
+    pts2d : np.ndarray
+        Committed per-view 2D of shape ``(V, T, N, 2)``.
+    reproj : np.ndarray
+        Reprojection error of shape ``(V, T, N)``.
     """
     names = cameras.names
     cand_xy, cand_score = apply_visibility(

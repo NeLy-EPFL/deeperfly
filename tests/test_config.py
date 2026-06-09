@@ -18,7 +18,6 @@ from deeperfly.config import (
     IoParams,
     PictorialParams,
     Pose2dParams,
-    SmoothingParams,
     TriangulationParams,
 )
 from deeperfly.viz.compose import VideoSpec
@@ -32,7 +31,6 @@ def test_empty_config_uses_python_defaults():
     assert c.pose2d == Pose2dParams()
     assert c.pose2d.decode_buffer == 4  # the value the stale code constant got wrong
     assert c.triangulation == TriangulationParams()
-    assert c.smoothing == SmoothingParams()
     assert c.pictorial == PictorialParams()
     assert c.io == IoParams()
     assert c.stage_flags() == STAGE_DEFAULTS
@@ -47,7 +45,6 @@ def test_template_matches_python_defaults():
     c = Config.default()
     assert c.pose2d == Pose2dParams()
     assert c.triangulation == TriangulationParams()
-    assert c.smoothing == SmoothingParams()
     assert c.pictorial == PictorialParams()
     assert c.io == IoParams()
     assert c.stage_flags() == STAGE_DEFAULTS
@@ -199,6 +196,8 @@ def test_snapshot_from_dict_config_raises(tmp_path):
             {"pipeline": {"bundle_adjustment": {"least_squares_scipy": {}}}},
             "solver",
         ),
+        ({"pipeline": {"do_smoothing": True}}, "smoothing was removed"),
+        ({"pipeline": {"smoothing": {"method": "gaussian"}}}, "smoothing was removed"),
     ],
 )
 def test_removed_sections_fail_with_pointer(data, match):

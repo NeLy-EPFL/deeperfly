@@ -66,8 +66,12 @@ def bundle_adjust(
 
     Returns
     -------
-    ``(result, optimized_cameras, pts3d)`` -- the raw scipy ``OptimizeResult``,
-    a ``CameraGroup`` carrying the refined parameters, and the refined points.
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
+    optimized_cameras : CameraGroup
+        A camera group carrying the refined parameters.
+    pts3d : np.ndarray
+        The refined 3D points of shape ``(N, 3)``.
     """
     state = build_state(
         cameras.rvecs,
@@ -95,12 +99,29 @@ def bundle_adjust_from_config(
     config: "Config | dict | str | Path",
     pts2d: Float[ndarray, "V N 2"],
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:
-    """Run :func:`bundle_adjust` driven by a TOML config (Config, dict or file path).
+    """Run :func:`bundle_adjust` driven by a TOML config.
 
     The ``[pipeline.bundle_adjustment]`` section supplies ``fixed`` / ``shared`` and
     the flat scipy ``least_squares`` kwargs (e.g. ``max_nfev`` / ``loss``). The
     ``keypoints`` key (which restricts the calibration keypoints) is a pipeline-level
     concern handled by :func:`deeperfly.pipeline.calibrate`, not here.
+
+    Parameters
+    ----------
+    config
+        A :class:`~deeperfly.config.Config`, parsed ``dict`` or path to a config
+        TOML file.
+    pts2d
+        Observed 2D points of shape ``(V, N, 2)`` with NaNs for missing.
+
+    Returns
+    -------
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
+    optimized_cameras : CameraGroup
+        A camera group carrying the refined parameters.
+    pts3d : np.ndarray
+        The refined 3D points of shape ``(N, 3)``.
     """
     from ..config import Config
 

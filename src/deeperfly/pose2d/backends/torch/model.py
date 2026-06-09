@@ -169,6 +169,11 @@ def device() -> str:
     On Apple Silicon ``"mps"`` runs the hourglass forward on the GPU via Metal
     Performance Shaders (~6x over CPU for sh8); output matches CPU to float32
     epsilon, so the detector is accelerated on macOS with no setup.
+
+    Returns
+    -------
+    str
+        ``"cuda"``, ``"mps"`` or ``"cpu"``.
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -228,6 +233,18 @@ def set_precision(model: HourglassNet, precision: str = "float32") -> None:
     autocast). float16 is fastest; bfloat16 trades a touch of that speed for the
     wider exponent range of float32, so it can't overflow. Stored on the model so
     the forward picks it up without threading it through every call.
+
+    Parameters
+    ----------
+    model
+        The detector (the precision is stored on it).
+    precision
+        ``"float32"``, ``"float16"`` or ``"bfloat16"``.
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``precision`` name.
     """
     precision = (precision or "float32").lower()
     if precision not in _PRECISIONS:
@@ -273,7 +290,20 @@ def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
 
 @torch.inference_mode()
 def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
-    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs (numpy/array in, numpy out)."""
+    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs.
+
+    Parameters
+    ----------
+    model
+        The detector.
+    inputs
+        Network inputs of shape ``(N, 3, H, W)``.
+
+    Returns
+    -------
+    np.ndarray
+        The final-stack heatmaps as host NumPy.
+    """
     out = _forward_last(model, inputs)
     if out.device.type == "cuda":
         torch.cuda.synchronize()
@@ -299,6 +329,23 @@ def predict_points(
 
     The candidate path (:func:`deeperfly.pose2d.inference.detect_candidates_sequence`)
     still uses :func:`predict_heatmaps`, since it needs the whole heatmap.
+
+    Parameters
+    ----------
+    model
+        The detector.
+    inputs
+        Network inputs of shape ``(N, 3, H, W)``.
+    method, radius
+        Sub-pixel refinement options (see
+        :func:`~deeperfly.pose2d.inference.refine_peaks`).
+
+    Returns
+    -------
+    points_norm : np.ndarray
+        Normalized ``(N, J, 2)`` peaks.
+    conf : np.ndarray
+        Per-joint confidence of shape ``(N, J)``.
     """
     out = _forward_last(model, inputs)  # (N, J, h, w) on device, float32
     xy, conf = _decode_peaks(out, method=method, radius=radius)

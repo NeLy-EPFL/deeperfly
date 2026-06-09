@@ -4,7 +4,7 @@ How the pipeline works internally. For a comparison with the upstream projects,
 see [comparison.md](comparison.md).
 
 `deeperfly run` is one linear sequence of stages — `pose2d` (2D) →
-`bundle_adjustment` → `pictorial_structures` → `triangulation` → `smoothing` →
+`bundle_adjustment` → `pictorial_structures` → `triangulation` →
 `visualization` — each toggled by a `do_<stage>` boolean in `[pipeline]`, with its
 own `[pipeline.<stage>]` parameter sub-table. An enabled stage reuses its cached
 result from the output directory and recomputes only when it's missing or
@@ -18,9 +18,8 @@ still on — so disabling the finished stages resumes a partial run.
 | --- | --- | --- |
 | 2D pose | `pose2d/` (`backends/torch/`) | Stacked hourglass (PyTorch) running the original DeepFly2D weights directly; CUDA / Metal automatically. |
 | Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior. |
-| Triangulation | `triangulate.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT. |
-| 3D correction | `correction.py` / `pictorial.py` | Triangulation (ransac/greedy/dlt), optionally after pictorial-structures peak recovery; temporal smoothing. |
-| Visualization | `viz.py`, `video/` | matplotlib 2D overlays, 3D skeleton, MP4 export. |
+| Triangulation | `triangulate.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT, optionally after pictorial-structures peak recovery (`pictorial.py`). |
+| Visualization | `viz/`, `video/` | OpenCV 2D overlays + reprojected 3D skeleton, composited to MP4. |
 | Result I/O | `io.py` | Self-contained HDF5 `PoseResult`. |
 | Skeleton | `skeleton.py` + `data/skeleton_fly.toml` | 38 points, 10 limbs, 28 bones, per-camera visibility. |
 

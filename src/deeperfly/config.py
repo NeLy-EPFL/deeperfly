@@ -49,19 +49,17 @@ STAGES = (
     "bundle_adjustment",
     "pictorial_structures",
     "triangulation",
-    "smoothing",
     "visualization",
 )
 
 #: Default for each ``do_<stage>`` when the key is omitted: detection,
 #: calibration, triangulation and visualization run by default; pictorial
-#: structures and smoothing are opt-in.
+#: structures is opt-in.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
     "pictorial_structures": False,
     "triangulation": True,
-    "smoothing": False,
     "visualization": True,
 }
 
@@ -96,14 +94,6 @@ class TriangulationParams:
     min_inliers: int = 2
     reproj_threshold: float = 40.0
     max_drops: int = 5
-
-
-@dataclass(frozen=True)
-class SmoothingParams:
-    """``[pipeline.smoothing]`` -- ``method`` plus the smoother's own kwargs."""
-
-    method: str = "gaussian"
-    kwargs: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -155,8 +145,26 @@ def _params(data: dict, path: tuple[str, ...], cls):
     """Build a frozen ``*Params`` from the sub-table at ``path``.
 
     Keys absent from the table fall through to the dataclass field defaults (the
-    single source of truth); a key the dataclass does not define is a typo and
-    fails loudly, naming the section and the allowed keys.
+    single source of truth).
+
+    Parameters
+    ----------
+    data
+        The parsed config mapping.
+    path
+        Key path to the sub-table, e.g. ``("pipeline", "pose2d")``.
+    cls
+        The frozen ``*Params`` dataclass to build.
+
+    Returns
+    -------
+    The populated ``cls`` instance.
+
+    Raises
+    ------
+    ValueError
+        If the sub-table holds a key the dataclass does not define (a typo);
+        the message names the section and the allowed keys.
     """
     sub = _dig(data, path)
     fields = {f.name for f in dataclasses.fields(cls)}
@@ -179,7 +187,7 @@ _REMOVED_PIPELINE_KEYS = {
     "triangulation": "[pipeline.triangulation].method",
     "ransac_threshold": "[pipeline.triangulation].ransac_threshold",
     "min_inliers": "[pipeline.triangulation].min_inliers",
-    "smooth": "do_smoothing + [pipeline.smoothing].method",
+    "smooth": "nothing -- temporal smoothing was removed",
 }
 
 
@@ -187,8 +195,18 @@ def _validate(data: dict) -> None:
     """Reject removed/renamed sections with a pointer to the new layout.
 
     Run once at construction so both the CLI and the library ``from_config`` paths
-    catch a stale config the same way. Raises :class:`SystemExit` (a clean message,
-    no traceback) -- these are migration errors the user must fix.
+    catch a stale config the same way.
+
+    Parameters
+    ----------
+    data
+        The parsed config mapping to validate.
+
+    Raises
+    ------
+    SystemExit
+        On a removed/renamed section, with a clean fix-it message (no traceback)
+        -- these are migration errors the user must fix.
     """
     # Per-camera consolidation: rig defaults, input globs and frame preprocessing
     # now live inside [cameras.<name>] (and [cameras.defaults]).
@@ -224,6 +242,13 @@ def _validate(data: dict) -> None:
             + ", ".join(f"do_{n}" for n in STAGES)
         )
     pipe = data.get("pipeline", {})
+    # Temporal smoothing was removed wholesale -- reject its old stage toggle and
+    # sub-table with a clear message rather than the generic unknown-toggle one.
+    if "do_smoothing" in pipe or "smoothing" in pipe:
+        raise SystemExit(
+            "temporal smoothing was removed; drop do_smoothing and the "
+            "[pipeline.smoothing] table from the config"
+        )
     for old, new in _REMOVED_PIPELINE_KEYS.items():
         # A scalar at the old key is the removed usage; a sub-table (dict) of the
         # same name -- e.g. the new [pipeline.triangulation] -- is fine.
@@ -262,20 +287,54 @@ class Config:
 
     @classmethod
     def read(cls, path: str | Path) -> "Config":
-        """Load a config from a TOML file (preserving its text for snapshots)."""
+        """Load a config from a TOML file (preserving its text for snapshots).
+
+        Parameters
+        ----------
+        path
+            Path to a config TOML file.
+
+        Returns
+        -------
+        Config
+            The loaded, validated config.
+        """
         p = Path(path)
         text = p.read_text()
         return cls(tomllib.loads(text), text=text, source=p)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        """Wrap an already-parsed mapping (library use, tests)."""
+        """Wrap an already-parsed mapping (library use, tests).
+
+        Parameters
+        ----------
+        data
+            A parsed config mapping.
+
+        Returns
+        -------
+        Config
+            The validated config wrapping ``data`` (no source text).
+        """
         return cls(data)
 
     @classmethod
     def coerce(cls, config: "Config | dict | str | Path") -> "Config":
         """Accept a ``Config`` / parsed dict / path -- the one loader for every
-        ``from_config``. A ``Config`` is returned unchanged."""
+        ``from_config``.
+
+        Parameters
+        ----------
+        config
+            An existing :class:`Config` (returned unchanged), a parsed ``dict``,
+            or a path to a config TOML file.
+
+        Returns
+        -------
+        Config
+            The corresponding config.
+        """
         if isinstance(config, cls):
             return config
         if isinstance(config, dict):
@@ -296,6 +355,19 @@ class Config:
         even over an explicit ``-c`` (notifying that it is ignored). To change it, edit
         that file or point ``-o`` at a fresh dir. With no snapshot, ``-c`` is used if
         given, else the packaged default.
+
+        Parameters
+        ----------
+        cli_config
+            The ``-c`` config path, or ``None``.
+        outdir
+            The run's output directory, which may already hold a ``config.toml``
+            snapshot.
+
+        Returns
+        -------
+        Config
+            The config that drives this run.
         """
         snapshot = Path(outdir) / "config.toml"
         if snapshot.exists():
@@ -330,12 +402,6 @@ class Config:
     @property
     def pictorial(self) -> PictorialParams:
         return _params(self.data, ("pipeline", "pictorial_structures"), PictorialParams)
-
-    @property
-    def smoothing(self) -> SmoothingParams:
-        sm = dict(_dig(self.data, ("pipeline", "smoothing")))
-        method = sm.pop("method", SmoothingParams.method)
-        return SmoothingParams(method=method, kwargs=sm)
 
     @property
     def io(self) -> IoParams:
@@ -376,8 +442,14 @@ class Config:
     def stage_flags(self) -> dict[str, bool]:
         """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
 
-        Each stage (:data:`STAGES`) defaults to :data:`STAGE_DEFAULTS`. Unknown or
-        removed toggles already failed in :func:`_validate` at construction.
+        Unknown or removed toggles already failed in :func:`_validate` at
+        construction.
+
+        Returns
+        -------
+        dict of str to bool
+            ``stage_name -> enabled`` for every stage in :data:`STAGES`, each
+            defaulting to :data:`STAGE_DEFAULTS`.
         """
         pipe = self.data.get("pipeline", {})
         return {n: bool(pipe.get(f"do_{n}", STAGE_DEFAULTS[n])) for n in STAGES}
@@ -397,7 +469,19 @@ class Config:
         return read_video_specs(self)
 
     def camera_group(self, image_sizes=None) -> "CameraGroup":
-        """The configured camera rig (``[cameras.*]``)."""
+        """The configured camera rig (``[cameras.*]``).
+
+        Parameters
+        ----------
+        image_sizes
+            Optional ``camera_name -> (height, width)`` used to infer principal
+            points when a camera omits ``principal_point_px``.
+
+        Returns
+        -------
+        CameraGroup
+            The configured rig.
+        """
         from .cameras import CameraGroup
 
         return CameraGroup.from_config(self, image_sizes=image_sizes)
@@ -415,16 +499,26 @@ class Config:
         return parse_frame_transforms(self)
 
     def camera_table(self) -> tuple[dict, dict]:
-        """``(defaults, cameras)`` -- the ``[cameras.defaults]`` spec and the real
-        per-camera specs (keyed by name, ``defaults`` excluded)."""
+        """Split ``[cameras]`` into the shared defaults and the per-camera specs.
+
+        Returns
+        -------
+        defaults, cameras : dict
+            The ``[cameras.defaults]`` spec and the real per-camera specs (keyed
+            by name, with ``defaults`` excluded).
+        """
         cams = dict(self.data.get("cameras", {}))
         defaults = cams.pop("defaults", {})
         return defaults, cams
 
     def camera_patterns(self) -> dict[str, str]:
-        """``camera-name -> footage glob`` (``[cameras.<name>].input``), in config order.
+        """Map each camera to its footage glob (``[cameras.<name>].input``).
 
-        A camera with no ``input`` key uses its own name as the glob pattern.
+        Returns
+        -------
+        dict of str to str
+            ``camera_name -> footage glob`` in config order; a camera with no
+            ``input`` key uses its own name as the glob pattern.
         """
         _, cams = self.camera_table()
         return {name: spec.get("input", name) for name, spec in cams.items()}
@@ -432,7 +526,18 @@ class Config:
     # -- snapshot round-trip -------------------------------------------------
 
     def snapshot_text(self) -> str:
-        """The exact TOML text to snapshot. Requires a file-backed config."""
+        """The exact TOML text to snapshot.
+
+        Returns
+        -------
+        str
+            The original file text.
+
+        Raises
+        ------
+        ValueError
+            If this config was built from a dict (no source text to snapshot).
+        """
         if self.text is None:
             raise ValueError(
                 "this Config was built from a dict; it has no source text to snapshot"
@@ -445,5 +550,11 @@ class Config:
         A no-op rewrite when the config already came from there (see
         :meth:`read_for_run`); otherwise it records the ``-c``/default config that
         produced this run's results so a later resume reuses the very same config.
+
+        Parameters
+        ----------
+        outdir
+            The run's output directory; the snapshot is written to
+            ``<outdir>/config.toml``.
         """
         (Path(outdir) / "config.toml").write_text(self.snapshot_text())

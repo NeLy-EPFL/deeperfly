@@ -2,9 +2,9 @@
 
 A :class:`PoseResult` bundles everything produced for one recording -- the
 calibrated cameras, the skeleton, the 2D detections + confidences, and the
-triangulated (and optionally smoothed) 3D points -- plus free-form metadata. The
-HDF5 file fully reconstructs the cameras and skeleton, so results are portable
-without the original config files.
+triangulated 3D points -- plus free-form metadata. The HDF5 file fully
+reconstructs the cameras and skeleton, so results are portable without the
+original config files.
 
 Arrays use the view-leading layout: ``pts2d`` is ``(V, T, N, 2)``, ``conf`` is
 ``(V, T, N)``, ``pts3d`` is ``(T, N, 3)``. NaN encodes missing observations /
@@ -38,13 +38,12 @@ class PoseResult:
     pts2d: Float[np.ndarray, "V T N 2"]
     conf: Float[np.ndarray, "V T N"] | None = None
     pts3d: Float[np.ndarray, "T N 3"] | None = None
-    pts3d_smoothed: Float[np.ndarray, "T N 3"] | None = None
     reproj_error: Float[np.ndarray, "V T N"] | None = None
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.pts2d = np.asarray(self.pts2d, dtype=float)
-        for name in ("conf", "pts3d", "pts3d_smoothed", "reproj_error"):
+        for name in ("conf", "pts3d", "reproj_error"):
             arr = getattr(self, name)
             if arr is not None:
                 setattr(self, name, np.asarray(arr, dtype=float))
@@ -60,7 +59,13 @@ class PoseResult:
     # -- serialization -------------------------------------------------------
 
     def save(self, path: str | Path) -> None:
-        """Write the result to an HDF5 file (overwriting ``path``)."""
+        """Write the result to an HDF5 file (overwriting ``path``).
+
+        Parameters
+        ----------
+        path
+            Destination ``.h5`` path; an existing file is overwritten.
+        """
         meta = {
             "deeperfly_format_version": FORMAT_VERSION,
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -74,12 +79,9 @@ class PoseResult:
             g2d.create_dataset("points", data=self.pts2d)
             if self.conf is not None:
                 g2d.create_dataset("conf", data=self.conf)
-            if self.pts3d is not None or self.pts3d_smoothed is not None:
+            if self.pts3d is not None:
                 g3d = f.create_group("pose3d")
-                if self.pts3d is not None:
-                    g3d.create_dataset("points", data=self.pts3d)
-                if self.pts3d_smoothed is not None:
-                    g3d.create_dataset("points_smoothed", data=self.pts3d_smoothed)
+                g3d.create_dataset("points", data=self.pts3d)
             if self.reproj_error is not None:
                 f.create_group("diagnostics").create_dataset(
                     "reproj_error", data=self.reproj_error
@@ -87,7 +89,18 @@ class PoseResult:
 
     @classmethod
     def load(cls, path: str | Path) -> PoseResult:
-        """Read a :class:`PoseResult` back from an HDF5 file."""
+        """Read a :class:`PoseResult` back from an HDF5 file.
+
+        Parameters
+        ----------
+        path
+            Path to a ``.h5`` file written by :meth:`save`.
+
+        Returns
+        -------
+        PoseResult
+            The reconstructed result (cameras, skeleton, points and ``meta``).
+        """
         with h5py.File(path, "r") as f:
             meta = json.loads(f.attrs["meta"])
             cameras = _read_cameras(f["cameras"])
@@ -95,11 +108,6 @@ class PoseResult:
             pts2d = f["pose2d/points"][()]
             conf = f["pose2d/conf"][()] if "conf" in f["pose2d"] else None
             pts3d = f["pose3d/points"][()] if "pose3d/points" in f else None
-            pts3d_sm = (
-                f["pose3d/points_smoothed"][()]
-                if "pose3d/points_smoothed" in f
-                else None
-            )
             reproj = (
                 f["diagnostics/reproj_error"][()]
                 if "diagnostics/reproj_error" in f
@@ -112,7 +120,6 @@ class PoseResult:
             pts2d=pts2d,
             conf=conf,
             pts3d=pts3d,
-            pts3d_smoothed=pts3d_sm,
             reproj_error=reproj,
             meta=meta,
         )

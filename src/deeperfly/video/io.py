@@ -50,6 +50,8 @@ def read_video(
 
     Parameters
     ----------
+    path
+        The video file to decode.
     backend
         ``"auto"`` | ``"pyav"`` | ``"opencv"`` | ``"video_reader_rs"`` |
         ``"torchcodec"``. ``"auto"`` picks the fastest installed backend -- the
@@ -60,6 +62,11 @@ def read_video(
         Explicit frame indices for random access (overrides ``start/stop/step``).
         Seek-capable backends fetch just these frames; others decode up to
         ``max(indices)`` and gather.
+
+    Returns
+    -------
+    np.ndarray
+        The decoded ``(T, H, W, 3)`` uint8 RGB frames (host NumPy).
     """
     reader = select_reader(backend)
     frames = reader.read(path, start=start, stop=stop, step=step, indices=indices)
@@ -76,7 +83,23 @@ def read_video(
 
 
 def list_image_files(pattern: str | Path) -> list[Path]:
-    """Sorted image files for a directory or glob pattern (by name)."""
+    """Sorted image files for a directory or glob pattern (by name).
+
+    Parameters
+    ----------
+    pattern
+        A directory of images, or a glob pattern.
+
+    Returns
+    -------
+    list of Path
+        The matching image files, sorted by name.
+
+    Raises
+    ------
+    FileNotFoundError
+        If nothing matches ``pattern``.
+    """
     p = Path(pattern)
     if p.is_dir():
         files = sorted(f for f in p.iterdir() if f.suffix.lower() in _IMAGE_EXTS)
@@ -165,6 +188,8 @@ def read_images(
 
     Parameters
     ----------
+    pattern
+        A directory of images, or a glob pattern.
     indices, start, stop, step
         Select a subset, mirroring :func:`read_video` (``indices`` wins).
     workers
@@ -173,6 +198,11 @@ def read_images(
         ``"auto"`` | ``"opencv"`` | ``"imageio"`` -- the still-image decoder. OpenCV
         is the core default; ``"auto"`` uses it and falls back to imageio (optional
         extra) only for files OpenCV cannot decode.
+
+    Returns
+    -------
+    np.ndarray
+        The decoded ``(T, H, W, 3)`` uint8 RGB frames.
     """
     return _read_image_files(
         list_image_files(pattern),
@@ -199,8 +229,28 @@ def _read_image_files(
 
     The shared tail of :func:`read_images` (which lists/sorts the files) and the
     explicit-file-list path of :func:`read_frames` (which is handed the files a
-    recording resolved up front, preserving their natural order). ``files`` is
-    sliced by ``indices`` / ``start:stop:step`` exactly as :func:`read_images`.
+    recording resolved up front, preserving their natural order).
+
+    Parameters
+    ----------
+    files
+        The ordered image files to decode.
+    indices, start, stop, step
+        Subset selection, exactly as :func:`read_images` (``indices`` wins).
+    workers
+        Decode thread count.
+    image_backend
+        The still-image decoder (``"auto"`` | ``"opencv"`` | ``"imageio"``).
+
+    Returns
+    -------
+    np.ndarray
+        The decoded ``(T, H, W, 3)`` uint8 RGB frames.
+
+    Raises
+    ------
+    ValueError
+        If the selection is empty.
     """
     files = _subset(list(files), indices, start, stop, step)
     if not files:
@@ -241,9 +291,29 @@ def read_frames(
       camera's files up front, naturally sorted) -- is read in the given order
       without re-listing the directory.
 
-    ``backend`` applies to video sources and ``image_backend`` to image sequences;
-    each is ignored by the other. All return host NumPy and honor the same frame
-    selection.
+    Parameters
+    ----------
+    source
+        A video file, an image directory/glob, or an explicit list of footage
+        files (one video, or an ordered image sequence).
+    backend
+        The video decoder (applies to video sources; ignored for images).
+    indices, start, stop, step
+        Frame selection, as in :func:`read_video` / :func:`read_images`.
+    workers
+        Decode thread count for image sequences.
+    image_backend
+        The still-image decoder (applies to image sources; ignored for video).
+
+    Returns
+    -------
+    np.ndarray
+        Host ``(T, H, W, 3)`` uint8 RGB frames.
+
+    Raises
+    ------
+    ValueError
+        If an explicit file list is empty.
     """
     if isinstance(source, (list, tuple)):
         files = [Path(f) for f in source]
@@ -298,6 +368,23 @@ def _stream_source(source: str | Path | list[Path]) -> tuple[str, object]:
     A future *live-camera* source plugs in as a third kind here (e.g.
     ``("camera", handle)``) with a matching branch in :func:`stream_frames`; the
     forward-only stream it yields then flows through the unchanged prefetch loop.
+
+    Parameters
+    ----------
+    source
+        A video file, image directory/glob, or explicit footage file list.
+
+    Returns
+    -------
+    kind : str
+        ``"video"`` or ``"images"``.
+    target : object
+        The single video path, or the ordered image file list.
+
+    Raises
+    ------
+    ValueError
+        If an explicit file list is empty.
     """
     if isinstance(source, (list, tuple)):
         files = [Path(f) for f in source]
@@ -327,7 +414,7 @@ def stream_frames(
     is what streaming detection wants. ``block`` only sets the grouping
     granularity (the unit a consumer pulls and batches); it does *not* bound how
     far decode runs ahead -- that backpressure is the consumer's to impose (e.g.
-    the bounded queue in :func:`deeperfly.cli._prefetch_windows`).
+    the bounded queue in :func:`deeperfly.pose2d.stream.prefetch_windows`).
 
     Dispatches on ``source`` exactly like :func:`read_frames`: a video file streams
     through ``backend`` (:meth:`~deeperfly.video.base.ReaderBackend.stream`, a
@@ -340,6 +427,29 @@ def stream_frames(
     future capture backend slots in as another :func:`_stream_source` branch --
     yielding frames as they arrive -- without the prefetch/detector machinery
     downstream needing to change.
+
+    Parameters
+    ----------
+    source
+        A video file, image directory/glob, or explicit footage file list.
+    backend
+        Video decoder for a video source.
+    image_backend
+        Still-image decoder for an image sequence.
+    workers
+        Decode thread count for image blocks.
+    block
+        Maximum frames per yielded block.
+
+    Yields
+    ------
+    np.ndarray
+        ``(T, H, W, 3)`` uint8 RGB blocks with ``T <= block``.
+
+    Raises
+    ------
+    ValueError
+        If ``block`` is less than 1.
     """
     if block < 1:
         raise ValueError(f"block must be >= 1, got {block}")
@@ -379,6 +489,20 @@ def reader_name(
       :func:`read_images`, which ignores the video backend and resolves
       ``image_backend`` via :func:`~deeperfly.video.base.select_image_reader`
       (``opencv`` by default).
+
+    Parameters
+    ----------
+    path
+        A video file, image directory/glob, or explicit footage file list.
+    backend
+        The requested video backend.
+    image_backend
+        The requested image backend.
+
+    Returns
+    -------
+    str
+        The decoder name :func:`read_frames` would use.
     """
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
@@ -418,6 +542,16 @@ def count_frames(path: str | Path | list[Path]) -> int | None:
 
     Accepts the same sources as :func:`read_frames`, including an explicit list of
     footage files (one video, or an image sequence counted by its length).
+
+    Parameters
+    ----------
+    path
+        A video file, image directory/glob, or explicit footage file list.
+
+    Returns
+    -------
+    int or None
+        The frame count, or ``None`` when unknown.
     """
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
@@ -468,8 +602,18 @@ def video_fps(path: str | Path | list[Path]) -> float | None:
     as a fallback); both are cheap and need no pixel decode. Image *sequences*
     carry no intrinsic frame rate, so they return ``None``. Used to detect the
     playback rate of a recording when ``[pipeline].fps`` is left unset and as the
-    base rate for the visualization ``speed`` factor. Accepts the same sources as
-    :func:`read_frames` (a list resolves to its single video file, else ``None``).
+    base rate for the visualization ``speed`` factor.
+
+    Parameters
+    ----------
+    path
+        A video file, image directory/glob, or explicit footage file list (a list
+        resolves to its single video file, else ``None``).
+
+    Returns
+    -------
+    float or None
+        Frames per second, or ``None`` when unknown (e.g. an image sequence).
     """
     if isinstance(path, (list, tuple)):
         files = [Path(f) for f in path]
@@ -500,10 +644,22 @@ def write_mp4(
 ) -> None:
     """Write ``(T, H, W, 3)`` frames to an MP4.
 
-    ``frames`` may be NumPy or a GPU tensor; non-``uint8`` input is clipped to
-    ``[0, 255]``. ``backend`` is ``"auto"`` (pyav, the core default) | ``"pyav"``
-    | ``"opencv"``; ``codec`` overrides the backend default (libx264 for pyav, the
-    ``mp4v`` fourcc for opencv).
+    Parameters
+    ----------
+    frames
+        ``(T, H, W, 3)`` frames (NumPy or a GPU tensor; non-``uint8`` input is
+        clipped to ``[0, 255]``).
+    path
+        Destination MP4 path.
+    fps
+        Output frame rate.
+    backend
+        ``"auto"`` (pyav, the core default) | ``"pyav"`` | ``"opencv"``.
+    codec
+        Overrides the backend default codec (libx264 for pyav, the ``mp4v``
+        fourcc for opencv).
+    **kwargs
+        Extra keyword arguments forwarded to the writer backend.
     """
     writer = select_writer(backend)
     frames = to_numpy(frames)

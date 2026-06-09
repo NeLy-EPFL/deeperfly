@@ -21,8 +21,16 @@ import numpy as np
 def load_detector(checkpoint=None, **kwargs):
     """Load the PyTorch detector, optionally from ``checkpoint`` (a ``.pth``).
 
-    Extra keyword arguments are forwarded to the backend's ``load_model`` (e.g.
-    ``dev``). With ``checkpoint=None`` a freshly initialized model is returned.
+    Parameters
+    ----------
+    checkpoint
+        Path to a ``.pth`` checkpoint, or ``None`` for a freshly initialized model.
+    **kwargs
+        Forwarded to the backend's ``load_model`` (e.g. ``dev``).
+
+    Returns
+    -------
+    The loaded detector model.
     """
     from . import torch as backend
 
@@ -35,6 +43,18 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     Returns NumPy so downstream :func:`~deeperfly.pose2d.inference.heatmap_to_points`
     decoding is independent of where the forward ran. Used by the candidate path,
     which needs whole heatmaps; the plain detect path uses :func:`predict_points`.
+
+    Parameters
+    ----------
+    model
+        The detector.
+    inputs
+        Network inputs of shape ``(N, 3, H, W)``.
+
+    Returns
+    -------
+    np.ndarray
+        The final-stack heatmaps as host NumPy.
     """
     from . import torch as backend
 
@@ -48,8 +68,24 @@ def predict_points(
 
     The arg-max decode runs on the forward's device, so only the small peak arrays
     cross to the host -- not the full heatmap, and not a host-side float64 arg-max.
-    Equivalent to ``heatmap_to_points(predict_heatmaps(...))`` to float32 epsilon;
-    ``method`` / ``radius`` select the sub-pixel refinement.
+    Equivalent to ``heatmap_to_points(predict_heatmaps(...))`` to float32 epsilon.
+
+    Parameters
+    ----------
+    model
+        The detector.
+    inputs
+        Network inputs of shape ``(N, 3, H, W)``.
+    method, radius
+        Sub-pixel refinement options (see
+        :func:`~deeperfly.pose2d.inference.refine_peaks`).
+
+    Returns
+    -------
+    xy : np.ndarray
+        Normalized ``(N, J, 2)`` peaks.
+    conf : np.ndarray
+        Per-joint confidence of shape ``(N, J)``.
     """
     from . import torch as backend
 
@@ -63,6 +99,13 @@ def set_precision(model, precision: str = "float32") -> None:
     ``"float16"`` / ``"bfloat16"`` run under CUDA autocast (faster, negligible
     keypoint drift; bfloat16 trades a little speed for a wider, overflow-proof
     range); a no-op on CPU/MPS. Stored on the model, so the next forward honors it.
+
+    Parameters
+    ----------
+    model
+        The detector (the precision is stored on it).
+    precision
+        ``"float32"``, ``"float16"`` or ``"bfloat16"``.
     """
     from . import torch as backend
 
@@ -73,7 +116,17 @@ def detector_device(model) -> str:
     """Device the detector's parameters live on (e.g. ``"cuda:0"``, ``"cpu"``).
 
     Lets callers log where 2D inference runs and tells the orchestration where to
-    upload frames. Falls back to ``"cpu"`` for a parameterless model.
+    upload frames.
+
+    Parameters
+    ----------
+    model
+        The detector.
+
+    Returns
+    -------
+    str
+        The device string (``"cpu"`` for a parameterless model).
     """
     params = getattr(model, "parameters", None)
     if params is None:
@@ -89,6 +142,16 @@ def gpu_memory_bytes(device=None) -> int | None:
 
     The CUDA device's total memory, or -- on Apple Silicon -- Metal's (MPS)
     recommended working-set size (the GPU shares unified memory there).
+
+    Parameters
+    ----------
+    device
+        An optional CUDA device string to query (defaults to device 0).
+
+    Returns
+    -------
+    int or None
+        The memory in bytes, or ``None`` on CPU / when unavailable.
     """
     try:
         import torch
@@ -112,6 +175,21 @@ def infer_num_stacks(state_dict) -> int:
     Lets the loader match the architecture to the checkpoint before a strict load.
     The published checkpoint is ``sh8`` (8 stacks), but the count is derived from
     the weights so any depth round-trips.
+
+    Parameters
+    ----------
+    state_dict
+        A HourglassNet ``state_dict``.
+
+    Returns
+    -------
+    int
+        The number of hourglass stacks.
+
+    Raises
+    ------
+    KeyError
+        If no ``score.{i}.weight`` keys are present (not a HourglassNet state).
     """
     n = 0
     while f"score.{n}.weight" in state_dict:

@@ -1,0 +1,582 @@
+"""The pipeline stages and the cache/overwrite bookkeeping that drives a run."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import numpy as np
+
+from ..cameras import CameraGroup
+from ..config import STAGES, Config
+from ..io import PoseResult
+from ..pose2d.stream import _null_progress, detect_2d, load_detector, resolve_fps
+from ..recordings import camera_image_sizes
+
+log = logging.getLogger("deeperfly")
+
+
+#: Sentinel injected by the CLI's ``--overwrite`` normalization for a bare
+#: ``--overwrite`` (no stage names), meaning "recompute every stage".
+_OVERWRITE_ALL = "__all__"
+
+
+def overwrite_stages(overwrite: list[str] | None) -> set[str]:
+    """Stage names selected by ``--overwrite`` (empty set = reuse all cached).
+
+    Parameters
+    ----------
+    overwrite
+        ``None`` / empty (reuse everything), the ``_OVERWRITE_ALL`` sentinel (a
+        bare ``--overwrite`` -> every stage), or a list of stage names.
+
+    Returns
+    -------
+    set of str
+        The selected stage names.
+
+    Raises
+    ------
+    SystemExit
+        If a name is not a known stage (:data:`STAGES`).
+    """
+    if not overwrite:
+        return set()
+    if _OVERWRITE_ALL in overwrite:
+        return set(STAGES)
+    unknown = [s for s in overwrite if s not in STAGES]
+    if unknown:
+        raise SystemExit(
+            f"--overwrite got unknown stage(s) {', '.join(unknown)}; choose from "
+            f"{', '.join(STAGES)} (or a bare --overwrite to recompute everything)"
+        )
+    return set(overwrite)
+
+
+def visualization_cached(config: Config, outdir: Path) -> bool:
+    """Whether every ``[[pipeline.visualization.videos]]`` MP4 already exists.
+
+    Parameters
+    ----------
+    config
+        The run config (the video specs).
+    outdir
+        The output directory checked for the rendered MP4s.
+
+    Returns
+    -------
+    bool
+        ``True`` if there is at least one spec and all their MP4s exist.
+    """
+    specs = config.videos
+    return bool(specs) and all(
+        (outdir / f"{spec.video_name}.mp4").exists() for spec in specs
+    )
+
+
+def stage_cached(
+    stage: str, cached: PoseResult | None, config: Config, outdir: Path
+) -> bool:
+    """Whether ``stage``'s output already exists in the output dir (so it can be reused).
+
+    The pose stages read the cached ``poses.h5`` loaded as ``cached`` (its arrays /
+    ``meta`` markers); ``visualization`` checks for the rendered MP4s. Used to skip
+    recomputation by default -- ``--overwrite`` forces a stage to recompute even
+    when this returns ``True``.
+
+    Parameters
+    ----------
+    stage
+        The stage name.
+    cached
+        The cached :class:`PoseResult`, or ``None`` if none is on disk.
+    config
+        The run config.
+    outdir
+        The output directory.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``stage``'s output is already present and reusable.
+    """
+    if stage == "visualization":
+        return visualization_cached(config, outdir)
+    if cached is None:
+        return False
+    if stage == "pose2d":
+        return cached.pts2d is not None
+    if stage == "bundle_adjustment":
+        return bool(cached.meta.get("bundle_adjustment"))
+    if stage == "pictorial_structures":
+        return bool(cached.meta.get("pictorial"))
+    if stage == "triangulation":
+        return cached.pts3d is not None
+    return False
+
+
+# -- pipeline stages ---------------------------------------------------------
+
+
+def stage_pose2d(
+    config: Config,
+    *,
+    sources: dict[str, list[Path]] | None = None,
+    input=None,
+    want_candidates: bool,
+    progress=None,
+) -> tuple[PoseResult, object | None, None, dict]:
+    """Run 2D detection -> a 2D-only :class:`PoseResult` + in-memory artifacts.
+
+    Frames are not held in memory (detection streams them in windows -- see
+    :func:`deeperfly.pose2d.stream.detect_2d`); a visualization stage re-sources the
+    overlay cameras it needs.
+
+    Parameters
+    ----------
+    config
+        The run config.
+    sources, input
+        The footage to detect over (see
+        :func:`deeperfly.recordings.camera_sources`).
+    want_candidates
+        Whether to also extract the top-K candidate peaks (for the
+        ``pictorial_structures`` stage; candidates are not cached).
+    progress
+        Optional progress factory threaded into the streaming detector.
+
+    Returns
+    -------
+    result : PoseResult
+        A 2D-only result (cameras, skeleton, ``pts2d``, ``conf``).
+    candidates : deeperfly.pictorial.Candidates or None
+        The top-K peak set when ``want_candidates``, else ``None``.
+    frames : None
+        Always ``None`` (frames are streamed, not retained).
+    image_sizes : dict
+        ``camera_name -> (height, width)`` of the preprocessed frames.
+    """
+    from ..pose2d import backends, inference
+    from ..triangulate import apply_visibility
+
+    transforms = config.frame_transforms()
+    image_sizes = camera_image_sizes(config, sources=sources, input=input)
+    log.info(
+        "input image sizes (h, w, after preprocess): %s",
+        {n: tuple(s) for n, s in image_sizes.items()},
+    )
+    cameras = config.camera_group(image_sizes=image_sizes)
+    unknown = set(transforms) - set(cameras.names)
+    if unknown:
+        log.warning(
+            "preprocess entries for unknown cameras are ignored: %s",
+            sorted(unknown),
+        )
+    active = {
+        n: t
+        for n, t in transforms.items()
+        if n in cameras.names and not t.is_identity()
+    }
+    if active:
+        log.info(
+            "frame preprocessing (per camera): %s",
+            {
+                n: f"fliplr={t.fliplr}, flipud={t.flipud}, rot90={t.rot90}"
+                for n, t in active.items()
+            },
+        )
+    skeleton = config.skeleton()
+
+    pose2d = config.pose2d
+    log.info("loading detector (checkpoint: %s)", pose2d.checkpoint or "cached")
+    model = load_detector(pose2d.checkpoint)
+    precision = pose2d.precision
+    backends.set_precision(
+        model, precision
+    )  # float16 -> CUDA autocast (no-op on CPU/MPS)
+    log.info(
+        "detector ready on device %s (precision: %s)",
+        backends.detector_device(model),
+        precision,
+    )
+
+    k = config.pictorial.k
+    sides, flips = inference.fly_camera_layout(cameras.names)
+    n_passes = len(inference.expand_passes(sides, flips)[0])
+    batch_size = pose2d.batch_size
+    log.info(
+        "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
+        "forward batch %d frames",
+        len(image_sizes),
+        n_passes,
+        inference.IMG_SIZE[0],
+        inference.IMG_SIZE[1],
+        batch_size,
+    )
+    pts2d, conf, candidates = detect_2d(
+        config,
+        model,
+        sides,
+        flips,
+        sources=sources,
+        input=input,
+        want_candidates=want_candidates,
+        k=k,
+        progress=progress,
+    )
+    # Mask (camera, point) pairs the rig cannot see once, here, so the cached 2D
+    # and every downstream stage see the same visibility-masked points.
+    pts2d = apply_visibility(pts2d, skeleton, cameras.names)
+
+    result = PoseResult(cameras=cameras, skeleton=skeleton, pts2d=pts2d, conf=conf)
+    return result, candidates, None, image_sizes
+
+
+def config_camera_rig(
+    config: Config, *, sources: dict[str, list[Path]] | None = None, input=None
+) -> CameraGroup:
+    """The un-refined camera rig straight from the config -- the BA stage's *input*.
+
+    On a resume that reuses the cached 2D, ``result.cameras`` are the *previous* BA
+    output, so re-running bundle adjustment (e.g. after editing
+    ``[pipeline.bundle_adjustment]`` or the ``[cameras]`` rig) must restart from
+    this fresh config rig -- otherwise it just re-refines already-refined cameras
+    and the edits look ignored. Reads one frame per camera for the image sizes, as
+    ``pose2d`` does, so principal-point inference matches.
+
+    Parameters
+    ----------
+    config
+        The run config.
+    sources, input
+        The footage to size the rig from (see
+        :func:`deeperfly.recordings.camera_sources`).
+
+    Returns
+    -------
+    CameraGroup
+        The un-refined config rig.
+    """
+    image_sizes = camera_image_sizes(config, sources=sources, input=input)
+    return config.camera_group(image_sizes=image_sizes)
+
+
+def stage_bundle_adjustment(config: Config, result: PoseResult) -> PoseResult:
+    """Refine ``result.cameras`` with bundle adjustment (fly-as-calibration-target).
+
+    Calibrates on the arg-max 2D in ``result`` and replaces its cameras in place.
+    The caller hands in the un-refined config rig (see :func:`config_camera_rig`),
+    so editing the rig or ``[pipeline.bundle_adjustment]`` and recomputing this
+    stage recalibrates from the edited config rather than the prior BA output.
+
+    Parameters
+    ----------
+    config
+        The run config (the bundle-adjustment options).
+    result
+        The result whose ``cameras`` are refined in place.
+
+    Returns
+    -------
+    PoseResult
+        ``result`` with refined cameras and a ``bundle_adjustment`` meta marker.
+    """
+    from ..triangulate import reprojection_error, triangulate
+    from .core import calibrate
+
+    log.info(
+        "bundle adjustment: refining cameras (%d frames, %d views)",
+        result.n_frames,
+        result.n_views,
+    )
+    ba = config.bundle_adjustment
+    result.cameras, _ = calibrate(
+        result.cameras,
+        result.pts2d,
+        result.conf,
+        result.skeleton,
+        ba_keypoints=ba.keypoints,
+        fixed=ba.fixed,
+        shared=ba.shared,
+        **ba.least_squares,
+    )
+    result.meta["bundle_adjustment"] = True  # marks the cameras as BA-refined (cache)
+
+    # Report the refined rig's pixel reprojection error (triangulate the committed
+    # 2D with the new cameras and reproject); the triangulation stage refines it.
+    err = reprojection_error(
+        result.cameras, triangulate(result.cameras, result.pts2d), result.pts2d
+    )
+    log.info(
+        "bundle adjustment: reprojection error median %.3f px  max %.3f px",
+        np.nanmedian(err),
+        np.nanmax(err),
+    )
+    return result
+
+
+def stage_pictorial_structures(
+    config: Config, result: PoseResult, candidates: object
+) -> PoseResult:
+    """DeepFly3D pictorial-structures recovery over the detector's top-K candidates.
+
+    Commits a corrected per-view 2D (``result.pts2d``) and an initial 3D estimate
+    (``result.pts3d``); the triangulation stage, if enabled, then re-triangulates
+    the committed 2D.
+
+    Parameters
+    ----------
+    config
+        The run config (the pictorial-structures options).
+    result
+        The result whose ``pts2d`` / ``pts3d`` are updated in place.
+    candidates
+        The detector's top-K candidates from a ``pose2d`` run in this process
+        (they are not cached).
+
+    Returns
+    -------
+    PoseResult
+        ``result`` with corrected 2D, an initial 3D and a ``pictorial`` marker.
+    """
+    from .. import pictorial
+
+    ps = config.pictorial
+    log.info(
+        "pictorial structures: recovering peaks (%d frames, %d views)",
+        result.n_frames,
+        result.n_views,
+    )
+    pts3d, pts2d, reproj = pictorial.reconstruct(
+        result.cameras,
+        result.skeleton,
+        candidates,
+        result.pts2d,
+        temporal=ps.temporal,
+        lam=ps.lam,
+    )
+    result.pts2d, result.pts3d, result.reproj_error = pts2d, pts3d, reproj
+    result.meta["pictorial"] = True
+    return result
+
+
+def stage_triangulation(config: Config, result: PoseResult) -> PoseResult:
+    """Triangulate the 2D in ``result`` to 3D by the configured method.
+
+    Sets ``result.pts3d`` (and the cleaned ``result.pts2d`` / ``reproj_error`` for
+    the outlier-rejecting methods) using ``result.cameras``. ``ransac`` builds each
+    point from its largest multi-view consensus, ``greedy`` drops the
+    worst-reprojecting view, ``dlt`` is plain least squares (see
+    :func:`deeperfly.pipeline._resolve_triangulation`).
+
+    Parameters
+    ----------
+    config
+        The run config (the triangulation method and thresholds).
+    result
+        The result whose ``pts2d`` / ``pts3d`` / ``reproj_error`` are updated.
+
+    Returns
+    -------
+    PoseResult
+        ``result`` with 3D points and a ``triangulation`` meta marker.
+    """
+    from ..triangulate import reprojection_error, triangulate
+    from .core import _resolve_triangulation, reconstruct, reconstruct_ransac
+
+    opts = config.triangulation
+    method = _resolve_triangulation(opts.method)
+    log.info(
+        "triangulation: method=%s (%d frames, %d views)",
+        method,
+        result.n_frames,
+        result.n_views,
+    )
+    if method == "ransac":
+        pts3d, pts2d, reproj = reconstruct_ransac(
+            result.cameras,
+            result.pts2d,
+            threshold=opts.ransac_threshold,
+            min_inliers=opts.min_inliers,
+        )
+    elif method == "greedy":
+        pts3d, pts2d, reproj = reconstruct(
+            result.cameras,
+            result.pts2d,
+            reproj_threshold=opts.reproj_threshold,
+            max_drops=opts.max_drops,
+        )
+    else:  # "dlt": plain least-squares triangulation, no outlier handling
+        pts2d = result.pts2d
+        pts3d = triangulate(result.cameras, pts2d)
+        reproj = reprojection_error(result.cameras, pts3d, pts2d)
+    result.pts2d, result.pts3d, result.reproj_error = pts2d, pts3d, reproj
+    result.meta["triangulation"] = method
+    return result
+
+
+def source_view_frames(
+    config: Config,
+    result: PoseResult,
+    views: list[str],
+    *,
+    sources: dict[str, list[Path]] | None = None,
+    in_memory: list | None = None,
+) -> dict[str, np.ndarray]:
+    """Per-view footage for the visualization stage's ``imshow`` panels.
+
+    Uses ``in_memory`` frames (indexed by camera order) when available; otherwise
+    the footage ``deeperfly run`` resolved up front (``sources``). A resume that
+    re-renders just re-passes the recording, re-resolving the footage the same way.
+
+    Parameters
+    ----------
+    config
+        The run config (I/O backends, per-camera preprocessing).
+    result
+        The result (for the camera order).
+    views
+        The camera names whose footage is needed.
+    sources
+        Optional pre-resolved ``camera_name -> footage files`` map.
+    in_memory
+        Optional in-memory frames per camera (in ``result.cameras`` order).
+
+    Returns
+    -------
+    dict of str to np.ndarray
+        ``view -> preprocessed footage`` (empty when ``views`` is empty).
+
+    Raises
+    ------
+    SystemExit
+        If neither in-memory frames nor resolved footage are available.
+    """
+    from .. import video
+
+    if not views:
+        return {}
+    names = result.cameras.names
+    # The detector ran on transformed frames, so the 2D/3D overlays live in
+    # transformed-frame coordinates; the overlay footage must match (apply the
+    # same per-camera preprocess transform).
+    transforms = config.frame_transforms()
+    backend = config.io.video_reader
+    image_backend = config.io.image_reader
+    workers = config.io.image_workers
+
+    def transform(v, frames):
+        return transforms.get(v, video.FrameTransform()).apply(frames)
+
+    if in_memory is not None:
+        return {v: transform(v, in_memory[names.index(v)]) for v in views}
+
+    sources = sources or {}
+    if all(sources.get(v) for v in views):
+        return {
+            v: transform(
+                v,
+                video.read_frames(
+                    sources[v],
+                    backend=backend,
+                    image_backend=image_backend,
+                    workers=workers,
+                ),
+            )
+            for v in views
+        }
+    raise SystemExit(
+        "image (imshow) panels need the original frames, but none are in memory and "
+        "the run resolved no footage. Re-run with the recording as the input "
+        "('deeperfly run <recording> --overwrite visualization'), or drop the imshow "
+        "panels from [[pipeline.visualization.videos]]."
+    )
+
+
+def render_videos(
+    config: Config,
+    result: PoseResult,
+    frames: list | None,
+    outdir: Path,
+    *,
+    sources: dict[str, list[Path]] | None = None,
+    progress=None,
+) -> None:
+    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
+
+    Each video is composited by :mod:`deeperfly.viz.compose` from its panels (see
+    the config's ``[pipeline.visualization]`` section), overwriting any existing MP4
+    (the visualization stage recomputes when enabled; disable it to keep prior
+    renders). A video whose panels reproject the 3D skeleton is skipped with a
+    reason when the result has no 3D pose (e.g. no triangulation/pictorial stage
+    ran); frames for ``imshow`` panels are sourced only across the videos that
+    actually render.
+
+    Parameters
+    ----------
+    config
+        The run config (the video specs and output encoder).
+    result
+        The pose result drawn from.
+    frames
+        Optional in-memory frames (from a fresh ``pose2d`` run), or ``None``.
+    outdir
+        The directory the MP4s are written to.
+    sources
+        Optional pre-resolved footage map for the ``imshow`` overlay panels.
+    progress
+        Optional progress factory threaded into the per-video compositor.
+    """
+    from .. import video
+    from ..viz import compose
+
+    specs = config.videos
+    if not specs:
+        log.info(
+            "no [[pipeline.visualization.videos]] in the config; nothing to render"
+        )
+        return
+
+    pending = []
+    for spec in specs:
+        if result.pts3d is None and any(p.plot == "skeleton_3d" for p in spec.panels):
+            log.warning(
+                "skipping video %r: it reprojects the 3D skeleton but the result has "
+                "no 3D pose (enable [pipeline].do_triangulation or do_pictorial_structures)",
+                spec.video_name,
+            )
+        else:
+            pending.append(spec)
+    if not pending:
+        return
+
+    input_fps = resolve_fps(config, sources=sources)
+    # The visualization stage *writes* MP4s -- the output encoder is [io.video].writer
+    # (the shared I/O config), distinct from [io.video].reader used to read footage.
+    backend = config.io.video_writer
+    views = sorted(
+        {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
+    )
+    src = compose.Sources(
+        skeleton=result.skeleton,
+        camera_group=result.cameras,
+        frames=source_view_frames(
+            config, result, views, sources=sources, in_memory=frames
+        ),
+        pts2d=result.pts2d,
+        pts3d=result.pts3d,
+        conf=result.conf,
+    )
+    make_progress = progress or _null_progress
+    for spec in pending:
+        path = outdir / f"{spec.video_name}.mp4"
+        fps = spec.resolve_fps(input_fps)
+        log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
+        with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
+            clip = compose.render_video(spec, src, progress=wrap)
+        video.write_mp4(clip, path, fps=fps, backend=backend)
+        log.info("wrote %s", path)
+
+
+def _has_2d(result: PoseResult | None) -> bool:
+    return result is not None and result.pts2d is not None

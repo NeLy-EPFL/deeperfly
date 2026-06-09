@@ -4,7 +4,7 @@ A :class:`Skeleton` is the rig-independent description of *what* is tracked: the
 ordered tracked points, their grouping into limbs, the bones (edges) connecting
 them, and -- for a known camera rig -- which points each named camera can see.
 It carries no geometry; it is consumed by triangulation (to mask unobservable
-points), bundle adjustment (bone-length priors), correction (per-side Procrustes)
+points), bundle adjustment (bone-length priors), pictorial-structures recovery
 and visualization (drawing bones).
 
 The default fly skeleton is packaged as ``data/skeleton_fly.toml``; it tracks the
@@ -69,8 +69,24 @@ class Skeleton:
 
     @classmethod
     def from_config(cls, config: "Config | dict | str | Path") -> Skeleton:
-        """Build a skeleton from a :class:`~deeperfly.config.Config`, a config dict
-        or a path to a TOML file."""
+        """Build a skeleton from a config object, dict or TOML path.
+
+        Parameters
+        ----------
+        config
+            A :class:`~deeperfly.config.Config`, a parsed config ``dict`` or a
+            path to a TOML file with a ``[skeleton]`` table.
+
+        Returns
+        -------
+        Skeleton
+            The skeleton described by the config's ``[skeleton]`` table.
+
+        Raises
+        ------
+        ValueError
+            If a ``visibility`` entry has out-of-range point indices.
+        """
         from .config import Config
 
         spec = Config.coerce(config).data["skeleton"]
@@ -114,6 +130,16 @@ class Skeleton:
 
         Cameras without an entry in :attr:`visibility` are taken to see every
         point (all ``True``), so an unknown rig degrades to "everything visible".
+
+        Parameters
+        ----------
+        camera_names
+            Camera names labelling the rows of the returned mask.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array of shape ``(V, N)`` (``V = len(camera_names)``).
         """
         mask = np.ones((len(camera_names), self.n_points), dtype=bool)
         for v, name in enumerate(camera_names):
@@ -125,7 +151,13 @@ class Skeleton:
     def bone_index_pairs(
         self,
     ) -> tuple[Int[np.ndarray, "B"], Int[np.ndarray, "B"]]:
-        """Endpoint index arrays ``(i, j)`` for vectorized bone-length maths."""
+        """Endpoint index arrays ``(i, j)`` for vectorized bone-length maths.
+
+        Returns
+        -------
+        i, j : np.ndarray
+            The first and second endpoint index of each bone (shape ``(B,)``).
+        """
         return self.bones[:, 0], self.bones[:, 1]
 
 
@@ -135,13 +167,30 @@ def _parse_limb_joints(
     """Expand a ``{limb_name: [joint_indices]}`` mapping into limb structure.
 
     ``limb_joints`` is the single source of truth for a skeleton's limbs: each
-    entry lists a limb's points in kinematic-chain order. From it we derive
+    entry lists a limb's points in kinematic-chain order.
 
-    * ``limb_names`` -- the mapping keys, in order;
-    * ``limb_id`` -- each point's limb (its key's position), shape ``(n_points,)``;
-      points absent from every limb get ``-1``;
-    * ``bones`` -- the within-limb 2D edges, i.e. consecutive points of each
-      chain (so a single-point limb such as an antenna contributes none).
+    Parameters
+    ----------
+    limb_joints
+        Mapping ``limb_name -> [point indices]`` in kinematic-chain order.
+    n_points
+        Total number of tracked points (for index validation).
+
+    Returns
+    -------
+    limb_names : tuple of str
+        The mapping keys, in order.
+    limb_id : np.ndarray
+        Each point's limb index (shape ``(n_points,)``); points absent from
+        every limb get ``-1``.
+    bones : np.ndarray
+        The within-limb 2D edges, i.e. consecutive points of each chain (a
+        single-point limb such as an antenna contributes none).
+
+    Raises
+    ------
+    ValueError
+        If a limb references a point index outside ``[0, n_points)``.
     """
     limb_names = tuple(limb_joints)
     limb_id = np.full(n_points, -1, dtype=np.int64)
@@ -160,7 +209,27 @@ def _parse_limb_joints(
 
 
 def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:
-    """Validate and pack a list of index pairs into an ``(E, 2)`` int array."""
+    """Validate and pack a list of index pairs into an ``(E, 2)`` int array.
+
+    Parameters
+    ----------
+    raw
+        A list of ``[i, j]`` index pairs (or empty).
+    n_points
+        Total number of tracked points (for index validation).
+    what
+        Label naming the edge kind, used in the error message.
+
+    Returns
+    -------
+    np.ndarray
+        The packed ``(E, 2)`` int64 edge array.
+
+    Raises
+    ------
+    ValueError
+        If any index is outside ``[0, n_points)``.
+    """
     arr = (
         np.asarray(raw, dtype=np.int64).reshape(-1, 2)
         if raw

@@ -91,6 +91,16 @@ class Panel:
 
         ``width`` / ``height`` (target footprint pixels) take priority over
         ``scale`` -- see the class docstring.
+
+        Parameters
+        ----------
+        view_h, view_w
+            The source view's height and width in pixels.
+
+        Returns
+        -------
+        scale_x, scale_y : float
+            The per-axis resize factors.
         """
         if self.width is not None and self.height is not None:
             return self.width / view_w, self.height / view_h
@@ -103,7 +113,18 @@ class Panel:
         return self.scale, self.scale
 
     def footprint(self, view_h: int, view_w: int) -> tuple[int, int]:
-        """The layer's ``(height, width)`` in canvas pixels at its resolved scale."""
+        """The layer's ``(height, width)`` in canvas pixels at its resolved scale.
+
+        Parameters
+        ----------
+        view_h, view_w
+            The source view's height and width in pixels.
+
+        Returns
+        -------
+        height, width : int
+            The footprint in canvas pixels.
+        """
         sx, sy = self.scales(view_h, view_w)
         return round(view_h * sy), round(view_w * sx)
 
@@ -133,6 +154,16 @@ class VideoSpec:
         An explicit ``output_fps`` wins; otherwise ``speed`` scales the input
         recording's frame rate (``input_fps * speed``); with neither, the output
         plays at the input rate.
+
+        Parameters
+        ----------
+        input_fps
+            The recording's frame rate.
+
+        Returns
+        -------
+        float
+            The concrete output frame rate.
         """
         if self.output_fps is not None:
             return float(self.output_fps)
@@ -162,7 +193,18 @@ class Sources:
         return self.camera_group.names.index(view)
 
     def view_size(self, view: str) -> tuple[int, int]:
-        """``(height, width)`` of a view's panel, from its frames or intrinsics."""
+        """``(height, width)`` of a view's panel, from its frames or intrinsics.
+
+        Parameters
+        ----------
+        view
+            The camera name.
+
+        Returns
+        -------
+        height, width : int
+            The view size (from its frames if present, else its intrinsics).
+        """
         frames = self.frames.get(view)
         if frames is not None:
             return int(frames.shape[1]), int(frames.shape[2])
@@ -247,6 +289,19 @@ def _layout_key(panel: dict, options: dict, key: str):
     A direct key on the panel wins over one merged in from the op-kwargs levels.
     The key is popped from ``options`` either way so it is never forwarded to the
     draw op (it resizes the layer, it is not a draw argument).
+
+    Parameters
+    ----------
+    panel
+        The raw panel table.
+    options
+        The merged op-kwargs; ``key`` is popped from it.
+    key
+        The layout key (``"scale"`` / ``"width"`` / ``"height"``).
+
+    Returns
+    -------
+    The resolved value, or ``None`` if unset at every level.
     """
     value = panel[key] if key in panel else options.get(key)
     options.pop(key, None)
@@ -262,6 +317,16 @@ def read_video_specs(config: "Config | dict | str | Path") -> list[VideoSpec]:
     The layout keys ``scale`` / ``width`` / ``height`` are lifted onto the
     :class:`Panel` fields rather than forwarded. The canvas background comes from
     ``pipeline.visualization.background`` (default ``"black"``).
+
+    Parameters
+    ----------
+    config
+        A :class:`~deeperfly.config.Config`, parsed ``dict`` or config TOML path.
+
+    Returns
+    -------
+    list of VideoSpec
+        One spec per ``[[pipeline.visualization.videos]]`` entry.
     """
     from ..config import Config
 
@@ -322,6 +387,18 @@ def _resolve_fps_spec(
     ``[pipeline.visualization]`` setting, and within one level an explicit
     ``output_fps`` beats ``speed``. Exactly one of the pair is set (or both
     ``None``), so :meth:`VideoSpec.resolve_fps` never has to break a tie.
+
+    Parameters
+    ----------
+    entry
+        One video entry table.
+    global_output_fps, global_speed
+        The ``[pipeline.visualization]`` fallback values.
+
+    Returns
+    -------
+    output_fps, speed : float or None
+        Exactly one set (or both ``None``).
     """
     if entry.get("output_fps") is not None:
         return float(entry["output_fps"]), None
@@ -338,7 +415,20 @@ def _resolve_fps_spec(
 
 
 def canvas_size(spec: VideoSpec, src: Sources) -> tuple[int, int]:
-    """``(height, width)`` for ``spec``: explicit when set, else panel bbox."""
+    """``(height, width)`` for ``spec``: explicit when set, else panel bbox.
+
+    Parameters
+    ----------
+    spec
+        The video spec.
+    src
+        The data sources (for the per-view sizes).
+
+    Returns
+    -------
+    height, width : int
+        The canvas size in pixels.
+    """
     height, width = spec.height, spec.width
     if height is None or width is None:
         bbox_h = bbox_w = 0
@@ -352,7 +442,27 @@ def canvas_size(spec: VideoSpec, src: Sources) -> tuple[int, int]:
 
 
 def compose_frame(spec: VideoSpec, src: Sources, t: int) -> np.ndarray:
-    """Composite frame ``t`` of ``spec`` into a single RGB array."""
+    """Composite frame ``t`` of ``spec`` into a single RGB array.
+
+    Parameters
+    ----------
+    spec
+        The video spec (its ordered panels).
+    src
+        The data sources the panels draw from.
+    t
+        The frame index.
+
+    Returns
+    -------
+    np.ndarray
+        The composited ``(H, W, 3)`` uint8 RGB frame.
+
+    Raises
+    ------
+    ValueError
+        If a panel names an unknown ``plot`` op.
+    """
     height, width = canvas_size(spec, src)
     canvas = _cv.new_canvas(height, width, spec.background)
     for panel in spec.panels:
@@ -378,9 +488,22 @@ def render_video(
 ) -> Float[np.ndarray, "T H W 3"]:
     """Composite every frame of ``spec`` into a ``(T, H, W, 3)`` uint8 stack.
 
-    ``progress`` optionally wraps the per-frame iterator (e.g. a rich progress
-    bar) so callers can show progress while compositing; it defaults to the
-    identity, keeping this library UI-free.
+    Parameters
+    ----------
+    spec
+        The video spec.
+    src
+        The data sources the panels draw from.
+    n_frames
+        How many frames to render (defaults to ``src.n_frames()``).
+    progress
+        Optional wrapper of the per-frame iterator (e.g. a rich progress bar);
+        defaults to the identity, keeping this library UI-free.
+
+    Returns
+    -------
+    np.ndarray
+        The composited ``(T, H, W, 3)`` uint8 stack.
     """
     n = src.n_frames() if n_frames is None else n_frames
     steps = range(n) if progress is None else progress(range(n))
@@ -395,7 +518,26 @@ def render_videos(
     fps: float = 30.0,
     backend: str = "auto",
 ) -> list[Path]:
-    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``."""
+    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
+
+    Parameters
+    ----------
+    config
+        A :class:`~deeperfly.config.Config`, parsed ``dict`` or config TOML path.
+    src
+        The data sources the panels draw from.
+    outdir
+        The directory the MP4s are written to (created if missing).
+    fps
+        Output frame rate.
+    backend
+        Video writer backend name.
+
+    Returns
+    -------
+    list of Path
+        The written MP4 paths.
+    """
     from ..video import write_mp4
 
     outdir = Path(outdir)
