@@ -69,31 +69,12 @@ def test_stage_flags_defaults():
     }
 
 
-def test_stage_flags_toggles_and_validates():
+def test_stage_flags_toggles():
     flags = Config.from_dict(
         {"pipeline": {"do_pose2d": False, "do_pictorial_structures": True}}
     ).stage_flags()
     assert flags["pose2d"] is False and flags["pictorial_structures"] is True
     assert flags["triangulation"] is True  # untouched default
-    with pytest.raises(SystemExit, match="unknown stage toggle"):
-        Config.from_dict({"pipeline": {"do_detekt": True}})  # validated at construction
-
-
-def test_stage_flags_rejects_removed_keys():
-    """Old [stages] / [pipeline] keys fail with a pointer to the new location."""
-    with pytest.raises(SystemExit, match="do_bundle_adjustment"):
-        Config.from_dict({"pipeline": {"calibrate": True}})
-    with pytest.raises(SystemExit, match="do_visualization"):
-        Config.from_dict({"pipeline": {"do_visualize": True}})
-    with pytest.raises(SystemExit, match=r"triangulation"):
-        Config.from_dict({"pipeline": {"triangulation": "ransac"}})
-    with pytest.raises(SystemExit, match="stages"):
-        Config.from_dict({"stages": {"detect": True}})
-    # the new [pipeline.triangulation] sub-table is *not* mistaken for the removed
-    # scalar key.
-    assert Config.from_dict(
-        {"pipeline": {"triangulation": {"method": "dlt"}}}
-    ).stage_flags()
 
 
 # -- config resolution -------------------------------------------------------

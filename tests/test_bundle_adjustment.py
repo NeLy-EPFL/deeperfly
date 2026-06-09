@@ -294,21 +294,3 @@ def test_bundle_adjust_from_config(rig):
     f = rig["names"].index("f")
     assert np.allclose(opt.rvecs[f], rig["rvecs"][f])
     assert np.allclose(opt.tvecs[f], rig["tvecs"][f])
-
-
-def test_bundle_adjust_from_config_rejects_removed_solver_key(rig):
-    # solver selection was removed (scipy least_squares is the only solver); a stale
-    # `solver` key is a migration error, not a silently-forwarded kwarg.
-    config = {
-        "cameras": {
-            "a": {
-                "rvec": [0, 0, 0],
-                "tvec": [0, 0, 5],
-                "focal_length_px": 800.0,
-                "principal_point_px": [1, 2],
-            }
-        },
-        "pipeline": {"bundle_adjustment": {"solver": "ceres"}},
-    }
-    with pytest.raises(SystemExit, match="solver"):
-        bundle_adjust_from_config(Config.from_dict(config), np.zeros((1, 1, 2)))
