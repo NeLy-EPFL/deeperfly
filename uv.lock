@@ -299,18 +299,12 @@ dependencies = [
     { name = "typer" },
 ]
 
-[package.optional-dependencies]
-imageio = [
-    { name = "imageio" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
     { name = "matplotlib" },
 ]
 test = [
-    { name = "imageio" },
     { name = "pytest" },
 ]
 
@@ -318,7 +312,6 @@ test = [
 requires-dist = [
     { name = "av", specifier = ">=13" },
     { name = "h5py", specifier = ">=3.11" },
-    { name = "imageio", marker = "extra == 'imageio'", specifier = ">=2.34" },
     { name = "jax", specifier = ">=0.10.1" },
     { name = "jaxtyping", specifier = ">=0.3.10" },
     { name = "natsort", specifier = ">=8.4.0" },
@@ -331,17 +324,13 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.17" },
     { name = "typer", specifier = ">=0.26" },
 ]
-provides-extras = ["imageio"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "matplotlib", specifier = ">=3.10" },
 ]
-test = [
-    { name = "imageio", specifier = ">=2.34" },
-    { name = "pytest", specifier = ">=9.0.3" },
-]
+test = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "executing"
@@ -436,19 +425,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/28/c4/532123bcd9080e250696779c927f2cb906c8bf3447df98f5ceb8dcded539/h5py-3.16.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:7e420b539fb6023a259a1b14d4c9f6df8cf50d7268f48e161169987a57b737ff", size = 5414598, upload-time = "2026-03-06T13:48:29.49Z" },
     { url = "https://files.pythonhosted.org/packages/c3/d9/a27997f84341fc0dfcdd1fe4179b6ba6c32a7aa880fdb8c514d4dad6fba3/h5py-3.16.0-cp313-cp313-win_amd64.whl", hash = "sha256:18f2bbcd545e6991412253b98727374c356d67caa920e68dc79eab36bf5fedad", size = 3175509, upload-time = "2026-03-06T13:48:31.131Z" },
     { url = "https://files.pythonhosted.org/packages/a5/23/bb8647521d4fd770c30a76cfc6cb6a2f5495868904054e92f2394c5a78ff/h5py-3.16.0-cp313-cp313-win_arm64.whl", hash = "sha256:656f00e4d903199a1d58df06b711cf3ca632b874b4207b7dbec86185b5c8c7d4", size = 2647362, upload-time = "2026-03-06T13:48:33.411Z" },
-]
-
-[[package]]
-name = "imageio"
-version = "2.37.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "pillow" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/84/93bcd1300216ea50811cee96873b84a1bebf8d0489ffaf7f2a3756bab866/imageio-2.37.3.tar.gz", hash = "sha256:bbb37efbfc4c400fcd534b367b91fcd66d5da639aaa138034431a1c5e0a41451", size = 389673, upload-time = "2026-03-09T11:31:12.573Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/fa/391e437a34e55095173dca5f24070d89cbc233ff85bf1c29c93248c6588d/imageio-2.37.3-py3-none-any.whl", hash = "sha256:46f5bb8522cd421c0f5ae104d8268f569d856b29eb1a13b92829d1970f32c9f0", size = 317646, upload-time = "2026-03-09T11:31:10.771Z" },
 ]
 
 [[package]]
