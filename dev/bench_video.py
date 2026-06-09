@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import time
+from io import StringIO
 
 
 def _timeit(fn, reps=2):
@@ -38,22 +39,22 @@ def bench_decode(path: str, n: int) -> None:
 
     ``windows`` re-opens the file for each ``[s, s+chunk)`` slice -- PyAV rescans
     from frame 0, so this is quadratic in the number of windows. ``stream`` is one
-    continuous forward pass (:meth:`deeperfly.io.FrameReader.stream`), the path the
-    detector now uses; the gap between them is the re-decode that went away.
+    continuous forward pass (:meth:`deeperfly.io.FrameReader.stream_blocks`), the
+    path the detector now uses; the gap between them is the re-decode that went away.
     """
     from deeperfly import io
 
     def run_windows(chunk):
         reader = io.VideoReader(path)
         for s in range(0, n, chunk):
-            reader.read(start=s, stop=min(s + chunk, n))
+            reader[s : min(s + chunk, n)]
 
     def run_stream(block):
-        for _ in io.VideoReader(path).stream(block=block):
+        for _ in io.VideoReader(path).stream_blocks(block_size=block):
             pass
 
     print(f"\n{'mode':>8s} {'block':>5s} {'frames/s':>9s}")
-    with contextlib.redirect_stderr(io.StringIO()):
+    with contextlib.redirect_stderr(StringIO()):
         for mode, run in (("windows", run_windows), ("stream", run_stream)):
             for block in (64, 256):
                 try:
@@ -68,28 +69,23 @@ def bench_inference(path: str, t: int) -> None:
     import numpy as np
 
     from deeperfly import io
-    from deeperfly.pose2d import backends, inference
+    from deeperfly.pose2d import detector, inference
     from deeperfly.pose2d.download import download_torch_weights
 
-    model = backends.load_detector(download_torch_weights())
+    model = detector.load_detector(download_torch_weights())
 
     print(f"\n{'fwd batch':>9s} {'img/s':>7s}")
     for b in (8, 32, 64):
         x = np.zeros((b, 3, 256, 512), np.float32)
-        np.asarray(backends.predict_heatmaps(model, x))  # compile
-        fps = (
-            b
-            * 3
-            / _timeit(lambda: np.asarray(backends.predict_heatmaps(model, x)), reps=1)
-            / 3
-        )
+        detector.predict_heatmaps(model, x)  # compile
+        fps = b * 3 / _timeit(lambda: detector.predict_heatmaps(model, x), reps=1) / 3
         print(f"{b:9d} {fps:7.0f}")
 
     sides, flips = inference.fly_camera_layout(
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
     paths = [path.replace("_0", f"_{i}") for i in range(7)]
-    frames = [io.VideoReader(p).read(start=0, stop=t) for p in paths]
+    frames = [io.VideoReader(p)[:t] for p in paths]
     inference.detect_sequence(model, [f[:4] for f in frames], sides, flips)  # warmup
     dt = _timeit(
         lambda: np.asarray(inference.detect_sequence(model, frames, sides, flips)[0]),
@@ -112,11 +108,11 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
 
     from deeperfly import io
     from deeperfly.config import Config
-    from deeperfly.pose2d import backends, inference
+    from deeperfly.pose2d import detector, inference
     from deeperfly.pose2d.download import download_torch_weights
     from deeperfly.pose2d.stream import prefetch_windows
 
-    model = backends.load_detector(download_torch_weights())
+    model = detector.load_detector(download_torch_weights())
     sides, flips = inference.fly_camera_layout(
         ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
     )
@@ -125,7 +121,7 @@ def bench_pipeline(path: str, t: int, block: int = 64) -> None:
 
     def serial():
         done = 0
-        streams = [io.VideoReader(p).stream(block=block) for p in paths]
+        streams = [io.VideoReader(p).stream_blocks(block_size=block) for p in paths]
         while True:
             blocks = [next(s, None) for s in streams]
             if any(b is None for b in blocks):

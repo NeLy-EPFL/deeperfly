@@ -108,7 +108,7 @@ def main():
     fps = 100.0
     do_calibrate = False  # the synthetic cameras are already the ground-truth rig
     rng = np.random.default_rng(0)
-    config = Config.read(HERE / "cameras.toml")
+    config = Config.from_toml(HERE / "cameras.toml")
     # The synthetic rig has no real frames, so give each camera a nominal (H, W):
     # camera_group then fixes its principal point at the image center, exactly as
     # `deeperfly run` does from the footage. View order follows [cameras.*] in the

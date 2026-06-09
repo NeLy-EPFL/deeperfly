@@ -35,8 +35,9 @@ import numpy as np
 
 from deeperfly import io
 from deeperfly.cameras import CameraGroup
+from deeperfly.config import Config
 from deeperfly.pipeline import run_from_points2d
-from deeperfly.pose2d import backends, inference
+from deeperfly.pose2d import detector, inference
 from deeperfly.skeleton import Skeleton
 
 CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]  # camera 0..6
@@ -45,7 +46,7 @@ CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]  # camera 0..6
 def load_detector(checkpoint: str | None):
     from deeperfly.pose2d.download import torch_weights_path
 
-    return backends.load_detector(checkpoint or torch_weights_path())
+    return detector.load_detector(checkpoint or torch_weights_path())
 
 
 def build_detector(model, sides, flips, *, method="weighted", radius=2):
@@ -92,7 +93,7 @@ def detect_pictorial(
     """Stream detection keeping the top-K candidate peaks per joint (PS path).
 
     Pictorial structures needs the full heatmaps (to read off secondary peaks), so
-    this deliberately uses the un-fused detect path -- ``backends.predict_heatmaps``
+    this deliberately uses the un-fused detect path -- ``detector.predict_heatmaps``
     per frame -- instead of the on-GPU fast path. The single-peak ``(pts2d, conf)``
     (for calibration) and the top-K candidates are both decoded with ``method`` /
     ``radius`` (see :func:`inference.heatmap_to_points`); in this path ``radius``
@@ -100,7 +101,6 @@ def detect_pictorial(
     :class:`deeperfly.pictorial.Candidates`.
     """
     from deeperfly import pictorial
-    from deeperfly.pose2d import backends
 
     n_views, n_t = len(sides), len(frame_ids)
     n_pts = 2 * inference.N_SIDE_JOINTS
@@ -120,7 +120,7 @@ def detect_pictorial(
                 for vw, fl in zip(pass_views, pass_flips)
             ]
         )
-        heatmaps = np.asarray(backends.predict_heatmaps(model, inputs))
+        heatmaps = detector.predict_heatmaps(model, inputs)
         image_size = [(im.shape[1], im.shape[0]) for im in images]
         pnorm, c = inference.heatmap_to_points(heatmaps, method=method, radius=radius)
         p2, cf = inference.assemble_skeleton(
@@ -231,15 +231,16 @@ def main() -> None:
     # Cameras: recenter the principal point onto the real 960x480 image center.
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
-    probe = io.open_reader([root / f"camera_0_img_{frame_ids[0]:06d}.jpg"]).read()[0]
+    probe = io.open_reader([root / f"camera_0_img_{frame_ids[0]:06d}.jpg"])[0]
     h, w = probe.shape[:2]
-    cfg.setdefault("camera_defaults", {})["principal_point_px"] = [
+    cfg.setdefault("cameras", {}).setdefault("defaults", {})["principal_point_px"] = [
         (w - 1) / 2,
         (h - 1) / 2,
     ]
-    cameras = CameraGroup.from_config(cfg)
-    ba = cfg.get("bundle_adjustment", {})
-    calibrate_kwargs = {"fixed": ba.get("fixed", []), "shared": ba.get("shared", [])}
+    config = Config.from_dict(cfg)
+    cameras = CameraGroup.from_config(config)
+    ba = config.bundle_adjustment
+    calibrate_kwargs = {"fixed": ba.fixed, "shared": ba.shared}
 
     n_views = len(CAMERA_NAMES)
     skeleton = Skeleton.fly()
@@ -251,7 +252,7 @@ def main() -> None:
         """The synchronized cameras for one frame as a single (V, H, W, 3) array."""
         return io.open_reader(
             [root / f"camera_{c}_img_{fid:06d}.jpg" for c in range(n_views)]
-        ).read()
+        )[:]
 
     candidates = None
     t0 = time.perf_counter()
@@ -284,9 +285,7 @@ def main() -> None:
         # batch on a fast GPU, so a modest batch saturates speed -- see
         # [pipeline.pose2d] batch_size.
         if args.batch == "auto":
-            from deeperfly.config import Config
-
-            vram = backends.gpu_memory_bytes()
+            vram = detector.gpu_memory_bytes()
             batch = max(1, Config.from_dict({}).pose2d.batch_size // n_views)
             where = f"VRAM {vram / 1e9:.1f} GB" if vram else "no GPU"
             print(
