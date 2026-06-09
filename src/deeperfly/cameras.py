@@ -21,7 +21,6 @@ don't conflict. Everything resolves to a single ``(rvec, tvec)``; see
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -375,10 +374,10 @@ class CameraGroup:
     @classmethod
     def from_config(
         cls,
-        config: "Config | dict | str | Path",
+        config: "Config",
         image_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> CameraGroup:
-        """Build a group from a config object, dict or TOML path.
+        """Build a group from a config.
 
         Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
         override the defaults. The per-camera ``input`` (footage glob) and
@@ -388,8 +387,7 @@ class CameraGroup:
         Parameters
         ----------
         config
-            A :class:`~deeperfly.config.Config`, a parsed config ``dict`` or a
-            path to a TOML file.
+            A :class:`~deeperfly.config.Config`.
         image_sizes
             Maps a camera name to its ``(height, width)``, used to infer that
             camera's principal point (image center) when neither the camera spec
@@ -405,9 +403,7 @@ class CameraGroup:
         ValueError
             If the config defines no cameras.
         """
-        from .config import Config
-
-        defaults, specs = Config.coerce(config).camera_table()
+        defaults, specs = config.camera_table()
         image_sizes = image_sizes or {}
         cameras = {
             name: Camera.from_spec(

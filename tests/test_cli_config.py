@@ -14,7 +14,7 @@ import pytest
 
 from deeperfly import cli
 from deeperfly.cameras import CameraGroup
-from deeperfly.config import DEFAULT_CONFIG_PATH
+from deeperfly.config import Config, DEFAULT_CONFIG_PATH
 from deeperfly.recordings import camera_files, camera_patterns
 from deeperfly.skeleton import Skeleton
 
@@ -32,7 +32,8 @@ def test_init_writes_parseable_config(tmp_path):
     # Every section round-trips through its loader.
     cameras = {n: spec for n, spec in config["cameras"].items() if n != "defaults"}
     sizes = {n: (512, 1024) for n in cameras}
-    assert CameraGroup.from_config(config, image_sizes=sizes).names == [
+    cfg = Config.from_dict(config)
+    assert CameraGroup.from_config(cfg, image_sizes=sizes).names == [
         "rh",
         "rm",
         "rf",
@@ -41,7 +42,7 @@ def test_init_writes_parseable_config(tmp_path):
         "lm",
         "lh",
     ]
-    assert Skeleton.from_config(config).n_points == 38
+    assert Skeleton.from_config(cfg).n_points == 38
     # Each camera carries its own footage glob (`input`).
     assert all("input" in spec for spec in cameras.values())
 
@@ -60,7 +61,7 @@ def test_init_refuses_to_clobber(tmp_path):
 
 
 def test_template_skeleton_matches_fly():
-    config = tomllib.load(DEFAULT_CONFIG_PATH.open("rb"))
+    config = Config.from_toml(DEFAULT_CONFIG_PATH)
     sk = Skeleton.from_config(config)
     fly = Skeleton.fly()
     assert sk.joint_names == fly.joint_names
@@ -133,5 +134,5 @@ def test_camera_files_missing_returns_empty(tmp_path):
 
 def test_camera_patterns_defaults_to_camera_name():
     # A camera with no `input` uses its own name as the pattern; [cameras] sets order.
-    config = {"cameras": {"rh": {"input": "cam0.mp4"}, "lf": {}}}
+    config = Config.from_dict({"cameras": {"rh": {"input": "cam0.mp4"}, "lf": {}}})
     assert camera_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

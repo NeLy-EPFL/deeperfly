@@ -73,17 +73,6 @@ def test_unknown_stage_key_fails_loudly():
         ).triangulation
 
 
-# -- coerce: the single dict/path/Config loader ------------------------------
-
-
-def test_coerce_accepts_config_dict_and_path(tmp_path):
-    assert Config.coerce(Config.from_dict({})).data == {}
-    assert Config.coerce({"pipeline": {}}).data == {"pipeline": {}}
-    p = tmp_path / "c.toml"
-    p.write_text("[pipeline.pose2d]\nbatch_size = 8\n")
-    assert Config.coerce(p).pose2d.batch_size == 8
-
-
 # -- bundle adjustment: flat scipy kwargs ------------------------------------
 
 
@@ -170,7 +159,7 @@ def test_videos_returns_typed_specs():
 
 def test_snapshot_is_byte_exact(tmp_path):
     src = DEFAULT_CONFIG_PATH
-    c = Config.read(src)
+    c = Config.from_toml(src)
     out = tmp_path / "out"
     out.mkdir()
     c.save_snapshot(out)

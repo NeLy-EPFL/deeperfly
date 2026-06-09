@@ -13,6 +13,7 @@ import itertools
 import numpy as np
 import pytest
 
+from deeperfly.config import Config
 from deeperfly.preprocessing import FrameTransform, parse_frame_transforms
 
 
@@ -97,14 +98,14 @@ def test_parse_frame_transforms_reads_tables():
             "rm": {},  # a camera with no preprocess table
         }
     }
-    d = parse_frame_transforms(cfg)
+    d = parse_frame_transforms(Config.from_dict(cfg))
     assert d["rh"] == FrameTransform(fliplr=True, rot90=3)
     assert d["lf"] == FrameTransform(flipud=True)
     assert "rm" not in d  # cameras with no table are simply absent (-> identity)
 
 
 def test_parse_frame_transforms_empty_when_section_missing():
-    assert parse_frame_transforms({}) == {}
+    assert parse_frame_transforms(Config.from_dict({})) == {}
 
 
 @pytest.mark.parametrize(
@@ -118,4 +119,6 @@ def test_parse_frame_transforms_empty_when_section_missing():
 )
 def test_parse_frame_transforms_rejects_bad_config(spec):
     with pytest.raises(ValueError):
-        parse_frame_transforms({"cameras": {"rh": {"preprocess": spec}}})
+        parse_frame_transforms(
+            Config.from_dict({"cameras": {"rh": {"preprocess": spec}}})
+        )

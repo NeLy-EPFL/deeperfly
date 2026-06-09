@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from deeperfly import cli, io, pipeline
+from deeperfly.config import Config
 from deeperfly.results import PoseResult
 from deeperfly.visualization import compose
 
@@ -72,7 +73,9 @@ def test_video_spec_resolve_fps_levels():
             }
         }
     }
-    specs = {s.video_name: s for s in compose.read_video_specs(config)}
+    specs = {
+        s.video_name: s for s in compose.read_video_specs(Config.from_dict(config))
+    }
     assert specs["a"].resolve_fps(30) == 15.0  # 30 * global speed 0.5
     assert specs["b"].resolve_fps(30) == 24.0  # per-video output_fps beats global speed
     assert specs["c"].resolve_fps(30) == 60.0  # 30 * per-video speed 2
@@ -80,7 +83,13 @@ def test_video_spec_resolve_fps_levels():
 
 def test_video_spec_resolve_fps_defaults_to_input():
     (spec,) = compose.read_video_specs(
-        {"pipeline": {"visualization": {"videos": [{"video_name": "a", "panels": []}]}}}
+        Config.from_dict(
+            {
+                "pipeline": {
+                    "visualization": {"videos": [{"video_name": "a", "panels": []}]}
+                }
+            }
+        )
     )
     assert spec.output_fps is None and spec.speed is None
     assert spec.resolve_fps(37.5) == 37.5  # native input rate when neither is set

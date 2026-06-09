@@ -24,6 +24,7 @@ from deeperfly.bundle_adjustment import (
 )
 from deeperfly.bundle_adjustment import core
 from deeperfly.cameras import CameraGroup
+from deeperfly.config import Config
 from helpers import small_rotation
 
 
@@ -287,7 +288,7 @@ def test_bundle_adjust_from_config(rig):
             },
         },
     }
-    res, opt, _ = bundle_adjust_from_config(config, pts2d)
+    res, opt, _ = bundle_adjust_from_config(Config.from_dict(config), pts2d)
     assert res.cost < 1e-6
     # anchor camera held exactly fixed
     f = rig["names"].index("f")
@@ -310,4 +311,4 @@ def test_bundle_adjust_from_config_rejects_removed_solver_key(rig):
         "pipeline": {"bundle_adjustment": {"solver": "ceres"}},
     }
     with pytest.raises(SystemExit, match="solver"):
-        bundle_adjust_from_config(config, np.zeros((1, 1, 2)))
+        bundle_adjust_from_config(Config.from_dict(config), np.zeros((1, 1, 2)))

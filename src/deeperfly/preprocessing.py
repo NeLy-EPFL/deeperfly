@@ -81,7 +81,7 @@ class FrameTransform:
 
 
 def parse_frame_transforms(
-    config: "Config | dict | str | Path",
+    config: "Config",
 ) -> dict[str, FrameTransform]:
     """Build ``camera name -> FrameTransform`` from the per-camera preprocess tables.
 
@@ -91,7 +91,7 @@ def parse_frame_transforms(
     Parameters
     ----------
     config
-        A :class:`~deeperfly.config.Config`, parsed ``dict`` or config TOML path.
+        A :class:`~deeperfly.config.Config`.
 
     Returns
     -------
@@ -105,9 +105,7 @@ def parse_frame_transforms(
         On an unknown preprocess key or a non-integer ``rot90`` (so config typos
         fail loudly).
     """
-    from .config import Config
-
-    _, cameras = Config.coerce(config).camera_table()
+    _, cameras = config.camera_table()
     out: dict[str, FrameTransform] = {}
     for name, cam in cameras.items():
         spec = cam.get("preprocess")

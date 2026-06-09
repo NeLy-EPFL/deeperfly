@@ -14,7 +14,6 @@ dispatches to :func:`bundle_adjust`.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jaxtyping import Float
@@ -96,7 +95,7 @@ def bundle_adjust(
 
 
 def bundle_adjust_from_config(
-    config: "Config | dict | str | Path",
+    config: "Config",
     pts2d: Float[ndarray, "V N 2"],
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:
     """Run :func:`bundle_adjust` driven by a TOML config.
@@ -109,8 +108,7 @@ def bundle_adjust_from_config(
     Parameters
     ----------
     config
-        A :class:`~deeperfly.config.Config`, parsed ``dict`` or path to a config
-        TOML file.
+        A :class:`~deeperfly.config.Config`.
     pts2d
         Observed 2D points of shape ``(V, N, 2)`` with NaNs for missing.
 
@@ -123,11 +121,8 @@ def bundle_adjust_from_config(
     pts3d : np.ndarray
         The refined 3D points of shape ``(N, 3)``.
     """
-    from ..config import Config
-
-    cfg = Config.coerce(config)
-    cameras = CameraGroup.from_config(cfg)
-    ba = cfg.bundle_adjustment
+    cameras = CameraGroup.from_config(config)
+    ba = config.bundle_adjustment
     return bundle_adjust(
         cameras,
         pts2d,

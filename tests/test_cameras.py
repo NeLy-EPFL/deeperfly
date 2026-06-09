@@ -12,6 +12,7 @@ import pytest
 
 from deeperfly import geometry as geom
 from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
+from deeperfly.config import Config
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -24,25 +25,27 @@ from helpers import (
 
 
 @pytest.fixture
-def config() -> dict:
-    """Config dict equivalent to examples/cameras.toml (cameras only)."""
-    return {
-        "cameras": {
-            "defaults": {
-                "focal_length_px": [FOCAL_PX, FOCAL_PX],
-                "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
-                "distortion_coefficients": [],
-                "look_at": [0.0, 0.0, 0.0],
-                "distance": DISTANCE_MM,
-                "elevation_deg": 0.0,
-                "roll_deg": 0.0,
+def config() -> Config:
+    """Config equivalent to examples/cameras.toml (cameras only)."""
+    return Config.from_dict(
+        {
+            "cameras": {
+                "defaults": {
+                    "focal_length_px": [FOCAL_PX, FOCAL_PX],
+                    "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
+                    "distortion_coefficients": [],
+                    "look_at": [0.0, 0.0, 0.0],
+                    "distance": DISTANCE_MM,
+                    "elevation_deg": 0.0,
+                    "roll_deg": 0.0,
+                },
+                **{
+                    name: {"azimuth_deg": az}
+                    for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+                },
             },
-            **{
-                name: {"azimuth_deg": az}
-                for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
-            },
-        },
-    }
+        }
+    )
 
 
 # -- resolve_extrinsics ------------------------------------------------------
@@ -227,14 +230,14 @@ def test_group_from_config_toml_file(tmp_path):
     """
     path = tmp_path / "cams.toml"
     path.write_text(toml)
-    group = CameraGroup.from_config(path)
+    group = CameraGroup.from_config(Config.from_toml(path))
     assert group.names == ["left", "right"]
     assert np.allclose(group["left"].intr, [800.0, 800.0, 320.0, 240.0])
 
 
 def test_group_empty_config_raises():
     with pytest.raises(ValueError, match="no cameras"):
-        CameraGroup.from_config({"cameras": {}})
+        CameraGroup.from_config(Config.from_dict({"cameras": {}}))
 
 
 def test_group_from_config_infers_principal_point_per_view():
@@ -247,7 +250,7 @@ def test_group_from_config_infers_principal_point_per_view():
         },
     }
     image_sizes = {"left": (512, 1024), "right": (480, 640)}
-    group = CameraGroup.from_config(config, image_sizes=image_sizes)
+    group = CameraGroup.from_config(Config.from_dict(config), image_sizes=image_sizes)
     assert np.allclose(
         group["left"].intr, [800.0, 800.0, (1024 - 1) / 2, (512 - 1) / 2]
     )
@@ -264,7 +267,7 @@ def test_group_from_config_missing_principal_point_no_sizes_raises():
         },
     }
     with pytest.raises(ValueError, match="principal_point_px"):
-        CameraGroup.from_config(config)
+        CameraGroup.from_config(Config.from_dict(config))
 
 
 def test_group_project_triangulate_roundtrip(config, rng):

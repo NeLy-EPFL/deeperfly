@@ -65,17 +65,18 @@ class Skeleton:
     @classmethod
     def fly(cls) -> Skeleton:
         """The default 38-point Drosophila skeleton (DeepFly3D 7-camera rig)."""
-        return cls.from_config(_FLY_TOML)
+        from .config import Config
+
+        return cls.from_config(Config.from_toml(_FLY_TOML))
 
     @classmethod
-    def from_config(cls, config: "Config | dict | str | Path") -> Skeleton:
-        """Build a skeleton from a config object, dict or TOML path.
+    def from_config(cls, config: "Config") -> Skeleton:
+        """Build a skeleton from a config.
 
         Parameters
         ----------
         config
-            A :class:`~deeperfly.config.Config`, a parsed config ``dict`` or a
-            path to a TOML file with a ``[skeleton]`` table.
+            A :class:`~deeperfly.config.Config` with a ``[skeleton]`` table.
 
         Returns
         -------
@@ -87,9 +88,7 @@ class Skeleton:
         ValueError
             If a ``visibility`` entry has out-of-range point indices.
         """
-        from .config import Config
-
-        spec = Config.coerce(config).data["skeleton"]
+        spec = config.data["skeleton"]
         n = len(spec["joint_names"])
         limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
         palette = {str(k): str(v) for k, v in spec.get("palette", {}).items()}

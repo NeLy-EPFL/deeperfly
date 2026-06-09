@@ -308,8 +308,8 @@ def _layout_key(panel: dict, options: dict, key: str):
     return value
 
 
-def read_video_specs(config: "Config | dict | str | Path") -> list[VideoSpec]:
-    """Parse ``[[pipeline.visualization.videos]]`` from a Config, dict or TOML path.
+def read_video_specs(config: "Config") -> list[VideoSpec]:
+    """Parse ``[[pipeline.visualization.videos]]`` from a config.
 
     Per-op kwargs are merged into each panel's ``options`` from least to most
     specific: global ``[pipeline.visualization.kwargs]``, the video entry's
@@ -321,16 +321,14 @@ def read_video_specs(config: "Config | dict | str | Path") -> list[VideoSpec]:
     Parameters
     ----------
     config
-        A :class:`~deeperfly.config.Config`, parsed ``dict`` or config TOML path.
+        A :class:`~deeperfly.config.Config`.
 
     Returns
     -------
     list of VideoSpec
         One spec per ``[[pipeline.visualization.videos]]`` entry.
     """
-    from ..config import Config
-
-    viz = Config.coerce(config).visualization
+    viz = config.visualization
     global_kwargs = viz.get("kwargs", {})
     background = viz.get("background", "black")
     global_fps = (viz.get("output_fps"), viz.get("speed"))

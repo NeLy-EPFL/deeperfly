@@ -83,13 +83,9 @@ input = "camera_6.mp4"
 
 # ===========================================================================
 # Frame I/O, shared across stages. Video files are read and written with PyAV
-# (in-process FFmpeg, on the CPU); only the image-sequence decoder is configurable.
+# (in-process FFmpeg, on the CPU); image sequences are decoded with OpenCV.
 # ===========================================================================
 [io.image]
-# Image *sequence* decoder (a folder/glob of jpg/png/... per camera). "auto" /
-# "opencv" use OpenCV (core, fast); "imageio" uses the optional `imageio` extra for
-# broader formats, which "auto" also falls back to for files OpenCV cannot decode.
-reader = "auto"
 # workers = 0   # decode threads (0 = auto, one per CPU; decode releases the GIL)
 
 

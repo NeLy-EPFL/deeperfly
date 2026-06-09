@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from deeperfly.config import Config
 from deeperfly.skeleton import Skeleton
 from helpers import CAMERA_NAMES, leg_indices
 
@@ -79,7 +80,7 @@ def test_from_config_dict_roundtrip(fly):
             "visibility": {"cam0": [0, 1], "cam1": [1, 2]},
         }
     }
-    s = Skeleton.from_config(spec)
+    s = Skeleton.from_config(Config.from_dict(spec))
     assert s.n_points == 3
     assert s.limb_names == ("L",)
     np.testing.assert_array_equal(s.limb_id, [0, 0, 0])
@@ -102,4 +103,4 @@ def test_limb_joints_derive_structure(fly):
 def test_out_of_range_limb_joint_raises():
     spec = {"skeleton": {"joint_names": ["a", "b"], "limb_joints": {"L": [0, 2]}}}
     with pytest.raises(ValueError, match="outside"):
-        Skeleton.from_config(spec)
+        Skeleton.from_config(Config.from_dict(spec))

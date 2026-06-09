@@ -37,7 +37,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
         raise SystemExit("give at least one recording directory (or wildcard) to run")
     # Only used to recognize recording directories while resolving the inputs; each
     # run then resolves its own config against its output dir (Config.read_for_run).
-    discovery_config = Config.read(args.config) if args.config else Config.default()
+    discovery_config = (
+        Config.from_toml(args.config) if args.config else Config.default()
+    )
     recordings = resolve_recordings(
         args.inputs,
         recursive=args.recursive,
