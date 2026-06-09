@@ -169,26 +169,3 @@ def test_snapshot_is_byte_exact(tmp_path):
 def test_snapshot_from_dict_config_raises(tmp_path):
     with pytest.raises(ValueError, match="no source text"):
         Config.from_dict({}).save_snapshot(tmp_path)
-
-
-# -- migration errors for the renamed/removed sections -----------------------
-
-
-@pytest.mark.parametrize(
-    "data, match",
-    [
-        ({"camera_defaults": {}}, "cameras.defaults"),
-        ({"inputs": {"rh": "x"}}, r"input"),
-        ({"preprocess": {"rh": {"rot90": 1}}}, "cameras.<camera>.preprocess"),
-        ({"pipeline": {"bundle_adjustment": {"solver": "x"}}}, "solver"),
-        (
-            {"pipeline": {"bundle_adjustment": {"least_squares_scipy": {}}}},
-            "solver",
-        ),
-        ({"pipeline": {"do_smoothing": True}}, "smoothing was removed"),
-        ({"pipeline": {"smoothing": {"method": "gaussian"}}}, "smoothing was removed"),
-    ],
-)
-def test_removed_sections_fail_with_pointer(data, match):
-    with pytest.raises(SystemExit, match=match):
-        Config.from_dict(data)

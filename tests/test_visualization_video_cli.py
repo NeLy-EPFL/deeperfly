@@ -26,7 +26,7 @@ def test_write_read_mp4_roundtrip(tmp_path, rng):
     path = tmp_path / "clip.mp4"
     with io.VideoWriter(path, fps=10) as writer:
         writer.write_frames(frames)
-    back = io.VideoReader(path).read()
+    back = io.VideoReader(path)[:]
     assert back.shape[0] == 8
     assert back.shape[1:3] == (64, 48)
 
@@ -37,7 +37,7 @@ def test_read_images(tmp_path, rng):
     for i in range(3):
         img = rng.integers(0, 255, (16, 16, 3), dtype=np.uint8)
         cv2.imwrite(str(tmp_path / f"frame_{i:03d}.png"), img)
-    frames = io.open_reader(tmp_path).read()
+    frames = io.open_reader(tmp_path)[:]
     assert frames.shape == (3, 16, 16, 3)
 
 
@@ -166,7 +166,7 @@ def test_cli_run_visualization_only(result, tmp_path):
             "error",
         ]
     )
-    assert io.VideoReader(outdir / "pose3d.mp4").read().shape[0] == result.n_frames
+    assert io.VideoReader(outdir / "pose3d.mp4")[:].shape[0] == result.n_frames
 
 
 def _viz_only_cfg(tmp_path):
@@ -230,4 +230,4 @@ def test_overwrite_visualization_rerenders(result, tmp_path):
             "error",
         ]
     )
-    assert io.VideoReader(outdir / "pose3d.mp4").read().shape[0] == result.n_frames
+    assert io.VideoReader(outdir / "pose3d.mp4")[:].shape[0] == result.n_frames
