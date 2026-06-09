@@ -144,17 +144,16 @@ GPU fed when decode is jittery, lower it to shave memory.
 
 ## Frame I/O — `[io]`
 
-Video files are read and written with PyAV (in-process FFmpeg, on the CPU); only
-the image-sequence decoder is configurable:
+Video files are read and written with PyAV (in-process FFmpeg, on the CPU);
+image sequences are decoded with OpenCV. The only knob is the image-decode
+thread count:
 
 ```toml
 [io.image]
-reader = "auto"   # auto/opencv (core) | imageio (optional, broader formats)
-# workers = 0     # decode threads (0 = one per CPU)
+# workers = 0   # decode threads (0 = one per CPU)
 ```
 
-`"auto"` picks the fastest installed backend. See [video.md](video.md) for what
-each backend supports and how to install the optional ones.
+See [video.md](video.md) for the reader API.
 
 ## Per-camera preprocessing — `[cameras.<camera>.preprocess]`
 
