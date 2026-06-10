@@ -366,7 +366,7 @@ class Config:
         return Skeleton.from_config(self) if "skeleton" in self.data else Skeleton.fly()
 
     def frame_transforms(self) -> "dict[str, FrameTransform]":
-        """Per-camera frame preprocessing (``[cameras.<name>.preprocess]``)."""
+        """Per-camera frame preprocessing (the ``[cameras.<name>]`` ``preprocess`` lists)."""
         from .preprocessing import parse_frame_transforms
 
         return parse_frame_transforms(self)

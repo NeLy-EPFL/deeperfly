@@ -203,15 +203,18 @@ def camera_sources(
 def camera_image_sizes(
     config: Config, *, sources: dict[str, list[Path]] | None = None, input=None
 ) -> dict[str, tuple[int, int]]:
-    """``name -> (height, width)`` from a single frame per camera.
+    """``name -> (height, width)`` of the raw footage, from a single frame per camera.
 
-    Used to infer each view's principal point. Reads only frame 0 (host), so it is
-    cheap and independent of the full streaming decode.
+    Used to resolve each view's intrinsics: the config's intrinsics describe the
+    raw frame, and :meth:`~deeperfly.cameras.CameraGroup.from_config` maps them
+    through the camera's preprocess chain (which is also anchored on this raw
+    size). Reads only frame 0 (host), so it is cheap and independent of the full
+    streaming decode.
 
     Parameters
     ----------
     config
-        The run config (I/O backends and per-camera preprocessing).
+        The run config (I/O backends).
     sources
         Optional pre-resolved ``camera_name -> footage files`` map.
     input
@@ -220,18 +223,13 @@ def camera_image_sizes(
     Returns
     -------
     dict of str to tuple of int
-        ``camera_name -> (height, width)`` of the preprocess-transformed frame.
+        ``camera_name -> (height, width)`` of the raw (untransformed) frame.
     """
-    from . import io, preprocessing
+    from . import io
 
-    # Size the principal point on the *transformed* frame -- the detector and the
-    # overlays use the preprocess-transformed footage, so a rot90 that swaps
-    # H/W must swap here too.
-    transforms = config.frame_transforms()
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in camera_sources(config, sources=sources, input=input):
         head = io.open_reader(src)[[0]]
-        head = transforms.get(name, preprocessing.FrameTransform()).apply(head)
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
 

@@ -190,8 +190,8 @@ def prefetch_windows(
 
     ``transforms`` is an optional per-source
     :class:`~deeperfly.preprocessing.FrameTransform` (aligned to ``sources``)
-    applied to each block before yielding, so detection sees the
-    ``[cameras.*.preprocess]`` orientation.
+    applied to each block before yielding, so detection sees the canonical
+    (``[cameras.*].preprocess``-transformed) frames.
 
     The producer treats each source as an opaque forward stream -- it never asks
     for a frame count or a seek -- so an unbounded *live-camera* source (a future
@@ -207,7 +207,7 @@ def prefetch_windows(
     transforms
         Optional per-source :class:`~deeperfly.preprocessing.FrameTransform`
         (aligned to ``sources``) applied to each block, so detection sees the
-        ``[cameras.*.preprocess]`` orientation.
+        canonical (``[cameras.*].preprocess``-transformed) frames.
     depth
         Queue depth bounding how far the decoder runs ahead of the GPU.
     workers

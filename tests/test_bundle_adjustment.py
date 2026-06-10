@@ -25,7 +25,7 @@ from deeperfly.bundle_adjustment import (
 from deeperfly.bundle_adjustment import core
 from deeperfly.cameras import CameraGroup
 from deeperfly.config import Config
-from helpers import small_rotation
+from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, small_rotation
 
 
 def make_group(rig) -> CameraGroup:
@@ -259,20 +259,25 @@ def test_bundle_adjust_from_config(rig):
     cloud = np.random.default_rng(2).uniform(-0.5, 0.5, size=(120, 3))
     pts2d = group.project(cloud)
 
-    # Perturb all but the anchor `f`; leave tvec[2] (shared+fixed) at ground truth.
-    rvecs0, tvecs0 = rig["rvecs"].copy(), rig["tvecs"].copy()
-    for i, name in enumerate(rig["names"]):
-        if name == "f":
-            continue
-        rmat = np.asarray(geom.rvec_to_rmat(rig["rvecs"][i]))
-        rvecs0[i] = np.asarray(geom.rmat_to_rvec(small_rotation(0.005, i) @ rmat))
-        tvecs0[i, :2] += np.random.default_rng(i).normal(scale=0.2, size=2)
-
+    # Perturb the orbit angles of all but the anchor `f`; keep `distance` at
+    # ground truth so tvec[2] (shared+fixed) starts there too (tvec == [0, 0, d]
+    # for any orbit camera looking at the origin).
+    perturb = np.random.default_rng(3)
+    angles0 = {
+        name: {"azimuth_deg": az}
+        if name == "f"
+        else {
+            "azimuth_deg": az + perturb.normal(scale=0.5),
+            "elevation_deg": perturb.normal(scale=0.5),
+            "roll_deg": perturb.normal(scale=0.5),
+        }
+        for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+    }
     config = {
         "cameras": {
             name: {
-                "rvec": rvecs0[i].tolist(),
-                "tvec": tvecs0[i].tolist(),
+                **angles0[name],
+                "distance": DISTANCE_MM,
                 "focal_length_px": rig["intrs"][i, :2].tolist(),
                 "principal_point_px": rig["intrs"][i, 2:].tolist(),
             }

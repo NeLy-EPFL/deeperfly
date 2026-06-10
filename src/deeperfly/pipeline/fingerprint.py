@@ -122,22 +122,35 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
 
 
 def _camera_geometry(config: Config) -> dict:
-    """The ``[cameras]`` table minus footage concerns (``input``, ``preprocess``)."""
+    """The ``[cameras]`` table minus the footage glob, plus the preprocess chains.
+
+    The raw ``preprocess`` value is stripped from each spec (it is an
+    unnormalized TOML list) and the normalized form is attached at the top
+    level instead -- it shapes the resolved rig (the spec's raw-frame
+    intrinsics are mapped through it). The key is added only when some chain
+    is non-identity, so the no-preprocess majority keeps byte-identical
+    fingerprints (a *new* expected key would invalidate every cached
+    downstream stage under the subset diff).
+    """
 
     def strip(spec: dict) -> dict:
         return {k: v for k, v in spec.items() if k not in ("input", "preprocess")}
 
     defaults, cams = config.camera_table()
-    return {
+    out = {
         "defaults": strip(defaults),
         "cameras": {name: strip(spec) for name, spec in cams.items()},
     }
+    preprocess = _preprocess(config)
+    if preprocess:
+        out["preprocess"] = preprocess
+    return out
 
 
 def _preprocess(config: Config) -> dict:
     """The non-identity per-camera frame transforms (they move the detections)."""
     return {
-        name: {"fliplr": t.fliplr, "flipud": t.flipud, "rot90": t.rot90}
+        name: t.to_json()
         for name, t in config.frame_transforms().items()
         if not t.is_identity()
     }

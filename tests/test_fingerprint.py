@@ -134,7 +134,7 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
     for extra in (
         {"pipeline.pose2d.precision": "float32"},
         {"cameras.cam0.input": "other_pattern"},
-        {"cameras.cam0.preprocess": {"rot90": 1}},
+        {"cameras.cam0.preprocess": [{"op": "rot90", "k": 1}]},
     ):
         other = stage_fingerprint("pose2d", _cfg(extra), enabled, store)
         assert fingerprint_diff(fp, other), extra
@@ -152,8 +152,8 @@ def test_pose2d_fingerprint_candidates_iff_pictorial_enabled(store):
     assert fingerprint_diff(off, on)  # but enabling it does
 
 
-def test_camera_geometry_excludes_footage_keys(store):
-    """[cameras] input/preprocess changes do not touch the BA fingerprint."""
+def test_camera_geometry_excludes_footage_glob(store):
+    """[cameras] input changes do not touch the BA fingerprint; geometry does."""
     base = _cfg()
     moved = _cfg({"cameras.cam0.input": "elsewhere"})
     enabled = base.stage_flags()
@@ -165,6 +165,29 @@ def test_camera_geometry_excludes_footage_keys(store):
         stage_fingerprint("bundle_adjustment", base, enabled, store),
         stage_fingerprint("bundle_adjustment", geom, enabled, store),
     )
+
+
+def test_camera_geometry_tracks_preprocess(store):
+    """Preprocess shapes the resolved rig, so it must invalidate rig consumers."""
+    base = _cfg()
+    cropped = _cfg(
+        {
+            "cameras.cam0.preprocess": [
+                {"op": "crop", "x": 1, "y": 1, "width": 4, "height": 4}
+            ]
+        }
+    )
+    enabled = base.stage_flags()
+    base_fp = stage_fingerprint("bundle_adjustment", base, enabled, store)
+    assert fingerprint_diff(
+        base_fp, stage_fingerprint("bundle_adjustment", cropped, enabled, store)
+    )
+    # no-preprocess configs must not gain a new expected key (the subset diff
+    # would otherwise invalidate every cached downstream stage of older runs)
+    assert "preprocess" not in base_fp["cameras"]
+    # an identity chain normalizes away entirely
+    noop = _cfg({"cameras.cam0.preprocess": [{"op": "rot90", "k": 4}]})
+    assert stage_fingerprint("bundle_adjustment", noop, enabled, store) == base_fp
 
 
 def test_source_selectors_follow_enabled_and_present(store, cameras):

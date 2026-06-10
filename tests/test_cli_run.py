@@ -1271,7 +1271,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     assert pipeline.source_view_frames(cfg, res, [], sources=None) == {}
 
 
-# -- per-camera [preprocess.*] frame transform wiring ------------------------
+# -- per-camera preprocess frame transform wiring ----------------------------
 
 
 def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
@@ -1296,13 +1296,19 @@ def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monke
 
     v0, v1 = names[0], names[1]
     cameras = {n: {"input": n} for n in names}
-    cameras[v0] = {"input": v0, "preprocess": {"rot90": 1, "fliplr": True}}
+    cameras[v0] = {
+        "input": v0,
+        "preprocess": [{"op": "rot90", "k": 1}, {"op": "fliplr"}],
+    }
     cfg = Config.from_dict({"cameras": cameras, "pipeline": {"pose2d": {}}})
     got = pipeline.source_view_frames(
         cfg, result, [v0, v1], sources={n: [n] for n in names}
     )
     np.testing.assert_array_equal(
-        got[v0], preprocessing.FrameTransform(rot90=1, fliplr=True).apply(raw[v0])
+        got[v0],
+        preprocessing.FrameTransform(
+            (preprocessing.Rot90(k=1), preprocessing.Fliplr())
+        ).apply(raw[v0]),
     )
     np.testing.assert_array_equal(got[v1], raw[v1])  # no table -> untouched
 
@@ -1322,7 +1328,7 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
         return SimpleNamespace(stream_blocks=stream_blocks)
 
     monkeypatch.setattr(io, "open_reader", fake_open_reader)
-    t = preprocessing.FrameTransform(fliplr=True, rot90=1)
+    t = preprocessing.FrameTransform((preprocessing.Fliplr(), preprocessing.Rot90(k=1)))
     windows = list(pose2d_stream.prefetch_windows(["camA"], block=8, transforms=[t]))
     assert len(windows) == 1
     window, n = windows[0]
@@ -1359,9 +1365,10 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
     np.testing.assert_array_equal(cam_b, b)
 
 
-def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
-    # A rot90 swaps H/W, so the inferred principal point must use the transformed
-    # size; an untransformed camera keeps its raw (H, W).
+def test_camera_image_sizes_returns_raw_dims(monkeypatch):
+    # Sizes are the *raw* footage dims for every camera -- intrinsics resolve
+    # against the raw frame and are mapped through the preprocess chain
+    # downstream (CameraGroup.from_config), so a rot90 must NOT swap here.
     from deeperfly import io
 
     monkeypatch.setattr(
@@ -1378,10 +1385,10 @@ def test_camera_image_sizes_uses_transformed_dims(monkeypatch):
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader())
     cfg = Config.from_dict(
         {
-            "cameras": {"rh": {"preprocess": {"rot90": 1}}, "lf": {}},
+            "cameras": {"rh": {"preprocess": [{"op": "rot90"}]}, "lf": {}},
             "pipeline": {"pose2d": {}},
         }
     )
     sizes = recordings.camera_image_sizes(cfg, input="x")
-    assert sizes["rh"] == (6, 4)  # (H, W) swapped by the quarter-turn
-    assert sizes["lf"] == (4, 6)  # identity
+    assert sizes["rh"] == (4, 6)  # raw (H, W), untouched by the quarter-turn
+    assert sizes["lf"] == (4, 6)

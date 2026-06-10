@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from deeperfly import Config
+from deeperfly.preprocessing import Rot90
 from deeperfly.config import (
     DEFAULT_CONFIG_PATH,
     STAGE_DEFAULTS,
@@ -116,14 +117,14 @@ def test_camera_patterns_and_frame_transforms_from_per_camera_tables():
         {
             "cameras": {
                 "defaults": {"focal_length_px": 800.0},
-                "rh": {"input": "cam0.mp4", "preprocess": {"rot90": 1}},
+                "rh": {"input": "cam0.mp4", "preprocess": [{"op": "rot90"}]},
                 "lf": {},  # no input -> own name; no preprocess -> identity
             }
         }
     )
     assert c.camera_patterns() == {"rh": "cam0.mp4", "lf": "lf"}
     transforms = c.frame_transforms()
-    assert transforms["rh"].rot90 == 1
+    assert transforms["rh"].ops == (Rot90(k=1),)
     assert "lf" not in transforms  # identity cameras are absent
     # camera_table() splits the reserved `defaults` key from the real cameras.
     defaults, cams = c.camera_table()

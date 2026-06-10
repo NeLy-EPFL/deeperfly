@@ -12,7 +12,7 @@ be re-run later from pristine upstream outputs:
         points               (V, T, N, 2) arg-max 2D detections (visibility-masked)
         conf                 (V, T, N) detection confidences
         cameras/             the config rig as built at detect time
-        attrs["image_sizes"] json {camera_name: [h, w]} of the preprocessed frames
+        attrs["image_sizes"] json {camera_name: [h, w]} of the raw footage frames
         candidates/          top-K peaks (xy, score) -- present iff the
                              pictorial_structures stage was enabled at detect time
     bundle_adjustment/
@@ -259,7 +259,7 @@ class StageStore:
         pts2d, conf
             The detections, ``(V, T, N, 2)`` and ``(V, T, N)``.
         image_sizes
-            ``camera_name -> (height, width)`` of the preprocessed frames (lets
+            ``camera_name -> (height, width)`` of the raw footage frames (lets
             a later run rebuild the config rig without re-reading footage).
         candidates
             The top-K candidate peaks to cache (when pictorial_structures is

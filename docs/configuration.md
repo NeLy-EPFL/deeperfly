@@ -168,20 +168,41 @@ thread count:
 
 See [video.md](video.md) for the reader API.
 
-## Per-camera preprocessing — `[cameras.<camera>.preprocess]`
+## Per-camera preprocessing — `[cameras.<camera>]` `preprocess`
 
-Optional per-camera geometric correction applied right after decoding — for a
-camera mounted sideways/upside-down or with a mirrored sensor. The transformed
-frame becomes canonical for the whole run; nothing maps back to the raw footage.
+Optional per-camera correction applied right after decoding, written as an
+ordered list of steps — for a camera mounted sideways/upside-down, with a
+mirrored sensor, or to crop/downscale a view. Steps run in the order written
+(flips and rotations do not commute, so the order is yours to choose); the
+transformed frame becomes canonical for the whole run.
 
 ```toml
-[cameras.rh.preprocess]
-fliplr = false   # left-right flip
-flipud = false   # up-down flip
-rot90  = 0       # counter-clockwise 90-degree turns (0-3)
+[cameras.rh]
+preprocess = [
+    { op = "rot90", k = 1 },                                  # k CCW quarter-turns (any sign)
+    { op = "fliplr" },                                         # left-right flip; also: flipud
+    { op = "crop", x = 10, y = 10, width = 80, height = 80 },  # keep a window
+    { op = "resize", scale = 0.5 },                            # or width/height; optional
+]                                                              # interpolation = "bilinear"|"nearest"
 ```
 
-Applied in that order. Cameras with no table are left untouched.
+(equivalently as `[[cameras.rh.preprocess]]` blocks). Cameras with no list are
+left untouched.
+
+The camera's intrinsics (`focal_length_px`, `principal_point_px`,
+`distortion_coefficients`) always describe the **raw** footage frame and are
+mapped through the chain automatically: a crop shifts the principal point, a
+resize scales the focal lengths, an odd quarter-turn count swaps them. The
+default principal point is the raw image center, also mapped — e.g. a 100x100
+view with the default center (49.5, 49.5) cropped at `x = y = 10` ends up with
+its principal point at (39.5, 39.5).
+
+> **Migrating from the old table form:** `[cameras.<camera>.preprocess]` with
+> `fliplr`/`flipud`/`rot90` keys is rejected; write the equivalent list,
+> e.g. `preprocess = [{ op = "fliplr" }, { op = "flipud" }, { op = "rot90", k = 1 }]`
+> (the old fixed order). If you set an explicit `principal_point_px` for a
+> preprocessed camera, restate it in raw-footage coordinates — it is now mapped
+> through the chain for you.
 
 ## Bundle adjustment — `[pipeline.bundle_adjustment]`
 
@@ -207,6 +228,9 @@ The cameras orbit an object near the world origin. `[cameras.defaults]` is merge
 into every camera; each `[cameras.<name>]` overrides it (the default rig sets
 just `azimuth_deg` and `input` per view). The shipped values describe the
 standard DeepFly3D 7-camera rig — leave them unless your rig differs.
+Intrinsics refer to the raw footage frame; a per-camera `preprocess` chain maps
+them into the frame the pipeline actually sees (see the preprocessing section
+above).
 
 ```toml
 [cameras.defaults]

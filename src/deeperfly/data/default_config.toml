@@ -16,7 +16,7 @@
 # ===========================================================================
 # Cameras: an array of views orbiting an object near the world origin. Each
 # `[cameras.<name>]` table holds everything about that view -- its geometry, the
-# footage that feeds it (`input`) and any frame correction (`[...preprocess]`).
+# footage that feeds it (`input`) and any frame correction (`preprocess`).
 # `[cameras.defaults]` is merged into every camera; per-camera keys override it.
 # ===========================================================================
 [cameras.defaults]
@@ -65,20 +65,24 @@ input = "camera_5.mp4"
 azimuth_deg = 120
 input = "camera_6.mp4"
 
-# Optional per-camera frame preprocessing, applied to each frame right after decoding
-# -- for a camera mounted sideways/upside-down or with a mirrored sensor. The
+# Optional per-camera frame preprocessing: an ordered list of steps applied to
+# each frame right after decoding, in the order written -- for a camera mounted
+# sideways/upside-down, with a mirrored sensor, or to crop/downscale a view. The
 # transformed frame becomes the canonical frame for the whole run (2D detector,
-# principal point, calibration, overlays); nothing maps back to the raw footage.
-# Each `[cameras.<camera>.preprocess]` table takes:
-#   fliplr = true|false   # left-right flip   (numpy fliplr)
-#   flipud = true|false   # up-down flip      (numpy flipud)
-#   rot90  = 0|1|2|3       # counter-clockwise 90-degree turns (numpy rot90, k)
-# applied in that order. Cameras with no table are left untouched. Example
-# (disabled -- all identity):
-# [cameras.rh.preprocess]
-# fliplr = false
-# flipud = false
-# rot90  = 0
+# calibration, overlays). Camera intrinsics (focal_length_px,
+# principal_point_px) describe the *raw* footage and are mapped through the
+# chain automatically; the default principal point is the raw image center,
+# also mapped (e.g. a 100x100 view cropped at x = y = 10 centers at 39.5).
+# Steps (order matters -- flips and rotations do not commute):
+#   { op = "fliplr" }                                     # left-right flip
+#   { op = "flipud" }                                     # up-down flip
+#   { op = "rot90", k = 1 }                                # k CCW quarter-turns (any sign)
+#   { op = "crop", x = 0, y = 0, width = 960, height = 480 }
+#   { op = "resize", scale = 0.5 }                         # or width/height; optional
+#                                                          # interpolation = "bilinear"|"nearest"
+# Cameras with no list are left untouched. Example (disabled):
+# [cameras.rh]
+# preprocess = [{ op = "rot90", k = 1 }, { op = "fliplr" }]
 
 
 # ===========================================================================

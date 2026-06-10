@@ -25,6 +25,10 @@ only CPU JAX -- the tiny arrays don't benefit from a GPU.
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float

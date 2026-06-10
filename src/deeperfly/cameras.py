@@ -11,11 +11,12 @@ from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
 *only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
 ``CameraGroup`` with a separate ``[pipeline.bundle_adjustment]`` section.
 
-Orientation and position accept whatever combination is convenient -- a Rodrigues
-vector, a rotation matrix, a forward/up axis pair, or an orbit around a
-``look_at`` target (azimuth / elevation / roll / distance) -- as long as the keys
-don't conflict. Everything resolves to a single ``(rvec, tvec)``; see
-:func:`resolve_extrinsics` for the rules.
+Extrinsics are specified as an orbit around a ``look_at`` target: the camera
+sits ``distance`` away in the direction given by ``azimuth_deg`` /
+``elevation_deg``, looks back at the target with world ``+z`` up, and
+``roll_deg`` turns it about the optical axis. See :func:`resolve_extrinsics`.
+(Cameras with known raw extrinsics -- e.g. bundle-adjustment output -- are built
+via :meth:`CameraGroup.from_arrays`, not a config spec.)
 """
 
 from __future__ import annotations
@@ -36,13 +37,27 @@ from .geometry import (
 
 if TYPE_CHECKING:
     from .config import Config
+    from .preprocessing import FrameTransform
 
-# Default world "up" used to disambiguate look-at / orbit orientations.
+# World "up" that fixes the camera roll in the look-at orientation.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
 
-# Keys recognized by the extrinsic resolver, grouped by the quantity they fix.
-_ROTATION_KEYS = ("rvec", "rotation_matrix", "forward")
-_CENTER_KEYS = ("position", "center", "eye")
+# The orbit spec: the only way a config specifies extrinsics. ``distance`` is
+# required; the rest default to the origin / zero angles.
+_ORBIT_KEYS = ("look_at", "distance", "azimuth_deg", "elevation_deg", "roll_deg")
+
+# Extrinsics keys from the old free-form spec grammar, rejected with a pointer
+# to the orbit keys rather than silently ignored.
+_REMOVED_KEYS = (
+    "rvec",
+    "tvec",
+    "rotation_matrix",
+    "forward",
+    "up",
+    "position",
+    "center",
+    "eye",
+)
 
 # Per-camera keys owned by other stages (footage glob, frame preprocessing), not
 # the rig geometry -- dropped before a spec reaches :meth:`Camera.from_spec`.
@@ -82,26 +97,37 @@ def _orbit_direction(azimuth_deg: float, elevation_deg: float) -> np.ndarray:
     return np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
 
 
-def _look_rotation(forward: np.ndarray, up: np.ndarray) -> np.ndarray:
+def _look_rotation(forward: np.ndarray) -> np.ndarray:
     """Rotation matrix (rows = camera axes) for a camera looking along ``forward``.
 
     ``z`` (optical axis) is ``forward``; ``x`` (image right) is
-    ``normalize(cross(z, up))``; ``y`` (image down) is ``cross(z, x)``.
+    ``normalize(cross(z, _WORLD_UP))``; ``y`` (image down) is ``cross(z, x)``.
 
     Parameters
     ----------
     forward
         Optical-axis direction (need not be normalized).
-    up
-        World up vector used to disambiguate the roll.
 
     Returns
     -------
     np.ndarray
         A ``(3, 3)`` rotation matrix whose rows are the camera axes.
+
+    Raises
+    ------
+    ValueError
+        If ``forward`` is parallel to the world up axis, which leaves the
+        camera roll undefined.
     """
     z = _normalize(forward)
-    x = _normalize(np.cross(z, up))
+    x = np.cross(z, _WORLD_UP)
+    norm = np.linalg.norm(x)
+    if norm < 1e-9:
+        raise ValueError(
+            "camera looks straight along the world up axis (elevation_deg of "
+            "+/-90); its orientation is ambiguous"
+        )
+    x = x / norm
     y = np.cross(z, x)
     return np.array([x, y, z])
 
@@ -114,22 +140,18 @@ def _roll_matrix(roll_deg: float) -> np.ndarray:
 
 
 def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve a camera spec dict to ``(rvec, tvec)``.
+    """Resolve an orbit camera spec to ``(rvec, tvec)``.
 
-    The rotation is taken from at most one explicit source -- ``rvec``,
-    ``rotation_matrix``, or ``forward`` (+ optional ``up``) -- otherwise from a
-    look-at orientation implied by ``look_at`` / ``azimuth_deg`` /
-    ``elevation_deg``. The camera center is taken from at most one of an
-    explicit ``position`` (aka ``center`` / ``eye``) or an orbit
-    ``look_at + distance * dir(azimuth, elevation)``; alternatively ``tvec`` may
-    be given directly. ``roll_deg`` (default 0) composes on top of any rotation
-    as a turn about the optical axis.
+    The camera sits at ``look_at + distance * dir(azimuth_deg, elevation_deg)``
+    and looks back at ``look_at`` with world ``+z`` up; ``roll_deg`` then turns
+    it about the optical axis. ``distance`` is required; ``look_at`` defaults
+    to the origin and the angles to zero.
 
     Parameters
     ----------
     spec
-        A camera spec dict mixing any non-conflicting orientation/position keys
-        (see the summary above).
+        Camera spec dict with the orbit keys above (other keys -- intrinsics,
+        footage -- are ignored here).
 
     Returns
     -------
@@ -139,110 +161,69 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     Raises
     ------
     ValueError
-        If conflicting orientation/position keys are given, or neither a
-        rotation nor a position source can be resolved.
+        If ``distance`` is missing, a removed key from the old free-form spec
+        grammar is given, or ``elevation_deg`` is +/-90 (camera roll undefined).
     """
-    up = np.asarray(spec.get("up", _WORLD_UP), dtype=float)
-
-    # --- camera center (world position) -------------------------------------
-    center_keys = [k for k in _CENTER_KEYS if k in spec]
-    has_orbit = "distance" in spec
-    has_tvec = "tvec" in spec
-    if len(center_keys) > 1:
-        raise ValueError(f"conflicting position keys: {center_keys}")
-    if sum([bool(center_keys), has_orbit, has_tvec]) > 1:
-        given = (
-            center_keys
-            + (["distance"] if has_orbit else [])
-            + (["tvec"] if has_tvec else [])
-        )
-        raise ValueError(f"conflicting position/translation keys: {given}")
-
-    center = None
-    if center_keys:
-        center = np.asarray(spec[center_keys[0]], dtype=float)
-    elif has_orbit:
-        look_at = np.asarray(spec.get("look_at", [0.0, 0.0, 0.0]), dtype=float)
-        direction = _orbit_direction(
-            spec.get("azimuth_deg", 0.0), spec.get("elevation_deg", 0.0)
-        )
-        center = look_at + float(spec["distance"]) * direction
-
-    # --- rotation -----------------------------------------------------------
-    rot_keys = [k for k in _ROTATION_KEYS if k in spec]
-    if len(rot_keys) > 1:
-        raise ValueError(f"conflicting rotation keys: {rot_keys}")
-    implies_look_at = any(
-        k in spec for k in ("look_at", "azimuth_deg", "elevation_deg")
-    )
-
-    if rot_keys == ["rvec"]:
-        rmat = np.asarray(rvec_to_rmat(np.asarray(spec["rvec"], dtype=float)))
-    elif rot_keys == ["rotation_matrix"]:
-        rmat = np.asarray(spec["rotation_matrix"], dtype=float).reshape(3, 3)
-    elif rot_keys == ["forward"]:
-        rmat = _look_rotation(np.asarray(spec["forward"], dtype=float), up)
-    elif implies_look_at:
-        if center is None:
-            raise ValueError(
-                "look-at orientation needs a camera position; give 'distance' "
-                "(orbit) or 'position', or specify orientation directly via "
-                "'rvec' / 'rotation_matrix' / 'forward'"
-            )
-        target = np.asarray(spec.get("look_at", [0.0, 0.0, 0.0]), dtype=float)
-        rmat = _look_rotation(target - center, up)
-    else:
+    removed = [k for k in _REMOVED_KEYS if k in spec]
+    if removed:
         raise ValueError(
-            "no rotation source: provide one of 'rvec', 'rotation_matrix', "
-            "'forward', or a look-at ('look_at' / 'azimuth_deg' / "
-            "'elevation_deg')"
+            f"unsupported extrinsics keys {removed}: cameras are specified as "
+            f"an orbit via {list(_ORBIT_KEYS)}"
         )
-
-    if "roll_deg" in spec:
-        rmat = _roll_matrix(spec["roll_deg"]) @ rmat
-
-    # --- translation --------------------------------------------------------
-    if has_tvec:
-        tvec = np.asarray(spec["tvec"], dtype=float)
-    else:
-        if center is None:
-            raise ValueError(
-                "no position source: provide 'tvec', 'position', or an orbit 'distance'"
-            )
-        tvec = -rmat @ center
-
+    if "distance" not in spec:
+        raise ValueError(
+            f"camera spec needs an orbit 'distance' (orbit keys: {list(_ORBIT_KEYS)})"
+        )
+    look_at = np.asarray(spec.get("look_at", [0.0, 0.0, 0.0]), dtype=float)
+    direction = _orbit_direction(
+        spec.get("azimuth_deg", 0.0), spec.get("elevation_deg", 0.0)
+    )
+    center = look_at + float(spec["distance"]) * direction
+    rmat = _roll_matrix(spec.get("roll_deg", 0.0)) @ _look_rotation(-direction)
     rvec = np.asarray(rmat_to_rvec(rmat), dtype=float)
-    return rvec, tvec
+    return rvec, -rmat @ center
 
 
 def _parse_intrinsics(
-    spec: dict, image_size: tuple[int, int] | None = None
+    spec: dict,
+    image_size: tuple[int, int] | None = None,
+    transform: "FrameTransform | None" = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a spec dict to packed ``intr = [fx, fy, cx, cy]`` and ``dist``.
 
-    ``principal_point_px`` is optional: when the spec omits it, the principal
-    point is placed at the image center ``((w - 1) / 2, (h - 1) / 2)`` using
-    ``image_size``.
+    The spec's intrinsics describe the *raw* footage frame. ``principal_point_px``
+    is optional: when the spec omits it, the principal point is placed at the
+    raw image center ``((w - 1) / 2, (h - 1) / 2)`` using ``image_size``. When
+    the camera has a preprocess ``transform``, the resolved intrinsics are then
+    mapped through it into the canonical (transformed) frame (see
+    :meth:`~deeperfly.preprocessing.FrameTransform.map_intrinsics`).
 
     Parameters
     ----------
     spec
         Camera spec with ``focal_length_px`` (scalar or ``[fx, fy]``) and an
-        optional ``principal_point_px`` / ``distortion_coefficients``.
+        optional ``principal_point_px`` / ``distortion_coefficients``, all in
+        raw-frame pixels.
     image_size
-        ``(height, width)`` (as in a NumPy image array) used to infer the
-        principal point when ``principal_point_px`` is absent.
+        Raw footage ``(height, width)`` (as in a NumPy image array) used to
+        infer the principal point when ``principal_point_px`` is absent, and to
+        anchor the preprocess affine.
+    transform
+        The camera's preprocess :class:`~deeperfly.preprocessing.FrameTransform`
+        (or ``None`` for the identity).
 
     Returns
     -------
     intr, dist : np.ndarray
-        Packed intrinsics ``[fx, fy, cx, cy]`` and the distortion coefficients.
+        Packed canonical-frame intrinsics ``[fx, fy, cx, cy]`` and the
+        distortion coefficients.
 
     Raises
     ------
     ValueError
-        If a required intrinsic is missing (and cannot be inferred) or
-        ``focal_length_px`` is not a scalar or 2-vector.
+        If a required intrinsic is missing (and cannot be inferred),
+        ``focal_length_px`` is not a scalar or 2-vector, or a non-identity
+        ``transform`` comes without an ``image_size`` to anchor it.
     """
     try:
         focal = np.atleast_1d(np.asarray(spec["focal_length_px"], dtype=float))
@@ -266,6 +247,14 @@ def _parse_intrinsics(
         raise ValueError("focal_length_px must be a scalar or [fx, fy]")
     intr = np.array([fx, fy, cx, cy])
     dist = np.asarray(spec.get("distortion_coefficients", []), dtype=float)
+    if transform is not None and not transform.is_identity():
+        if image_size is None:
+            raise ValueError(
+                "camera has a preprocess transform but no raw image size to "
+                "map its intrinsics through (the op affines need the frame's "
+                "height/width)"
+            )
+        intr = transform.map_intrinsics(intr, dist, image_size)
     return intr, dist
 
 
@@ -290,18 +279,25 @@ class Camera:
         spec: dict,
         name: str | None = None,
         image_size: tuple[int, int] | None = None,
+        transform: "FrameTransform | None" = None,
     ) -> Camera:
         """Build a camera from a config dict (see :func:`resolve_extrinsics`).
 
         Parameters
         ----------
         spec
-            Camera spec dict (extrinsics + intrinsics keys).
+            Camera spec dict (extrinsics + intrinsics keys; intrinsics in
+            raw-footage pixels).
         name
             Optional camera name stored on the result.
         image_size
-            Optional ``(height, width)`` pair used to infer the principal point
-            (image center) when the spec omits ``principal_point_px``.
+            Optional raw-footage ``(height, width)`` pair used to infer the
+            principal point (image center) when the spec omits
+            ``principal_point_px``, and to anchor ``transform``'s affine.
+        transform
+            The camera's preprocess transform; when given and non-identity, the
+            spec's raw-frame intrinsics are mapped through it (see
+            :func:`_parse_intrinsics`).
 
         Returns
         -------
@@ -309,7 +305,7 @@ class Camera:
             The constructed camera.
         """
         rvec, tvec = resolve_extrinsics(spec)
-        intr, dist = _parse_intrinsics(spec, image_size=image_size)
+        intr, dist = _parse_intrinsics(spec, image_size=image_size, transform=transform)
         return cls(rvec=rvec, tvec=tvec, intr=intr, dist=dist, name=name)
 
     @property
@@ -380,18 +376,20 @@ class CameraGroup:
         """Build a group from a config.
 
         Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
-        override the defaults. The per-camera ``input`` (footage glob) and
-        ``preprocess`` (frame transform) keys belong to other stages and are
-        ignored here, as is any foreign section -- this class is rig-only.
+        override the defaults. The per-camera ``input`` (footage glob) key
+        belongs to other stages and is ignored here. Spec intrinsics describe
+        the *raw* footage frame; a per-camera ``preprocess`` chain maps them
+        into the canonical (transformed) frame the rest of the pipeline uses.
 
         Parameters
         ----------
         config
             A :class:`~deeperfly.config.Config`.
         image_sizes
-            Maps a camera name to its ``(height, width)``, used to infer that
-            camera's principal point (image center) when neither the camera spec
-            nor ``[cameras.defaults]`` specifies ``principal_point_px``.
+            Maps a camera name to its raw footage ``(height, width)``, used to
+            infer that camera's principal point (image center) when neither the
+            camera spec nor ``[cameras.defaults]`` specifies
+            ``principal_point_px``, and to anchor the preprocess affine.
 
         Returns
         -------
@@ -404,12 +402,14 @@ class CameraGroup:
             If the config defines no cameras.
         """
         defaults, specs = config.camera_table()
+        transforms = config.frame_transforms()
         image_sizes = image_sizes or {}
         cameras = {
             name: Camera.from_spec(
                 _rig_keys({**defaults, **spec}),
                 name=name,
                 image_size=image_sizes.get(name),
+                transform=transforms.get(name),
             )
             for name, spec in specs.items()
         }

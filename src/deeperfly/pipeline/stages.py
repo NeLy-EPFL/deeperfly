@@ -109,7 +109,7 @@ def stage_pose2d(
     candidates : deeperfly.pictorial.Candidates or None
         The top-K peak set when ``want_candidates``, else ``None``.
     image_sizes : dict
-        ``camera_name -> (height, width)`` of the preprocessed frames.
+        ``camera_name -> (height, width)`` of the raw footage frames.
     """
     from ..pose2d import detector, inference
     from ..triangulation import apply_visibility
@@ -117,7 +117,7 @@ def stage_pose2d(
     transforms = config.frame_transforms()
     image_sizes = camera_image_sizes(config, sources=sources, input=input)
     log.info(
-        "input image sizes (h, w, after preprocess): %s",
+        "raw input image sizes (h, w): %s",
         {n: tuple(s) for n, s in image_sizes.items()},
     )
     cameras = config.camera_group(image_sizes=image_sizes)
@@ -135,10 +135,11 @@ def stage_pose2d(
     if active:
         log.info(
             "frame preprocessing (per camera): %s",
-            {
-                n: f"fliplr={t.fliplr}, flipud={t.flipud}, rot90={t.rot90}"
-                for n, t in active.items()
-            },
+            {n: t.to_json() for n, t in active.items()},
+        )
+        log.info(
+            "preprocessed image sizes (h, w): %s",
+            {n: t.output_size(image_sizes[n]) for n, t in active.items()},
         )
     skeleton = config.skeleton()
 
@@ -335,8 +336,9 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
 def config_rig_from_store(config: Config, store: StageStore) -> CameraGroup:
     """The un-refined config rig, rebuilt footage-free from the store.
 
-    Principal points default to the image centers ``pose2d`` recorded
-    (``image_sizes``), so the rig matches what a fresh detection would build.
+    Intrinsics resolve against the raw frame sizes ``pose2d`` recorded
+    (``image_sizes``) and map through each camera's preprocess chain, so the
+    rig matches what a fresh detection would build.
     When the config alone cannot build a rig (no explicit principal point and no
     recorded sizes -- e.g. a result file from an older run), the rig stored by
     ``pose2d`` is used instead, with a note.
