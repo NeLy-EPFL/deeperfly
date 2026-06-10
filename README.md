@@ -74,7 +74,7 @@ UV_TORCH_BACKEND=auto uv add git+https://github.com/NeLy-EPFL/deeperfly
 ```python
 from deeperfly import CameraGroup, Config, Skeleton, run_from_points2d
 
-cameras = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+cameras = CameraGroup.from_config(Config.from_toml("config.toml"))
 result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```

@@ -14,7 +14,7 @@ cameras, `Skeleton.from_config(config)` only `[skeleton]`.
 ```python
 from deeperfly import CameraGroup, Config, bundle_adjust
 
-group = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+group = CameraGroup.from_config(Config.from_toml("config.toml"))
 pts2d = group.project(pts3d)                       # (V, N, 2) observations
 result, optimized, points = bundle_adjust(group, pts2d, fixed=["*.intr"])
 ```
@@ -24,7 +24,7 @@ result, optimized, points = bundle_adjust(group, pts2d, fixed=["*.intr"])
 ```python
 from deeperfly import CameraGroup, Config, Skeleton, run_from_points2d
 
-cameras = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+cameras = CameraGroup.from_config(Config.from_toml("config.toml"))
 result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```

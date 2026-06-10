@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-# Reference rig parameters (shared with examples/cameras.toml).
+# Reference rig parameters.
 FOCAL_PX = 22388.125
 DISTANCE_MM = 107.463
 WIDTH, HEIGHT = 1024, 512

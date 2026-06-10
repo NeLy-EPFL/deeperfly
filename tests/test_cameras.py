@@ -27,7 +27,7 @@ from helpers import (
 
 @pytest.fixture
 def config() -> Config:
-    """Config equivalent to examples/cameras.toml (cameras only)."""
+    """Reference camera rig config (cameras only)."""
     return Config.from_dict(
         {
             "cameras": {
