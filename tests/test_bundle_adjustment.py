@@ -254,6 +254,69 @@ def test_bundle_adjust_missing_observations(rig):
     assert res.cost < 1e-6
 
 
+def test_irls_losses_consistent():
+    """The IRLS losses report scipy's documented rho(z), its exact derivative
+    as rho'(z), and zero curvature (the point of the IRLS form)."""
+    z = np.linspace(0.01, 9, 50)
+    expected = {
+        "huber": np.where(z <= 1, z, 2 * z**0.5 - 1),
+        "cauchy": np.log1p(z),
+        "arctan": np.arctan(z),
+    }
+    for name, loss in core._IRLS_LOSSES.items():
+        rho = loss(z)
+        assert np.allclose(rho[0], expected[name]), name
+        fd = (loss(z + 1e-7)[0] - loss(z - 1e-7)[0]) / 2e-7
+        assert np.allclose(rho[1], fd, atol=1e-6), name
+        assert (rho[1] > 0).all() and (rho[2] == 0).all(), name
+
+
+def test_bundle_adjust_huber_outliers(rig):
+    """Gross outliers drag a linear fit; the same fit with huber loss recovers.
+
+    Exercises the IRLS translation of ``loss="huber"``: scipy's native huber
+    rescaling zeroes the Jacobian rows of outlier residuals, which stalls the
+    sparse lsmr solver even from a good initialization.
+    """
+    group = make_group(rig)
+    cloud = np.random.default_rng(6).uniform(-0.5, 0.5, size=(60, 3))
+    pts2d = np.asarray(group.project(cloud))
+    out = np.random.default_rng(7)
+    out_view, out_pt = np.unravel_index(
+        out.choice(pts2d.size // 2, size=40, replace=False), pts2d.shape[:2]
+    )
+    angle = out.uniform(0, 2 * np.pi, size=40)
+    magnitude = out.uniform(30, 150, size=40)
+    corrupt = pts2d.copy()
+    corrupt[out_view, out_pt] += magnitude[:, None] * np.stack(
+        [np.cos(angle), np.sin(angle)], axis=-1
+    )
+
+    rvecs0, tvecs0 = perturb_extrinsics(rig, rot_sigma=0.02, trans_sigma=2.0)
+    cams0 = CameraGroup.from_arrays(
+        rig["names"], rvecs0, tvecs0, rig["intrs"], rig["dists"]
+    )
+    inlier = np.ones(pts2d.shape[:2], dtype=bool)
+    inlier[out_view, out_pt] = False
+
+    def median_inlier_error(cams, pts3d):
+        resid = np.asarray(cams.project(pts3d)) - pts2d
+        return np.median(np.linalg.norm(resid[inlier], axis=-1))
+
+    # the linear fit is dragged off by the outliers
+    res_lin, cams_lin, pts3d_lin = bundle_adjust(
+        cams0, corrupt, fixed=["*.intr"], max_nfev=2000
+    )
+    assert median_inlier_error(cams_lin, pts3d_lin) > 3.0
+
+    # the huber fit pulls the inlier reprojections back to ~0
+    res, opt, pts3d_opt = bundle_adjust(
+        cams0, corrupt, fixed=["*.intr"], max_nfev=2000, loss="huber", f_scale=1.0
+    )
+    assert res.status > 0  # converged, not out of budget
+    assert median_inlier_error(opt, pts3d_opt) < 0.5
+
+
 def test_bundle_adjust_from_config(rig):
     group = make_group(rig)
     cloud = np.random.default_rng(2).uniform(-0.5, 0.5, size=(120, 3))

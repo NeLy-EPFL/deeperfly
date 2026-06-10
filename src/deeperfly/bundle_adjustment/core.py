@@ -53,6 +53,38 @@ _bone_len_per = jax.jit(jax.vmap(_bone_length_one))
 _bone_jac_per = jax.jit(jax.vmap(jax.jacfwd(_bone_length_one, argnums=(0, 1))))
 
 
+def _irls(rho0, rho1):
+    """A scipy ``loss`` callable from rho(z) and rho'(z), reporting rho'' = 0."""
+
+    def loss(z):
+        rho = np.empty((3, z.size))
+        rho[0] = rho0(z)
+        rho[1] = rho1(z)
+        rho[2] = 0.0
+        return rho
+
+    return loss
+
+
+# scipy turns a robust loss into a least-squares subproblem by scaling each
+# residual row with sqrt(rho' + 2 rho'' z) (a second-order "Triggs" correction).
+# For huber, cauchy and arctan that factor is zero (or negative, then clamped to
+# EPS) for residuals beyond ~f_scale, and the degenerate rows -- near-zero
+# Jacobian against a 1/sqrt(EPS)-amplified residual -- stall the iterative LSMR
+# trust-region solver far from the optimum. Reporting rho'' = 0 keeps the cost
+# and gradient exact and the row scaling sqrt(rho') strictly positive: plain
+# IRLS, and Ceres' fallback in its loss-function corrector. The z <= 1 (inlier)
+# branches are untouched, where huber's rho'' is genuinely zero.
+_IRLS_LOSSES = {
+    "huber": _irls(
+        lambda z: np.where(z <= 1, z, 2 * np.sqrt(np.maximum(z, 1)) - 1),
+        lambda z: np.where(z <= 1, 1.0, 1 / np.sqrt(np.maximum(z, 1))),
+    ),
+    "cauchy": _irls(np.log1p, lambda z: 1 / (1 + z)),
+    "arctan": _irls(np.arctan, lambda z: 1 / (1 + z**2)),
+}
+
+
 def bundle_adjust(
     values: Float[np.ndarray, "n_params"],
     fixed: Bool[np.ndarray, "n_params"],
@@ -83,6 +115,11 @@ def bundle_adjust(
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`. Use ``loss="huber"``
         with ``f_scale`` set to a pixel threshold for robust calibration.
+        ``"huber"``, ``"cauchy"`` and ``"arctan"`` are translated to IRLS-form
+        callables (same cost and gradient, ``rho'' = 0``) because scipy's
+        native second-order rescaling of those losses degenerates on outlier
+        residuals and stalls the sparse LSMR trust-region solver; see
+        ``_IRLS_LOSSES``.
     weights
         Optional per-observation weights of shape ``(V, N)``. Each reprojection
         residual is scaled by ``sqrt(weight)`` (so the cost is ``weight``
@@ -262,7 +299,7 @@ def bundle_adjust(
         jac=jac,
         method="trf",
         tr_solver="lsmr",
-        loss=loss,
+        loss=_IRLS_LOSSES.get(loss, loss),
         f_scale=f_scale,
         max_nfev=max_nfev,
         **kwargs,
