@@ -54,4 +54,3 @@ with io.VideoWriter("out.mp4", fps=30) as writer:
 
 - [`examples/bundle_adjustment.ipynb`](../examples/bundle_adjustment.ipynb) — the bundle-adjustment walkthrough.
 - [`examples/pipeline_walkthrough.ipynb`](../examples/pipeline_walkthrough.ipynb) — the pipeline one stage at a time.
-- [`examples/pipeline_demo.py`](../examples/pipeline_demo.py) — a synthetic end-to-end run (no weights required).
