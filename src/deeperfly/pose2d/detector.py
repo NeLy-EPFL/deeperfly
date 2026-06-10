@@ -38,7 +38,7 @@ def load_detector(checkpoint=None, **kwargs):
 
 
 def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
-    """Final-stack heatmaps for ``(N, 3, H, W)`` inputs, always as NumPy.
+    """Final-stack heatmaps for ``(B, V, 3, H, W)`` inputs, always as NumPy.
 
     Returns NumPy so downstream :func:`~deeperfly.pose2d.inference.heatmap_to_points`
     decoding is independent of where the forward ran. Used by the candidate path,
@@ -49,12 +49,14 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
     model
         The detector.
     inputs
-        Network inputs of shape ``(N, 3, H, W)``.
+        Network inputs of shape ``(B, V, 3, H, W)`` (the ``V`` views run in parallel
+        and independent); plain 4D ``(N, 3, H, W)`` is also accepted.
 
     Returns
     -------
     np.ndarray
-        The final-stack heatmaps as host NumPy.
+        The final-stack heatmaps as host NumPy, ``(B, V, J, h, w)`` (or
+        ``(N, J, h, w)`` for a 4D input).
     """
     from . import model as _model
 
@@ -64,7 +66,7 @@ def predict_heatmaps(model, inputs: np.ndarray) -> np.ndarray:
 def predict_points(
     model, inputs: np.ndarray, *, method: str = "weighted", radius: int = 2
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fused forward + heatmap decode: normalized ``(N, J, 2)`` peaks and ``(N, J)`` conf.
+    """Fused forward + heatmap decode: normalized ``(B, V, J, 2)`` peaks and ``(B, V, J)`` conf.
 
     The arg-max decode runs on the forward's device, so only the small peak arrays
     cross to the host -- not the full heatmap, and not a host-side float64 arg-max.
@@ -75,7 +77,7 @@ def predict_points(
     model
         The detector.
     inputs
-        Network inputs of shape ``(N, 3, H, W)``.
+        Network inputs of shape ``(B, V, 3, H, W)`` (or 4D ``(N, 3, H, W)``).
     method, radius
         Sub-pixel refinement options (see
         :func:`~deeperfly.pose2d.inference.refine_peaks`).
@@ -83,9 +85,9 @@ def predict_points(
     Returns
     -------
     xy : np.ndarray
-        Normalized ``(N, J, 2)`` peaks.
+        Normalized ``(B, V, J, 2)`` peaks (``(N, J, 2)`` for a 4D input).
     conf : np.ndarray
-        Per-joint confidence of shape ``(N, J)``.
+        Per-joint confidence of shape ``(B, V, J)`` (``(N, J)`` for a 4D input).
     """
     from . import model as _model
 

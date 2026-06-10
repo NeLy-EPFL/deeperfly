@@ -136,7 +136,11 @@ class LoadedModel:
         return out - self.spec.mean
 
     def predict_points(self, inputs, *, method: str = "weighted", radius: int = 2):
-        """Fused forward + decode: normalized ``(N, J, 2)`` peaks and ``(N, J)`` conf."""
+        """Fused forward + decode for ``(B, V, 3, H, W)`` input.
+
+        Returns normalized ``(B, V, J, 2)`` peaks and ``(B, V, J)`` conf (plain 4D
+        ``(N, 3, H, W)`` input gives ``(N, J, 2)`` / ``(N, J)``).
+        """
         from . import detector
 
         return detector.predict_points(
@@ -144,7 +148,7 @@ class LoadedModel:
         )
 
     def predict_heatmaps(self, inputs):
-        """Final-stack heatmaps ``(N, J, Hh, Ww)`` (host NumPy) for the candidate path."""
+        """Final-stack heatmaps ``(B, V, J, Hh, Ww)`` (host NumPy) for the candidate path."""
         from . import detector
 
         return detector.predict_heatmaps(self.module, inputs)

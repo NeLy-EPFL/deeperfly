@@ -347,15 +347,17 @@ def detect_sequence(
         model = models[model_name]
         stacked = torch.stack([prepared[p] for p in pw_idxs], dim=1)  # (T, Pm, 3, H, W)
         p_m = stacked.shape[1]
-        flat = stacked.reshape(n_frames * p_m, *stacked.shape[2:])
-        bs = p_m if batch_size is None else max(p_m, (int(batch_size) // p_m) * p_m)
-        for i in range(0, flat.shape[0], bs):
+        # The model's standard input is (B, V, 3, H, W): hand it whole frames (B) of
+        # this model's Pm pathways (V), in chunks of bs_t frames. Numerically
+        # identical to the old flat (T*Pm, ...) batch -- only the dispatch differs.
+        bs_t = 1 if batch_size is None else max(1, int(batch_size) // p_m)
+        for i in range(0, n_frames, bs_t):
             pn, cc = model.predict_points(
-                flat[i : i + bs], method=method, radius=radius
-            )
-            for j in range(pn.shape[0]):
-                t, local = divmod(i + j, p_m)
-                landed(t, pw_idxs[local], pn[j], cc[j])
+                stacked[i : i + bs_t], method=method, radius=radius
+            )  # (b, Pm, J, 2), (b, Pm, J)
+            for tt in range(pn.shape[0]):
+                for local in range(p_m):
+                    landed(i + tt, pw_idxs[local], pn[tt, local], cc[tt, local])
     for _ in step_iter:  # drain any trailing progress ticks
         pass
 
@@ -472,7 +474,8 @@ def detect_candidates_sequence(
             # One forward over all this model's pathways for frame t -> whole
             # heatmaps decoded/peaked in a single batched call.
             batch = torch.stack([prepared[p][t] for p in pw_idxs])  # (Pm, 3, H, W)
-            heatmaps = model.predict_heatmaps(batch)  # (Pm, J, Hh, Ww)
+            # Standard (B, V, ...) input: this frame is B=1 over Pm views; strip B back.
+            heatmaps = model.predict_heatmaps(batch.unsqueeze(0))[0]  # (Pm, J, Hh, Ww)
             pn, c = heatmap_to_points(heatmaps, method=method, radius=radius)
             cxy, csc = pictorial.peak_candidates(
                 heatmaps, k, radius=radius, method=method

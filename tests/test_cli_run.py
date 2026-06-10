@@ -1288,8 +1288,10 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
             return torch.zeros((*t.shape[:-3], 3, 4, 4))
 
         def predict_points(self, inputs, *, method="weighted", radius=2):
-            n = inputs.shape[0]
-            return np.zeros((n, 19, 2), np.float32), np.ones((n, 19), np.float32)
+            lead = tuple(inputs.shape[:-3])  # (B, V) of the standard (B, V, 3, H, W)
+            return np.zeros((*lead, 19, 2), np.float32), np.ones(
+                (*lead, 19), np.float32
+            )
 
     def _pw(view):
         return SimpleNamespace(

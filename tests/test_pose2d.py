@@ -38,6 +38,19 @@ def test_forward_shapes(model):
     assert tuple(outs[-1].shape) == (1, 19, 64, 128)
 
 
+def test_forward_view_axis_folds_into_batch(model):
+    # The standard input is (B, V, C, H, W): the V views run in parallel and
+    # independent, so the result must equal folding them into one (B*V) batch.
+    x = torch.randn(2, 4, 3, 256, 512)
+    with torch.inference_mode():
+        out5 = model(x)[-1]
+        out4 = model(x.reshape(8, 3, 256, 512))[-1]
+    assert tuple(out5.shape) == (2, 4, 19, 64, 128)
+    np.testing.assert_allclose(
+        np.asarray(out5).reshape(8, 19, 64, 128), np.asarray(out4), atol=1e-6
+    )
+
+
 def test_default_is_sh8():
     # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
     # load_model builds a matching architecture for the published weights.
@@ -49,6 +62,19 @@ def test_batched_inference(model):
     hm = detector.predict_heatmaps(model, inputs)
     assert hm.shape == (3, 19, 64, 128)
     assert isinstance(hm, np.ndarray)  # backend always returns host NumPy
+
+
+def test_predict_view_axis_matches_folded(model):
+    # predict_* carry the (B, V) axes through to their outputs and must match the
+    # equivalent flat (B*V, ...) batch to float32 epsilon.
+    inputs = torch.randn(2, 3, 3, 256, 512)
+    hm = detector.predict_heatmaps(model, inputs)
+    pts, conf = detector.predict_points(model, inputs)
+    assert hm.shape == (2, 3, 19, 64, 128)
+    assert pts.shape == (2, 3, 19, 2)
+    assert conf.shape == (2, 3, 19)
+    hm_flat = detector.predict_heatmaps(model, inputs.reshape(6, 3, 256, 512))
+    np.testing.assert_allclose(hm.reshape(6, 19, 64, 128), hm_flat, atol=1e-6)
 
 
 # -- weight I/O --------------------------------------------------------------
@@ -306,18 +332,19 @@ def test_detect_sequence_chunking_is_equivalent(model):
 
 
 def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
-    # Batching the forward across (frame, pathway) only regroups inputs, so it must
-    # yield the same skeletons as the per-frame path -- even when a batch straddles
-    # frame boundaries. Stub the fused forward+decode with a deterministic peak
-    # keyed on each input's content (identical however rows are batched).
+    # Batching the forward over more frames per call only regroups inputs, so it must
+    # yield the same skeletons as the per-frame path. Stub the fused forward+decode
+    # with a deterministic peak keyed on each input's content (identical however the
+    # (B, V, ...) input is chunked), carrying the (B, V) leading axes through.
     def fake_predict_points(_model, inputs, *, method="weighted", radius=2):
         x = np.asarray(inputs.cpu() if hasattr(inputs, "cpu") else inputs)
-        pts = np.zeros((x.shape[0], 19, 2), np.float32)
-        conf = np.ones((x.shape[0], 19), np.float32)
-        for i in range(x.shape[0]):
-            r, c = divmod(int(abs(x[i]).sum() * 1e3) % (64 * 128), 128)
+        lead, flat = x.shape[:-3], x.reshape(-1, *x.shape[-3:])
+        pts = np.zeros((flat.shape[0], 19, 2), np.float32)
+        conf = np.ones((flat.shape[0], 19), np.float32)
+        for i in range(flat.shape[0]):
+            r, c = divmod(int(abs(flat[i]).sum() * 1e3) % (64 * 128), 128)
             pts[i, :, 0], pts[i, :, 1] = c / 128, r / 64
-        return pts, conf
+        return pts.reshape(*lead, 19, 2), conf.reshape(*lead, 19)
 
     monkeypatch.setattr(detector, "predict_points", fake_predict_points)
     plan = _mini_plan()
