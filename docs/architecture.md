@@ -47,9 +47,8 @@ CLI:
 - **`greedy`** — triangulate the arg-max detections by DLT and iteratively drop
   the single worst-reprojecting view of each offending point, re-triangulating
   from the survivors (`reproj_threshold` / `max_drops`). Cheaper, but refines an
-  already-contaminated fit. (`reproject` is a legacy alias.)
-- **`dlt`** — plain least-squares triangulation, no outlier handling. (`none` is
-  an alias.)
+  already-contaminated fit.
+- **`dlt`** — plain least-squares triangulation, no outlier handling.
 
 **`do_pictorial_structures`** (default off; `do_pictorial=` in the library call) —
 when on, first run DeepFly3D-style pictorial structures over the detector's top-K

@@ -48,9 +48,9 @@ class Skeleton:
         Mapping ``limb_name -> hex color`` for plotting. Limbs absent from the
         mapping fall back to a default colormap in the visualization helpers.
 
-    Which view sees which point is no longer carried here: it is intrinsic to the
-    detection plan (the pathways' ``(channel, view, point)`` mappings), and an
-    unobserved ``(view, point)`` is simply ``NaN`` in the points array.
+    Which view sees which point lives in the detection plan (the pathways'
+    ``(channel, view, point)`` mappings), not here: an unobserved ``(view, point)``
+    is simply ``NaN`` in the points array.
     """
 
     name: str

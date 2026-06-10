@@ -46,9 +46,9 @@ _WORLD_UP = np.array([0.0, 0.0, 1.0])
 # required; the rest default to the origin / zero angles.
 _ORBIT_KEYS = ("look_at", "distance", "azimuth_deg", "elevation_deg", "roll_deg")
 
-# Extrinsics keys from the old free-form spec grammar, rejected with a pointer
-# to the orbit keys rather than silently ignored.
-_REMOVED_KEYS = (
+# Extrinsics keys a config might reach for but that are not supported; rejected
+# with a pointer to the orbit keys rather than silently ignored.
+_UNSUPPORTED_EXTRINSICS_KEYS = (
     "rvec",
     "tvec",
     "rotation_matrix",
@@ -161,13 +161,13 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     Raises
     ------
     ValueError
-        If ``distance`` is missing, a removed key from the old free-form spec
-        grammar is given, or ``elevation_deg`` is +/-90 (camera roll undefined).
+        If ``distance`` is missing, an unsupported extrinsics key is given, or
+        ``elevation_deg`` is +/-90 (camera roll undefined).
     """
-    removed = [k for k in _REMOVED_KEYS if k in spec]
-    if removed:
+    unsupported = [k for k in _UNSUPPORTED_EXTRINSICS_KEYS if k in spec]
+    if unsupported:
         raise ValueError(
-            f"unsupported extrinsics keys {removed}: cameras are specified as "
+            f"unsupported extrinsics keys {unsupported}: cameras are specified as "
             f"an orbit via {list(_ORBIT_KEYS)}"
         )
     if "distance" not in spec:

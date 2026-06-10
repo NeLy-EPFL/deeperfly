@@ -1,9 +1,10 @@
 # Library usage
 
-The public API lives at the top level (`from deeperfly import ...`): `Camera`,
-`CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
-`bundle_adjust_from_config`, `run_from_points2d`, and the `geometry`,
-`triangulation`, `pictorial`, `pipeline` submodules.
+The public API lives at the top level (`from deeperfly import ...`): `Config`,
+`Camera`, `CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
+`bundle_adjust_from_config`, `run_from_points2d`, `run_recording`, and the
+`geometry`, `triangulation`, `pictorial`, `pipeline`, `recordings`, and `io`
+submodules.
 
 Sections of a `config.toml` are independently usable: load it once with
 `Config.from_toml`, then `CameraGroup.from_config(config)` reads only the

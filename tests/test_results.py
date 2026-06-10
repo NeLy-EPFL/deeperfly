@@ -14,13 +14,6 @@ from deeperfly.results import PoseResult, StageStore
 from deeperfly.skeleton import Skeleton
 
 
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
 def _result(cameras, rng):
     v, t, n = len(cameras), 4, 38
     pts2d = rng.normal(size=(v, t, n, 2))

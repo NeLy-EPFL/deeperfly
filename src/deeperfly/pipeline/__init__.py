@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from .core import (  # noqa: F401  (re-exported)
     _bone_prior,
-    _resolve_triangulation,
     _subsample,
+    _validate_triangulation,
     calibrate,
     reconstruct,
     reconstruct_ransac,

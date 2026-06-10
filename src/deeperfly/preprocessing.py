@@ -637,9 +637,9 @@ def parse_frame_transforms(
     Raises
     ------
     ValueError
-        On the removed table form (``[cameras.<camera>.preprocess]`` with
-        ``fliplr``/``flipud``/``rot90`` keys), an unknown op or op key, or a
-        malformed op parameter (so config typos fail loudly).
+        If ``preprocess`` is not an ordered list of op tables, or names an
+        unknown op or op key, or carries a malformed op parameter (so config
+        typos fail loudly).
     """
     defaults, cameras = config.camera_table()
     if "preprocess" in defaults:
@@ -652,17 +652,13 @@ def parse_frame_transforms(
         spec = cam.get("preprocess")
         if not spec:
             continue
-        if isinstance(spec, dict):
-            raise ValueError(
-                f"[cameras.{name}.preprocess] is now an ordered *list* of steps; "
-                f"the fliplr/flipud/rot90 table form was removed. Write e.g.\n"
-                f'  preprocess = [{{ op = "fliplr" }}, {{ op = "rot90", k = 1 }}]\n'
-                f"(or [[cameras.{name}.preprocess]] blocks), applied in the "
-                f"order written."
-            )
         if not isinstance(spec, list):
             raise ValueError(
-                f"[cameras.{name}].preprocess must be a list of op tables, got {spec!r}"
+                f"[cameras.{name}].preprocess must be an ordered list of op "
+                f'tables, e.g.\n  preprocess = [{{ op = "fliplr" }}, '
+                f'{{ op = "rot90", k = 1 }}]\n'
+                f"(or [[cameras.{name}.preprocess]] blocks), applied in the "
+                f"order written; got {spec!r}"
             )
         ops = tuple(
             _parse_op(step, f"[cameras.{name}].preprocess[{i}]")

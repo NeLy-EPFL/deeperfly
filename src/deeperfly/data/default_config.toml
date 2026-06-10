@@ -444,8 +444,8 @@ lam = 1.0                # bone-length prior weight
 # Triangulation: how the per-view 2D points become one 3D point.
 [pipeline.triangulation]
 method = "ransac"        # ransac - largest multi-view consensus (default, robust)
-                         # greedy - drop the worst-reprojecting view (a.k.a. reproject)
-                         # dlt    - plain least-squares, no outlier handling (a.k.a. none)
+                         # greedy - drop the worst-reprojecting view
+                         # dlt    - plain least-squares, no outlier handling
 ransac_threshold = 15.0  # inlier reprojection cutoff (px) for method = ransac
 min_inliers = 2          # min agreeing views to accept a point (ransac)
 # reproj_threshold = 40.0  # method = greedy: per-view reprojection cutoff (px)

@@ -14,40 +14,13 @@ import pytest
 from deeperfly.cameras import CameraGroup
 from deeperfly.results import PoseResult
 from deeperfly.pipeline import (
-    _resolve_triangulation,
+    _validate_triangulation,
     calibrate,
     reconstruct,
     reconstruct_ransac,
     run_from_points2d,
 )
-from deeperfly.skeleton import Skeleton
-from helpers import leg_indices, small_rotation
-
-
-def _fly_masked(pts2d: np.ndarray) -> np.ndarray:
-    """NaN-out (view, point) pairs the fly default plan does not observe.
-
-    Visibility is no longer a separate mask applied inside the pipeline; it is the
-    union of the default config's pathway maps. The leading axis must be the 7 fly
-    views in order (rh, rm, rf, f, lf, lm, lh).
-    """
-    from deeperfly.config import Config
-
-    mask = Config.default().detection_plan().visibility_mask()  # (7, 38)
-    m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
-    return np.where(m[..., None], pts2d, np.nan)
-
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
+from helpers import fly_masked, leg_indices, small_rotation
 
 
 def fly_motion(rng, n_frames=12, n_pts=38):
@@ -191,7 +164,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
         return float(np.mean(errs))
 
     def run(front_sees_both: bool) -> float:
-        pts2d = _fly_masked(pts2d_full.copy())
+        pts2d = fly_masked(pts2d_full.copy())
         if not front_sees_both:  # drop the front camera's left-side observations
             fi = names.index("f")
             for j in leg_indices(fly, "l"):
@@ -274,7 +247,7 @@ def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
 
 def test_run_with_calibration(rig, cameras, fly):
     # With per-side visibility masking (now applied by the plan, here reproduced
-    # via _fly_masked) and bone_prior=False, the far side is bridged only by the
+    # via fly_masked) and bone_prior=False, the far side is bridged only by the
     # front camera -- a weakly constrained sub-problem whose conditioning depends
     # on the geometry of the (random) points each camera happens to see.
     # default_rng(0) is degenerate for this rig (a far-side point loses all but
@@ -282,7 +255,7 @@ def test_run_with_calibration(rig, cameras, fly):
     # for any non-degenerate cloud.
     rng = np.random.default_rng(5)
     pts3d = fly_motion(rng, n_frames=20)
-    pts2d = _fly_masked(np.array(cameras.project(pts3d)))
+    pts2d = fly_masked(np.array(cameras.project(pts3d)))
     cams0 = perturbed_cameras(rig)
 
     result = run_from_points2d(
@@ -311,24 +284,17 @@ def test_run_with_calibration(rig, cameras, fly):
 # -- triangulation choices (ransac default, greedy, dlt) + pictorial flag -----
 
 
+@pytest.mark.parametrize("spec", ["ransac", "greedy", "dlt"])
+def test_validate_triangulation(spec):
+    assert _validate_triangulation(spec) == spec
+
+
 @pytest.mark.parametrize(
-    "spec, expected",
-    [
-        ("ransac", "ransac"),
-        ("greedy", "greedy"),
-        ("dlt", "dlt"),
-        ("reproject", "greedy"),  # legacy alias
-        ("none", "dlt"),  # legacy alias
-    ],
+    "spec", ["bogus", "pictorial", "ransac+greedy", "", "reproject", "none"]
 )
-def test_resolve_triangulation(spec, expected):
-    assert _resolve_triangulation(spec) == expected
-
-
-@pytest.mark.parametrize("spec", ["bogus", "pictorial", "ransac+greedy", ""])
-def test_resolve_triangulation_rejects_bad(spec):
+def test_validate_triangulation_rejects_bad(spec):
     with pytest.raises(ValueError, match="triangulation"):
-        _resolve_triangulation(spec)
+        _validate_triangulation(spec)
 
 
 @pytest.mark.parametrize("triangulation", ["ransac", "greedy", "dlt"])

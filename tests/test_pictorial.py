@@ -3,7 +3,7 @@
 The detector is stubbed out: we project a known 3D fly through the synthetic test
 rig to get ground-truth 2D, then build candidate peak sets (optionally with a
 wrong arg-max "decoy" plus the true location as a secondary peak) and check that
-PS recovers the joint where the default reproject path can only veto it.
+PS recovers the joint where the default triangulation path can only veto it.
 """
 
 from __future__ import annotations
@@ -12,34 +12,9 @@ import numpy as np
 import pytest
 
 from deeperfly import pictorial
-from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config
 from deeperfly.results import PoseResult
 from deeperfly.pipeline import _bone_prior, reconstruct, run_from_points2d
-from deeperfly.skeleton import Skeleton
-
-
-def _fly_masked(pts2d: np.ndarray) -> np.ndarray:
-    """NaN-out the (view, point) pairs the fly default plan does not observe.
-
-    Visibility is no longer a separate mask; it is the union of the default
-    config's pathway maps. The leading axis must be the 7 fly views in order.
-    """
-    mask = Config.default().detection_plan().visibility_mask()  # (7, 38)
-    m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
-    return np.where(m[..., None], pts2d, np.nan)
-
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
+from helpers import fly_masked
 
 
 def fly_cloud(rng, n_pts=38):
@@ -142,13 +117,13 @@ def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     ps3d, _, _ = pictorial.reconstruct(
         cameras, fly, cands, argmax, bone_max_frames=None
     )
-    # Reproject path triangulates the arg-max (including the decoy).
-    rp3d, _, _ = reconstruct(cameras, _fly_masked(argmax))
+    # The greedy path triangulates the arg-max (including the decoy).
+    rp3d, _, _ = reconstruct(cameras, fly_masked(argmax))
 
     ps_err = np.linalg.norm(ps3d[0, joint] - pts3d[joint])
     rp_err = np.linalg.norm(rp3d[0, joint] - pts3d[joint])
     assert ps_err < 1e-3  # PS recovers the true 3D from the secondary peak
-    assert rp_err > 10 * ps_err  # reproject is dragged off by the decoy
+    assert rp_err > 10 * ps_err  # the greedy fit is dragged off by the decoy
 
 
 def test_pictorial_clean_matches_truth(cameras, fly, rng):

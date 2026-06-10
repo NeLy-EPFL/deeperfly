@@ -6,7 +6,7 @@
 | Upstream project | Role | `deeperfly` counterpart |
 | --- | --- | --- |
 | [DeepFly2D](https://github.com/NeLy-EPFL/DeepFly2D) | 2D pose: a PyTorch stacked-hourglass detector | [`pose2d/`](../src/deeperfly/pose2d) — a faithful PyTorch port running the original weights directly |
-| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline.py`](../src/deeperfly/pipeline.py), [`triangulation.py`](../src/deeperfly/triangulation.py), [`pictorial.py`](../src/deeperfly/pictorial.py) |
+| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline/`](../src/deeperfly/pipeline), [`triangulation.py`](../src/deeperfly/triangulation.py), [`pictorial.py`](../src/deeperfly/pictorial.py) |
 | [PyBundleAdjustment](https://github.com/semihgunel/PyBundleAdjustment) | scipy-based bundle adjustment for calibration | [`bundle_adjustment/`](../src/deeperfly/bundle_adjustment) |
 
 The science is faithful to the originals — same camera rig, same detector
@@ -79,9 +79,7 @@ stage that *recovers* the right peak first.
     consensus set; a gross outlier never enters the fit.
   - **`greedy`** — greedily drop the worst-reprojecting view of each offending
     point. Cheaper; refines a (possibly contaminated) least-squares fit.
-    (`reproject` is a legacy alias.)
-  - **`dlt`** — plain least-squares triangulation, no outlier handling. (`none`
-    is an alias.)
+  - **`dlt`** — plain least-squares triangulation, no outlier handling.
 - **`do_pictorial_structures`** (`[pipeline].do_pictorial_structures`) — a re-implementation of the
   DeepFly3D idea over the top-K candidate peaks. Because the fly skeleton's bones
   form a forest of simple chains (each leg a 5-joint path), the MAP estimate is

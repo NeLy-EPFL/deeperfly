@@ -14,10 +14,10 @@ for one recording:
    and scatter them into the ``(V, N)`` skeleton
    (:func:`~deeperfly.pose2d.pathways.scatter_pathway`).
 
-A ``(view, point)`` pair that no pathway writes stays ``NaN`` -- that is the
-visibility mask, with no separate table. The front camera is no longer special:
-it is one source feeding two pathways (one mirrored) that both map into view
-``f``.
+A ``(view, point)`` pair that no pathway writes stays ``NaN`` -- that is how
+visibility is encoded, with no separate table. A source can feed several
+pathways: the front camera, for instance, is one source feeding two pathways
+(one mirrored) that both map into view ``f``.
 """
 
 from __future__ import annotations
@@ -348,8 +348,7 @@ def detect_sequence(
         stacked = torch.stack([prepared[p] for p in pw_idxs], dim=1)  # (T, Pm, 3, H, W)
         p_m = stacked.shape[1]
         # The model's standard input is (B, V, 3, H, W): hand it whole frames (B) of
-        # this model's Pm pathways (V), in chunks of bs_t frames. Numerically
-        # identical to the old flat (T*Pm, ...) batch -- only the dispatch differs.
+        # this model's Pm pathways (V), in chunks of bs_t frames.
         bs_t = 1 if batch_size is None else max(1, int(batch_size) // p_m)
         for i in range(0, n_frames, bs_t):
             pn, cc = model.predict_points(
@@ -417,7 +416,7 @@ def detect_candidates_sequence(
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
 
     The same forward yields the single-peak ``(pts2d, conf)`` -- used by
-    calibration and the reproject reconstructor -- and a
+    calibration and triangulation -- and a
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
     (view, joint), consumed by the pictorial-structures corrector. Candidates a
     pathway does not map (or that no pathway produces) stay ``NaN``.

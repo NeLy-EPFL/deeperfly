@@ -104,8 +104,8 @@ def stage_pose2d(
     skeleton : Skeleton
         The configured skeleton.
     pts2d, conf : np.ndarray
-        The visibility-masked detections ``(V, T, N, 2)`` and confidences
-        ``(V, T, N)``.
+        The detections ``(V, T, N, 2)`` and confidences ``(V, T, N)``. A
+        ``(view, point)`` pair no pathway maps is ``NaN``.
     candidates : deeperfly.pictorial.Candidates or None
         The top-K peak set when ``want_candidates``, else ``None``.
     image_sizes : dict
@@ -155,8 +155,8 @@ def stage_pose2d(
         k=k,
         progress=progress,
     )
-    # No visibility masking step: a (view, point) pair no pathway writes is already
-    # NaN from the scatter, so the cached 2D and every downstream stage agree.
+    # A (view, point) pair no pathway writes stays NaN from the scatter, so the
+    # cached 2D and every downstream stage agree on what each view observes.
     return cameras, skeleton, pts2d, conf, candidates, image_sizes
 
 
@@ -260,7 +260,7 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
 
     ``ransac`` builds each point from its largest multi-view consensus,
     ``greedy`` drops the worst-reprojecting view, ``dlt`` is plain least squares
-    (see :func:`deeperfly.pipeline._resolve_triangulation`).
+    (see :func:`deeperfly.pipeline._validate_triangulation`).
 
     Parameters
     ----------
@@ -278,10 +278,10 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
         The (possibly cleaned) 2D, the 3D points, and the reprojection error.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import _resolve_triangulation, reconstruct, reconstruct_ransac
+    from .core import _validate_triangulation, reconstruct, reconstruct_ransac
 
     opts = config.triangulation
-    method = _resolve_triangulation(opts.method)
+    method = _validate_triangulation(opts.method)
     v, t = pts2d.shape[:2]
     log.info("triangulation: method=%s (%d frames, %d views)", method, t, v)
     if method == "ransac":

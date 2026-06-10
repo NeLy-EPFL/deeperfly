@@ -10,13 +10,15 @@ The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
 their defaults.
 
-## The detection plan — `[[sources]]`, `[[preprocessors]]`, `[[models]]`, `[[pathways]]`, `[point_sources]`
+## The detection plan
 
-2D detection is described by four top-level lists plus a mapping table. A
-neural network turns a preprocessed image into output channels; the plan says
-which footage feeds which model (the pathways) and where each output channel
-lands in the skeleton (`[point_sources]`). The default fly rig is **7 sources →
-8 pathways → 7 views** (the front camera is read twice, once mirrored).
+2D detection is described by four top-level lists — `[[sources]]`,
+`[[preprocessors]]`, `[[models]]`, `[[pathways]]` — plus a `[point_sources]`
+mapping table. A neural network turns a preprocessed image into output channels;
+the plan says which footage feeds which model (the pathways) and where each
+output channel lands in the skeleton (`[point_sources]`). The default fly rig is
+**7 sources → 8 pathways → 7 views** (the front camera is read twice, once
+mirrored).
 
 **Sources** name the footage, the one setting almost every recording needs. Each
 `filename` is a glob matched inside the recording directory:
@@ -35,10 +37,9 @@ A source's footage is one video file or a naturally-sorted image sequence
 source matches footage with the same file and frame count. A source with no
 `filename` defaults to its own name.
 
-**Preprocessors** are named, reusable frame-op pipelines (see the op grammar in
-the preprocessing section below). A pathway references one by name; the
-detector's points are mapped back into the view frame by inverting these ops, so
-a mirror here never moves the reconstructed skeleton:
+**Preprocessors** are named, reusable frame-op pipelines that a pathway
+references by name (full op grammar in the *Preprocessor op grammar* section
+below):
 
 ```toml
 [[preprocessors]]
@@ -92,9 +93,9 @@ rf_femur_tibia = { pathway = "f_noflip", out_channel = 2 }   # right, un-flipped
 lf_femur_tibia = { pathway = "f_fliplr", out_channel = 2 }   # left, mirrored
 ```
 
-This modularity supports setups the old hardcoded layout could not: a single
-front model predicting both legs, per-view or per-side specialized models (… → 14
-pathways → 7 views), or a different `model` per pathway.
+This modularity supports a range of setups: a single front model predicting both
+legs, per-view or per-side specialized models (… → 14 pathways → 7 views), or a
+different `model` per pathway.
 
 ## Choose which stages run — `[pipeline]`
 
@@ -298,7 +299,6 @@ azimuth_deg = 0
 
 The tracked points and their structure (38-point, 7-camera *Drosophila* rig):
 `point_names`, `limb_points` kinematic chains (each a list of point names), and
-the plotting `limb_palette`. Which view sees which point is no longer a table
-here — it is the union of the `[point_sources]` tables. Edit this only to track a
-different animal — see [library.md](library.md) and
-[architecture.md](architecture.md).
+the plotting `limb_palette`. Which view sees which point is not set here — it is
+the union of the `[point_sources]` tables. Edit this only to track a different
+animal — see [library.md](library.md) and [architecture.md](architecture.md).

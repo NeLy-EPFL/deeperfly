@@ -159,8 +159,8 @@ def run_recording(
 
 
 def _log_recompute(name: str, reason: str) -> None:
-    """Announce that a previously cached result is being recomputed; loudly for
-    the slow detection stage."""
+    """Announce that a stage's cached result is stale and being recomputed;
+    loudly for the slow detection stage."""
     if name == "pose2d":
         if "candidates" in reason:
             reason += (
@@ -286,8 +286,8 @@ def _run_visualization(ctx: _RunContext) -> bool:
             ctx.outdir,
         )
         return False
-    # MP4s rendered by a previous config but no longer specced are left on disk
-    # (the output dir may hold user files); just point them out.
+    # MP4s an earlier run rendered that the current config does not spec are
+    # left on disk (the output dir may hold user files); just point them out.
     stored = ctx.record.get("visualization") or {}
     stale = sorted(
         {v.get("video_name") for v in stored.get("videos", [])}
@@ -296,7 +296,7 @@ def _run_visualization(ctx: _RunContext) -> bool:
     )
     if stale:
         log.info(
-            "video(s) no longer in the config (their MP4s are left in place): %s",
+            "video(s) not in the current config (their MP4s are left in place): %s",
             ", ".join(stale),
         )
     stages.render_videos(

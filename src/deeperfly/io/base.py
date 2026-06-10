@@ -82,10 +82,9 @@ class FrameReader(ABC):
     """Reads ``(T, H, W, 3)`` uint8 RGB frames from one footage source.
 
     The two concrete readers -- :class:`~deeperfly.io.video.VideoReader` (PyAV) and
-    :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV) -- resolve
-    their source kind at construction, so the per-call dispatch the old free
-    functions repeated happens once. :func:`~deeperfly.io.open_reader` is the
-    factory that picks the subclass.
+    :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV) -- resolve their
+    source kind once, at construction, rather than on every read.
+    :func:`~deeperfly.io.open_reader` is the factory that picks the subclass.
 
     All decoding runs on the CPU and yields host ``(T, H, W, 3)`` uint8 RGB NumPy.
 

@@ -13,7 +13,7 @@ Development setup. For how the pipeline works, see
 Clone the repo and sync a dev environment with the test dependencies:
 
 ```bash
-git clone https://github.com/tkclam/deeperfly
+git clone https://github.com/NeLy-EPFL/deeperfly
 cd deeperfly
 uv sync --group test       # .venv with the editable package + test deps
 ```

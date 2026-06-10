@@ -5,19 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.cameras import CameraGroup
 from deeperfly.triangulation import (
     reprojection_error,
     triangulate,
     triangulate_ransac,
 )
-
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
 
 
 def _fly_cloud(rng, n=38, scale=2.0):

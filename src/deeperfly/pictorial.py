@@ -604,7 +604,7 @@ def reconstruct(
 ) -> tuple[
     Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
 ]:
-    """Run PS correction over a whole sequence (the drop-in for reproject mode).
+    """Run PS correction over a whole sequence.
 
     The bone-length prior is estimated once from an arg-max triangulation of up to
     ``bone_max_frames`` frames; PS then runs per frame (optionally threading the

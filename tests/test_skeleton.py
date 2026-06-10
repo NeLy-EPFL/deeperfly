@@ -10,11 +10,6 @@ from deeperfly.skeleton import Skeleton
 from helpers import leg_indices
 
 
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
-
-
 def test_counts(fly):
     assert fly.n_points == 38
     assert fly.n_limbs == 10

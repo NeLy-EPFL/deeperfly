@@ -1,8 +1,7 @@
 """The detection plan: sources, preprocessors, models and pathways from config.
 
-This is the config-driven replacement for the old hardcoded fly camera layout
-(``fly_camera_layout`` / ``expand_passes`` / ``assemble_skeleton``). It decouples
-four counts that used to be fused at "one per camera":
+The plan is built from config and keeps four counts independent rather than
+fusing them at "one per camera":
 
 - **sources** -- named footage globs, each decoded once.
 - **views** -- the geometric cameras (``[cameras.*]``); the ``V`` axis of the
@@ -15,14 +14,15 @@ tables keyed by point name: ``point = { pathway, out_channel }`` says point ``po
 of view ``<view>`` is filled by output channel ``out_channel`` of the named pathway.
 Keying on ``(view, point)`` makes every point's data come from exactly one place
 (a repeat is a TOML error). A ``(view, point)`` no entry names stays ``NaN`` -- that
-*is* the visibility mask (no separate table). Internally each pathway still carries
-the resolved ``(i, v, p)`` triples (channel ``i`` -> point ``p`` of view ``v``).
+``NaN`` is how visibility is encoded, so no separate mask is needed. Internally each
+pathway carries the resolved ``(i, v, p)`` triples (channel ``i`` -> point ``p`` of
+view ``v``).
 
-The front camera is no longer special: it is one source feeding two pathways
-(one mirrored), each mapping into view ``f``. A point predicted in a pathway's
-(possibly mirrored/cropped/resized) model frame is mapped back into its view's
-frame by inverting the pathway's preprocessing -- see :func:`map_to_view`, which
-generalizes the old ``x -> 1 - x`` flip undo to any
+A source may feed several pathways: the front camera, for instance, is one
+source feeding two pathways (one mirrored), each mapping into view ``f``. A point
+predicted in a pathway's (possibly mirrored/cropped/resized) model frame is
+mapped back into its view's frame by inverting the pathway's preprocessing -- see
+:func:`map_to_view`, which inverts any
 :class:`~deeperfly.preprocessing.FrameTransform`.
 """
 
@@ -87,8 +87,7 @@ def map_to_view(
     Inverts the pathway's geometry: normalized model coords -> model-input
     pixels -> (undo the model's resize) -> preprocessed-frame pixels -> (undo
     the preprocessor, e.g. a mirror) -> raw source pixels, which is the frame
-    the view's intrinsics describe. Generalizes the old ``assemble_skeleton``
-    ``x -> 1 - x`` flip undo + ``* (w, h)`` scale.
+    the view's intrinsics describe.
 
     Parameters
     ----------

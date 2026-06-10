@@ -442,11 +442,9 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         name: (v.decode() if isinstance(v, bytes) else v)
         for name, v in g["palette"].attrs.items()
     }
-    # ``point_names`` was ``joint_names`` before; read either so older files load.
-    names = g["point_names"] if "point_names" in g else g["joint_names"]
     return Skeleton(
         name=g.attrs["name"],
-        point_names=decode(names[()]),
+        point_names=decode(g["point_names"][()]),
         limb_names=decode(g["limb_names"][()]),
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],

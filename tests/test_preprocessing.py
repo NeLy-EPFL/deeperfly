@@ -66,8 +66,8 @@ def test_adjacent_exact_compositions_fold():
 @pytest.mark.parametrize("fliplr", (False, True))
 def test_apply_matches_numpy_per_frame(fliplr, flipud, rot90):
     # A fliplr -> flipud -> rot90 chain over the batch must equal the same
-    # sequence run per frame with NumPy -- pinning the ops and the in-order
-    # application (this is the old fixed-order pipeline, now spelled out).
+    # sequence run per frame with NumPy -- pinning the ops and their in-order
+    # application.
     rng = np.random.default_rng(1)
     frames = _clip(rng)
     ops = []
@@ -344,7 +344,7 @@ def test_map_intrinsics_resize_scales():
 )
 def test_raw_center_maps_to_canonical_center(ops):
     # Flip/rot90 chains keep the image center at the image center, so the
-    # default principal point resolves bit-identically to the old behavior.
+    # default principal point lands at the center of the transformed frame.
     h, w = 100, 200
     t = FrameTransform(ops)
     oh, ow = t.output_size((h, w))
@@ -417,9 +417,9 @@ def test_parse_frame_transforms_empty_when_section_missing():
     assert parse_frame_transforms(Config.from_dict(cfg)) == {}
 
 
-def test_parse_frame_transforms_rejects_old_table_form():
+def test_parse_frame_transforms_rejects_table_form():
     cfg = {"cameras": {"rh": {"preprocess": {"fliplr": True, "rot90": 3}}}}
-    with pytest.raises(ValueError, match=r"ordered \*list\*"):
+    with pytest.raises(ValueError, match="ordered list of op tables"):
         parse_frame_transforms(Config.from_dict(cfg))
 
 

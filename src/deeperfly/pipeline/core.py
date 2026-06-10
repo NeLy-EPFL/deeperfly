@@ -290,36 +290,31 @@ def reconstruct_ransac(
     return pts3d, cleaned, err
 
 
-#: Triangulation strategies for the reconstruction step, plus legacy aliases.
+#: Triangulation strategies for the reconstruction step.
 _TRIANGULATORS = ("ransac", "greedy", "dlt")
-_TRIANGULATION_ALIASES = {"reproject": "greedy", "none": "dlt"}
 
 
-def _resolve_triangulation(triangulation: str) -> str:
-    """Normalize a ``triangulation`` choice to one of :data:`_TRIANGULATORS`.
-
-    Canonical names ``"ransac"`` / ``"greedy"`` / ``"dlt"``; ``"reproject"`` and
-    ``"none"`` are aliases for ``"greedy"`` and ``"dlt"``.
+def _validate_triangulation(triangulation: str) -> str:
+    """Check that ``triangulation`` names a known strategy and return it.
 
     Parameters
     ----------
     triangulation
-        A method name or legacy alias.
+        One of :data:`_TRIANGULATORS` (``"ransac"``, ``"greedy"``, ``"dlt"``).
 
     Returns
     -------
     str
-        One of ``"ransac"``, ``"greedy"`` or ``"dlt"``.
+        The validated method name, unchanged.
 
     Raises
     ------
     ValueError
-        If ``triangulation`` is not a known method or alias.
+        If ``triangulation`` is not a known strategy.
     """
-    method = _TRIANGULATION_ALIASES.get(triangulation, triangulation)
-    if method not in _TRIANGULATORS:
+    if triangulation not in _TRIANGULATORS:
         raise ValueError(f"unknown triangulation {triangulation!r} (ransac|greedy|dlt)")
-    return method
+    return triangulation
 
 
 def run_from_points2d(
@@ -361,11 +356,10 @@ def run_from_points2d(
     calibrate_kwargs
         Extra keyword arguments forwarded to :func:`calibrate`.
     triangulation
-        Reconstruction strategy (:func:`_resolve_triangulation`): ``"ransac"``
-        (default, largest multi-view consensus set; ``ransac_threshold`` /
-        ``min_inliers``), ``"greedy"`` (DLT dropping the worst-reprojecting view;
-        ``reproj_threshold`` / ``max_drops``; ``"reproject"`` alias), or ``"dlt"``
-        (plain least squares, no outlier handling; ``"none"`` alias).
+        Reconstruction strategy: ``"ransac"`` (default, largest multi-view
+        consensus set; ``ransac_threshold`` / ``min_inliers``), ``"greedy"`` (DLT
+        dropping the worst-reprojecting view; ``reproj_threshold`` / ``max_drops``),
+        or ``"dlt"`` (plain least squares, no outlier handling).
     do_pictorial
         When ``True``, first run pictorial-structures peak recovery over the
         detector's top-K ``candidates`` (:func:`deeperfly.pictorial.reconstruct`,
@@ -394,9 +388,9 @@ def run_from_points2d(
         If ``do_pictorial`` is set but no ``candidates`` are given, or
         ``triangulation`` is unknown.
     """
-    method = _resolve_triangulation(triangulation)  # validate before calibrating
-    # Unobserved (view, point) pairs are expected to already be NaN (the detector's
-    # pathway scatter leaves them so); visibility is no longer a separate mask.
+    method = _validate_triangulation(triangulation)  # validate before calibrating
+    # Unobserved (view, point) pairs are NaN (the detector's pathway scatter leaves
+    # them so), which the calibration and triangulation below treat as "not seen".
     pts2d = np.asarray(pts2d, dtype=float)
 
     if do_calibrate:
