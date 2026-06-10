@@ -1,8 +1,8 @@
 """Tests for :mod:`deeperfly.cameras`.
 
-Covers the extrinsic resolver (the small spec grammar of rvec / rotation
-matrix / forward-up / look-at orbit), the :class:`Camera` conveniences, and the
-:class:`CameraGroup` config loader and geometry round-trips.
+Covers the extrinsic resolver (the orbit spec: look_at / distance /
+azimuth_deg / elevation_deg / roll_deg), the :class:`Camera` conveniences, and
+the :class:`CameraGroup` config loader and geometry round-trips.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ import pytest
 
 from deeperfly import geometry as geom
 from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
+from deeperfly.config import Config
+from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -24,22 +26,27 @@ from helpers import (
 
 
 @pytest.fixture
-def config() -> dict:
-    """Config dict equivalent to examples/cameras.toml (cameras only)."""
-    return {
-        "camera_defaults": {
-            "focal_length_px": [FOCAL_PX, FOCAL_PX],
-            "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
-            "distortion_coefficients": [],
-            "look_at": [0.0, 0.0, 0.0],
-            "distance": DISTANCE_MM,
-            "elevation_deg": 0.0,
-            "roll_deg": 0.0,
-        },
-        "cameras": {
-            name: {"azimuth_deg": az} for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
-        },
-    }
+def config() -> Config:
+    """Config equivalent to examples/cameras.toml (cameras only)."""
+    return Config.from_dict(
+        {
+            "cameras": {
+                "defaults": {
+                    "focal_length_px": [FOCAL_PX, FOCAL_PX],
+                    "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
+                    "distortion_coefficients": [],
+                    "look_at": [0.0, 0.0, 0.0],
+                    "distance": DISTANCE_MM,
+                    "elevation_deg": 0.0,
+                    "roll_deg": 0.0,
+                },
+                **{
+                    name: {"azimuth_deg": az}
+                    for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+                },
+            },
+        }
+    )
 
 
 # -- resolve_extrinsics ------------------------------------------------------
@@ -57,38 +64,35 @@ def test_resolve_orbit_matches_reference_convention():
         assert np.allclose(tvec, [0.0, 0.0, DISTANCE_MM], atol=1e-9)
 
 
-def test_resolve_rvec_passthrough(rng):
-    rvec_in = rng.normal(size=3) * 0.5
-    rvec, tvec = resolve_extrinsics({"rvec": rvec_in.tolist(), "tvec": [1.0, 2.0, 3.0]})
-    assert np.allclose(rvec, rvec_in, atol=1e-12)
-    assert np.allclose(tvec, [1.0, 2.0, 3.0])
+def test_resolve_defaults_look_at_origin_and_zero_angles():
+    # Only distance given: camera at [d, 0, 0] looking back at the origin.
+    rvec, tvec = resolve_extrinsics({"distance": DISTANCE_MM})
+    rmat = np.asarray(geom.rvec_to_rmat(rvec))
+    assert np.allclose(rmat, reference_rmat(0.0), atol=1e-12)
+    assert np.allclose(-rmat.T @ tvec, [DISTANCE_MM, 0.0, 0.0], atol=1e-9)
 
 
-def test_resolve_rotation_matrix_and_position():
-    rmat = reference_rmat(np.deg2rad(30.0))
+def test_resolve_orbit_places_camera_around_look_at():
+    target = np.array([1.0, -2.0, 3.0])
     rvec, tvec = resolve_extrinsics(
-        {"rotation_matrix": rmat.tolist(), "position": [0.0, 0.0, 5.0]}
-    )
-    assert np.allclose(np.asarray(geom.rvec_to_rmat(rvec)), rmat, atol=1e-12)
-    # tvec encodes the world camera center: center == -R^T t.
-    center = -np.asarray(geom.rvec_to_rmat(rvec)).T @ tvec
-    assert np.allclose(center, [0.0, 0.0, 5.0], atol=1e-9)
-
-
-def test_resolve_forward_up():
-    rvec, _ = resolve_extrinsics(
-        {"forward": [0.0, 0.0, 1.0], "up": [0.0, -1.0, 0.0], "position": [0, 0, -3.0]}
+        {
+            "look_at": target.tolist(),
+            "distance": 5.0,
+            "azimuth_deg": 30.0,
+            "elevation_deg": 20.0,
+        }
     )
     rmat = np.asarray(geom.rvec_to_rmat(rvec))
-    assert np.allclose(rmat[2], [0.0, 0.0, 1.0], atol=1e-12)  # optical axis = forward
+    center = -rmat.T @ tvec
+    # camera sits `distance` from the target with its optical axis pointing at it
+    assert np.isclose(np.linalg.norm(center - target), 5.0, atol=1e-9)
+    assert np.allclose(rmat[2], (target - center) / 5.0, atol=1e-12)
 
 
 def test_resolve_roll_composes_about_optical_axis():
-    # forward must not be parallel to the default up (+z) for look-at to be well posed.
-    base, _ = resolve_extrinsics({"forward": [1, 0, 0.0], "tvec": [0, 0, 0]})
-    rolled, _ = resolve_extrinsics(
-        {"forward": [1, 0, 0.0], "tvec": [0, 0, 0], "roll_deg": 90.0}
-    )
+    base_spec = {"distance": 3.0, "azimuth_deg": 25.0, "elevation_deg": 10.0}
+    base, _ = resolve_extrinsics(base_spec)
+    rolled, _ = resolve_extrinsics({**base_spec, "roll_deg": 90.0})
     rb = np.asarray(geom.rvec_to_rmat(base))
     rr = np.asarray(geom.rvec_to_rmat(rolled))
     # optical axis unchanged by roll
@@ -97,27 +101,23 @@ def test_resolve_roll_composes_about_optical_axis():
     assert np.allclose(np.abs(rr[0] @ rb[1]), 1.0, atol=1e-12)
 
 
-@pytest.mark.parametrize(
-    "spec",
-    [
-        {"rvec": [0, 0, 0], "rotation_matrix": np.eye(3).tolist(), "tvec": [0, 0, 0]},
-        {"position": [0, 0, 1], "center": [0, 0, 1], "rvec": [0, 0, 0]},
-        {"tvec": [0, 0, 0], "position": [0, 0, 1], "rvec": [0, 0, 0]},
-    ],
-)
-def test_resolve_conflicting_keys_raise(spec):
-    with pytest.raises(ValueError):
-        resolve_extrinsics(spec)
-
-
-def test_resolve_missing_rotation_raises():
-    with pytest.raises(ValueError, match="rotation"):
-        resolve_extrinsics({"position": [0, 0, 1]})
-
-
-def test_resolve_lookat_without_position_raises():
-    with pytest.raises(ValueError, match="position"):
+def test_resolve_missing_distance_raises():
+    with pytest.raises(ValueError, match="distance"):
         resolve_extrinsics({"look_at": [0, 0, 0]})
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["rvec", "tvec", "rotation_matrix", "forward", "up", "position", "center", "eye"],
+)
+def test_resolve_removed_keys_raise(key):
+    with pytest.raises(ValueError, match="orbit"):
+        resolve_extrinsics({"distance": 1.0, key: [0, 0, 0]})
+
+
+def test_resolve_straight_down_is_ambiguous():
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_extrinsics({"distance": 1.0, "elevation_deg": 90.0})
 
 
 # -- Camera ------------------------------------------------------------------
@@ -136,14 +136,16 @@ def test_camera_position_roundtrip(rng):
 def test_camera_project_matches_geometry(rng):
     cam = Camera.from_spec(
         {
-            "rvec": (rng.normal(size=3) * 0.2).tolist(),
-            "tvec": [0.1, 0.2, 5.0],
+            "distance": 5.0,
+            "azimuth_deg": 30.0,
+            "elevation_deg": 10.0,
+            "roll_deg": 5.0,
             "focal_length_px": [800.0, 810.0],
             "principal_point_px": [320.0, 240.0],
             "distortion_coefficients": [0.01, -0.02, 0.001, 0.0],
         }
     )
-    cloud = rng.normal(size=(15, 3)) + np.array([0, 0, 5.0])
+    cloud = rng.normal(size=(15, 3)) * 0.3  # near the look_at target (origin)
     expected = np.asarray(
         geom.project_full(
             cloud, cam.rvec[None], cam.tvec[None], cam.intr[None], cam.dist[None]
@@ -155,8 +157,7 @@ def test_camera_project_matches_geometry(rng):
 def test_parse_intrinsics_scalar_focal():
     cam = Camera.from_spec(
         {
-            "rvec": [0, 0, 0],
-            "tvec": [0, 0, 1],
+            "distance": 1.0,
             "focal_length_px": 700.0,
             "principal_point_px": [10.0, 20.0],
         }
@@ -167,7 +168,7 @@ def test_parse_intrinsics_scalar_focal():
 def test_from_spec_infers_principal_point_from_image_size():
     # No principal_point_px -> image center ((w-1)/2, (h-1)/2) from (height, width).
     cam = Camera.from_spec(
-        {"rvec": [0, 0, 0], "tvec": [0, 0, 1], "focal_length_px": 700.0},
+        {"distance": 1.0, "focal_length_px": 700.0},
         image_size=(HEIGHT, WIDTH),
     )
     assert cam.intr.tolist() == [700.0, 700.0, (WIDTH - 1) / 2, (HEIGHT - 1) / 2]
@@ -177,8 +178,7 @@ def test_from_spec_explicit_principal_point_overrides_image_size():
     # An explicit principal point wins even when an image size is available.
     cam = Camera.from_spec(
         {
-            "rvec": [0, 0, 0],
-            "tvec": [0, 0, 1],
+            "distance": 1.0,
             "focal_length_px": 700.0,
             "principal_point_px": [10.0, 20.0],
         },
@@ -189,9 +189,70 @@ def test_from_spec_explicit_principal_point_overrides_image_size():
 
 def test_from_spec_missing_principal_point_without_image_size_raises():
     with pytest.raises(ValueError, match="principal_point_px"):
+        Camera.from_spec({"distance": 1.0, "focal_length_px": 700.0})
+
+
+# -- Camera + preprocess transform --------------------------------------------
+
+
+def test_from_spec_crop_shifts_default_principal_point():
+    # The acceptance example: 100x100 raw, default pp = raw center (49.5, 49.5),
+    # crop at (10, 10) -> canonical pp (39.5, 39.5).
+    cam = Camera.from_spec(
+        {"distance": 1.0, "focal_length_px": 700.0},
+        image_size=(100, 100),
+        transform=FrameTransform((Crop(x=10, y=10, width=80, height=80),)),
+    )
+    assert cam.intr.tolist() == [700.0, 700.0, 39.5, 39.5]
+
+
+def test_from_spec_explicit_principal_point_is_raw_and_mapped():
+    # Explicit pp is in raw-footage coordinates and rides through the chain.
+    cam = Camera.from_spec(
+        {
+            "distance": 1.0,
+            "focal_length_px": [700.0, 710.0],
+            "principal_point_px": [10.0, 20.0],
+        },
+        image_size=(100, 200),
+        transform=FrameTransform((Rot90(k=1),)),
+    )
+    # (x, y) -> (y, w-1-x); odd quarter-turns swap fx and fy.
+    assert cam.intr.tolist() == [710.0, 700.0, 20.0, 189.0]
+
+
+def test_from_spec_resize_scales_intrinsics():
+    cam = Camera.from_spec(
+        {"distance": 1.0, "focal_length_px": 700.0},
+        image_size=(100, 100),
+        transform=FrameTransform((Resize(scale=0.5),)),
+    )
+    assert cam.intr.tolist() == [350.0, 350.0, 24.5, 24.5]
+
+
+def test_from_spec_transform_without_image_size_raises():
+    # Even with an explicit pp: the op affines need the raw height/width.
+    with pytest.raises(ValueError, match="raw image size"):
         Camera.from_spec(
-            {"rvec": [0, 0, 0], "tvec": [0, 0, 1], "focal_length_px": 700.0}
+            {
+                "distance": 1.0,
+                "focal_length_px": 700.0,
+                "principal_point_px": [10.0, 20.0],
+            },
+            transform=FrameTransform((Fliplr(),)),
         )
+
+
+def test_from_spec_identity_transform_is_inert():
+    cam = Camera.from_spec(
+        {
+            "distance": 1.0,
+            "focal_length_px": 700.0,
+            "principal_point_px": [10.0, 20.0],
+        },
+        transform=FrameTransform(),
+    )
+    assert cam.intr.tolist() == [700.0, 700.0, 10.0, 20.0]
 
 
 # -- CameraGroup -------------------------------------------------------------
@@ -210,41 +271,40 @@ def test_group_from_config_dict(config):
 
 def test_group_from_config_toml_file(tmp_path):
     toml = """
-    [camera_defaults]
+    [cameras.defaults]
     focal_length_px = 800.0
     principal_point_px = [320.0, 240.0]
+    distance = 5.0
 
     [cameras.left]
-    rvec = [0.0, 0.0, 0.0]
-    tvec = [0.0, 0.0, 5.0]
+    azimuth_deg = 0.0
 
     [cameras.right]
-    rvec = [0.0, 0.1, 0.0]
-    tvec = [1.0, 0.0, 5.0]
+    azimuth_deg = 90.0
     """
     path = tmp_path / "cams.toml"
     path.write_text(toml)
-    group = CameraGroup.from_config(path)
+    group = CameraGroup.from_config(Config.from_toml(path))
     assert group.names == ["left", "right"]
     assert np.allclose(group["left"].intr, [800.0, 800.0, 320.0, 240.0])
 
 
 def test_group_empty_config_raises():
     with pytest.raises(ValueError, match="no cameras"):
-        CameraGroup.from_config({"cameras": {}})
+        CameraGroup.from_config(Config.from_dict({"cameras": {}}))
 
 
 def test_group_from_config_infers_principal_point_per_view():
     # Defaults omit principal_point_px; each view's center comes from image_sizes.
     config = {
-        "camera_defaults": {"focal_length_px": 800.0},
         "cameras": {
-            "left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]},
-            "right": {"rvec": [0, 0, 0], "tvec": [1.0, 0, 5.0]},
+            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
+            "left": {"azimuth_deg": 0.0},
+            "right": {"azimuth_deg": 90.0},
         },
     }
     image_sizes = {"left": (512, 1024), "right": (480, 640)}
-    group = CameraGroup.from_config(config, image_sizes=image_sizes)
+    group = CameraGroup.from_config(Config.from_dict(config), image_sizes=image_sizes)
     assert np.allclose(
         group["left"].intr, [800.0, 800.0, (1024 - 1) / 2, (512 - 1) / 2]
     )
@@ -253,13 +313,38 @@ def test_group_from_config_infers_principal_point_per_view():
     )
 
 
+def test_group_from_config_maps_intrinsics_through_preprocess():
+    # Raw sizes go in; the per-camera preprocess chain maps the rig into the
+    # canonical frame (left: cropped -> shifted pp; right: untouched).
+    config = {
+        "cameras": {
+            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
+            "left": {
+                "azimuth_deg": 0.0,
+                "preprocess": [
+                    {"op": "crop", "x": 10, "y": 10, "width": 80, "height": 80}
+                ],
+            },
+            "right": {"azimuth_deg": 90.0},
+        },
+    }
+    image_sizes = {"left": (100, 100), "right": (480, 640)}
+    group = CameraGroup.from_config(Config.from_dict(config), image_sizes=image_sizes)
+    assert np.allclose(group["left"].intr, [800.0, 800.0, 39.5, 39.5])
+    assert np.allclose(
+        group["right"].intr, [800.0, 800.0, (640 - 1) / 2, (480 - 1) / 2]
+    )
+
+
 def test_group_from_config_missing_principal_point_no_sizes_raises():
     config = {
-        "camera_defaults": {"focal_length_px": 800.0},
-        "cameras": {"left": {"rvec": [0, 0, 0], "tvec": [0, 0, 5.0]}},
+        "cameras": {
+            "defaults": {"focal_length_px": 800.0},
+            "left": {"distance": 5.0},
+        },
     }
     with pytest.raises(ValueError, match="principal_point_px"):
-        CameraGroup.from_config(config)
+        CameraGroup.from_config(Config.from_dict(config))
 
 
 def test_group_project_triangulate_roundtrip(config, rng):

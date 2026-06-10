@@ -7,16 +7,14 @@ core solver (:mod:`deeperfly.bundle_adjustment.core`), and returns an optimized
 ``CameraGroup`` alongside the refined 3D points.
 
 :func:`bundle_adjust_from_config` is the config-driven entry point: it reads the
-``[pipeline.bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``,
-``solver`` and a solver-named kwargs sub-table such as
-``[pipeline.bundle_adjustment.least_squares_scipy]``) and dispatches to
-:func:`bundle_adjust`.
+``[pipeline.bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``
+and the flat scipy ``least_squares`` kwargs such as ``max_nfev`` / ``loss``) and
+dispatches to :func:`bundle_adjust`.
 """
 
 from __future__ import annotations
 
-import tomllib
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jaxtyping import Float
 from numpy import ndarray
@@ -25,6 +23,9 @@ from scipy.optimize import OptimizeResult
 from ..cameras import CameraGroup
 from . import core
 from .state import BAState, build_state, initialize_pts3d
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 __all__ = [
     "bundle_adjust",
@@ -35,8 +36,6 @@ __all__ = [
     "CameraGroup",
     "core",
 ]
-
-_SUPPORTED_SOLVERS = ("least_squares_scipy",)
 
 
 def bundle_adjust(
@@ -66,8 +65,12 @@ def bundle_adjust(
 
     Returns
     -------
-    ``(result, optimized_cameras, pts3d)`` -- the raw scipy ``OptimizeResult``,
-    a ``CameraGroup`` carrying the refined parameters, and the refined points.
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
+    optimized_cameras : CameraGroup
+        A camera group carrying the refined parameters.
+    pts3d : np.ndarray
+        The refined 3D points of shape ``(N, 3)``.
     """
     state = build_state(
         cameras.rvecs,
@@ -92,35 +95,38 @@ def bundle_adjust(
 
 
 def bundle_adjust_from_config(
-    config: dict | str | Path,
+    config: "Config",
     pts2d: Float[ndarray, "V N 2"],
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:
-    """Run :func:`bundle_adjust` driven by a TOML config (dict or file path).
+    """Run :func:`bundle_adjust` driven by a TOML config.
 
-    The ``[pipeline.bundle_adjustment]`` section supplies ``fixed``, ``shared`` and
-    ``solver``; solver kwargs live in a sub-table named after the solver, e.g.
-    ``[pipeline.bundle_adjustment.least_squares_scipy]``.
+    The ``[pipeline.bundle_adjustment]`` section supplies ``fixed`` / ``shared`` and
+    the flat scipy ``least_squares`` kwargs (e.g. ``max_nfev`` / ``loss``). The
+    ``keypoints`` key (which restricts the calibration keypoints) is a pipeline-level
+    concern handled by :func:`deeperfly.pipeline.calibrate`, not here.
+
+    Parameters
+    ----------
+    config
+        A :class:`~deeperfly.config.Config`.
+    pts2d
+        Observed 2D points of shape ``(V, N, 2)`` with NaNs for missing.
+
+    Returns
+    -------
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
+    optimized_cameras : CameraGroup
+        A camera group carrying the refined parameters.
+    pts3d : np.ndarray
+        The refined 3D points of shape ``(N, 3)``.
     """
-    if not isinstance(config, dict):
-        with open(config, "rb") as f:
-            config = tomllib.load(f)
-
     cameras = CameraGroup.from_config(config)
-    ba = config.get("pipeline", {}).get("bundle_adjustment", {})
-
-    solver = ba.get("solver", "scipy.least_squares")
-    if solver not in _SUPPORTED_SOLVERS:
-        raise ValueError(
-            f"unsupported solver {solver!r}; expected one of {_SUPPORTED_SOLVERS}"
-        )
-    solver_kwargs = ba
-    for part in solver.split("."):  # e.g. ba["least_squares_scipy"]
-        solver_kwargs = solver_kwargs.get(part, {})
-
+    ba = config.bundle_adjustment
     return bundle_adjust(
         cameras,
         pts2d,
-        fixed=ba.get("fixed", []),
-        shared=ba.get("shared", []),
-        **solver_kwargs,
+        fixed=ba.fixed,
+        shared=ba.shared,
+        **ba.least_squares,
     )

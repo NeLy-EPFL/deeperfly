@@ -5,7 +5,7 @@ Development setup. For how the pipeline works, see
 
 ## Requirements
 
-- Python ≥ 3.11 (development and CI target 3.14; a `.python-version` pins it)
+- Python ≥ 3.11, < 3.14 (development targets 3.13; a `.python-version` pins it)
 - [uv](https://docs.astral.sh/uv/) for dependency management
 
 ## Development install
@@ -19,18 +19,8 @@ uv sync --group test       # .venv with the editable package + test deps
 ```
 
 `uv sync` installs from the working tree, so changes are picked up without
-reinstalling. Run the CLI with `uv run deeperfly ...`.
-
-### Optional extras
-
-PyTorch, OpenCV and PyAV are core, so no extra is needed for the detector or the
-default video stack. Add the alternative (CPU) video backends as needed (see
-[docs/video.md](docs/video.md)):
-
-```bash
-uv sync --group test --extra torchcodec        # one optional video backend
-uv sync --group test --extra video-reader-rs   # (repeat --extra for more)
-```
+reinstalling. Run the CLI with `uv run deeperfly ...`. PyTorch, OpenCV and PyAV
+are all core dependencies — there are no optional extras.
 
 ## Running the tests
 
@@ -62,9 +52,8 @@ uvx pre-commit run --all-files
 Ad-hoc benchmark and experiment scripts live in [`dev/`](dev), e.g.:
 
 ```bash
-uv run python dev/bench_pose2d.py --batch 7 --frames 8   # 2D detector throughput
-uv run python dev/bench_video.py                         # video decode backends
-uv run python dev/bench_ba.py                            # bundle adjustment
+uv run python dev/bench_video.py   # video decode vs detector throughput
+uv run python dev/bench_ba.py      # bundle adjustment
 ```
 
 ## License

@@ -45,7 +45,6 @@ dependencies = [
     "platformdirs>=4.0",
     "rich>=14.0",
     "typer>=0.26",
-    "matplotlib>=3.10",
     "av>=13",
     "opencv-python-headless>=4.13",
     "natsort>=8.4.0",
@@ -59,16 +58,6 @@ Issues = "https://github.com/NeLy-EPFL/deeperfly/issues"
 [project.scripts]
 deeperfly = "deeperfly.cli:main"
 
-[project.optional-dependencies]
-# Optional alternative video read/write backends (deeperfly.video), each
-# selectable via `backend=...`.
-video-reader-rs = ["video-reader-rs>=0.4; sys_platform != 'darwin'"]
-torchcodec = ["torchcodec>=0.1"]      # CPU decode straight into torch tensors
-# Optional image-sequence decoder: OpenCV (a core dependency) reads jpg/png/... by
-# default; install this for broader format support via `[io.image].reader = "imageio"`
-# (and as the "auto" fallback for files OpenCV cannot decode).
-imageio = ["imageio>=2.34"]
-
 [build-system]
 requires = ["uv_build>=0.11.16,<0.12.0"]
 build-backend = "uv_build"
@@ -76,10 +65,10 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "matplotlib>=3.10",   # ad-hoc plotting in the example notebooks (not used by the package)
 ]
 test = [
     "pytest>=9.0.3",
-    "imageio>=2.34",   # exercise the optional image-reader fallback path
 ]
 
 [tool.pytest.ini_options]

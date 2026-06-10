@@ -1,4 +1,4 @@
-"""Multi-view geometry primitives (CPU-only JAX).
+"""Multi-view geometry primitives with JAX.
 
 Conventions:
 
@@ -7,14 +7,15 @@ Conventions:
 - Camera extrinsics are an axis-angle rotation vector ``rvec`` and a
   translation vector ``tvec``. A 3D world point ``X`` is mapped to camera
   coordinates as ``R(rvec) @ X + tvec``.
-- Camera intrinsics ``intr`` are packed as ``[fx, ..., fy, cx, cy]`` (see
-  :func:`intr_to_kmat`); distortion coefficients ``dists`` follow OpenCV's
+- Camera intrinsics ``intr`` are packed as ``[fx, fy, cx, cy]`` (or
+  ``[f, cx, cy]`` with ``fx = fy = f``) (see :func:`intr_to_kmat`);
+  distortion coefficients ``dists`` follow OpenCV's
   ordering ``[k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4]``.
 - A projection matrix ``pmat`` is the 3x4 product ``K @ [R | t]``.
 
-Functions take their primary operand (``pts3d``, ``pts2d``, ``rvec``, ...) first
-and camera parameters after, in the canonical order ``rvecs, tvecs, intrs,
-dists``. All are JIT- and grad-friendly.
+Functions take their primary operand (``pts3d``, ``pts2d``) first and camera
+parameters after, in the canonical order ``rvecs, tvecs, intrs, dists``.
+All are JIT- and grad-friendly.
 
 The batched public functions are :func:`jax.jit`-wrapped thin :func:`jax.vmap`
 wrappers around the ``*_one`` single-observation variants, which compose with
@@ -23,6 +24,10 @@ only CPU JAX -- the tiny arrays don't benefit from a GPU.
 """
 
 from __future__ import annotations
+
+import os
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import jax
 import jax.numpy as jnp
@@ -50,6 +55,16 @@ def rvec_to_rmat_one(rvec: Float[Array, "3"]) -> Float[Array, "3 3"]:
 
     Single-instance variant of :func:`rvec_to_rmat` for use under
     :func:`jax.vmap` and :func:`jax.jacfwd`.
+
+    Parameters
+    ----------
+    rvec
+        Axis-angle rotation vector of shape ``(3,)`` (direction = axis,
+        magnitude = angle in radians).
+
+    Returns
+    -------
+    Rotation matrix of shape ``(3, 3)``.
     """
     theta_sq = jnp.dot(rvec, rvec)
     theta = jnp.sqrt(theta_sq)
@@ -84,6 +99,15 @@ def rmat_to_rvec_one(rmat: Float[Array, "3 3"]) -> Float[Array, "3"]:
     """Rotation matrix to axis-angle vector for a single rotation.
 
     Single-instance variant of :func:`rmat_to_rvec`.
+
+    Parameters
+    ----------
+    rmat
+        Rotation matrix of shape ``(3, 3)``.
+
+    Returns
+    -------
+    Axis-angle rotation vector of shape ``(3,)``.
     """
     r00, r01, r02 = rmat[0, 0], rmat[0, 1], rmat[0, 2]
     r10, r11, r12 = rmat[1, 0], rmat[1, 1], rmat[1, 2]
@@ -121,6 +145,18 @@ def distort_one(
     """Distortion model applied to a single 2D point.
 
     Single-instance variant of :func:`distort`.
+
+    Parameters
+    ----------
+    xy
+        Normalized 2D coordinate of shape ``(2,)``.
+    dist
+        Distortion coefficients of shape ``(K,)`` with ``K`` in
+        ``{0, 1, ..., 12}``.
+
+    Returns
+    -------
+    Distorted 2D coordinate of shape ``(2,)``.
     """
     n = dist.shape[-1]
     if n == 0:
@@ -183,6 +219,23 @@ def project_full_one(
     Argument order matches :func:`project_full`: operand (``pt3d``) first,
     then camera parameters in the canonical order
     ``rvec, tvec, intr, dist``.
+
+    Parameters
+    ----------
+    pt3d
+        3D world point of shape ``(3,)``.
+    rvec
+        Axis-angle rotation vector of shape ``(3,)``.
+    tvec
+        Translation vector of shape ``(3,)``.
+    intr
+        Packed intrinsics of shape ``(P,)``; see :func:`intr_to_kmat`.
+    dist
+        Distortion coefficients of shape ``(K,)``.
+
+    Returns
+    -------
+    Projected 2D image point of shape ``(2,)``.
     """
     rmat = rvec_to_rmat_one(rvec)
     p_cam = rmat @ pt3d + tvec

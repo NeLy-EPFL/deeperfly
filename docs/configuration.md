@@ -4,29 +4,34 @@ A run is driven by a single self-contained `config.toml`. `deeperfly init
 config.toml` writes a fully commented copy to edit in place; `deeperfly run
 recording/` with no `-c` falls back to the packaged defaults. A single file
 carries everything a run needs — the camera rig, which file belongs to which
-camera, the detector, the pipeline, correction and smoothing.
+camera, the detector, the pipeline and the visualization.
 
 The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
 their defaults.
 
-## Map input files to cameras — `[inputs]`
+## Map input files to cameras — `input` under `[cameras.*]`
 
-The one section almost every recording needs. Each key is a camera name (from
-`[cameras.*]`); each value is a filename glob matched inside the recording
-directory:
+The one setting almost every recording needs. Each camera's footage is given by
+its `input` key — a filename glob matched inside the recording directory — right
+beside that camera's geometry:
 
 ```toml
-[inputs]
-rh = "camera_0.mp4"   # a named file, used as-is
-rm = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
-lf = "cam*/*"         # your own wildcard, used as-is
+[cameras.rh]
+azimuth_deg = -120
+input = "camera_0.mp4"   # a named file, used as-is
+[cameras.rm]
+azimuth_deg = -90
+input = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
+[cameras.lf]
+azimuth_deg = 45
+input = "cam*/*"         # your own wildcard, used as-is
 ```
 
 A camera's footage is one video file or a naturally-sorted image sequence
 (`camera_1_000123.jpg ...`). A directory is a valid recording only when every
 camera matches footage with the same file and frame count. A camera with no
-entry defaults to its own name.
+`input` defaults to its own name.
 
 ## Choose which stages run — `[pipeline]`
 
@@ -38,53 +43,61 @@ do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
 do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
 do_triangulation        = true   # triangulate 2D -> 3D
-do_smoothing            = false  # temporal smoothing of the 3D track (opt-in)
 do_visualization        = true   # render the videos
 # fps = 100.0   # optional; omit to detect from the input videos
 ```
 
-Each enabled stage has its own `[pipeline.<stage>]` parameter table (below). The
-two opt-in stages — pictorial structures and smoothing — are the most common
-toggles to flip on.
+Each enabled stage has its own `[pipeline.<stage>]` parameter table (below).
+Pictorial structures is the opt-in stage most commonly flipped on.
 
-## Resume and recompute — caching and `--overwrite`
+## Resume and recompute — fingerprints and `--overwrite`
 
-An *enabled* stage reuses its result when it is already in the output directory,
-recomputing only when it's missing — so re-running a finished recording is a
-cheap no-op. Force a recompute with `--overwrite`: bare redoes every stage, or
-name stages to redo only those (plus the stages after them):
+An *enabled* stage reuses its result while its config is unchanged and its
+output is in the output directory — so re-running a finished recording is a
+cheap no-op, and **editing the config recomputes exactly the affected stages**.
+Tweak `[pipeline.triangulation]` or the videos and re-run: the slow 2D
+detection is reused, only triangulation/visualization recompute (each stage's
+parameters are recorded in `<outdir>/run.json` when it completes).
+Performance-only knobs (`batch_size`, `decode_buffer`, `[io.image]`) never
+trigger a recompute; a change that invalidates the slow `pose2d` stage is
+announced loudly with exactly what changed. `--overwrite` forces a recompute
+even when nothing changed: bare redoes every stage, or name stages to redo only
+those (plus the stages after them):
 
 ```bash
 deeperfly run recording/ --overwrite                       # recompute everything
 deeperfly run recording/ --overwrite pose2d visualization  # just these (+ what follows)
 ```
 
-A *disabled* stage (`do_<stage> = false`) is dropped from the pipeline; its
-cached result is read from `poses.h5` and fed to the stages still on — so
-`do_pose2d = false` reconstructs 3D from a cached 2D pose without re-running
-detection. An enabled stage whose input is unavailable is skipped, with the
-reason logged.
+The `pose2d` cache always feeds the stages downstream — `do_pose2d = false`
+reconstructs 3D from a cached 2D pose without re-running detection. A *derived*
+stage's cached output (bundle adjustment, pictorial structures, triangulation)
+feeds downstream only while that stage is enabled: turning
+`do_pictorial_structures` off re-triangulates from the raw detections. An
+enabled stage whose input is unavailable is skipped, with the reason logged.
 
-A run reuses the `config.toml` saved in the output directory (it owns the cached
-results), so `-o out/` alone resumes; pass `-c` only for a fresh output
-directory, and edit `out/config.toml` to change a run in place.
+The run's config is snapshotted to `<outdir>/config.toml`. On a re-run `-c`
+wins when given (and refreshes the snapshot); without `-c` the snapshot is
+reused — so both workflows work: edit `out/config.toml` and re-run with
+`-o out/` alone, or keep your own config and pass `-c` each time.
 
-## Tune the opt-in stages — pictorial structures and smoothing
+## Tune the opt-in stage — pictorial structures
 
-These run only when their `do_<stage>` switch is on.
+This runs only when its `do_pictorial_structures` switch is on.
 
 ```toml
 [pipeline.pictorial_structures]   # peak recovery before triangulation
 k        = 5       # candidate peaks per joint
 temporal = false   # add a temporal-consistency term
 lam      = 1.0     # bone-length prior weight
-
-[pipeline.smoothing]
-method = "gaussian"   # gaussian | one_euro
 ```
 
-Pictorial structures needs `do_pose2d` in the same run (candidate peaks aren't
-cached), so it is skipped when resuming from a stored 2D result.
+Candidate peaks are extracted during detection and cached in `poses.h5` when
+this stage is enabled. Enabling it on an existing output directory therefore
+re-runs `pose2d` once (announced loudly); after that, tweaking `temporal` /
+`lam` re-runs only the recovery from the cached candidates. Resuming with
+`do_pose2d = false` from a 2D result that stored no candidates skips the stage
+with a notice.
 
 ## Output videos — `[pipeline.visualization]`
 
@@ -107,7 +120,7 @@ skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
 The generated config ships two montage videos (`pose2d`, `pose3d`) wired to the
 7-camera rig; reorder, drop, or add `panels` to change the layout. Draw-op
 kwargs merge across three levels (global → per-video → per-panel), most specific
-winning. The output encoder and input decoder come from `[io.video]`.
+winning. Video frames are read and written with PyAV.
 
 ## Triangulation — `[pipeline.triangulation]`
 
@@ -129,76 +142,98 @@ worst-reprojecting view; `dlt` is plain least-squares with no outlier handling.
 
 ```toml
 [pipeline.pose2d]
-precision    = "float32"   # "float16" runs under CUDA autocast: ~1.5-2x faster,
-                           # negligible drift. "bfloat16" is as fast with a wider
-                           # range (no overflow); ignored on CPU/MPS
-chunk_frames = 64          # frames decoded + detected at a time, per camera
+precision     = "bfloat16"  # the default: as fast as float16 under CUDA autocast
+                            # (~1.5-2x over float32) with a wider range (no overflow).
+                            # "float32" is the reference; ignored on CPU/MPS
+batch_size    = 16          # GPU forward batch (images/forward); throughput plateaus
+                            # by ~16 on a fast GPU
+decode_buffer = 4           # decode queue depth, in multiples of batch_size
 # checkpoint = "/path/to/weights"   # defaults to the cached weights
 ```
 
-`chunk_frames` is a *memory* knob, not a speed one: lower it for high-res
-footage, many cameras, or a small GPU. The frame decoder lives in `[io.video]`.
+`batch_size` is the GPU forward batch; `decode_buffer` is a *memory* knob (peak
+frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
+GPU fed when decode is jittery, lower it to shave memory.
 
-## Frame I/O backends — `[io]`
+## Frame I/O — `[io]`
 
-Decoder/encoder choices shared across every stage (all decode/encode is CPU):
+Video files are read and written with PyAV (in-process FFmpeg, on the CPU);
+image sequences are decoded with OpenCV. The only knob is the image-decode
+thread count:
 
 ```toml
-[io.video]
-reader = "auto"   # auto | pyav | opencv | torchcodec | video_reader_rs
-writer = "auto"   # auto | pyav | opencv
-
 [io.image]
-reader = "auto"   # auto/opencv (core) | imageio (optional, broader formats)
-# workers = 0     # decode threads (0 = one per CPU)
+# workers = 0   # decode threads (0 = one per CPU)
 ```
 
-`"auto"` picks the fastest installed backend. See [video.md](video.md) for what
-each backend supports and how to install the optional ones.
+See [video.md](video.md) for the reader API.
 
-## Per-camera preprocessing — `[preprocess]`
+## Per-camera preprocessing — `[cameras.<camera>]` `preprocess`
 
-Optional per-camera geometric correction applied right after decoding — for a
-camera mounted sideways/upside-down or with a mirrored sensor. The transformed
-frame becomes canonical for the whole run; nothing maps back to the raw footage.
+Optional per-camera correction applied right after decoding, written as an
+ordered list of steps — for a camera mounted sideways/upside-down, with a
+mirrored sensor, or to crop/downscale a view. Steps run in the order written
+(flips and rotations do not commute, so the order is yours to choose); the
+transformed frame becomes canonical for the whole run.
 
 ```toml
-[preprocess.rh]
-fliplr = false   # left-right flip
-flipud = false   # up-down flip
-rot90  = 0       # counter-clockwise 90-degree turns (0-3)
+[cameras.rh]
+preprocess = [
+    { op = "rot90", k = 1 },                                  # k CCW quarter-turns (any sign)
+    { op = "fliplr" },                                         # left-right flip; also: flipud
+    { op = "crop", x = 10, y = 10, width = 80, height = 80 },  # keep a window
+    { op = "resize", scale = 0.5 },                            # or width/height; optional
+]                                                              # interpolation = "bilinear"|"nearest"
 ```
 
-Applied in that order. Cameras with no table are left untouched.
+(equivalently as `[[cameras.rh.preprocess]]` blocks). Cameras with no list are
+left untouched.
+
+The camera's intrinsics (`focal_length_px`, `principal_point_px`,
+`distortion_coefficients`) always describe the **raw** footage frame and are
+mapped through the chain automatically: a crop shifts the principal point, a
+resize scales the focal lengths, an odd quarter-turn count swaps them. The
+default principal point is the raw image center, also mapped — e.g. a 100x100
+view with the default center (49.5, 49.5) cropped at `x = y = 10` ends up with
+its principal point at (39.5, 39.5).
+
+> **Migrating from the old table form:** `[cameras.<camera>.preprocess]` with
+> `fliplr`/`flipud`/`rot90` keys is rejected; write the equivalent list,
+> e.g. `preprocess = [{ op = "fliplr" }, { op = "flipud" }, { op = "rot90", k = 1 }]`
+> (the old fixed order). If you set an explicit `principal_point_px` for a
+> preprocessed camera, restate it in raw-footage coordinates — it is now mapped
+> through the chain for you.
 
 ## Bundle adjustment — `[pipeline.bundle_adjustment]`
 
-Calibration uses the fly itself as the target. The defaults suit the standard
-rig; you rarely need to change them.
+Calibration uses the fly itself as the target, solved with
+`scipy.optimize.least_squares` — its kwargs (`max_nfev`, `loss`, ...) sit
+directly in the table. The defaults suit the standard rig; you rarely need to
+change them.
 
 ```toml
 [pipeline.bundle_adjustment]
-solver    = "least_squares_scipy"
 keypoints = [ "..." ]   # skeleton points that drive calibration (default: the 30 leg points)
 fixed     = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
 shared    = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
-
-[pipeline.bundle_adjustment.least_squares_scipy]   # forwarded to scipy.optimize.least_squares
-max_nfev = 2000
-loss     = "linear"
+max_nfev  = 2000        # forwarded to scipy.optimize.least_squares
+loss      = "linear"
 ```
 
 See [library.md](library.md) for calling the bundle adjuster directly.
 
-## Camera rig geometry — `[camera_defaults]` and `[cameras.*]`
+## Camera rig geometry — `[cameras.defaults]` and `[cameras.*]`
 
-The cameras orbit an object near the world origin. `[camera_defaults]` is merged
+The cameras orbit an object near the world origin. `[cameras.defaults]` is merged
 into every camera; each `[cameras.<name>]` overrides it (the default rig sets
-just `azimuth_deg` per view). The shipped values describe the standard DeepFly3D
-7-camera rig — leave them unless your rig differs.
+just `azimuth_deg` and `input` per view). The shipped values describe the
+standard DeepFly3D 7-camera rig — leave them unless your rig differs.
+Intrinsics refer to the raw footage frame; a per-camera `preprocess` chain maps
+them into the frame the pipeline actually sees (see the preprocessing section
+above).
 
 ```toml
-[camera_defaults]
+[cameras.defaults]
 focal_length_px = [22388.125, 22388.125]
 distance        = 107.463
 elevation_deg   = 0.0
@@ -206,6 +241,7 @@ elevation_deg   = 0.0
 
 [cameras.f]
 azimuth_deg = 0
+input = "camera_3.mp4"
 ```
 
 ## Skeleton — `[skeleton]`

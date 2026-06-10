@@ -99,7 +99,10 @@ def bundle_adjust(
 
     Returns
     -------
-    ``(result, BASolution(rvecs, tvecs, intrs, dists, pts3d))``.
+    result : scipy.optimize.OptimizeResult
+        The raw scipy least-squares result.
+    solution : BASolution
+        The optimized parameters unpacked into per-camera arrays plus points.
     """
     obs_view, obs_pt = np.where(np.isfinite(pts2d).all(axis=-1))
     pts2d_observed = pts2d[obs_view, obs_pt]

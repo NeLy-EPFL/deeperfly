@@ -38,7 +38,25 @@ def _sha256(path: Path) -> str:
 
 
 def download_torch_weights(*, force: bool = False, sha256: str | None = None) -> Path:
-    """Download the original PyTorch checkpoint to the cache and return its path."""
+    """Download the original PyTorch checkpoint to the cache and return its path.
+
+    Parameters
+    ----------
+    force
+        Re-download even when the cached file already exists.
+    sha256
+        Optional expected checksum to verify the download against.
+
+    Returns
+    -------
+    Path
+        The cached checkpoint path.
+
+    Raises
+    ------
+    ValueError
+        If ``sha256`` is given and the download fails verification.
+    """
     dest = cache_dir() / TORCH_WEIGHTS_NAME
     if dest.exists() and not force:
         return dest

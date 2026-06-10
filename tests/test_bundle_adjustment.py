@@ -24,7 +24,8 @@ from deeperfly.bundle_adjustment import (
 )
 from deeperfly.bundle_adjustment import core
 from deeperfly.cameras import CameraGroup
-from helpers import small_rotation
+from deeperfly.config import Config
+from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, small_rotation
 
 
 def make_group(rig) -> CameraGroup:
@@ -258,20 +259,25 @@ def test_bundle_adjust_from_config(rig):
     cloud = np.random.default_rng(2).uniform(-0.5, 0.5, size=(120, 3))
     pts2d = group.project(cloud)
 
-    # Perturb all but the anchor `f`; leave tvec[2] (shared+fixed) at ground truth.
-    rvecs0, tvecs0 = rig["rvecs"].copy(), rig["tvecs"].copy()
-    for i, name in enumerate(rig["names"]):
-        if name == "f":
-            continue
-        rmat = np.asarray(geom.rvec_to_rmat(rig["rvecs"][i]))
-        rvecs0[i] = np.asarray(geom.rmat_to_rvec(small_rotation(0.005, i) @ rmat))
-        tvecs0[i, :2] += np.random.default_rng(i).normal(scale=0.2, size=2)
-
+    # Perturb the orbit angles of all but the anchor `f`; keep `distance` at
+    # ground truth so tvec[2] (shared+fixed) starts there too (tvec == [0, 0, d]
+    # for any orbit camera looking at the origin).
+    perturb = np.random.default_rng(3)
+    angles0 = {
+        name: {"azimuth_deg": az}
+        if name == "f"
+        else {
+            "azimuth_deg": az + perturb.normal(scale=0.5),
+            "elevation_deg": perturb.normal(scale=0.5),
+            "roll_deg": perturb.normal(scale=0.5),
+        }
+        for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+    }
     config = {
         "cameras": {
             name: {
-                "rvec": rvecs0[i].tolist(),
-                "tvec": tvecs0[i].tolist(),
+                **angles0[name],
+                "distance": DISTANCE_MM,
                 "focal_length_px": rig["intrs"][i, :2].tolist(),
                 "principal_point_px": rig["intrs"][i, 2:].tolist(),
             }
@@ -279,32 +285,17 @@ def test_bundle_adjust_from_config(rig):
         },
         "pipeline": {
             "bundle_adjustment": {
-                "solver": "least_squares_scipy",
                 "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
                 "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-                "least_squares_scipy": {"max_nfev": 2000, "loss": "linear"},
+                # scipy least_squares kwargs sit flat in the table (no solver sub-table).
+                "max_nfev": 2000,
+                "loss": "linear",
             },
         },
     }
-    res, opt, _ = bundle_adjust_from_config(config, pts2d)
+    res, opt, _ = bundle_adjust_from_config(Config.from_dict(config), pts2d)
     assert res.cost < 1e-6
     # anchor camera held exactly fixed
     f = rig["names"].index("f")
     assert np.allclose(opt.rvecs[f], rig["rvecs"][f])
     assert np.allclose(opt.tvecs[f], rig["tvecs"][f])
-
-
-def test_bundle_adjust_from_config_rejects_unknown_solver(rig):
-    config = {
-        "cameras": {
-            "a": {
-                "rvec": [0, 0, 0],
-                "tvec": [0, 0, 5],
-                "focal_length_px": 800.0,
-                "principal_point_px": [1, 2],
-            }
-        },
-        "pipeline": {"bundle_adjustment": {"solver": "ceres"}},
-    }
-    with pytest.raises(ValueError, match="unsupported solver"):
-        bundle_adjust_from_config(config, np.zeros((1, 1, 2)))

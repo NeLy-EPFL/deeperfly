@@ -46,8 +46,8 @@ deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
-calibrate the cameras, triangulate to 3D, correct and smooth, then render a
-skeleton video. Outputs land in `recording/deeperfly_outputs/` (override with
+calibrate the cameras, triangulate to 3D, then render a skeleton video. Outputs
+land in `recording/deeperfly_outputs/` (override with
 `-o`): `poses.h5`, the rendered video, and a copy of the config used.
 
 The config is optional — `deeperfly run recording/` uses sensible defaults.
@@ -72,10 +72,10 @@ UV_TORCH_BACKEND=auto uv add git+https://github.com/NeLy-EPFL/deeperfly
 ```
 
 ```python
-from deeperfly import CameraGroup, Skeleton, run_from_points2d
+from deeperfly import CameraGroup, Config, Skeleton, run_from_points2d
 
-cameras = CameraGroup.from_config("examples/cameras.toml")
-result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf, smooth="one_euro")
+cameras = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```
 
@@ -87,7 +87,7 @@ for full walkthroughs.
 - [docs/configuration.md](docs/configuration.md) — the `config.toml`, section by section, ordered by how often you'll edit it.
 - [docs/library.md](docs/library.md) — the Python API: bundle adjustment, the pipeline, video I/O.
 - [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), the detector.
-- [docs/video.md](docs/video.md) — video read/write backends (CPU decode).
+- [docs/video.md](docs/video.md) — frame read/write: PyAV video, OpenCV image sequences (CPU decode).
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.
 

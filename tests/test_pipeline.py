@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from deeperfly.cameras import CameraGroup
-from deeperfly.io import PoseResult
+from deeperfly.results import PoseResult
 from deeperfly.pipeline import (
     _resolve_triangulation,
     calibrate,
@@ -140,7 +140,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
     observations are present.
     """
     from deeperfly import geometry as geom
-    from deeperfly.triangulate import apply_visibility
+    from deeperfly.triangulation import apply_visibility
 
     names = rig["names"]
     pts3d = fly_motion(rng, n_frames=16)
@@ -220,14 +220,11 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
         conf,
         do_calibrate=False,
         max_drops=3,
-        smooth="one_euro",
         fps=100.0,
-        smooth_kwargs={"mincutoff": 0.5},
         meta={"source": "synthetic"},
     )
     assert isinstance(result, PoseResult)
     assert result.pts3d.shape == pts3d.shape
-    assert result.pts3d_smoothed is not None
     assert not np.isnan(result.pts3d).any()  # every fly point recoverable
     assert np.nanmax(result.reproj_error) < 40.0
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.05)

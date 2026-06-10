@@ -6,7 +6,7 @@
 | Upstream project | Role | `deeperfly` counterpart |
 | --- | --- | --- |
 | [DeepFly2D](https://github.com/NeLy-EPFL/DeepFly2D) | 2D pose: a PyTorch stacked-hourglass detector | [`pose2d/`](../src/deeperfly/pose2d) — a faithful PyTorch port running the original weights directly |
-| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline.py`](../src/deeperfly/pipeline.py), [`triangulate.py`](../src/deeperfly/triangulate.py), [`pictorial.py`](../src/deeperfly/pictorial.py), [`correction.py`](../src/deeperfly/correction.py) |
+| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline.py`](../src/deeperfly/pipeline.py), [`triangulation.py`](../src/deeperfly/triangulation.py), [`pictorial.py`](../src/deeperfly/pictorial.py) |
 | [PyBundleAdjustment](https://github.com/semihgunel/PyBundleAdjustment) | scipy-based bundle adjustment for calibration | [`bundle_adjustment/`](../src/deeperfly/bundle_adjustment) |
 
 The science is faithful to the originals — same camera rig, same detector
@@ -90,16 +90,13 @@ stage that *recovers* the right peak first.
   on the wrong peak (occlusion, crossing legs, L/R confusion); its committed 2D
   then feeds the chosen `triangulation` (a plain `dlt` pass keeps the PS estimate).
 
-`correction.py` adds NaN-aware temporal smoothing (Gaussian or a streaming
-1-Euro filter).
-
 ### Interface, I/O, reproducibility
 
 DeepFly3D ships a PyQt **GUI** for visualization and manual correction.
 deeperfly is **headless**: a single `deeperfly run` drives the whole pipeline
 from one merged `config.toml`, with per-stage caching so re-runs only compute
 what changed. Results are a self-contained **HDF5** `PoseResult` instead of
-pickled objects, and visualization is matplotlib overlays + MP4 export.
+pickled objects, and visualization is OpenCV overlays composited to MP4.
 
 ### Performance
 
