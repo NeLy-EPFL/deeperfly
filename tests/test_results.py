@@ -85,10 +85,7 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     assert sk.joint_names == Skeleton.fly().joint_names
     assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
-    np.testing.assert_array_equal(
-        sk.visibility_mask(cameras.names),
-        Skeleton.fly().visibility_mask(cameras.names),
-    )
+    np.testing.assert_array_equal(sk.limb_id, Skeleton.fly().limb_id)
 
 
 def test_optional_fields_absent(cameras, rng, tmp_path):

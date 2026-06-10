@@ -325,6 +325,12 @@ def _normalize_ops(ops) -> tuple[FrameOp, ...]:
     return tuple(out)
 
 
+def _apply_affine(a: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Apply a 3x3 homogeneous pixel map ``a`` to ``(..., 2)`` points ``(x, y)``."""
+    pts = np.asarray(pts, dtype=float)
+    return pts @ a[:2, :2].T + a[:2, 2]
+
+
 @dataclass(frozen=True)
 class FrameTransform:
     """An ordered op sequence for one camera's frames (default: identity).
@@ -387,6 +393,47 @@ class FrameTransform:
             a = op.affine(size) @ a
             size = op.output_size(size)
         return a
+
+    def map_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        """Map raw-frame pixel points ``(x, y)`` into the transformed frame.
+
+        Parameters
+        ----------
+        pts
+            Points of shape ``(..., 2)`` in raw-frame pixel-center coordinates.
+        size
+            The raw frame ``(height, width)`` the chain is anchored on.
+
+        Returns
+        -------
+        np.ndarray
+            The points of shape ``(..., 2)`` in the transformed frame.
+        """
+        return _apply_affine(self.affine(size), pts)
+
+    def unmap_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        """Map transformed-frame pixel points ``(x, y)`` back to the raw frame.
+
+        The inverse of :meth:`map_points`: a detector/model peak located in the
+        transformed (preprocessed) frame is brought back into the raw frame the
+        camera's intrinsics describe -- this is how a pathway's points return to
+        their view (undoing a mirror, resize, crop, ...). ``size`` is the *raw*
+        frame size the chain is anchored on (not the transformed size).
+
+        Parameters
+        ----------
+        pts
+            Points of shape ``(..., 2)`` in transformed-frame pixel-center
+            coordinates.
+        size
+            The raw frame ``(height, width)`` the chain is anchored on.
+
+        Returns
+        -------
+        np.ndarray
+            The points of shape ``(..., 2)`` in the raw frame.
+        """
+        return _apply_affine(np.linalg.inv(self.affine(size)), pts)
 
     def map_intrinsics(
         self, intr: np.ndarray, dist: np.ndarray, raw_size: tuple[int, int]
@@ -524,6 +571,39 @@ def _parse_op(step, where: str) -> FrameOp:
         if str(exc).startswith(where):
             raise
         raise ValueError(f"{where}: {exc}") from exc
+
+
+def frame_transform_from_ops(ops, where: str) -> FrameTransform:
+    """Build a :class:`FrameTransform` from a list of ``{ op = ... }`` tables.
+
+    The shared parser behind ``[cameras.<name>].preprocess`` and the named
+    ``[[preprocessors]]`` of the detection plan, so both accept the exact same
+    op grammar (and fail the same way on a typo).
+
+    Parameters
+    ----------
+    ops
+        An ordered list of op tables (or empty / ``None`` for the identity).
+    where
+        A label for error messages (e.g. ``"[[preprocessors]] 'mirror'"``).
+
+    Returns
+    -------
+    FrameTransform
+        The parsed, normalized transform.
+
+    Raises
+    ------
+    ValueError
+        If ``ops`` is not a list, or any op table is malformed.
+    """
+    if not ops:
+        return FrameTransform(())
+    if not isinstance(ops, list):
+        raise ValueError(f"{where} must be a list of op tables, got {ops!r}")
+    return FrameTransform(
+        tuple(_parse_op(step, f"{where}[{i}]") for i, step in enumerate(ops))
+    )
 
 
 def parse_frame_transforms(

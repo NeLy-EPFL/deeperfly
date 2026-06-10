@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import Config
-from ..recordings import camera_sources
+from ..recordings import source_sources
 
 log = logging.getLogger("deeperfly")
 
@@ -44,37 +44,26 @@ def _null_progress(total, description):
     yield wrap
 
 
-def load_detector(checkpoint: str | None):
-    """Load the PyTorch detector from a ``.pth`` checkpoint.
+def load_models(plan) -> dict:
+    """Load every model the plan references -> ``name -> LoadedModel``.
 
-    With no explicit ``checkpoint`` the cached weights are used, downloading the
-    released DeepFly2D checkpoint on demand.
+    Each model's weights are loaded once (downloading the cached DeepFly2D
+    checkpoint on demand for a model with no explicit ``weights``); a pathway
+    then forwards through the model named in its ``model`` key.
 
     Parameters
     ----------
-    checkpoint
-        Path to a ``.pth`` checkpoint, or ``None`` to use the cached weights.
+    plan
+        The detection plan (:class:`~deeperfly.pose2d.pathways.DetectionPlan`).
 
     Returns
     -------
-    The loaded detector model.
-
-    Raises
-    ------
-    SystemExit
-        If an explicit ``checkpoint`` path does not exist (we never write to a
-        user-named path).
+    dict of str to LoadedModel
+        The loaded models, keyed by name.
     """
-    from . import detector
-    from .download import download_torch_weights
+    from .models import load_model
 
-    if checkpoint is not None and not Path(checkpoint).exists():
-        raise SystemExit(
-            f"no detector checkpoint at {checkpoint}. Remove [pipeline.pose2d].checkpoint "
-            "to use the auto-provisioned cache, or point it at a valid .pth."
-        )
-    path = checkpoint or download_torch_weights()
-    return detector.load_detector(path)
+    return {name: load_model(spec) for name, spec in plan.models.items()}
 
 
 # -- frame-rate resolution ---------------------------------------------------
@@ -112,7 +101,7 @@ def detect_input_fps(
 
     try:
         cam_sources = [
-            src for _, src in camera_sources(config, sources=sources, input=input)
+            src for _, src in source_sources(config, sources=sources, input=input)
         ]
     except SystemExit:
         return None
@@ -270,9 +259,8 @@ def prefetch_windows(
 
 def detect_2d(
     config: Config,
-    model,
-    sides,
-    flips,
+    plan,
+    models: dict,
     *,
     sources: dict[str, list[Path]] | None = None,
     input=None,
@@ -282,11 +270,13 @@ def detect_2d(
 ):
     """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
 
-    Decodes each camera in one continuous forward pass (CPU), handing the detector
-    one ``[pipeline.pose2d] batch_size``-frame block at a time and freeing it before
-    the next, so peak frame memory is bounded by the decode buffer, not the recording
-    length. Per-block results are concatenated along time. End-of-file comes from
-    the decoder (a short or exhausted block), so it doesn't depend on
+    Decodes each **source** in one continuous forward pass (CPU), handing the
+    detector one ``[pipeline.pose2d] batch_size``-frame block at a time and
+    freeing it before the next, so peak frame memory is bounded by the decode
+    buffer, not the recording length. Each block feeds every pathway on that
+    source (the front source is decoded once, read by both its pathways).
+    Per-block results are concatenated along time. End-of-file comes from the
+    decoder (a short or exhausted block), so it doesn't depend on
     :meth:`deeperfly.io.FrameReader.count` being exact -- that is only the
     progress-bar total.
 
@@ -294,13 +284,13 @@ def detect_2d(
     ----------
     config
         The run config (I/O backends, batch size, decode buffer).
-    model
-        The loaded detector.
-    sides, flips
-        Per-view body side and mirror flags (:func:`fly_camera_layout`).
+    plan
+        The detection plan (:class:`~deeperfly.pose2d.pathways.DetectionPlan`).
+    models
+        ``name -> LoadedModel`` for every model the plan references.
     sources, input
         The footage to detect over (see
-        :func:`deeperfly.recordings.camera_sources`).
+        :func:`deeperfly.recordings.source_sources`).
     want_candidates
         Whether to also extract the top-K candidate peaks (for pictorial
         structures, which are not cached).
@@ -325,8 +315,9 @@ def detect_2d(
     SystemExit
         If the detector received no frames.
     """
-    from .. import io, preprocessing
+    from .. import io
     from ..pictorial import Candidates
+    from ..recordings import source_sources
     from . import inference
 
     pose2d = config.pose2d
@@ -337,22 +328,16 @@ def detect_2d(
     batch_size = pose2d.batch_size
     depth = pose2d.decode_buffer
     block = batch_size
-    cam_sources = camera_sources(config, sources=sources, input=input)
-    cam_files = [src for _, src in cam_sources]
-    # Apply each camera's preprocess transform to its decoded block, so the detector
-    # sees the corrected orientation (and 2D points land in that frame).
-    transforms_by_name = config.frame_transforms()
-    transforms = [
-        transforms_by_name.get(name, preprocessing.FrameTransform())
-        for name, _ in cam_sources
-    ]
-    # One head reader for the first camera serves the progress-bar total -- the
+    src_list = source_sources(config, sources=sources, input=input)
+    src_names = [name for name, _ in src_list]
+    src_files = [files for _, files in src_list]
+    # One head reader for the first source serves the progress-bar total -- the
     # source kind is resolved once here.
-    head = io.open_reader(cam_files[0]) if cam_files else None
+    head = io.open_reader(src_files[0]) if src_files else None
     total = head.count() if head is not None else 0
 
     log.info(
-        "streaming frames: forward batch %d, decode buffer %d batches (%d frames/camera)",
+        "streaming frames: forward batch %d, decode buffer %d batches (%d frames/source)",
         batch_size,
         depth,
         depth * batch_size,
@@ -363,24 +348,23 @@ def detect_2d(
 
     with make_progress(total, "detect 2D") as wrap:
         for window, _ in prefetch_windows(
-            cam_files,
+            src_files,
             block=block,
-            transforms=transforms,
             depth=depth,
             workers=workers,
         ):
+            windows = {name: window[i] for i, name in enumerate(src_names)}
             if want_candidates:
                 p, c, cand = inference.detect_candidates_sequence(
-                    model, window, sides, flips, k=k, progress=wrap
+                    plan, models, windows, k=k, progress=wrap
                 )
                 cand_xy.append(cand.xy)
                 cand_score.append(cand.score)
             else:
                 p, c = inference.detect_sequence(
-                    model,
-                    window,
-                    sides,
-                    flips,
+                    plan,
+                    models,
+                    windows,
                     batch_size=batch_size,
                     progress=wrap,
                 )

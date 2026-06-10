@@ -432,16 +432,12 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     pal = g.create_group("palette")
     for name, color in s.palette.items():
         pal.attrs[name] = color
-    vis = g.create_group("visibility")
-    for name, idx in s.visibility.items():
-        vis.create_dataset(name, data=idx)
 
 
 def _read_skeleton(g: h5py.Group) -> Skeleton:
     decode = lambda arr: tuple(  # noqa: E731
         x.decode() if isinstance(x, bytes) else x for x in arr
     )
-    visibility = {name: g["visibility"][name][()] for name in g.get("visibility", {})}
     palette = {
         name: (v.decode() if isinstance(v, bytes) else v)
         for name, v in g["palette"].attrs.items()
@@ -453,5 +449,4 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],
         palette=palette,
-        visibility=visibility,
     )

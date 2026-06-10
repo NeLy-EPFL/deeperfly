@@ -7,7 +7,7 @@ import pytest
 
 from deeperfly.config import Config
 from deeperfly.skeleton import Skeleton
-from helpers import CAMERA_NAMES, leg_indices
+from helpers import leg_indices
 
 
 @pytest.fixture
@@ -46,24 +46,6 @@ def test_left_right_legs_disjoint(fly):
     assert left.max() < right.min()
 
 
-def test_visibility_mask_matches_table(fly):
-    mask = fly.visibility_mask(CAMERA_NAMES)
-    assert mask.shape == (7, 38)
-    # Per-camera visible counts derived from DeepFly3D's camera_see_joint.
-    assert mask.sum(axis=1).tolist() == [19, 19, 16, 14, 16, 19, 19]
-    # Right cameras never see left-side points and vice versa.
-    rh = CAMERA_NAMES.index("rh")
-    lh = CAMERA_NAMES.index("lh")
-    assert not mask[rh, leg_indices(fly, "l")].any()
-    assert not mask[lh, leg_indices(fly, "r")].any()
-
-
-def test_unknown_camera_sees_everything(fly):
-    mask = fly.visibility_mask(["mystery_cam"])
-    assert mask.shape == (1, 38)
-    assert mask.all()
-
-
 def test_bone_index_pairs(fly):
     i, j = fly.bone_index_pairs()
     assert i.shape == j.shape == (28,)
@@ -77,7 +59,6 @@ def test_from_config_dict_roundtrip(fly):
             "joint_names": ["a", "b", "c"],
             "limb_joints": {"L": [0, 1, 2]},
             "palette": {"L": "#123456"},
-            "visibility": {"cam0": [0, 1], "cam1": [1, 2]},
         }
     }
     s = Skeleton.from_config(Config.from_dict(spec))
@@ -87,8 +68,6 @@ def test_from_config_dict_roundtrip(fly):
     # The limb's three points form a two-edge chain.
     np.testing.assert_array_equal(s.bones, [[0, 1], [1, 2]])
     assert s.palette == {"L": "#123456"}
-    mask = s.visibility_mask(["cam0", "cam1"])
-    np.testing.assert_array_equal(mask, [[True, True, False], [False, True, True]])
 
 
 def test_limb_joints_derive_structure(fly):

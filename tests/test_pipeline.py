@@ -24,6 +24,20 @@ from deeperfly.skeleton import Skeleton
 from helpers import leg_indices, small_rotation
 
 
+def _fly_masked(pts2d: np.ndarray) -> np.ndarray:
+    """NaN-out (view, point) pairs the fly default plan does not observe.
+
+    Visibility is no longer a separate mask applied inside the pipeline; it is the
+    union of the default config's pathway maps. The leading axis must be the 7 fly
+    views in order (rh, rm, rf, f, lf, lm, lh).
+    """
+    from deeperfly.config import Config
+
+    mask = Config.default().detection_plan().visibility_mask()  # (7, 38)
+    m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
+    return np.where(m[..., None], pts2d, np.nan)
+
+
 @pytest.fixture
 def cameras(rig) -> CameraGroup:
     return CameraGroup.from_arrays(
@@ -140,7 +154,6 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
     observations are present.
     """
     from deeperfly import geometry as geom
-    from deeperfly.triangulation import apply_visibility
 
     names = rig["names"]
     pts3d = fly_motion(rng, n_frames=16)
@@ -178,7 +191,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
         return float(np.mean(errs))
 
     def run(front_sees_both: bool) -> float:
-        pts2d = apply_visibility(pts2d_full.copy(), fly, names)
+        pts2d = _fly_masked(pts2d_full.copy())
         if not front_sees_both:  # drop the front camera's left-side observations
             fi = names.index("f")
             for j in leg_indices(fly, "l"):
@@ -260,16 +273,16 @@ def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
 
 
 def test_run_with_calibration(rig, cameras, fly):
-    # Unlike calibrate() on full observations, run_from_points2d applies
-    # per-side visibility masking *before* calibrating, and with bone_prior=False
-    # the far side is bridged only by the front camera -- a weakly constrained
-    # sub-problem whose conditioning depends on the geometry of the (random)
-    # points each camera happens to see. default_rng(0) is degenerate for this
-    # rig (a far-side point loses all but one view), so pin a well-conditioned
-    # seed; the recovered physics is the same for any non-degenerate cloud.
+    # With per-side visibility masking (now applied by the plan, here reproduced
+    # via _fly_masked) and bone_prior=False, the far side is bridged only by the
+    # front camera -- a weakly constrained sub-problem whose conditioning depends
+    # on the geometry of the (random) points each camera happens to see.
+    # default_rng(0) is degenerate for this rig (a far-side point loses all but
+    # one view), so pin a well-conditioned seed; the recovered physics is the same
+    # for any non-degenerate cloud.
     rng = np.random.default_rng(5)
     pts3d = fly_motion(rng, n_frames=20)
-    pts2d = np.array(cameras.project(pts3d))
+    pts2d = _fly_masked(np.array(cameras.project(pts3d)))
     cams0 = perturbed_cameras(rig)
 
     result = run_from_points2d(

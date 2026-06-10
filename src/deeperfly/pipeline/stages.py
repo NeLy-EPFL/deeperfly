@@ -19,8 +19,8 @@ import numpy as np
 from ..cameras import CameraGroup
 from ..config import STAGES, Config
 from ..results import PoseResult, StageStore
-from ..pose2d.stream import _null_progress, detect_2d, load_detector, resolve_fps
-from ..recordings import camera_image_sizes
+from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
+from ..recordings import source_image_sizes
 from . import fingerprint
 
 log = logging.getLogger("deeperfly")
@@ -111,78 +111,52 @@ def stage_pose2d(
     image_sizes : dict
         ``camera_name -> (height, width)`` of the raw footage frames.
     """
-    from ..pose2d import detector, inference
-    from ..triangulation import apply_visibility
-
-    transforms = config.frame_transforms()
-    image_sizes = camera_image_sizes(config, sources=sources, input=input)
+    plan = config.detection_plan()
+    source_sizes = source_image_sizes(config, sources=sources, input=input)
     log.info(
-        "raw input image sizes (h, w): %s",
-        {n: tuple(s) for n, s in image_sizes.items()},
+        "raw source image sizes (h, w): %s",
+        {n: tuple(s) for n, s in source_sizes.items()},
     )
-    cameras = config.camera_group(image_sizes=image_sizes)
-    unknown = set(transforms) - set(cameras.names)
-    if unknown:
-        log.warning(
-            "preprocess entries for unknown cameras are ignored: %s",
-            sorted(unknown),
-        )
-    active = {
-        n: t
-        for n, t in transforms.items()
-        if n in cameras.names and not t.is_identity()
+    # Each view's intrinsics describe its source's raw frame; gather per-view sizes
+    # to resolve principal points (when omitted) for the rig.
+    view_sources = plan.view_sources()
+    image_sizes = {
+        v: source_sizes[s] for v, s in view_sources.items() if s in source_sizes
     }
-    if active:
-        log.info(
-            "frame preprocessing (per camera): %s",
-            {n: t.to_json() for n, t in active.items()},
-        )
-        log.info(
-            "preprocessed image sizes (h, w): %s",
-            {n: t.output_size(image_sizes[n]) for n, t in active.items()},
-        )
+    cameras = config.camera_group(image_sizes=image_sizes)
     skeleton = config.skeleton()
 
     pose2d = config.pose2d
-    log.info("loading detector (checkpoint: %s)", pose2d.checkpoint or "cached")
-    model = load_detector(pose2d.checkpoint)
-    precision = pose2d.precision
-    detector.set_precision(
-        model, precision
-    )  # float16 -> CUDA autocast (no-op on CPU/MPS)
+    log.info("loading %d model(s): %s", len(plan.models), ", ".join(plan.models))
+    models = load_models(plan)
+    for model in models.values():
+        model.set_precision(pose2d.precision)  # float16 -> CUDA autocast (no-op on CPU)
     log.info(
         "detector ready on device %s (precision: %s)",
-        detector.detector_device(model),
-        precision,
+        next(iter(models.values())).device(),
+        pose2d.precision,
     )
 
     k = config.pictorial.k
-    sides, flips = inference.fly_camera_layout(cameras.names)
-    n_passes = len(inference.expand_passes(sides, flips)[0])
-    batch_size = pose2d.batch_size
     log.info(
-        "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
-        "forward batch %d frames",
-        len(image_sizes),
-        n_passes,
-        inference.IMG_SIZE[0],
-        inference.IMG_SIZE[1],
-        batch_size,
+        "detecting 2D poses: %d sources, %d pathways, %d views, forward batch %d frames",
+        len(plan.sources),
+        len(plan.pathways),
+        plan.n_views,
+        pose2d.batch_size,
     )
     pts2d, conf, candidates = detect_2d(
         config,
-        model,
-        sides,
-        flips,
+        plan,
+        models,
         sources=sources,
         input=input,
         want_candidates=want_candidates,
         k=k,
         progress=progress,
     )
-    # Mask (camera, point) pairs the rig cannot see once, here, so the cached 2D
-    # and every downstream stage see the same visibility-masked points.
-    pts2d = apply_visibility(pts2d, skeleton, cameras.names)
+    # No visibility masking step: a (view, point) pair no pathway writes is already
+    # NaN from the scatter, so the cached 2D and every downstream stage agree.
     return cameras, skeleton, pts2d, conf, candidates, image_sizes
 
 
@@ -454,31 +428,29 @@ def source_view_frames(
     SystemExit
         If neither in-memory frames nor resolved footage are available.
     """
-    from .. import io, preprocessing
+    from .. import io
 
     if not views:
         return {}
     names = result.cameras.names
-    # The detector ran on transformed frames, so the 2D/3D overlays live in
-    # transformed-frame coordinates; the overlay footage must match (apply the
-    # same per-camera preprocess transform).
-    transforms = config.frame_transforms()
     workers = config.io.image_workers
-
-    def transform(v, frames):
-        return transforms.get(v, preprocessing.FrameTransform()).apply(frames)
+    # 2D/3D overlays live in the raw view frame (the detector mapped its points
+    # back through the pathway), so the overlay footage is the raw source footage
+    # of the source feeding each view -- no transform. Fall back to view==source
+    # when the config carries no detection plan (a viz-only library call).
+    try:
+        view_sources = config.detection_plan().view_sources()
+    except (ValueError, KeyError):
+        view_sources = {}
+    src_for = {v: view_sources.get(v, v) for v in views}
 
     if in_memory is not None:
-        return {v: transform(v, in_memory[names.index(v)]) for v in views}
+        return {v: in_memory[names.index(v)] for v in views}
 
     sources = sources or {}
-    if all(sources.get(v) for v in views):
+    if all(sources.get(src_for[v]) for v in views):
         return {
-            v: transform(
-                v,
-                io.open_reader(sources[v], workers=workers)[:],
-            )
-            for v in views
+            v: io.open_reader(sources[src_for[v]], workers=workers)[:] for v in views
         }
     raise SystemExit(
         "image (imshow) panels need the original frames, but none are in memory and "

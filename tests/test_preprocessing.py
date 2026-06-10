@@ -191,6 +191,38 @@ def test_affine_matches_pixel_movement(ops):
     assert checked > 0
 
 
+@pytest.mark.parametrize(
+    "ops",
+    [
+        (),
+        (Fliplr(),),
+        (Flipud(),),
+        (Rot90(k=1),),
+        (Crop(x=2, y=1, width=5, height=3),),
+        (Resize(width=20, height=12),),
+        (Fliplr(), Resize(width=20, height=12)),
+        (Crop(x=1, y=1, width=6, height=4), Fliplr(), Resize(scale=2.0)),
+    ],
+)
+def test_map_unmap_points_roundtrip(ops):
+    # unmap_points is the exact inverse of map_points (the inverse the detector
+    # uses to bring a model peak back into its view/source frame).
+    size = (10, 8)  # (H, W)
+    t = FrameTransform(ops)
+    rng = np.random.default_rng(0)
+    pts = rng.uniform([0, 0], [size[1] - 1, size[0] - 1], size=(11, 2))
+    mapped = t.map_points(pts, size)
+    np.testing.assert_allclose(t.unmap_points(mapped, size), pts, atol=1e-9)
+
+
+def test_map_points_matches_apply_for_fliplr():
+    # A left-right flip sends pixel column x to (W-1)-x; map_points must agree.
+    t = FrameTransform((Fliplr(),))
+    size = (4, 6)
+    np.testing.assert_allclose(t.map_points([[0, 0]], size), [[5, 0]])
+    np.testing.assert_allclose(t.map_points([[5, 3]], size), [[0, 3]])
+
+
 def test_resize_affine_matches_centroid():
     # Half-pixel convention: a delta at x=4 upscaled 2x must center at
     # (4 + 0.5) * 2 - 0.5 = 8.5.

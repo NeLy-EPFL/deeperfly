@@ -10,28 +10,79 @@ The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
 their defaults.
 
-## Map input files to cameras — `input` under `[cameras.*]`
+## The detection plan — `[[sources]]`, `[[preprocessors]]`, `[[models]]`, `[[pathways]]`
 
-The one setting almost every recording needs. Each camera's footage is given by
-its `input` key — a filename glob matched inside the recording directory — right
-beside that camera's geometry:
+2D detection is described by four top-level lists whose counts may all differ.
+Conceptually a neural network turns a preprocessed image into points; the plan
+says which footage feeds which model and where each model output lands in the
+skeleton. The default fly rig is **7 sources → 8 pathways → 7 views** (the front
+camera is read twice, once mirrored).
+
+**Sources** name the footage, the one setting almost every recording needs. Each
+`input` is a filename glob matched inside the recording directory:
 
 ```toml
-[cameras.rh]
-azimuth_deg = -120
+[[sources]]
+name  = "cam0"
 input = "camera_0.mp4"   # a named file, used as-is
-[cameras.rm]
-azimuth_deg = -90
+[[sources]]
+name  = "cam1"
 input = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
-[cameras.lf]
-azimuth_deg = 45
-input = "cam*/*"         # your own wildcard, used as-is
 ```
 
-A camera's footage is one video file or a naturally-sorted image sequence
+A source's footage is one video file or a naturally-sorted image sequence
 (`camera_1_000123.jpg ...`). A directory is a valid recording only when every
-camera matches footage with the same file and frame count. A camera with no
+source matches footage with the same file and frame count. A source with no
 `input` defaults to its own name.
+
+**Preprocessors** are named, reusable frame-op pipelines (see the op grammar in
+the preprocessing section below). A pathway references one by name; the
+detector's points are mapped back into the view frame by inverting these ops, so
+a mirror here never moves the reconstructed skeleton:
+
+```toml
+[[preprocessors]]
+name = "plain"
+ops  = []
+[[preprocessors]]
+name = "mirror"
+ops  = [{ op = "fliplr" }]
+```
+
+**Models** select a detector network: `class` is the registry key
+(`"hourglass"` = DeepFly2D), `weights` a checkpoint (`""`/omitted uses the cached
+download), `input_size` the `(height, width)` it expects, `mean` the scalar
+subtracted after `/255`, and `n_channels` the output heatmap count.
+
+```toml
+[[models]]
+name = "deepfly2d"
+class = "hourglass"
+weights = ""
+input_size = [256, 512]
+mean = 0.22
+n_channels = 19
+```
+
+**Pathways** wire `source -> preprocessor -> model -> view`. `points[i]` is the
+skeleton point that model channel `i` fills in `view` (a `-1` drops the channel);
+a `(view, point)` pair no pathway writes is left unobserved (NaN) — that *is* the
+visibility, with no separate table. Right views fill the right half (`19..37`),
+left views the mirrored left half (`0..18`):
+
+```toml
+[[pathways]]
+source = "cam0"; preprocessor = "plain"; model = "deepfly2d"; view = "rh"
+points = [19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37]
+[[pathways]]                              # the front source, mirrored pass -> left half
+source = "cam3"; preprocessor = "mirror"; model = "deepfly2d"; view = "f"
+points = [-1,-1,2,3,4,-1,-1,7,8,9,-1,-1,-1,-1,-1,15,-1,-1,-1]
+```
+
+This modularity supports setups the old hardcoded layout could not: a single
+front model predicting both legs (7 sources → 7 pathways → 7 views), per-view or
+per-side specialized models (… → 14 pathways → 7 views), or a different `model`
+per pathway.
 
 ## Choose which stages run — `[pipeline]`
 
@@ -148,9 +199,10 @@ precision     = "bfloat16"  # the default: as fast as float16 under CUDA autocas
 batch_size    = 16          # GPU forward batch (images/forward); throughput plateaus
                             # by ~16 on a fast GPU
 decode_buffer = 4           # decode queue depth, in multiples of batch_size
-# checkpoint = "/path/to/weights"   # defaults to the cached weights
 ```
 
+This table holds only performance knobs; *what* to detect (sources, models,
+pathways — including per-model `weights`) is the detection plan above.
 `batch_size` is the GPU forward batch; `decode_buffer` is a *memory* knob (peak
 frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
 GPU fed when decode is jittery, lower it to shave memory.
@@ -168,17 +220,17 @@ thread count:
 
 See [video.md](video.md) for the reader API.
 
-## Per-camera preprocessing — `[cameras.<camera>]` `preprocess`
+## Preprocessor op grammar — `[[preprocessors]]` `ops`
 
-Optional per-camera correction applied right after decoding, written as an
-ordered list of steps — for a camera mounted sideways/upside-down, with a
-mirrored sensor, or to crop/downscale a view. Steps run in the order written
-(flips and rotations do not commute, so the order is yours to choose); the
-transformed frame becomes canonical for the whole run.
+A preprocessor is an ordered list of frame ops applied to a pathway's frames
+before the model — to feed the detector a mirrored/cropped/rotated view. Steps
+run in the order written (flips and rotations do not commute, so the order is
+yours):
 
 ```toml
-[cameras.rh]
-preprocess = [
+[[preprocessors]]
+name = "corrected"
+ops  = [
     { op = "rot90", k = 1 },                                  # k CCW quarter-turns (any sign)
     { op = "fliplr" },                                         # left-right flip; also: flipud
     { op = "crop", x = 10, y = 10, width = 80, height = 80 },  # keep a window
@@ -186,23 +238,10 @@ preprocess = [
 ]                                                              # interpolation = "bilinear"|"nearest"
 ```
 
-(equivalently as `[[cameras.rh.preprocess]]` blocks). Cameras with no list are
-left untouched.
-
-The camera's intrinsics (`focal_length_px`, `principal_point_px`,
-`distortion_coefficients`) always describe the **raw** footage frame and are
-mapped through the chain automatically: a crop shifts the principal point, a
-resize scales the focal lengths, an odd quarter-turn count swaps them. The
-default principal point is the raw image center, also mapped — e.g. a 100x100
-view with the default center (49.5, 49.5) cropped at `x = y = 10` ends up with
-its principal point at (39.5, 39.5).
-
-> **Migrating from the old table form:** `[cameras.<camera>.preprocess]` with
-> `fliplr`/`flipud`/`rot90` keys is rejected; write the equivalent list,
-> e.g. `preprocess = [{ op = "fliplr" }, { op = "flipud" }, { op = "rot90", k = 1 }]`
-> (the old fixed order). If you set an explicit `principal_point_px` for a
-> preprocessed camera, restate it in raw-footage coordinates — it is now mapped
-> through the chain for you.
+A pathway's detections are mapped back into its view frame by inverting these
+ops (plus the model's resize to its `input_size`), so the points always land in
+the raw source frame the view's intrinsics describe. The flip is therefore a
+detector-input concern only — it never reflects the reconstructed 3D skeleton.
 
 ## Bundle adjustment — `[pipeline.bundle_adjustment]`
 
@@ -224,13 +263,13 @@ See [library.md](library.md) for calling the bundle adjuster directly.
 
 ## Camera rig geometry — `[cameras.defaults]` and `[cameras.*]`
 
-The cameras orbit an object near the world origin. `[cameras.defaults]` is merged
-into every camera; each `[cameras.<name>]` overrides it (the default rig sets
-just `azimuth_deg` and `input` per view). The shipped values describe the
-standard DeepFly3D 7-camera rig — leave them unless your rig differs.
-Intrinsics refer to the raw footage frame; a per-camera `preprocess` chain maps
-them into the frame the pipeline actually sees (see the preprocessing section
-above).
+A `[cameras.<name>]` is a geometric **view** that a pathway maps its points back
+into — pure geometry now (intrinsics + orbit extrinsics), no footage or
+preprocessing. The cameras orbit an object near the world origin;
+`[cameras.defaults]` is merged into every view, and each `[cameras.<name>]`
+overrides it (the default rig sets just `azimuth_deg` per view). A view's
+intrinsics describe the raw frame of the source feeding it. The shipped values
+describe the standard DeepFly3D 7-camera rig — leave them unless your rig differs.
 
 ```toml
 [cameras.defaults]
@@ -241,12 +280,12 @@ elevation_deg   = 0.0
 
 [cameras.f]
 azimuth_deg = 0
-input = "camera_3.mp4"
 ```
 
 ## Skeleton — `[skeleton]`
 
 The tracked points and their structure (38-point, 7-camera *Drosophila* rig):
-joint names, `limb_joints` kinematic chains, plotting `palette`, and per-camera
-`visibility`. Edit this only to track a different animal — see
+joint names, `limb_joints` kinematic chains, and the plotting `palette`. Which
+view sees which point is no longer a table here — it is the union of the
+`[[pathways]]` `points` maps. Edit this only to track a different animal — see
 [library.md](library.md) and [architecture.md](architecture.md).

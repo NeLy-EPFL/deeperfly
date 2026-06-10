@@ -30,7 +30,6 @@ from ..cameras import CameraGroup
 from ..results import PoseResult
 from ..skeleton import Skeleton
 from ..triangulation import (
-    apply_visibility,
     reprojection_error,
     triangulate,
     triangulate_ransac,
@@ -344,15 +343,15 @@ def run_from_points2d(
 ) -> PoseResult:
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
-    Steps: apply skeleton visibility -> (optional) calibrate cameras ->
-    reconstruct 3D.
+    Steps: (optional) calibrate cameras -> reconstruct 3D. Unobserved points are
+    expected to already be NaN (the detector's pathway scatter leaves them so).
 
     Parameters
     ----------
     cameras
         The camera rig (refined in place when ``do_calibrate``).
     skeleton
-        Skeleton used for visibility masking and the bone-length prior.
+        Skeleton used for the bone-length prior.
     pts2d
         Detector 2D observations of shape ``(V, T, N, 2)``, NaN for missing.
     conf
@@ -396,8 +395,9 @@ def run_from_points2d(
         ``triangulation`` is unknown.
     """
     method = _resolve_triangulation(triangulation)  # validate before calibrating
-    names = cameras.names
-    pts2d = apply_visibility(np.asarray(pts2d, dtype=float), skeleton, names)
+    # Unobserved (view, point) pairs are expected to already be NaN (the detector's
+    # pathway scatter leaves them so); visibility is no longer a separate mask.
+    pts2d = np.asarray(pts2d, dtype=float)
 
     if do_calibrate:
         cameras, _ = calibrate(

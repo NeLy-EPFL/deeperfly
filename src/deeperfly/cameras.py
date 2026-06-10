@@ -376,20 +376,21 @@ class CameraGroup:
         """Build a group from a config.
 
         Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
-        override the defaults. The per-camera ``input`` (footage glob) key
-        belongs to other stages and is ignored here. Spec intrinsics describe
-        the *raw* footage frame; a per-camera ``preprocess`` chain maps them
-        into the canonical (transformed) frame the rest of the pipeline uses.
+        override the defaults. A camera here is a geometric *view*: its
+        intrinsics describe its source's raw footage frame, the frame a pathway
+        maps its detections back into (see
+        :mod:`deeperfly.pose2d.pathways`). Detector-input geometry (mirror,
+        crop, resize) lives in the pathways, not on the view.
 
         Parameters
         ----------
         config
             A :class:`~deeperfly.config.Config`.
         image_sizes
-            Maps a camera name to its raw footage ``(height, width)``, used to
-            infer that camera's principal point (image center) when neither the
-            camera spec nor ``[cameras.defaults]`` specifies
-            ``principal_point_px``, and to anchor the preprocess affine.
+            Maps a view name to its source's raw footage ``(height, width)``,
+            used to infer that view's principal point (image center) when
+            neither the camera spec nor ``[cameras.defaults]`` specifies
+            ``principal_point_px``.
 
         Returns
         -------
@@ -402,14 +403,12 @@ class CameraGroup:
             If the config defines no cameras.
         """
         defaults, specs = config.camera_table()
-        transforms = config.frame_transforms()
         image_sizes = image_sizes or {}
         cameras = {
             name: Camera.from_spec(
                 _rig_keys({**defaults, **spec}),
                 name=name,
                 image_size=image_sizes.get(name),
-                transform=transforms.get(name),
             )
             for name, spec in specs.items()
         }

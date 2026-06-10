@@ -22,7 +22,7 @@ from deeperfly.skeleton import Skeleton
 
 
 def _cfg(extra: dict | None = None) -> Config:
-    """A minimal two-camera config (geometry explicit, so no image sizes needed)."""
+    """A minimal two-view config with a full detection plan (geometry explicit)."""
     cameras = {
         name: {
             "focal_length_px": [100.0, 100.0],
@@ -32,7 +32,39 @@ def _cfg(extra: dict | None = None) -> Config:
         }
         for name, az in (("cam0", 0), ("cam1", 90))
     }
-    data = {"cameras": cameras, "pipeline": {}}
+    data = {
+        "cameras": cameras,
+        "sources": [
+            {"name": "cam0", "input": "cam0.mp4"},
+            {"name": "cam1", "input": "cam1.mp4"},
+        ],
+        "preprocessors": [{"name": "plain", "ops": []}],
+        "models": [
+            {
+                "name": "m",
+                "class": "hourglass",
+                "input_size": [256, 512],
+                "n_channels": 19,
+            }
+        ],
+        "pathways": [
+            {
+                "source": "cam0",
+                "preprocessor": "plain",
+                "model": "m",
+                "view": "cam0",
+                "points": list(range(19)),
+            },
+            {
+                "source": "cam1",
+                "preprocessor": "plain",
+                "model": "m",
+                "view": "cam1",
+                "points": list(range(19)),
+            },
+        ],
+        "pipeline": {},
+    }
     for key, value in (extra or {}).items():
         node = data
         *parents, leaf = key.split(".")
@@ -131,13 +163,26 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
     base = _cfg()
     enabled = base.stage_flags()
     fp = stage_fingerprint("pose2d", base, enabled, store)
-    for extra in (
-        {"pipeline.pose2d.precision": "float32"},
-        {"cameras.cam0.input": "other_pattern"},
-        {"cameras.cam0.preprocess": [{"op": "rot90", "k": 1}]},
-    ):
-        other = stage_fingerprint("pose2d", _cfg(extra), enabled, store)
-        assert fingerprint_diff(fp, other), extra
+    # precision is a plain [pipeline.pose2d] key
+    assert fingerprint_diff(
+        fp,
+        stage_fingerprint(
+            "pose2d", _cfg({"pipeline.pose2d.precision": "float32"}), enabled, store
+        ),
+    )
+    # the detection plan: source glob, preprocessor ops, model input, pathway map
+    src = _cfg()
+    src.data["sources"][0]["input"] = "other.mp4"
+    pre = _cfg()
+    pre.data["preprocessors"][0]["ops"] = [{"op": "fliplr"}]
+    model = _cfg()
+    model.data["models"][0]["input_size"] = [128, 256]
+    pw = _cfg()
+    pw.data["pathways"][0]["points"] = [5] + list(range(1, 19))
+    for changed in (src, pre, model, pw):
+        assert fingerprint_diff(
+            fp, stage_fingerprint("pose2d", changed, enabled, store)
+        )
 
 
 def test_pose2d_fingerprint_candidates_iff_pictorial_enabled(store):
@@ -152,42 +197,22 @@ def test_pose2d_fingerprint_candidates_iff_pictorial_enabled(store):
     assert fingerprint_diff(off, on)  # but enabling it does
 
 
-def test_camera_geometry_excludes_footage_glob(store):
-    """[cameras] input changes do not touch the BA fingerprint; geometry does."""
+def test_bundle_adjustment_fingerprint_is_geometry_only(store):
+    """BA depends on the rig geometry, not the footage sources feeding the views."""
     base = _cfg()
-    moved = _cfg({"cameras.cam0.input": "elsewhere"})
     enabled = base.stage_flags()
+    # changing a source glob does not touch BA (footage lives in the plan, not here)
+    moved = _cfg()
+    moved.data["sources"][0]["input"] = "elsewhere.mp4"
     assert stage_fingerprint(
         "bundle_adjustment", base, enabled, store
     ) == stage_fingerprint("bundle_adjustment", moved, enabled, store)
+    # a view geometry edit does invalidate BA
     geom = _cfg({"cameras.cam0.distance": 11.0})
     assert fingerprint_diff(
         stage_fingerprint("bundle_adjustment", base, enabled, store),
         stage_fingerprint("bundle_adjustment", geom, enabled, store),
     )
-
-
-def test_camera_geometry_tracks_preprocess(store):
-    """Preprocess shapes the resolved rig, so it must invalidate rig consumers."""
-    base = _cfg()
-    cropped = _cfg(
-        {
-            "cameras.cam0.preprocess": [
-                {"op": "crop", "x": 1, "y": 1, "width": 4, "height": 4}
-            ]
-        }
-    )
-    enabled = base.stage_flags()
-    base_fp = stage_fingerprint("bundle_adjustment", base, enabled, store)
-    assert fingerprint_diff(
-        base_fp, stage_fingerprint("bundle_adjustment", cropped, enabled, store)
-    )
-    # no-preprocess configs must not gain a new expected key (the subset diff
-    # would otherwise invalidate every cached downstream stage of older runs)
-    assert "preprocess" not in base_fp["cameras"]
-    # an identity chain normalizes away entirely
-    noop = _cfg({"cameras.cam0.preprocess": [{"op": "rot90", "k": 4}]})
-    assert stage_fingerprint("bundle_adjustment", noop, enabled, store) == base_fp
 
 
 def test_source_selectors_follow_enabled_and_present(store, cameras):

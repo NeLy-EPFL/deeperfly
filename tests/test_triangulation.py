@@ -6,14 +6,11 @@ import numpy as np
 import pytest
 
 from deeperfly.cameras import CameraGroup
-from deeperfly.skeleton import Skeleton
 from deeperfly.triangulation import (
-    apply_visibility,
     reprojection_error,
     triangulate,
     triangulate_ransac,
 )
-from helpers import CAMERA_NAMES
 
 
 @pytest.fixture
@@ -21,11 +18,6 @@ def cameras(rig) -> CameraGroup:
     return CameraGroup.from_arrays(
         rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
     )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
 
 
 def _fly_cloud(rng, n=38, scale=2.0):
@@ -40,23 +32,16 @@ def test_roundtrip_recovers_points(cameras, rng):
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
 
 
-def test_apply_visibility_nans_invisible(cameras, fly, rng):
+def test_triangulation_with_nan_observations(cameras, rng):
+    # Visibility now travels purely as NaN (no separate mask): drop a couple of
+    # (view, point) observations and triangulation still recovers them from the
+    # remaining views.
     pts3d = _fly_cloud(rng)
-    pts2d = np.asarray(cameras.project(pts3d))
-    masked = apply_visibility(pts2d, fly, CAMERA_NAMES)
-    vis = fly.visibility_mask(CAMERA_NAMES)
-    # Exactly the invisible (view, point) entries became NaN.
-    assert np.isnan(masked).any(axis=-1).tolist() == (~vis).tolist()
-    # Visible entries are untouched.
-    np.testing.assert_array_equal(masked[vis], pts2d[vis])
-
-
-def test_triangulation_after_visibility(cameras, fly, rng):
-    pts3d = _fly_cloud(rng)
-    pts2d = apply_visibility(np.asarray(cameras.project(pts3d)), fly, CAMERA_NAMES)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0, :5] = np.nan  # camera 0 does not see the first five points
+    pts2d[3, 7] = np.nan
     recovered = triangulate(cameras, pts2d)
-    # Every fly point is seen by >= 2 cameras, so all are recovered.
-    assert not np.isnan(recovered).any()
+    assert not np.isnan(recovered).any()  # >= 2 views remain for every point
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
 
 

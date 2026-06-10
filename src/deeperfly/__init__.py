@@ -18,8 +18,10 @@ The end-to-end pipeline is reusable without the CLI:
 
 - :func:`deeperfly.resolve_recordings` -- expand recording dirs / wildcards into the
   per-camera footage to process (:mod:`deeperfly.recordings`).
-- :func:`deeperfly.load_detector` / :func:`deeperfly.detect_2d` -- load the PyTorch
-  detector and stream 2D detection over a recording (:mod:`deeperfly.pose2d.stream`).
+- :func:`deeperfly.load_detector` -- load a PyTorch detector model
+  (:mod:`deeperfly.pose2d.detector`); :func:`deeperfly.detect_2d` streams 2D
+  detection over a recording given a detection plan + loaded models
+  (:mod:`deeperfly.pose2d.stream`).
 - :func:`deeperfly.run_recording` -- run a recording's enabled stages against an
   output directory, reusing cached results (the staged run behind ``deeperfly run``);
   :func:`deeperfly.run_from_points2d` is the lower-level 2D-to-3D pass over arrays.
@@ -33,7 +35,8 @@ from .cameras import Camera, CameraGroup
 from .config import Config
 from .results import PoseResult
 from .pipeline import run_from_points2d, run_recording
-from .pose2d.stream import detect_2d, load_detector
+from .pose2d.detector import load_detector
+from .pose2d.stream import detect_2d
 from .recordings import Recording, resolve_recordings
 from .skeleton import Skeleton
 

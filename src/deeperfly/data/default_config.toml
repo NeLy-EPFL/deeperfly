@@ -14,10 +14,124 @@
 
 
 # ===========================================================================
-# Cameras: an array of views orbiting an object near the world origin. Each
-# `[cameras.<name>]` table holds everything about that view -- its geometry, the
-# footage that feeds it (`input`) and any frame correction (`preprocess`).
-# `[cameras.defaults]` is merged into every camera; per-camera keys override it.
+# 2D detection plan. Detection is decoupled into four lists, whose counts may
+# all differ:
+#   [[sources]]       -- named footage globs, each decoded once
+#   [[preprocessors]] -- named, reusable frame-op pipelines (mirror/crop/resize)
+#   [[models]]        -- detector models (class + weights + input contract)
+#   [[pathways]]      -- source -> preprocessor -> model -> map into (view, point)
+# A pathway runs one model over one (preprocessed) source and scatters each model
+# output channel `i` into point `points[i]` of its `view`; a `-1` drops a channel,
+# and a (view, point) pair that no pathway writes is left unobserved (NaN) -- that
+# is the visibility mask, with no separate table. The canonical 7-camera fly rig
+# below is 7 sources -> 8 pathways (the front is read twice, once mirrored) ->
+# 7 views.
+# ===========================================================================
+[[sources]]            # name -> footage glob (the same grammar the old
+name = "cam0"          # [cameras.<name>].input used: a file, prefix, or wildcard)
+input = "camera_0.mp4"
+[[sources]]
+name = "cam1"
+input = "camera_1.mp4"
+[[sources]]
+name = "cam2"
+input = "camera_2.mp4"
+[[sources]]
+name = "cam3"
+input = "camera_3.mp4"
+[[sources]]
+name = "cam4"
+input = "camera_4.mp4"
+[[sources]]
+name = "cam5"
+input = "camera_5.mp4"
+[[sources]]
+name = "cam6"
+input = "camera_6.mp4"
+
+# Named preprocessors: an ordered op list applied to a pathway's frames before
+# the model. The detector's points are mapped back into the view frame by
+# inverting these ops, so a mirror here never moves the reconstructed skeleton.
+# Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
+#      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
+[[preprocessors]]
+name = "plain"
+ops = []
+[[preprocessors]]
+name = "mirror"
+ops = [{ op = "fliplr" }]
+
+# Models: `class` selects the network ("hourglass" = DeepFly2D); `weights` is a
+# checkpoint path ("" / omitted uses the auto-provisioned cache); `input_size` is
+# (height, width); `mean` is subtracted after /255; `n_channels` is the output
+# heatmap count (validated against the weights).
+[[models]]
+name = "deepfly2d"
+class = "hourglass"
+weights = ""
+input_size = [256, 512]
+mean = 0.22
+n_channels = 19
+
+# Pathways. `points[i]` is the skeleton point the model's channel `i` fills in
+# `view` (-1 drops it). Right views fill 19..37, left views 0..18 (mirrored).
+# rf drops the stripes; the front's two pathways keep only the distal joints.
+[[pathways]]
+source = "cam0"
+preprocessor = "plain"
+model = "deepfly2d"
+view = "rh"
+points = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
+[[pathways]]
+source = "cam1"
+preprocessor = "plain"
+model = "deepfly2d"
+view = "rm"
+points = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
+[[pathways]]
+source = "cam2"
+preprocessor = "plain"
+model = "deepfly2d"
+view = "rf"
+points = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, -1, -1, -1]
+[[pathways]]
+source = "cam3"          # front, right pass (un-flipped): distal joints only
+preprocessor = "plain"
+model = "deepfly2d"
+view = "f"
+points = [-1, -1, 21, 22, 23, -1, -1, 26, 27, 28, -1, -1, -1, -1, -1, 34, -1, -1, -1]
+[[pathways]]
+source = "cam3"          # front, left pass (mirrored): distal joints only
+preprocessor = "mirror"
+model = "deepfly2d"
+view = "f"
+points = [-1, -1, 2, 3, 4, -1, -1, 7, 8, 9, -1, -1, -1, -1, -1, 15, -1, -1, -1]
+[[pathways]]
+source = "cam4"
+preprocessor = "mirror"
+model = "deepfly2d"
+view = "lf"
+points = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, -1, -1, -1]
+[[pathways]]
+source = "cam5"
+preprocessor = "mirror"
+model = "deepfly2d"
+view = "lm"
+points = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+[[pathways]]
+source = "cam6"
+preprocessor = "mirror"
+model = "deepfly2d"
+view = "lh"
+points = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+
+
+# ===========================================================================
+# Views: the geometric cameras a pathway maps its points back into -- an array
+# of views orbiting an object near the world origin. Each `[cameras.<name>]` holds
+# only geometry (intrinsics + the orbit extrinsics); its footage comes from the
+# pathway's source, and its intrinsics describe that source's raw frame.
+# `[cameras.defaults]` is merged into every view; per-view keys override it.
 # ===========================================================================
 [cameras.defaults]
 focal_length_px = [22388.125, 22388.125]    # scalar also allowed when fx == fy
@@ -32,57 +146,20 @@ distance = 107.463
 elevation_deg = 0.0
 roll_deg = 0.0
 
-# Per camera: an orbit `azimuth_deg` and the footage `input` -- a filename glob
-# matched in the recording directory:
-#   - a value naming a file ("camera_0.mp4") or carrying its own wildcard
-#     ("camera_0/*", "cam*") is used as-is;
-#   - a bare name ("camera_0") is a prefix ("camera_0*"), matching a video
-#     "camera_0.mp4" or an image sequence "camera_0_000123.jpg ...".
-# A camera's footage is one video file or an image sequence (sorted naturally).
-# If a glob matches several videos only the first is used (warned); several
-# extensions keep the highest-priority one. A directory is a recording only when
-# every camera matches footage with the same file and frame count. A camera with
-# no `input` defaults to its own name. Edit these to match your filenames.
 [cameras.rh]
 azimuth_deg = -120
-input = "camera_0.mp4"
 [cameras.rm]
 azimuth_deg = -90
-input = "camera_1.mp4"
 [cameras.rf]
 azimuth_deg = -45
-input = "camera_2.mp4"
 [cameras.f]
 azimuth_deg = 0
-input = "camera_3.mp4"
 [cameras.lf]
 azimuth_deg = 45
-input = "camera_4.mp4"
 [cameras.lm]
 azimuth_deg = 90
-input = "camera_5.mp4"
 [cameras.lh]
 azimuth_deg = 120
-input = "camera_6.mp4"
-
-# Optional per-camera frame preprocessing: an ordered list of steps applied to
-# each frame right after decoding, in the order written -- for a camera mounted
-# sideways/upside-down, with a mirrored sensor, or to crop/downscale a view. The
-# transformed frame becomes the canonical frame for the whole run (2D detector,
-# calibration, overlays). Camera intrinsics (focal_length_px,
-# principal_point_px) describe the *raw* footage and are mapped through the
-# chain automatically; the default principal point is the raw image center,
-# also mapped (e.g. a 100x100 view cropped at x = y = 10 centers at 39.5).
-# Steps (order matters -- flips and rotations do not commute):
-#   { op = "fliplr" }                                     # left-right flip
-#   { op = "flipud" }                                     # up-down flip
-#   { op = "rot90", k = 1 }                                # k CCW quarter-turns (any sign)
-#   { op = "crop", x = 0, y = 0, width = 960, height = 480 }
-#   { op = "resize", scale = 0.5 }                         # or width/height; optional
-#                                                          # interpolation = "bilinear"|"nearest"
-# Cameras with no list are left untouched. Example (disabled):
-# [cameras.rh]
-# preprocess = [{ op = "rot90", k = 1 }, { op = "fliplr" }]
 
 
 # ===========================================================================
@@ -125,7 +202,9 @@ do_visualization        = true   # render the videos (see [pipeline.visualizatio
                          # videos' base playback rate.
 
 
-# Detector: the 2D pose detector. Video frames are decoded with PyAV (on the CPU).
+# Detector performance knobs (what to detect is the detection plan up top --
+# [[sources]] / [[preprocessors]] / [[models]] / [[pathways]]). Video frames are
+# decoded with PyAV (on the CPU).
 [pipeline.pose2d]
 # Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
 # -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
@@ -144,7 +223,6 @@ batch_size = 16
 # per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
 # network/remote storage); lower it to shave memory.
 decode_buffer = 4
-# checkpoint = "/path/to/weights"   # optional; defaults to the cached weights
 
 
 # Bundle adjustment: the fly itself is the calibration target. Solved with
@@ -317,14 +395,5 @@ rh_leg = "#d58579"
 r_antenna = "#8c1525"
 r_stripe = "#e6b3a8"
 
-# Per-camera point visibility (camera names match the [cameras.*] tables above).
-# Right cameras see the right side, left cameras the left; the front camera sees
-# front/middle legs and the antennae but not the proximal joints or the stripes.
-[skeleton.visibility]
-rh = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
-rm = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
-rf = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-f = [2, 3, 4, 7, 8, 9, 15, 21, 22, 23, 26, 27, 28, 34]
-lf = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-lm = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-lh = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+# Which view sees which point is no longer a table here: it is the union of the
+# [[pathways]] `points` maps above (a (view, point) no pathway writes is NaN).

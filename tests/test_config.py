@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from deeperfly import Config
-from deeperfly.preprocessing import Rot90
 from deeperfly.config import (
     DEFAULT_CONFIG_PATH,
     STAGE_DEFAULTS,
@@ -109,24 +108,26 @@ def test_bundle_adjustment_defaults_when_absent():
     )
 
 
-# -- per-camera consolidation ------------------------------------------------
+# -- sources and views -------------------------------------------------------
 
 
-def test_camera_patterns_and_frame_transforms_from_per_camera_tables():
+def test_source_patterns_and_camera_table():
     c = Config.from_dict(
         {
+            "sources": [
+                {"name": "cam0", "input": "v0.mp4"},
+                {"name": "cam1"},  # no input -> own name
+            ],
             "cameras": {
                 "defaults": {"focal_length_px": 800.0},
-                "rh": {"input": "cam0.mp4", "preprocess": [{"op": "rot90"}]},
-                "lf": {},  # no input -> own name; no preprocess -> identity
-            }
+                "rh": {},
+                "lf": {},
+            },
         }
     )
-    assert c.camera_patterns() == {"rh": "cam0.mp4", "lf": "lf"}
-    transforms = c.frame_transforms()
-    assert transforms["rh"].ops == (Rot90(k=1),)
-    assert "lf" not in transforms  # identity cameras are absent
-    # camera_table() splits the reserved `defaults` key from the real cameras.
+    # Footage globs come from the [[sources]] table (views are pure geometry).
+    assert c.source_patterns() == {"cam0": "v0.mp4", "cam1": "cam1"}
+    # camera_table() splits the reserved `defaults` key from the real views.
     defaults, cams = c.camera_table()
     assert defaults == {"focal_length_px": 800.0}
     assert set(cams) == {"rh", "lf"}

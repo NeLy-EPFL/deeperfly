@@ -16,54 +16,9 @@ from __future__ import annotations
 from itertools import combinations
 
 import numpy as np
-from jaxtyping import Bool, Float
+from jaxtyping import Float
 
 from .cameras import CameraGroup
-from .skeleton import Skeleton
-
-
-def apply_visibility(
-    pts2d: Float[np.ndarray, "V *pts 2"],
-    skeleton: Skeleton,
-    camera_names: list[str],
-) -> Float[np.ndarray, "V *pts 2"]:
-    """Return a copy of ``pts2d`` with invisible (camera, point) entries NaN'd.
-
-    Parameters
-    ----------
-    pts2d
-        2D observations of shape ``(V, *pts, 2)``; the leading axis is views.
-    skeleton
-        Skeleton whose :attr:`~deeperfly.skeleton.Skeleton.visibility` decides
-        which points each named camera can see.
-    camera_names
-        Names labelling the leading view axis, matched against the skeleton's
-        visibility. Cameras unknown to the skeleton keep all their points (see
-        :meth:`Skeleton.visibility_mask`).
-
-    Returns
-    -------
-    np.ndarray
-        A copy of ``pts2d`` with invisible ``(camera, point)`` entries set to NaN.
-
-    Raises
-    ------
-    ValueError
-        If the view or point counts of ``pts2d`` disagree with the skeleton.
-    """
-    pts2d = np.array(pts2d, dtype=float)
-    mask = skeleton.visibility_mask(camera_names)  # (V, N)
-    n_view, n_pts = mask.shape
-    if pts2d.shape[0] != n_view:
-        raise ValueError(
-            f"pts2d has {pts2d.shape[0]} views but {n_view} camera names given"
-        )
-    if pts2d.shape[-2] != n_pts:
-        raise ValueError(f"pts2d has {pts2d.shape[-2]} points but skeleton has {n_pts}")
-    # Broadcast (V, N) over any middle (e.g. time) axes -> (V, *pts).
-    n_mid = pts2d.ndim - 3
-    m = mask.reshape((n_view, *([1] * n_mid), n_pts))
-    return np.where(m[..., None], pts2d, np.nan)
 
 
 def triangulate(

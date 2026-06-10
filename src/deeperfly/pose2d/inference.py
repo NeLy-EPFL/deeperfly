@@ -1,26 +1,23 @@
-"""Orchestration: run the detector and assemble 2D skeletons.
+"""Orchestration: run the detector(s) and assemble 2D skeletons from a plan.
 
-Sits above the detector seam (:mod:`deeperfly.pose2d.detector`): preprocesses
-images (in torch, so a GPU-decoded frame never leaves the GPU), decodes heatmaps,
-and scatters per-camera detections into the full skeleton. Pipeline for one
-recording:
+Sits above the detector seam (:mod:`deeperfly.pose2d.detector`) and the model
+registry (:mod:`deeperfly.pose2d.models`). A :class:`~deeperfly.pose2d.pathways.DetectionPlan`
+says *what* to detect -- which footage source feeds which preprocessor + model,
+and how each model output channel maps to a ``(view, skeleton-point)``. Pipeline
+for one recording:
 
-1. :func:`expand_passes` -- turn the per-camera ``(side, flip)`` layout into a flat
-   list of forward *passes*. A side camera is one pass; the **front camera is two
-   passes** (un-flipped -> right legs, mirror-flipped -> left legs) sharing one
-   physical view, so the front image bridges the two body sides.
-2. :func:`preprocess` each pass (mirror-flip if required, resize to 256x512,
-   subtract the training mean) -- matching DeepFly2D.
-3. :func:`deeperfly.pose2d.detector.predict_points` (batched) -- forward + on-device
-   arg-max decode -> normalized sub-pixel peaks + confidence (the same decode as
-   :func:`heatmap_to_points`, kept on the GPU so only the peaks come back). The
-   candidate path instead pulls whole heatmaps via ``predict_heatmaps``.
-4. :func:`assemble_skeleton` -- place each pass's 19 single-side joints into the
-   38-point skeleton (right -> 19..37, mirrored left -> 0..18 with the x flip
-   undone) and scale to original pixels.
+1. Decode each **source** once into a ``(T, H, W, 3)`` window.
+2. For each **pathway**: orient the frame with the pathway's preprocessor (a
+   mirror/crop/...), let its **model** resize + normalize + forward + decode to
+   normalized peaks, then map those peaks back into the view frame by inverting
+   the pathway's preprocessing (:func:`~deeperfly.pose2d.pathways.map_to_view`)
+   and scatter them into the ``(V, N)`` skeleton
+   (:func:`~deeperfly.pose2d.pathways.scatter_pathway`).
 
-The 19 detector channels match the skeleton's per-side ordering, so the mapping is
-a direct slice.
+A ``(view, point)`` pair that no pathway writes stays ``NaN`` -- that is the
+visibility mask, with no separate table. The front camera is no longer special:
+it is one source feeding two pathways (one mirrored) that both map into view
+``f``.
 """
 
 from __future__ import annotations
@@ -28,11 +25,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 import numpy as np
-from jaxtyping import Array, Float, Int
+from jaxtyping import Float, Int
 
-IMG_SIZE = (256, 512)  # (H, W) network input
-MEAN = 0.22  # DeepFly2D subtracts this scalar from the [0, 1] image
-N_SIDE_JOINTS = 19  # detector channels (one body side)
+from .pathways import DetectionPlan, map_to_view, scatter_pathway
 
 
 def _to_torch_image(image):
@@ -53,13 +48,13 @@ def _to_torch_image(image):
 
 
 def _window_to_device(window, device):
-    """Move one camera's ``(T, H, W, 3)`` window onto the detector ``device`` once.
+    """Move one source's ``(T, H, W, 3)`` window onto the detector ``device`` once.
 
-    Without this, :func:`preprocess` would re-upload a frame for every pass that
-    reads it -- many tiny synchronous host->device copies. Uploading the whole
-    window in one transfer collapses that to a single copy; per-frame
-    :func:`preprocess` then just re-slices on-device. An already-on-device window
-    (a GPU-decoded tensor) is moved only if needed.
+    Without this, each pathway reading the source would re-upload a frame -- many
+    tiny synchronous host->device copies. Uploading the whole window in one
+    transfer collapses that to a single copy; per-frame preparation then just
+    re-slices on-device. An already-on-device window (a GPU-decoded tensor) is
+    moved only if needed.
     """
     import torch
 
@@ -78,55 +73,10 @@ def _image_wh(image) -> tuple[int, int]:
     return int(shape[1]), int(shape[0])
 
 
-def preprocess(
-    image: Float[np.ndarray, "H W 3"],
-    *,
-    flip: bool = False,
-    img_size: tuple[int, int] = IMG_SIZE,
-    mean: float = MEAN,
-) -> Float[Array, "3 Hh Ww"]:
-    """Image (HWC, uint8 or float[0,1]) -> normalized CHW network input (torch).
-
-    Accepts a NumPy array or an on-device tensor (e.g. a GPU-decoded
-    ``torch.Tensor``); on-device inputs stay on the device (:func:`_to_torch_image`),
-    so a GPU-decoded frame is normalized and resized on the GPU and never leaves it.
-    Mirror-side cameras are horizontally flipped so the fly faces the trained
-    orientation. Uses bilinear (anti-aliased) resize; this is close to but not
-    bit-identical with DeepFly2D's skimage resize -- argmax peak picking is robust
-    to the difference.
-
-    Parameters
-    ----------
-    image
-        An ``(H, W, 3)`` frame (NumPy array or on-device torch tensor).
-    flip
-        Whether to mirror left/right (for a mirror-side camera).
-    img_size
-        Target ``(height, width)`` of the network input.
-    mean
-        Mean subtracted from the normalized image.
-
-    Returns
-    -------
-    Array
-        The normalized ``(3, Hh, Ww)`` CHW network input (a torch tensor on the
-        input's device).
-    """
-    import torch
-    import torch.nn.functional as F
-
-    img = _to_torch_image(image)
-    img = img.float() / 255.0 if not torch.is_floating_point(img) else img.float()
-    if img.ndim == 2:
-        img = img.unsqueeze(-1).expand(-1, -1, 3)
-    img = img[..., :3]
-    if flip:
-        img = torch.flip(img, dims=(1,))  # mirror left<->right (width axis)
-    chw = img.permute(2, 0, 1).contiguous()
-    resized = F.interpolate(
-        chw[None], size=img_size, mode="bilinear", align_corners=False, antialias=True
-    )[0]
-    return resized - mean
+def _image_hw(image) -> tuple[int, int]:
+    """``(height, width)`` of an ``(H, W, ...)`` frame without copying to host."""
+    w, h = _image_wh(image)
+    return h, w
 
 
 SubpixelMethod = str  # "argmax" | "weighted" | "taylor"
@@ -299,323 +249,163 @@ def heatmap_to_points(
     return points.reshape(*lead, 2), conf.reshape(*lead)
 
 
-def expand_passes(
-    sides: list[str], flips: list[bool]
-) -> tuple[list[int], list[str], list[bool]]:
-    """Expand a per-camera ``(side, flip)`` layout into per-*pass* lists.
+# -- plan-driven detection ---------------------------------------------------
 
-    A *pass* is one detector forward run. Most cameras are a single pass; a camera
-    whose side is ``"both"`` (the front camera) becomes **two** passes sharing its
-    physical view: ``("right", flip=False)`` -> skeleton indices ``19..37`` and
-    ``("left", flip=True)`` (mirror-flipped) -> ``0..18``. So the one front image
-    yields both body sides, bridging them for calibration.
 
-    Parameters
-    ----------
-    sides, flips
-        Per-camera body side and mirror flag.
+def _plan_device(models) -> str:
+    """The device the plan's models live on (they share one)."""
+    return next(iter(models.values())).device()
 
-    Returns
-    -------
-    views : list of int
-        The physical view index per pass.
-    pass_sides : list of str
-        The body side per pass.
-    pass_flips : list of bool
-        The mirror flag per pass (ready for :func:`assemble_skeleton`).
+
+def _prepare_pathways(plan, models, windows):
+    """Batched input prep: ``pathway -> (T, 3, Hh, Ww)`` model input.
+
+    Each pathway's *whole* window is oriented (mirror/crop) and resized +
+    normalized in one shot, so the heavy resize runs once per pathway over all
+    ``T`` frames rather than per frame. Returns the per-pathway prepared inputs.
     """
-    views: list[int] = []
-    pass_sides: list[str] = []
-    pass_flips: list[bool] = []
-    for v, (side, flip) in enumerate(zip(sides, flips)):
-        if side == "both":
-            views += [v, v]
-            pass_sides += ["right", "left"]
-            pass_flips += [False, True]
-        else:
-            views.append(v)
-            pass_sides.append(side)
-            pass_flips.append(flip)
-    return views, pass_sides, pass_flips
-
-
-def assemble_skeleton(
-    points_norm: Float[np.ndarray, "P J2 2"],
-    conf: Float[np.ndarray, "P J2"],
-    sides: list[str],
-    flips: list[bool],
-    image_size: list[tuple[int, int]],
-    *,
-    views: list[int] | None = None,
-    n_views: int | None = None,
-    n_points: int = 38,
-) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
-    """Scatter per-*pass* single-side detections into the full skeleton (pixels).
-
-    Parameters
-    ----------
-    points_norm, conf
-        Per-pass detector output: ``(P, 19, 2)`` normalized ``(x, y)`` and
-        ``(P, 19)`` confidence (``P`` passes, see :func:`expand_passes`).
-    sides
-        ``"right"`` or ``"left"`` per pass -- which half of the skeleton the 19
-        channels populate (left -> 0..18, right -> 19..37).
-    flips
-        Whether each pass's image was mirror-flipped in :func:`preprocess`
-        (the x coordinate is then undone as ``1 - x``).
-    image_size
-        ``(W, H)`` original pixel size per *physical view* to scale normalized
-        coords (indexed by ``views``).
-    views
-        Physical view index per pass (default: identity, one pass per view). Two
-        passes may share a view -- that is how the front camera fills both halves.
-    n_views
-        Number of physical views in the output (default: ``max(views) + 1``).
-    n_points
-        Total skeleton points in the output.
-
-    Returns
-    -------
-    pts : np.ndarray
-        Assembled 2D pixels of shape ``(V, N, 2)`` (NaN where unfilled).
-    conf : np.ndarray
-        Assembled confidence of shape ``(V, N)`` (``0`` where unfilled).
-    """
-    points_norm = np.asarray(points_norm, dtype=float)
-    conf = np.asarray(conf, dtype=float)
-    n_passes = len(sides)
-    if views is None:
-        views = list(range(n_passes))
-    if n_views is None:
-        n_views = (max(views) + 1) if views else 0
-    pts = np.full((n_views, n_points, 2), np.nan)
-    cout = np.zeros((n_views, n_points))
-    for i in range(n_passes):
-        v = views[i]
-        p = points_norm[i].copy()
-        if flips[i]:
-            p[:, 0] = 1.0 - p[:, 0]
-        w, h = image_size[v]
-        p = p * np.array([w, h])
-        sl = (
-            slice(0, N_SIDE_JOINTS)
-            if sides[i] == "left"
-            else slice(N_SIDE_JOINTS, 2 * N_SIDE_JOINTS)
-        )
-        pts[v, sl] = p
-        cout[v, sl] = conf[i]
-    return pts, cout
-
-
-def fly_camera_layout(camera_names: list[str]) -> tuple[list[str], list[bool]]:
-    """Default ``(sides, flips)`` for the canonical 7-camera fly rig.
-
-    Left cameras (names starting ``l``) image the left side, mirror-flipped so the
-    fly faces the trained orientation; right cameras image the right side
-    un-flipped. The **front camera** (name starting ``f``) gets side ``"both"`` --
-    :func:`expand_passes` runs it twice so it observes both sides. Override for rigs
-    whose front camera should feed a single side.
-
-    Parameters
-    ----------
-    camera_names
-        The rig's camera names, in order.
-
-    Returns
-    -------
-    sides : list of str
-        ``"left"`` / ``"right"`` / ``"both"`` per camera.
-    flips : list of bool
-        The mirror flag per camera.
-    """
-    sides, flips = [], []
-    for name in camera_names:
-        n = name.lower()
-        if n.startswith("l"):
-            sides.append("left")
-            flips.append(True)
-        elif n.startswith("f"):
-            sides.append("both")
-            flips.append(False)  # ignored: expand_passes sets both passes' flips
-        else:
-            sides.append("right")
-            flips.append(False)
-    return sides, flips
-
-
-def detect(
-    model,
-    images: list[Float[np.ndarray, "H W 3"]],
-    sides: list[str],
-    flips: list[bool],
-    *,
-    method: SubpixelMethod = "weighted",
-    radius: int = 2,
-) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
-    """Detect one multi-camera frame -> ``(V, 38, 2)`` pixels and ``(V, 38)`` conf.
-
-    A ``"both"`` camera is run twice (:func:`expand_passes`) so the front image
-    fills both body sides.
-
-    Parameters
-    ----------
-    model
-        The detector (see :mod:`deeperfly.pose2d.detector`).
-    images
-        One ``(H, W, 3)`` frame per physical view.
-    sides, flips
-        Per-camera body side and mirror flag.
-    method, radius
-        Heatmap decode options (see :func:`heatmap_to_points`).
-
-    Returns
-    -------
-    pts : np.ndarray
-        2D pixels of shape ``(V, 38, 2)``.
-    conf : np.ndarray
-        Per-point confidence of shape ``(V, 38)``.
-    """
-    import torch
-
-    from . import detector  # lazy: importing pose2d never imports torch
-
-    views, pass_sides, pass_flips = expand_passes(sides, flips)
-    # Stack the preprocessed passes into one batch; preprocess keeps each frame on
-    # its own device, so GPU-decoded frames feed the forward pass zero-copy.
-    inputs = torch.stack(
-        [preprocess(images[views[i]], flip=pass_flips[i]) for i in range(len(views))]
-    )
-    # Fused forward + decode: the arg-max runs on the forward's device, so only the
-    # small peak arrays leave the GPU (see detector.predict_points).
-    points_norm, conf = detector.predict_points(
-        model, inputs, method=method, radius=radius
-    )
-    image_size = [_image_wh(im) for im in images]  # (w, h) without materializing
-    return assemble_skeleton(
-        np.asarray(points_norm),
-        np.asarray(conf),
-        pass_sides,
-        pass_flips,
-        image_size,
-        views=views,
-        n_views=len(images),
-    )
+    return [
+        models[pw.model].prepare(pw.transform.apply(windows[pw.source]))
+        for pw in plan.pathways
+    ]
 
 
 def detect_sequence(
-    model,
-    frames: Float[np.ndarray, "V T H W 3"],
-    sides: list[str],
-    flips: list[bool],
+    plan: DetectionPlan,
+    models: dict,
+    windows: dict,
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
     batch_size: int | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ) -> tuple[Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]]:
-    """Detect a multi-camera sequence -> ``(V, T, 38, 2)`` pixels and ``(V, T, 38)`` conf.
+    """Detect a multi-source sequence -> ``(V, T, N, 2)`` pixels and ``(V, T, N)`` conf.
 
-    ``batch_size`` controls how many detector *passes* go through one forward.
-    ``None`` (the default) detects one multi-camera frame at a time (batch =
-    passes-per-frame, ~8 for the fly rig). A larger ``batch_size`` flattens the
-    window into ``(T*passes, 3, Hh, Ww)`` and forwards it in groups of
-    ``batch_size`` (the CLI sets it from ``[pipeline.pose2d] batch_size``). Results
-    are numerically identical -- only the dispatch granularity differs.
+    Fully batched: every pathway's window is preprocessed in one shot, then the
+    forward runs **per model** over one big time-major batch (all pathways of a
+    model for every frame), in chunks of ``batch_size``. Pathways sharing a model
+    are never looped one-at-a-time through the network. ``batch_size`` ``None``
+    forwards one frame's pathways at a time; a larger value flattens across frames
+    (numerically identical, only dispatch differs).
 
     Parameters
     ----------
-    model
-        The detector.
-    frames
-        One ``(T, H, W, 3)`` window per physical view.
-    sides, flips
-        Per-camera body side and mirror flag.
+    plan
+        The detection plan (views, pathways, models).
+    models
+        ``name -> LoadedModel`` for every model the plan references.
+    windows
+        ``source name -> (T, H, W, 3)`` window (NumPy or on-device tensor).
     method, radius
-        Heatmap decode options.
+        Heatmap decode options (see :func:`heatmap_to_points`).
     batch_size
-        Detector passes per forward. ``None`` detects one frame at a time
-        (batch = passes/frame); a larger value flattens the window and forwards in
-        groups of ``batch_size`` (numerically identical, only dispatch differs).
+        Forward inputs per model forward, or ``None`` for one frame at a time.
     progress
-        Optional wrapper of the per-frame iterator, advanced once per *completed*
+        Optional wrapper of the per-frame iterator, advanced once per completed
         frame; defaults to the identity.
 
     Returns
     -------
     pts : np.ndarray
-        2D pixels of shape ``(V, T, 38, 2)``.
+        2D pixels of shape ``(V, T, N, 2)`` (NaN where unobserved).
     conf : np.ndarray
-        Per-point confidence of shape ``(V, T, 38)``.
+        Per-point confidence of shape ``(V, T, N)``.
     """
-    from . import detector
-
-    n_views, n_frames = len(frames), len(frames[0])
-    device = detector.detector_device(model)
-    frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
-    pts = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS, 2))
-    conf = np.empty((n_views, n_frames, 2 * N_SIDE_JOINTS))
-    steps = progress(range(n_frames)) if progress is not None else range(n_frames)
-    if batch_size is None:
-        for t in steps:
-            pts[:, t], conf[:, t] = detect(
-                model,
-                [frames[v][t] for v in range(n_views)],
-                sides,
-                flips,
-                method=method,
-                radius=radius,
-            )
-        return pts, conf
-
-    # Batched: forward all (frame, pass) inputs in groups of ``batch_size``,
-    # bounding memory to one group of heatmaps. Pairs are time-major, so frame t
-    # owns the contiguous block [t*P, (t+1)*P) -- letting us tick progress and
-    # assemble per frame once every pass has landed.
     import torch
 
-    views, pass_sides, pass_flips = expand_passes(sides, flips)
-    n_passes = len(views)
-    bs = max(n_passes, int(batch_size))
-    image_size = [_image_wh(frames[v][0]) for v in range(n_views)]  # constant per video
-    pn = np.empty((n_frames, n_passes, N_SIDE_JOINTS, 2))
-    cc = np.empty((n_frames, n_passes, N_SIDE_JOINTS))
-    pairs = [(t, p) for t in range(n_frames) for p in range(n_passes)]
+    device = _plan_device(models)
+    windows = {name: _window_to_device(w, device) for name, w in windows.items()}
+    source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
+    n_frames = len(next(iter(windows.values())))
+    pathways = plan.pathways
+    n_pass = len(pathways)
 
+    out_pts = np.full((plan.n_views, n_frames, plan.n_points, 2), np.nan)
+    out_conf = np.zeros((plan.n_views, n_frames, plan.n_points))
+    prepared = _prepare_pathways(plan, models, windows)  # [(T, 3, Hh, Ww)] per pathway
+
+    # results[t][pw_idx] = (points_norm (J, 2), conf (J,))
+    results: list[list] = [[None] * n_pass for _ in range(n_frames)]
+    steps = progress(range(n_frames)) if progress is not None else range(n_frames)
     step_iter = iter(steps)
-    ticked = 0  # frames whose progress tick has fired
-    for i in range(0, len(pairs), bs):
-        grp = pairs[i : i + bs]
-        inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
-            [preprocess(frames[views[p]][t], flip=pass_flips[p]) for (t, p) in grp]
-        )
-        pg, cg = detector.predict_points(model, inputs, method=method, radius=radius)
-        for j, (t, p) in enumerate(grp):
-            pn[t, p], cc[t, p] = pg[j], cg[j]
-        covered = (i + len(grp)) // n_passes  # frames now fully forwarded
-        while ticked < covered:
+    remaining = [n_pass] * n_frames  # pathway results still owed per frame
+
+    def landed(t: int, pw_idx: int, pn, cc) -> None:
+        results[t][pw_idx] = (pn, cc)
+        remaining[t] -= 1
+        if remaining[t] == 0:
             next(step_iter, None)
-            ticked += 1
+
+    # Forward each model's pathways as one time-major batch (t outer, pathway
+    # inner), in chunks of whole frames so progress ticks land cleanly.
+    by_model: dict[str, list[int]] = {}
+    for pw_idx, pw in enumerate(pathways):
+        by_model.setdefault(pw.model, []).append(pw_idx)
+
+    for model_name, pw_idxs in by_model.items():
+        model = models[model_name]
+        stacked = torch.stack([prepared[p] for p in pw_idxs], dim=1)  # (T, Pm, 3, H, W)
+        p_m = stacked.shape[1]
+        flat = stacked.reshape(n_frames * p_m, *stacked.shape[2:])
+        bs = p_m if batch_size is None else max(p_m, (int(batch_size) // p_m) * p_m)
+        for i in range(0, flat.shape[0], bs):
+            pn, cc = model.predict_points(
+                flat[i : i + bs], method=method, radius=radius
+            )
+            for j in range(pn.shape[0]):
+                t, local = divmod(i + j, p_m)
+                landed(t, pw_idxs[local], pn[j], cc[j])
     for _ in step_iter:  # drain any trailing progress ticks
         pass
 
+    # Scatter each frame's pathway results into the skeleton (out_pts[:, t] is a
+    # view, so the in-place scatter writes through).
     for t in range(n_frames):
-        pts[:, t], conf[:, t] = assemble_skeleton(
-            pn[t],
-            cc[t],
-            pass_sides,
-            pass_flips,
-            image_size,
-            views=views,
-            n_views=n_views,
-        )
-    return pts, conf
+        for pw_idx, pw in enumerate(pathways):
+            pn, cc = results[t][pw_idx]
+            raw_xy = map_to_view(
+                pn, pw.transform, models[pw.model].input_size, source_sizes[pw.source]
+            )
+            scatter_pathway(raw_xy, cc, pw.mapping, out_pts[:, t], out_conf[:, t])
+    return out_pts, out_conf
+
+
+def detect(
+    plan: DetectionPlan,
+    models: dict,
+    images: dict,
+    *,
+    method: SubpixelMethod = "weighted",
+    radius: int = 2,
+) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
+    """Detect one multi-source frame -> ``(V, N, 2)`` pixels and ``(V, N)`` conf.
+
+    Parameters
+    ----------
+    plan
+        The detection plan.
+    models
+        ``name -> LoadedModel``.
+    images
+        ``source name -> (H, W, 3)`` frame.
+    method, radius
+        Heatmap decode options.
+
+    Returns
+    -------
+    pts, conf : np.ndarray
+        ``(V, N, 2)`` pixels and ``(V, N)`` confidence.
+    """
+    windows = {name: img[None] for name, img in images.items()}
+    pts, conf = detect_sequence(plan, models, windows, method=method, radius=radius)
+    return pts[:, 0], conf[:, 0]
 
 
 def detect_candidates_sequence(
-    model,
-    frames: Float[np.ndarray, "V T H W 3"],
-    sides: list[str],
-    flips: list[bool],
+    plan: DetectionPlan,
+    models: dict,
+    windows: dict,
     *,
     k: int = 5,
     method: SubpixelMethod = "weighted",
@@ -627,18 +417,17 @@ def detect_candidates_sequence(
     The same forward yields the single-peak ``(pts2d, conf)`` -- used by
     calibration and the reproject reconstructor -- and a
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
-    (view, joint), consumed by the pictorial-structures corrector. The front
-    camera is run as two passes (:func:`expand_passes`), so both its arg-max pose
-    and its candidates cover both body sides.
+    (view, joint), consumed by the pictorial-structures corrector. Candidates a
+    pathway does not map (or that no pathway produces) stay ``NaN``.
 
     Parameters
     ----------
-    model
-        The detector.
-    frames
-        One ``(T, H, W, 3)`` window per physical view.
-    sides, flips
-        Per-camera body side and mirror flag.
+    plan
+        The detection plan.
+    models
+        ``name -> LoadedModel``.
+    windows
+        ``source name -> (T, H, W, 3)`` window.
     k
         Number of candidate peaks kept per (view, joint).
     method, radius
@@ -649,56 +438,56 @@ def detect_candidates_sequence(
     Returns
     -------
     pts2d : np.ndarray
-        Arg-max 2D pixels of shape ``(V, T, 38, 2)``.
+        Arg-max 2D pixels of shape ``(V, T, N, 2)``.
     conf : np.ndarray
-        Per-point confidence of shape ``(V, T, 38)``.
+        Per-point confidence of shape ``(V, T, N)``.
     candidates : deeperfly.pictorial.Candidates
         The top-``k`` candidate peak set.
     """
     import torch
 
     from .. import pictorial
-    from . import detector
 
-    n_views, n_frames = len(frames), len(frames[0])
-    device = detector.detector_device(model)
-    frames = [_window_to_device(f, device) for f in frames]  # one copy per camera
-    n_pts = 2 * N_SIDE_JOINTS
-    views, pass_sides, pass_flips = expand_passes(sides, flips)
-    pts = np.empty((n_views, n_frames, n_pts, 2))
-    conf = np.empty((n_views, n_frames, n_pts))
-    cand_xy = np.empty((n_views, n_frames, n_pts, k, 2))
-    cand_score = np.empty((n_views, n_frames, n_pts, k))
+    device = _plan_device(models)
+    windows = {name: _window_to_device(w, device) for name, w in windows.items()}
+    source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
+    n_frames = len(next(iter(windows.values())))
+    pathways = plan.pathways
+
+    V, N = plan.n_views, plan.n_points
+    pts = np.full((V, n_frames, N, 2), np.nan)
+    conf = np.zeros((V, n_frames, N))
+    cand_xy = np.full((V, n_frames, N, k, 2), np.nan)
+    cand_score = np.zeros((V, n_frames, N, k))
+
+    prepared = _prepare_pathways(plan, models, windows)  # [(T, 3, Hh, Ww)] per pathway
+    by_model: dict[str, list[int]] = {}
+    for pw_idx, pw in enumerate(pathways):
+        by_model.setdefault(pw.model, []).append(pw_idx)
+
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
     for t in steps:
-        images = [frames[v][t] for v in range(n_views)]
-        inputs = torch.stack(  # on-device batch (zero-copy for GPU-decoded frames)
-            [
-                preprocess(images[views[i]], flip=pass_flips[i])
-                for i in range(len(views))
-            ]
-        )
-        heatmaps = detector.predict_heatmaps(model, inputs)  # (P,J,Hh,Ww)
-        image_size = [_image_wh(im) for im in images]  # (w, h), no host copy
-        points_norm, c = heatmap_to_points(heatmaps, method=method, radius=radius)
-        pts[:, t], conf[:, t] = assemble_skeleton(
-            np.asarray(points_norm),
-            np.asarray(c),
-            pass_sides,
-            pass_flips,
-            image_size,
-            views=views,
-            n_views=n_views,
-        )
-        cand_xy[:, t], cand_score[:, t] = pictorial.extract_candidates(
-            heatmaps,
-            pass_sides,
-            pass_flips,
-            image_size,
-            k=k,
-            views=views,
-            n_views=n_views,
-            method=method,
-            radius=radius,
-        )
+        for model_name, pw_idxs in by_model.items():
+            model = models[model_name]
+            # One forward over all this model's pathways for frame t -> whole
+            # heatmaps decoded/peaked in a single batched call.
+            batch = torch.stack([prepared[p][t] for p in pw_idxs])  # (Pm, 3, H, W)
+            heatmaps = model.predict_heatmaps(batch)  # (Pm, J, Hh, Ww)
+            pn, c = heatmap_to_points(heatmaps, method=method, radius=radius)
+            cxy, csc = pictorial.peak_candidates(
+                heatmaps, k, radius=radius, method=method
+            )
+            for local, pw_idx in enumerate(pw_idxs):
+                pw = pathways[pw_idx]
+                src_size = source_sizes[pw.source]
+                raw_pn = map_to_view(
+                    pn[local], pw.transform, model.input_size, src_size
+                )
+                scatter_pathway(raw_pn, c[local], pw.mapping, pts[:, t], conf[:, t])
+                raw_cxy = map_to_view(
+                    cxy[local], pw.transform, model.input_size, src_size
+                )
+                scatter_pathway(
+                    raw_cxy, csc[local], pw.mapping, cand_xy[:, t], cand_score[:, t]
+                )
     return pts, conf, pictorial.Candidates(xy=cand_xy, score=cand_score)

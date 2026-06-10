@@ -145,115 +145,6 @@ def peak_candidates(
     return xy, score
 
 
-def extract_candidates(
-    heatmaps: Float[np.ndarray, "P J Hh Ww"],
-    sides: list[str],
-    flips: list[bool],
-    image_size: list[tuple[int, int]],
-    *,
-    k: int = DEFAULT_K,
-    views: list[int] | None = None,
-    n_views: int | None = None,
-    n_points: int = 38,
-    n_side_joints: int = 19,
-    **peak_kwargs,
-) -> tuple[Float[np.ndarray, "V N K 2"], Float[np.ndarray, "V N K"]]:
-    """Scatter per-*pass* top-K single-side peaks into the full skeleton (pixels).
-
-    The candidate analog of :func:`deeperfly.pose2d.inference.assemble_skeleton`:
-    extracts K peaks per detector channel, undoes the mirror flip (``x -> 1 - x``),
-    scales to original pixels, and places a right pass's 19 channels into skeleton
-    indices ``19..37`` and a left pass's into ``0..18``.
-
-    Parameters
-    ----------
-    heatmaps
-        One detector stack per *pass* of shape ``(P, J, Hh, Ww)`` (see
-        :func:`deeperfly.pose2d.inference.expand_passes`).
-    sides, flips
-        Per-pass body side (``"left"`` / ``"right"``) and mirror flag.
-    image_size
-        ``(width, height)`` per physical view, indexed by ``views``.
-    k
-        Candidate peaks kept per channel.
-    views
-        Physical view index per pass (default identity), so the front camera's
-        two passes write both halves of its row.
-    n_views, n_points, n_side_joints
-        Output rig sizes; ``n_views`` defaults to ``max(views) + 1``.
-    **peak_kwargs
-        Forwarded to :func:`peak_candidates`.
-
-    Returns
-    -------
-    cand_xy : np.ndarray
-        Candidate pixels of shape ``(V, N, K, 2)`` (NaN where absent).
-    cand_score : np.ndarray
-        Candidate scores of shape ``(V, N, K)`` (``0`` where absent).
-    """
-    xy_norm, score = peak_candidates(heatmaps, k, **peak_kwargs)  # (P, J, K, 2/.)
-    n_passes = len(sides)
-    if views is None:
-        views = list(range(n_passes))
-    if n_views is None:
-        n_views = (max(views) + 1) if views else 0
-    cand_xy = np.full((n_views, n_points, k, 2), np.nan)
-    cand_score = np.zeros((n_views, n_points, k))
-    for i in range(n_passes):
-        v = views[i]
-        p = xy_norm[i].copy()  # (J, K, 2)
-        if flips[i]:
-            p[..., 0] = 1.0 - p[..., 0]
-        w, h = image_size[v]
-        p = p * np.array([w, h])
-        sl = (
-            slice(0, n_side_joints)
-            if sides[i] == "left"
-            else slice(n_side_joints, 2 * n_side_joints)
-        )
-        cand_xy[v, sl] = p
-        cand_score[v, sl] = score[i]
-    return cand_xy, cand_score
-
-
-def apply_visibility(
-    cand_xy: Float[np.ndarray, "V *rest N K 2"],
-    cand_score: Float[np.ndarray, "V *rest N K"],
-    skeleton: Skeleton,
-    camera_names: list[str],
-) -> tuple[np.ndarray, np.ndarray]:
-    """NaN out candidates for (camera, point) pairs the rig cannot see.
-
-    Mirrors :func:`deeperfly.triangulation.apply_visibility` but for the candidate
-    arrays (an extra trailing ``K`` axis). Broadcasts the ``(V, N)`` visibility
-    mask over any middle (e.g. time) axes.
-
-    Parameters
-    ----------
-    cand_xy
-        Candidate pixels of shape ``(V, *rest, N, K, 2)``.
-    cand_score
-        Candidate scores of shape ``(V, *rest, N, K)``.
-    skeleton
-        Skeleton supplying the per-camera visibility.
-    camera_names
-        Names labelling the leading view axis.
-
-    Returns
-    -------
-    cand_xy, cand_score : np.ndarray
-        Copies with invisible entries set to NaN (``xy``) and ``0`` (``score``).
-    """
-    cand_xy = np.array(cand_xy, dtype=float)
-    cand_score = np.array(cand_score, dtype=float)
-    mask = skeleton.visibility_mask(camera_names)  # (V, N)
-    n_mid = cand_xy.ndim - 4  # axes between V and N
-    m = mask.reshape((mask.shape[0], *([1] * n_mid), mask.shape[1], 1))  # (V,*1,N,1)
-    cand_xy = np.where(m[..., None], cand_xy, np.nan)
-    cand_score = np.where(m, cand_score, 0.0)
-    return cand_xy, cand_score
-
-
 # -- bone-length prior (shared with calibration) -----------------------------
 
 
@@ -746,10 +637,9 @@ def reconstruct(
     reproj : np.ndarray
         Reprojection error of shape ``(V, T, N)``.
     """
-    names = cameras.names
-    cand_xy, cand_score = apply_visibility(
-        candidates.xy, candidates.score, skeleton, names
-    )
+    # Candidates already carry NaN where no pathway produced a (view, point), so
+    # the visibility pattern is intrinsic to the detection -- no masking needed.
+    cand_xy, cand_score = candidates.xy, candidates.score
     v, t, n, k = candidates.shape
 
     # Anatomical prior from a cheap arg-max triangulation (subsampled).

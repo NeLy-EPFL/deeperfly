@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from .cameras import CameraGroup
     from .skeleton import Skeleton
     from .preprocessing import FrameTransform
+    from .pose2d.pathways import DetectionPlan
     from .visualization.compose import VideoSpec
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
@@ -70,16 +71,17 @@ STAGE_DEFAULTS = {
 
 @dataclass(frozen=True)
 class Pose2dParams:
-    """``[pipeline.pose2d]`` -- the 2D detector knobs.
+    """``[pipeline.pose2d]`` -- the 2D detector performance knobs.
 
     ``batch_size`` is the GPU forward batch (images/forward); ``decode_buffer`` is
-    the decode queue depth in multiples of it. Both are clamped to ``>= 1``.
+    the decode queue depth in multiples of it. Both are clamped to ``>= 1``. The
+    *what to detect* (sources, models, pathways) lives in the top-level detection
+    plan (:meth:`Config.detection_plan`), not here.
     """
 
     precision: str = "bfloat16"
     batch_size: int = 16
     decode_buffer: int = 4
-    checkpoint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "batch_size", max(1, int(self.batch_size)))
@@ -371,6 +373,20 @@ class Config:
 
         return parse_frame_transforms(self)
 
+    def detection_plan(self) -> "DetectionPlan":
+        """The 2D detection plan (``[[sources]]``/``[[preprocessors]]``/``[[models]]``/``[[pathways]]``).
+
+        Returns
+        -------
+        DetectionPlan
+            The parsed, validated plan mapping footage sources through
+            preprocessors and models into the skeleton (see
+            :class:`deeperfly.pose2d.pathways.DetectionPlan`).
+        """
+        from .pose2d.pathways import DetectionPlan
+
+        return DetectionPlan.from_config(self)
+
     def camera_table(self) -> tuple[dict, dict]:
         """Split ``[cameras]`` into the shared defaults and the per-camera specs.
 
@@ -384,17 +400,32 @@ class Config:
         defaults = cams.pop("defaults", {})
         return defaults, cams
 
-    def camera_patterns(self) -> dict[str, str]:
-        """Map each camera to its footage glob (``[cameras.<name>].input``).
+    def source_patterns(self) -> dict[str, str]:
+        """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``input``).
+
+        Read directly from the ``[[sources]]`` table (without building the whole
+        detection plan) so recording discovery stays cheap. A source with no
+        ``input`` key uses its own name as the glob pattern.
 
         Returns
         -------
         dict of str to str
-            ``camera_name -> footage glob`` in config order; a camera with no
-            ``input`` key uses its own name as the glob pattern.
+            ``source_name -> footage glob`` in config order.
+
+        Raises
+        ------
+        ValueError
+            If a source entry has no string ``name``.
         """
-        _, cams = self.camera_table()
-        return {name: spec.get("input", name) for name, spec in cams.items()}
+        out: dict[str, str] = {}
+        for s in self.data.get("sources", []) or []:
+            name = s.get("name")
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"[[sources]] entry needs a string 'name', got {name!r}"
+                )
+            out[name] = s.get("input", name)
+        return out
 
     # -- snapshot round-trip -------------------------------------------------
 

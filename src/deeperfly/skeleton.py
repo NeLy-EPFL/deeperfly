@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from jaxtyping import Bool, Int
+from jaxtyping import Int
 
 if TYPE_CHECKING:
     from .config import Config
@@ -47,9 +47,10 @@ class Skeleton:
     palette
         Mapping ``limb_name -> hex color`` for plotting. Limbs absent from the
         mapping fall back to a default colormap in the visualization helpers.
-    visibility
-        Mapping ``camera_name -> array of visible point indices`` for a known
-        rig. Cameras absent from the mapping are treated as seeing every point.
+
+    Which view sees which point is no longer carried here: it is intrinsic to the
+    detection plan (the pathways' ``(channel, view, point)`` mappings), and an
+    unobserved ``(view, point)`` is simply ``NaN`` in the points array.
     """
 
     name: str
@@ -58,7 +59,6 @@ class Skeleton:
     limb_id: Int[np.ndarray, "N"]
     bones: Int[np.ndarray, "B 2"]
     palette: dict[str, str]
-    visibility: dict[str, Int[np.ndarray, "M"]]
 
     # -- construction --------------------------------------------------------
 
@@ -89,16 +89,10 @@ class Skeleton:
             If a ``visibility`` entry has out-of-range point indices.
         """
         spec = config.data["skeleton"]
-        n = len(spec["joint_names"])
-        limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
+        limb_names, limb_id, bones = _parse_limb_joints(
+            spec.get("limb_joints", {}), len(spec["joint_names"])
+        )
         palette = {str(k): str(v) for k, v in spec.get("palette", {}).items()}
-        visibility = {
-            name: np.asarray(idx, dtype=np.int64)
-            for name, idx in spec.get("visibility", {}).items()
-        }
-        for name, idx in visibility.items():
-            if idx.size and (idx.min() < 0 or idx.max() >= n):
-                raise ValueError(f"visibility[{name!r}] has out-of-range indices")
         return cls(
             name=spec.get("name", "skeleton"),
             joint_names=tuple(spec["joint_names"]),
@@ -106,7 +100,6 @@ class Skeleton:
             limb_id=limb_id,
             bones=bones,
             palette=palette,
-            visibility=visibility,
         )
 
     # -- basic views ---------------------------------------------------------
@@ -123,29 +116,6 @@ class Skeleton:
         return self.n_points
 
     # -- derived structure ---------------------------------------------------
-
-    def visibility_mask(self, camera_names: list[str]) -> Bool[np.ndarray, "V N"]:
-        """Boolean ``(V, N)`` mask: can camera ``v`` see point ``n``?
-
-        Cameras without an entry in :attr:`visibility` are taken to see every
-        point (all ``True``), so an unknown rig degrades to "everything visible".
-
-        Parameters
-        ----------
-        camera_names
-            Camera names labelling the rows of the returned mask.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean array of shape ``(V, N)`` (``V = len(camera_names)``).
-        """
-        mask = np.ones((len(camera_names), self.n_points), dtype=bool)
-        for v, name in enumerate(camera_names):
-            if name in self.visibility:
-                mask[v] = False
-                mask[v, self.visibility[name]] = True
-        return mask
 
     def bone_index_pairs(
         self,
