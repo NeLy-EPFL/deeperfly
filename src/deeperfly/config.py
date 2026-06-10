@@ -14,9 +14,11 @@ are returned as the domain objects their own parsers already build
 kwargs (a draw op's options, scipy's ``least_squares`` kwargs) stay dicts, carried
 inside their typed parent.
 
-``Config`` also owns the resume contract: it keeps the original TOML *text* so a
-run can snapshot it into the output dir byte-for-byte (see
-:meth:`Config.save_snapshot`).
+``Config`` keeps the original TOML *text* so a run can snapshot it into the
+output dir byte-for-byte (see :meth:`Config.save_snapshot`); a later run without
+``-c`` picks the snapshot back up (:meth:`Config.read_for_run`), and the
+per-stage fingerprints (:mod:`deeperfly.pipeline.fingerprint`) recompute exactly
+the stages whose parameters changed.
 """
 
 from __future__ import annotations
@@ -235,13 +237,15 @@ class Config:
 
     @classmethod
     def read_for_run(cls, cli_config: str | None, outdir: Path) -> "Config":
-        """Pick the config for one run, preferring the snapshot already in ``outdir``.
+        """Pick the config for one run: ``-c`` wins, then the ``outdir`` snapshot.
 
-        A previous run snapshots its config to ``<outdir>/config.toml``; that snapshot
-        owns the cached results and the stage toggles that drive a resume, so it wins
-        even over an explicit ``-c`` (notifying that it is ignored). To change it, edit
-        that file or point ``-o`` at a fresh dir. With no snapshot, ``-c`` is used if
-        given, else the packaged default.
+        An explicit ``-c`` always drives the run (and refreshes the snapshot --
+        see :meth:`save_snapshot`). Without ``-c``, the snapshot a previous run
+        left in ``<outdir>/config.toml`` is reused -- so both "pass a new ``-c``"
+        and "edit the snapshot and re-run" work; either way the per-stage
+        fingerprints (:mod:`deeperfly.pipeline.fingerprint`) recompute exactly
+        the stages whose parameters changed. With neither, the packaged default
+        is used.
 
         Parameters
         ----------
@@ -257,20 +261,12 @@ class Config:
             The config that drives this run.
         """
         snapshot = Path(outdir) / "config.toml"
-        if snapshot.exists():
-            if cli_config is not None:
-                log.warning(
-                    "using the config already in %s (ignoring -c %s); edit that file to "
-                    "change the run (e.g. to toggle [pipeline].do_<stage>), or point -o "
-                    "at a new dir",
-                    snapshot,
-                    cli_config,
-                )
-            log.info("using config %s (snapshot in the output dir)", snapshot)
-            return cls.from_toml(snapshot)
         if cli_config:
             path = Path(cli_config)
             log.info("using config %s (from -c)", path)
+        elif snapshot.exists():
+            path = snapshot
+            log.info("using config %s (snapshot in the output dir)", path)
         else:
             path = DEFAULT_CONFIG_PATH
             log.info("using config %s (packaged default; pass -c to override)", path)
@@ -426,7 +422,7 @@ class Config:
 
         A no-op rewrite when the config already came from there (see
         :meth:`read_for_run`); otherwise it records the ``-c``/default config that
-        produced this run's results so a later resume reuses the very same config.
+        drives this run, so a later run without ``-c`` reuses the very same config.
 
         Parameters
         ----------

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -279,7 +280,7 @@ class Recording:
     directory kept so a resume can reuse a cached result though its footage is
     absent (see :func:`resolve_recordings`).
 
-    ``outdir`` is this recording's output directory (see :func:`_run_outdir`) --
+    ``outdir`` is this recording's output directory (see :func:`plan_outdirs`) --
     the run's durable identity, holding the config snapshot and cached ``poses.h5``.
     The input directory is not retained; a resume re-passes the recording, which
     re-resolves ``sources`` the same way.
@@ -479,70 +480,95 @@ def _dedup_found(
     return out
 
 
-def _run_outdir(output: str | None, recording: Path, *, batch: bool) -> Path:
-    """Output directory for one recording.
+@dataclass(frozen=True)
+class OutdirPlan:
+    """The per-recording output directories for one run.
 
-    Default (no ``-o``): the recording's own ``deeperfly_outputs``. With ``-o``:
-    that directory for a single recording, or a per-recording subdirectory under it
-    for a wildcard/recursive batch (so the runs don't overwrite each other).
+    ``outdirs`` is aligned with the recording directories handed to
+    :func:`plan_outdirs`. ``mirror_confirm``, when set, is a human-readable
+    description of a name-collision fallback (mirroring the input tree) that the
+    caller must confirm with the user *before* any run starts.
+    """
+
+    outdirs: list[Path]
+    mirror_confirm: str | None = None
+
+
+def plan_outdirs(dirs: list[Path], output: str | None) -> OutdirPlan:
+    """Resolve each recording's output directory from the raw ``-o`` string.
+
+    A single recording uses ``-o`` as given (default: its own
+    ``deeperfly_outputs``). A batch (several recordings) reads ``-o`` like
+    ``rsync`` reads a trailing slash:
+
+    - no ``-o``: each recording's own ``deeperfly_outputs``;
+    - ``-o`` *ending in a path separator* ("collect"): one subdirectory per
+      recording under it, ``<o>/<name>``; when recording names collide (e.g.
+      ``a/rec`` and ``b/rec``), every output instead mirrors its recording's
+      path from their common ancestor (``<o>/a/rec``, ``<o>/b/rec``), pending
+      user confirmation (:attr:`OutdirPlan.mirror_confirm`);
+    - a *relative* ``-o`` without a trailing separator: that directory inside
+      each recording, ``<recording>/<o>`` (the default is effectively
+      ``-o deeperfly_outputs``);
+    - an *absolute* ``-o`` without a trailing separator: treated as "collect"
+      (an absolute path cannot nest inside each recording), with a log note.
 
     Parameters
     ----------
+    dirs
+        The resolved recording directories.
     output
-        The ``-o`` value, or ``None`` for the default.
-    recording
-        The recording directory.
-    batch
-        Whether this run processes several recordings (so ``-o`` nests per name).
+        The raw ``-o`` string (the trailing-slash distinction is lost on a
+        ``Path``), or ``None``.
 
     Returns
     -------
-    Path
-        The output directory for this recording.
+    OutdirPlan
+        The output directories, aligned with ``dirs``.
     """
+    if len(dirs) == 1:
+        return OutdirPlan([Path(output) if output else default_outdir(dirs[0])])
     if not output:
-        return default_outdir(recording)
+        return OutdirPlan([default_outdir(d) for d in dirs])
+    collect = output.endswith(("/", os.sep))
+    if not collect and os.path.isabs(output):
+        log.info(
+            "-o %s is absolute: collecting per-recording outputs under it (a "
+            "relative name would create that directory inside each recording)",
+            output,
+        )
+        collect = True
+    if not collect:
+        return OutdirPlan([d / output for d in dirs])
     base = Path(output)
-    return base / recording.name if batch else base
-
-
-def _plan_recordings(
-    found: list[tuple[Path, dict[str, list[Path]]]], output: str | None
-) -> list[Recording]:
-    """Turn discovered ``(dir, sources)`` pairs into :class:`Recording`\\ s.
-
-    The output directory is resolved per recording (:func:`_run_outdir`); whether
-    this is a *batch* (several recordings, so ``-o`` nests per recording) is known
-    only here, once every input has been resolved.
-
-    Parameters
-    ----------
-    found
-        Discovered ``(dir, sources)`` pairs.
-    output
-        The ``-o`` value, or ``None``.
-
-    Returns
-    -------
-    list of Recording
-        One :class:`Recording` per discovered pair.
-    """
-    batch = len(found) > 1
-    return [Recording(src, _run_outdir(output, d, batch=batch)) for d, src in found]
+    names = [d.name for d in dirs]
+    if len(set(names)) == len(names):
+        return OutdirPlan([base / name for name in names])
+    # Names collide -> mirror each recording's path from the common ancestor, so
+    # the runs can't silently share one output dir. Needs user confirmation.
+    resolved = [d.resolve() for d in dirs]
+    ancestor = Path(os.path.commonpath([str(p) for p in resolved]))
+    outdirs = [base / p.relative_to(ancestor) for p in resolved]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    mapping = "\n".join(f"  {d}  ->  {o}" for d, o in zip(dirs, outdirs))
+    confirm = (
+        f"recording names collide under -o {output} ({', '.join(dupes)}); "
+        f"mirroring the input paths from {ancestor} instead:\n{mapping}"
+    )
+    return OutdirPlan(outdirs, mirror_confirm=confirm)
 
 
 def resolve_recordings(
-    inputs: list[Path], *, recursive: bool, config: Config, output: str | None = None
-) -> list[Recording]:
-    """Expand the ``run`` inputs into the recordings to process (footage + output dir).
+    inputs: list[Path], *, recursive: bool, config: Config
+) -> list[tuple[Path, dict[str, list[Path]]]]:
+    """Expand the ``run`` inputs into the recordings to process.
 
     ``inputs`` is one or more input arguments, each a literal path or a wildcard
     pattern expanded against the filesystem (:func:`_expand_pattern`). A *recording*
     is a directory holding footage for every configured camera, resolved to a
     ``camera -> files`` map by :func:`find_recording` (which warns and skips a
-    malformed one). Each kept recording is paired with its output directory
-    (:func:`_run_outdir`, honoring ``output`` = ``-o``); the input directory is not
-    retained past this point. The behaviors:
+    malformed one). Output directories are resolved separately
+    (:func:`plan_outdirs`). The behaviors:
 
     - A single literal path is taken as that one recording -- kept (with empty
       sources) even when it is not valid footage, so a resume from its cached result
@@ -563,13 +589,11 @@ def resolve_recordings(
         Whether each input is a parent directory whose subtree is searched.
     config
         The discovery config (recognizes recording directories).
-    output
-        The ``-o`` value, or ``None``.
 
     Returns
     -------
-    list of Recording
-        The recordings to process.
+    list of (Path, dict)
+        ``(recording directory, camera -> footage files)`` per recording.
 
     Raises
     ------
@@ -605,7 +629,7 @@ def resolve_recordings(
                 [str(p) for p, _ in candidates] or [str(a) for a in inputs],
             )
             raise SystemExit("no recordings to run")
-        return _plan_recordings(found, output)
+        return found
 
     # Non-recursive. A single explicit path is honored as-is (resume-friendly): keep
     # it even when it is not valid footage, so resuming from its cache still works.
@@ -620,7 +644,7 @@ def resolve_recordings(
                 path.resolve(),
             )
             src = {}
-        return _plan_recordings([(path, src)], output)
+        return [(path, src)]
 
     # Several inputs and/or a wildcard: a batch. Keep only the valid recordings; only
     # warn (and error) when the inputs yield no valid recording at all.
@@ -635,7 +659,7 @@ def resolve_recordings(
             "footage for every configured camera)",
         )
         raise SystemExit("no valid recording directories among the inputs")
-    return _plan_recordings(found, output)
+    return found
 
 
 def require_input_footage(

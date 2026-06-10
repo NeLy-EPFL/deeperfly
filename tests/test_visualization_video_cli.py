@@ -139,27 +139,34 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     assert "has 3D:   True" in printed
 
 
-def test_cli_run_visualization_only(result, tmp_path):
-    outdir = tmp_path / "out"
-    outdir.mkdir()
+def _viz_3d_cfg(tmp_path):
+    """A config rendering one skeleton_3d video from the cached 2D (needs no input
+    frames): pose2d/BA off, triangulation on (a disabled 3D stage would not be
+    drawn -- a derived stage feeds downstream only while enabled)."""
     cfg = tmp_path / "cfg.toml"
-    # every compute stage off -> visualization from the cached 3D result. A
-    # skeleton_3d-only video needs no image frames (canvas sized from the camera's
-    # intrinsics); fps comes from the config.
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = true\nfps = 5\n"
+        "do_triangulation = true\ndo_visualization = true\nfps = 5\n"
         "[[pipeline.visualization.videos]]\n"
         'video_name = "pose3d"\n'
         'panels = [{ plot = "skeleton_3d", view = "rh", x0 = 0, y0 = 0 }]\n'
     )
-    result.save(outdir / "poses.h5")  # full result (has 3D)
+    return cfg
+
+
+def test_cli_run_visualization_only(result, tmp_path):
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    # pose2d off -> the cached 2D is triangulated and rendered. A skeleton_3d-only
+    # video needs no image frames (canvas sized from the camera's intrinsics); fps
+    # comes from the config.
+    result.save(outdir / "poses.h5")
     cli.main(
         [
             "run",
             str(tmp_path / "rec"),
             "-c",
-            str(cfg),
+            str(_viz_3d_cfg(tmp_path)),
             "-o",
             str(outdir),
             "--log-level",
@@ -169,65 +176,50 @@ def test_cli_run_visualization_only(result, tmp_path):
     assert io.VideoReader(outdir / "pose3d.mp4")[:].shape[0] == result.n_frames
 
 
-def _viz_only_cfg(tmp_path):
-    """A compute-off config rendering one skeleton_3d video (needs no input frames)."""
-    cfg = tmp_path / "cfg.toml"
-    cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = true\nfps = 5\n"
-        "[[pipeline.visualization.videos]]\n"
-        'video_name = "pose3d"\n'
-        'panels = [{ plot = "skeleton_3d", view = "rh", x0 = 0, y0 = 0 }]\n'
-    )
-    return cfg
-
-
 def test_visualization_reused_when_mp4_exists(result, tmp_path, monkeypatch):
-    """An existing output MP4 is reused (not re-rendered) without --overwrite."""
+    """A rendered MP4 with an unchanged config is reused (not re-rendered)."""
     outdir = tmp_path / "out"
     outdir.mkdir()
     result.save(outdir / "poses.h5")
-    cfg = _viz_only_cfg(tmp_path)
-    (outdir / "pose3d.mp4").write_bytes(b"already rendered")  # pretend a prior render
+    cfg = _viz_3d_cfg(tmp_path)
+    args = [
+        "run",
+        str(tmp_path / "rec"),
+        "-c",
+        str(cfg),
+        "-o",
+        str(outdir),
+        "--log-level",
+        "error",
+    ]
+    cli.main(args)  # renders pose3d.mp4 and records the run
+    rendered = (outdir / "pose3d.mp4").read_bytes()
     monkeypatch.setattr(
         pipeline.stages,
         "render_videos",
         lambda *a, **k: pytest.fail("should reuse the MP4"),
     )
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--log-level",
-            "error",
-        ]
-    )
-    assert (outdir / "pose3d.mp4").read_bytes() == b"already rendered"  # untouched
+    cli.main(args)
+    assert (outdir / "pose3d.mp4").read_bytes() == rendered  # untouched
 
 
 def test_overwrite_visualization_rerenders(result, tmp_path):
-    """--overwrite visualization re-renders even when the output MP4 exists."""
+    """--overwrite visualization re-renders even when the cached MP4 is valid."""
     outdir = tmp_path / "out"
     outdir.mkdir()
     result.save(outdir / "poses.h5")
-    cfg = _viz_only_cfg(tmp_path)
-    (outdir / "pose3d.mp4").write_bytes(b"stale")  # not a real video
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--overwrite",
-            "visualization",
-            "--log-level",
-            "error",
-        ]
-    )
+    cfg = _viz_3d_cfg(tmp_path)
+    args = [
+        "run",
+        str(tmp_path / "rec"),
+        "-c",
+        str(cfg),
+        "-o",
+        str(outdir),
+        "--log-level",
+        "error",
+    ]
+    cli.main(args)
+    (outdir / "pose3d.mp4").write_bytes(b"stale")  # corrupt the cached render
+    cli.main(args + ["--overwrite", "visualization"])
     assert io.VideoReader(outdir / "pose3d.mp4")[:].shape[0] == result.n_frames

@@ -1,14 +1,14 @@
 """Tests for the unified ``deeperfly run`` command and its plumbing.
 
 Covers the per-stage flags (:meth:`Config.stage_flags`), config resolution
-(:meth:`Config.read_for_run`: the output-dir snapshot wins over ``-c``, else
-``-c``, else the packaged default), the
-stage execution -- an enabled stage runs and recomputes, a disabled one is reused
-from the cached ``poses.h5``, and an enabled stage whose input is missing is
-skipped with a reason -- the default ``<input>/deeperfly_outputs``, automatic
-weight provisioning, the pictorial-skipped notice on resume, the detector progress
-hook, and the overlay frame-recovery order. The detector and frame I/O are stubbed
-so these need neither real weights nor video files.
+(:meth:`Config.read_for_run`: ``-c`` wins, else the output-dir snapshot, else
+the packaged default), the fingerprint-driven stage execution -- an enabled
+stage is reused while its config is unchanged, recomputes when it changed, and
+is skipped with a reason when its input is missing -- the output-dir layout
+(:func:`recordings.plan_outdirs`), automatic weight provisioning, the
+pictorial-skipped notice on resume, the detector progress hook, and the overlay
+frame-recovery order. The detector and frame I/O are stubbed so these need
+neither real weights nor video files.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import numpy as np
 import pytest
 
 from deeperfly import Config, cli, pipeline, recordings
-from deeperfly.cameras import CameraGroup
 from deeperfly.cli.app import _normalize_overwrite_argv
 from deeperfly.cli.report import _fmt_bytes
 from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
@@ -93,36 +92,38 @@ def test_resolve_config_uses_cli_when_no_snapshot(tmp_path):
     assert config.source == cfg and config.data["pipeline"] == {"do_pose2d": False}
 
 
-def test_resolve_config_snapshot_wins_over_cli_and_notifies(tmp_path, caplog):
+def test_resolve_config_cli_wins_over_snapshot(tmp_path):
     snapshot = tmp_path / "config.toml"
     snapshot.write_text("[pipeline]\ndo_triangulation = false\n")
     other = tmp_path / "other.toml"
     other.write_text("[pipeline]\ndo_triangulation = true\n")
-    with caplog.at_level("WARNING"):
-        config = Config.read_for_run(str(other), tmp_path)
-    assert config.source == snapshot and config.data["pipeline"] == {
-        "do_triangulation": False
+    config = Config.read_for_run(str(other), tmp_path)
+    assert config.source == other and config.data["pipeline"] == {
+        "do_triangulation": True
     }
-    assert any("ignoring -c" in r.message for r in caplog.records)
 
 
-def test_resolve_config_snapshot_used_silently_without_cli(tmp_path, caplog):
+def test_resolve_config_snapshot_used_without_cli(tmp_path):
     snapshot = tmp_path / "config.toml"
     snapshot.write_text("[pipeline]\ndo_visualization = false\n")
-    with caplog.at_level("WARNING"):
-        config = Config.read_for_run(None, tmp_path)
+    config = Config.read_for_run(None, tmp_path)
     assert config.source == snapshot and config.data["pipeline"] == {
         "do_visualization": False
     }
-    assert not [r for r in caplog.records if "ignoring" in r.message]
 
 
 # -- run: stage toggles, caching, skips -------------------------------------
 
 
 def _stub_detect(monkeypatch, tmp_path):
-    """Stub frame sizing + detection so detect needs no files, weights or recording."""
+    """Stub frame sizing + detection so detect needs no files, weights or recording.
+
+    Returns ``(T, calls)``: the stubbed frame count and a list appended to on
+    every detection, so a test can assert whether pose2d recomputed or was
+    reused from cache.
+    """
     T, H, W = 3, 16, 16
+    calls: list[bool] = []
     sizes = {n: (H, W) for n in FLY_CAMERAS}
     monkeypatch.setattr(
         pipeline.stages, "camera_image_sizes", lambda config, **kw: sizes
@@ -134,12 +135,54 @@ def _stub_detect(monkeypatch, tmp_path):
         pipeline.run, "require_input_footage", lambda config, **kw: None
     )
 
-    def fake_detect_2d(config, model, sides, flips, **kw):
+    def fake_detect_2d(
+        config, model, sides, flips, *, want_candidates=False, k=5, **kw
+    ):
+        from deeperfly.pictorial import Candidates
+
+        calls.append(True)
         v = len(FLY_CAMERAS)
-        return np.zeros((v, T, 38, 2)), np.ones((v, T, 38)), None
+        cand = None
+        if want_candidates:
+            cand = Candidates(
+                xy=np.zeros((v, T, 38, k, 2)), score=np.ones((v, T, 38, k))
+            )
+        return np.zeros((v, T, 38, 2)), np.ones((v, T, 38)), cand
 
     monkeypatch.setattr(pipeline.stages, "detect_2d", fake_detect_2d)
-    return T
+    return T, calls
+
+
+def _stub_compute_stages(monkeypatch):
+    """Stub BA / triangulation / render with shape-correct no-ops.
+
+    Returns ``(ba_calls, tri_calls)``: lists appended to (with the input rig /
+    the triangulation params) on every call, so tests can assert which stages
+    recomputed and with what.
+    """
+    ba_calls: list = []
+    tri_calls: list = []
+
+    def stub_ba(config, cameras, pts2d, conf, skeleton):
+        ba_calls.append(cameras)
+        return cameras
+
+    def stub_tri(config, cameras, pts2d):
+        tri_calls.append(config.triangulation)
+        return pts2d, np.zeros((pts2d.shape[1], 38, 3)), None
+
+    monkeypatch.setattr(pipeline.stages, "stage_bundle_adjustment", stub_ba)
+    monkeypatch.setattr(pipeline.stages, "stage_triangulation", stub_tri)
+    monkeypatch.setattr(pipeline.stages, "render_videos", lambda *a, **k: None)
+    return ba_calls, tri_calls
+
+
+def _edit_snapshot(outdir, pattern, repl):
+    """Regex-edit the config snapshot in ``outdir`` (asserting one substitution)."""
+    snapshot = outdir / "config.toml"
+    text, n = re.subn(pattern, repl, snapshot.read_text(), count=1, flags=re.M)
+    assert n == 1, f"{pattern!r} not found in the snapshot"
+    snapshot.write_text(text)
 
 
 def _make_fly_recording(d):
@@ -155,7 +198,7 @@ def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
     cfg = _default_cfg(
         tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
     )
-    T = _stub_detect(monkeypatch, tmp_path)
+    T, _ = _stub_detect(monkeypatch, tmp_path)
 
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
@@ -176,13 +219,7 @@ def test_run_without_config_uses_default(tmp_path, monkeypatch):
     # The default runs pose2d + bundle_adjustment + triangulation + visualization; stub
     # the compute/render stages so the run needs no real BA, triangulation or video
     # frames -- this test is about config resolution.
-    monkeypatch.setattr(
-        pipeline.stages, "stage_bundle_adjustment", lambda config, result: result
-    )
-    monkeypatch.setattr(
-        pipeline.stages, "stage_triangulation", lambda config, result: result
-    )
-    monkeypatch.setattr(pipeline.stages, "render_videos", lambda *a, **k: None)
+    _stub_compute_stages(monkeypatch)
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
     cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
@@ -307,13 +344,18 @@ def _make_recording(d, *, ext="mp4", count=1):
 
 
 def _resolve(patterns, tmp_path, *, recursive=False, output=None):
-    # globs are written relative to tmp_path, so resolve from there
-    return recordings.resolve_recordings(
+    # globs are written relative to tmp_path, so resolve from there. Discovery and
+    # output planning are separate steps; zip them back into Recordings as the CLI
+    # does (deeperfly.cli.run._cmd_run).
+    found = recordings.resolve_recordings(
         [str(tmp_path / p) for p in patterns],
         recursive=recursive,
         config=_RES_CFG,
-        output=output,
     )
+    plan = recordings.plan_outdirs([d for d, _ in found], output)
+    return [
+        recordings.Recording(src, out) for (_, src), out in zip(found, plan.outdirs)
+    ]
 
 
 def _rec_dir(rec):
@@ -432,11 +474,12 @@ def test_resolve_recursive_multiple_and_glob_roots(tmp_path):
 
 
 def test_resolve_output_dir_handling(tmp_path):
-    """Each recording's output directory is resolved up front into the Recording.
+    """Each recording's output directory is planned up front (plan_outdirs).
 
     No -o: each recording writes into its own <recording>/deeperfly_outputs. With -o
-    and a single recording: that directory directly. With -o and a batch: a
-    per-recording subdirectory so the runs don't overwrite each other.
+    and a single recording: that directory directly. With an absolute -o and a
+    batch: a per-recording subdirectory under it ("collect") so the runs don't
+    overwrite each other.
     """
     _make_recording(tmp_path / "fly1")
     _make_recording(tmp_path / "fly2")
@@ -449,6 +492,110 @@ def test_resolve_output_dir_handling(tmp_path):
         tmp_path / "results" / "fly1",
         tmp_path / "results" / "fly2",
     }
+
+
+def test_plan_outdirs_batch_no_output_uses_defaults(tmp_path):
+    fly1 = _make_recording(tmp_path / "fly1")
+    fly2 = _make_recording(tmp_path / "fly2")
+    batch = _resolve(["*"], tmp_path)
+    assert {r.outdir for r in batch} == {
+        fly1 / "deeperfly_outputs",
+        fly2 / "deeperfly_outputs",
+    }
+
+
+def test_plan_outdirs_trailing_slash_collects(tmp_path):
+    """A batch -o ending in '/' collects one subdirectory per recording name."""
+    _make_recording(tmp_path / "a" / "rec1")
+    _make_recording(tmp_path / "b" / "rec2")
+    batch = _resolve(["a/rec1", "b/rec2"], tmp_path, output=str(tmp_path / "out") + "/")
+    assert [r.outdir for r in batch] == [
+        tmp_path / "out" / "rec1",
+        tmp_path / "out" / "rec2",
+    ]
+
+
+def test_plan_outdirs_relative_no_slash_nests_inside_each_recording(tmp_path):
+    """A batch with a relative -o (no trailing slash) writes <recording>/<o>,
+    generalizing the default (which is effectively -o deeperfly_outputs)."""
+    fly1 = _make_recording(tmp_path / "fly1")
+    fly2 = _make_recording(tmp_path / "fly2")
+    batch = _resolve(["fly1", "fly2"], tmp_path, output="myrun")
+    assert [r.outdir for r in batch] == [fly1 / "myrun", fly2 / "myrun"]
+
+
+def test_plan_outdirs_collision_mirrors_from_common_ancestor(tmp_path):
+    """Colliding recording names under a collect -o fall back to mirroring the
+    input paths from their common ancestor, pending confirmation."""
+    a = _make_recording(tmp_path / "a" / "rec")
+    b = _make_recording(tmp_path / "b" / "rec")
+    plan = recordings.plan_outdirs([a, b], str(tmp_path / "out") + "/")
+    assert plan.outdirs == [
+        tmp_path / "out" / "a" / "rec",
+        tmp_path / "out" / "b" / "rec",
+    ]
+    assert plan.mirror_confirm is not None
+    assert "rec" in plan.mirror_confirm and str(tmp_path) in plan.mirror_confirm
+    # without a collision there is nothing to confirm
+    assert recordings.plan_outdirs([a], str(tmp_path / "out")).mirror_confirm is None
+
+
+def test_run_batch_collision_errors_noninteractively(tmp_path, monkeypatch):
+    """A collision fallback cannot be confirmed without a TTY: the run aborts up
+    front, before any output dir is created."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _stub_detect(monkeypatch, tmp_path)
+    _make_fly_recording(tmp_path / "a" / "rec")
+    _make_fly_recording(tmp_path / "b" / "rec")
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="collide"):
+        cli.main(
+            [
+                "run",
+                str(tmp_path / "a" / "rec"),
+                str(tmp_path / "b" / "rec"),
+                "-c",
+                str(cfg),
+                "-o",
+                str(out),  # absolute, no trailing slash -> collect -> collision
+                "--log-level",
+                "error",
+            ]
+        )
+    assert not out.exists()
+
+
+def test_run_batch_collision_confirmed_mirrors(tmp_path, monkeypatch):
+    """Confirming the collision fallback runs the batch into mirrored outdirs."""
+    import sys
+
+    import typer
+
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _stub_detect(monkeypatch, tmp_path)
+    _make_fly_recording(tmp_path / "a" / "rec")
+    _make_fly_recording(tmp_path / "b" / "rec")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(typer, "confirm", lambda *a, **k: True)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "a" / "rec"),
+            str(tmp_path / "b" / "rec"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(tmp_path / "out"),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert (tmp_path / "out" / "a" / "rec" / "poses.h5").exists()
+    assert (tmp_path / "out" / "b" / "rec" / "poses.h5").exists()
 
 
 def test_resolve_recursive_nondir_literal_warns_and_errors(tmp_path, caplog):
@@ -540,7 +687,10 @@ def test_triangulation_skipped_without_2d(tmp_path, caplog):
 
 
 def test_visualization_only_from_cached_result(result, tmp_path, monkeypatch):
-    """Every compute stage off, visualization on -> render from the cached 3D result."""
+    """Every compute stage off, visualization on -> render from the cached result.
+
+    With the 3D stages disabled their cached output is not drawn (a derived
+    stage feeds downstream only while enabled), so this renders the 2D pose."""
     outdir = tmp_path / "out"
     outdir.mkdir()
     result.save(outdir / "poses.h5")  # full result with 3D
@@ -632,211 +782,234 @@ def test_overwrite_stages_parsing():
         pipeline.overwrite_stages(["pose2d", "nope"])
 
 
-def test_enabled_pose2d_reused_when_cached(result, tmp_path, monkeypatch):
-    """An enabled stage whose output is already cached is reused, not recomputed."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    result.save(outdir / "poses.h5")  # cached full result, n_frames=6
-    cfg = _default_cfg(
-        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
-    )
-    _stub_detect(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        pipeline.stages,
-        "stage_pose2d",
-        lambda *a, **k: pytest.fail("pose2d should be reused"),
-    )
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--log-level",
-            "error",
-        ]
-    )
-    # the cache is untouched: nothing recomputed, so the n_frames=6 result stands.
-    assert PoseResult.load(outdir / "poses.h5").n_frames == 6
+def _run_args(tmp_path, cfg=None, *, extra=(), log_level="error"):
+    """The CLI argv for one stubbed run against <tmp_path>/out.
 
-
-def test_overwrite_pose2d_recomputes_over_cache(result, tmp_path, monkeypatch):
-    """--overwrite forces an enabled stage to recompute over its cache."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    result.save(outdir / "poses.h5")  # cached full result, n_frames=6
-    cfg = _default_cfg(
-        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
-    )
-    T = _stub_detect(monkeypatch, tmp_path)  # stub detects 3 frames
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--overwrite",
-            "pose2d",
-            "--log-level",
-            "error",
-        ]
-    )
-    res = PoseResult.load(outdir / "poses.h5")
-    assert res.pts3d is None and res.pts2d.shape == (7, T, 38, 2)  # fresh 2D, not cache
-
-
-def test_overwrite_cascades_to_downstream_stages(result, tmp_path, monkeypatch):
-    """Overwriting an upstream stage also refreshes the enabled stages after it."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    result.save(outdir / "poses.h5")  # cached full result with 3D, n_frames=6
-    # pose2d + bundle_adjustment + triangulation on (visualization off); all cached.
-    cfg = _default_cfg(tmp_path, visualization=False)
-    T = _stub_detect(monkeypatch, tmp_path)  # fresh 2D has 3 frames
-    triangulated: list[bool] = []
-    real_triangulate = pipeline.stage_triangulation
-
-    def spy_triangulate(config, res):
-        triangulated.append(True)
-        return real_triangulate(config, res)
-
-    monkeypatch.setattr(
-        pipeline.stages, "stage_bundle_adjustment", lambda config, res: res
-    )
-    monkeypatch.setattr(pipeline.stages, "stage_triangulation", spy_triangulate)
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--overwrite",
-            "pose2d",
-            "--log-level",
-            "error",
-        ]
-    )
-    # triangulation reran (cascade) even though it was not named, producing 3D over
-    # the freshly detected 3-frame 2D rather than reusing the cached 6-frame 3D.
-    assert triangulated == [True]
-    res = PoseResult.load(outdir / "poses.h5")
-    assert res.pts3d is not None and res.pts3d.shape[0] == T
-
-
-def test_overwrite_bundle_adjustment_rebuilds_config_rig(result, tmp_path, monkeypatch):
-    """--overwrite bundle_adjustment on a BA-refined cache re-runs BA from the
-    *config* rig, not the already-refined cached cameras.
-
-    The cached poses.h5 stores the previous BA *output*; feeding it back to BA as
-    the starting point would begin at the prior optimum, so edited
-    [pipeline.bundle_adjustment] params barely move it. The stage must instead
-    rebuild the un-refined config rig (the regression behind "--overwrite does
-    nothing" after editing the BA config).
+    ``cfg=None`` omits ``-c`` (the run picks up the snapshot in the output dir).
+    Tests asserting on log records must pass a permissive ``log_level`` (the CLI
+    reconfigures the logger level on every invocation).
     """
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    PoseResult(
-        result.cameras,
-        result.skeleton,
-        result.pts2d,
-        conf=result.conf,
-        meta={"bundle_adjustment": True},  # cached cameras are a previous BA output
-    ).save(outdir / "poses.h5")
-    cfg = tmp_path / "cfg.toml"
-    cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
-        "do_triangulation = false\ndo_visualization = false\n"
-    )
-
-    # a recognizable rig the config rebuild yields (distinct from the cached one).
-    fresh = CameraGroup.from_arrays(
-        result.cameras.names,
-        result.cameras.rvecs,
-        result.cameras.tvecs * 2.0,
-        result.cameras.intrs,
-        result.cameras.dists,
-    )
-    monkeypatch.setattr(
-        pipeline.stages, "config_camera_rig", lambda config, **kw: fresh
-    )
-    monkeypatch.setattr(
-        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d off")
-    )
-    seen: dict = {}
-
-    def spy_ba(config, res):
-        seen["is_fresh"] = res.cameras is fresh
-        return res
-
-    monkeypatch.setattr(pipeline.stages, "stage_bundle_adjustment", spy_ba)
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--overwrite",
-            "bundle_adjustment",
-            "--log-level",
-            "error",
-        ]
-    )
-    assert seen["is_fresh"]  # BA started from the rebuilt config rig, not the cache
+    args = ["run", str(tmp_path / "rec")]
+    if cfg is not None:
+        args += ["-c", str(cfg)]
+    args += ["-o", str(tmp_path / "out"), *extra, "--log-level", log_level]
+    return args
 
 
-def test_recompute_bundle_adjustment_keeps_unrefined_cached_rig(
-    result, tmp_path, monkeypatch
+def test_enabled_pose2d_reused_when_cached(tmp_path, monkeypatch):
+    """An enabled stage whose config is unchanged reuses its cache on re-run."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    cli.main(_run_args(tmp_path, cfg))
+    assert len(calls) == 1
+    cli.main(_run_args(tmp_path, cfg))  # identical re-run -> nothing recomputes
+    assert len(calls) == 1
+
+
+def test_overwrite_pose2d_recomputes_over_cache(tmp_path, monkeypatch):
+    """--overwrite forces an enabled stage to recompute over a valid cache."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    cli.main(_run_args(tmp_path, cfg))
+    cli.main(_run_args(tmp_path, cfg, extra=("--overwrite", "pose2d")))
+    assert len(calls) == 2
+
+
+def test_overwrite_cascades_to_downstream_stages(tmp_path, monkeypatch):
+    """Overwriting an upstream stage also refreshes the enabled stages after it."""
+    cfg = _default_cfg(tmp_path, visualization=False)
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    ba_calls, tri_calls = _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+    assert (len(calls), len(ba_calls), len(tri_calls)) == (1, 1, 1)
+    cli.main(_run_args(tmp_path, cfg, extra=("--overwrite", "pose2d")))
+    # bundle_adjustment and triangulation reran (cascade) though not named.
+    assert (len(calls), len(ba_calls), len(tri_calls)) == (2, 2, 2)
+
+
+def test_config_change_recomputes_only_affected_stages(tmp_path, monkeypatch, caplog):
+    """Editing a stage's params re-runs it (and downstream) while the slow pose2d
+    cache is reused -- no --overwrite needed."""
+    cfg = _default_cfg(tmp_path, bundle_adjustment=False, visualization=False)
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    _, tri_calls = _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+    assert (len(calls), len(tri_calls)) == (1, 1)
+    assert tri_calls[0].ransac_threshold == 15.0
+
+    _edit_snapshot(
+        tmp_path / "out", r"^ransac_threshold = 15\.0", "ransac_threshold = 9.0"
+    )
+    with caplog.at_level("INFO", logger="deeperfly"):
+        # no -c -> the edited snapshot drives the run
+        cli.main(_run_args(tmp_path, log_level="info"))
+    assert len(calls) == 1  # pose2d reused
+    assert len(tri_calls) == 2 and tri_calls[1].ransac_threshold == 9.0
+    assert any("reusing cached pose2d" in r.message for r in caplog.records)
+    assert any(
+        "recomputing triangulation" in r.message and "ransac_threshold" in r.message
+        for r in caplog.records
+    )
+
+
+def test_perf_only_knobs_do_not_invalidate(tmp_path, monkeypatch):
+    """batch_size / decode_buffer are performance-only: editing them reuses every
+    cache."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
+    )
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    cli.main(_run_args(tmp_path, cfg))
+    _edit_snapshot(tmp_path / "out", r"^batch_size = 16", "batch_size = 2")
+    _edit_snapshot(tmp_path / "out", r"^decode_buffer = 4", "decode_buffer = 8")
+    cli.main(_run_args(tmp_path))  # no -c -> the edited snapshot drives
+    assert len(calls) == 1  # nothing recomputed
+
+
+def test_pose2d_param_change_recomputes_with_loud_warning(
+    tmp_path, monkeypatch, caplog
 ):
-    """Cached cameras that were never BA-refined are legitimate input: a BA
-    recompute keeps them and does not rebuild the config rig."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
-    )  # no bundle_adjustment marker
-    cfg = tmp_path / "cfg.toml"
-    cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = true\n"
-        "do_triangulation = false\ndo_visualization = false\n"
+    """Editing a result-affecting pose2d param recomputes the slow stage with a
+    WARNING naming exactly what changed."""
+    cfg = _default_cfg(
+        tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
     )
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    cli.main(_run_args(tmp_path, cfg))
+    _edit_snapshot(
+        tmp_path / "out", r'^precision = "bfloat16"', 'precision = "float32"'
+    )
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        cli.main(_run_args(tmp_path, log_level="warning"))
+    assert len(calls) == 2
+    assert any(
+        "recomputing pose2d" in r.message
+        and "precision" in r.message
+        and "float32" in r.message
+        and r.levelname == "WARNING"
+        for r in caplog.records
+    )
+
+
+def test_enable_pictorial_later_redetects_candidates(tmp_path, monkeypatch, caplog):
+    """Enabling pictorial_structures after a run re-detects pose2d (candidates are
+    extracted during detection); a pictorial param tweak afterwards reuses the
+    cached candidates without re-detecting."""
+    cfg = _default_cfg(tmp_path, bundle_adjustment=False, visualization=False)
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    _, tri_calls = _stub_compute_stages(monkeypatch)
+    ps_calls: list[float] = []
+
+    def stub_ps(config, cameras, skeleton, candidates, pts2d):
+        assert candidates is not None
+        ps_calls.append(config.pictorial.lam)
+        return pts2d, np.zeros((pts2d.shape[1], 38, 3)), None
+
+    monkeypatch.setattr(pipeline.stages, "stage_pictorial_structures", stub_ps)
+
+    cli.main(_run_args(tmp_path, cfg))
+    assert (len(calls), len(ps_calls)) == (1, 0)  # pictorial off by default
+
+    _edit_snapshot(
+        tmp_path / "out",
+        r"^do_pictorial_structures = false",
+        "do_pictorial_structures = true",
+    )
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        cli.main(_run_args(tmp_path, log_level="warning"))
+    # pose2d re-detected to extract candidates, loudly; pictorial then ran.
+    assert (len(calls), len(ps_calls)) == (2, 1)
+    assert any(
+        "recomputing pose2d" in r.message and "candidates" in r.message
+        for r in caplog.records
+    )
+
+    _edit_snapshot(tmp_path / "out", r"^lam = 1\.0", "lam = 2.0")
+    cli.main(_run_args(tmp_path))
+    # only pictorial (and downstream) reran, from the cached candidates.
+    assert (len(calls), len(ps_calls)) == (2, 2)
+    assert ps_calls[1] == 2.0
+
+
+def test_disable_pictorial_later_keeps_pose2d(tmp_path, monkeypatch):
+    """Disabling pictorial_structures again does NOT re-detect pose2d (subset
+    fingerprint rule), but triangulation re-runs on the raw pose2d points."""
+    cfg = _default_cfg(
+        tmp_path,
+        pictorial_structures=True,
+        bundle_adjustment=False,
+        visualization=False,
+    )
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    _, tri_calls = _stub_compute_stages(monkeypatch)
     monkeypatch.setattr(
         pipeline.stages,
-        "config_camera_rig",
-        lambda config, **kw: pytest.fail("must not rebuild an un-refined rig"),
+        "stage_pictorial_structures",
+        lambda config, cameras, skeleton, candidates, pts2d: (
+            pts2d,
+            np.zeros((pts2d.shape[1], 38, 3)),
+            None,
+        ),
     )
-    monkeypatch.setattr(
-        pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d off")
-    )
-    seen: dict = {}
+    cli.main(_run_args(tmp_path, cfg))
+    assert (len(calls), len(tri_calls)) == (1, 1)
 
-    def spy_ba(config, res):
-        seen["is_cached"] = res.cameras.names == result.cameras.names
-        return res
+    _edit_snapshot(
+        tmp_path / "out",
+        r"^do_pictorial_structures = true",
+        "do_pictorial_structures = false",
+    )
+    cli.main(_run_args(tmp_path))
+    assert len(calls) == 1  # pose2d cache (with candidates) still valid
+    assert len(tri_calls) == 2  # its 2D source flipped pictorial -> pose2d
+
+
+def test_bundle_adjustment_always_starts_from_config_rig(tmp_path, monkeypatch):
+    """A BA recompute starts from the un-refined config rig, never the prior BA
+    output -- so edited BA params actually move the solution."""
+    cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    seen: list = []
+
+    def spy_ba(config, cameras, pts2d, conf, skeleton):
+        seen.append(cameras)
+        # return a recognizably different rig (the "refined" output)
+        from deeperfly.cameras import CameraGroup
+
+        return CameraGroup.from_arrays(
+            cameras.names,
+            cameras.rvecs,
+            cameras.tvecs * 2.0,
+            cameras.intrs,
+            cameras.dists,
+        )
 
     monkeypatch.setattr(pipeline.stages, "stage_bundle_adjustment", spy_ba)
-    cli.main(
-        [
-            "run",
-            str(tmp_path / "rec"),
-            "-c",
-            str(cfg),
-            "-o",
-            str(outdir),
-            "--overwrite",
-            "bundle_adjustment",
-            "--log-level",
-            "error",
-        ]
-    )
-    assert seen["is_cached"]  # BA refined the stored cameras, no config rebuild
+    cli.main(_run_args(tmp_path, cfg))
+    cli.main(_run_args(tmp_path, cfg, extra=("--overwrite", "bundle_adjustment")))
+    assert len(seen) == 2
+    # the second run's input rig equals the first's (the config rig), not the
+    # doubled-tvec output the first run cached.
+    np.testing.assert_allclose(seen[1].tvecs, seen[0].tvecs)
+
+
+def test_camera_geometry_edit_invalidates_bundle_adjustment(tmp_path, monkeypatch):
+    """Editing [cameras] geometry re-runs BA (its fingerprint embeds the rig) while
+    the pose2d cache -- which only depends on footage patterns/preprocess -- is
+    reused."""
+    cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
+    _, calls = _stub_detect(monkeypatch, tmp_path)
+    ba_calls, _ = _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+    assert (len(calls), len(ba_calls)) == (1, 1)
+    _edit_snapshot(tmp_path / "out", r"^distance = 107\.463", "distance = 99.0")
+    cli.main(_run_args(tmp_path))
+    assert len(calls) == 1  # pose2d reused
+    assert len(ba_calls) == 2  # BA recomputed from the edited rig
 
 
 def test_overwrite_unknown_stage_errors(tmp_path):
@@ -858,23 +1031,30 @@ def test_overwrite_unknown_stage_errors(tmp_path):
         )
 
 
-def test_existing_config_in_outdir_wins(result, tmp_path, caplog):
-    """A config.toml in the output dir is used over -c, with a notification."""
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    result.save(outdir / "poses.h5")  # full 3D result already present
-    # the snapshot in outdir disables every stage, so the run is a quiet no-op ...
-    (outdir / "config.toml").write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = false\n"
+def test_cli_config_wins_and_refreshes_snapshot(tmp_path, monkeypatch):
+    """-c drives the run even when a snapshot exists, and refreshes the snapshot."""
+    cfg1 = _default_cfg(
+        tmp_path,
+        name="cfg1.toml",
+        bundle_adjustment=False,
+        triangulation=False,
+        visualization=False,
     )
-    cfg = (
-        tmp_path / "cfg.toml"
-    )  # ... while -c would enable pose2d (and fail without it)
-    cfg.write_text("[pipeline]\ndo_pose2d = true\n")
-    with caplog.at_level("WARNING"):
-        cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
-    assert any("ignoring -c" in r.message for r in caplog.records)
+    cfg2 = _default_cfg(
+        tmp_path,
+        name="cfg2.toml",
+        bundle_adjustment=False,
+        triangulation=True,
+        visualization=False,
+    )
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg1))
+    assert (tmp_path / "out" / "config.toml").read_text() == cfg1.read_text()
+    cli.main(_run_args(tmp_path, cfg2))
+    assert (tmp_path / "out" / "config.toml").read_text() == cfg2.read_text()
+    # ... and the -c'd triangulation toggle actually drove the run
+    assert PoseResult.load(tmp_path / "out" / "poses.h5").pts3d is not None
 
 
 def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
@@ -972,8 +1152,10 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("method", ["ransac", "greedy"])
 def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, method):
-    """Resuming with pictorial_structures on but pose2d off skips it (candidates
-    are not cached); the triangulation stage still produces 3D."""
+    """Resuming with pictorial_structures on but pose2d off (and no candidates in
+    the cached 2D result) skips it with a reason; the triangulation stage still
+    produces 3D. With pose2d *on*, the candidates clause of its fingerprint would
+    have re-detected instead."""
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
@@ -1075,7 +1257,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     assert got == {v0: ("frames", ["f0"]), v1: ("frames", ["f1"])}
 
     # 2) no run footage -> error telling the user to re-pass the recording.
-    with pytest.raises(SystemExit, match="overwrite visualization"):
+    with pytest.raises(SystemExit, match="original frames"):
         pipeline.source_view_frames(cfg, res, [v0], sources={})
 
     # 3) in-memory frames (indexed by camera order) bypass the recording entirely.

@@ -99,13 +99,17 @@ input = "camera_6.mp4"
 #   do_triangulation        -> [pipeline.triangulation]        2D -> 3D
 #   do_visualization        -> [pipeline.visualization]        render the videos
 #
-# An enabled stage reuses its cached result from the output dir, recomputing only
-# when it's missing or --overwrite selects it (bare --overwrite redoes everything;
-# `--overwrite pose2d visualization` redoes just those, plus the stages after
-# them). Switching a stage *off* drops it: its cached result is read from
-# `poses.h5` and fed to the stages still on -- so `do_pose2d = false` reconstructs
-# 3D from a cached 2D pose without re-detecting. An enabled stage whose input is
-# unavailable is skipped, with the reason logged.
+# An enabled stage reuses its cached result from the output dir while its
+# parameters here are unchanged; *editing this file recomputes exactly the
+# affected stages* (and the ones after them) on the next run -- tweak the
+# triangulation or the videos and re-run; the slow 2D detection is reused.
+# --overwrite forces a recompute even when nothing changed (bare --overwrite
+# redoes everything; `--overwrite pose2d visualization` redoes just those, plus
+# the stages after them). The cached 2D pose always feeds the stages downstream
+# -- so `do_pose2d = false` reconstructs 3D from a cached 2D pose without
+# re-detecting -- while a *derived* stage's cached output is used only while
+# that stage is on. An enabled stage whose input is unavailable is skipped,
+# with the reason logged.
 # ===========================================================================
 [pipeline]
 do_pose2d               = true   # detect 2D pose in every camera view
@@ -162,8 +166,10 @@ loss = "linear"
 
 
 # Pictorial structures: DeepFly3D-style peak recovery over the detector's top-K
-# candidates before triangulation. Needs do_pose2d in the same run (candidate peaks
-# are not cached), so it is skipped when resuming from a stored 2D result.
+# candidates before triangulation. The candidates are extracted during detection
+# and cached when this stage is on -- enabling it on an existing output dir
+# re-runs pose2d once; afterwards, tweaking temporal/lam reuses the cached
+# candidates without re-detecting.
 [pipeline.pictorial_structures]
 k = 5                    # candidate peaks per joint
 temporal = false         # add a temporal-consistency term

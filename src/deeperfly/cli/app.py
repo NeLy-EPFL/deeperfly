@@ -112,17 +112,22 @@ def run(
             "-o",
             "--output-dir",
             help="output directory (default: <input>/deeperfly_outputs; created if "
-            "missing)",
+            "missing). For a batch of several recordings: end it with '/' to "
+            "collect one subdirectory per recording under it (colliding names "
+            "fall back to mirroring the input tree, after confirmation); a "
+            "relative name without '/' creates that directory inside each "
+            "recording.",
         ),
     ] = None,
     overwrite: Annotated[
         list[str] | None,
         typer.Option(
             "--overwrite",
-            help="recompute stages instead of reusing results already in the output "
-            "dir. A bare --overwrite recomputes everything; name stages to recompute "
-            "only those (e.g. --overwrite pose2d visualization). Recomputing a stage "
-            "also refreshes the stages after it.",
+            help="force stages to recompute even though their config is unchanged "
+            "(config changes are detected automatically). A bare --overwrite "
+            "recomputes everything; name stages to recompute only those (e.g. "
+            "--overwrite pose2d visualization). Recomputing a stage also "
+            "refreshes the stages after it.",
         ),
     ] = None,
     log_level: LogLevelOption = LogLevel.info,
@@ -135,13 +140,17 @@ def run(
     recordings. With -r/--recursive, each INPUT is a parent directory and every
     recording nested under it is run in turn.
 
-    By default a stage already in the output dir is reused, so re-running a finished
-    recording is a cheap no-op. Pass --overwrite to recompute: bare redoes every
-    stage, or name stages to redo only those (plus the stages after them).
+    A stage already in the output dir is reused when its config is unchanged, so
+    re-running a finished recording is a cheap no-op -- and editing the config
+    recomputes exactly the affected stages (tweak the triangulation or the videos
+    and re-run; the slow 2D detection is reused). Pass --overwrite to force a
+    recompute anyway: bare redoes every stage, or name stages to redo only those
+    (plus the stages after them).
 
     Everything else is set in the config: the do_<stage> toggles choose which stages
-    run, alongside fps, background and each stage's parameters. With no -c, a run
-    reuses the config.toml already in the output dir, else the packaged default.
+    run, alongside fps, background and each stage's parameters. -c wins when given;
+    with no -c, a run reuses the config.toml already in the output dir, else the
+    packaged default.
     """
     _configure_logging(log_level.value)
     _cmd_run(

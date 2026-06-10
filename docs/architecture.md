@@ -6,11 +6,16 @@ see [comparison.md](comparison.md).
 `deeperfly run` is one linear sequence of stages — `pose2d` (2D) →
 `bundle_adjustment` → `pictorial_structures` → `triangulation` →
 `visualization` — each toggled by a `do_<stage>` boolean in `[pipeline]`, with its
-own `[pipeline.<stage>]` parameter sub-table. An enabled stage reuses its cached
-result from the output directory and recomputes only when it's missing or
-`--overwrite` selects it (which also refreshes the stages downstream). A disabled
-stage is dropped: its cached `poses.h5` output is read back and fed to the stages
-still on — so disabling the finished stages resumes a partial run.
+own `[pipeline.<stage>]` parameter sub-table. Each stage writes its own group in
+`poses.h5` (so its inputs are never mutated) and records the config subset that
+produced it in `<outdir>/run.json` (a *fingerprint*). On a re-run an enabled
+stage is reused while its fingerprint still matches and its output is present;
+it recomputes when its parameters changed, its output is missing, `--overwrite`
+selects it, or an upstream stage recomputed (the cascade). Performance-only
+knobs (`batch_size`, `decode_buffer`, `[io.image]`) never invalidate a cache.
+The `pose2d` cache always feeds downstream (so `do_pose2d = false` reconstructs
+from a stored 2D pose); a *derived* stage's output feeds downstream only while
+that stage is enabled.
 
 ## Pipeline stages
 

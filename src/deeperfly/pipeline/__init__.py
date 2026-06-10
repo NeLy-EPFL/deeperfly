@@ -14,7 +14,9 @@ The pure array functions live in :mod:`deeperfly.pipeline.core` (re-exported her
 On top of those, the *staged* run (shared by the CLI and a library caller):
 
 - :mod:`deeperfly.pipeline.stages` -- the per-stage wrappers (``stage_pose2d``,
-  ``stage_bundle_adjustment``, ...) and the cache/overwrite bookkeeping.
+  ``stage_bundle_adjustment``, ...) and the stage-input selectors.
+- :mod:`deeperfly.pipeline.fingerprint` -- the per-stage config fingerprints
+  that decide when a cached stage output can be reused.
 - :func:`run_recording` -- run a single recording's enabled stages against an output
   directory, reusing cached results and recomputing only what changed.
 """
@@ -33,16 +35,15 @@ from .core import (  # noqa: F401  (re-exported)
 from .run import run_recording
 from .stages import (
     _OVERWRITE_ALL,  # noqa: F401  (re-exported)
-    config_camera_rig,
+    assemble_result,
+    config_rig_from_store,
     overwrite_stages,
     render_videos,
     source_view_frames,
     stage_bundle_adjustment,
-    stage_cached,
     stage_pictorial_structures,
     stage_pose2d,
     stage_triangulation,
-    visualization_cached,
 )
 
 __all__ = [
@@ -53,12 +54,11 @@ __all__ = [
     "run_recording",
     "overwrite_stages",
     "stage_pose2d",
-    "config_camera_rig",
+    "config_rig_from_store",
     "stage_bundle_adjustment",
     "stage_pictorial_structures",
     "stage_triangulation",
+    "assemble_result",
     "source_view_frames",
     "render_videos",
-    "stage_cached",
-    "visualization_cached",
 ]

@@ -50,27 +50,36 @@ do_visualization        = true   # render the videos
 Each enabled stage has its own `[pipeline.<stage>]` parameter table (below).
 Pictorial structures is the opt-in stage most commonly flipped on.
 
-## Resume and recompute — caching and `--overwrite`
+## Resume and recompute — fingerprints and `--overwrite`
 
-An *enabled* stage reuses its result when it is already in the output directory,
-recomputing only when it's missing — so re-running a finished recording is a
-cheap no-op. Force a recompute with `--overwrite`: bare redoes every stage, or
-name stages to redo only those (plus the stages after them):
+An *enabled* stage reuses its result while its config is unchanged and its
+output is in the output directory — so re-running a finished recording is a
+cheap no-op, and **editing the config recomputes exactly the affected stages**.
+Tweak `[pipeline.triangulation]` or the videos and re-run: the slow 2D
+detection is reused, only triangulation/visualization recompute (each stage's
+parameters are recorded in `<outdir>/run.json` when it completes).
+Performance-only knobs (`batch_size`, `decode_buffer`, `[io.image]`) never
+trigger a recompute; a change that invalidates the slow `pose2d` stage is
+announced loudly with exactly what changed. `--overwrite` forces a recompute
+even when nothing changed: bare redoes every stage, or name stages to redo only
+those (plus the stages after them):
 
 ```bash
 deeperfly run recording/ --overwrite                       # recompute everything
 deeperfly run recording/ --overwrite pose2d visualization  # just these (+ what follows)
 ```
 
-A *disabled* stage (`do_<stage> = false`) is dropped from the pipeline; its
-cached result is read from `poses.h5` and fed to the stages still on — so
-`do_pose2d = false` reconstructs 3D from a cached 2D pose without re-running
-detection. An enabled stage whose input is unavailable is skipped, with the
-reason logged.
+The `pose2d` cache always feeds the stages downstream — `do_pose2d = false`
+reconstructs 3D from a cached 2D pose without re-running detection. A *derived*
+stage's cached output (bundle adjustment, pictorial structures, triangulation)
+feeds downstream only while that stage is enabled: turning
+`do_pictorial_structures` off re-triangulates from the raw detections. An
+enabled stage whose input is unavailable is skipped, with the reason logged.
 
-A run reuses the `config.toml` saved in the output directory (it owns the cached
-results), so `-o out/` alone resumes; pass `-c` only for a fresh output
-directory, and edit `out/config.toml` to change a run in place.
+The run's config is snapshotted to `<outdir>/config.toml`. On a re-run `-c`
+wins when given (and refreshes the snapshot); without `-c` the snapshot is
+reused — so both workflows work: edit `out/config.toml` and re-run with
+`-o out/` alone, or keep your own config and pass `-c` each time.
 
 ## Tune the opt-in stage — pictorial structures
 
@@ -83,8 +92,12 @@ temporal = false   # add a temporal-consistency term
 lam      = 1.0     # bone-length prior weight
 ```
 
-Pictorial structures needs `do_pose2d` in the same run (candidate peaks aren't
-cached), so it is skipped when resuming from a stored 2D result.
+Candidate peaks are extracted during detection and cached in `poses.h5` when
+this stage is enabled. Enabling it on an existing output directory therefore
+re-runs `pose2d` once (announced loudly); after that, tweaking `temporal` /
+`lam` re-runs only the recovery from the cached candidates. Resuming with
+`do_pose2d = false` from a 2D result that stored no candidates skips the stage
+with a notice.
 
 ## Output videos — `[pipeline.visualization]`
 
