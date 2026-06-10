@@ -831,6 +831,19 @@ def _run_args(tmp_path, cfg=None, *, extra=(), log_level="error"):
     return args
 
 
+def test_fresh_run_logs_running_not_recomputing(tmp_path, monkeypatch, caplog):
+    """A first run over an empty output dir announces plain "running <stage>" --
+    there is no cached result, so nothing is being "recomputed"."""
+    cfg = _default_cfg(tmp_path, bundle_adjustment=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    with caplog.at_level("INFO", logger="deeperfly"):
+        cli.main(_run_args(tmp_path, cfg, log_level="info"))
+    assert not any("recomputing" in r.message for r in caplog.records)
+    for stage in ("pose2d", "triangulation"):
+        assert any(f"running {stage}" == r.message for r in caplog.records)
+
+
 def test_enabled_pose2d_reused_when_cached(tmp_path, monkeypatch):
     """An enabled stage whose config is unchanged reuses its cache on re-run."""
     cfg = _default_cfg(

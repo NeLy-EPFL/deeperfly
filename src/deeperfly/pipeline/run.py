@@ -124,6 +124,12 @@ def run_recording(
         progress=progress,
     )
 
+    # Which stages carry a result from a previous run, snapshotted before the
+    # loop (record.set drops downstream entries as stages complete). A stage
+    # with no prior record runs for the first time -- that is not a "recompute"
+    # and warrants no reason.
+    had_record = {name: record.get(name) is not None for name in STAGES}
+
     recomputed = False  # has any enabled stage recomputed this run? -> cascade
     for name in STAGES:
         if not enabled[name]:
@@ -143,14 +149,18 @@ def run_recording(
                 )
                 continue
             reason = why
-        _log_recompute(name, reason)
+        if had_record[name]:
+            _log_recompute(name, reason)
+        else:
+            log.info("running %s", name)
         if _RUNNERS[name](ctx):
             record.set(name, expected)
             recomputed = True
 
 
 def _log_recompute(name: str, reason: str) -> None:
-    """Announce a recompute; loudly for the slow detection stage."""
+    """Announce that a previously cached result is being recomputed; loudly for
+    the slow detection stage."""
     if name == "pose2d":
         if "candidates" in reason:
             reason += (
