@@ -44,7 +44,7 @@ def test_init_writes_parseable_config(tmp_path):
     ]
     assert Skeleton.from_config(cfg).n_points == 38
     # Footage globs live on the sources; the detection plan parses end to end.
-    assert all("input" in s for s in config["sources"])
+    assert all("filename" in s for s in config["sources"])
     plan = cfg.detection_plan()
     assert len(plan.sources) == 7 and len(plan.pathways) == 8
 
@@ -66,7 +66,7 @@ def test_template_skeleton_matches_fly():
     config = Config.from_toml(DEFAULT_CONFIG_PATH)
     sk = Skeleton.from_config(config)
     fly = Skeleton.fly()
-    assert sk.joint_names == fly.joint_names
+    assert sk.point_names == fly.point_names
     assert sk.limb_names == fly.limb_names
     np.testing.assert_array_equal(sk.limb_id, fly.limb_id)
     np.testing.assert_array_equal(sk.bones, fly.bones)
@@ -132,8 +132,8 @@ def test_camera_files_missing_returns_empty(tmp_path):
 
 
 def test_source_patterns_defaults_to_source_name():
-    # A source with no `input` uses its own name as the pattern; [[sources]] order.
+    # A source with no `filename` uses its own name as the pattern; [[sources]] order.
     config = Config.from_dict(
-        {"sources": [{"name": "rh", "input": "cam0.mp4"}, {"name": "lf"}]}
+        {"sources": [{"name": "rh", "filename": "cam0.mp4"}, {"name": "lf"}]}
     )
     assert source_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

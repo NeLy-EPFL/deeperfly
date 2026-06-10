@@ -7,7 +7,7 @@ be re-run later from pristine upstream outputs:
 .. code-block:: text
 
     attrs["meta"]            json: {deeperfly_format_version: 2, created_utc, ...}
-    skeleton/                the skeleton (joint names, bones, visibility, palette)
+    skeleton/                the skeleton (point names, bones, visibility, palette)
     pose2d/
         points               (V, T, N, 2) arg-max 2D detections (visibility-masked)
         conf                 (V, T, N) detection confidences
@@ -422,7 +422,7 @@ def _read_cameras(g: h5py.Group) -> CameraGroup:
 def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.attrs["name"] = s.name
     g.create_dataset(
-        "joint_names", data=np.array(s.joint_names, dtype=object), dtype=_STR
+        "point_names", data=np.array(s.point_names, dtype=object), dtype=_STR
     )
     g.create_dataset(
         "limb_names", data=np.array(s.limb_names, dtype=object), dtype=_STR
@@ -442,9 +442,11 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         name: (v.decode() if isinstance(v, bytes) else v)
         for name, v in g["palette"].attrs.items()
     }
+    # ``point_names`` was ``joint_names`` before; read either so older files load.
+    names = g["point_names"] if "point_names" in g else g["joint_names"]
     return Skeleton(
         name=g.attrs["name"],
-        joint_names=decode(g["joint_names"][()]),
+        point_names=decode(names[()]),
         limb_names=decode(g["limb_names"][()]),
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],

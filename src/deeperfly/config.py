@@ -401,11 +401,11 @@ class Config:
         return defaults, cams
 
     def source_patterns(self) -> dict[str, str]:
-        """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``input``).
+        """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).
 
         Read directly from the ``[[sources]]`` table (without building the whole
         detection plan) so recording discovery stays cheap. A source with no
-        ``input`` key uses its own name as the glob pattern.
+        ``filename`` key uses its own name as the glob pattern.
 
         Returns
         -------
@@ -424,7 +424,7 @@ class Config:
                 raise ValueError(
                     f"[[sources]] entry needs a string 'name', got {name!r}"
                 )
-            out[name] = s.get("input", name)
+            out[name] = s.get("filename", name)
         return out
 
     # -- snapshot round-trip -------------------------------------------------

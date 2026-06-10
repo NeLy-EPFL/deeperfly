@@ -18,19 +18,45 @@ CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
 
 def leg_indices(skeleton, side: str) -> np.ndarray:
-    """Point indices of one body side's leg joints (``side`` is ``"r"`` or ``"l"``).
+    """Point indices of one body side's leg points (``side`` is ``"r"`` or ``"l"``).
 
-    Leg joints are named ``"{side}{f|m|h}_..."`` (front / mid / hind leg); the
-    antennae and abdominal stripes (``"{side}_..."``) are excluded.
+    Leg points are named ``"{side}{f|m|h}_..."`` (front / mid / hind leg); the
+    antennae and abdominal markers (``"{side}_..."``) are excluded.
     """
     return np.array(
         [
             i
-            for i, name in enumerate(skeleton.joint_names)
+            for i, name in enumerate(skeleton.point_names)
             if name[:1] == side and name[1:2] in "fmh"
         ],
         dtype=np.int64,
     )
+
+
+def point_sources_table(point_names, specs):
+    """Build a ``[point_sources.<view>]`` mapping from per-pathway channel lists.
+
+    Parameters
+    ----------
+    point_names
+        The skeleton's ordered point names.
+    specs
+        Iterable of ``(view, pathway, points)`` where ``points[i]`` is the point
+        index output channel ``i`` of ``pathway`` fills in ``view`` (``-1`` drops
+        the channel) -- the old per-pathway ``points`` list.
+
+    Returns
+    -------
+    dict
+        ``{view: {point_name: {"pathway": ..., "out_channel": i}}}``.
+    """
+    table: dict[str, dict] = {}
+    for view, pathway, points in specs:
+        entries = table.setdefault(view, {})
+        for ch, p in enumerate(points):
+            if p >= 0:
+                entries[point_names[p]] = {"pathway": pathway, "out_channel": ch}
+    return table
 
 
 def reference_rmat(yaw_rad: float) -> np.ndarray:

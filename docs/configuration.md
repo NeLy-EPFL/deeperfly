@@ -10,30 +10,30 @@ The sections below are ordered roughly by how often you'll touch them: the first
 few you'll set for almost every recording, the last few you can usually leave at
 their defaults.
 
-## The detection plan — `[[sources]]`, `[[preprocessors]]`, `[[models]]`, `[[pathways]]`
+## The detection plan — `[[sources]]`, `[[preprocessors]]`, `[[models]]`, `[[pathways]]`, `[point_sources]`
 
-2D detection is described by four top-level lists whose counts may all differ.
-Conceptually a neural network turns a preprocessed image into points; the plan
-says which footage feeds which model and where each model output lands in the
-skeleton. The default fly rig is **7 sources → 8 pathways → 7 views** (the front
-camera is read twice, once mirrored).
+2D detection is described by four top-level lists plus a mapping table. A
+neural network turns a preprocessed image into output channels; the plan says
+which footage feeds which model (the pathways) and where each output channel
+lands in the skeleton (`[point_sources]`). The default fly rig is **7 sources →
+8 pathways → 7 views** (the front camera is read twice, once mirrored).
 
 **Sources** name the footage, the one setting almost every recording needs. Each
-`input` is a filename glob matched inside the recording directory:
+`filename` is a glob matched inside the recording directory:
 
 ```toml
 [[sources]]
-name  = "cam0"
-input = "camera_0.mp4"   # a named file, used as-is
+name     = "vid_rh"
+filename = "camera_0.mp4"   # a named file, used as-is
 [[sources]]
-name  = "cam1"
-input = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
+name     = "vid_rm"
+filename = "camera_1"       # a bare prefix -> "camera_1*": a video or an image sequence
 ```
 
 A source's footage is one video file or a naturally-sorted image sequence
 (`camera_1_000123.jpg ...`). A directory is a valid recording only when every
 source matches footage with the same file and frame count. A source with no
-`input` defaults to its own name.
+`filename` defaults to its own name.
 
 **Preprocessors** are named, reusable frame-op pipelines (see the op grammar in
 the preprocessing section below). A pathway references one by name; the
@@ -52,7 +52,7 @@ ops  = [{ op = "fliplr" }]
 **Models** select a detector network: `class` is the registry key
 (`"hourglass"` = DeepFly2D), `weights` a checkpoint (`""`/omitted uses the cached
 download), `input_size` the `(height, width)` it expects, `mean` the scalar
-subtracted after `/255`, and `n_channels` the output heatmap count.
+subtracted after `/255`, and `n_out_channels` the output heatmap count.
 
 ```toml
 [[models]]
@@ -61,28 +61,40 @@ class = "hourglass"
 weights = ""
 input_size = [256, 512]
 mean = 0.22
-n_channels = 19
+n_out_channels = 19
 ```
 
-**Pathways** wire `source -> preprocessor -> model -> view`. `points[i]` is the
-skeleton point that model channel `i` fills in `view` (a `-1` drops the channel);
-a `(view, point)` pair no pathway writes is left unobserved (NaN) — that *is* the
-visibility, with no separate table. Right views fill the right half (`19..37`),
-left views the mirrored left half (`0..18`):
+**Pathways** are named `source -> preprocessor -> model` inference runs. A pathway
+only says *what to detect on*; each needs a unique `name`:
 
 ```toml
 [[pathways]]
-source = "cam0"; preprocessor = "plain"; model = "deepfly2d"; view = "rh"
-points = [19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37]
-[[pathways]]                              # the front source, mirrored pass -> left half
-source = "cam3"; preprocessor = "mirror"; model = "deepfly2d"; view = "f"
-points = [-1,-1,2,3,4,-1,-1,7,8,9,-1,-1,-1,-1,-1,15,-1,-1,-1]
+name = "rh_noflip"; source = "vid_rh"; preprocessor = "noflip"; model = "deepfly2d"
+[[pathways]]        # the front source, mirrored pass
+name = "f_fliplr";  source = "vid_f";  preprocessor = "fliplr"; model = "deepfly2d"
+```
+
+**`[point_sources.<view>]`** says *where the outputs land*: for each view, a table
+keyed by point name where `point = { pathway, out_channel }` fills that point from
+output channel `out_channel` of the named pathway. Keying on `(view, point)` makes
+every point's data come from exactly one place (a duplicate is a config error); a
+`(view, point)` no entry names is left unobserved (NaN) — that union *is* the
+visibility, with no separate table.
+
+```toml
+[point_sources.rh]                 # right-side view: 19 channels of one pathway
+rf_thorax_coxa = { pathway = "rh_noflip", out_channel = 0 }
+# ... through ...
+r_abdomen2     = { pathway = "rh_noflip", out_channel = 18 }
+
+[point_sources.f]                  # one view fed by two pathways, disjoint points
+rf_femur_tibia = { pathway = "f_noflip", out_channel = 2 }   # right, un-flipped
+lf_femur_tibia = { pathway = "f_fliplr", out_channel = 2 }   # left, mirrored
 ```
 
 This modularity supports setups the old hardcoded layout could not: a single
-front model predicting both legs (7 sources → 7 pathways → 7 views), per-view or
-per-side specialized models (… → 14 pathways → 7 views), or a different `model`
-per pathway.
+front model predicting both legs, per-view or per-side specialized models (… → 14
+pathways → 7 views), or a different `model` per pathway.
 
 ## Choose which stages run — `[pipeline]`
 
@@ -285,7 +297,8 @@ azimuth_deg = 0
 ## Skeleton — `[skeleton]`
 
 The tracked points and their structure (38-point, 7-camera *Drosophila* rig):
-joint names, `limb_joints` kinematic chains, and the plotting `palette`. Which
-view sees which point is no longer a table here — it is the union of the
-`[[pathways]]` `points` maps. Edit this only to track a different animal — see
-[library.md](library.md) and [architecture.md](architecture.md).
+`point_names`, `limb_points` kinematic chains (each a list of point names), and
+the plotting `limb_palette`. Which view sees which point is no longer a table
+here — it is the union of the `[point_sources]` tables. Edit this only to track a
+different animal — see [library.md](library.md) and
+[architecture.md](architecture.md).

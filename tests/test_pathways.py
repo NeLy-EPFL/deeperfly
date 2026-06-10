@@ -9,12 +9,14 @@ import pytest
 from deeperfly.config import Config
 from deeperfly.preprocessing import FrameTransform, Fliplr, Resize
 from deeperfly.pose2d.pathways import map_to_view, scatter_pathway
+from helpers import point_sources_table
 
 
-def _plan(pathways, cameras=None, models=None):
+def _config(pathways, point_sources, cameras=None, models=None):
+    """Build a plan from explicit ``[[pathways]]`` and ``[point_sources]`` tables."""
     skel = Config.default().data["skeleton"]
     data = {
-        "sources": [{"name": "s0", "input": "a"}, {"name": "s1", "input": "b"}],
+        "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
         "preprocessors": [
             {"name": "plain", "ops": []},
             {"name": "mirror", "ops": [{"op": "fliplr"}]},
@@ -25,10 +27,11 @@ def _plan(pathways, cameras=None, models=None):
                 "name": "m",
                 "class": "hourglass",
                 "input_size": [256, 512],
-                "n_channels": 19,
+                "n_out_channels": 19,
             }
         ],
         "pathways": pathways,
+        "point_sources": point_sources,
         "cameras": cameras
         or {
             "rh": {"azimuth_deg": 0, "distance": 100, "focal_length_px": 1},
@@ -37,6 +40,29 @@ def _plan(pathways, cameras=None, models=None):
         "skeleton": skel,
     }
     return Config.from_dict(data).detection_plan()
+
+
+def _plan(specs, **kwargs):
+    """Build a plan from ``(view, source, preprocessor, points)`` pathway specs.
+
+    Each spec gets a pathway named ``"<view>_p"`` and a ``[point_sources.<view>]``
+    table derived from ``points`` (``points[i]`` = the point index channel ``i``
+    fills, ``-1`` to drop).
+    """
+    point_names = Config.default().data["skeleton"]["point_names"]
+    pathways, ps_specs = [], []
+    for s in specs:
+        name = f"{s['view']}_p"
+        pathways.append(
+            {
+                "name": name,
+                "source": s["source"],
+                "preprocessor": s["preprocessor"],
+                "model": s.get("model", "m"),
+            }
+        )
+        ps_specs.append((s["view"], name, s["points"]))
+    return _config(pathways, point_sources_table(point_names, ps_specs), **kwargs)
 
 
 # -- coordinate inverse (map_to_view) ----------------------------------------
@@ -115,14 +141,12 @@ def test_visibility_mask_is_union_of_pathways():
             {
                 "source": "s0",
                 "preprocessor": "plain",
-                "model": "m",
                 "view": "rh",
                 "points": [19, 20, -1] + [-1] * 16,
             },
             {
                 "source": "s1",
                 "preprocessor": "mirror",
-                "model": "m",
                 "view": "lf",
                 "points": [0, -1, 2] + [-1] * 16,
             },
@@ -140,14 +164,12 @@ def test_view_sources_links_each_view_to_its_source():
             {
                 "source": "s0",
                 "preprocessor": "plain",
-                "model": "m",
                 "view": "rh",
                 "points": list(range(19, 38)),
             },
             {
                 "source": "s1",
                 "preprocessor": "mirror",
-                "model": "m",
                 "view": "lf",
                 "points": list(range(0, 19)),
             },
@@ -159,99 +181,61 @@ def test_view_sources_links_each_view_to_its_source():
 # -- validation ---------------------------------------------------------------
 
 
+def _ps(view, pathway, **points):
+    """A single ``[point_sources.<view>]`` table (point_name=out_channel kwargs)."""
+    return {
+        view: {n: {"pathway": pathway, "out_channel": c} for n, c in points.items()}
+    }
+
+
+def _one_pathway(source="s0", preprocessor="plain", model="m", name="rh_p"):
+    return [
+        {"name": name, "source": source, "preprocessor": preprocessor, "model": model}
+    ]
+
+
 def test_pathway_rejects_unknown_references():
+    ps = _ps("rh", "rh_p", rf_thorax_coxa=0)
     with pytest.raises(ValueError, match="unknown source"):
-        _plan(
-            [
-                {
-                    "source": "nope",
-                    "preprocessor": "plain",
-                    "model": "m",
-                    "view": "rh",
-                    "points": list(range(19, 38)),
-                }
-            ]
-        )
+        _config(_one_pathway(source="nope"), ps)
     with pytest.raises(ValueError, match="unknown preprocessor"):
-        _plan(
-            [
-                {
-                    "source": "s0",
-                    "preprocessor": "nope",
-                    "model": "m",
-                    "view": "rh",
-                    "points": list(range(19, 38)),
-                }
-            ]
-        )
+        _config(_one_pathway(preprocessor="nope"), ps)
     with pytest.raises(ValueError, match="unknown model"):
-        _plan(
-            [
-                {
-                    "source": "s0",
-                    "preprocessor": "plain",
-                    "model": "nope",
-                    "view": "rh",
-                    "points": list(range(19, 38)),
-                }
-            ]
+        _config(_one_pathway(model="nope"), ps)
+
+
+def test_duplicate_pathway_name_rejected():
+    with pytest.raises(ValueError, match="duplicate name"):
+        _config(
+            _one_pathway(name="dup") + _one_pathway(name="dup", source="s1"),
+            _ps("rh", "dup", rf_thorax_coxa=0),
         )
 
 
-def test_pathway_rejects_unknown_view_and_out_of_range_point():
+def test_point_sources_rejects_unknown_view():
     with pytest.raises(ValueError, match="unknown view"):
-        _plan(
-            [
-                {
-                    "source": "s0",
-                    "preprocessor": "plain",
-                    "model": "m",
-                    "view": "ghost",
-                    "points": list(range(19, 38)),
-                }
-            ]
+        _config(_one_pathway(), _ps("ghost", "rh_p", rf_thorax_coxa=0))
+
+
+def test_point_sources_rejects_unknown_point_name():
+    with pytest.raises(ValueError, match="not a skeleton point"):
+        _config(_one_pathway(), _ps("rh", "rh_p", not_a_point=0))
+
+
+def test_point_sources_rejects_unknown_pathway():
+    with pytest.raises(ValueError, match="unknown pathway"):
+        _config(_one_pathway(), _ps("rh", "ghost_pw", rf_thorax_coxa=0))
+
+
+def test_out_channel_must_fit_model():
+    with pytest.raises(ValueError, match="out_channel 19 outside"):
+        _config(_one_pathway(), _ps("rh", "rh_p", rf_thorax_coxa=19))
+
+
+def test_pathway_without_point_sources_rejected():
+    # A pathway named by no [point_sources] entry maps nothing -> error.
+    with pytest.raises(ValueError, match="no \\[point_sources\\] entries"):
+        _config(
+            _one_pathway(name="rh_p") + _one_pathway(name="idle", source="s1"),
+            _ps("rh", "rh_p", rf_thorax_coxa=0),
         )
-    with pytest.raises(ValueError, match="outside"):
-        _plan(
-            [
-                {
-                    "source": "s0",
-                    "preprocessor": "plain",
-                    "model": "m",
-                    "view": "rh",
-                    "points": [999] + [-1] * 18,
-                }
-            ]
-        )
-
-
-def test_pathway_channel_count_must_fit_model():
-    # A points list longer than the model's channel count maps a channel out of
-    # range.
-    with pytest.raises(ValueError, match="channel outside"):
-        _plan(
-            [
-                {
-                    "source": "s0",
-                    "preprocessor": "plain",
-                    "model": "m",
-                    "view": "rh",
-                    "points": list(range(19, 38)) + [0],
-                }
-            ]
-        )
-
-
-def test_map_form_with_view_index_resolves():
-    plan = _plan(
-        [
-            {
-                "source": "s0",
-                "preprocessor": "plain",
-                "model": "m",
-                "map": [[0, 0, 19], [1, 1, 0]],
-            }
-        ]
-    )
-    pw = plan.pathways[0]
-    np.testing.assert_array_equal(pw.mapping, [[0, 0, 19], [1, 1, 0]])

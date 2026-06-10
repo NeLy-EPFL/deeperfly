@@ -126,8 +126,8 @@ def _stub_detect(monkeypatch, tmp_path):
 
     T, H, W = 3, 16, 16
     calls: list[bool] = []
-    # Per-source raw sizes (the default plan's 7 sources are cam0..cam6).
-    sizes = {f"cam{i}": (H, W) for i in range(len(FLY_CAMERAS))}
+    # Per-source raw sizes (the default plan's 7 sources are vid_<view>).
+    sizes = {f"vid_{view}": (H, W) for view in FLY_CAMERAS}
     monkeypatch.setattr(
         pipeline.stages, "source_image_sizes", lambda config, **kw: sizes
     )
@@ -253,20 +253,31 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
 
 def _footage_cfg(tmp_path):
     """A minimal but complete two-source/two-view plan that reads real footage."""
-    points = ", ".join(str(i) for i in range(19))
+    from deeperfly.skeleton import Skeleton
+
+    names = Skeleton.fly().point_names
+
+    def point_sources(view, pathway):
+        lines = [f"[point_sources.{view}]"]
+        lines += [
+            f'{names[i]} = {{ pathway = "{pathway}", out_channel = {i} }}'
+            for i in range(19)
+        ]
+        return "\n".join(lines) + "\n"
+
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
         '[[sources]]\nname = "cam0"\n[[sources]]\nname = "cam1"\n'
         '[[preprocessors]]\nname = "plain"\nops = []\n'
         '[[models]]\nname = "m"\nclass = "hourglass"\n'
-        "input_size = [256, 512]\nn_channels = 19\n"
-        f'[[pathways]]\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
-        f'view = "cam0"\npoints = [{points}]\n'
-        f'[[pathways]]\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
-        f'view = "cam1"\npoints = [{points}]\n'
+        "input_size = [256, 512]\nn_out_channels = 19\n"
+        '[[pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
+        '[[pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
         "[cameras.cam0]\nazimuth_deg = 0\ndistance = 10\nfocal_length_px = 100\n"
         "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
-        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
+        + point_sources("cam0", "p0")
+        + point_sources("cam1", "p1")
+        + "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
         "do_triangulation = false\ndo_visualization = false\n"
     )
     return cfg

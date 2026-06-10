@@ -82,7 +82,7 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     res.save(path)
     sk = PoseResult.load(path).skeleton
     assert sk.name == "fly38"
-    assert sk.joint_names == Skeleton.fly().joint_names
+    assert sk.point_names == Skeleton.fly().point_names
     assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
     np.testing.assert_array_equal(sk.limb_id, Skeleton.fly().limb_id)
@@ -145,7 +145,7 @@ def test_store_pose2d_roundtrip(cameras, rng, tmp_path):
     np.testing.assert_array_equal(gotconf, conf)
     assert store.read_cameras("pose2d").names == cameras.names
     assert store.read_image_sizes() == _image_sizes(cameras)
-    assert store.read_skeleton().joint_names == Skeleton.fly().joint_names
+    assert store.read_skeleton().point_names == Skeleton.fly().point_names
 
 
 def test_store_candidates_roundtrip(cameras, rng, tmp_path):

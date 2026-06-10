@@ -17,6 +17,7 @@ from deeperfly.pose2d import detector, inference
 from deeperfly.pose2d.model import HourglassNet
 from deeperfly.pose2d.models import LoadedModel, ModelSpec
 from deeperfly.pose2d.weights import load_model
+from helpers import point_sources_table
 
 
 @pytest.fixture
@@ -133,14 +134,14 @@ def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
 # -- model input preparation -------------------------------------------------
 
 
-def _loaded(model, n_channels=19, input_size=(256, 512), mean=0.22):
+def _loaded(model, n_out_channels=19, input_size=(256, 512), mean=0.22):
     spec = ModelSpec(
         name="m",
         cls="hourglass",
         weights=None,
         input_size=input_size,
         mean=mean,
-        n_channels=n_channels,
+        n_out_channels=n_out_channels,
     )
     return LoadedModel(spec, model)
 
@@ -166,39 +167,36 @@ def test_model_prepare_accepts_on_device_tensor(model):
 # -- plan-driven detection ---------------------------------------------------
 
 
+def _model_list():
+    return [
+        {
+            "name": "m",
+            "class": "hourglass",
+            "input_size": [256, 512],
+            "n_out_channels": 19,
+        }
+    ]
+
+
 def _mini_plan():
     """A 2-source / 2-pathway / 2-view plan: rh (plain) and lf (mirrored)."""
     skel = Config.default().data["skeleton"]
+    point_names = skel["point_names"]
     data = {
-        "sources": [{"name": "s0", "input": "a"}, {"name": "s1", "input": "b"}],
+        "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
         "preprocessors": [
             {"name": "plain", "ops": []},
             {"name": "mirror", "ops": [{"op": "fliplr"}]},
         ],
-        "models": [
-            {
-                "name": "m",
-                "class": "hourglass",
-                "input_size": [256, 512],
-                "n_channels": 19,
-            }
-        ],
+        "models": _model_list(),
         "pathways": [
-            {
-                "source": "s0",
-                "preprocessor": "plain",
-                "model": "m",
-                "view": "rh",
-                "points": list(range(19, 38)),
-            },
-            {
-                "source": "s1",
-                "preprocessor": "mirror",
-                "model": "m",
-                "view": "lf",
-                "points": list(range(0, 19)),
-            },
+            {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
+            {"name": "lf_p", "source": "s1", "preprocessor": "mirror", "model": "m"},
         ],
+        "point_sources": point_sources_table(
+            point_names,
+            [("rh", "rh_p", list(range(19, 38))), ("lf", "lf_p", list(range(0, 19)))],
+        ),
         "cameras": {
             "rh": {
                 "azimuth_deg": -120,
@@ -221,36 +219,35 @@ def _mini_plan():
 def _front_plan():
     """A 1-source / 2-pathway / 1-view plan: the front source bridges both sides."""
     skel = Config.default().data["skeleton"]
+    point_names = skel["point_names"]
     data = {
-        "sources": [{"name": "fcam", "input": "f"}],
+        "sources": [{"name": "fcam", "filename": "f"}],
         "preprocessors": [
             {"name": "plain", "ops": []},
             {"name": "mirror", "ops": [{"op": "fliplr"}]},
         ],
-        "models": [
-            {
-                "name": "m",
-                "class": "hourglass",
-                "input_size": [256, 512],
-                "n_channels": 19,
-            }
-        ],
+        "models": _model_list(),
         "pathways": [
             {
+                "name": "f_plain",
                 "source": "fcam",
                 "preprocessor": "plain",
                 "model": "m",
-                "view": "f",
-                "points": list(range(19, 38)),
             },
             {
+                "name": "f_mirror",
                 "source": "fcam",
                 "preprocessor": "mirror",
                 "model": "m",
-                "view": "f",
-                "points": list(range(0, 19)),
             },
         ],
+        "point_sources": point_sources_table(
+            point_names,
+            [
+                ("f", "f_plain", list(range(19, 38))),
+                ("f", "f_mirror", list(range(0, 19))),
+            ],
+        ),
         "cameras": {
             "f": {
                 "azimuth_deg": 0,

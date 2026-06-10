@@ -3,7 +3,7 @@
 A pose pipeline can drive several detector models (see
 :mod:`deeperfly.pose2d.pathways`): each is described in the config by a
 ``class`` (a registry key here), the ``weights`` to load, the ``input_size`` it
-expects, the ``mean`` it subtracts, and the ``n_channels`` it emits. A
+expects, the ``mean`` it subtracts, and the ``n_out_channels`` it emits. A
 :class:`ModelSpec` is the parsed, torch-free description; :func:`load_model`
 turns it into a :class:`LoadedModel` that owns the model-specific input
 preparation (resize to ``input_size`` + normalize) and forward/decode, wrapping
@@ -27,7 +27,7 @@ DEFAULT_MEAN = 0.22
 #: DeepFly2D network input ``(height, width)``.
 DEFAULT_INPUT_SIZE = (256, 512)
 #: DeepFly2D body-side detector channels.
-DEFAULT_N_CHANNELS = 19
+DEFAULT_N_OUT_CHANNELS = 19
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class ModelSpec:
         The network input ``(height, width)``.
     mean
         Scalar subtracted from the ``[0, 1]`` image after the resize.
-    n_channels
+    n_out_channels
         Number of output heatmap channels (validated against the weights).
     kwargs
         Extra class-specific construction kwargs.
@@ -57,7 +57,7 @@ class ModelSpec:
     weights: str | None
     input_size: tuple[int, int] = DEFAULT_INPUT_SIZE
     mean: float = DEFAULT_MEAN
-    n_channels: int = DEFAULT_N_CHANNELS
+    n_out_channels: int = DEFAULT_N_OUT_CHANNELS
     kwargs: dict = field(default_factory=dict)
 
 
@@ -101,8 +101,8 @@ class LoadedModel:
         return self.spec.input_size
 
     @property
-    def n_channels(self) -> int:
-        return self.spec.n_channels
+    def n_out_channels(self) -> int:
+        return self.spec.n_out_channels
 
     def prepare(self, frames):
         """``(..., H, W, 3)`` frame(s) -> ``(..., 3, Hh, Ww)`` normalized model input.
@@ -166,7 +166,7 @@ def load_model(spec: ModelSpec) -> LoadedModel:
     """Build a :class:`LoadedModel` from a :class:`ModelSpec`.
 
     Looks up ``spec.cls`` in :data:`MODEL_CLASSES`, loads the weights, and
-    validates that the loaded module emits ``spec.n_channels`` heatmaps.
+    validates that the loaded module emits ``spec.n_out_channels`` heatmaps.
 
     Raises
     ------
@@ -175,7 +175,7 @@ def load_model(spec: ModelSpec) -> LoadedModel:
         path does not exist.
     ValueError
         If the loaded module's output-channel count disagrees with
-        ``spec.n_channels``.
+        ``spec.n_out_channels``.
     """
     loader = MODEL_CLASSES.get(spec.cls)
     if loader is None:
@@ -185,9 +185,9 @@ def load_model(spec: ModelSpec) -> LoadedModel:
         )
     module = loader(spec.weights, **spec.kwargs)
     num_classes = getattr(module, "num_classes", None)
-    if num_classes is not None and int(num_classes) != int(spec.n_channels):
+    if num_classes is not None and int(num_classes) != int(spec.n_out_channels):
         raise ValueError(
-            f"model {spec.name!r} declares n_channels={spec.n_channels} but its "
-            f"weights emit {num_classes} channels"
+            f"model {spec.name!r} declares n_out_channels={spec.n_out_channels} "
+            f"but its weights emit {num_classes} channels"
         )
     return LoadedModel(spec, module)

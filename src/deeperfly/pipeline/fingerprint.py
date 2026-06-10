@@ -110,7 +110,7 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
     skel = config.skeleton()
     digest = {
         "name": skel.name,
-        "joint_names": list(skel.joint_names),
+        "point_names": list(skel.point_names),
         "bones": skel.bones.tolist(),
     }
     if cosmetic:  # the visualization stage also draws limbs/colors
@@ -206,7 +206,7 @@ def stage_fingerprint(
                     "weights": s.weights,
                     "input_size": list(s.input_size),
                     "mean": s.mean,
-                    "n_channels": s.n_channels,
+                    "n_out_channels": s.n_out_channels,
                     "kwargs": s.kwargs,
                 }
                 for name, s in plan.models.items()

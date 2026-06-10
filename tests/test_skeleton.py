@@ -19,7 +19,7 @@ def test_counts(fly):
     assert fly.n_points == 38
     assert fly.n_limbs == 10
     assert fly.bones.shape == (28, 2)
-    assert len(fly.joint_names) == 38
+    assert len(fly.point_names) == 38
     assert fly.limb_id.shape == (38,)
 
 
@@ -29,12 +29,12 @@ def test_bone_indices_in_range(fly):
 
 
 def test_palette(fly):
-    # One color per limb, with the bright antenna/stripe cues set in the config.
+    # One color per limb, with the bright antenna/abdomen cues set in the config.
     assert set(fly.palette) == set(fly.limb_names)
     assert fly.palette["l_antenna"] == "#0a4f6b"
     assert fly.palette["r_antenna"] == "#8c1525"
-    assert fly.palette["l_stripe"] == "#a9dbe4"
-    assert fly.palette["r_stripe"] == "#e6b3a8"
+    assert fly.palette["l_abdomen"] == "#a9dbe4"
+    assert fly.palette["r_abdomen"] == "#e6b3a8"
 
 
 def test_left_right_legs_disjoint(fly):
@@ -56,9 +56,9 @@ def test_from_config_dict_roundtrip(fly):
     spec = {
         "skeleton": {
             "name": "toy",
-            "joint_names": ["a", "b", "c"],
-            "limb_joints": {"L": [0, 1, 2]},
-            "palette": {"L": "#123456"},
+            "point_names": ["a", "b", "c"],
+            "limb_points": {"L": [0, 1, 2]},
+            "limb_palette": {"L": "#123456"},
         }
     }
     s = Skeleton.from_config(Config.from_dict(spec))
@@ -70,8 +70,8 @@ def test_from_config_dict_roundtrip(fly):
     assert s.palette == {"L": "#123456"}
 
 
-def test_limb_joints_derive_structure(fly):
-    # limb_names / limb_id / bones are all derived from the limb_joints mapping.
+def test_limb_points_derive_structure(fly):
+    # limb_names / limb_id / bones are all derived from the limb_points mapping.
     assert fly.limb_names[0] == "lf_leg" and fly.limb_names[3] == "l_antenna"
     assert fly.limb_id[:5].tolist() == [0, 0, 0, 0, 0]
     assert fly.limb_id[15] == 3  # the single-point l_antenna limb
@@ -79,7 +79,19 @@ def test_limb_joints_derive_structure(fly):
     np.testing.assert_array_equal(fly.bones[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
 
 
-def test_out_of_range_limb_joint_raises():
-    spec = {"skeleton": {"joint_names": ["a", "b"], "limb_joints": {"L": [0, 2]}}}
+def test_out_of_range_limb_point_raises():
+    spec = {"skeleton": {"point_names": ["a", "b"], "limb_points": {"L": [0, 2]}}}
     with pytest.raises(ValueError, match="outside"):
         Skeleton.from_config(Config.from_dict(spec))
+
+
+def test_limb_points_resolve_names():
+    # limb_points may list point names; an unknown name is rejected.
+    spec = {
+        "skeleton": {"point_names": ["a", "b", "c"], "limb_points": {"L": ["a", "c"]}}
+    }
+    s = Skeleton.from_config(Config.from_dict(spec))
+    np.testing.assert_array_equal(s.bones, [[0, 2]])
+    bad = {"skeleton": {"point_names": ["a", "b"], "limb_points": {"L": ["a", "z"]}}}
+    with pytest.raises(ValueError, match="unknown point name"):
+        Skeleton.from_config(Config.from_dict(bad))

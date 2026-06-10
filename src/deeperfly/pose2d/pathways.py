@@ -8,11 +8,15 @@ four counts that used to be fused at "one per camera":
 - **views** -- the geometric cameras (``[cameras.*]``); the ``V`` axis of the
   ``(V, T, N, 2)`` points array.
 - **models** -- detector models (see :mod:`deeperfly.pose2d.models`).
-- **pathways** -- ``source -> preprocessor -> model -> mapping``. A pathway runs
-  one model over one (preprocessed) source and scatters its output channels into
-  the skeleton via a list of ``(i, v, p)`` triples: model output channel ``i``
-  becomes point ``p`` of view ``v``. A ``(view, point)`` pair that no pathway
-  writes stays ``NaN`` -- that *is* the visibility mask (no separate table).
+- **pathways** -- ``source -> preprocessor -> model``, each a named inference run.
+
+Where a pathway's outputs land is declared separately, in ``[point_sources.<view>]``
+tables keyed by point name: ``point = { pathway, out_channel }`` says point ``point``
+of view ``<view>`` is filled by output channel ``out_channel`` of the named pathway.
+Keying on ``(view, point)`` makes every point's data come from exactly one place
+(a repeat is a TOML error). A ``(view, point)`` no entry names stays ``NaN`` -- that
+*is* the visibility mask (no separate table). Internally each pathway still carries
+the resolved ``(i, v, p)`` triples (channel ``i`` -> point ``p`` of view ``v``).
 
 The front camera is no longer special: it is one source feeding two pathways
 (one mirrored), each mapping into view ``f``. A point predicted in a pathway's
@@ -38,7 +42,7 @@ log = logging.getLogger("deeperfly")
 
 @dataclass(frozen=True)
 class Source:
-    """A named footage source: its glob pattern (the old ``[cameras.*].input``)."""
+    """A named footage source: its glob pattern (``[[sources]]`` ``filename``)."""
 
     name: str
     pattern: str
@@ -50,16 +54,21 @@ class Pathway:
 
     Attributes
     ----------
+    name
+        The pathway's name (``[[pathways]]`` ``name``), referenced from the
+        ``[point_sources.<view>]`` tables.
     source, preprocessor, model
         The names referenced from ``[[sources]]`` / ``[[preprocessors]]`` /
         ``[[models]]``.
     transform
         The resolved preprocessor (the pathway's geometric frame prep).
     mapping
-        An ``(E, 3)`` int array of ``(i, v, p)`` triples: model output channel
-        ``i`` -> point ``p`` of view ``v``.
+        An ``(E, 3)`` int array of ``(i, v, p)`` triples (resolved from
+        ``[point_sources]``): model output channel ``i`` -> point ``p`` of view
+        ``v``.
     """
 
+    name: str
     source: str
     preprocessor: str
     model: str
@@ -200,9 +209,9 @@ class DetectionPlan:
         """Build a plan from a :class:`~deeperfly.config.Config`.
 
         Parses ``[[sources]]`` / ``[[preprocessors]]`` / ``[[models]]`` /
-        ``[[pathways]]`` and resolves view names from ``[cameras.*]`` and the
-        point count from ``[skeleton]``. Validates every cross-reference and
-        index loudly (a config typo fails here, not mid-run).
+        ``[[pathways]]`` / ``[point_sources.<view>]`` and resolves view names from
+        ``[cameras.*]`` and the points from ``[skeleton]``. Validates every
+        cross-reference and index loudly (a config typo fails here, not mid-run).
         """
         data = config.data
         view_names = list(config.camera_table()[1])
@@ -210,7 +219,8 @@ class DetectionPlan:
             raise ValueError(
                 "the detection plan needs cameras (views) under [cameras.*]"
             )
-        n_points = config.skeleton().n_points
+        skeleton = config.skeleton()
+        point_index = {name: i for i, name in enumerate(skeleton.point_names)}
 
         sources = _parse_sources(data.get("sources"))
         preprocessors = _parse_preprocessors(data.get("preprocessors"))
@@ -221,11 +231,12 @@ class DetectionPlan:
             preprocessors=preprocessors,
             models=models,
             view_names=view_names,
-            n_points=n_points,
+            point_index=point_index,
+            point_sources=data.get("point_sources"),
         )
         return cls(
             view_names=view_names,
-            n_points=n_points,
+            n_points=skeleton.n_points,
             sources=sources,
             preprocessors=preprocessors,
             models=models,
@@ -255,7 +266,7 @@ def _parse_sources(raw) -> list[Source]:
         if name in seen:
             raise ValueError(f"[[sources]] has a duplicate name {name!r}")
         seen.add(name)
-        out.append(Source(name=name, pattern=s.get("input", name)))
+        out.append(Source(name=name, pattern=s.get("filename", name)))
     return out
 
 
@@ -276,7 +287,7 @@ def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
 
 
 def _parse_models(raw) -> dict[str, ModelSpec]:
-    fixed = {"name", "class", "weights", "input_size", "mean", "n_channels"}
+    fixed = {"name", "class", "weights", "input_size", "mean", "n_out_channels"}
     out: dict[str, ModelSpec] = {}
     for i, m in enumerate(_require_list(raw, "[[models]]")):
         name = m.get("name")
@@ -297,7 +308,7 @@ def _parse_models(raw) -> dict[str, ModelSpec]:
             weights=(weights or None),  # "" / absent -> cached default
             input_size=(int(size[0]), int(size[1])),
             mean=float(m.get("mean", ModelSpec.mean)),
-            n_channels=int(m.get("n_channels", ModelSpec.n_channels)),
+            n_out_channels=int(m.get("n_out_channels", ModelSpec.n_out_channels)),
             kwargs={k: v for k, v in m.items() if k not in fixed},
         )
     return out
@@ -316,35 +327,65 @@ def _resolve_view(value, view_names: list[str], where: str) -> int:
     raise ValueError(f"{where} references unknown view {value!r}; views: {view_names}")
 
 
-def _pathway_mapping(
-    pw: dict, n_channels: int, view_names: list[str], n_points: int, where: str
-) -> np.ndarray:
-    """Resolve a pathway's ``map``/``view``+``points`` into an ``(E, 3)`` array."""
-    triples: list[tuple[int, int, int]] = []
-    if "map" in pw:
-        for entry in pw["map"]:
-            if len(entry) != 3:
-                raise ValueError(f"{where} map entry {entry!r} must be [i, v, p]")
-            i, v, p = entry
-            triples.append((int(i), _resolve_view(v, view_names, where), int(p)))
-    elif "view" in pw and "points" in pw:
-        v = _resolve_view(pw["view"], view_names, where)
-        for i, p in enumerate(pw["points"]):
-            if int(p) >= 0:
-                triples.append((i, v, int(p)))
-    else:
-        raise ValueError(f"{where} needs either 'map' or both 'view' and 'points'")
+def _parse_point_sources(
+    raw,
+    *,
+    pathway_models: dict[str, str],
+    models: dict[str, ModelSpec],
+    view_names: list[str],
+    point_index: dict[str, int],
+) -> dict[str, np.ndarray]:
+    """Resolve ``[point_sources.<view>]`` into each pathway's ``(E, 3)`` mapping.
 
-    arr = np.asarray(triples, dtype=np.int64).reshape(-1, 3)
-    if arr.size == 0:
-        raise ValueError(f"{where} maps no points")
-    if arr[:, 0].min() < 0 or arr[:, 0].max() >= n_channels:
-        raise ValueError(
-            f"{where} maps a channel outside [0, {n_channels}) (model n_channels)"
-        )
-    if arr[:, 2].min() < 0 or arr[:, 2].max() >= n_points:
-        raise ValueError(f"{where} maps a point outside [0, {n_points}) (skeleton)")
-    return arr
+    Each ``[point_sources.<view>]`` table is keyed by point name; an entry
+    ``{ pathway, out_channel }`` says output channel ``out_channel`` of that
+    pathway fills the named point of ``<view>``. Keying on ``(view, point)``
+    means every point has exactly one source (a repeat is a TOML error), so no
+    later-write-wins rule is needed. Returns ``pathway name -> (E, 3)`` array of
+    ``(out_channel, view, point)`` triples; every pathway must be named at least
+    once.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("the detection plan is missing [point_sources.<view>]")
+    triples: dict[str, list[tuple[int, int, int]]] = {n: [] for n in pathway_models}
+    for view, table in raw.items():
+        v = _resolve_view(view, view_names, f"[point_sources.{view}]")
+        if not isinstance(table, dict):
+            raise ValueError(
+                f"[point_sources.{view}] must be a table of "
+                "point = {{ pathway, out_channel }}"
+            )
+        for point_name, entry in table.items():
+            where = f"[point_sources.{view}] {point_name!r}"
+            if point_name not in point_index:
+                raise ValueError(f"{where} is not a skeleton point")
+            if not (
+                isinstance(entry, dict)
+                and "pathway" in entry
+                and "out_channel" in entry
+            ):
+                raise ValueError(
+                    f"{where} must be {{ pathway = ..., out_channel = ... }}"
+                )
+            pw_name = entry["pathway"]
+            if pw_name not in pathway_models:
+                raise ValueError(f"{where} references unknown pathway {pw_name!r}")
+            i = int(entry["out_channel"])
+            n_out = models[pathway_models[pw_name]].n_out_channels
+            if not 0 <= i < n_out:
+                raise ValueError(
+                    f"{where} out_channel {i} outside [0, {n_out}) "
+                    "(model n_out_channels)"
+                )
+            triples[pw_name].append((i, v, point_index[point_name]))
+    out: dict[str, np.ndarray] = {}
+    for name, t in triples.items():
+        if not t:
+            raise ValueError(
+                f"pathway {name!r} has no [point_sources] entries; it maps no points"
+            )
+        out[name] = np.asarray(t, dtype=np.int64).reshape(-1, 3)
+    return out
 
 
 def _parse_pathways(
@@ -354,12 +395,19 @@ def _parse_pathways(
     preprocessors: dict[str, FrameTransform],
     models: dict[str, ModelSpec],
     view_names: list[str],
-    n_points: int,
+    point_index: dict[str, int],
+    point_sources,
 ) -> list[Pathway]:
-    out: list[Pathway] = []
-    seen_targets: set[tuple[int, int]] = set()
+    specs: list[tuple[str, str, str, str]] = []  # name, source, preprocessor, model
+    seen: set[str] = set()
     for i, pw in enumerate(_require_list(raw, "[[pathways]]")):
         where = f"[[pathways]][{i}]"
+        name = pw.get("name")
+        if not isinstance(name, str):
+            raise ValueError(f"{where} needs a string 'name', got {name!r}")
+        if name in seen:
+            raise ValueError(f"[[pathways]] has a duplicate name {name!r}")
+        seen.add(name)
         src = pw.get("source")
         if src not in sources:
             raise ValueError(f"{where} references unknown source {src!r}")
@@ -369,27 +417,23 @@ def _parse_pathways(
         model = pw.get("model")
         if model not in models:
             raise ValueError(f"{where} references unknown model {model!r}")
-        mapping = _pathway_mapping(
-            pw, models[model].n_channels, view_names, n_points, where
+        specs.append((name, src, prep, model))
+
+    mappings = _parse_point_sources(
+        point_sources,
+        pathway_models={name: model for name, _, _, model in specs},
+        models=models,
+        view_names=view_names,
+        point_index=point_index,
+    )
+    return [
+        Pathway(
+            name=name,
+            source=src,
+            preprocessor=prep,
+            model=model,
+            transform=preprocessors[prep],
+            mapping=mappings[name],
         )
-        for v, p in mapping[:, 1:]:
-            key = (int(v), int(p))
-            if key in seen_targets:
-                log.warning(
-                    "%s maps to view %r point %d, already written by an earlier "
-                    "pathway; the later pathway wins",
-                    where,
-                    view_names[v],
-                    p,
-                )
-            seen_targets.add(key)
-        out.append(
-            Pathway(
-                source=src,
-                preprocessor=prep,
-                model=model,
-                transform=preprocessors[prep],
-                mapping=mapping,
-            )
-        )
-    return out
+        for name, src, prep, model in specs
+    ]

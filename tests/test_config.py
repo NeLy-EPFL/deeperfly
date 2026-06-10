@@ -115,8 +115,8 @@ def test_source_patterns_and_camera_table():
     c = Config.from_dict(
         {
             "sources": [
-                {"name": "cam0", "input": "v0.mp4"},
-                {"name": "cam1"},  # no input -> own name
+                {"name": "cam0", "filename": "v0.mp4"},
+                {"name": "cam1"},  # no filename -> own name
             ],
             "cameras": {
                 "defaults": {"focal_length_px": 800.0},

@@ -19,6 +19,7 @@ from deeperfly.pipeline.fingerprint import (
 )
 from deeperfly.results import StageStore
 from deeperfly.skeleton import Skeleton
+from helpers import point_sources_table
 
 
 def _cfg(extra: dict | None = None) -> Config:
@@ -32,11 +33,12 @@ def _cfg(extra: dict | None = None) -> Config:
         }
         for name, az in (("cam0", 0), ("cam1", 90))
     }
+    point_names = Skeleton.fly().point_names
     data = {
         "cameras": cameras,
         "sources": [
-            {"name": "cam0", "input": "cam0.mp4"},
-            {"name": "cam1", "input": "cam1.mp4"},
+            {"name": "cam0", "filename": "cam0.mp4"},
+            {"name": "cam1", "filename": "cam1.mp4"},
         ],
         "preprocessors": [{"name": "plain", "ops": []}],
         "models": [
@@ -44,25 +46,17 @@ def _cfg(extra: dict | None = None) -> Config:
                 "name": "m",
                 "class": "hourglass",
                 "input_size": [256, 512],
-                "n_channels": 19,
+                "n_out_channels": 19,
             }
         ],
         "pathways": [
-            {
-                "source": "cam0",
-                "preprocessor": "plain",
-                "model": "m",
-                "view": "cam0",
-                "points": list(range(19)),
-            },
-            {
-                "source": "cam1",
-                "preprocessor": "plain",
-                "model": "m",
-                "view": "cam1",
-                "points": list(range(19)),
-            },
+            {"name": "p_cam0", "source": "cam0", "preprocessor": "plain", "model": "m"},
+            {"name": "p_cam1", "source": "cam1", "preprocessor": "plain", "model": "m"},
         ],
+        "point_sources": point_sources_table(
+            point_names,
+            [("cam0", "p_cam0", list(range(19))), ("cam1", "p_cam1", list(range(19)))],
+        ),
         "pipeline": {},
     }
     for key, value in (extra or {}).items():
@@ -170,15 +164,16 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
             "pose2d", _cfg({"pipeline.pose2d.precision": "float32"}), enabled, store
         ),
     )
-    # the detection plan: source glob, preprocessor ops, model input, pathway map
+    # the detection plan: source glob, preprocessor ops, model input, point map
     src = _cfg()
-    src.data["sources"][0]["input"] = "other.mp4"
+    src.data["sources"][0]["filename"] = "other.mp4"
     pre = _cfg()
     pre.data["preprocessors"][0]["ops"] = [{"op": "fliplr"}]
     model = _cfg()
     model.data["models"][0]["input_size"] = [128, 256]
     pw = _cfg()
-    pw.data["pathways"][0]["points"] = [5] + list(range(1, 19))
+    point = Skeleton.fly().point_names[0]
+    pw.data["point_sources"]["cam0"][point]["out_channel"] = 18
     for changed in (src, pre, model, pw):
         assert fingerprint_diff(
             fp, stage_fingerprint("pose2d", changed, enabled, store)
@@ -203,7 +198,7 @@ def test_bundle_adjustment_fingerprint_is_geometry_only(store):
     enabled = base.stage_flags()
     # changing a source glob does not touch BA (footage lives in the plan, not here)
     moved = _cfg()
-    moved.data["sources"][0]["input"] = "elsewhere.mp4"
+    moved.data["sources"][0]["filename"] = "elsewhere.mp4"
     assert stage_fingerprint(
         "bundle_adjustment", base, enabled, store
     ) == stage_fingerprint("bundle_adjustment", moved, enabled, store)
