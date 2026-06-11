@@ -25,36 +25,36 @@ The two diagrams below show what happens when we run deeperfly on the example da
 
 ```mermaid
 flowchart TD
-  subgraph SRC["$$\text{videos}$$"]
+  subgraph SRC["videos"]
     direction LR
-    c0("$$\begin{gathered}\text{camera\_0.mp4} \\\\ \text{(RH)}\end{gathered}$$")
-    c1("$$\begin{gathered}\text{camera\_1.mp4} \\\\ \text{(RM)}\end{gathered}$$")
-    c2("$$\begin{gathered}\text{camera\_2.mp4} \\\\ \text{(RF)}\end{gathered}$$")
-    c3("$$\begin{gathered}\text{camera\_3.mp4} \\\\ \text{(F)}\end{gathered}$$")
-    c4("$$\begin{gathered}\text{camera\_4.mp4} \\\\ \text{(LF)}\end{gathered}$$")
-    c5("$$\begin{gathered}\text{camera\_5.mp4} \\\\ \text{(LM)}\end{gathered}$$")
-    c6("$$\begin{gathered}\text{camera\_6.mp4} \\\\ \text{(LH)}\end{gathered}$$")
+    c0(["camera_0.mp4<br>(RH)"])
+    c1(["camera_1.mp4<br>(RM)"])
+    c2(["camera_2.mp4<br>(RF)"])
+    c3(["camera_3.mp4<br>(F)"])
+    c4(["camera_4.mp4<br>(LF)"])
+    c5(["camera_5.mp4<br>(LM)"])
+    c6(["camera_6.mp4<br>(LH)"])
   end
 
-  fl["$$\text{L} \leftrightarrow \text{R flip}$$"]
-  rz["$$\text{resize, normalize}$$"]
+  fl["horizontal flip"]
+  rz["resize, normalize"]
 
-  c0 -->|"$$ \begin{gathered} \text{raw frames} \\\\ (T, H_\text{raw}, W_\text{raw}, C_\text{raw})\end{gathered} $$"| rz
+  c0 -->|"raw frames<br>(T, H_raw, W_raw, C_raw)"| rz
   c1 --> rz
   c2 --> rz
   c3 --> rz
   c3 --> fl
-  c4 -->|"$$ \begin{gathered} \text{raw frames} \\\\ (T, H_\text{raw}, W_\text{raw}, C_\text{raw})\end{gathered} $$"| fl
+  c4 -->|"raw frames<br>(T, H_raw, W_raw, C_raw)"| fl
   c5 --> fl
   c6 --> fl
 
-  fl -->|"$$ \begin{gathered} \text{mirrored frames} \\\\ (T, H_\text{raw}, W_\text{raw}, C_\text{raw})\end{gathered} $$"| rz
+  fl -->|"mirrored frames<br>(T, H_raw, W_raw, C_raw)"| rz
   fl --> rz
   fl --> rz
   fl --> rz
 
-  net["$$\text{stacked hourglass network}$$"]
-  rz -->|"$$ \begin{gathered} \text{preprocessed images} \\\\ (T, C_\text{in}, H_\text{in}, W_\text{in})\end{gathered} $$"| net
+  net["stacked hourglass network"]
+  rz -->|"preprocessed images<br>(T, C_in, H_in, W_in)"| net
   rz --> net
   rz --> net
   rz --> net
@@ -63,8 +63,8 @@ flowchart TD
   rz --> net
   rz --> net
 
-  am["$$\begin{gathered}\text{locate peaks (in original image coordinates)}\end{gathered}$$"]
-  net -->|"$$\begin{gathered}\text{keypoint heatmaps} \\\\ (T, C_\text{out}, H_\text{out}, W_\text{out})\end{gathered}$$"| am
+  am["locate peaks (in original image coordinates)"]
+  net -->|"keypoint heatmaps<br>(T, C_out, H_out, W_out)"| am
   net --> am
   net --> am
   net --> am
@@ -73,8 +73,8 @@ flowchart TD
   net --> am
   net --> am
 
-  sc["$$\text{Route channel } c \text{ in path } i \text{ to point } p \text{ in view } v$$"]
-  am -->|"$$ \begin{gathered} \text{peak locations }(T, C_\text{out}, 2), \\\\ \text{confidence } (T, C_\text{out}) \end{gathered} $$"| sc
+  sc["Route channel c in path i to point p in view v"]
+  am -->|"peak locations (T, C_out, 2),<br>confidence (T, C_out)"| sc
   am --> sc
   am --> sc
   am --> sc
@@ -83,8 +83,8 @@ flowchart TD
   am --> sc
   am --> sc
 
-  sc --> out(["$$\begin{gathered} \text{2D keypoints} \\\\ (V, T, P, 2) \end{gathered}$$"])
-  sc --> out2(["$$\begin{gathered} \text{confidence} \\\\ (V, T, P) \end{gathered}$$"])
+  sc --> out(["2D keypoints<br>(V, T, P, 2)"])
+  sc --> out2(["confidence<br>(V, T, P)"])
 
   %% one color per pathway (skeleton limb_palette): right=reds, left=blues,
   %% front camera's two lanes in the right/left antenna shades.
@@ -106,23 +106,23 @@ the keypoints on the right, mirrored for the left.
 
 ```mermaid
 flowchart TD
-  kp2d["$$\begin{gathered}\text{2D keypoints } (V, T, P, 2), \\\\ \text{with unobsered} = \text{NaN}\end{gathered}$$"]
-  conf["$$\text{confidence } (V, T, P)$$"]
-  cam0("$$\begin{gathered}\text{initial camera parameters} \\\\ \text{(intrinsics + extrinsics),} \\\\ \text{7 cameras}\end{gathered}$$")
+  kp2d(["2D keypoints (V, T, P, 2),<br>with unobserved = NaN"])
+  conf(["confidence (V, T, P)"])
+  cam0(["initial camera parameters<br>(intrinsics + extrinsics),<br>7 cameras"])
 
-  ba["$$\text{bundle adjustment}$$"]
+  ba["bundle adjustment"]
 
   kp2d --> ba
   conf -.-> ba
   cam0 --> ba
 
-  tri["$$\text{triangulation}$$"]
+  tri["triangulation"]
 
-  ba -->|"$$\text{refined camera parameters}$$"| tri
+  ba -->|"refined camera parameters"| tri
   kp2d --> tri
   conf -.-> tri
 
-  tri --> res(["$$\text{3D keypoints}$$"])
+  tri --> res(["3D keypoints<br>(T, P, 3)"])
 ```
 
 ## Pipeline stages
