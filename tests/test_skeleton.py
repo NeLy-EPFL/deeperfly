@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import leg_indices
 
 from deeperfly.config import Config
 from deeperfly.skeleton import Skeleton
-from helpers import leg_indices
 
 
 def test_counts(fly):

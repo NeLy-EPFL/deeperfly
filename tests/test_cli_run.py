@@ -22,8 +22,8 @@ from deeperfly import Config, cli, pipeline, recordings
 from deeperfly.cli.app import _normalize_overwrite_argv
 from deeperfly.cli.report import _fmt_bytes
 from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
-from deeperfly.results import PoseResult
 from deeperfly.pose2d import stream as pose2d_stream
+from deeperfly.results import PoseResult
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 

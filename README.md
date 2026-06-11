@@ -89,7 +89,7 @@ for full walkthroughs.
 - [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), the detector.
 - [docs/video.md](docs/video.md) — frame read/write: PyAV video, OpenCV image sequences (CPU decode).
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests, linting.
 
 ## License
 

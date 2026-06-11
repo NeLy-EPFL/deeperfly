@@ -25,6 +25,8 @@ from jaxtyping import Int
 if TYPE_CHECKING:
     from .config import Config
 
+__all__ = ["Skeleton"]
+
 _DATA_DIR = Path(__file__).parent / "data"
 _FLY_TOML = _DATA_DIR / "skeleton_fly.toml"
 

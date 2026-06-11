@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+from helpers import small_rotation
 
 from deeperfly import geometry as geom
 from deeperfly.bundle_adjustment import bundle_adjust, core
 from deeperfly.cameras import CameraGroup
-from helpers import small_rotation
 
 
 def make_group(rig, rvecs=None, tvecs=None) -> CameraGroup:

@@ -15,7 +15,11 @@ plus the GPU-memory helper (:func:`gpu_memory_bytes`) and
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+
+log = logging.getLogger("deeperfly")
 
 
 def load_detector(checkpoint=None, **kwargs):
@@ -166,7 +170,8 @@ def gpu_memory_bytes(device=None) -> int | None:
         if torch.backends.mps.is_available():
             return int(torch.mps.recommended_max_memory())
         return None
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        log.debug("GPU memory probe failed: %s", exc)
         return None
 
 

@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import point_sources_table
 
 from deeperfly.config import Config
-from deeperfly.preprocessing import FrameTransform, Fliplr, Resize
 from deeperfly.pose2d.pathways import map_to_view, scatter_pathway
-from helpers import point_sources_table
+from deeperfly.preprocessing import Fliplr, FrameTransform, Resize
 
 
 def _config(pathways, point_sources, cameras=None, models=None):

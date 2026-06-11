@@ -9,11 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from deeperfly import geometry as geom
-from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
-from deeperfly.config import Config
-from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -23,6 +18,11 @@ from helpers import (
     WIDTH,
     reference_rmat,
 )
+
+from deeperfly import geometry as geom
+from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
+from deeperfly.config import Config
+from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
 
 
 @pytest.fixture

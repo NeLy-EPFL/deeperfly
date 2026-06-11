@@ -32,10 +32,20 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cameras import CameraGroup
-    from .skeleton import Skeleton
-    from .preprocessing import FrameTransform
     from .pose2d.pathways import DetectionPlan
+    from .preprocessing import FrameTransform
+    from .skeleton import Skeleton
     from .visualization.compose import VideoSpec
+
+__all__ = [
+    "Config",
+    "Pose2dParams",
+    "TriangulationParams",
+    "PictorialParams",
+    "IoParams",
+    "BundleAdjustmentParams",
+    "DEFAULT_CONFIG_PATH",
+]
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"

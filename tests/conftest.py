@@ -10,11 +10,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from deeperfly import geometry as geom
-from deeperfly.cameras import CameraGroup
-from deeperfly.results import PoseResult
-from deeperfly.skeleton import Skeleton
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -24,6 +19,11 @@ from helpers import (
     WIDTH,
     reference_rmat,
 )
+
+from deeperfly import geometry as geom
+from deeperfly.cameras import CameraGroup
+from deeperfly.results import PoseResult
+from deeperfly.skeleton import Skeleton
 
 
 @pytest.fixture

@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import fly_masked
 
 from deeperfly import pictorial
-from deeperfly.results import PoseResult
 from deeperfly.pipeline import _bone_prior, reconstruct, run_from_points2d
-from helpers import fly_masked
+from deeperfly.results import PoseResult
 
 
 def fly_cloud(rng, n_pts=38):

@@ -56,6 +56,8 @@ from .skeleton import Skeleton
 if TYPE_CHECKING:
     from .pictorial import Candidates
 
+__all__ = ["PoseResult", "StageStore"]
+
 FORMAT_VERSION = 2
 _STR = h5py.string_dtype("utf-8")
 

@@ -20,7 +20,6 @@ from rich.progress import (
 )
 from rich.text import Text
 
-
 #: rich output: status/results to stdout, logs and the progress bar to stderr, so
 #: piping stdout stays clean and progress never clobbers a log line.
 console = Console()

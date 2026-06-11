@@ -47,15 +47,6 @@ The hooks run ruff, keep `uv.lock` in sync, and strip notebook outputs with
 uvx pre-commit run --all-files
 ```
 
-## Benchmarks
-
-Ad-hoc benchmark and experiment scripts live in [`dev/`](dev), e.g.:
-
-```bash
-uv run python dev/bench_video.py   # video decode vs detector throughput
-uv run python dev/bench_ba.py      # bundle adjustment
-```
-
 ## License
 
 By contributing you agree that your contributions are licensed under the

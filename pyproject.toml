@@ -69,6 +69,7 @@ dev = [
 ]
 test = [
     "pytest>=9.0.3",
+    "pytest-cov>=6.0",
 ]
 
 [tool.pytest.ini_options]
@@ -77,4 +78,22 @@ pythonpath = ["tests"]
 addopts = "-q"
 
 [tool.ruff.lint]
+# Default rules (E4/E7/E9 + F) plus pycodestyle warnings (W) and import sorting (I).
+# F722/F821 are off because jaxtyping uses string shape annotations (e.g.
+# Float[Array, "n 3"]) that pyflakes misreads as forward references. The pyupgrade
+# (UP) rules are deliberately *not* enabled for the same reason: UP037 would strip
+# the quotes from those shape strings and break the annotations.
+select = ["E4", "E7", "E9", "F", "W", "I"]
 ignore = ["F722", "F821"]
+
+[tool.coverage.run]
+source = ["deeperfly"]
+branch = true
+
+[tool.pyright]
+include = ["src/deeperfly"]
+# Heavy dynamic JAX/PyTorch plus jaxtyping string annotations make strict checking
+# noisy; "basic" surfaces real issues without the flood. Runs as an advisory
+# (non-blocking) CI job, not in pre-commit.
+typeCheckingMode = "basic"
+pythonVersion = "3.11"

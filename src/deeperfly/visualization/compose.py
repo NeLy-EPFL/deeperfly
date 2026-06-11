@@ -308,6 +308,18 @@ def _layout_key(panel: dict, options: dict, key: str):
     return value
 
 
+def _require_keys(table: dict, required: tuple[str, ...], loc: str) -> None:
+    """Raise a clear ``ValueError`` if ``table`` lacks any ``required`` key.
+
+    Gives ``[[pipeline.visualization.videos]]`` the same typo-friendly errors the
+    static config sections get (see :func:`deeperfly.config._params`) instead of a
+    raw ``KeyError`` surfacing from deep in the parser.
+    """
+    missing = [k for k in required if k not in table]
+    if missing:
+        raise ValueError(f"{loc} is missing required key(s) {missing}")
+
+
 def read_video_specs(config: "Config") -> list[VideoSpec]:
     """Parse ``[[pipeline.visualization.videos]]`` from a config.
 
@@ -333,11 +345,19 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     background = viz.get("background", "black")
     global_fps = (viz.get("output_fps"), viz.get("speed"))
     specs: list[VideoSpec] = []
-    for entry in viz.get("videos", []):
+    for i, entry in enumerate(viz.get("videos", [])):
+        loc = f"[[pipeline.visualization.videos]] (entry {i})"
+        _require_keys(entry, ("video_name",), loc)
         video_kwargs = entry.get("kwargs", {})
         panels = []
-        for p in entry.get("panels", []):
+        for j, p in enumerate(entry.get("panels", [])):
+            ploc = f"{loc} panel {j}"
+            _require_keys(p, ("plot", "view"), ploc)
             plot = p["plot"]
+            if plot not in OPS:
+                raise ValueError(
+                    f"{ploc} has unknown plot op {plot!r}; choose from {sorted(OPS)}"
+                )
             options = {
                 **_op_kwargs(global_kwargs, plot),
                 **_op_kwargs(video_kwargs, plot),

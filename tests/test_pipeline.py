@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import fly_masked, leg_indices, small_rotation
 
 from deeperfly.cameras import CameraGroup
-from deeperfly.results import PoseResult
 from deeperfly.pipeline import (
     _validate_triangulation,
     calibrate,
@@ -20,7 +20,7 @@ from deeperfly.pipeline import (
     reconstruct_ransac,
     run_from_points2d,
 )
-from helpers import fly_masked, leg_indices, small_rotation
+from deeperfly.results import PoseResult
 
 
 def fly_motion(rng, n_frames=12, n_pts=38):

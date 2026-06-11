@@ -36,6 +36,17 @@ from .io.base import to_numpy
 if TYPE_CHECKING:
     from .config import Config
 
+__all__ = [
+    "Fliplr",
+    "Flipud",
+    "Rot90",
+    "Crop",
+    "Resize",
+    "FrameTransform",
+    "frame_transform_from_ops",
+    "parse_frame_transforms",
+]
+
 _OP_NAMES = ("fliplr", "flipud", "rot90", "crop", "resize")
 _INTERPOLATIONS = ("bilinear", "nearest")
 

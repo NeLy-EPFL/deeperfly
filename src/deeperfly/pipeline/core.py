@@ -26,6 +26,7 @@ from jaxtyping import Float
 from scipy.optimize import OptimizeResult
 
 from .. import pictorial
+from ..bundle_adjustment import bundle_adjust
 from ..cameras import CameraGroup
 from ..results import PoseResult
 from ..skeleton import Skeleton
@@ -34,7 +35,6 @@ from ..triangulation import (
     triangulate,
     triangulate_ransac,
 )
-from ..bundle_adjustment import bundle_adjust
 
 
 def _subsample(n_frames: int, max_frames: int | None) -> np.ndarray:

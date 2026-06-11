@@ -33,11 +33,11 @@ from . import geometry, pictorial, pipeline, recordings, triangulation
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
 from .config import Config
-from .results import PoseResult
 from .pipeline import run_from_points2d, run_recording
 from .pose2d.detector import load_detector
 from .pose2d.stream import detect_2d
 from .recordings import Recording, resolve_recordings
+from .results import PoseResult
 from .skeleton import Skeleton
 
 __all__ = [

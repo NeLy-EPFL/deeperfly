@@ -18,9 +18,9 @@ import numpy as np
 
 from ..cameras import CameraGroup
 from ..config import STAGES, Config
-from ..results import PoseResult, StageStore
 from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
 from ..recordings import source_image_sizes
+from ..results import PoseResult, StageStore
 from . import fingerprint
 
 log = logging.getLogger("deeperfly")

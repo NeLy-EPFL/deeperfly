@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from .config import Config
     from .preprocessing import FrameTransform
 
+__all__ = ["Camera", "CameraGroup", "resolve_extrinsics"]
+
 # World "up" that fixes the camera roll in the look-at orientation.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
 

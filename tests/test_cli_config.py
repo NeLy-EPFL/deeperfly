@@ -14,10 +14,9 @@ import pytest
 
 from deeperfly import cli
 from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config, DEFAULT_CONFIG_PATH
+from deeperfly.config import DEFAULT_CONFIG_PATH, Config
 from deeperfly.recordings import camera_files, source_patterns
 from deeperfly.skeleton import Skeleton
-
 
 # -- deeperfly init ----------------------------------------------------------
 

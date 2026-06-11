@@ -11,13 +11,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
+from helpers import point_sources_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d import detector, inference
 from deeperfly.pose2d.model import HourglassNet
 from deeperfly.pose2d.models import LoadedModel, ModelSpec
 from deeperfly.pose2d.weights import load_model
-from helpers import point_sources_table
 
 
 @pytest.fixture

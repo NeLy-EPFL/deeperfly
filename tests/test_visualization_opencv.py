@@ -194,6 +194,36 @@ def test_op_kwargs_must_be_a_table():
         compose.read_video_specs(cfg)
 
 
+def _viz_config(videos: list[dict]) -> Config:
+    return Config.from_dict({"pipeline": {"visualization": {"videos": videos}}})
+
+
+def test_missing_video_name_raises_clear_error():
+    cfg = _viz_config([{"panels": [{"plot": "imshow", "view": "rh"}]}])
+    with pytest.raises(ValueError, match=r"entry 0\).*video_name"):
+        compose.read_video_specs(cfg)
+
+
+def test_missing_panel_plot_raises_clear_error():
+    cfg = _viz_config([{"video_name": "v", "panels": [{"view": "rh"}]}])
+    with pytest.raises(ValueError, match=r"panel 0.*plot"):
+        compose.read_video_specs(cfg)
+
+
+def test_missing_panel_view_raises_clear_error():
+    cfg = _viz_config([{"video_name": "v", "panels": [{"plot": "imshow"}]}])
+    with pytest.raises(ValueError, match=r"panel 0.*view"):
+        compose.read_video_specs(cfg)
+
+
+def test_unknown_plot_op_raises_at_parse_time():
+    cfg = _viz_config(
+        [{"video_name": "v", "panels": [{"plot": "skeleton2d", "view": "rh"}]}]
+    )
+    with pytest.raises(ValueError, match="unknown plot op"):
+        compose.read_video_specs(cfg)
+
+
 def test_scale_from_kwargs_lifted_to_panel_and_panel_key_wins():
     cfg = Config.from_dict(
         {
@@ -478,9 +508,12 @@ def test_render_video_stacks_all_frames(result, fly, frames):
 
 
 def test_unknown_plot_op_raises(result, fly, frames):
-    raw = _two_panel_config("skeleton_2d").data
-    raw["pipeline"]["visualization"]["videos"][0]["panels"][1]["plot"] = "bogus"
-    spec = compose.read_video_specs(Config.from_dict(raw))[0]
+    # The render-time guard is defense in depth: read_video_specs now rejects an
+    # unknown op at parse time (see test_unknown_plot_op_raises_at_parse_time), so
+    # build the spec directly to reach compose_frame with a bogus op.
+    spec = compose.VideoSpec(
+        video_name="v", panels=[compose.Panel(plot="bogus", view="rh")]
+    )
     src = compose.Sources(fly, result.cameras, frames, pts2d=result.pts2d)
     with pytest.raises(ValueError, match="unknown plot op 'bogus'"):
         compose.compose_frame(spec, src, t=0)

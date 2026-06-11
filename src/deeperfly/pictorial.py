@@ -36,6 +36,15 @@ from .cameras import CameraGroup
 from .skeleton import Skeleton
 from .triangulation import reprojection_error
 
+__all__ = [
+    "Candidates",
+    "peak_candidates",
+    "bone_length_targets",
+    "skeleton_chains",
+    "solve_frame",
+    "reconstruct",
+]
+
 # Defaults (all overridable through the pipeline / CLI).
 DEFAULT_K = 5  # candidate peaks kept per (view, joint)
 DEFAULT_MAX_HYP = 10  # 3D hypotheses kept per joint after pruning

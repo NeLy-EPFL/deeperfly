@@ -6,6 +6,7 @@ import json
 
 import numpy as np
 import pytest
+from helpers import point_sources_table
 
 from deeperfly.config import Config
 from deeperfly.pipeline.fingerprint import (
@@ -19,7 +20,6 @@ from deeperfly.pipeline.fingerprint import (
 )
 from deeperfly.results import StageStore
 from deeperfly.skeleton import Skeleton
-from helpers import point_sources_table
 
 
 def _cfg(extra: dict | None = None) -> Config:

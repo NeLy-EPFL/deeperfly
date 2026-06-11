@@ -22,7 +22,6 @@ from deeperfly.config import (
 )
 from deeperfly.visualization.compose import VideoSpec
 
-
 # -- defaults: one source of truth -------------------------------------------
 
 

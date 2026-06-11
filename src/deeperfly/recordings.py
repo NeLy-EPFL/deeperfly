@@ -13,6 +13,20 @@ from .config import Config
 
 log = logging.getLogger("deeperfly")
 
+__all__ = [
+    "camera_files",
+    "source_patterns",
+    "source_sources",
+    "source_image_sizes",
+    "default_outdir",
+    "Recording",
+    "find_recording",
+    "OutdirPlan",
+    "plan_outdirs",
+    "resolve_recordings",
+    "require_input_footage",
+]
+
 
 # -- input -> camera frame resolution ----------------------------------------
 
