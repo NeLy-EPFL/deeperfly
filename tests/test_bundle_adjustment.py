@@ -346,14 +346,12 @@ def test_bundle_adjust_from_config(rig):
             }
             for i, name in enumerate(rig["names"])
         },
-        "pipeline": {
-            "bundle_adjustment": {
-                "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
-                "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-                # scipy least_squares kwargs sit flat in the table (no solver sub-table).
-                "max_nfev": 2000,
-                "loss": "linear",
-            },
+        "bundle_adjustment": {
+            "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
+            "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
+            # scipy least_squares kwargs sit flat in the table (no solver sub-table).
+            "max_nfev": 2000,
+            "loss": "linear",
         },
     }
     res, opt, _ = bundle_adjust_from_config(Config.from_dict(config), pts2d)

@@ -1,9 +1,9 @@
 """Config-driven panel compositor: layer draw-ops into video frames.
 
-A ``[[pipeline.visualization.videos]]`` entry describes one output video as an
+A ``[[visualization.videos]]`` entry describes one output video as an
 ordered list of *panels* (layers) drawn onto a shared RGB buffer::
 
-    [[pipeline.visualization.videos]]
+    [[visualization.videos]]
     video_name = "pose3d"
     panels = [
         { plot = "imshow",      view = "rf", x0 = 0,   y0 = 0 },
@@ -23,10 +23,10 @@ background. Supported ``plot`` ops:
 Draw-op kwargs merge across three levels, each a table keyed by ``plot`` op name,
 most specific winning::
 
-    [pipeline.visualization.kwargs]   # 1. global: every panel of every video
+    [visualization.kwargs]   # 1. global: every panel of every video
     skeleton_3d = { line_thickness = 2 }
 
-    [[pipeline.visualization.videos]]
+    [[visualization.videos]]
     video_name = "pose3d"
     kwargs = { skeleton_3d = { point_radius = 5 } }   # 2. one video
     panels = [
@@ -37,7 +37,7 @@ The layout keys ``scale`` / ``width`` / ``height`` are settable at the same leve
 but resize the layer instead of reaching the op (``width`` / ``height`` win over
 ``scale``: both -> that exact box, one -> aspect preserved). The canvas is sized
 to the video's ``width`` / ``height`` when given, else the panels' bounding box.
-Its background is ``black`` unless ``pipeline.visualization.background`` is set; a
+Its background is ``black`` unless ``visualization.background`` is set; a
 panel's ``background`` key repaints just its tile.
 
 Primitives live in :mod:`deeperfly.visualization.opencv`; MP4 writing uses the PyAV stack.
@@ -311,7 +311,7 @@ def _layout_key(panel: dict, options: dict, key: str):
 def _require_keys(table: dict, required: tuple[str, ...], loc: str) -> None:
     """Raise a clear ``ValueError`` if ``table`` lacks any ``required`` key.
 
-    Gives ``[[pipeline.visualization.videos]]`` the same typo-friendly errors the
+    Gives ``[[visualization.videos]]`` the same typo-friendly errors the
     static config sections get (see :func:`deeperfly.config._params`) instead of a
     raw ``KeyError`` surfacing from deep in the parser.
     """
@@ -321,14 +321,14 @@ def _require_keys(table: dict, required: tuple[str, ...], loc: str) -> None:
 
 
 def read_video_specs(config: "Config") -> list[VideoSpec]:
-    """Parse ``[[pipeline.visualization.videos]]`` from a config.
+    """Parse ``[[visualization.videos]]`` from a config.
 
     Per-op kwargs are merged into each panel's ``options`` from least to most
-    specific: global ``[pipeline.visualization.kwargs]``, the video entry's
+    specific: global ``[visualization.kwargs]``, the video entry's
     ``kwargs``, then the panel's own extra keys (each keyed by ``plot`` op name).
     The layout keys ``scale`` / ``width`` / ``height`` are lifted onto the
     :class:`Panel` fields rather than forwarded. The canvas background comes from
-    ``pipeline.visualization.background`` (default ``"black"``).
+    ``visualization.background`` (default ``"black"``).
 
     Parameters
     ----------
@@ -338,7 +338,7 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     Returns
     -------
     list of VideoSpec
-        One spec per ``[[pipeline.visualization.videos]]`` entry.
+        One spec per ``[[visualization.videos]]`` entry.
     """
     viz = config.visualization
     global_kwargs = viz.get("kwargs", {})
@@ -346,7 +346,7 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     global_fps = (viz.get("output_fps"), viz.get("speed"))
     specs: list[VideoSpec] = []
     for i, entry in enumerate(viz.get("videos", [])):
-        loc = f"[[pipeline.visualization.videos]] (entry {i})"
+        loc = f"[[visualization.videos]] (entry {i})"
         _require_keys(entry, ("video_name",), loc)
         video_kwargs = entry.get("kwargs", {})
         panels = []
@@ -402,7 +402,7 @@ def _resolve_fps_spec(
     """Pick this video's ``(output_fps, speed)``, most specific level winning.
 
     A per-video ``output_fps`` or ``speed`` overrides the global
-    ``[pipeline.visualization]`` setting, and within one level an explicit
+    ``[visualization]`` setting, and within one level an explicit
     ``output_fps`` beats ``speed``. Exactly one of the pair is set (or both
     ``None``), so :meth:`VideoSpec.resolve_fps` never has to break a tie.
 
@@ -411,7 +411,7 @@ def _resolve_fps_spec(
     entry
         One video entry table.
     global_output_fps, global_speed
-        The ``[pipeline.visualization]`` fallback values.
+        The ``[visualization]`` fallback values.
 
     Returns
     -------
@@ -572,7 +572,7 @@ def render_videos(
     *,
     fps: float = 30.0,
 ) -> list[Path]:
-    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
+    """Render every ``[[visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
     Parameters
     ----------

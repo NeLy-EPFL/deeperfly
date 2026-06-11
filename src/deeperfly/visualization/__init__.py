@@ -7,7 +7,7 @@ fast; the two submodules are imported on demand:
   arrays with ``cv2``, with painter's-algorithm depth ordering for 3D.
 - :mod:`deeperfly.visualization.compose` -- a config-driven panel compositor that layers
   the OpenCV primitives into video frames (one MP4 per
-  ``[[pipeline.visualization.videos]]`` entry).
+  ``[[visualization.videos]]`` entry).
 """
 
 from __future__ import annotations

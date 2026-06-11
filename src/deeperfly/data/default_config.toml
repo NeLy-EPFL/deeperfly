@@ -1,9 +1,11 @@
 # deeperfly run configuration -- a single self-contained file.
 #
-# Bundles everything one run needs: the 2D detection plan (sources ->
-# preprocessors -> models -> pathways, with [point_sources] saying where each
-# tracked point's data comes from), the camera rig, the skeleton, and the
-# pipeline. Run with:
+# Bundles everything one run needs: the shared inputs ([[sources]] footage, the
+# camera rig, the skeleton) and the pipeline -- a linear sequence of stages, each
+# a top-level table. The 2D detector and its detection plan live under [pose2d]
+# (preprocessors -> models -> pathways, with [pose2d.output_points] saying how
+# each pathway's output channels are packaged into the per-view 2D keypoints).
+# Run with:
 #
 #     deeperfly run recording/ -c config.toml -o outputs/
 #     # -c defaults to this packaged config; -o defaults to <recording>/deeperfly_outputs/
@@ -13,13 +15,10 @@
 
 
 # ===========================================================================
-# 2D detection plan, decoupled into four lists whose counts may all differ:
-#   [[sources]]       -- named footage globs, each decoded once
-#   [[preprocessors]] -- named, reusable frame-op pipelines (mirror/crop/resize)
-#   [[models]]        -- detector models (class + weights + input contract)
-#   [[pathways]]      -- a named source -> preprocessor -> model inference run
-# Where each pathway's output channels land is declared separately, in the
-# [point_sources.<view>] tables near the bottom of the file.
+# Sources: named footage globs, each decoded once. A shared input -- a
+# [[pose2d.pathways]] entry runs a detector on a source, and visualization draws
+# a view's frames from it. Decoupled from the cameras and pathways that reference
+# it by name, so one source can feed several pathways.
 # ===========================================================================
 [[sources]]            # name -> footage glob (a file, prefix, or wildcard)
 name = "vid_rh"
@@ -46,78 +45,6 @@ filename = "camera_6.mp4"
 [io.image]
 workers = 0   # decode threads (0 = auto, one per CPU)
 
-# Named preprocessors: an ordered op list applied to a pathway's frames before
-# the model. The detector's points are mapped back into the view frame by
-# inverting these ops, so a mirror here never moves the reconstructed skeleton.
-# A pathway may omit `preprocessor` entirely -- that means no ops (identity),
-# the same as referencing a preprocessor whose `ops = []`.
-# Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
-#      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
-[[preprocessors]]
-name = "flip"
-ops = [{ op = "fliplr" }]
-
-# Models: `class` selects the network ("hourglass" = DeepFly2D); `weights` is a
-# checkpoint path ("" / omitted uses the auto-provisioned cache); `input_size`
-# (height, width) is the frame size the network was trained on -- every frame is
-# resized to it before inference and the output peaks are scaled back out of it,
-# so it cannot be inferred; `mean` is subtracted after /255; `n_out_channels` is
-# the output heatmap count (validated against the weights).
-[[models]]
-name = "deepfly2d"
-class = "hourglass"
-weights = ""
-input_size = [256, 512]
-mean = 0.22
-n_out_channels = 19
-
-# Pathways: each a named source -> preprocessor -> model run. A pathway just says
-# what to detect on; where its output channels land is in [point_sources] below.
-# The front source feeds two pathways (one mirrored). Each pathway needs a unique
-# `name` so [point_sources] can reference it.
-[[pathways]]
-name = "rh"
-source = "vid_rh"
-model = "deepfly2d"
-
-[[pathways]]
-name = "rm"
-source = "vid_rm"
-model = "deepfly2d"
-
-[[pathways]]
-name = "rf"
-source = "vid_rf"
-model = "deepfly2d"
-
-[[pathways]]
-name = "f"
-source = "vid_f"
-model = "deepfly2d"
-
-[[pathways]]
-name = "f_flip"
-source = "vid_f"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pathways]]
-name = "lf_flip"
-source = "vid_lf"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pathways]]
-name = "lm_flip"
-source = "vid_lm"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pathways]]
-name = "lh_flip"
-source = "vid_lh"
-preprocessor = "flip"
-model = "deepfly2d"
 
 # ===========================================================================
 # Skeleton: the tracked points and their structure (DeepFly3D 7-camera rig). 38
@@ -203,16 +130,148 @@ azimuth_deg = 90
 [cameras.lh]
 azimuth_deg = 120
 
+
 # ===========================================================================
-# point_sources: for each view, where every tracked point's data comes from.
-# `point = { pathway, out_channel }` fills that point of the view from output
-# channel `out_channel` of the named pathway. Keying by (view, point) means each
-# point has exactly one source (a repeat is an error); a (view, point) left out
-# stays unobserved (NaN) -- that union is the visibility mask. The front view is
-# filled by two pathways: the un-flipped pass supplies the right distal joints,
-# the mirrored pass the left.
+# Pipeline: a linear sequence of stages, each an on/off switch in [pipeline]
+# (do_<stage>) with its own parameter table:
+#
+#   do_pose2d               -> [pose2d]               detect 2D per view
+#   do_bundle_adjustment    -> [bundle_adjustment]    refine the cameras
+#   do_pictorial_structures -> [pictorial_structures] peak recovery
+#   do_triangulation        -> [triangulation]        2D -> 3D
+#   do_visualization        -> [visualization]        render the videos
+#
+# An enabled stage reuses its cached result from the output dir while its
+# parameters here are unchanged; *editing this file recomputes exactly the
+# affected stages* (and the ones after them) on the next run -- tweak the
+# triangulation or the videos and re-run; the slow 2D detection is reused.
+# --overwrite forces a recompute even when nothing changed (bare --overwrite
+# redoes everything; `--overwrite pose2d visualization` redoes just those, plus
+# the stages after them). The cached 2D pose always feeds the stages downstream
+# -- so `do_pose2d = false` reconstructs 3D from a cached 2D pose without
+# re-detecting -- while a *derived* stage's cached output is used only while
+# that stage is on. An enabled stage whose input is unavailable is skipped,
+# with the reason logged.
 # ===========================================================================
-[point_sources.rh]
+[pipeline]
+do_pose2d               = true   # detect 2D pose in every camera view
+do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
+do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
+do_triangulation        = true   # triangulate 2D -> 3D
+do_visualization        = true   # render the videos (see [visualization] below)
+
+
+# ===========================================================================
+# 2D detection (the pose2d stage). [pose2d] holds the detector's performance
+# knobs; its detection plan -- what to detect and how -- follows as sub-tables
+# whose counts may all differ:
+#   [[pose2d.preprocessors]]      -- named, reusable frame-op pipelines (mirror/crop/resize)
+#   [[pose2d.models]]             -- detector models (class + weights + input contract)
+#   [[pose2d.pathways]]           -- a named source -> preprocessor -> model inference run
+#   [pose2d.output_points.<view>] -- how each pathway's output channels are packaged
+#                                    into the per-view 2D keypoints
+# Video frames are decoded with PyAV (on the CPU).
+# ===========================================================================
+[pose2d]
+# Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
+# -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
+# is about as fast with a wider range (no overflow) at slightly lower precision.
+# Ignored on CPU/MPS, which stay float32.
+precision = "bfloat16"
+# GPU forward batch: images pushed through the detector at once. The 8-stack
+# network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
+# saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
+# benchmark shows a gain on your hardware. Ignored on CPU (one pass-group at a time).
+batch_size = 16
+# Video decode buffer, in multiples of batch_size. Each camera is decoded in one
+# continuous pass into a queue, one batch_size-frame block at a time; the reader
+# runs ahead and pauses once this many blocks are queued, so it never outruns the
+# GPU or grows memory without bound (peak ~(decode_buffer + 2) * batch_size frames
+# per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
+# network/remote storage); lower it to shave memory.
+decode_buffer = 4
+
+# Named preprocessors: an ordered op list applied to a pathway's frames before
+# the model. The detector's points are mapped back into the view frame by
+# inverting these ops, so a mirror here never moves the reconstructed skeleton.
+# A pathway may omit `preprocessor` entirely -- that means no ops (identity),
+# the same as referencing a preprocessor whose `ops = []`.
+# Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
+#      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
+[[pose2d.preprocessors]]
+name = "flip"
+ops = [{ op = "fliplr" }]
+
+# Models: `class` selects the network ("hourglass" = DeepFly2D); `weights` is a
+# checkpoint path ("" / omitted uses the auto-provisioned cache); `input_size`
+# (height, width) is the frame size the network was trained on -- every frame is
+# resized to it before inference and the output peaks are scaled back out of it,
+# so it cannot be inferred; `mean` is subtracted after /255; `n_out_channels` is
+# the output heatmap count (validated against the weights).
+[[pose2d.models]]
+name = "deepfly2d"
+class = "hourglass"
+weights = ""
+input_size = [256, 512]
+mean = 0.22
+n_out_channels = 19
+
+# Pathways: each a named source -> preprocessor -> model run. A pathway just says
+# what to detect on; where its output channels land is in [pose2d.output_points]
+# below. The front source feeds two pathways (one mirrored). Each pathway needs a
+# unique `name` so [pose2d.output_points] can reference it.
+[[pose2d.pathways]]
+name = "rh"
+source = "vid_rh"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "rm"
+source = "vid_rm"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "rf"
+source = "vid_rf"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "f"
+source = "vid_f"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "f_flip"
+source = "vid_f"
+preprocessor = "flip"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "lf_flip"
+source = "vid_lf"
+preprocessor = "flip"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "lm_flip"
+source = "vid_lm"
+preprocessor = "flip"
+model = "deepfly2d"
+
+[[pose2d.pathways]]
+name = "lh_flip"
+source = "vid_lh"
+preprocessor = "flip"
+model = "deepfly2d"
+
+# output_points: how the stage packages its result. For each view, where every
+# tracked point's data comes from: `point = { pathway, out_channel }` fills that
+# point of the view from output channel `out_channel` of the named pathway. Keying
+# by (view, point) means each point has exactly one source (a repeat is an error);
+# a (view, point) left out stays unobserved (NaN) -- that union is the visibility
+# mask. The front view is filled by two pathways: the un-flipped pass supplies the
+# right distal joints, the mirrored pass the left.
+[pose2d.output_points.rh]
 rf_thorax_coxa     = { pathway = "rh", out_channel = 0  }
 rf_coxa_trochanter = { pathway = "rh", out_channel = 1  }
 rf_femur_tibia     = { pathway = "rh", out_channel = 2  }
@@ -233,7 +292,7 @@ r_abdomen0         = { pathway = "rh", out_channel = 16 }
 r_abdomen1         = { pathway = "rh", out_channel = 17 }
 r_abdomen2         = { pathway = "rh", out_channel = 18 }
 
-[point_sources.rm]
+[pose2d.output_points.rm]
 rf_thorax_coxa     = { pathway = "rm", out_channel = 0  }
 rf_coxa_trochanter = { pathway = "rm", out_channel = 1  }
 rf_femur_tibia     = { pathway = "rm", out_channel = 2  }
@@ -254,7 +313,7 @@ r_abdomen0         = { pathway = "rm", out_channel = 16 }
 r_abdomen1         = { pathway = "rm", out_channel = 17 }
 r_abdomen2         = { pathway = "rm", out_channel = 18 }
 
-[point_sources.rf]
+[pose2d.output_points.rf]
 rf_thorax_coxa     = { pathway = "rf", out_channel = 0  }
 rf_coxa_trochanter = { pathway = "rf", out_channel = 1  }
 rf_femur_tibia     = { pathway = "rf", out_channel = 2  }
@@ -272,7 +331,7 @@ rh_tibia_tarsus    = { pathway = "rf", out_channel = 13 }
 rh_claw            = { pathway = "rf", out_channel = 14 }
 r_antenna          = { pathway = "rf", out_channel = 15 }
 
-[point_sources.f]
+[pose2d.output_points.f]
 rf_femur_tibia     = { pathway = "f", out_channel = 2  }
 rf_tibia_tarsus    = { pathway = "f", out_channel = 3  }
 rf_claw            = { pathway = "f", out_channel = 4  }
@@ -288,7 +347,7 @@ lm_tibia_tarsus    = { pathway = "f_flip", out_channel = 8  }
 lm_claw            = { pathway = "f_flip", out_channel = 9  }
 l_antenna          = { pathway = "f_flip", out_channel = 15 }
 
-[point_sources.lf]
+[pose2d.output_points.lf]
 lf_thorax_coxa     = { pathway = "lf_flip", out_channel = 0  }
 lf_coxa_trochanter = { pathway = "lf_flip", out_channel = 1  }
 lf_femur_tibia     = { pathway = "lf_flip", out_channel = 2  }
@@ -306,7 +365,7 @@ lh_tibia_tarsus    = { pathway = "lf_flip", out_channel = 13 }
 lh_claw            = { pathway = "lf_flip", out_channel = 14 }
 l_antenna          = { pathway = "lf_flip", out_channel = 15 }
 
-[point_sources.lm]
+[pose2d.output_points.lm]
 lf_thorax_coxa     = { pathway = "lm_flip", out_channel = 0  }
 lf_coxa_trochanter = { pathway = "lm_flip", out_channel = 1  }
 lf_femur_tibia     = { pathway = "lm_flip", out_channel = 2  }
@@ -327,7 +386,7 @@ l_abdomen0         = { pathway = "lm_flip", out_channel = 16 }
 l_abdomen1         = { pathway = "lm_flip", out_channel = 17 }
 l_abdomen2         = { pathway = "lm_flip", out_channel = 18 }
 
-[point_sources.lh]
+[pose2d.output_points.lh]
 lf_thorax_coxa     = { pathway = "lh_flip", out_channel = 0  }
 lf_coxa_trochanter = { pathway = "lh_flip", out_channel = 1  }
 lf_femur_tibia     = { pathway = "lh_flip", out_channel = 2  }
@@ -348,65 +407,11 @@ l_abdomen0         = { pathway = "lh_flip", out_channel = 16 }
 l_abdomen1         = { pathway = "lh_flip", out_channel = 17 }
 l_abdomen2         = { pathway = "lh_flip", out_channel = 18 }
 
-# ===========================================================================
-# Pipeline: a linear sequence of stages, each an on/off switch in [pipeline]
-# (do_<stage>) with its own parameter sub-table below:
-#
-#   do_pose2d               -> [pipeline.pose2d]               detect 2D per view
-#   do_bundle_adjustment    -> [pipeline.bundle_adjustment]    refine the cameras
-#   do_pictorial_structures -> [pipeline.pictorial_structures] peak recovery
-#   do_triangulation        -> [pipeline.triangulation]        2D -> 3D
-#   do_visualization        -> [pipeline.visualization]        render the videos
-#
-# An enabled stage reuses its cached result from the output dir while its
-# parameters here are unchanged; *editing this file recomputes exactly the
-# affected stages* (and the ones after them) on the next run -- tweak the
-# triangulation or the videos and re-run; the slow 2D detection is reused.
-# --overwrite forces a recompute even when nothing changed (bare --overwrite
-# redoes everything; `--overwrite pose2d visualization` redoes just those, plus
-# the stages after them). The cached 2D pose always feeds the stages downstream
-# -- so `do_pose2d = false` reconstructs 3D from a cached 2D pose without
-# re-detecting -- while a *derived* stage's cached output is used only while
-# that stage is on. An enabled stage whose input is unavailable is skipped,
-# with the reason logged.
-# ===========================================================================
-[pipeline]
-do_pose2d               = true   # detect 2D pose in every camera view
-do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
-do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
-do_triangulation        = true   # triangulate 2D -> 3D
-do_visualization        = true   # render the videos (see [pipeline.visualization] below)
-# fps = 100.0            # optional; omit to detect from the input videos. Sets the
-                         # videos' base playback rate.
-
-
-# Detector performance knobs (what to detect is the detection plan up top --
-# [[sources]] / [[preprocessors]] / [[models]] / [[pathways]]). Video frames are
-# decoded with PyAV (on the CPU).
-[pipeline.pose2d]
-# Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
-# -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
-# is about as fast with a wider range (no overflow) at slightly lower precision.
-# Ignored on CPU/MPS, which stay float32.
-precision = "bfloat16"
-# GPU forward batch: images pushed through the detector at once. The 8-stack
-# network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
-# saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
-# benchmark shows a gain on your hardware. Ignored on CPU (one pass-group at a time).
-batch_size = 16
-# Video decode buffer, in multiples of batch_size. Each camera is decoded in one
-# continuous pass into a queue, one batch_size-frame block at a time; the reader
-# runs ahead and pauses once this many blocks are queued, so it never outruns the
-# GPU or grows memory without bound (peak ~(decode_buffer + 2) * batch_size frames
-# per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
-# network/remote storage); lower it to shave memory.
-decode_buffer = 4
-
 
 # Bundle adjustment: the fly itself is the target. Solved with
 # scipy.optimize.least_squares; its kwargs (max_nfev, loss, f_scale, ...) sit
 # directly in this table.
-[pipeline.bundle_adjustment]
+[bundle_adjustment]
 # Skeleton point names (from [skeleton].point_names) that drive bundle adjustment.
 # The leg joints sit at sharp limb corners and detect most reliably, so the
 # default uses the 30 leg points only. Omit this key to bundle-adjust on all keypoints.
@@ -444,26 +449,26 @@ loss = "linear"
 # and cached when this stage is on -- enabling it on an existing output dir
 # re-runs pose2d once; afterwards, tweaking temporal/lam reuses the cached
 # candidates without re-detecting.
-[pipeline.pictorial_structures]
+[pictorial_structures]
 k = 5                    # candidate peaks per joint
 temporal = false         # add a temporal-consistency term
 lam = 1.0                # bone-length prior weight
 
 
 # Triangulation: how the per-view 2D points become one 3D point.
-[pipeline.triangulation]
-weigh_by_confidence = true  # whether keypoints with higher detector confidence get more weight
-method = "dlt"              # ransac - largest multi-view consensus (default, robust)
+[triangulation]
+weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
+method = "ransac"           # ransac - largest multi-view consensus (default, robust)
                             # greedy - drop the worst-reprojecting view
                             # dlt    - plain least-squares, no outlier handling
-# ransac_threshold = 15.0   # inlier reprojection cutoff (px) for method = ransac
-# min_inliers = 2           # min agreeing views to accept a point (ransac)
+ransac_threshold = 15.0     # inlier reprojection cutoff (px) for method = ransac
+min_inliers = 2             # min agreeing views to accept a point (ransac)
 # reproj_threshold = 40.0   # method = greedy: per-view reprojection cutoff (px)
 # max_drops = 5             # method = greedy: max views dropped per offending point
 
 
 # ---------------------------------------------------------------------------
-# Visualization: each [[pipeline.visualization.videos]] is one output MP4
+# Visualization: each [[visualization.videos]] is one output MP4
 # (`<video_name>.mp4`), composited from an ordered list of `panels`. A panel draws
 # one `plot` op for one `view` (camera) with its top-left at pixel (`x0`, `y0`):
 #   imshow      - that view's video frame
@@ -473,35 +478,34 @@ method = "dlt"              # ransac - largest multi-view consensus (default, ro
 # overlays it. The canvas auto-sizes to fit all panels unless you set
 # `width`/`height` on the video.
 #
-# `background` is the canvas fill (default black): set it under
-# `[pipeline.visualization]` for every video, or per panel to repaint just its tile.
+# `background` is the canvas fill (default black): set it under `[visualization]`
+# for every video, or per panel to repaint just its tile.
 #
 # Output frame rate: set `output_fps` (explicit fps) or `speed` (output fps = input
 # fps * speed; 0.5 = slow motion) -- globally or per video, the per-video value
-# winning. With neither, a video plays at the recording's own rate (or
-# `[pipeline].fps` when set).
+# winning. With neither, a video plays at the recording's own detected rate.
 #
 # Draw-op kwargs (point_radius, line_thickness, scale, palette, ...) merge across
 # three levels, each keyed by the `plot` op name, most specific winning:
-# `[pipeline.visualization.kwargs]` (every video), a `kwargs` table on a video
-# entry (that video), and extra keys on a single panel.
+# `[visualization.kwargs]` (every video), a `kwargs` table on a video entry (that
+# video), and extra keys on a single panel.
 #
 # Instead of `scale`, give a target `width` and/or `height` in pixels (settable at
 # any level, priority over `scale`): both -> that exact box, one -> the other
 # follows to keep aspect.
 # ---------------------------------------------------------------------------
-[pipeline.visualization]
+[visualization]
 background = "black"
 # Output MP4s are encoded with PyAV (H.264 / libx264, on the CPU).
 # output_fps = 30        # explicit output fps for every video (per-video override below)
 # speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
 
-[pipeline.visualization.kwargs]
+[visualization.kwargs]
 imshow      = { width = 480, height = 240 }
 skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
 skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
 
-[[pipeline.visualization.videos]]
+[[visualization.videos]]
 video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
 panels = [
     { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
@@ -520,7 +524,7 @@ panels = [
     { plot = "skeleton_2d", view = "lh", x0 = 480, y0 = 720 },
 ]
 
-[[pipeline.visualization.videos]]
+[[visualization.videos]]
 video_name = "pose3d"   # same montage with the triangulated 3D skeleton reprojected back
 panels = [
     { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },

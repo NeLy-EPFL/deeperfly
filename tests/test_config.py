@@ -50,26 +50,20 @@ def test_template_matches_python_defaults():
 
 
 def test_overrides_win_over_defaults():
-    c = Config.from_dict(
-        {"pipeline": {"pose2d": {"batch_size": 32, "precision": "float32"}}}
-    )
+    c = Config.from_dict({"pose2d": {"batch_size": 32, "precision": "float32"}})
     assert c.pose2d.batch_size == 32
     assert c.pose2d.precision == "float32"
     assert c.pose2d.decode_buffer == 4  # untouched -> default
 
 
 def test_pose2d_clamps_batch_and_buffer():
-    c = Config.from_dict(
-        {"pipeline": {"pose2d": {"batch_size": 0, "decode_buffer": 0}}}
-    )
+    c = Config.from_dict({"pose2d": {"batch_size": 0, "decode_buffer": 0}})
     assert c.pose2d.batch_size == 1 and c.pose2d.decode_buffer == 1
 
 
 def test_unknown_stage_key_fails_loudly():
     with pytest.raises(ValueError, match="unknown key"):
-        Config.from_dict(
-            {"pipeline": {"triangulation": {"ransac_thresh": 1.0}}}
-        ).triangulation
+        Config.from_dict({"triangulation": {"ransac_thresh": 1.0}}).triangulation
 
 
 # -- bundle adjustment: flat scipy kwargs ------------------------------------
@@ -78,17 +72,15 @@ def test_unknown_stage_key_fails_loudly():
 def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     c = Config.from_dict(
         {
-            "pipeline": {
-                "bundle_adjustment": {
-                    "points_to_use": ["lf_claw", "lm_claw", "lh_claw"],
-                    "fixed": ["*.intr"],
-                    "shared": [["a.tvec[2]", "b.tvec[2]"]],
-                    "weigh_by_confidence": False,
-                    "max_frames": 50,
-                    "frame_sampling": "coverage",
-                    "max_nfev": 500,
-                    "loss": "huber",
-                }
+            "bundle_adjustment": {
+                "points_to_use": ["lf_claw", "lm_claw", "lh_claw"],
+                "fixed": ["*.intr"],
+                "shared": [["a.tvec[2]", "b.tvec[2]"]],
+                "weigh_by_confidence": False,
+                "max_frames": 50,
+                "frame_sampling": "coverage",
+                "max_nfev": 500,
+                "loss": "huber",
             }
         }
     )
@@ -148,15 +140,13 @@ def test_source_patterns_and_camera_table():
 def test_videos_returns_typed_specs():
     c = Config.from_dict(
         {
-            "pipeline": {
-                "visualization": {
-                    "videos": [
-                        {
-                            "video_name": "v",
-                            "panels": [{"plot": "skeleton_2d", "view": "f"}],
-                        }
-                    ]
-                }
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [{"plot": "skeleton_2d", "view": "f"}],
+                    }
+                ]
             }
         }
     )

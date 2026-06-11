@@ -7,7 +7,7 @@ core solver (:mod:`deeperfly.bundle_adjustment.core`), and returns an optimized
 ``CameraGroup`` alongside the refined 3D points.
 
 :func:`bundle_adjust_from_config` is the config-driven entry point: it reads the
-``[pipeline.bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``
+``[bundle_adjustment]`` section of a TOML config (``fixed``, ``shared``
 and the flat scipy ``least_squares`` kwargs such as ``max_nfev`` / ``loss``) and
 dispatches to :func:`bundle_adjust`.
 """
@@ -100,7 +100,7 @@ def bundle_adjust_from_config(
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:
     """Run :func:`bundle_adjust` driven by a TOML config.
 
-    The ``[pipeline.bundle_adjustment]`` section supplies ``fixed`` / ``shared`` and
+    The ``[bundle_adjustment]`` section supplies ``fixed`` / ``shared`` and
     the flat scipy ``least_squares`` kwargs (e.g. ``max_nfev`` / ``loss``). The
     ``points_to_use`` key (which restricts the bundle-adjustment keypoints) is a
     pipeline-level concern handled by :func:`deeperfly.pipeline.bundle_adjust_cameras`,

@@ -32,7 +32,7 @@ DEFAULT_N_OUT_CHANNELS = 19
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """A torch-free description of one detector model (parsed from ``[[models]]``).
+    """A torch-free description of one detector model (parsed from ``[[pose2d.models]]``).
 
     Attributes
     ----------

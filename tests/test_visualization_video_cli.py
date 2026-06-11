@@ -62,15 +62,13 @@ def test_video_fps_roundtrip(tmp_path, rng):
 def test_video_spec_resolve_fps_levels():
     """output_fps / speed resolve with per-video winning over the global setting."""
     config = {
-        "pipeline": {
-            "visualization": {
-                "speed": 0.5,  # global: half speed unless a video overrides it
-                "videos": [
-                    {"video_name": "a", "panels": []},  # inherits global speed
-                    {"video_name": "b", "panels": [], "output_fps": 24},  # explicit fps
-                    {"video_name": "c", "panels": [], "speed": 2},  # own speed
-                ],
-            }
+        "visualization": {
+            "speed": 0.5,  # global: half speed unless a video overrides it
+            "videos": [
+                {"video_name": "a", "panels": []},  # inherits global speed
+                {"video_name": "b", "panels": [], "output_fps": 24},  # explicit fps
+                {"video_name": "c", "panels": [], "speed": 2},  # own speed
+            ],
         }
     }
     specs = {
@@ -84,11 +82,7 @@ def test_video_spec_resolve_fps_levels():
 def test_video_spec_resolve_fps_defaults_to_input():
     (spec,) = compose.read_video_specs(
         Config.from_dict(
-            {
-                "pipeline": {
-                    "visualization": {"videos": [{"video_name": "a", "panels": []}]}
-                }
-            }
+            {"visualization": {"videos": [{"video_name": "a", "panels": []}]}}
         )
     )
     assert spec.output_fps is None and spec.speed is None
@@ -146,8 +140,9 @@ def _viz_3d_cfg(tmp_path):
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = true\nfps = 5\n"
-        "[[pipeline.visualization.videos]]\n"
+        "do_triangulation = true\ndo_visualization = true\n"
+        "[visualization]\noutput_fps = 5\n"
+        "[[visualization.videos]]\n"
         'video_name = "pose3d"\n'
         'panels = [{ plot = "skeleton_3d", view = "rh", x0 = 0, y0 = 0 }]\n'
     )

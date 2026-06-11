@@ -589,7 +589,7 @@ def frame_transform_from_ops(ops, where: str) -> FrameTransform:
     """Build a :class:`FrameTransform` from a list of ``{ op = ... }`` tables.
 
     The shared parser behind ``[cameras.<name>].preprocess`` and the named
-    ``[[preprocessors]]`` of the detection plan, so both accept the exact same
+    ``[[pose2d.preprocessors]]`` of the detection plan, so both accept the exact same
     op grammar (and fail the same way on a typo).
 
     Parameters
@@ -597,7 +597,7 @@ def frame_transform_from_ops(ops, where: str) -> FrameTransform:
     ops
         An ordered list of op tables (or empty / ``None`` for the identity).
     where
-        A label for error messages (e.g. ``"[[preprocessors]] 'mirror'"``).
+        A label for error messages (e.g. ``"[[pose2d.preprocessors]] 'mirror'"``).
 
     Returns
     -------

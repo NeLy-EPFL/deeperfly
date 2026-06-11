@@ -257,8 +257,8 @@ def _footage_cfg(tmp_path):
 
     names = Skeleton.fly().point_names
 
-    def point_sources(view, pathway):
-        lines = [f"[point_sources.{view}]"]
+    def output_points(view, pathway):
+        lines = [f"[pose2d.output_points.{view}]"]
         lines += [
             f'{names[i]} = {{ pathway = "{pathway}", out_channel = {i} }}'
             for i in range(19)
@@ -268,15 +268,15 @@ def _footage_cfg(tmp_path):
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
         '[[sources]]\nname = "cam0"\n[[sources]]\nname = "cam1"\n'
-        '[[preprocessors]]\nname = "plain"\nops = []\n'
-        '[[models]]\nname = "m"\nclass = "hourglass"\n'
+        '[[pose2d.preprocessors]]\nname = "plain"\nops = []\n'
+        '[[pose2d.models]]\nname = "m"\nclass = "hourglass"\n'
         "input_size = [256, 512]\nn_out_channels = 19\n"
-        '[[pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
-        '[[pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
+        '[[pose2d.pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
+        '[[pose2d.pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
         "[cameras.cam0]\nazimuth_deg = 0\ndistance = 10\nfocal_length_px = 100\n"
         "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
-        + point_sources("cam0", "p0")
-        + point_sources("cam1", "p1")
+        + output_points("cam0", "p0")
+        + output_points("cam1", "p1")
         + "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
         "do_triangulation = false\ndo_visualization = false\n"
     )
@@ -1222,7 +1222,7 @@ def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, m
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
         "do_pictorial_structures = true\ndo_triangulation = true\ndo_visualization = false\n"
-        f'[pipeline.triangulation]\nmethod = "{method}"\n'
+        f'[triangulation]\nmethod = "{method}"\n'
     )
     with caplog.at_level("WARNING"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
@@ -1331,7 +1331,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
             return ("frames", self._src)
 
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
-    cfg = Config.from_dict({"pipeline": {"pose2d": {}}})
+    cfg = Config.from_dict({"pose2d": {}})
     names = result.cameras.names
     v0, v1 = names[0], names[1]
     res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
@@ -1427,7 +1427,7 @@ def test_source_image_sizes_returns_raw_dims(monkeypatch):
 
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader())
     cfg = Config.from_dict(
-        {"sources": [{"name": "cam0"}, {"name": "cam1"}], "pipeline": {"pose2d": {}}}
+        {"sources": [{"name": "cam0"}, {"name": "cam1"}], "pose2d": {}}
     )
     sizes = recordings.source_image_sizes(cfg, input="x")
     assert sizes["cam0"] == (4, 6)  # raw (H, W)

@@ -250,12 +250,10 @@ def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng
     def stage(flag, c):
         cfg = Config.from_dict(
             {
-                "pipeline": {
-                    "bundle_adjustment": {
-                        "fixed": fixed,
-                        "weigh_by_confidence": flag,
-                        "max_nfev": 800,
-                    }
+                "bundle_adjustment": {
+                    "fixed": fixed,
+                    "weigh_by_confidence": flag,
+                    "max_nfev": 800,
                 }
             }
         )

@@ -4,7 +4,7 @@ Each stage's *result-affecting* config subset is captured as a plain JSON-able
 dict (a *fingerprint*) and recorded in ``<outdir>/run.json`` when the stage
 completes. On a later run a stage is reused only when its recorded fingerprint
 still matches the current config **and** its output is present -- so editing,
-say, ``[pipeline.triangulation]`` automatically recomputes triangulation (and
+say, ``[triangulation]`` automatically recomputes triangulation (and
 everything downstream) while the slow ``pose2d`` cache is reused untouched.
 Performance-only knobs (``batch_size``, ``decode_buffer``, ``[io.image]``
 workers) are deliberately excluded: they never invalidate a cache.
@@ -258,7 +258,6 @@ def stage_fingerprint(
         return _norm(
             {
                 "videos": [dataclasses.asdict(spec) for spec in config.videos],
-                "fps": config.fps,
                 "skeleton": _skeleton_digest(config, cosmetic=True),
                 "pose_from": pose_sources(enabled, store),
                 "cameras_from": _cameras_entry(config, enabled, store),

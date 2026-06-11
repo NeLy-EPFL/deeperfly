@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import point_sources_table
+from helpers import output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d.pathways import (
@@ -15,26 +15,28 @@ from deeperfly.pose2d.pathways import (
 from deeperfly.preprocessing import Fliplr, FrameTransform, Resize
 
 
-def _config(pathways, point_sources, cameras=None, models=None):
-    """Build a plan from explicit ``[[pathways]]`` and ``[point_sources]`` tables."""
+def _config(pathways, output_points, cameras=None, models=None):
+    """Build a plan from explicit ``[[pose2d.pathways]]`` and ``[pose2d.output_points]`` tables."""
     skel = Config.default().data["skeleton"]
     data = {
         "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
-        "preprocessors": [
-            {"name": "plain", "ops": []},
-            {"name": "mirror", "ops": [{"op": "fliplr"}]},
-        ],
-        "models": models
-        or [
-            {
-                "name": "m",
-                "class": "hourglass",
-                "input_size": [256, 512],
-                "n_out_channels": 19,
-            }
-        ],
-        "pathways": pathways,
-        "point_sources": point_sources,
+        "pose2d": {
+            "preprocessors": [
+                {"name": "plain", "ops": []},
+                {"name": "mirror", "ops": [{"op": "fliplr"}]},
+            ],
+            "models": models
+            or [
+                {
+                    "name": "m",
+                    "class": "hourglass",
+                    "input_size": [256, 512],
+                    "n_out_channels": 19,
+                }
+            ],
+            "pathways": pathways,
+            "output_points": output_points,
+        },
         "cameras": cameras
         or {
             "rh": {"azimuth_deg": 0, "distance": 100, "focal_length_px": 1},
@@ -48,7 +50,7 @@ def _config(pathways, point_sources, cameras=None, models=None):
 def _plan(specs, **kwargs):
     """Build a plan from ``(view, source, preprocessor, points)`` pathway specs.
 
-    Each spec gets a pathway named ``"<view>_p"`` and a ``[point_sources.<view>]``
+    Each spec gets a pathway named ``"<view>_p"`` and a ``[pose2d.output_points.<view>]``
     table derived from ``points`` (``points[i]`` = the point index channel ``i``
     fills, ``-1`` to drop).
     """
@@ -65,7 +67,7 @@ def _plan(specs, **kwargs):
             }
         )
         ps_specs.append((s["view"], name, s["points"]))
-    return _config(pathways, point_sources_table(point_names, ps_specs), **kwargs)
+    return _config(pathways, output_points_table(point_names, ps_specs), **kwargs)
 
 
 # -- coordinate inverse (normalized_peaks_to_original_pixels) ----------------
@@ -191,7 +193,7 @@ def test_view_sources_links_each_view_to_its_source():
 
 
 def _ps(view, pathway, **points):
-    """A single ``[point_sources.<view>]`` table (point_name=out_channel kwargs)."""
+    """A single ``[pose2d.output_points.<view>]`` table (point_name=out_channel kwargs)."""
     return {
         view: {n: {"pathway": pathway, "out_channel": c} for n, c in points.items()}
     }
@@ -251,8 +253,8 @@ def test_out_channel_must_fit_model():
 
 
 def test_pathway_without_point_sources_rejected():
-    # A pathway named by no [point_sources] entry maps nothing -> error.
-    with pytest.raises(ValueError, match="no \\[point_sources\\] entries"):
+    # A pathway named by no [pose2d.output_points] entry maps nothing -> error.
+    with pytest.raises(ValueError, match="no \\[pose2d.output_points\\] entries"):
         _config(
             _one_pathway(name="rh_p") + _one_pathway(name="idle", source="s1"),
             _ps("rh", "rh_p", rf_thorax_coxa=0),

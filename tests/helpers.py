@@ -35,8 +35,8 @@ def leg_indices(skeleton, side: str) -> np.ndarray:
     )
 
 
-def point_sources_table(point_names, specs):
-    """Build a ``[point_sources.<view>]`` mapping from per-pathway channel lists.
+def output_points_table(point_names, specs):
+    """Build a ``[pose2d.output_points.<view>]`` mapping from per-pathway channel lists.
 
     Parameters
     ----------

@@ -69,9 +69,8 @@ def load_models(plan) -> dict:
 # -- frame-rate resolution ---------------------------------------------------
 
 
-#: Frame rate used when ``[pipeline].fps`` is unset and none can be detected from
-#: the recording (e.g. an image sequence carries no intrinsic rate). Matches the
-#: historical default.
+#: Frame rate used when none can be detected from the recording (e.g. an image
+#: sequence carries no intrinsic rate). Matches the historical default.
 _FPS_FALLBACK = 100.0
 
 
@@ -120,10 +119,10 @@ def resolve_fps(
 ) -> float:
     """The recording's frame rate, used as the visualization base playback rate.
 
-    Uses ``[pipeline].fps`` when set; otherwise detects it from the input videos
-    (:func:`detect_input_fps`). Falls back to :data:`_FPS_FALLBACK` when neither
-    is available -- e.g. an image sequence, or a cache-only resume with no
-    recording -- logging a hint to set ``[pipeline].fps`` explicitly.
+    Detects the rate from the input videos (:func:`detect_input_fps`), falling
+    back to :data:`_FPS_FALLBACK` when none is available -- e.g. an image
+    sequence, or a cache-only resume with no recording -- logging a hint to set
+    ``[visualization].output_fps`` for an explicit output rate.
 
     Parameters
     ----------
@@ -137,15 +136,13 @@ def resolve_fps(
     float
         The resolved frame rate.
     """
-    if config.fps is not None:
-        return config.fps
     detected = detect_input_fps(config, sources=sources, input=input)
     if detected is not None:
         log.info("detected input fps %.4g from the recording", detected)
         return detected
     log.warning(
         "could not detect the input fps (image sequence, or no recording available); "
-        "using %g fps -- set [pipeline].fps to override",
+        "using %g fps -- set [visualization].output_fps to override",
         _FPS_FALLBACK,
     )
     return _FPS_FALLBACK
@@ -174,7 +171,7 @@ def prefetch_windows(
     therefore ``~(depth + 2)`` blocks (queue + the one the producer is blocked
     enqueueing + the one the consumer is forwarding), independent of recording
     length. A deeper queue absorbs more decode jitter; the detector sets ``block``
-    to the forward batch and ``depth`` to ``[pipeline.pose2d] decode_buffer`` (see
+    to the forward batch and ``depth`` to ``[pose2d] decode_buffer`` (see
     :class:`~deeperfly.config.Pose2dParams`).
 
     ``transforms`` is an optional per-source
@@ -271,7 +268,7 @@ def detect_2d(
     """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
 
     Decodes each **source** in one continuous forward pass (CPU), handing the
-    detector one ``[pipeline.pose2d] batch_size``-frame block at a time and
+    detector one ``[pose2d] batch_size``-frame block at a time and
     freeing it before the next, so peak frame memory is bounded by the decode
     buffer, not the recording length. Each block feeds every pathway on that
     source (the front source is decoded once, read by both its pathways).

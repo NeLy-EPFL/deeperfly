@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from helpers import point_sources_table
+from helpers import output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d import detector, inference
@@ -210,19 +210,29 @@ def _mini_plan():
     point_names = skel["point_names"]
     data = {
         "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
-        "preprocessors": [
-            {"name": "plain", "ops": []},
-            {"name": "mirror", "ops": [{"op": "fliplr"}]},
-        ],
-        "models": _model_list(),
-        "pathways": [
-            {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
-            {"name": "lf_p", "source": "s1", "preprocessor": "mirror", "model": "m"},
-        ],
-        "point_sources": point_sources_table(
-            point_names,
-            [("rh", "rh_p", list(range(19, 38))), ("lf", "lf_p", list(range(0, 19)))],
-        ),
+        "pose2d": {
+            "preprocessors": [
+                {"name": "plain", "ops": []},
+                {"name": "mirror", "ops": [{"op": "fliplr"}]},
+            ],
+            "models": _model_list(),
+            "pathways": [
+                {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
+                {
+                    "name": "lf_p",
+                    "source": "s1",
+                    "preprocessor": "mirror",
+                    "model": "m",
+                },
+            ],
+            "output_points": output_points_table(
+                point_names,
+                [
+                    ("rh", "rh_p", list(range(19, 38))),
+                    ("lf", "lf_p", list(range(0, 19))),
+                ],
+            ),
+        },
         "cameras": {
             "rh": {
                 "azimuth_deg": -120,
@@ -248,32 +258,34 @@ def _front_plan():
     point_names = skel["point_names"]
     data = {
         "sources": [{"name": "fcam", "filename": "f"}],
-        "preprocessors": [
-            {"name": "plain", "ops": []},
-            {"name": "mirror", "ops": [{"op": "fliplr"}]},
-        ],
-        "models": _model_list(),
-        "pathways": [
-            {
-                "name": "f_plain",
-                "source": "fcam",
-                "preprocessor": "plain",
-                "model": "m",
-            },
-            {
-                "name": "f_mirror",
-                "source": "fcam",
-                "preprocessor": "mirror",
-                "model": "m",
-            },
-        ],
-        "point_sources": point_sources_table(
-            point_names,
-            [
-                ("f", "f_plain", list(range(19, 38))),
-                ("f", "f_mirror", list(range(0, 19))),
+        "pose2d": {
+            "preprocessors": [
+                {"name": "plain", "ops": []},
+                {"name": "mirror", "ops": [{"op": "fliplr"}]},
             ],
-        ),
+            "models": _model_list(),
+            "pathways": [
+                {
+                    "name": "f_plain",
+                    "source": "fcam",
+                    "preprocessor": "plain",
+                    "model": "m",
+                },
+                {
+                    "name": "f_mirror",
+                    "source": "fcam",
+                    "preprocessor": "mirror",
+                    "model": "m",
+                },
+            ],
+            "output_points": output_points_table(
+                point_names,
+                [
+                    ("f", "f_plain", list(range(19, 38))),
+                    ("f", "f_mirror", list(range(0, 19))),
+                ],
+            ),
+        },
         "cameras": {
             "f": {
                 "azimuth_deg": 0,

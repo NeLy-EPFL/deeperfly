@@ -9,7 +9,7 @@ image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
 A :class:`CameraGroup` is an ordered collection of named cameras, typically built
 from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
 *only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
-``CameraGroup`` with a separate ``[pipeline.bundle_adjustment]`` section.
+``CameraGroup`` with a separate ``[bundle_adjustment]`` section.
 
 Extrinsics are specified as an orbit around a ``look_at`` target: the camera
 sits ``distance`` away in the direction given by ``azimuth_deg`` /

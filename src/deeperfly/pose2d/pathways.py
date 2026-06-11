@@ -9,7 +9,7 @@ fusing them at "one per camera":
 - **models** -- detector models (see :mod:`deeperfly.pose2d.models`).
 - **pathways** -- ``source -> preprocessor -> model``, each a named inference run.
 
-Where a pathway's outputs land is declared separately, in ``[point_sources.<view>]``
+Where a pathway's outputs land is declared separately, in ``[pose2d.output_points.<view>]``
 tables keyed by point name: ``point = { pathway, out_channel }`` says point ``point``
 of view ``<view>`` is filled by output channel ``out_channel`` of the named pathway.
 Keying on ``(view, point)`` makes every point's data come from exactly one place
@@ -55,19 +55,19 @@ class Pathway:
     Attributes
     ----------
     name
-        The pathway's name (``[[pathways]]`` ``name``), referenced from the
-        ``[point_sources.<view>]`` tables.
+        The pathway's name (``[[pose2d.pathways]]`` ``name``), referenced from the
+        ``[pose2d.output_points.<view>]`` tables.
     source, preprocessor, model
-        The names referenced from ``[[sources]]`` / ``[[preprocessors]]`` /
-        ``[[models]]``. ``preprocessor`` is ``None`` when the pathway omits it
+        The names referenced from ``[[sources]]`` / ``[[pose2d.preprocessors]]`` /
+        ``[[pose2d.models]]``. ``preprocessor`` is ``None`` when the pathway omits it
         (no frame ops; ``transform`` is the identity).
     transform
         The resolved preprocessor (the pathway's geometric frame prep); the
         identity when ``preprocessor`` is omitted.
     mapping
         An ``(E, 3)`` int array of ``(i, v, p)`` triples (resolved from
-        ``[point_sources]``): model output channel ``i`` -> point ``p`` of view
-        ``v``.
+        ``[pose2d.output_points]``): model output channel ``i`` -> point ``p`` of
+        view ``v``.
     """
 
     name: str
@@ -209,12 +209,14 @@ class DetectionPlan:
     def from_config(cls, config) -> DetectionPlan:
         """Build a plan from a :class:`~deeperfly.config.Config`.
 
-        Parses ``[[sources]]`` / ``[[preprocessors]]`` / ``[[models]]`` /
-        ``[[pathways]]`` / ``[point_sources.<view>]`` and resolves view names from
-        ``[cameras.*]`` and the points from ``[skeleton]``. Validates every
-        cross-reference and index loudly (a config typo fails here, not mid-run).
+        Parses the top-level ``[[sources]]`` plus pose2d's own machinery
+        (``[[pose2d.preprocessors]]`` / ``[[pose2d.models]]`` / ``[[pose2d.pathways]]`` /
+        ``[pose2d.output_points.<view>]``) and resolves view names from ``[cameras.*]``
+        and the points from ``[skeleton]``. Validates every cross-reference and
+        index loudly (a config typo fails here, not mid-run).
         """
         data = config.data
+        pose2d = data.get("pose2d", {})
         view_names = list(config.camera_table()[1])
         if not view_names:
             raise ValueError(
@@ -224,16 +226,16 @@ class DetectionPlan:
         point_index = {name: i for i, name in enumerate(skeleton.point_names)}
 
         sources = _parse_sources(data.get("sources"))
-        preprocessors = _parse_preprocessors(data.get("preprocessors"))
-        models = _parse_models(data.get("models"))
+        preprocessors = _parse_preprocessors(pose2d.get("preprocessors"))
+        models = _parse_models(pose2d.get("models"))
         pathways = _parse_pathways(
-            data.get("pathways"),
+            pose2d.get("pathways"),
             sources={s.name for s in sources},
             preprocessors=preprocessors,
             models=models,
             view_names=view_names,
             point_index=point_index,
-            point_sources=data.get("point_sources"),
+            output_points=pose2d.get("output_points"),
         )
         return cls(
             view_names=view_names,
@@ -273,16 +275,16 @@ def _parse_sources(raw) -> list[Source]:
 
 def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
     out: dict[str, FrameTransform] = {}
-    for i, p in enumerate(_require_list(raw, "[[preprocessors]]")):
+    for i, p in enumerate(_require_list(raw, "[[pose2d.preprocessors]]")):
         name = p.get("name")
         if not isinstance(name, str):
             raise ValueError(
-                f"[[preprocessors]][{i}] needs a string 'name', got {name!r}"
+                f"[[pose2d.preprocessors]][{i}] needs a string 'name', got {name!r}"
             )
         if name in out:
-            raise ValueError(f"[[preprocessors]] has a duplicate name {name!r}")
+            raise ValueError(f"[[pose2d.preprocessors]] has a duplicate name {name!r}")
         out[name] = frame_transform_from_ops(
-            p.get("ops"), f"[[preprocessors]] {name!r} ops"
+            p.get("ops"), f"[[pose2d.preprocessors]] {name!r} ops"
         )
     return out
 
@@ -290,18 +292,24 @@ def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
 def _parse_models(raw) -> dict[str, ModelSpec]:
     fixed = {"name", "class", "weights", "input_size", "mean", "n_out_channels"}
     out: dict[str, ModelSpec] = {}
-    for i, m in enumerate(_require_list(raw, "[[models]]")):
+    for i, m in enumerate(_require_list(raw, "[[pose2d.models]]")):
         name = m.get("name")
         if not isinstance(name, str):
-            raise ValueError(f"[[models]][{i}] needs a string 'name', got {name!r}")
+            raise ValueError(
+                f"[[pose2d.models]][{i}] needs a string 'name', got {name!r}"
+            )
         if name in out:
-            raise ValueError(f"[[models]] has a duplicate name {name!r}")
+            raise ValueError(f"[[pose2d.models]] has a duplicate name {name!r}")
         cls = m.get("class")
         if not isinstance(cls, str):
-            raise ValueError(f"[[models]] {name!r} needs a string 'class', got {cls!r}")
+            raise ValueError(
+                f"[[pose2d.models]] {name!r} needs a string 'class', got {cls!r}"
+            )
         size = m.get("input_size", list(ModelSpec.input_size))
         if len(size) != 2:
-            raise ValueError(f"[[models]] {name!r} input_size must be [height, width]")
+            raise ValueError(
+                f"[[pose2d.models]] {name!r} input_size must be [height, width]"
+            )
         weights = m.get("weights")
         out[name] = ModelSpec(
             name=name,
@@ -328,7 +336,7 @@ def _resolve_view(value, view_names: list[str], where: str) -> int:
     raise ValueError(f"{where} references unknown view {value!r}; views: {view_names}")
 
 
-def _parse_point_sources(
+def _parse_output_points(
     raw,
     *,
     pathway_models: dict[str, str],
@@ -336,9 +344,9 @@ def _parse_point_sources(
     view_names: list[str],
     point_index: dict[str, int],
 ) -> dict[str, np.ndarray]:
-    """Resolve ``[point_sources.<view>]`` into each pathway's ``(E, 3)`` mapping.
+    """Resolve ``[pose2d.output_points.<view>]`` into each pathway's ``(E, 3)`` mapping.
 
-    Each ``[point_sources.<view>]`` table is keyed by point name; an entry
+    Each ``[pose2d.output_points.<view>]`` table is keyed by point name; an entry
     ``{ pathway, out_channel }`` says output channel ``out_channel`` of that
     pathway fills the named point of ``<view>``. Keying on ``(view, point)``
     means every point has exactly one source (a repeat is a TOML error), so no
@@ -347,17 +355,17 @@ def _parse_point_sources(
     once.
     """
     if not isinstance(raw, dict) or not raw:
-        raise ValueError("the detection plan is missing [point_sources.<view>]")
+        raise ValueError("the detection plan is missing [pose2d.output_points.<view>]")
     triples: dict[str, list[tuple[int, int, int]]] = {n: [] for n in pathway_models}
     for view, table in raw.items():
-        v = _resolve_view(view, view_names, f"[point_sources.{view}]")
+        v = _resolve_view(view, view_names, f"[pose2d.output_points.{view}]")
         if not isinstance(table, dict):
             raise ValueError(
-                f"[point_sources.{view}] must be a table of "
+                f"[pose2d.output_points.{view}] must be a table of "
                 "point = {{ pathway, out_channel }}"
             )
         for point_name, entry in table.items():
-            where = f"[point_sources.{view}] {point_name!r}"
+            where = f"[pose2d.output_points.{view}] {point_name!r}"
             if point_name not in point_index:
                 raise ValueError(f"{where} is not a skeleton point")
             if not (
@@ -383,7 +391,8 @@ def _parse_point_sources(
     for name, t in triples.items():
         if not t:
             raise ValueError(
-                f"pathway {name!r} has no [point_sources] entries; it maps no points"
+                f"pathway {name!r} has no [pose2d.output_points] entries; "
+                "it maps no points"
             )
         out[name] = np.asarray(t, dtype=np.int64).reshape(-1, 3)
     return out
@@ -397,19 +406,19 @@ def _parse_pathways(
     models: dict[str, ModelSpec],
     view_names: list[str],
     point_index: dict[str, int],
-    point_sources,
+    output_points,
 ) -> list[Pathway]:
     specs: list[
         tuple[str, str, str | None, str]
     ] = []  # name, source, preprocessor, model
     seen: set[str] = set()
-    for i, pw in enumerate(_require_list(raw, "[[pathways]]")):
-        where = f"[[pathways]][{i}]"
+    for i, pw in enumerate(_require_list(raw, "[[pose2d.pathways]]")):
+        where = f"[[pose2d.pathways]][{i}]"
         name = pw.get("name")
         if not isinstance(name, str):
             raise ValueError(f"{where} needs a string 'name', got {name!r}")
         if name in seen:
-            raise ValueError(f"[[pathways]] has a duplicate name {name!r}")
+            raise ValueError(f"[[pose2d.pathways]] has a duplicate name {name!r}")
         seen.add(name)
         src = pw.get("source")
         if src not in sources:
@@ -422,8 +431,8 @@ def _parse_pathways(
             raise ValueError(f"{where} references unknown model {model!r}")
         specs.append((name, src, prep, model))
 
-    mappings = _parse_point_sources(
-        point_sources,
+    mappings = _parse_output_points(
+        output_points,
         pathway_models={name: model for name, _, _, model in specs},
         models=models,
         view_names=view_names,

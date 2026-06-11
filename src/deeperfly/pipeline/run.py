@@ -224,7 +224,7 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
     refined = stages.stage_bundle_adjustment(
         ctx.config,
         # Always the un-refined config rig, never a prior BA output, so an edited
-        # [cameras] / [pipeline.bundle_adjustment] re-runs bundle adjustment from the config.
+        # [cameras] / [bundle_adjustment] re-runs bundle adjustment from the config.
         stages.config_rig_from_store(ctx.config, ctx.store),
         pts2d,
         conf,

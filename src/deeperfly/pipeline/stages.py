@@ -163,7 +163,7 @@ def stage_pose2d(
 def _resolve_bundle_adjustment_points(
     names: list[str] | None, skeleton
 ) -> list[int] | None:
-    """``[pipeline.bundle_adjustment].points_to_use`` names -> skeleton indices.
+    """``[bundle_adjustment].points_to_use`` names -> skeleton indices.
 
     ``None`` (the key omitted) passes through as ``None`` -- bundle-adjust on every
     point. Otherwise each name is resolved against ``skeleton.point_names``.
@@ -180,7 +180,7 @@ def _resolve_bundle_adjustment_points(
         return [index[name] for name in names]
     except KeyError as e:
         raise ValueError(
-            f"[pipeline.bundle_adjustment].points_to_use references unknown "
+            f"[bundle_adjustment].points_to_use references unknown "
             f"skeleton point {e.args[0]!r}"
         ) from None
 
@@ -192,7 +192,7 @@ def stage_bundle_adjustment(
 
     Bundle-adjusts on the arg-max 2D. The caller always hands in the *un-refined*
     config rig (:func:`config_rig_from_store`), so editing the rig or
-    ``[pipeline.bundle_adjustment]`` and recomputing this stage re-runs bundle
+    ``[bundle_adjustment]`` and recomputing this stage re-runs bundle
     adjustment from the edited config rather than a prior BA output.
 
     Parameters
@@ -310,7 +310,7 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
         :func:`select_pts2d`).
     conf
         Per-observation detector confidences ``(V, T, P)``. Used as DLT weights
-        only when ``[pipeline.triangulation].weigh_by_confidence`` is set;
+        only when ``[triangulation].weigh_by_confidence`` is set;
         ignored (and may be ``None``) otherwise.
 
     Returns
@@ -506,7 +506,7 @@ def source_view_frames(
         "image (imshow) panels need the original frames, but none are in memory and "
         "the run resolved no footage. Re-run with the recording as the input "
         "('deeperfly run <recording>'), or drop the imshow panels from "
-        "[[pipeline.visualization.videos]]."
+        "[[visualization.videos]]."
     )
 
 
@@ -518,10 +518,10 @@ def render_videos(
     sources: dict[str, list[Path]] | None = None,
     progress=None,
 ) -> None:
-    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
+    """Render every ``[[visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
     Each video is composited by :mod:`deeperfly.visualization.compose` from its panels (see
-    the config's ``[pipeline.visualization]`` section), overwriting any existing MP4.
+    the config's ``[visualization]`` section), overwriting any existing MP4.
     A video whose panels reproject the 3D skeleton is skipped with a
     reason when the result has no 3D pose (e.g. no triangulation/pictorial stage
     ran); frames for ``imshow`` panels are sourced only across the videos that
@@ -545,9 +545,7 @@ def render_videos(
 
     specs = config.videos
     if not specs:
-        log.info(
-            "no [[pipeline.visualization.videos]] in the config; nothing to render"
-        )
+        log.info("no [[visualization.videos]] in the config; nothing to render")
         return
 
     pending = []

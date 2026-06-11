@@ -55,7 +55,7 @@ log = logging.getLogger("deeperfly")
 
 #: The linear pipeline stages, in run order. Each is independently toggled by a
 #: ``[pipeline].do_<stage>`` boolean (see :meth:`Config.stage_flags`) and
-#: parameterized by its own ``[pipeline.<stage>]`` sub-table.
+#: parameterized by its own top-level ``[<stage>]`` table.
 STAGES = (
     "pose2d",
     "bundle_adjustment",
@@ -81,12 +81,13 @@ STAGE_DEFAULTS = {
 
 @dataclass(frozen=True)
 class Pose2dParams:
-    """``[pipeline.pose2d]`` -- the 2D detector performance knobs.
+    """``[pose2d]`` -- the 2D detector performance knobs.
 
     ``batch_size`` is the GPU forward batch (images/forward); ``decode_buffer`` is
     the decode queue depth in multiples of it. Both are clamped to ``>= 1``. The
-    *what to detect* (sources, models, pathways) lives in the top-level detection
-    plan (:meth:`Config.detection_plan`), not here.
+    *what to detect* (preprocessors, models, pathways, output points) is the
+    detection plan that shares the ``[pose2d]`` table (:meth:`Config.detection_plan`),
+    not these knobs.
     """
 
     precision: str = "bfloat16"
@@ -100,7 +101,7 @@ class Pose2dParams:
 
 @dataclass(frozen=True)
 class TriangulationParams:
-    """``[pipeline.triangulation]`` -- method + per-method thresholds."""
+    """``[triangulation]`` -- method + per-method thresholds."""
 
     method: str = "ransac"
     ransac_threshold: float = 15.0
@@ -112,7 +113,7 @@ class TriangulationParams:
 
 @dataclass(frozen=True)
 class PictorialParams:
-    """``[pipeline.pictorial_structures]`` -- DeepFly3D peak-recovery knobs."""
+    """``[pictorial_structures]`` -- DeepFly3D peak-recovery knobs."""
 
     k: int = 5
     temporal: bool = False
@@ -128,7 +129,7 @@ class IoParams:
 
 @dataclass(frozen=True)
 class BundleAdjustmentParams:
-    """``[pipeline.bundle_adjustment]`` -- bundle adjustment over scipy ``least_squares``.
+    """``[bundle_adjustment]`` -- bundle adjustment over scipy ``least_squares``.
 
     ``points_to_use`` (``None`` = all) names which skeleton points drive bundle adjustment
     (resolved to indices against the skeleton in :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
@@ -152,14 +153,21 @@ class BundleAdjustmentParams:
 # -- helpers -----------------------------------------------------------------
 
 
+#: The detection-plan sub-tables that share the ``[pose2d]`` table with its
+#: runtime knobs (see :meth:`Config.detection_plan`). They are parsed separately
+#: (:meth:`deeperfly.pose2d.pathways.DetectionPlan.from_config`), so the strict
+#: :func:`_params` validator ignores them when building :class:`Pose2dParams`.
+_POSE2D_PLAN_KEYS = frozenset({"preprocessors", "models", "pathways", "output_points"})
+
+
 def _dig(data: dict, path: tuple[str, ...]) -> dict:
-    """The nested sub-table at ``path`` (e.g. ``("pipeline", "pose2d")``), or ``{}``."""
+    """The nested sub-table at ``path`` (e.g. ``("pose2d",)``), or ``{}``."""
     for key in path:
         data = data.get(key, {}) if isinstance(data, dict) else {}
     return data if isinstance(data, dict) else {}
 
 
-def _params(data: dict, path: tuple[str, ...], cls):
+def _params(data: dict, path: tuple[str, ...], cls, *, ignore: frozenset = frozenset()):
     """Build a frozen ``*Params`` from the sub-table at ``path``.
 
     Keys absent from the table fall through to the dataclass field defaults (the
@@ -170,9 +178,13 @@ def _params(data: dict, path: tuple[str, ...], cls):
     data
         The parsed config mapping.
     path
-        Key path to the sub-table, e.g. ``("pipeline", "pose2d")``.
+        Key path to the sub-table, e.g. ``("pose2d",)``.
     cls
         The frozen ``*Params`` dataclass to build.
+    ignore
+        Keys to skip -- neither validated nor passed to ``cls``. Used for the
+        ``[pose2d]`` table, which also holds the detection-plan sub-tables
+        (:data:`_POSE2D_PLAN_KEYS`).
 
     Returns
     -------
@@ -186,7 +198,7 @@ def _params(data: dict, path: tuple[str, ...], cls):
     """
     sub = _dig(data, path)
     fields = {f.name for f in dataclasses.fields(cls)}
-    unknown = sorted(set(sub) - fields)
+    unknown = sorted(set(sub) - fields - ignore)
     if unknown:
         loc = "[" + ".".join(path) + "]"
         raise ValueError(
@@ -296,15 +308,15 @@ class Config:
 
     @property
     def pose2d(self) -> Pose2dParams:
-        return _params(self.data, ("pipeline", "pose2d"), Pose2dParams)
+        return _params(self.data, ("pose2d",), Pose2dParams, ignore=_POSE2D_PLAN_KEYS)
 
     @property
     def triangulation(self) -> TriangulationParams:
-        return _params(self.data, ("pipeline", "triangulation"), TriangulationParams)
+        return _params(self.data, ("triangulation",), TriangulationParams)
 
     @property
     def pictorial(self) -> PictorialParams:
-        return _params(self.data, ("pipeline", "pictorial_structures"), PictorialParams)
+        return _params(self.data, ("pictorial_structures",), PictorialParams)
 
     @property
     def io(self) -> IoParams:
@@ -316,7 +328,7 @@ class Config:
 
     @property
     def bundle_adjustment(self) -> BundleAdjustmentParams:
-        ba = dict(_dig(self.data, ("pipeline", "bundle_adjustment")))
+        ba = dict(_dig(self.data, ("bundle_adjustment",)))
         points_to_use = ba.pop("points_to_use", None)
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
@@ -337,12 +349,6 @@ class Config:
 
     # -- pipeline orchestration ---------------------------------------------
 
-    @property
-    def fps(self) -> float | None:
-        """``[pipeline].fps`` if set, else ``None`` (the caller detects/falls back)."""
-        fps = self.data.get("pipeline", {}).get("fps")
-        return None if fps is None else float(fps)
-
     def stage_flags(self) -> dict[str, bool]:
         """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
 
@@ -359,12 +365,12 @@ class Config:
 
     @property
     def visualization(self) -> dict:
-        """The raw ``[pipeline.visualization]`` table (consumed by :attr:`videos`)."""
-        return self.data.get("pipeline", {}).get("visualization", {})
+        """The raw ``[visualization]`` table (consumed by :attr:`videos`)."""
+        return self.data.get("visualization", {})
 
     @property
     def videos(self) -> "list[VideoSpec]":
-        """The output-video specs (``[[pipeline.visualization.videos]]``)."""
+        """The output-video specs (``[[visualization.videos]]``)."""
         from .visualization.compose import read_video_specs
 
         return read_video_specs(self)
@@ -400,7 +406,7 @@ class Config:
         return parse_frame_transforms(self)
 
     def detection_plan(self) -> "DetectionPlan":
-        """The 2D detection plan (``[[sources]]``/``[[preprocessors]]``/``[[models]]``/``[[pathways]]``).
+        """The 2D detection plan (``[[sources]]`` + ``[[pose2d.preprocessors]]``/``[[pose2d.models]]``/``[[pose2d.pathways]]``).
 
         Returns
         -------
