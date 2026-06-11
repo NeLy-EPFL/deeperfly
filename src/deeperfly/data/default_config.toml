@@ -426,6 +426,15 @@ fixed = [
     "rm.tvec[2]",
 ]
 shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
+max_frames = 100         # calibrate on at most this many frames (subsampled from the recording)
+frame_sampling = "even"  # which frames to keep when subsampling:
+                         #   even       - evenly spaced over the recording (default; temporal spread)
+                         #   confidence - the highest-confidence frame in each time bin
+                         #                (uses detector confidence; independent of weigh_by_confidence)
+                         #   coverage   - the frame in each time bin with the most
+                         #                keypoints seen by >= 2 cameras (best-conditioned)
+                         #   diversity  - frames whose postures are most spread apart, so the
+                         #                target is seen in many distinct configurations
 max_nfev = 2000          # forwarded to scipy.optimize.least_squares
 loss = "linear"
 

@@ -104,7 +104,7 @@ def stage_pose2d(
     skeleton : Skeleton
         The configured skeleton.
     pts2d, conf : np.ndarray
-        The detections ``(V, T, N, 2)`` and confidences ``(V, T, N)``. A
+        The detections ``(V, T, P, 2)`` and confidences ``(V, T, P)``. A
         ``(view, point)`` pair no pathway maps is ``NaN``.
     candidates : deeperfly.pictorial.Candidates or None
         The top-K peak set when ``want_candidates``, else ``None``.
@@ -190,22 +190,27 @@ def stage_bundle_adjustment(
     from .core import calibrate
 
     ba = config.bundle_adjustment
-    ba_conf = conf if ba.weigh_by_confidence else None
+    weighted = ba.weigh_by_confidence and conf is not None
     v, t = pts2d.shape[:2]
     log.info(
         "bundle adjustment: refining cameras (%d frames, %d views)%s",
         t,
         v,
-        " confidence-weighted" if ba_conf is not None else "",
+        " confidence-weighted" if weighted else "",
     )
+    # conf is always handed in (frame_sampling="confidence" may use it); whether it
+    # also weighs the residuals is the separate weigh_by_confidence switch.
     refined, _ = calibrate(
         cameras,
         pts2d,
-        ba_conf,
+        conf,
         skeleton,
         ba_keypoints=ba.keypoints,
         fixed=ba.fixed,
         shared=ba.shared,
+        weigh_by_confidence=ba.weigh_by_confidence,
+        max_frames=ba.max_frames,
+        frame_sampling=ba.frame_sampling,
         **ba.least_squares,
     )
 
@@ -278,7 +283,7 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
         The 2D points (pristine ``pose2d`` or pictorial-corrected -- see
         :func:`select_pts2d`).
     conf
-        Per-observation detector confidences ``(V, T, N)``. Used as DLT weights
+        Per-observation detector confidences ``(V, T, P)``. Used as DLT weights
         only when ``[pipeline.triangulation].weigh_by_confidence`` is set;
         ignored (and may be ``None``) otherwise.
 

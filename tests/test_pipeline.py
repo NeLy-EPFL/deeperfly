@@ -28,7 +28,7 @@ def fly_motion(rng, n_frames=12, n_pts=38):
     base = rng.uniform(-1.5, 1.5, size=(n_pts, 3))
     t = np.linspace(0, 1, n_frames)[:, None, None]
     wiggle = 0.2 * np.sin(2 * np.pi * (t + np.arange(n_pts)[None, :, None] / n_pts))
-    return base[None] + wiggle  # (T, N, 3)
+    return base[None] + wiggle  # (T, P, 3)
 
 
 # -- reconstruct -------------------------------------------------------------
@@ -36,7 +36,7 @@ def fly_motion(rng, n_frames=12, n_pts=38):
 
 def test_reconstruct_rejects_outliers(cameras, rng):
     pts3d = fly_motion(rng)
-    pts2d = np.array(cameras.project(pts3d))  # (V, T, N, 2)
+    pts2d = np.array(cameras.project(pts3d))  # (V, T, P, 2)
     # Inject gross outliers into single views (each point still seen elsewhere).
     pts2d[1, 0, 5] += [200.0, -150.0]
     pts2d[4, 3, 20] += [-300.0, 120.0]
@@ -59,7 +59,7 @@ def test_reconstruct_noisy_is_approximate(cameras, rng):
 
 def test_reconstruct_ransac_rejects_outliers_and_handles_nan(cameras, rng):
     pts3d = fly_motion(rng)
-    pts2d = np.array(cameras.project(pts3d))  # (V, T, N, 2)
+    pts2d = np.array(cameras.project(pts3d))  # (V, T, P, 2)
     pts2d[1, 0, 5] += [200.0, -150.0]  # gross single-view outliers
     pts2d[4, 3, 20] += [-300.0, 120.0]
     pts2d[0, :, 7] = np.nan  # camera 0 never sees point 7 (NaN observations)
@@ -71,6 +71,83 @@ def test_reconstruct_ransac_rejects_outliers_and_handles_nan(cameras, rng):
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
     assert np.isnan(cleaned[1, 0, 5]).all()  # the outlier observation was rejected
     assert np.isnan(cleaned[0, :, 7]).all()  # the unobserved view stays NaN
+
+
+# -- frame subsampling -------------------------------------------------------
+
+
+def test_subsample_even_is_spread_and_deterministic():
+    from deeperfly.pipeline.core import _subsample
+
+    sel = _subsample(100, 10, "even")
+    assert sel.tolist() == [0, 11, 22, 33, 44, 55, 66, 77, 88, 99]
+    # endpoints anchored, monotonic, and exactly max_frames of them
+    assert len(sel) == 10 and sel[0] == 0 and sel[-1] == 99
+    np.testing.assert_array_equal(sel, _subsample(100, 10, "even"))
+
+
+def test_subsample_keeps_all_when_few_or_unbounded():
+    from deeperfly.pipeline.core import _subsample
+
+    np.testing.assert_array_equal(_subsample(5, 10, "coverage"), np.arange(5))
+    np.testing.assert_array_equal(_subsample(50, None, "even"), np.arange(50))
+
+
+def test_subsample_confidence_prefers_high_confidence_frame_per_bin():
+    from deeperfly.pipeline.core import _subsample
+
+    # 20 frames, 2 views, 3 points; one standout high-confidence frame per half.
+    conf = np.full((2, 20, 3), 0.1)
+    conf[:, 3] = 0.9  # best in the first bin
+    conf[:, 14] = 0.9  # best in the second bin
+    pts2d = np.zeros((2, 20, 3, 2))  # all observed; coverage is uninformative here
+    sel = _subsample(20, 2, "confidence", pts2d=pts2d, conf=conf)
+    assert sel.tolist() == [3, 14]
+
+
+def test_subsample_coverage_prefers_well_observed_frame_per_bin():
+    from deeperfly.pipeline.core import _subsample
+
+    # Most frames have a missing view (only 1 view sees each point -> not
+    # triangulable); two frames are fully observed, one per temporal half.
+    pts2d = np.full((2, 20, 3, 2), np.nan)
+    pts2d[0] = 0.0  # view 0 always sees everything
+    pts2d[1, 5] = 0.0  # view 1 only on frames 5 ...
+    pts2d[1, 16] = 0.0  # ... and 16 -> those two are the triangulable ones
+    sel = _subsample(20, 2, "coverage", pts2d=pts2d, conf=None)
+    assert sel.tolist() == [5, 16]
+
+
+def test_subsample_confidence_requires_conf():
+    from deeperfly.pipeline.core import _subsample
+
+    # Confidence sampling is independent of BA weighting, but it does need the
+    # confidences themselves -- absent them it errors rather than silently coping.
+    with pytest.raises(ValueError, match="needs detector confidences"):
+        _subsample(20, 5, "confidence", pts2d=np.zeros((2, 20, 3, 2)), conf=None)
+
+
+def test_subsample_diversity_spans_distinct_postures():
+    from deeperfly.pipeline.core import _subsample
+
+    # Two tight posture clusters; frames within a cluster are near-identical.
+    rng = np.random.default_rng(0)
+    n_frames, n_pts = 30, 3
+    centers = np.where(np.arange(n_frames)[:, None, None] < 15, 0.0, 50.0)
+    pts2d = (centers + rng.normal(scale=0.01, size=(n_frames, n_pts, 2)))[
+        None
+    ]  # (1,T,P,2)
+    sel = _subsample(n_frames, 2, "diversity", pts2d=pts2d, conf=None)
+    # Farthest-point picks one frame from each cluster, not two from the same one.
+    assert len(sel) == 2
+    assert (sel < 15).any() and (sel >= 15).any()
+
+
+def test_subsample_rejects_unknown_strategy():
+    from deeperfly.pipeline.core import _subsample
+
+    with pytest.raises(ValueError, match="unknown frame_sampling"):
+        _subsample(20, 5, "bogus")
 
 
 # -- calibrate ---------------------------------------------------------------
@@ -113,6 +190,41 @@ def test_calibrate_recovers_perturbed_rig(rig, cameras, fly, rng):
     proj = np.asarray(opt.project(pts3d))
     assert np.nanmax(np.abs(proj - pts2d)) < 1e-2
     assert result.cost < 1e-4
+
+
+def test_calibrate_confidence_sampling_independent_of_weighting(rig, cameras, fly, rng):
+    """frame_sampling='confidence' uses the confidences for *which frames* even
+    when weigh_by_confidence is off (the two confidence uses are decoupled)."""
+    import deeperfly.pipeline.core as core
+
+    pts3d = fly_motion(rng, n_frames=20)
+    pts2d = np.array(cameras.project(pts3d))
+    conf = np.ones(pts2d.shape[:3])
+
+    seen = {}
+    orig = core._subsample
+
+    def spy(n, m, strategy="even", *, pts2d=None, conf=None):
+        seen["conf"] = conf
+        return orig(n, m, strategy, pts2d=pts2d, conf=conf)
+
+    core._subsample = spy
+    try:
+        calibrate(
+            perturbed_cameras(rig),
+            pts2d,
+            conf,
+            fly,
+            fixed=["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
+            weigh_by_confidence=False,  # residuals unweighted ...
+            frame_sampling="confidence",  # ... yet sampling still gets the conf
+            bone_prior=False,
+            max_frames=5,
+            max_nfev=50,
+        )
+    finally:
+        core._subsample = orig
+    assert seen["conf"] is not None
 
 
 def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng):

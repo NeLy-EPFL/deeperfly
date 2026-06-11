@@ -132,15 +132,19 @@ class BundleAdjustmentParams:
 
     ``keypoints`` (``None`` = all) restricts which skeleton points drive calibration;
     ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
-    scales each reprojection residual by ``sqrt(confidence)``; ``least_squares`` is
-    the leftover flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded
-    straight to :func:`scipy.optimize.least_squares`.
+    scales each reprojection residual by ``sqrt(confidence)``; ``max_frames`` /
+    ``frame_sampling`` choose how many frames to calibrate on and which (see
+    :func:`deeperfly.pipeline.core._subsample`); ``least_squares`` is the leftover
+    flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded straight to
+    :func:`scipy.optimize.least_squares`.
     """
 
     keypoints: list[int] | None = None
     fixed: list[str] = field(default_factory=list)
     shared: list[list[str]] = field(default_factory=list)
     weigh_by_confidence: bool = True
+    max_frames: int | None = 100
+    frame_sampling: str = "even"
     least_squares: dict = field(default_factory=dict)
 
 
@@ -316,11 +320,15 @@ class Config:
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
         weigh_by_confidence = ba.pop("weigh_by_confidence", True)
+        max_frames = ba.pop("max_frames", 100)
+        frame_sampling = ba.pop("frame_sampling", "even")
         return BundleAdjustmentParams(
             keypoints=keypoints,
             fixed=list(fixed),
             shared=[list(s) for s in shared],
             weigh_by_confidence=bool(weigh_by_confidence),
+            max_frames=None if max_frames is None else int(max_frames),
+            frame_sampling=str(frame_sampling),
             least_squares=ba,  # leftover flat keys -> scipy.optimize.least_squares
         )
 

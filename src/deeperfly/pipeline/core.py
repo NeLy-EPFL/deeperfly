@@ -13,16 +13,17 @@ detector stays pluggable (a callable producing ``(pts2d, conf)``):
 - :func:`run_from_points2d` -- the whole pipeline from a 2D sequence to a saved
   :class:`PoseResult`.
 
-All 2D arrays use the view-leading layout ``(V, T, N, 2)`` with NaN for missing
-observations; 3D points come out as ``(T, N, 3)``.
+All 2D arrays use the view-leading layout ``(V, T, P, 2)`` with NaN for missing
+observations; 3D points come out as ``(T, P, 3)``.
 """
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from scipy.optimize import OptimizeResult
 
 from .. import pictorial
@@ -36,17 +37,142 @@ from ..triangulation import (
     triangulate_ransac,
 )
 
+#: Frame-subsampling strategies understood by :func:`_subsample`.
+FRAME_SAMPLERS = ("even", "confidence", "coverage", "diversity")
 
-def _subsample(n_frames: int, max_frames: int | None) -> np.ndarray:
-    """Evenly spaced frame indices (all of them if ``max_frames`` is None)."""
+
+def _frame_scores(
+    strategy: str,
+    pts2d: Float[np.ndarray, "V T P 2"] | None,
+    conf: Float[np.ndarray, "V T P"] | None,
+) -> Float[np.ndarray, "T"]:
+    """Per-frame calibration-quality score (higher = a better frame to keep).
+
+    ``"confidence"`` scores each frame by the mean of its (finite) detector
+    confidences across views and points -- frames the detector is surest about.
+    ``"coverage"`` scores each frame by how many keypoints are seen by at least
+    two views -- i.e. how many points that frame can actually triangulate, a
+    proxy for how well it conditions the solve.
+    """
+    if strategy == "confidence":
+        assert conf is not None  # _subsample requires conf for this strategy
+        c = np.where(np.isfinite(conf), np.asarray(conf, dtype=float), np.nan)
+        with warnings.catch_warnings():  # all-NaN frames -> -inf (rank last)
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return np.nan_to_num(np.nanmean(c, axis=(0, 2)), nan=-np.inf)
+    # "coverage": number of points observed by >= 2 views (triangulable) per frame.
+    observed = np.isfinite(np.asarray(pts2d, dtype=float)).all(axis=-1)  # (V, T, P)
+    return (observed.sum(axis=0) >= 2).sum(axis=1).astype(float)  # (T,)
+
+
+def _best_per_bin(scores: Float[np.ndarray, "T"], k: int) -> Int[np.ndarray, "F"]:
+    """Index of the highest-scoring frame in each of ``k`` contiguous time bins.
+
+    Binning keeps the temporal spread that makes ``"even"`` robust while letting
+    each bin contribute its best frame; ties take the earliest. Returns the sorted
+    unique picks (at most ``k``).
+    """
+    edges = np.linspace(0, len(scores), k + 1).round().astype(int)
+    picks = {
+        lo + int(np.argmax(scores[lo:hi]))
+        for lo, hi in zip(edges[:-1], edges[1:])
+        if hi > lo
+    }
+    return np.array(sorted(picks))
+
+
+def _frame_features(pts2d: Float[np.ndarray, "V T P 2"]) -> Float[np.ndarray, "T D"]:
+    """Per-frame posture descriptor: standardized, mean-imputed 2D keypoints.
+
+    Each frame becomes its flattened ``(view, point, coord)`` vector. Missing
+    observations are imputed with that coordinate's across-frame mean (so a
+    dropout reads as "average posture", not spurious novelty), and every column
+    is scaled to unit variance so all views/joints weigh in comparably despite
+    differing pixel ranges. ``diversity`` sampling measures frame-to-frame
+    distance in this space.
+    """
+    pts2d = np.asarray(pts2d, dtype=float)
+    n_frames = pts2d.shape[1]
+    feats = np.moveaxis(pts2d, 1, 0).reshape(n_frames, -1)  # (T, V*P*2)
+    with warnings.catch_warnings():  # all-NaN columns -> mean NaN -> imputed to 0
+        warnings.simplefilter("ignore", RuntimeWarning)
+        col_mean = np.nanmean(feats, axis=0)
+    col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+    feats = np.where(np.isfinite(feats), feats, col_mean)
+    std = feats.std(axis=0)
+    return feats / np.where(std > 0, std, 1.0)
+
+
+def _farthest_first(feats: Float[np.ndarray, "T D"], k: int) -> Int[np.ndarray, "F"]:
+    """Greedy farthest-point (k-center) selection: a maximally spread subset.
+
+    Seeds on the most extreme frame (farthest from the centroid) and each step
+    adds the frame farthest from everything already chosen, so the picks span the
+    range of postures instead of clustering on whatever the animal did most
+    often. Deterministic (ties take the earliest); returns sorted indices.
+    """
+    centroid = feats.mean(axis=0)
+    chosen = [int(np.argmax(np.linalg.norm(feats - centroid, axis=1)))]
+    dist = np.linalg.norm(feats - feats[chosen[0]], axis=1)
+    while len(chosen) < k:
+        nxt = int(np.argmax(dist))
+        if dist[nxt] == 0:  # every remaining frame coincides with a chosen one
+            break
+        chosen.append(nxt)
+        dist = np.minimum(dist, np.linalg.norm(feats - feats[nxt], axis=1))
+    return np.array(sorted(chosen))
+
+
+def _subsample(
+    n_frames: int,
+    max_frames: int | None,
+    strategy: str = "even",
+    *,
+    pts2d: Float[np.ndarray, "V T P 2"] | None = None,
+    conf: Float[np.ndarray, "V T P"] | None = None,
+) -> Int[np.ndarray, "F"]:
+    """Pick at most ``max_frames`` frame indices to calibrate on.
+
+    ``max_frames=None`` (or a sequence already that short) keeps every frame.
+    Otherwise ``strategy`` chooses which frames to keep:
+
+    - ``"even"`` -- evenly spaced over the sequence (deterministic; the default).
+      Guarantees temporal spread but is blind to detection quality.
+    - ``"confidence"`` -- split the sequence into ``max_frames`` contiguous bins
+      and keep the highest mean-confidence frame in each, trading a little spread
+      for frames the detector is surest about. Needs ``conf`` (independent of
+      whether bundle adjustment weighs residuals by confidence).
+    - ``"coverage"`` -- same binning, but keep the frame with the most
+      multi-view-observed (triangulable) keypoints, favouring well-conditioned
+      frames (needs only ``pts2d``).
+    - ``"diversity"`` -- pick frames whose 2D postures are maximally spread
+      (farthest-point sampling over :func:`_frame_features`), so the target is
+      seen in as many distinct configurations as possible rather than many
+      near-duplicates of a common pose (needs only ``pts2d``).
+
+    The binned ("stratified-best") ``confidence``/``coverage`` variants keep the
+    temporal spread that makes ``"even"`` robust while preferring the better frame
+    within each bin.
+    """
+    if strategy not in FRAME_SAMPLERS:
+        raise ValueError(
+            f"unknown frame_sampling {strategy!r}; choose from {list(FRAME_SAMPLERS)}"
+        )
+    if strategy == "confidence" and conf is None:
+        raise ValueError("frame_sampling='confidence' needs detector confidences")
     if max_frames is None or n_frames <= max_frames:
         return np.arange(n_frames)
-    return np.linspace(0, n_frames - 1, max_frames).round().astype(int)
+    if strategy == "even":
+        return np.linspace(0, n_frames - 1, max_frames).round().astype(int)
+    assert pts2d is not None  # the content-based scorers all read the 2D points
+    if strategy == "diversity":
+        return _farthest_first(_frame_features(pts2d), max_frames)
+    return _best_per_bin(_frame_scores(strategy, pts2d, conf), max_frames)
 
 
 def _bone_prior(
     cameras: CameraGroup,
-    pts2d: Float[np.ndarray, "V F N 2"],
+    pts2d: Float[np.ndarray, "V F P 2"],
     skeleton: Skeleton,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Bone-pair indices and per-bone target lengths for flattened frames.
@@ -60,14 +186,14 @@ def _bone_prior(
     cameras
         Rig used for the initial triangulation that sets the target lengths.
     pts2d
-        2D observations of shape ``(V, F, N, 2)`` (``F`` flattened frames).
+        2D observations of shape ``(V, F, P, 2)`` (``F`` flattened frames).
     skeleton
         Skeleton supplying the bone (edge) list.
 
     Returns
     -------
     pairs : np.ndarray
-        ``(B, 2)`` index pairs into the flattened ``F * N`` point axis.
+        ``(B, 2)`` index pairs into the flattened ``F * P`` point axis.
     targets : np.ndarray
         Per-bone target lengths, tiled across the ``F`` frames.
     """
@@ -80,18 +206,20 @@ def _bone_prior(
 
 def calibrate(
     cameras: CameraGroup,
-    pts2d: Float[np.ndarray, "V T N 2"],
-    conf: Float[np.ndarray, "V T N"] | None = None,
+    pts2d: Float[np.ndarray, "V T P 2"],
+    conf: Float[np.ndarray, "V T P"] | None = None,
     skeleton: Skeleton | None = None,
     *,
     ba_keypoints: Sequence[int] | None = None,
     fixed: list[str] = (),
     shared: list[list[str]] = (),
+    weigh_by_confidence: bool = True,
     bone_prior: bool = True,
     bone_weight: float = 1.0,
     loss: str = "huber",
     f_scale: float = 40.0,
     max_frames: int | None = 100,
+    frame_sampling: str = "even",
     max_nfev: int = 300,
     **solver_kwargs,
 ) -> tuple[CameraGroup, OptimizeResult]:
@@ -106,12 +234,16 @@ def calibrate(
     cameras
         Initial camera rig to refine.
     pts2d
-        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+        2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     conf
-        Per-observation confidences ``(V, T, N)`` used as weights, or ``None``
-        for uniform weights.
+        Per-observation confidences ``(V, T, P)``, or ``None``. Used as residual
+        weights when ``weigh_by_confidence`` and as the signal for
+        ``frame_sampling="confidence"`` (the two uses are independent).
     skeleton
         Skeleton supplying the bone-length prior (used when ``bone_prior``).
+    weigh_by_confidence
+        Scale each reprojection residual by ``sqrt(confidence)`` when ``conf`` is
+        given. Off still allows confidence-based *frame sampling*.
     ba_keypoints
         Skeleton point indices that drive the refinement -- observations of
         unselected points are masked out. ``None`` (default) uses every point;
@@ -127,8 +259,13 @@ def calibrate(
         Solver knobs forwarded to
         :func:`deeperfly.bundle_adjustment.bundle_adjust`.
     max_frames
-        Subsample to at most this many evenly spaced frames before fitting;
-        ``None`` uses every frame.
+        Subsample to at most this many frames before fitting; ``None`` uses
+        every frame.
+    frame_sampling
+        Which frames to keep when subsampling (see :func:`_subsample`):
+        ``"even"`` (evenly spaced, the default), ``"confidence"`` (the surest
+        frame per time bin), ``"coverage"`` (the most multi-view-observed frame
+        per time bin) or ``"diversity"`` (postures maximally spread apart).
     **solver_kwargs
         Extra keyword arguments forwarded to ``scipy.optimize.least_squares``.
 
@@ -141,8 +278,8 @@ def calibrate(
     """
     pts2d = np.asarray(pts2d, dtype=float)
     n_views, n_frames, n_pts = pts2d.shape[:3]
-    sel = _subsample(n_frames, max_frames)
-    p = pts2d[:, sel]  # (V, F, N, 2)
+    sel = _subsample(n_frames, max_frames, frame_sampling, pts2d=pts2d, conf=conf)
+    p = pts2d[:, sel]  # (V, F, P, 2)
     n_sel = len(sel)
 
     masked = False
@@ -161,7 +298,7 @@ def calibrate(
         bone_pairs, bone_targets = bone_pairs[finite], bone_targets[finite]
 
     weights = None
-    if conf is not None:
+    if conf is not None and weigh_by_confidence:
         weights = np.asarray(conf, dtype=float)[:, sel].reshape(n_views, n_sel * n_pts)
 
     p_flat = p.reshape(n_views, n_sel * n_pts, 2)
@@ -190,13 +327,13 @@ def calibrate(
 
 def reconstruct(
     cameras: CameraGroup,
-    pts2d: Float[np.ndarray, "V T N 2"],
+    pts2d: Float[np.ndarray, "V T P 2"],
     *,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
-    weights: Float[np.ndarray, "V T N"] | None = None,
+    weights: Float[np.ndarray, "V T P"] | None = None,
 ) -> tuple[
-    Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
+    Float[np.ndarray, "T P 3"], Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]
 ]:
     """Triangulate a sequence and greedily reject reprojection outliers.
 
@@ -210,13 +347,13 @@ def reconstruct(
     cameras
         The calibrated rig.
     pts2d
-        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+        2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     reproj_threshold
         Per-view reprojection error (px) above which a view may be dropped.
     max_drops
         Maximum number of drop-and-retriangulate passes.
     weights
-        Optional per-observation weights ``(V, T, N)`` for a confidence-weighted
+        Optional per-observation weights ``(V, T, P)`` for a confidence-weighted
         DLT; ``None`` (default) is plain DLT. The drop logic stays geometric
         (driven by reprojection error), so confidence only shapes how the kept
         views are combined.
@@ -224,11 +361,11 @@ def reconstruct(
     Returns
     -------
     pts3d : np.ndarray
-        Triangulated points ``(T, N, 3)``.
+        Triangulated points ``(T, P, 3)``.
     cleaned_pts2d : np.ndarray
-        ``pts2d`` with dropped observations set to NaN ``(V, T, N, 2)``.
+        ``pts2d`` with dropped observations set to NaN ``(V, T, P, 2)``.
     reproj_error : np.ndarray
-        Per-observation reprojection error ``(V, T, N)``.
+        Per-observation reprojection error ``(V, T, P)``.
     """
     pts2d = np.array(pts2d, dtype=float)
     n_views = pts2d.shape[0]
@@ -252,13 +389,13 @@ def reconstruct(
 
 def reconstruct_ransac(
     cameras: CameraGroup,
-    pts2d: Float[np.ndarray, "V T N 2"],
+    pts2d: Float[np.ndarray, "V T P 2"],
     *,
     threshold: float = 15.0,
     min_inliers: int = 2,
-    weights: Float[np.ndarray, "V T N"] | None = None,
+    weights: Float[np.ndarray, "V T P"] | None = None,
 ) -> tuple[
-    Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
+    Float[np.ndarray, "T P 3"], Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]
 ]:
     """Triangulate a sequence robustly via per-point RANSAC consensus.
 
@@ -272,25 +409,25 @@ def reconstruct_ransac(
     cameras
         The calibrated rig.
     pts2d
-        2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+        2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     threshold
         Inlier reprojection threshold (px) for the consensus set.
     min_inliers
         Minimum number of agreeing views for a point to be triangulated.
     weights
-        Optional per-observation weights ``(V, T, N)``. Passed through to
+        Optional per-observation weights ``(V, T, P)``. Passed through to
         :func:`deeperfly.triangulation.triangulate_ransac` to weight the
         candidate fits and final refit; consensus scoring stays unweighted.
 
     Returns
     -------
     pts3d : np.ndarray
-        Triangulated points ``(T, N, 3)``.
+        Triangulated points ``(T, P, 3)``.
     cleaned_pts2d : np.ndarray
         ``pts2d`` with every non-inlier observation set to NaN, matching
         :func:`reconstruct`'s contract.
     reproj_error : np.ndarray
-        Per-observation reprojection error ``(V, T, N)``.
+        Per-observation reprojection error ``(V, T, P)``.
     """
     pts2d = np.array(pts2d, dtype=float)
     pts3d, inliers = triangulate_ransac(
@@ -331,8 +468,8 @@ def _validate_triangulation(triangulation: str) -> str:
 def run_from_points2d(
     cameras: CameraGroup,
     skeleton: Skeleton,
-    pts2d: Float[np.ndarray, "V T N 2"],
-    conf: Float[np.ndarray, "V T N"] | None = None,
+    pts2d: Float[np.ndarray, "V T P 2"],
+    conf: Float[np.ndarray, "V T P"] | None = None,
     *,
     do_calibrate: bool = True,
     calibrate_kwargs: dict | None = None,
@@ -360,9 +497,9 @@ def run_from_points2d(
     skeleton
         Skeleton used for the bone-length prior.
     pts2d
-        Detector 2D observations of shape ``(V, T, N, 2)``, NaN for missing.
+        Detector 2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     conf
-        Per-observation confidences ``(V, T, N)``, or ``None``.
+        Per-observation confidences ``(V, T, P)``, or ``None``.
     do_calibrate
         Whether to refine the cameras with bundle adjustment first.
     calibrate_kwargs

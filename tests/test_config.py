@@ -84,6 +84,8 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
                     "fixed": ["*.intr"],
                     "shared": [["a.tvec[2]", "b.tvec[2]"]],
                     "weigh_by_confidence": False,
+                    "max_frames": 50,
+                    "frame_sampling": "coverage",
                     "max_nfev": 500,
                     "loss": "huber",
                 }
@@ -96,7 +98,9 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     assert ba.fixed == ["*.intr"]
     assert ba.shared == [["a.tvec[2]", "b.tvec[2]"]]
     assert ba.weigh_by_confidence is False
-    # weigh_by_confidence is a recognized field, not a scipy least_squares kwarg.
+    assert ba.max_frames == 50
+    assert ba.frame_sampling == "coverage"
+    # the recognized fields are pulled out, not left as scipy least_squares kwargs.
     assert ba.least_squares == {"max_nfev": 500, "loss": "huber"}
 
 
@@ -107,6 +111,8 @@ def test_bundle_adjustment_defaults_when_absent():
         and ba.fixed == []
         and ba.shared == []
         and ba.weigh_by_confidence is True  # weighting on by default
+        and ba.max_frames == 100
+        and ba.frame_sampling == "even"
         and ba.least_squares == {}
     )
 
