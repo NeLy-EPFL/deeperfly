@@ -6,6 +6,7 @@ import logging
 from contextlib import contextmanager
 
 from rich.console import Console
+from rich.highlighter import RegexHighlighter
 from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
@@ -26,6 +27,35 @@ console = Console()
 err_console = Console(stderr=True)
 
 log = logging.getLogger("deeperfly")
+
+
+class _LogHighlighter(RegexHighlighter):
+    """Repr-style highlighter for log lines, minus rich's IP/MAC patterns.
+
+    rich's stock :class:`~rich.highlighter.ReprHighlighter` mis-tags substrings
+    in our messages: it reads ``0x960`` out of ``960x960`` as a hex literal
+    (``repr.number``, blue) and ``da:0`` out of ``cuda:0`` as an IPv6 address
+    (``repr.ipv6``, green). We drop the ipv4/ipv6/MAC/uuid patterns (this CLI
+    never logs those) and anchor the number pattern with lookbehinds so device
+    ids and ``NxN`` dimensions colour as whole tokens. Reuses the ``repr.*``
+    theme styles, so the colours match rich's defaults.
+    """
+
+    base_style = "repr."
+    highlights = [
+        r"(?P<brace>[][{}()])",
+        r"\b(?P<bool_true>True)\b|\b(?P<bool_false>False)\b|\b(?P<none>None)\b",
+        # numbers, floats, scientific, and NxN dimensions as one token; a hex
+        # 0x... literal only when not glued to a preceding word char.
+        r"(?P<number>(?<![\w.])-?\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?)*(?:e[-+]?\d+)?\b"
+        r"|(?<!\w)0x[0-9a-fA-F]+\b)",
+        # file names we emit (video/data/config), coloured whole.
+        r"(?P<filename>\b[-\w.+]+\.(?:mp4|mkv|mov|avi|toml|json|npz|npy|csv|"
+        r"png|jpe?g|pt|pth|safetensors|h5|hdf5|ya?ml|txt|log)\b)",
+        r"(?P<path>\B(/[-\w._+]+)*\/)(?P<filename>[-\w._+]*)?",
+        r"(?<![\\\w])(?P<str>b?'''.*?(?<!\\)'''|b?'.*?(?<!\\)'|b?\"\"\".*?(?<!\\)\"\"\"|b?\".*?(?<!\\)\")",
+        r"(?P<url>(?:file|https?|wss?)://[-0-9a-zA-Z$_+!`(),.?/;:&=%#~@]*)",
+    ]
 
 
 class _FPSColumn(ProgressColumn):
@@ -124,6 +154,7 @@ def _configure_logging(level_name: str) -> None:
         show_time=False,
         show_path=False,
         markup=False,  # log messages carry dict/list reprs; don't parse their brackets
+        highlighter=_LogHighlighter(),  # repr-style colours without the false positives
         rich_tracebacks=True,
     )
     logging.basicConfig(level=level, format="%(message)s", handlers=[handler])
