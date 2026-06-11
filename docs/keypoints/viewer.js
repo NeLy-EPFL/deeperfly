@@ -126,6 +126,9 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
       mesh.material.color.copy(e.target.checked ? flyColor : GRAY);
     requestRender();
   });
+  document.getElementById('toggle-ontop').addEventListener('change', (e) => {
+    overlay.setOnTop(e.target.checked); requestRender();
+  });
   document.getElementById('opacity').addEventListener('input', (e) => {
     const o = parseFloat(e.target.value);
     meshGroup.visible = o > 0;
@@ -250,9 +253,15 @@ function buildOverlay(keypoints) {
   const group = new THREE.Group();
   let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE;
 
+  // depthTest is off by default (overlay drawn "on top"); transparent:true puts
+  // the overlay in the same render pass as the mesh, so when depthTest is turned
+  // back on the higher renderOrder + the mesh's depth let the mesh occlude it.
+  const materials = [];
   const sphereGeom = new THREE.SphereGeometry(1, 16, 12);
   const points = keypoints.points.map((p) => {
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(p.color), depthTest: false });
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(p.color), depthTest: false, transparent: true });
+    materials.push(mat);
     const ball = new THREE.Mesh(sphereGeom, mat);
     ball.renderOrder = 2;
     ball.scale.setScalar(dotSize);
@@ -264,7 +273,9 @@ function buildOverlay(keypoints) {
   const cylGeom = new THREE.CylinderGeometry(1, 1, 1, 8); // unit; axis +Y
   const bones = keypoints.bones.map((pair) => {
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(keypoints.points[pair[0]].color), depthTest: false });
+      color: new THREE.Color(keypoints.points[pair[0]].color),
+      depthTest: false, transparent: true });
+    materials.push(mat);
     const cyl = new THREE.Mesh(cylGeom, mat);
     cyl.renderOrder = 1;
     group.add(cyl);
@@ -289,6 +300,7 @@ function buildOverlay(keypoints) {
     group, points, positions, syncBones,
     setDotSize: (s) => { dotSize = s; for (const p of points) p.ball.scale.setScalar(s); },
     setLineWidth: (w) => { lineWidth = w; syncBones(); },
+    setOnTop: (onTop) => { for (const m of materials) m.depthTest = !onTop; },
   };
 }
 
