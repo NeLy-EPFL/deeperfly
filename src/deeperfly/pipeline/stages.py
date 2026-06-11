@@ -160,10 +160,12 @@ def stage_pose2d(
     return cameras, skeleton, pts2d, conf, candidates, image_sizes
 
 
-def _resolve_calibration_points(names: list[str] | None, skeleton) -> list[int] | None:
+def _resolve_bundle_adjustment_points(
+    names: list[str] | None, skeleton
+) -> list[int] | None:
     """``[pipeline.bundle_adjustment].points_to_use`` names -> skeleton indices.
 
-    ``None`` (the key omitted) passes through as ``None`` -- calibrate on every
+    ``None`` (the key omitted) passes through as ``None`` -- bundle-adjust on every
     point. Otherwise each name is resolved against ``skeleton.point_names``.
 
     Raises
@@ -186,12 +188,12 @@ def _resolve_calibration_points(names: list[str] | None, skeleton) -> list[int] 
 def stage_bundle_adjustment(
     config: Config, cameras: CameraGroup, pts2d, conf, skeleton
 ) -> CameraGroup:
-    """Refine ``cameras`` with bundle adjustment (fly-as-calibration-target).
+    """Refine ``cameras`` with bundle adjustment (the fly itself is the target).
 
-    Calibrates on the arg-max 2D. The caller always hands in the *un-refined*
+    Bundle-adjusts on the arg-max 2D. The caller always hands in the *un-refined*
     config rig (:func:`config_rig_from_store`), so editing the rig or
-    ``[pipeline.bundle_adjustment]`` and recomputing this stage recalibrates
-    from the edited config rather than a prior BA output.
+    ``[pipeline.bundle_adjustment]`` and recomputing this stage re-runs bundle
+    adjustment from the edited config rather than a prior BA output.
 
     Parameters
     ----------
@@ -210,10 +212,10 @@ def stage_bundle_adjustment(
         The refined rig.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import calibrate
+    from .core import bundle_adjust_cameras
 
     ba = config.bundle_adjustment
-    ba_keypoints = _resolve_calibration_points(ba.points_to_use, skeleton)
+    ba_keypoints = _resolve_bundle_adjustment_points(ba.points_to_use, skeleton)
     weighted = ba.weigh_by_confidence and conf is not None
     v, t = pts2d.shape[:2]
     log.info(
@@ -224,7 +226,7 @@ def stage_bundle_adjustment(
     )
     # conf is always handed in (frame_sampling="confidence" may use it); whether it
     # also weighs the residuals is the separate weigh_by_confidence switch.
-    refined, _ = calibrate(
+    refined, _ = bundle_adjust_cameras(
         cameras,
         pts2d,
         conf,

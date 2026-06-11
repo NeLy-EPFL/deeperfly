@@ -110,7 +110,7 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     outdir = tmp_path / "out"
     _seed_2d(result, outdir)
     # Resume: pose2d/bundle_adjustment/visualization off (reuse the cached 2D, no
-    # recalibration, no video); triangulate the cached 2D into 3D.
+    # re-running bundle adjustment, no video); triangulate the cached 2D into 3D.
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"

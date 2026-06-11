@@ -243,7 +243,7 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
         cameras,
         fly,
         proj[:, :, :, 0, :] if proj.ndim == 5 else proj,
-        do_calibrate=False,
+        do_bundle_adjust=False,
         do_pictorial=True,
         candidates=cands,
     )
@@ -256,4 +256,4 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
 def test_pictorial_requires_candidates(cameras, fly, rng):
     proj = np.asarray(cameras.project(fly_cloud(rng)[None]))
     with pytest.raises(ValueError, match="requires candidates"):
-        run_from_points2d(cameras, fly, proj, do_calibrate=False, do_pictorial=True)
+        run_from_points2d(cameras, fly, proj, do_bundle_adjust=False, do_pictorial=True)

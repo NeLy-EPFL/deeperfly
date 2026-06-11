@@ -265,14 +265,14 @@ detector-input concern only — it never reflects the reconstructed 3D skeleton.
 
 ## Bundle adjustment — `[pipeline.bundle_adjustment]`
 
-Calibration uses the fly itself as the target, solved with
+Bundle adjustment uses the fly itself as the target, solved with
 `scipy.optimize.least_squares` — its kwargs (`max_nfev`, `loss`, ...) sit
 directly in the table. The defaults suit the standard rig; you rarely need to
 change them.
 
 ```toml
 [pipeline.bundle_adjustment]
-points_to_use       = [ "..." ]   # skeleton point names that drive calibration (default: the 30 leg points)
+points_to_use       = [ "..." ]   # skeleton point names that drive bundle adjustment (default: the 30 leg points)
 fixed               = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
 shared              = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
 weigh_by_confidence = true        # scale each reprojection residual by sqrt(confidence)
@@ -281,7 +281,7 @@ loss                = "linear"
 ```
 
 `weigh_by_confidence` (default `true`) makes surer detections pull the
-calibration harder, scaling each reprojection residual by `sqrt(confidence)`;
+bundle adjustment harder, scaling each reprojection residual by `sqrt(confidence)`;
 non-positive or non-finite confidences drop the observation, and if *every*
 weight is zero it falls back to uniform weighting. Set it `false` to weight all
 observations equally. (This is the mirror of

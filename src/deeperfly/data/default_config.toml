@@ -403,13 +403,13 @@ batch_size = 16
 decode_buffer = 4
 
 
-# Bundle adjustment: the fly itself is the calibration target. Solved with
+# Bundle adjustment: the fly itself is the target. Solved with
 # scipy.optimize.least_squares; its kwargs (max_nfev, loss, f_scale, ...) sit
 # directly in this table.
 [pipeline.bundle_adjustment]
-# Skeleton point names (from [skeleton].point_names) that drive calibration. The
-# leg joints sit at sharp limb corners and detect most reliably, so the default
-# uses the 30 leg points only. Omit this key to calibrate on all keypoints.
+# Skeleton point names (from [skeleton].point_names) that drive bundle adjustment.
+# The leg joints sit at sharp limb corners and detect most reliably, so the
+# default uses the 30 leg points only. Omit this key to bundle-adjust on all keypoints.
 points_to_use = [
     "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
     "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
@@ -426,7 +426,7 @@ fixed = [
 ]
 shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
 weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
-max_frames = 200            # calibrate on at most this many frames (subsampled from the recording)
+max_frames = 200            # bundle-adjust on at most this many frames (subsampled from the recording)
 frame_sampling = "even"     # which frames to keep when subsampling:
                             #   even       - evenly spaced over the recording (default; temporal spread)
                             #   confidence - the highest-confidence frame in each time bin

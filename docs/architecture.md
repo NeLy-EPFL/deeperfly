@@ -130,7 +130,7 @@ flowchart TD
 | Stage | Module | Notes |
 | --- | --- | --- |
 | 2D pose | `pose2d/` (`model.py`, `weights.py`) | Stacked hourglass (PyTorch) running the original DeepFly2D weights directly; CUDA / Metal automatically. |
-| Calibration | `pipeline.calibrate` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior; frames subsampled by `max_frames` / `frame_sampling` (`even`/`confidence`/`coverage`/`diversity`). |
+| Bundle adjustment | `pipeline.bundle_adjust_cameras` → `bundle_adjustment/` | Fly-as-target BA: confidence weights, Huber loss, bone-length prior; frames subsampled by `max_frames` / `frame_sampling` (`even`/`confidence`/`coverage`/`diversity`). |
 | Triangulation | `triangulation.py` / `pipeline.reconstruct{,_ransac}` | NaN-aware DLT: RANSAC consensus (default), greedy reprojection-outlier rejection, or plain DLT, optionally after pictorial-structures peak recovery (`pictorial.py`). |
 | Visualization | `visualization/`, `io/` | OpenCV 2D overlays + reprojected 3D skeleton, composited to MP4. |
 | Result I/O | `results.py` | Self-contained HDF5 `PoseResult`. |

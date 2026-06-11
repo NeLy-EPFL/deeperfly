@@ -115,7 +115,7 @@ def bundle_adjust(
         See :class:`deeperfly.bundle_adjustment.state.BAState`.
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`. Use ``loss="huber"``
-        with ``f_scale`` set to a pixel threshold for robust calibration.
+        with ``f_scale`` set to a pixel threshold for robust bundle adjustment.
         ``"huber"``, ``"cauchy"`` and ``"arctan"`` are translated to IRLS-form
         callables (same cost and gradient, ``rho'' = 0``) because scipy's
         native second-order rescaling of those losses degenerates on outlier

@@ -7,7 +7,7 @@ automatically. A :class:`~deeperfly.pose2d.pathways.DetectionPlan` drives the
 shared orchestration in :mod:`~deeperfly.pose2d.inference` (``detect`` /
 ``detect_sequence``) through the torch-free seam
 (:mod:`~deeperfly.pose2d.detector`) and the model registry
-(:mod:`~deeperfly.pose2d.models`); everything downstream (calibration,
+(:mod:`~deeperfly.pose2d.models`); everything downstream (bundle adjustment,
 triangulation) consumes its ``(V, T, P, 2)`` output.
 :mod:`~deeperfly.pose2d.download` fetches/caches the pretrained weights.
 

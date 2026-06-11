@@ -20,7 +20,7 @@ Following Gunel et al. (DeepFly3D, 2019):
 
 Everything is plain NumPy over a :class:`~deeperfly.cameras.CameraGroup` and
 :class:`~deeperfly.skeleton.Skeleton`. The detector forward and heatmap decode
-happen upstream; this module consumes only candidate peaks + calibrated cameras.
+happen upstream; this module consumes only candidate peaks + bundle-adjusted cameras.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ class Candidates:
 
     ``xy`` is ``(V, T, P, K, 2)`` and ``score`` is ``(V, T, P, K)``; padded /
     invisible / sub-threshold slots are ``NaN`` (``xy``) and ``0`` (``score``).
-    The arg-max (``K = 0``) reproduces the single-peak detection, so calibration
+    The arg-max (``K = 0``) reproduces the single-peak detection, so bundle adjustment
     can still use the plain 2D path while PS consumes the full candidate set.
     """
 
@@ -154,7 +154,7 @@ def peak_candidates(
     return xy, score
 
 
-# -- bone-length prior (shared with calibration) -----------------------------
+# -- bone-length prior (shared with bundle adjustment) -----------------------
 
 
 def bone_length_targets(
@@ -164,7 +164,7 @@ def bone_length_targets(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Median bone length per skeleton bone, from an initial triangulation.
 
-    Shared by bundle-adjustment calibration
+    Shared by bundle adjustment
     (:func:`deeperfly.pipeline._bone_prior`) and PS so the two agree on the
     anatomical prior.
 
@@ -285,7 +285,7 @@ def _frame_hypotheses(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     cand_xy, cand_score
         Per-frame candidates of shape ``(V, P, K, 2)`` / ``(V, P, K)``.
     inlier_px
@@ -336,7 +336,7 @@ def _score_hypotheses(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     x
         3D hypotheses of shape ``(P, M, 3)``.
     cand_xy, cand_score
@@ -526,7 +526,7 @@ def solve_frame(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     skeleton
         Skeleton (kept for symmetry with the sequence call).
     cand_xy, cand_score
@@ -623,7 +623,7 @@ def reconstruct(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     skeleton
         Skeleton supplying chains, visibility and the bone-length prior.
     candidates

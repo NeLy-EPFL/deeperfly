@@ -2,7 +2,7 @@
 
 Markerless 3D pose estimation of tethered *Drosophila* from a multi-camera rig.
 It estimates camera parameters and 2D/3D keypoint locations from behavioral
-recordings: 2D pose → camera calibration → triangulation → visualization.
+recordings: 2D pose → bundle adjustment → triangulation → visualization.
 
 It is a modern rewrite of
 [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D),
@@ -46,7 +46,7 @@ deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
-calibrate the cameras, triangulate to 3D, then render a skeleton video. Outputs
+bundle-adjust the cameras, triangulate to 3D, then render a skeleton video. Outputs
 land in `recording/deeperfly_outputs/` (override with
 `-o`): `poses.h5`, the rendered video, and a copy of the config used.
 

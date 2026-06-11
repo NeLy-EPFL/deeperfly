@@ -15,7 +15,7 @@ from helpers import fly_masked, leg_indices, small_rotation
 from deeperfly.cameras import CameraGroup
 from deeperfly.pipeline import (
     _validate_triangulation,
-    calibrate,
+    bundle_adjust_cameras,
     reconstruct,
     reconstruct_ransac,
     run_from_points2d,
@@ -150,7 +150,7 @@ def test_subsample_rejects_unknown_strategy():
         _subsample(20, 5, "bogus")
 
 
-# -- calibrate ---------------------------------------------------------------
+# -- bundle_adjust_cameras ---------------------------------------------------
 
 
 def perturbed_cameras(rig, *, keep=("f",)):
@@ -172,12 +172,12 @@ def perturbed_cameras(rig, *, keep=("f",)):
     )
 
 
-def test_calibrate_recovers_perturbed_rig(rig, cameras, fly, rng):
+def test_bundle_adjust_cameras_recovers_perturbed_rig(rig, cameras, fly, rng):
     pts3d = fly_motion(rng, n_frames=20)
     pts2d = np.array(cameras.project(pts3d))  # ground-truth observations
     cams0 = perturbed_cameras(rig)
 
-    opt, result = calibrate(
+    opt, result = bundle_adjust_cameras(
         cams0,
         pts2d,
         skeleton=fly,
@@ -192,7 +192,9 @@ def test_calibrate_recovers_perturbed_rig(rig, cameras, fly, rng):
     assert result.cost < 1e-4
 
 
-def test_calibrate_confidence_sampling_independent_of_weighting(rig, cameras, fly, rng):
+def test_bundle_adjust_cameras_confidence_sampling_independent_of_weighting(
+    rig, cameras, fly, rng
+):
     """frame_sampling='confidence' uses the confidences for *which frames* even
     when weigh_by_confidence is off (the two confidence uses are decoupled)."""
     import deeperfly.pipeline.core as core
@@ -210,7 +212,7 @@ def test_calibrate_confidence_sampling_independent_of_weighting(rig, cameras, fl
 
     core._subsample = spy
     try:
-        calibrate(
+        bundle_adjust_cameras(
             perturbed_cameras(rig),
             pts2d,
             conf,
@@ -269,7 +271,7 @@ def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng
     assert not np.allclose(on.tvecs, off.tvecs, atol=1e-6)
 
 
-def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
+def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly, rng):
     """The front camera, seeing both body sides, is what co-registers the two
     camera clusters in bundle adjustment.
 
@@ -323,7 +325,7 @@ def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
             fi = names.index("f")
             for j in leg_indices(fly, "l"):
                 pts2d[fi, :, j] = np.nan
-        opt, _ = calibrate(
+        opt, _ = bundle_adjust_cameras(
             perturbed,
             pts2d,
             conf,
@@ -358,7 +360,7 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
         fly,
         pts2d,
         conf,
-        do_calibrate=False,
+        do_bundle_adjust=False,
         max_drops=3,
         fps=100.0,
         meta={"source": "synthetic"},
@@ -371,9 +373,11 @@ def test_run_from_points2d_end_to_end(cameras, fly, rng):
     assert result.meta["source"] == "synthetic"
 
 
-def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
+def test_bundle_adjust_cameras_legs_only_ignores_corrupted_nonleg(
+    rig, cameras, fly, rng
+):
     """Restricting BA to the leg joints refines the cameras from those alone, so
-    gross errors on the antennae / stripes do not corrupt the calibration."""
+    gross errors on the antennae / stripes do not corrupt the bundle adjustment."""
     legs = np.concatenate(  # the 30 leg-joint indices
         [leg_indices(fly, "r"), leg_indices(fly, "l")]
     )
@@ -383,7 +387,7 @@ def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
     pts2d[:, :, nonleg] += rng.normal(scale=200.0, size=pts2d[:, :, nonleg].shape)
     cams0 = perturbed_cameras(rig)
 
-    opt, _ = calibrate(
+    opt, _ = bundle_adjust_cameras(
         cams0,
         pts2d,
         skeleton=fly,
@@ -399,7 +403,7 @@ def test_calibrate_legs_only_ignores_corrupted_nonleg(rig, cameras, fly, rng):
     assert np.nanmax(np.abs(proj[:, :, legs] - pts2d[:, :, legs])) < 1e-2
 
 
-def test_run_with_calibration(rig, cameras, fly):
+def test_run_with_bundle_adjustment(rig, cameras, fly):
     # With per-side visibility masking (now applied by the plan, here reproduced
     # via fly_masked) and bone_prior=False, the far side is bridged only by the
     # front camera -- a weakly constrained sub-problem whose conditioning depends
@@ -416,9 +420,9 @@ def test_run_with_calibration(rig, cameras, fly):
         cams0,
         fly,
         pts2d,
-        do_calibrate=True,
-        calibrate_kwargs={
-            # ba_keypoints defaults to None -> calibrate on all points
+        do_bundle_adjust=True,
+        bundle_adjust_kwargs={
+            # ba_keypoints defaults to None -> bundle-adjust on all points
             "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
             "bone_prior": False,
             "loss": "linear",
@@ -462,7 +466,7 @@ def test_run_triangulation_choices(cameras, fly, rng, triangulation):
         cameras,
         fly,
         pts2d,
-        do_calibrate=False,
+        do_bundle_adjust=False,
         triangulation=triangulation,
     )
     assert result.meta["triangulation"] == triangulation
@@ -473,7 +477,7 @@ def test_run_triangulation_choices(cameras, fly, rng, triangulation):
 
 def test_run_default_triangulation_is_ransac(cameras, fly, rng):
     pts2d = np.array(cameras.project(fly_motion(rng, n_frames=4)))
-    result = run_from_points2d(cameras, fly, pts2d, do_calibrate=False)
+    result = run_from_points2d(cameras, fly, pts2d, do_bundle_adjust=False)
     assert result.meta["triangulation"] == "ransac"  # the default
 
 
@@ -481,7 +485,7 @@ def test_run_unknown_triangulation_raises(cameras, fly, rng):
     pts2d = np.array(cameras.project(fly_motion(rng, n_frames=2)))
     with pytest.raises(ValueError, match="triangulation"):
         run_from_points2d(
-            cameras, fly, pts2d, do_calibrate=False, triangulation="bogus"
+            cameras, fly, pts2d, do_bundle_adjust=False, triangulation="bogus"
         )
 
 
@@ -494,7 +498,7 @@ def test_run_weigh_by_confidence_uses_conf(cameras, fly, rng):
     conf = np.ones(pts2d.shape[:3])
     conf[0, 0, 0] = 0.02
 
-    common = dict(do_calibrate=False, triangulation="dlt")
+    common = dict(do_bundle_adjust=False, triangulation="dlt")
     off = run_from_points2d(
         cameras, fly, pts2d, conf, weigh_by_confidence=False, **common
     )
@@ -532,7 +536,7 @@ def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
         candidates=cands,
         do_pictorial=True,
         triangulation=triangulation,
-        do_calibrate=False,
+        do_bundle_adjust=False,
     )
     assert result.meta["pictorial"] is True
     assert result.meta["triangulation"] == triangulation
@@ -543,4 +547,6 @@ def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
 def test_run_pictorial_requires_candidates(cameras, fly, rng):
     pts2d = np.array(cameras.project(fly_motion(rng, n_frames=2)))
     with pytest.raises(ValueError, match="requires candidates"):
-        run_from_points2d(cameras, fly, pts2d, do_calibrate=False, do_pictorial=True)
+        run_from_points2d(
+            cameras, fly, pts2d, do_bundle_adjust=False, do_pictorial=True
+        )

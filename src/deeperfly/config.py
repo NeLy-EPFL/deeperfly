@@ -65,7 +65,7 @@ STAGES = (
 )
 
 #: Default for each ``do_<stage>`` when the key is omitted: detection,
-#: calibration, triangulation and visualization run by default; pictorial
+#: bundle adjustment, triangulation and visualization run by default; pictorial
 #: structures is opt-in.
 STAGE_DEFAULTS = {
     "pose2d": True,
@@ -128,13 +128,13 @@ class IoParams:
 
 @dataclass(frozen=True)
 class BundleAdjustmentParams:
-    """``[pipeline.bundle_adjustment]`` -- calibration over scipy ``least_squares``.
+    """``[pipeline.bundle_adjustment]`` -- bundle adjustment over scipy ``least_squares``.
 
-    ``points_to_use`` (``None`` = all) names which skeleton points drive calibration
+    ``points_to_use`` (``None`` = all) names which skeleton points drive bundle adjustment
     (resolved to indices against the skeleton in :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
     ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
     scales each reprojection residual by ``sqrt(confidence)``; ``max_frames`` /
-    ``frame_sampling`` choose how many frames to calibrate on and which (see
+    ``frame_sampling`` choose how many frames to bundle-adjust on and which (see
     :func:`deeperfly.pipeline.core._subsample`); ``least_squares`` is the leftover
     flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded straight to
     :func:`scipy.optimize.least_squares`.

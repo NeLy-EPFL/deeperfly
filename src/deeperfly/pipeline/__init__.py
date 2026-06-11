@@ -1,9 +1,9 @@
-"""End-to-end orchestration: 2D points -> calibration -> 3D.
+"""End-to-end orchestration: 2D points -> bundle adjustment -> 3D.
 
 The pure array functions live in :mod:`deeperfly.pipeline.core` (re-exported here):
 
-- :func:`calibrate` -- treat the animal as the calibration target and refine the
-  cameras with bundle adjustment (confidence weights, Huber loss, bone-length prior).
+- :func:`bundle_adjust_cameras` -- treat the animal as the bundle-adjustment target
+  and refine the cameras (confidence weights, Huber loss, bone-length prior).
 - :func:`reconstruct` -- triangulate a 2D sequence and *greedily* reject
   high-reprojection-error observations, re-triangulating from the survivors.
 - :func:`reconstruct_ransac` -- the default: triangulate each point from its largest
@@ -27,7 +27,7 @@ from .core import (  # noqa: F401  (re-exported)
     _bone_prior,
     _subsample,
     _validate_triangulation,
-    calibrate,
+    bundle_adjust_cameras,
     reconstruct,
     reconstruct_ransac,
     run_from_points2d,
@@ -47,7 +47,7 @@ from .stages import (
 )
 
 __all__ = [
-    "calibrate",
+    "bundle_adjust_cameras",
     "reconstruct",
     "reconstruct_ransac",
     "run_from_points2d",

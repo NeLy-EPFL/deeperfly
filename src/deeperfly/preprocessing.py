@@ -4,7 +4,7 @@ A :class:`FrameTransform` is an ordered sequence of standard image operations
 -- left-right / up-down flip, quarter-turn rotation, crop and resize -- applied
 to a camera's frames right after they are read, in the order written in the
 config. The transformed frame is the canonical frame for the whole run
-(detector, 2D points, calibration, overlays); nothing maps back to the raw
+(detector, 2D points, bundle adjustment, overlays); nothing maps back to the raw
 footage.
 
 Camera intrinsics in the config refer to the *raw* footage frame: every op
@@ -495,8 +495,9 @@ class FrameTransform:
             if bad:
                 raise ValueError(
                     f"non-radial distortion coefficients (index {bad}) do not "
-                    f"survive a flip/rot90 preprocess op; calibrate for the "
-                    f"flipped/rotated frame or drop the tangential/thin-prism terms"
+                    f"survive a flip/rot90 preprocess op; supply distortion "
+                    f"coefficients valid for the flipped/rotated frame or drop "
+                    f"the tangential/thin-prism terms"
                 )
         new_c = lin @ np.array([cx, cy]) + off
         new_f = np.abs(lin) @ np.array([fx, fy])

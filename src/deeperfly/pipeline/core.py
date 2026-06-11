@@ -1,10 +1,10 @@
-"""End-to-end orchestration: 2D points -> calibration -> 3D.
+"""End-to-end orchestration: 2D points -> bundle adjustment -> 3D.
 
 Pure functions over arrays, so every stage is testable in isolation and the 2D
 detector stays pluggable (a callable producing ``(pts2d, conf)``):
 
-- :func:`calibrate` -- treat the animal as the calibration target and refine the
-  cameras with bundle adjustment (confidence weights, Huber loss, bone-length
+- :func:`bundle_adjust_cameras` -- treat the animal as the bundle-adjustment
+  target and refine the cameras (confidence weights, Huber loss, bone-length
   prior).
 - :func:`reconstruct` -- triangulate a 2D sequence and *greedily* reject
   high-reprojection-error observations, re-triangulating from the survivors.
@@ -46,7 +46,7 @@ def _frame_scores(
     pts2d: Float[np.ndarray, "V T P 2"] | None,
     conf: Float[np.ndarray, "V T P"] | None,
 ) -> Float[np.ndarray, "T"]:
-    """Per-frame calibration-quality score (higher = a better frame to keep).
+    """Per-frame bundle-adjustment-quality score (higher = a better frame to keep).
 
     ``"confidence"`` scores each frame by the mean of its (finite) detector
     confidences across views and points -- frames the detector is surest about.
@@ -131,7 +131,7 @@ def _subsample(
     pts2d: Float[np.ndarray, "V T P 2"] | None = None,
     conf: Float[np.ndarray, "V T P"] | None = None,
 ) -> Int[np.ndarray, "F"]:
-    """Pick at most ``max_frames`` frame indices to calibrate on.
+    """Pick at most ``max_frames`` frame indices to bundle-adjust on.
 
     ``max_frames=None`` (or a sequence already that short) keeps every frame.
     Otherwise ``strategy`` chooses which frames to keep:
@@ -204,7 +204,7 @@ def _bone_prior(
     return pairs, np.tile(targets, n_frames)
 
 
-def calibrate(
+def bundle_adjust_cameras(
     cameras: CameraGroup,
     pts2d: Float[np.ndarray, "V T P 2"],
     conf: Float[np.ndarray, "V T P"] | None = None,
@@ -223,7 +223,7 @@ def calibrate(
     max_nfev: int = 300,
     **solver_kwargs,
 ) -> tuple[CameraGroup, OptimizeResult]:
-    """Refine ``cameras`` from a 2D sequence (fly-as-calibration-target BA).
+    """Refine ``cameras`` from a 2D sequence (the fly itself is the BA target).
 
     Frames are flattened into one point cloud; detector confidences become
     per-observation weights; a robust loss and an optional bone-length prior
@@ -247,7 +247,7 @@ def calibrate(
     ba_keypoints
         Skeleton point indices that drive the refinement -- observations of
         unselected points are masked out. ``None`` (default) uses every point;
-        pass e.g. the leg-joint indices to calibrate on the sharp limb corners
+        pass e.g. the leg-joint indices to bundle-adjust on the sharp limb corners
         alone. Only the camera fit is restricted; all points are still
         triangulated afterward by :func:`reconstruct`.
     fixed, shared
@@ -345,7 +345,7 @@ def reconstruct(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     pts2d
         2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     reproj_threshold
@@ -407,7 +407,7 @@ def reconstruct_ransac(
     Parameters
     ----------
     cameras
-        The calibrated rig.
+        The bundle-adjusted rig.
     pts2d
         2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     threshold
@@ -471,8 +471,8 @@ def run_from_points2d(
     pts2d: Float[np.ndarray, "V T P 2"],
     conf: Float[np.ndarray, "V T P"] | None = None,
     *,
-    do_calibrate: bool = True,
-    calibrate_kwargs: dict | None = None,
+    do_bundle_adjust: bool = True,
+    bundle_adjust_kwargs: dict | None = None,
     triangulation: str = "ransac",
     weigh_by_confidence: bool = False,
     do_pictorial: bool = False,
@@ -487,23 +487,23 @@ def run_from_points2d(
 ) -> PoseResult:
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
-    Steps: (optional) calibrate cameras -> reconstruct 3D. Unobserved points are
+    Steps: (optional) bundle-adjust cameras -> reconstruct 3D. Unobserved points are
     expected to already be NaN (the detector's pathway scatter leaves them so).
 
     Parameters
     ----------
     cameras
-        The camera rig (refined in place when ``do_calibrate``).
+        The camera rig (refined in place when ``do_bundle_adjust``).
     skeleton
         Skeleton used for the bone-length prior.
     pts2d
         Detector 2D observations of shape ``(V, T, P, 2)``, NaN for missing.
     conf
         Per-observation confidences ``(V, T, P)``, or ``None``.
-    do_calibrate
+    do_bundle_adjust
         Whether to refine the cameras with bundle adjustment first.
-    calibrate_kwargs
-        Extra keyword arguments forwarded to :func:`calibrate`.
+    bundle_adjust_kwargs
+        Extra keyword arguments forwarded to :func:`bundle_adjust_cameras`.
     triangulation
         Reconstruction strategy: ``"ransac"`` (default, largest multi-view
         consensus set; ``ransac_threshold`` / ``min_inliers``), ``"greedy"`` (DLT
@@ -519,7 +519,7 @@ def run_from_points2d(
         detector's top-K ``candidates`` (:func:`deeperfly.pictorial.reconstruct`,
         accepting ``ps_kwargs`` like ``temporal`` / ``lam`` / ``max_hyp``), then
         feed its committed 2D into ``triangulation`` (``"dlt"`` keeps the PS
-        estimate). Calibration always uses the arg-max ``pts2d``.
+        estimate). Bundle adjustment always uses the arg-max ``pts2d``.
     candidates
         The detector's top-K candidate peaks; required when ``do_pictorial``.
     ps_kwargs
@@ -534,7 +534,7 @@ def run_from_points2d(
     Returns
     -------
     PoseResult
-        The calibrated cameras, committed 2D, triangulated 3D and diagnostics.
+        The bundle-adjusted cameras, committed 2D, triangulated 3D and diagnostics.
 
     Raises
     ------
@@ -542,14 +542,14 @@ def run_from_points2d(
         If ``do_pictorial`` is set but no ``candidates`` are given, or
         ``triangulation`` is unknown.
     """
-    method = _validate_triangulation(triangulation)  # validate before calibrating
+    method = _validate_triangulation(triangulation)  # validate before bundle-adjusting
     # Unobserved (view, point) pairs are NaN (the detector's pathway scatter leaves
-    # them so), which the calibration and triangulation below treat as "not seen".
+    # them so), which the bundle adjustment and triangulation below treat as "not seen".
     pts2d = np.asarray(pts2d, dtype=float)
 
-    if do_calibrate:
-        cameras, _ = calibrate(
-            cameras, pts2d, conf, skeleton, **(calibrate_kwargs or {})
+    if do_bundle_adjust:
+        cameras, _ = bundle_adjust_cameras(
+            cameras, pts2d, conf, skeleton, **(bundle_adjust_kwargs or {})
         )
 
     if do_pictorial:

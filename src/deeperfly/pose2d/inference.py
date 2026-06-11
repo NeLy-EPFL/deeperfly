@@ -424,7 +424,7 @@ def detect_candidates_sequence(
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
 
     The same forward yields the single-peak ``(pts2d, conf)`` -- used by
-    calibration and triangulation -- and a
+    bundle adjustment and triangulation -- and a
     :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
     (view, joint), consumed by the pictorial-structures corrector. Candidates a
     pathway does not map (or that no pathway produces) stay ``NaN``.
