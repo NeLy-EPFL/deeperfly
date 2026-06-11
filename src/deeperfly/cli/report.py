@@ -224,6 +224,15 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("video read/write", "pyav" if have_av else "av not installed")
     _doctor_row("image read", "opencv" if have_cv2 else "opencv not installed")
 
+    _doctor_header("gui")
+    have_qt = importlib.util.find_spec("PySide6") is not None
+    _doctor_row(
+        "deeperfly gui",
+        "PySide6 available"
+        if have_qt
+        else "not installed -- run 'pip install deeperfly[gui]'",
+    )
+
     _doctor_header("weights")
     _doctor_row("cache dir", download.cache_dir())
     path = download.torch_weights_path()

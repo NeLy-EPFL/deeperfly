@@ -43,7 +43,10 @@ __all__ = [
     "rvec_to_rmat_one",
     "rmat_to_rvec_one",
     "distort_one",
+    "undistort_one",
     "project_full_one",
+    "backproject_ray_one",
+    "closest_point_on_ray",
     "intr_to_kmat",
     "rvec_to_rmat",
     "rmat_to_rvec",
@@ -59,6 +62,10 @@ _SMALL_THETA_SQ = 1e-8
 # Below this value of ``sin theta``, the antisymmetric part of ``R`` is too
 # small to recover the rotation axis and we fall back to the symmetric branch.
 _NEAR_PI_SIN_THRESH = 1e-5
+# Fixed-point iterations for inverting :func:`distort_one`. OpenCV's
+# ``undistortPoints`` defaults to 5; a few more is still negligible here and
+# keeps lenses with stronger distortion accurate.
+_UNDISTORT_ITERS = 10
 
 
 # -- per-observation primitives ---------------------------------------------
@@ -217,6 +224,84 @@ def distort_one(
     return jnp.stack([x * mult + add_x, y * mult + add_y])
 
 
+def undistort_one(
+    xy_dist: Float[Array, "2"],
+    dist: Float[Array, "K"],
+) -> Float[Array, "2"]:
+    """Invert :func:`distort_one`: distorted normalized coords -> undistorted.
+
+    Recovers the undistorted normalized coordinate ``(x, y)`` whose
+    :func:`distort_one` image is ``xy_dist`` by OpenCV's fixed-point iteration
+    (the same scheme as ``cv2.undistortPoints``): starting from ``xy_dist``,
+    repeatedly apply ``x <- (x_d - tangential) * den / num`` with the radial
+    factor ``num / den`` and the tangential / thin-prism terms evaluated at the
+    current estimate. The locus of 3D points projecting to a fixed pixel is a
+    ray through the camera center regardless of distortion (distortion is a
+    function of the normalized direction only), so this is the step that turns a
+    clicked pixel into a back-projection direction (see
+    :func:`backproject_ray_one`). An empty ``dist`` is the identity.
+
+    Parameters
+    ----------
+    xy_dist
+        Distorted normalized 2D coordinate of shape ``(2,)`` (i.e. intrinsics
+        already removed: ``((u - cx) / fx, (v - cy) / fy)``).
+    dist
+        Distortion coefficients of shape ``(K,)`` with ``K`` in
+        ``{0, 1, ..., 12}`` (same ordering as :func:`distort_one`).
+
+    Returns
+    -------
+    Undistorted normalized 2D coordinate of shape ``(2,)``.
+    """
+    n = dist.shape[-1]
+    if n == 0:
+        return xy_dist
+    xd, yd = xy_dist[0], xy_dist[1]
+    x, y = xd, yd
+    for _ in range(_UNDISTORT_ITERS):
+        x2, y2 = x * x, y * y
+        r2 = x2 + y2
+        r4 = r2 * r2
+        r6 = r4 * r2
+
+        num = 1.0 + dist[0] * r2
+        if n >= 2:
+            num = num + dist[1] * r4
+        if n >= 5:
+            num = num + dist[4] * r6
+        den = 1.0
+        if n >= 6:
+            den = den + dist[5] * r2
+        if n >= 7:
+            den = den + dist[6] * r4
+        if n >= 8:
+            den = den + dist[7] * r6
+        icdist = den / num
+
+        xy_prod = x * y
+        add_x = jnp.zeros(())
+        add_y = jnp.zeros(())
+        if n >= 3:
+            add_x = 2 * dist[2] * xy_prod
+            add_y = dist[2] * (r2 + 2 * y2)
+        if n >= 4:
+            add_x = add_x + dist[3] * (r2 + 2 * x2)
+            add_y = add_y + 2 * dist[3] * xy_prod
+        if n >= 9:
+            add_x = add_x + dist[8] * r2
+        if n >= 10:
+            add_x = add_x + dist[9] * r4
+        if n >= 11:
+            add_y = add_y + dist[10] * r2
+        if n >= 12:
+            add_y = add_y + dist[11] * r4
+
+        x = (xd - add_x) * icdist
+        y = (yd - add_y) * icdist
+    return jnp.stack([x, y])
+
+
 def project_full_one(
     pt3d: Float[Array, "3"],
     rvec: Float[Array, "3"],
@@ -258,6 +343,86 @@ def project_full_one(
     fx, fy = intr[0], intr[-3]
     cx, cy = intr[-2], intr[-1]
     return jnp.stack([fx * xy[0] + cx, fy * xy[1] + cy])
+
+
+def backproject_ray_one(
+    pixel: Float[Array, "2"],
+    rvec: Float[Array, "3"],
+    tvec: Float[Array, "3"],
+    intr: Float[Array, "P"],
+    dist: Float[Array, "K"],
+) -> tuple[Float[Array, "3"], Float[Array, "3"]]:
+    """Back-project an image pixel to its viewing ray in world coordinates.
+
+    Inverts :func:`project_full_one`: strips the intrinsics
+    (``xy_d = ((u - cx) / fx, (v - cy) / fy)``), undistorts via
+    :func:`undistort_one` to the normalized direction ``xy``, lifts it to the
+    camera-frame ray direction ``[x, y, 1]`` and rotates it into the world. The
+    ray ``origin + s * direction`` (``s >= 0``) is exactly the set of world
+    points that :func:`project_full_one` maps back to ``pixel`` through this
+    camera. Pair with :func:`closest_point_on_ray` to move a triangulated 3D
+    point onto the ray while staying as close as possible to its old location.
+
+    Parameters
+    ----------
+    pixel
+        Image point of shape ``(2,)`` in pixels.
+    rvec
+        Axis-angle rotation vector of shape ``(3,)``.
+    tvec
+        Translation vector of shape ``(3,)``.
+    intr
+        Packed intrinsics of shape ``(P,)``; see :func:`intr_to_kmat`.
+    dist
+        Distortion coefficients of shape ``(K,)``.
+
+    Returns
+    -------
+    origin, direction : Float[Array, "3"]
+        The camera center ``-R(rvec).T @ tvec`` and the (unnormalized) world-frame
+        ray direction.
+    """
+    fx, fy = intr[0], intr[-3]
+    cx, cy = intr[-2], intr[-1]
+    xy_dist = jnp.stack([(pixel[0] - cx) / fx, (pixel[1] - cy) / fy])
+    xy = undistort_one(xy_dist, dist)
+    dir_cam = jnp.stack([xy[0], xy[1], jnp.ones(())])
+    rmat = rvec_to_rmat_one(rvec)
+    direction = rmat.T @ dir_cam
+    origin = -rmat.T @ tvec
+    return origin, direction
+
+
+def closest_point_on_ray(
+    origin: Float[Array, "3"],
+    direction: Float[Array, "3"],
+    target: Float[Array, "3"],
+) -> Float[Array, "3"]:
+    """The point on a ray nearest a target point (orthogonal projection).
+
+    Returns ``origin + s * direction`` with
+    ``s = (target - origin) . direction / (direction . direction)`` -- the
+    unique closest point on the infinite line through ``origin`` along
+    ``direction``. Used by the 3D-correction drag: ``direction`` / ``origin``
+    come from :func:`backproject_ray_one` for the pixel the user dragged to, and
+    ``target`` is the point's pre-drag 3D position, so the result reprojects
+    exactly onto the dragged pixel while moving the least in 3D.
+
+    Parameters
+    ----------
+    origin
+        A point on the ray, shape ``(3,)``.
+    direction
+        The ray direction, shape ``(3,)`` (need not be normalized).
+    target
+        The point to approach, shape ``(3,)``.
+
+    Returns
+    -------
+    The closest point on the ray, shape ``(3,)``.
+    """
+    s = jnp.dot(target - origin, direction) / jnp.dot(direction, direction)
+    return origin + s * direction
 
 
 # -- batched / composed functions -------------------------------------------

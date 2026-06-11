@@ -191,6 +191,23 @@ def _no_2d(ctx: _RunContext, stage: str) -> bool:
     return True
 
 
+def _footage_by_view(
+    config, sources: dict[str, list[Path]] | None
+) -> dict[str, list[Path]] | None:
+    """Re-key resolved footage from source name to view (camera) name.
+
+    ``sources`` is keyed by *source* name (config order), but the store records
+    footage keyed by *view* name -- matching ``image_sizes`` and ``cameras`` --
+    so the viewer can look each camera's footage up by its own name (a view's
+    source comes from the detection plan). Returns ``None`` when there is no
+    footage to record.
+    """
+    if not sources:
+        return None
+    view_sources = config.detection_plan().view_sources()
+    return {view: sources[src] for view, src in view_sources.items() if src in sources}
+
+
 def _run_pose2d(ctx: _RunContext) -> bool:
     cameras, skeleton, pts2d, conf, candidates, image_sizes = stages.stage_pose2d(
         ctx.config,
@@ -206,6 +223,7 @@ def _run_pose2d(ctx: _RunContext) -> bool:
         pts2d=pts2d,
         conf=conf,
         image_sizes=image_sizes,
+        footage=_footage_by_view(ctx.config, ctx.sources),
         candidates=candidates,
     )
     log.info(

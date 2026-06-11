@@ -24,10 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Float
 
 from .geometry import (
+    backproject_ray_one,
     intr_to_kmat,
     project_full,
     rmat_to_rvec,
@@ -346,6 +348,36 @@ class Camera:
             self.dist[None],
         )
         return np.asarray(out)[0]
+
+    def backproject_ray(
+        self, pixel: Float[np.ndarray, "2"]
+    ) -> tuple[Float[np.ndarray, "3"], Float[np.ndarray, "3"]]:
+        """The world-frame viewing ray of an image ``pixel`` through this camera.
+
+        Inverse of :meth:`project`: returns ``(origin, direction)`` such that
+        every world point ``origin + s * direction`` projects back onto
+        ``pixel``. ``origin`` is the camera center. See
+        :func:`deeperfly.geometry.backproject_ray_one`.
+
+        Parameters
+        ----------
+        pixel
+            Image point of shape ``(2,)`` in pixels.
+
+        Returns
+        -------
+        origin, direction : np.ndarray
+            The camera center and the (unnormalized) world-frame ray direction,
+            each of shape ``(3,)``.
+        """
+        origin, direction = backproject_ray_one(
+            jnp.asarray(pixel, dtype=float),
+            jnp.asarray(self.rvec),
+            jnp.asarray(self.tvec),
+            jnp.asarray(self.intr),
+            jnp.asarray(self.dist),
+        )
+        return np.asarray(origin), np.asarray(direction)
 
 
 class CameraGroup:
