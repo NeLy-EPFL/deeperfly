@@ -189,6 +189,63 @@ def test_view_sources_links_each_view_to_its_source():
     assert plan.view_sources() == {"rh": "s0", "lf": "s1"}
 
 
+def test_footage_by_view_rekeys_source_footage_to_view_names():
+    # The pipeline resolves footage keyed by *source* name, but records it keyed by
+    # *view* name so the viewer can match each camera to its footage (the regression
+    # behind the GUI showing blank frames). Two sources s0/s1 feed views rh/lf.
+    from pathlib import Path
+
+    from deeperfly.pipeline.run import _footage_by_view
+
+    point_names = Config.default().data["skeleton"]["point_names"]
+    pathways = [
+        {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
+        {"name": "lf_p", "source": "s1", "preprocessor": "mirror", "model": "m"},
+    ]
+    output_points = output_points_table(
+        point_names,
+        [("rh", "rh_p", list(range(19, 38))), ("lf", "lf_p", list(range(0, 19)))],
+    )
+    config = Config.from_dict(
+        {
+            "sources": [
+                {"name": "s0", "filename": "a"},
+                {"name": "s1", "filename": "b"},
+            ],
+            "pose2d": {
+                "preprocessors": [
+                    {"name": "plain", "ops": []},
+                    {"name": "mirror", "ops": [{"op": "fliplr"}]},
+                ],
+                "models": [
+                    {
+                        "name": "m",
+                        "class": "hourglass",
+                        "input_size": [256, 512],
+                        "n_out_channels": 19,
+                    }
+                ],
+                "pathways": pathways,
+                "output_points": output_points,
+            },
+            "cameras": {
+                "rh": {"azimuth_deg": 0, "distance": 100, "focal_length_px": 1},
+                "lf": {"azimuth_deg": 1, "distance": 100, "focal_length_px": 1},
+            },
+            "skeleton": Config.default().data["skeleton"],
+        }
+    )
+
+    sources = {"s0": [Path("/foot/cam0.mp4")], "s1": [Path("/foot/cam1.mp4")]}
+    assert _footage_by_view(config, sources) == {
+        "rh": [Path("/foot/cam0.mp4")],
+        "lf": [Path("/foot/cam1.mp4")],
+    }
+    # No footage to record -> no footage attr written.
+    assert _footage_by_view(config, None) is None
+    assert _footage_by_view(config, {}) is None
+
+
 # -- validation ---------------------------------------------------------------
 
 
