@@ -5,7 +5,7 @@ current config and its output is present (see
 :mod:`deeperfly.pipeline.fingerprint`); it recomputes when the config changed,
 the output is missing, ``--overwrite`` selects it, or any upstream enabled
 stage recomputed this run (its inputs changed -- the cascade). Each stage
-persists only its own ``poses.h5`` group (:class:`~deeperfly.results.StageStore`),
+persists only its own ``results.h5`` group (:class:`~deeperfly.results.StageStore`),
 so downstream re-runs always read pristine upstream outputs.
 """
 
@@ -85,7 +85,7 @@ def run_recording(
     enabled = config.stage_flags()  # config validated at construction
     overwrite_set: set[str] = stages.overwrite_stages(overwrite)
 
-    store = StageStore(outdir / "poses.h5")
+    store = StageStore(outdir / "results.h5")
     record = RunRecord(outdir / "run.json")
 
     # Validate the footage *before* creating the output dir, so a fresh run that
@@ -184,7 +184,7 @@ def _no_2d(ctx: _RunContext, stage: str) -> bool:
         return False
     log.warning(
         "skipping %s: no 2D pose available -- enable [pipeline].do_pose2d or leave "
-        "a cached poses.h5 with 2D in %s",
+        "a cached results.h5 with 2D in %s",
         stage,
         ctx.outdir,
     )
@@ -290,7 +290,7 @@ def _run_visualization(ctx: _RunContext) -> bool:
     if result is None:
         log.warning(
             "skipping visualization: no pose result available -- enable a stage "
-            "above or leave a cached poses.h5 in %s",
+            "above or leave a cached results.h5 in %s",
             ctx.outdir,
         )
         return False

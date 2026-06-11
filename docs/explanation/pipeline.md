@@ -4,7 +4,7 @@
 `bundle_adjustment` → `pictorial_structures` (off by default) → `triangulation`
 → `visualization`. Each stage is toggled by a `do_<stage>` boolean in
 `[pipeline]`, configured by its own top-level `[<stage>]` table, and (except
-`visualization`) writes its own group in `poses.h5`. This page walks through what
+`visualization`) writes its own group in `results.h5`. This page walks through what
 each stage consumes and produces; the cross-cutting array layouts and terms it
 uses are collected in [Conventions & glossary](conventions.md).
 
@@ -140,7 +140,7 @@ flowchart TD
 - **Produces:** `pts2d` `(V, T, P, 2)` and `conf` `(V, T, P)`, the config camera
   rig as built at detect time, the raw image sizes, and — when
   `pictorial_structures` is enabled — the detector's top-K candidate peaks.
-- **Cached in:** `pose2d/` (the whole `poses.h5` is rewritten when this stage
+- **Cached in:** `pose2d/` (the whole `results.h5` is rewritten when this stage
   runs, since everything downstream derives from it).
 
 Each pathway runs its source's frames (optionally preprocessed, e.g. mirrored)
@@ -195,7 +195,7 @@ outliers are handled — see below.
 - **Consumes:** the assembled result (best 2D + 3D from the enabled stages, the
   rig, the skeleton) and the footage for `imshow` panels.
 - **Produces:** one MP4 per `[[visualization.videos]]` entry under `<outdir>/`.
-- **Cached:** keeps no `poses.h5` group; reuse is keyed on the rendered MP4s
+- **Cached:** keeps no `results.h5` group; reuse is keyed on the rendered MP4s
   existing and the video specs being unchanged.
 
 Each video is composited panel by panel (OpenCV overlays for 2D, a depth-sorted
@@ -261,5 +261,5 @@ downstream (so `do_pose2d = false` reconstructs from a stored 2D pose); a
 
 For the resume/recompute workflow from the command line see the
 [CLI guide](../guides/cli.md#resuming-and-recomputing); for the exact
-`run.json` / `poses.h5` layout see the
+`run.json` / `results.h5` layout see the
 [output-format reference](../reference/output-format.md).

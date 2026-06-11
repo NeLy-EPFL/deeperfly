@@ -49,9 +49,9 @@ RECORD_VERSION = 1
 class RunRecord:
     """The fingerprints of the stage outputs currently cached in an output dir.
 
-    A small JSON sidecar next to ``poses.h5``: validity bookkeeping is
+    A small JSON sidecar next to ``results.h5``: validity bookkeeping is
     outdir-local run state, kept out of the portable result file (and a viz-only
-    run never touches ``poses.h5`` at all). Deleting it merely recomputes
+    run never touches ``results.h5`` at all). Deleting it merely recomputes
     everything.
     """
 
@@ -310,7 +310,7 @@ def stage_valid(
     """Whether ``stage``'s cached output can be reused, with the reason if not.
 
     Reuse requires a recorded fingerprint that matches ``expected`` *and* the
-    output itself to be present (the stage's ``poses.h5`` group, or every
+    output itself to be present (the stage's ``results.h5`` group, or every
     currently-specced MP4 for ``visualization``).
 
     Returns
@@ -336,5 +336,5 @@ def stage_valid(
             return False, f"rendered video(s) missing: {', '.join(missing)}"
         return True, None
     if not store.has(stage):
-        return False, "output missing from poses.h5"
+        return False, "output missing from results.h5"
     return True, None

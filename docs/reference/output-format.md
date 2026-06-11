@@ -5,13 +5,13 @@ default, or `-o`):
 
 ```
 deeperfly_outputs/
-├── poses.h5        # the result: cameras, skeleton, per-stage 2D/3D data
+├── results.h5      # the result: cameras, skeleton, per-stage 2D/3D data
 ├── config.toml     # byte-for-byte snapshot of the config this run used
 ├── run.json        # per-stage fingerprints (drives cache reuse)
 └── *.mp4           # one per [[visualization.videos]] entry
 ```
 
-## `poses.h5`
+## `results.h5`
 
 A self-contained HDF5 file (schema **version 2**). Each pipeline stage writes its
 own group, so a stage never overwrites another's data and any downstream stage
@@ -82,7 +82,7 @@ re-run with just `-o`.
 
 A small JSON sidecar recording, per stage, the **fingerprint** (the
 result-affecting config subset) and the completion time. It is outdir-local run
-state, kept out of the portable `poses.h5`; deleting it merely recomputes
+state, kept out of the portable `results.h5`; deleting it merely recomputes
 everything.
 
 ```json

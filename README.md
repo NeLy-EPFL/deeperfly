@@ -33,12 +33,12 @@ UV_TORCH_BACKEND=auto uv add git+https://github.com/NeLy-EPFL/deeperfly
 ```bash
 deeperfly doctor                                         # what this machine can run
 deeperfly run recording/                                 # detect 2D -> 3D -> video
-deeperfly inspect recording/deeperfly_outputs/poses.h5   # summarize the result
+deeperfly inspect recording/deeperfly_outputs/results.h5   # summarize the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
 bundle-adjust the cameras, triangulate to 3D, then render skeleton videos.
-Outputs land in `recording/deeperfly_outputs/` (override with `-o`): `poses.h5`,
+Outputs land in `recording/deeperfly_outputs/` (override with `-o`): `results.h5`,
 the rendered videos, and a snapshot of the config used. `deeperfly doctor`
 reports whether the detector will run on the GPU and where the weights are
 cached.

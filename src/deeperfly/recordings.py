@@ -292,7 +292,7 @@ class Recording:
     absent (see :func:`resolve_recordings`).
 
     ``outdir`` is this recording's output directory (see :func:`plan_outdirs`) --
-    the run's durable identity, holding the config snapshot and cached ``poses.h5``.
+    the run's durable identity, holding the config snapshot and cached ``results.h5``.
     The input directory is not retained; a resume re-passes the recording, which
     re-resolves ``sources`` the same way.
     """
@@ -724,5 +724,5 @@ def require_input_footage(
         raise SystemExit(
             f"this run needs footage for pose2d but the recording resolved no files "
             f"for camera(s) {missing} (see the warning above) -- pass a recording that "
-            "holds video/images for every camera, or resume from a cached poses.h5"
+            "holds video/images for every camera, or resume from a cached results.h5"
         )

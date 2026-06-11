@@ -1,6 +1,6 @@
 """Self-contained HDF5 result container for the pose pipeline.
 
-``poses.h5`` (schema v2) stores each pipeline stage's output in its own group,
+``results.h5`` (schema v2) stores each pipeline stage's output in its own group,
 so a stage never overwrites another stage's data and any downstream stage can
 be re-run later from pristine upstream outputs:
 
@@ -194,7 +194,7 @@ class PoseResult:
 
 
 class StageStore:
-    """Per-stage read/write access to one recording's ``poses.h5``.
+    """Per-stage read/write access to one recording's ``results.h5``.
 
     Used by the staged run: ``pose2d`` truncates and recreates the file
     (:meth:`write_pose2d`), every later stage replaces only its own group, and
