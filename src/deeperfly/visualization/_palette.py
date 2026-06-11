@@ -54,7 +54,8 @@ def _hex_to_rgb(value: str) -> tuple[float, float, float]:
         h = "".join(c * 2 for c in h)
     if len(h) != 6:
         raise ValueError(f"expected a #rgb or #rrggbb hex color, got {value!r}")
-    return tuple(int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return (r, g, b)
 
 
 def point_colors_rgb(

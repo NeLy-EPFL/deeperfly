@@ -74,12 +74,13 @@ class Hourglass(nn.Module):
         return nn.ModuleList(hg)
 
     def _hour_glass_forward(self, n, x):
-        up1 = self.hg[n - 1][0](x)
-        low1 = self.hg[n - 1][1](F.max_pool2d(x, 2, stride=2))
+        hg_n: nn.ModuleList = self.hg[n - 1]  # type: ignore[assignment]
+        up1 = hg_n[0](x)  # type: ignore[operator]
+        low1 = hg_n[1](F.max_pool2d(x, 2, stride=2))  # type: ignore[operator]
         low2 = (
-            self._hour_glass_forward(n - 1, low1) if n > 1 else self.hg[n - 1][3](low1)
+            self._hour_glass_forward(n - 1, low1) if n > 1 else hg_n[3](low1)  # type: ignore[operator]
         )
-        low3 = self.hg[n - 1][2](low2)
+        low3 = hg_n[2](low2)  # type: ignore[operator]
         return up1 + self.upsample(low3)
 
     def forward(self, x):
@@ -236,7 +237,7 @@ def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     fn = _COMPILED.get(id(model))
     if fn is None:
         fn = torch.compile(model)
-        _COMPILED[id(model)] = fn
+        _COMPILED[id(model)] = fn  # type: ignore[assignment]
     return fn
 
 
@@ -275,7 +276,7 @@ def set_precision(model: HourglassNet, precision: str = "float32") -> None:
     # A real detector (nn.Module) carries a __dict__; bare test stubs don't (and
     # never run the real forward), so there's nothing to set on them.
     if hasattr(model, "__dict__"):
-        model._deeperfly_precision = precision
+        model._deeperfly_precision = precision  # type: ignore[assignment]
 
 
 def _autocast_dtype(model: HourglassNet, dev: "torch.device"):

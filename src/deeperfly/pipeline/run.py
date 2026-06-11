@@ -83,7 +83,7 @@ def run_recording(
     outdir = Path(outdir)
     config = Config.read_for_run(config_path, outdir)
     enabled = config.stage_flags()  # config validated at construction
-    overwrite = stages.overwrite_stages(overwrite)
+    overwrite_set: set[str] = stages.overwrite_stages(overwrite)
 
     store = StageStore(outdir / "poses.h5")
     record = RunRecord(outdir / "run.json")
@@ -93,7 +93,7 @@ def run_recording(
     # Only pose2d decodes the recording, and only when it recomputes; a resume
     # reusing a cached 2D pose needs no footage.
     if enabled["pose2d"] and (
-        "pose2d" in overwrite
+        "pose2d" in overwrite_set
         or not stage_valid(
             "pose2d",
             config,
@@ -135,7 +135,7 @@ def run_recording(
         if not enabled[name]:
             continue
         expected = stage_fingerprint(name, config, enabled, store)
-        if name in overwrite:
+        if name in overwrite_set:
             reason = "--overwrite"
         elif recomputed:
             reason = "an upstream stage recomputed (its inputs changed)"
@@ -148,7 +148,7 @@ def run_recording(
                     name,
                 )
                 continue
-            reason = why
+            reason = why or "unknown"
         if had_record[name]:
             _log_recompute(name, reason)
         else:
@@ -220,7 +220,9 @@ def _run_pose2d(ctx: _RunContext) -> bool:
 def _run_bundle_adjustment(ctx: _RunContext) -> bool:
     if _no_2d(ctx, "bundle_adjustment"):
         return False
-    pts2d, conf = ctx.store.read_pose2d()
+    _pose2d = ctx.store.read_pose2d()
+    assert _pose2d is not None
+    pts2d, conf = _pose2d
     refined = stages.stage_bundle_adjustment(
         ctx.config,
         # Always the un-refined config rig, never a prior BA output, so an edited
@@ -247,7 +249,9 @@ def _run_pictorial_structures(ctx: _RunContext) -> bool:
             "candidates -- enable [pipeline].do_pose2d to re-detect them"
         )
         return False
-    pts2d, _ = ctx.store.read_pose2d()
+    _pose2d = ctx.store.read_pose2d()
+    assert _pose2d is not None
+    pts2d, _ = _pose2d
     new2d, pts3d, reproj = stages.stage_pictorial_structures(
         ctx.config,
         stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
@@ -265,7 +269,9 @@ def _run_pictorial_structures(ctx: _RunContext) -> bool:
 def _run_triangulation(ctx: _RunContext) -> bool:
     if _no_2d(ctx, "triangulation"):
         return False
-    _, conf = ctx.store.read_pose2d()  # detector confidences for optional weighting
+    _pose2d = ctx.store.read_pose2d()  # detector confidences for optional weighting
+    assert _pose2d is not None
+    _, conf = _pose2d
     pts2d, pts3d, reproj = stages.stage_triangulation(
         ctx.config,
         stages.select_cameras(ctx.config, ctx.enabled, ctx.store),

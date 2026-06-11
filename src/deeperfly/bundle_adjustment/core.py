@@ -315,10 +315,10 @@ def bundle_adjust(
     result = least_squares(
         residuals,
         x0,
-        jac=jac,
+        jac=jac,  # type: ignore[arg-type]
         method="trf",
         tr_solver="lsmr",
-        loss=_IRLS_LOSSES.get(loss, loss),
+        loss=_IRLS_LOSSES.get(loss, loss),  # type: ignore[arg-type]
         f_scale=f_scale,
         max_nfev=max_nfev,
         **kwargs,

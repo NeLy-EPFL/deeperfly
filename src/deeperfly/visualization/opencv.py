@@ -232,7 +232,7 @@ def _draw(
 ) -> np.ndarray:
     """Draw bones then joints, back-to-front when ``depth`` is given."""
     pts = np.asarray(pts, dtype=float)
-    finite = np.isfinite(pts).all(-1)
+    finite: np.ndarray = np.isfinite(pts).all(-1)
 
     def xy(i: int) -> tuple[int, int]:
         return int(round(pts[i, 0] * scale_x + x0)), int(
@@ -253,7 +253,7 @@ def _draw(
     for k in bone_order:
         a, b = int(bones[k][0]), int(bones[k][1])
         if finite[a] and finite[b]:
-            color = tuple(map(int, colors[a]))
+            color: Color = tuple(map(int, colors[a]))  # type: ignore[assignment]
             cv2.line(canvas, xy(a), xy(b), color, line_thickness, cv2.LINE_AA)
 
     if not draw_points:
@@ -265,7 +265,7 @@ def _draw(
         if not finite[n]:
             continue
         alpha = 1.0 if conf is None else float(np.clip(conf[n], 0.0, 1.0))
-        _draw_point(canvas, xy(n), point_radius, tuple(map(int, colors[n])), alpha)
+        _draw_point(canvas, xy(n), point_radius, tuple(map(int, colors[n])), alpha)  # type: ignore[arg-type]
     return canvas
 
 

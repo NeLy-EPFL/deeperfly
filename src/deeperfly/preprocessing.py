@@ -242,6 +242,7 @@ class Resize:
 
     def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
         if self.scale is None:
+            assert self.height is not None and self.width is not None
             return (self.height, self.width)
         h, w = size
         # Round half away from zero (cv2's saturate_cast), not banker's rounding.
@@ -390,7 +391,7 @@ class FrameTransform:
         """The ``(height, width)`` a frame of ``size`` has after the chain."""
         for op in self.ops:
             size = op.output_size(size)
-        return tuple(int(d) for d in size)
+        return (int(size[0]), int(size[1]))
 
     def affine(self, size: tuple[int, int]) -> np.ndarray:
         """The composed ``3x3`` raw-to-canonical pixel map for a ``size`` frame.

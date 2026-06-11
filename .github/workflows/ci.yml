@@ -24,7 +24,7 @@ jobs:
       # The detector-weight download is mocked in the tests (see tests/test_cli_run.py),
       # so the suite runs fully offline -- no network or weight cache needed.
       - name: Run tests
-        run: uv run pytest --cov=deeperfly --cov-report=term-missing
+        run: uv run --python ${{ matrix.python-version }} pytest --cov=deeperfly --cov-report=term-missing
 
   lint:
     runs-on: ubuntu-latest

@@ -234,11 +234,12 @@ def prefetch_windows(
                 if any(b is None or len(b) == 0 for b in blocks):
                     q.put(DONE)
                     return
-                n = min(len(b) for b in blocks)  # align cameras (synced rigs match)
-                window = [t.apply(b[:n]) for t, b in zip(transforms, blocks)]
+                live = [b for b in blocks if b is not None]
+                n = min(len(b) for b in live)  # align cameras (synced rigs match)
+                window = [t.apply(b[:n]) for t, b in zip(transforms, live)]
                 q.put(("win", window, n))
                 emitted = True
-                if any(len(b) < block for b in blocks):  # a short block is the last
+                if any(len(b) < block for b in live):  # a short block is the last
                     q.put(DONE)
                     return
         except Exception as exc:  # noqa: BLE001

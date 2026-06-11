@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..pictorial import Candidates
 
 import numpy as np
 
@@ -21,6 +25,7 @@ from ..config import STAGES, Config
 from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
 from ..recordings import source_image_sizes
 from ..results import PoseResult, StageStore
+from ..skeleton import Skeleton
 from . import fingerprint
 
 log = logging.getLogger("deeperfly")
@@ -252,7 +257,11 @@ def stage_bundle_adjustment(
 
 
 def stage_pictorial_structures(
-    config: Config, cameras: CameraGroup, skeleton, candidates: object, pts2d
+    config: Config,
+    cameras: CameraGroup,
+    skeleton: Skeleton | None,
+    candidates: "Candidates",
+    pts2d,
 ):
     """DeepFly3D pictorial-structures recovery over the detector's top-K candidates.
 
@@ -391,14 +400,18 @@ def select_cameras(
 ) -> CameraGroup:
     """The rig a downstream stage consumes (BA output if enabled+present, else config)."""
     if fingerprint.cameras_source(enabled, store) == "bundle_adjustment":
-        return store.read_cameras("bundle_adjustment")
+        cameras = store.read_cameras("bundle_adjustment")
+        assert cameras is not None
+        return cameras
     return config_rig_from_store(config, store)
 
 
 def select_pts2d(enabled: dict[str, bool], store: StageStore) -> np.ndarray | None:
     """The 2D points triangulation consumes (pictorial-corrected if enabled+present)."""
     if fingerprint.pts2d_source(enabled, store) == "pictorial_structures":
-        return store.read_points("pictorial_structures")[0]
+        _pts = store.read_points("pictorial_structures")
+        assert _pts is not None
+        return _pts[0]
     base = store.read_pose2d()
     return None if base is None else base[0]
 
@@ -425,12 +438,14 @@ def assemble_result(
     pts3d = reproj = None
     source = fingerprint.pose_sources(enabled, store)
     if source["pts3d"] is not None:
-        better2d, pts3d, reproj = store.read_points(source["pts3d"])
-        if better2d is not None:
-            pts2d = better2d
+        _pts = store.read_points(source["pts3d"])
+        if _pts is not None:
+            better2d, pts3d, reproj = _pts
+            if better2d is not None:
+                pts2d = better2d
     return PoseResult(
         cameras=select_cameras(config, enabled, store),
-        skeleton=store.read_skeleton(),
+        skeleton=store.read_skeleton(),  # type: ignore[arg-type]
         pts2d=pts2d,
         conf=conf,
         pts3d=pts3d,

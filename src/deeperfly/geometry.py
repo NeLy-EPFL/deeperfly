@@ -180,7 +180,7 @@ def distort_one(
     r2 = x2 + y2
 
     num = 1.0 + dist[0] * r2
-    r4 = r6 = None
+    r4 = r6 = jnp.zeros(())
     if n >= 2:
         r4 = r2 * r2
         num = num + dist[1] * r4
