@@ -41,6 +41,7 @@ nav:
       - Library API: guides/library.md
   - How it works:
       - Pipeline stages: explanation/pipeline.md
+      - Keypoint locations: explanation/keypoints.md
       - Conventions & glossary: explanation/conventions.md
   - Reference:
       - Configuration: reference/configuration.md
