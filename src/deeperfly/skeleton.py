@@ -58,7 +58,7 @@ class Skeleton:
     name: str
     point_names: tuple[str, ...]
     limb_names: tuple[str, ...]
-    limb_id: Int[np.ndarray, "N"]
+    limb_id: Int[np.ndarray, "P"]
     bones: Int[np.ndarray, "B 2"]
     palette: dict[str, str]
 
@@ -136,7 +136,7 @@ class Skeleton:
 
 def _parse_limb_points(
     limb_points: dict[str, list], point_names: tuple[str, ...]
-) -> tuple[tuple[str, ...], Int[np.ndarray, "N"], Int[np.ndarray, "B 2"]]:
+) -> tuple[tuple[str, ...], Int[np.ndarray, "P"], Int[np.ndarray, "B 2"]]:
     """Expand a ``{limb_name: [points]}`` mapping into limb structure.
 
     ``limb_points`` is the single source of truth for a skeleton's limbs: each

@@ -4,7 +4,7 @@ A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
 conversion (load them with :func:`deeperfly.pose2d.weights.load_model`).
 Stacked ``(B, V, 3, H, W)`` float inputs in -- the ``V`` views run in parallel and
-independent -- final-stack ``(B, V, J, h, w)`` heatmaps out (:func:`predict_heatmaps`);
+independent -- final-stack ``(B, V, C_out, H_out, W_out)`` heatmaps out (:func:`predict_heatmaps`);
 plain 4D ``(N, 3, H, W)`` is also accepted as the no-view case. The plain detect path
 (:func:`deeperfly.pose2d.inference.detect`) instead drives :func:`predict_points`,
 which decodes the peaks on-device and returns only those.
@@ -326,8 +326,8 @@ def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        The final-stack heatmaps as host NumPy, shaped ``(B, V, J, h, w)`` (or
-        ``(N, J, h, w)`` for a 4D input).
+        The final-stack heatmaps as host NumPy, shaped ``(B, V, C_out, H_out, W_out)`` (or
+        ``(N, C_out, H_out, W_out)`` for a 4D input).
     """
     out = _forward_last(model, inputs)
     if out.device.type == "cuda":
@@ -346,8 +346,8 @@ def predict_points(
     """Fused forward + on-device heatmap decode: ``(points_norm, conf)`` as NumPy.
 
     The arg-max peak decode (:func:`deeperfly.pose2d.inference.heatmap_to_points`)
-    runs on the *same device as the forward*, so only the tiny ``(B, V, J, 2)`` peaks
-    and ``(B, V, J)`` confidences leave the GPU -- never the full ``(B, V, J, h, w)``
+    runs on the *same device as the forward*, so only the tiny ``(B, V, C_out, 2)`` peaks
+    and ``(B, V, C_out)`` confidences leave the GPU -- never the full ``(B, V, C_out, H_out, W_out)``
     heatmap, and never a float64 arg-max over the whole grid on the host. Results
     match the NumPy decode to float32 epsilon; ``method`` / ``radius`` select the
     sub-pixel refinement exactly as the NumPy path does.
@@ -368,11 +368,11 @@ def predict_points(
     Returns
     -------
     points_norm : np.ndarray
-        Normalized ``(B, V, J, 2)`` peaks (``(N, J, 2)`` for a 4D input).
+        Normalized ``(B, V, C_out, 2)`` peaks (``(N, C_out, 2)`` for a 4D input).
     conf : np.ndarray
-        Per-joint confidence of shape ``(B, V, J)`` (``(N, J)`` for a 4D input).
+        Per-joint confidence of shape ``(B, V, C_out)`` (``(N, C_out)`` for a 4D input).
     """
-    out = _forward_last(model, inputs)  # (N, J, h, w) on device, float32
+    out = _forward_last(model, inputs)  # (N, C_out, H_out, W_out) on device, float32
     xy, conf = _decode_peaks(out, method=method, radius=radius)
     if out.device.type == "cuda":
         torch.cuda.synchronize()
@@ -384,13 +384,13 @@ def _decode_peaks(
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
     """Torch port of :func:`deeperfly.pose2d.inference.heatmap_to_points`.
 
-    ``heatmaps`` is ``(*lead, h, w)`` on any device; returns normalized ``(x, y)``
+    ``heatmaps`` is ``(*lead, H_out, W_out)`` on any device; returns normalized ``(x, y)``
     peaks ``(*lead, 2)`` and raw peak confidence ``(*lead,)``, both on the input's
     device. Mirrors the NumPy decoder's arg-max + sub-pixel refinement so the fused
     GPU path is numerically equivalent.
     """
     *lead, hh, ww = heatmaps.shape
-    flat = heatmaps.reshape(-1, hh * ww)  # (M, h*w)
+    flat = heatmaps.reshape(-1, hh * ww)  # (M, H_out*W_out)
     conf, idx = flat.max(dim=-1)  # (M,) peak value, (M,) flat index
     row, col = idx // ww, idx % ww
     cx, cy = _refine_peaks(
@@ -408,7 +408,7 @@ def _refine_peaks(
     method: str = "weighted",
     radius: int = 2,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """Refine one integer peak per ``(M, h, w)`` heatmap to sub-pixel ``(cx, cy)``.
+    """Refine one integer peak per ``(M, H_out, W_out)`` heatmap to sub-pixel ``(cx, cy)``.
 
     The torch counterpart of :func:`deeperfly.pose2d.inference.refine_peaks` (single
     peak per channel): ``"argmax"`` keeps the cell, ``"weighted"`` takes the

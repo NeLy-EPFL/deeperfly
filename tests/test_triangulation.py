@@ -19,7 +19,7 @@ def _fly_cloud(rng, n=38, scale=2.0):
 
 def test_roundtrip_recovers_points(cameras, rng):
     pts3d = _fly_cloud(rng)
-    pts2d = np.asarray(cameras.project(pts3d))  # (V, N, 2)
+    pts2d = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     recovered = triangulate(cameras, pts2d)
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
 
@@ -65,7 +65,7 @@ def test_reprojection_error_nan_where_unobserved(cameras, rng):
 
 
 def test_sequence_layout(cameras, rng):
-    # (V, T, N, 2) observations triangulate to (T, N, 3).
+    # (V, T, P, 2) observations triangulate to (T, P, 3).
     pts3d = rng.normal(scale=2.0, size=(5, 38, 3))
     pts2d = np.asarray(cameras.project(pts3d))
     assert pts2d.shape == (len(cameras), 5, 38, 2)

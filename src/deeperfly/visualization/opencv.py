@@ -271,13 +271,13 @@ def _draw(
 
 def draw_skeleton_2d(
     canvas: np.ndarray,
-    pts2d: Float[np.ndarray, "N 2"],
+    pts2d: Float[np.ndarray, "P 2"],
     skeleton: "Skeleton",
     *,
     x0: int = 0,
     y0: int = 0,
     scale: Scale = 1.0,
-    conf: Float[np.ndarray, "N"] | None = None,
+    conf: Float[np.ndarray, "P"] | None = None,
     palette: dict[str, str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
@@ -292,7 +292,7 @@ def draw_skeleton_2d(
     canvas
         The RGB buffer drawn on in place.
     pts2d
-        The view's 2D joints of shape ``(N, 2)`` in image pixels.
+        The view's 2D joints of shape ``(P, 2)`` in image pixels.
     skeleton
         Skeleton supplying the bones and per-limb colors.
     x0, y0
@@ -301,7 +301,7 @@ def draw_skeleton_2d(
         A uniform factor or ``(sx, sy)`` pair multiplying the pixel coordinates
         (match an ``imshow`` of the same view).
     conf
-        Per-joint confidence ``(N,)`` modulating opacity, or ``None``.
+        Per-joint confidence ``(P,)`` modulating opacity, or ``None``.
     palette
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness
@@ -334,14 +334,14 @@ def draw_skeleton_2d(
 
 def draw_skeleton_3d(
     canvas: np.ndarray,
-    pts3d: Float[np.ndarray, "N 3"],
+    pts3d: Float[np.ndarray, "P 3"],
     camera: "Camera",
     skeleton: "Skeleton",
     *,
     x0: int = 0,
     y0: int = 0,
     scale: Scale = 1.0,
-    conf: Float[np.ndarray, "N"] | None = None,
+    conf: Float[np.ndarray, "P"] | None = None,
     palette: dict[str, str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
@@ -357,7 +357,7 @@ def draw_skeleton_3d(
     canvas
         The RGB buffer drawn on in place.
     pts3d
-        World-coordinate joints of shape ``(N, 3)``.
+        World-coordinate joints of shape ``(P, 3)``.
     camera
         The camera the skeleton is reprojected through (distortion included).
     skeleton
@@ -368,7 +368,7 @@ def draw_skeleton_3d(
         A uniform factor or ``(sx, sy)`` pair multiplying the projected pixels
         (match an ``imshow`` of the same view).
     conf
-        Per-joint confidence ``(N,)`` modulating opacity, or ``None``.
+        Per-joint confidence ``(P,)`` modulating opacity, or ``None``.
     palette
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness

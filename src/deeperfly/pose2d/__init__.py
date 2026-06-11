@@ -8,7 +8,7 @@ shared orchestration in :mod:`~deeperfly.pose2d.inference` (``detect`` /
 ``detect_sequence``) through the torch-free seam
 (:mod:`~deeperfly.pose2d.detector`) and the model registry
 (:mod:`~deeperfly.pose2d.models`); everything downstream (calibration,
-triangulation) consumes its ``(V, T, N, 2)`` output.
+triangulation) consumes its ``(V, T, P, 2)`` output.
 :mod:`~deeperfly.pose2d.download` fetches/caches the pretrained weights.
 
 The torch modules (:mod:`~deeperfly.pose2d.model`, :mod:`~deeperfly.pose2d.weights`)

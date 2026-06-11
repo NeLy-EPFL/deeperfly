@@ -105,7 +105,7 @@ class LoadedModel:
         return self.spec.n_out_channels
 
     def prepare(self, frames):
-        """``(..., H, W, 3)`` frame(s) -> ``(..., 3, Hh, Ww)`` normalized model input.
+        """``(..., H, W, 3)`` frame(s) -> ``(..., 3, H_out, W_out)`` normalized model input.
 
         Accepts a NumPy array or an on-device torch tensor and keeps it on its
         device (a GPU-decoded frame is resized and normalized on the GPU). The
@@ -138,8 +138,8 @@ class LoadedModel:
     def predict_points(self, inputs, *, method: str = "weighted", radius: int = 2):
         """Fused forward + decode for ``(B, V, 3, H, W)`` input.
 
-        Returns normalized ``(B, V, J, 2)`` peaks and ``(B, V, J)`` conf (plain 4D
-        ``(N, 3, H, W)`` input gives ``(N, J, 2)`` / ``(N, J)``).
+        Returns normalized ``(B, V, C_out, 2)`` peaks and ``(B, V, C_out)`` conf (plain 4D
+        ``(N, 3, H, W)`` input gives ``(N, C_out, 2)`` / ``(N, C_out)``).
         """
         from . import detector
 
@@ -148,7 +148,7 @@ class LoadedModel:
         )
 
     def predict_heatmaps(self, inputs):
-        """Final-stack heatmaps ``(B, V, J, Hh, Ww)`` (host NumPy) for the candidate path."""
+        """Final-stack heatmaps ``(B, V, C_out, H_out, W_out)`` (host NumPy) for the candidate path."""
         from . import detector
 
         return detector.predict_heatmaps(self.module, inputs)

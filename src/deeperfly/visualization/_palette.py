@@ -60,7 +60,7 @@ def _hex_to_rgb(value: str) -> tuple[float, float, float]:
 def point_colors_rgb(
     skeleton: Skeleton, palette: dict[str, str] | None = None
 ) -> np.ndarray:
-    """``(N, 3)`` RGB floats in ``[0, 1]``, one per tracked point, by limb.
+    """``(P, 3)`` RGB floats in ``[0, 1]``, one per tracked point, by limb.
 
     Parameters
     ----------
@@ -72,7 +72,7 @@ def point_colors_rgb(
     Returns
     -------
     np.ndarray
-        ``(N, 3)`` RGB floats in ``[0, 1]`` (``tab10`` fallback for limbs absent
+        ``(P, 3)`` RGB floats in ``[0, 1]`` (``tab10`` fallback for limbs absent
         from the palette).
     """
     palette = skeleton.palette if palette is None else palette

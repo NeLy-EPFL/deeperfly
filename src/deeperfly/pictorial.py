@@ -61,14 +61,14 @@ DEFAULT_SUBPIXEL = "weighted"  # peak refinement: "argmax" | "weighted" | "taylo
 class Candidates:
     """Top-K detector peaks per (view, point) for a sequence, in image pixels.
 
-    ``xy`` is ``(V, T, N, K, 2)`` and ``score`` is ``(V, T, N, K)``; padded /
+    ``xy`` is ``(V, T, P, K, 2)`` and ``score`` is ``(V, T, P, K)``; padded /
     invisible / sub-threshold slots are ``NaN`` (``xy``) and ``0`` (``score``).
     The arg-max (``K = 0``) reproduces the single-peak detection, so calibration
     can still use the plain 2D path while PS consumes the full candidate set.
     """
 
-    xy: Float[np.ndarray, "V T N K 2"]
-    score: Float[np.ndarray, "V T N K"]
+    xy: Float[np.ndarray, "V T P K 2"]
+    score: Float[np.ndarray, "V T P K"]
 
     @property
     def shape(self) -> tuple[int, int, int, int]:
@@ -76,7 +76,7 @@ class Candidates:
         return v, t, n, k
 
     def frame(self, t: int) -> tuple[np.ndarray, np.ndarray]:
-        """Candidate ``(xy, score)`` for one frame: ``(V, N, K, 2)`` and ``(V, N, K)``."""
+        """Candidate ``(xy, score)`` for one frame: ``(V, P, K, 2)`` and ``(V, P, K)``."""
         return self.xy[:, t], self.score[:, t]
 
 
@@ -84,7 +84,7 @@ class Candidates:
 
 
 def peak_candidates(
-    heatmaps: Float[np.ndarray, "*chan Hh Ww"],
+    heatmaps: Float[np.ndarray, "*chan H_out W_out"],
     k: int = DEFAULT_K,
     *,
     radius: int = DEFAULT_PEAK_RADIUS,
@@ -102,7 +102,7 @@ def peak_candidates(
     Parameters
     ----------
     heatmaps
-        Heatmaps of shape ``(*chan, Hh, Ww)``.
+        Heatmaps of shape ``(*chan, H_out, W_out)``.
     k
         Number of peaks to keep per channel.
     radius
@@ -159,7 +159,7 @@ def peak_candidates(
 
 def bone_length_targets(
     cameras: CameraGroup,
-    pts2d: Float[np.ndarray, "V F N 2"],
+    pts2d: Float[np.ndarray, "V F P 2"],
     skeleton: Skeleton,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Median bone length per skeleton bone, from an initial triangulation.
@@ -173,7 +173,7 @@ def bone_length_targets(
     cameras
         The rig used for the initial triangulation.
     pts2d
-        2D observations of shape ``(V, F, N, 2)``.
+        2D observations of shape ``(V, F, P, 2)``.
     skeleton
         Skeleton supplying the bone (edge) list.
 
@@ -189,7 +189,7 @@ def bone_length_targets(
 
     from .triangulation import triangulate
 
-    pts3d0 = triangulate(cameras, pts2d)  # (F, N, 3)
+    pts3d0 = triangulate(cameras, pts2d)  # (F, P, 3)
     i, j = skeleton.bone_index_pairs()
     lengths = np.linalg.norm(pts3d0[:, i] - pts3d0[:, j], axis=-1)  # (F, B)
     with warnings.catch_warnings():  # a never-triangulated bone -> NaN target (ok)
@@ -261,7 +261,7 @@ def skeleton_chains(skeleton: Skeleton) -> list[list[int]]:
 
 def _combo_index(v: int, k: int):
     """View-pair and candidate index arrays for all ``C(V,2) * K*K`` hypotheses."""
-    pairs = np.array(list(combinations(range(v), 2)), dtype=int)  # (P, 2)
+    pairs = np.array(list(combinations(range(v), 2)), dtype=int)  # (C(V,2), 2)
     a = np.repeat(np.arange(k), k)  # (K*K,) slow index
     b = np.tile(np.arange(k), k)  # (K*K,) fast index
     vv = np.repeat(pairs[:, 0], k * k)
@@ -273,8 +273,8 @@ def _combo_index(v: int, k: int):
 
 def _frame_hypotheses(
     cameras: CameraGroup,
-    cand_xy: Float[np.ndarray, "V N K 2"],
-    cand_score: Float[np.ndarray, "V N K"],
+    cand_xy: Float[np.ndarray, "V P K 2"],
+    cand_score: Float[np.ndarray, "V P K"],
     *,
     inlier_px: float,
 ):
@@ -287,7 +287,7 @@ def _frame_hypotheses(
     cameras
         The calibrated rig.
     cand_xy, cand_score
-        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+        Per-frame candidates of shape ``(V, P, K, 2)`` / ``(V, P, K)``.
     inlier_px
         A view supports a hypothesis if a candidate reprojects within this many
         pixels.
@@ -295,13 +295,13 @@ def _frame_hypotheses(
     Returns
     -------
     X : np.ndarray
-        Refit 3D hypotheses of shape ``(N, M, 3)`` (``M = C(V, 2) K^2``).
+        Refit 3D hypotheses of shape ``(P, M, 3)`` (``M = C(V, 2) K^2``).
     evidence : np.ndarray
-        Summed heatmap confidence of supporting views ``(N, M)``.
+        Summed heatmap confidence of supporting views ``(P, M)``.
     n_inlier : np.ndarray
-        Supporting-view count per hypothesis ``(N, M)``.
+        Supporting-view count per hypothesis ``(P, M)``.
     obs : np.ndarray
-        Per-view chosen candidate observations ``(V, N, M, 2)`` (NaN for
+        Per-view chosen candidate observations ``(V, P, M, 2)`` (NaN for
         non-supporting views).
     """
     v, n, k, _ = cand_xy.shape
@@ -309,9 +309,9 @@ def _frame_hypotheses(
     m = len(vv)
     rng = np.arange(m)
 
-    # Build (V, N, M, 2): each hypothesis activates its two views' chosen candidates.
+    # Build (V, P, M, 2): each hypothesis activates its two views' chosen candidates.
     pts = np.full((v, n, m, 2), np.nan)
-    pts[vv, :, rng] = cand_xy[vv, :, aa]  # (M, N, 2) -> view vv[m], hyp m
+    pts[vv, :, rng] = cand_xy[vv, :, aa]  # (M, P, 2) -> view vv[m], hyp m
     pts[ww, :, rng] = cand_xy[ww, :, bb]
     x_pair = np.asarray(cameras.triangulate(pts.reshape(v, n * m, 2))).reshape(n, m, 3)
 
@@ -326,9 +326,9 @@ def _frame_hypotheses(
 
 def _score_hypotheses(
     cameras: CameraGroup,
-    x: Float[np.ndarray, "N M 3"],
-    cand_xy: Float[np.ndarray, "V N K 2"],
-    cand_score: Float[np.ndarray, "V N K"],
+    x: Float[np.ndarray, "P M 3"],
+    cand_xy: Float[np.ndarray, "V P K 2"],
+    cand_score: Float[np.ndarray, "V P K"],
     inlier_px: float,
 ):
     """Reproject hypotheses and gather per-view nearest-candidate support.
@@ -338,39 +338,39 @@ def _score_hypotheses(
     cameras
         The calibrated rig.
     x
-        3D hypotheses of shape ``(N, M, 3)``.
+        3D hypotheses of shape ``(P, M, 3)``.
     cand_xy, cand_score
-        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+        Per-frame candidates of shape ``(V, P, K, 2)`` / ``(V, P, K)``.
     inlier_px
         Inlier reprojection threshold in pixels.
 
     Returns
     -------
     obs : np.ndarray
-        Nearest in-threshold candidate per view ``(V, N, M, 2)`` (else NaN).
+        Nearest in-threshold candidate per view ``(V, P, M, 2)`` (else NaN).
     evidence : np.ndarray
-        Summed score of supporting views ``(N, M)``.
+        Summed score of supporting views ``(P, M)``.
     n_inlier : np.ndarray
-        Supporting-view count ``(N, M)``.
+        Supporting-view count ``(P, M)``.
     """
     v, n, k, _ = cand_xy.shape
-    proj = np.asarray(cameras.project(x))  # (V, N, M, 2)
+    proj = np.asarray(cameras.project(x))  # (V, P, M, 2)
     d = np.linalg.norm(proj[:, :, :, None, :] - cand_xy[:, :, None, :, :], axis=-1)
-    valid_cand = np.isfinite(cand_xy).all(-1)  # (V, N, K)
-    d = np.where(valid_cand[:, :, None, :], d, np.inf)  # (V, N, M, K)
-    nearest_k = np.argmin(d, axis=-1)  # (V, N, M)
-    nearest_d = np.min(d, axis=-1)  # (V, N, M)
+    valid_cand = np.isfinite(cand_xy).all(-1)  # (V, P, K)
+    d = np.where(valid_cand[:, :, None, :], d, np.inf)  # (V, P, M, K)
+    nearest_k = np.argmin(d, axis=-1)  # (V, P, M)
+    nearest_d = np.min(d, axis=-1)  # (V, P, M)
 
     vi = np.arange(v)[:, None, None]
     ni = np.arange(n)[None, :, None]
-    nearest_xy = cand_xy[vi, ni, nearest_k]  # (V, N, M, 2)
-    nearest_s = cand_score[vi, ni, nearest_k]  # (V, N, M)
+    nearest_xy = cand_xy[vi, ni, nearest_k]  # (V, P, M, 2)
+    nearest_s = cand_score[vi, ni, nearest_k]  # (V, P, M)
 
-    hyp_finite = np.isfinite(x).all(-1)  # (N, M)
-    inlier = (nearest_d < inlier_px) & hyp_finite[None]  # (V, N, M)
+    hyp_finite = np.isfinite(x).all(-1)  # (P, M)
+    inlier = (nearest_d < inlier_px) & hyp_finite[None]  # (V, P, M)
     obs = np.where(inlier[..., None], nearest_xy, np.nan)
-    evidence = np.where(inlier, nearest_s, 0.0).sum(0)  # (N, M)
-    n_in = inlier.sum(0)  # (N, M)
+    evidence = np.where(inlier, nearest_s, 0.0).sum(0)  # (P, M)
+    n_in = inlier.sum(0)  # (P, M)
     return obs, evidence, n_in
 
 
@@ -505,8 +505,8 @@ def _chain_dp(
 def solve_frame(
     cameras: CameraGroup,
     skeleton: Skeleton,
-    cand_xy: Float[np.ndarray, "V N K 2"],
-    cand_score: Float[np.ndarray, "V N K"],
+    cand_xy: Float[np.ndarray, "V P K 2"],
+    cand_score: Float[np.ndarray, "V P K"],
     target_map: dict[tuple[int, int], float],
     chains: list[list[int]],
     *,
@@ -516,8 +516,8 @@ def solve_frame(
     lam: float = DEFAULT_LAMBDA,
     huber: float = DEFAULT_HUBER,
     mu: float = DEFAULT_MU,
-    prev_pts3d: Float[np.ndarray, "N 3"] | None = None,
-) -> tuple[Float[np.ndarray, "N 3"], Float[np.ndarray, "V N 2"]]:
+    prev_pts3d: Float[np.ndarray, "P 3"] | None = None,
+) -> tuple[Float[np.ndarray, "P 3"], Float[np.ndarray, "V P 2"]]:
     """Pictorial-structures correction for one multi-camera frame.
 
     Generates per-joint 3D hypotheses, prunes them, and runs exact chain DP with
@@ -530,7 +530,7 @@ def solve_frame(
     skeleton
         Skeleton (kept for symmetry with the sequence call).
     cand_xy, cand_score
-        Per-frame candidates of shape ``(V, N, K, 2)`` / ``(V, N, K)``.
+        Per-frame candidates of shape ``(V, P, K, 2)`` / ``(V, P, K)``.
     target_map
         ``(i, j) -> target bone length`` for the prior.
     chains
@@ -545,9 +545,9 @@ def solve_frame(
     Returns
     -------
     pts3d : np.ndarray
-        Chosen 3D points of shape ``(N, 3)`` (NaN where unsolved).
+        Chosen 3D points of shape ``(P, 3)`` (NaN where unsolved).
     obs : np.ndarray
-        Per-view 2D observations PS committed to ``(V, N, 2)`` (NaN where
+        Per-view 2D observations PS committed to ``(V, P, 2)`` (NaN where
         unsupported).
     """
     v, n, k, _ = cand_xy.shape
@@ -601,7 +601,7 @@ def reconstruct(
     cameras: CameraGroup,
     skeleton: Skeleton,
     candidates: Candidates,
-    pts2d_argmax: Float[np.ndarray, "V T N 2"],
+    pts2d_argmax: Float[np.ndarray, "V T P 2"],
     *,
     bone_max_frames: int | None = 100,
     temporal: bool = False,
@@ -611,7 +611,7 @@ def reconstruct(
     huber: float = DEFAULT_HUBER,
     mu: float = DEFAULT_MU,
 ) -> tuple[
-    Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
+    Float[np.ndarray, "T P 3"], Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]
 ]:
     """Run PS correction over a whole sequence.
 
@@ -629,7 +629,7 @@ def reconstruct(
     candidates
         The detector's top-K candidate peaks for the sequence.
     pts2d_argmax
-        Arg-max 2D of shape ``(V, T, N, 2)`` used to estimate the prior.
+        Arg-max 2D of shape ``(V, T, P, 2)`` used to estimate the prior.
     bone_max_frames
         Frames subsampled to estimate the prior (``None`` uses all).
     temporal
@@ -640,11 +640,11 @@ def reconstruct(
     Returns
     -------
     pts3d : np.ndarray
-        Corrected 3D of shape ``(T, N, 3)``.
+        Corrected 3D of shape ``(T, P, 3)``.
     pts2d : np.ndarray
-        Committed per-view 2D of shape ``(V, T, N, 2)``.
+        Committed per-view 2D of shape ``(V, T, P, 2)``.
     reproj : np.ndarray
-        Reprojection error of shape ``(V, T, N)``.
+        Reprojection error of shape ``(V, T, P)``.
     """
     # Candidates already carry NaN where no pathway produced a (view, point), so
     # the visibility pattern is intrinsic to the detection -- no masking needed.

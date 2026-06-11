@@ -177,17 +177,17 @@ class Sources:
     """The data the panels draw from, shared across every video and frame.
 
     ``frames`` maps a view name to that camera's footage ``(T, H, W[, 3])``.
-    ``pts2d`` / ``conf`` are aligned to ``camera_group`` order (``(V, T, N, 2)``
-    / ``(V, T, N)``); ``pts3d`` is ``(T, N, 3)`` in world coordinates. Only the
+    ``pts2d`` / ``conf`` are aligned to ``camera_group`` order (``(V, T, P, 2)``
+    / ``(V, T, P)``); ``pts3d`` is ``(T, P, 3)`` in world coordinates. Only the
     sources a video's ops actually reference need to be provided.
     """
 
     skeleton: "Skeleton"
     camera_group: "CameraGroup"
     frames: dict[str, np.ndarray]
-    pts2d: Float[np.ndarray, "V T N 2"] | None = None
-    pts3d: Float[np.ndarray, "T N 3"] | None = None
-    conf: Float[np.ndarray, "V T N"] | None = None
+    pts2d: Float[np.ndarray, "V T P 2"] | None = None
+    pts3d: Float[np.ndarray, "T P 3"] | None = None
+    conf: Float[np.ndarray, "V T P"] | None = None
 
     def _view_index(self, view: str) -> int:
         return self.camera_group.names.index(view)

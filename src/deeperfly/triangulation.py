@@ -7,7 +7,7 @@ the **NaN convention**: a 2D observation of ``NaN`` means "this camera did not
 separate mask array travels downstream.
 
 All functions use the **view-leading** layout: ``pts2d`` has shape ``(V, *pts, 2)``
-(``(V, N, 2)`` for one frame, ``(V, T, N, 2)`` for a sequence); triangulated
+(``(V, P, 2)`` for one frame, ``(V, T, P, 2)`` for a sequence); triangulated
 points come back as ``(*pts, 3)``.
 """
 
@@ -105,7 +105,7 @@ def triangulate_ransac(
     error), and the point is re-triangulated from all its inlier views. Points
     with fewer than ``min_inliers`` agreeing views come back ``NaN``.
 
-    Operates per point over any leading layout (``(V, N, 2)``, ``(V, T, N, 2)``).
+    Operates per point over any leading layout (``(V, P, 2)``, ``(V, T, P, 2)``).
 
     Parameters
     ----------

@@ -23,7 +23,7 @@ def fly_cloud(rng, n_pts=38):
 
 
 def candidates_from_proj(proj, k, *, score=0.9):
-    """``(V, 1, N, K, 2)`` / ``(V, 1, N, K)`` with the true projection as peak 0."""
+    """``(V, 1, P, K, 2)`` / ``(V, 1, P, K)`` with the true projection as peak 0."""
     v, n, _ = proj.shape
     xy = np.full((v, 1, n, k, 2), np.nan)
     sc = np.zeros((v, 1, n, k))
@@ -75,8 +75,8 @@ def test_skeleton_chains_partition_fly(fly):
 
 
 def test_bone_length_targets_matches_manual(cameras, fly, rng):
-    pts3d = fly_cloud(rng)[None].repeat(4, 0)  # (F=4, N, 3)
-    pts2d = np.asarray(cameras.project(pts3d))  # (V, F, N, 2)
+    pts3d = fly_cloud(rng)[None].repeat(4, 0)  # (F=4, P, 3)
+    pts2d = np.asarray(cameras.project(pts3d))  # (V, F, P, 2)
     i, j, targets = pictorial.bone_length_targets(cameras, pts2d, fly)
     # The true bone lengths, recovered exactly from clean multi-view geometry.
     expect = np.linalg.norm(pts3d[0, i] - pts3d[0, j], axis=-1)
@@ -99,7 +99,7 @@ def test_bone_prior_uses_shared_targets(cameras, fly, rng):
 
 def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     pts3d = fly_cloud(rng)
-    proj = np.asarray(cameras.project(pts3d))  # (V, N, 2)
+    proj = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     k = 5
     xy, sc = candidates_from_proj(proj, k)
 
@@ -231,8 +231,8 @@ def test_single_view_joint_is_nan(cameras, fly, rng):
 
 
 def test_run_from_points2d_pictorial(cameras, fly, rng):
-    pts3d = fly_cloud(rng)[None]  # (T=1, N, 3)
-    proj = np.asarray(cameras.project(pts3d))  # (V, 1, N, 2)
+    pts3d = fly_cloud(rng)[None]  # (T=1, P, 3)
+    proj = np.asarray(cameras.project(pts3d))  # (V, 1, P, 2)
     xy = np.full((*proj.shape[:3], 3, 2), np.nan)
     sc = np.zeros((*proj.shape[:3], 3))
     xy[..., 0, :] = proj

@@ -304,9 +304,9 @@ def detect_2d(
     Returns
     -------
     pts2d : np.ndarray
-        Detected 2D of shape ``(V, T, N, 2)``.
+        Detected 2D of shape ``(V, T, P, 2)``.
     conf : np.ndarray
-        Per-point confidence of shape ``(V, T, N)``.
+        Per-point confidence of shape ``(V, T, P)``.
     candidates : deeperfly.pictorial.Candidates or None
         The top-K candidate set when ``want_candidates``, else ``None``.
 
