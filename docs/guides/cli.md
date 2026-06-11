@@ -75,7 +75,7 @@ By default each recording's outputs go to `<input>/deeperfly_outputs/`. With
 - a relative name without `/` creates that directory inside each recording;
 - for a single recording, `-o` is just that recording's output directory.
 
-Each output directory holds `poses.h5`, the rendered MP4s, a `config.toml`
+Each output directory holds `results.h5`, the rendered MP4s, a `config.toml`
 snapshot, and `run.json` — see the
 [output-format reference](../reference/output-format.md).
 
@@ -122,7 +122,7 @@ skeleton (name and point count), whether a 3D pose is present, and the median /
 max reprojection error.
 
 ```bash
-deeperfly inspect recording/deeperfly_outputs/poses.h5
+deeperfly inspect recording/deeperfly_outputs/results.h5
 ```
 
 ## `deeperfly doctor` — report the install

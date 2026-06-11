@@ -93,10 +93,10 @@ def test_video_spec_resolve_fps_defaults_to_input():
 
 
 def _seed_2d(result, outdir):
-    """Pre-seed a 2D-only poses.h5 in ``outdir`` so a run resumes at pose3d."""
+    """Pre-seed a 2D-only results.h5 in ``outdir`` so a run resumes at pose3d."""
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
+        outdir / "results.h5"
     )
 
 
@@ -123,11 +123,11 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
             "error",
         ]
     )
-    out = PoseResult.load(outdir / "poses.h5")
+    out = PoseResult.load(outdir / "results.h5")
     assert out.pts3d is not None
     assert out.pts3d.shape == (result.n_frames, 38, 3)
 
-    cli.main(["inspect", str(outdir / "poses.h5")])
+    cli.main(["inspect", str(outdir / "results.h5")])
     printed = capsys.readouterr().out
     assert "skeleton: fly38  (38 points)" in printed
     assert "has 3D:   True" in printed
@@ -155,7 +155,7 @@ def test_cli_run_visualization_only(result, tmp_path):
     # pose2d off -> the cached 2D is triangulated and rendered. A skeleton_3d-only
     # video needs no image frames (canvas sized from the camera's intrinsics); fps
     # comes from the config.
-    result.save(outdir / "poses.h5")
+    result.save(outdir / "results.h5")
     cli.main(
         [
             "run",
@@ -175,7 +175,7 @@ def test_visualization_reused_when_mp4_exists(result, tmp_path, monkeypatch):
     """A rendered MP4 with an unchanged config is reused (not re-rendered)."""
     outdir = tmp_path / "out"
     outdir.mkdir()
-    result.save(outdir / "poses.h5")
+    result.save(outdir / "results.h5")
     cfg = _viz_3d_cfg(tmp_path)
     args = [
         "run",
@@ -202,7 +202,7 @@ def test_overwrite_visualization_rerenders(result, tmp_path):
     """--overwrite visualization re-renders even when the cached MP4 is valid."""
     outdir = tmp_path / "out"
     outdir.mkdir()
-    result.save(outdir / "poses.h5")
+    result.save(outdir / "results.h5")
     cfg = _viz_3d_cfg(tmp_path)
     args = [
         "run",

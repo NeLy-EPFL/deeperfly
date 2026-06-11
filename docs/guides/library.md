@@ -92,7 +92,7 @@ is portable without the original config.
 ```python
 from deeperfly import PoseResult
 
-result = PoseResult.load("recording/deeperfly_outputs/poses.h5")
+result = PoseResult.load("recording/deeperfly_outputs/results.h5")
 print(result.n_views, result.n_frames)
 xyz = result.pts3d              # (T, P, 3), NaN where un-triangulated
 ```

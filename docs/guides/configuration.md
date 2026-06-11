@@ -132,7 +132,7 @@ temporal = false   # add a temporal-consistency term
 lam      = 1.0     # bone-length prior weight
 ```
 
-Candidate peaks are extracted during detection and cached in `poses.h5` when this
+Candidate peaks are extracted during detection and cached in `results.h5` when this
 stage is enabled. Enabling it on an existing output directory therefore re-runs
 `pose2d` once (announced loudly); after that, tweaking `temporal` / `lam` re-runs
 only the recovery from the cached candidates. Resuming with `do_pose2d = false`

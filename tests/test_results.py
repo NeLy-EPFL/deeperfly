@@ -126,7 +126,7 @@ def _write_base(store, cameras, rng, *, candidates=None):
 
 
 def test_store_pose2d_roundtrip(cameras, rng, tmp_path):
-    store = StageStore(tmp_path / "poses.h5")
+    store = StageStore(tmp_path / "results.h5")
     assert not store.has("pose2d")
     pts2d, conf = _write_base(store, cameras, rng)
 
@@ -142,7 +142,7 @@ def test_store_pose2d_roundtrip(cameras, rng, tmp_path):
 
 
 def test_store_candidates_roundtrip(cameras, rng, tmp_path):
-    store = StageStore(tmp_path / "poses.h5")
+    store = StageStore(tmp_path / "results.h5")
     v, t, n, k = len(cameras), 4, 38, 3
     cand = Candidates(
         xy=rng.normal(size=(v, t, n, k, 2)), score=rng.uniform(size=(v, t, n, k))
@@ -159,7 +159,7 @@ def test_store_candidates_roundtrip(cameras, rng, tmp_path):
 
 
 def test_store_stage_groups_do_not_touch_pose2d(cameras, rng, tmp_path):
-    store = StageStore(tmp_path / "poses.h5")
+    store = StageStore(tmp_path / "results.h5")
     pts2d, _ = _write_base(store, cameras, rng)
 
     refined = CameraGroup.from_arrays(
@@ -190,7 +190,7 @@ def test_store_stage_groups_do_not_touch_pose2d(cameras, rng, tmp_path):
 
 
 def test_load_prefers_most_derived(cameras, rng, tmp_path):
-    store = StageStore(tmp_path / "poses.h5")
+    store = StageStore(tmp_path / "results.h5")
     pts2d, conf = _write_base(store, cameras, rng)
     v, t, n = pts2d.shape[:3]
 
@@ -224,7 +224,7 @@ def test_load_prefers_most_derived(cameras, rng, tmp_path):
 
 
 def test_truncate_from_drops_stage_and_downstream(cameras, rng, tmp_path):
-    store = StageStore(tmp_path / "poses.h5")
+    store = StageStore(tmp_path / "results.h5")
     pts2d, _ = _write_base(store, cameras, rng)
     v, t, n = pts2d.shape[:3]
     store.write_cameras("bundle_adjustment", cameras)
@@ -244,7 +244,7 @@ def test_truncate_from_drops_stage_and_downstream(cameras, rng, tmp_path):
 
 
 def test_store_treats_old_format_as_empty(tmp_path):
-    path = tmp_path / "poses.h5"
+    path = tmp_path / "results.h5"
     with h5py.File(path, "w") as f:
         f.attrs["meta"] = json.dumps({"deeperfly_format_version": 1})
         f.create_group("pose2d").create_dataset("points", data=np.zeros((1, 1, 1, 2)))

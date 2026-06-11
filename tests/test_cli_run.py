@@ -215,7 +215,7 @@ def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
         ["run", str(rec), "-c", str(cfg), "-o", str(outdir), "--log-level", "error"]
     )
 
-    res = PoseResult.load(outdir / "poses.h5")
+    res = PoseResult.load(outdir / "results.h5")
     assert res.pts3d is None  # 2D only (no triangulation/pictorial)
     assert res.pts2d.shape == (7, T, 38, 2)
     # the config used is snapshotted next to the results for reproducibility.
@@ -232,7 +232,7 @@ def test_run_without_config_uses_default(tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     rec = tmp_path / "rec"
     cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
-    assert (outdir / "poses.h5").exists()
+    assert (outdir / "results.h5").exists()
     assert (outdir / "config.toml").read_text() == DEFAULT_CONFIG_PATH.read_text()
 
 
@@ -245,7 +245,7 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
     rec = tmp_path / "rec"
     rec.mkdir()
     cli.main(["run", str(rec), "-c", str(cfg), "--log-level", "error"])
-    assert (rec / "deeperfly_outputs" / "poses.h5").exists()
+    assert (rec / "deeperfly_outputs" / "results.h5").exists()
 
 
 # -- input footage validated before the output dir is created ----------------
@@ -332,7 +332,7 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
+        outdir / "results.h5"
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
@@ -351,7 +351,7 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
             "error",
         ]
     )
-    assert PoseResult.load(outdir / "poses.h5").pts3d is not None
+    assert PoseResult.load(outdir / "results.h5").pts3d is not None
 
 
 # -- input resolution: multiple inputs, wildcards, --recursive ----------------
@@ -629,8 +629,8 @@ def test_run_batch_collision_confirmed_mirrors(tmp_path, monkeypatch):
             "error",
         ]
     )
-    assert (tmp_path / "out" / "a" / "rec" / "poses.h5").exists()
-    assert (tmp_path / "out" / "b" / "rec" / "poses.h5").exists()
+    assert (tmp_path / "out" / "a" / "rec" / "results.h5").exists()
+    assert (tmp_path / "out" / "b" / "rec" / "results.h5").exists()
 
 
 def test_resolve_recursive_nondir_literal_warns_and_errors(tmp_path, caplog):
@@ -670,8 +670,8 @@ def test_run_batch_multiple_inputs(tmp_path, monkeypatch):
             "error",
         ]
     )
-    assert (out / "r1" / "poses.h5").exists()
-    assert (out / "r2" / "poses.h5").exists()
+    assert (out / "r1" / "results.h5").exists()
+    assert (out / "r2" / "results.h5").exists()
 
 
 def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
@@ -679,7 +679,7 @@ def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
+        outdir / "results.h5"
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
@@ -701,7 +701,7 @@ def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
             "error",
         ]
     )
-    assert PoseResult.load(outdir / "poses.h5").pts3d is not None
+    assert PoseResult.load(outdir / "results.h5").pts3d is not None
 
 
 def test_triangulation_skipped_without_2d(tmp_path, caplog):
@@ -714,7 +714,7 @@ def test_triangulation_skipped_without_2d(tmp_path, caplog):
     )
     with caplog.at_level("WARNING"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
-    assert not (outdir / "poses.h5").exists()
+    assert not (outdir / "results.h5").exists()
     assert any(
         "skipping triangulation" in r.message and "no 2D pose" in r.message
         for r in caplog.records
@@ -728,7 +728,7 @@ def test_visualization_only_from_cached_result(result, tmp_path, monkeypatch):
     stage feeds downstream only while enabled), so this renders the 2D pose."""
     outdir = tmp_path / "out"
     outdir.mkdir()
-    result.save(outdir / "poses.h5")  # full result with 3D
+    result.save(outdir / "results.h5")  # full result with 3D
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
@@ -1102,7 +1102,7 @@ def test_cli_config_wins_and_refreshes_snapshot(tmp_path, monkeypatch):
     cli.main(_run_args(tmp_path, cfg2))
     assert (tmp_path / "out" / "config.toml").read_text() == cfg2.read_text()
     # ... and the -c'd triangulation toggle actually drove the run
-    assert PoseResult.load(tmp_path / "out" / "poses.h5").pts3d is not None
+    assert PoseResult.load(tmp_path / "out" / "results.h5").pts3d is not None
 
 
 def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
@@ -1216,7 +1216,7 @@ def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, m
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
+        outdir / "results.h5"
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
@@ -1230,7 +1230,7 @@ def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, m
         "skipping pictorial_structures" in r.message and "candidates" in r.message
         for r in caplog.records
     )
-    assert PoseResult.load(outdir / "poses.h5").pts3d is not None
+    assert PoseResult.load(outdir / "results.h5").pts3d is not None
 
 
 def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
@@ -1240,7 +1240,7 @@ def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
     outdir = tmp_path / "out"
     outdir.mkdir()
     PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf).save(
-        outdir / "poses.h5"
+        outdir / "results.h5"
     )
     # full default config (with [cameras]), pose2d/visualization off so the rig is
     # never rebuilt -- bundle_adjustment + triangulation run on the stored cameras.
@@ -1257,7 +1257,7 @@ def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
             "error",
         ]
     )
-    res = PoseResult.load(outdir / "poses.h5")
+    res = PoseResult.load(outdir / "results.h5")
     assert res.pts3d is not None
     assert res.cameras.names == result.cameras.names  # stored rig, not rebuilt
 

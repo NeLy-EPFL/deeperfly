@@ -85,7 +85,7 @@ def _cfg(extra: dict | None = None) -> Config:
 
 @pytest.fixture
 def store(tmp_path):
-    return StageStore(tmp_path / "poses.h5")
+    return StageStore(tmp_path / "results.h5")
 
 
 def _seed_pose2d(store, cameras, *, candidates=None):

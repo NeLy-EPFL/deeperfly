@@ -59,7 +59,7 @@ Outputs land in `examples/data/deeperfly_outputs/` (override with `-o`):
 
 ```
 examples/data/deeperfly_outputs/
-├── poses.h5        # cameras, skeleton, 2D + 3D keypoints, reprojection error
+├── results.h5      # cameras, skeleton, 2D + 3D keypoints, reprojection error
 ├── config.toml     # a snapshot of the exact config this run used
 ├── run.json        # per-stage fingerprints (drives cache reuse)
 ├── pose2d.mp4      # camera montage with the 2D detections drawn on
@@ -69,11 +69,11 @@ examples/data/deeperfly_outputs/
 ## 4. Inspect the result
 
 ```bash
-deeperfly inspect examples/data/deeperfly_outputs/poses.h5
+deeperfly inspect examples/data/deeperfly_outputs/results.h5
 ```
 
 ```
-file:     examples/data/deeperfly_outputs/poses.h5
+file:     examples/data/deeperfly_outputs/results.h5
 views:    7  ['rh', 'rm', 'rf', 'f', 'lf', 'lm', 'lh']
 frames:   100
 skeleton: fly38  (38 points)
