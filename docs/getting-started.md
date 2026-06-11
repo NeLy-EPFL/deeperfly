@@ -21,6 +21,34 @@ git clone https://github.com/NeLy-EPFL/deeperfly
 cd deeperfly
 ```
 
+### Development installation
+
+If you want to edit deeperfly itself, install the CLI from your clone in editable
+mode instead — source changes then take effect without reinstalling:
+
+```bash
+uv tool install ./ --editable --python 3.13 --torch-backend=auto
+```
+
+See [CONTRIBUTING.md](https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md)
+for tests, linting, and the docs site.
+
+### Updating
+
+Upgrade a normal install to the latest `main`:
+
+```bash
+uv tool upgrade deeperfly
+```
+
+For a development install, pull the latest source — editable code is picked up
+automatically. Re-run the install command only if dependencies changed:
+
+```bash
+git pull
+uv tool install ./ --editable --python 3.13 --torch-backend=auto   # only if deps changed
+```
+
 ## 2. Check the install
 
 `deeperfly doctor` reports what this machine can run — accelerators, frame-I/O

@@ -26,13 +26,42 @@ uv tool install git+https://github.com/NeLy-EPFL/deeperfly --python 3.13 --torch
 
 `--torch-backend=auto` picks the right PyTorch wheel for your machine.
 
+### Development installation
+
+To hack on deeperfly, install the CLI from a local clone in editable mode so
+your source changes take effect without reinstalling:
+
+```bash
+git clone https://github.com/NeLy-EPFL/deeperfly
+cd deeperfly
+uv tool install ./ --editable --python 3.13 --torch-backend=auto
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, linting, and the docs site.
+
+### Updating
+
+Upgrade a normal install to the latest `main`:
+
+```bash
+uv tool upgrade deeperfly
+```
+
+For a development install, pull the latest source — editable code is picked up
+automatically. Re-run the install command only if dependencies changed:
+
+```bash
+git pull
+uv tool install ./ --editable --python 3.13 --torch-backend=auto   # only if deps changed
+```
+
 ## Usage
 
 ```bash
 deeperfly doctor                        # check installation
 deeperfly init config.toml              # generate a config template
-deeperfly run recording/ -c config.toml # run the pipeline
-deeperfly inspect recording/deeperfly_outputs/results.h5   # summarize the result
+deeperfly run examples/data/ -c config.toml # run the pipeline
+deeperfly inspect examples/data/deeperfly_outputs/results.h5   # summarize the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
