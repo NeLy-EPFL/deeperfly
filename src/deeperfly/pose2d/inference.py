@@ -10,9 +10,9 @@ for one recording:
 2. For each **pathway**: orient the frame with the pathway's preprocessor (a
    mirror/crop/...), let its **model** resize + normalize + forward + decode to
    normalized peaks, then map those peaks back into the view frame by inverting
-   the pathway's preprocessing (:func:`~deeperfly.pose2d.pathways.map_to_view`)
-   and scatter them into the ``(V, N)`` skeleton
-   (:func:`~deeperfly.pose2d.pathways.scatter_pathway`).
+   the pathway's preprocessing (:func:`~deeperfly.pose2d.pathways.normalized_peaks_to_original_pixels`)
+   and scatter them into the ``(V, P)`` skeleton
+   (:func:`~deeperfly.pose2d.pathways.route_channels_to_points_in_views`).
 
 A ``(view, point)`` pair that no pathway writes stays ``NaN`` -- that is how
 visibility is encoded, with no separate table. A source can feed several
@@ -27,7 +27,11 @@ from collections.abc import Callable, Iterable
 import numpy as np
 from jaxtyping import Float, Int
 
-from .pathways import DetectionPlan, map_to_view, scatter_pathway
+from .pathways import (
+    DetectionPlan,
+    normalized_peaks_to_original_pixels,
+    route_channels_to_points_in_views,
+)
 
 
 def _to_torch_image(image):
@@ -83,20 +87,20 @@ SubpixelMethod = str  # "argmax" | "weighted" | "taylor"
 
 
 def refine_peaks(
-    hm: Float[np.ndarray, "M Hh Ww"],
-    row: Int[np.ndarray, "M P"],
-    col: Int[np.ndarray, "M P"],
+    hm: Float[np.ndarray, "M H_out W_out"],
+    row: Int[np.ndarray, "M K"],
+    col: Int[np.ndarray, "M K"],
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
-) -> tuple[Float[np.ndarray, "M P"], Float[np.ndarray, "M P"]]:
+) -> tuple[Float[np.ndarray, "M K"], Float[np.ndarray, "M K"]]:
     """Refine integer peak cells ``(row, col)`` to sub-pixel ``(cx, cy)`` (heatmap px).
 
     Shared by :func:`heatmap_to_points` and
     :func:`deeperfly.pictorial.peak_candidates` so the single arg-max peak and the
     top-K candidate peaks are localized the same way. ``hm`` holds ``M`` heatmaps;
-    each carries ``P`` peaks to refine (``P = 1`` for the arg-max, ``P = K`` for
-    top-K). All three estimators are seeded by the arg-max cell:
+    each carries ``K`` peaks to refine (``K = 1`` for the arg-max, the top-``K``
+    for candidates). All three estimators are seeded by the arg-max cell:
 
     - ``"argmax"`` -- no refinement (the integer cell); the original behaviour.
     - ``"weighted"`` -- intensity-weighted centroid of the ``(2*radius+1)`` window
@@ -114,9 +118,9 @@ def refine_peaks(
     Parameters
     ----------
     hm
-        ``M`` heatmaps of shape ``(M, Hh, Ww)``.
+        ``M`` heatmaps of shape ``(M, H_out, W_out)``.
     row, col
-        Integer peak cells of shape ``(M, P)`` to refine.
+        Integer peak cells of shape ``(M, K)`` to refine.
     method
         ``"argmax"`` | ``"weighted"`` | ``"taylor"`` (see above).
     radius
@@ -125,7 +129,7 @@ def refine_peaks(
     Returns
     -------
     cx, cy : np.ndarray
-        The sub-pixel peak coordinates of shape ``(M, P)`` (heatmap pixels).
+        The sub-pixel peak coordinates of shape ``(M, K)`` (heatmap pixels).
 
     Raises
     ------
@@ -145,11 +149,11 @@ def refine_peaks(
 
     off = np.arange(-radius, radius + 1)
     dr, dc = (a.ravel() for a in np.meshgrid(off, off, indexing="ij"))  # (PP,)
-    nr, nc = row[..., None] + dr, col[..., None] + dc  # (M, P, PP) window cells
+    nr, nc = row[..., None] + dr, col[..., None] + dc  # (M, K, PP) window cells
     inb = (nr >= 0) & (nr < hh) & (nc >= 0) & (nc < ww)
     flat = hm.reshape(m, hh * ww)
     gidx = np.clip(nr, 0, hh - 1) * ww + np.clip(nc, 0, ww - 1)
-    patch = flat[np.arange(m)[:, None, None], gidx]  # (M, P, PP) values around peak
+    patch = flat[np.arange(m)[:, None, None], gidx]  # (M, K, PP) values around peak
 
     if method == "weighted":
         w = np.where(inb, np.maximum(patch, 0.0), 0.0)
@@ -162,7 +166,7 @@ def refine_peaks(
 
     # "taylor": fit the log-heatmap's local quadratic and Newton-step to its peak.
     p = 2 * radius + 1
-    b = np.log(np.maximum(patch, 1e-10)).reshape(m, -1, p, p)  # (M, P, P_, P_)
+    b = np.log(np.maximum(patch, 1e-10)).reshape(m, -1, p, p)  # (M, K, P_, P_)
     ib = inb.reshape(m, -1, p, p)
     c = radius  # centre tap; b[..., c + i, c + j] is row+i, col+j
     dx = 0.5 * (b[..., c, c + 1] - b[..., c, c - 1])
@@ -198,11 +202,11 @@ def refine_peaks(
 
 
 def heatmap_to_points(
-    heatmaps: Float[np.ndarray, "*batch J Hh Ww"],
+    heatmaps: Float[np.ndarray, "*batch C_out H_out W_out"],
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
-) -> tuple[Float[np.ndarray, "*batch J 2"], Float[np.ndarray, "*batch J"]]:
+) -> tuple[Float[np.ndarray, "*batch C_out 2"], Float[np.ndarray, "*batch C_out"]]:
     """Peak location (normalized ``(x, y)`` in [0, 1]) and confidence per joint.
 
     The heatmaps are ~8x smaller than the source image, so a plain arg-max
@@ -212,14 +216,14 @@ def heatmap_to_points(
     centroid, ``"taylor"`` is the DARK Newton step. Confidence stays the raw peak
     value.
 
-    Coordinates keep the same ``col / Ww``, ``row / Hh`` normalization as a plain
+    Coordinates keep the same ``col / W_out``, ``row / H_out`` normalization as a plain
     arg-max (DeepFly2D's ``heatmap2points``) and ``(x, y)`` ordering for the
     geometry layer, so a single-pixel spike still decodes to exactly its cell.
 
     Parameters
     ----------
     heatmaps
-        Heatmaps of shape ``(*batch, J, Hh, Ww)``.
+        Heatmaps of shape ``(*batch, C_out, H_out, W_out)``.
     method
         Sub-pixel refinement (see :func:`refine_peaks`).
     radius
@@ -228,13 +232,13 @@ def heatmap_to_points(
     Returns
     -------
     points : np.ndarray
-        Normalized ``(x, y)`` peaks in ``[0, 1]`` of shape ``(*batch, J, 2)``.
+        Normalized ``(x, y)`` peaks in ``[0, 1]`` of shape ``(*batch, C_out, 2)``.
     conf : np.ndarray
-        The raw peak value per joint of shape ``(*batch, J)``.
+        The raw peak value per joint of shape ``(*batch, C_out)``.
     """
     hm = np.asarray(heatmaps, dtype=float)
-    *lead, hh, ww = hm.shape  # lead = (*batch, J)
-    flat = hm.reshape(-1, hh * ww)  # (M, Hh*Ww)
+    *lead, hh, ww = hm.shape  # lead = (*batch, C_out)
+    flat = hm.reshape(-1, hh * ww)  # (M, H_out*W_out)
     idx = np.argmax(flat, axis=-1)  # (M,)
     conf = flat.max(axis=-1)
     row, col = idx // ww, idx % ww
@@ -258,7 +262,7 @@ def _plan_device(models) -> str:
 
 
 def _prepare_pathways(plan, models, windows):
-    """Batched input prep: ``pathway -> (T, 3, Hh, Ww)`` model input.
+    """Batched input prep: ``pathway -> (T, 3, H_out, W_out)`` model input.
 
     Each pathway's *whole* window is oriented (mirror/crop) and resized +
     normalized in one shot, so the heavy resize runs once per pathway over all
@@ -279,8 +283,8 @@ def detect_sequence(
     radius: int = 2,
     batch_size: int | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
-) -> tuple[Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]]:
-    """Detect a multi-source sequence -> ``(V, T, N, 2)`` pixels and ``(V, T, N)`` conf.
+) -> tuple[Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]]:
+    """Detect a multi-source sequence -> ``(V, T, P, 2)`` pixels and ``(V, T, P)`` conf.
 
     Fully batched: every pathway's window is preprocessed in one shot, then the
     forward runs **per model** over one big time-major batch (all pathways of a
@@ -308,9 +312,9 @@ def detect_sequence(
     Returns
     -------
     pts : np.ndarray
-        2D pixels of shape ``(V, T, N, 2)`` (NaN where unobserved).
+        2D pixels of shape ``(V, T, P, 2)`` (NaN where unobserved).
     conf : np.ndarray
-        Per-point confidence of shape ``(V, T, N)``.
+        Per-point confidence of shape ``(V, T, P)``.
     """
     import torch
 
@@ -323,9 +327,11 @@ def detect_sequence(
 
     out_pts = np.full((plan.n_views, n_frames, plan.n_points, 2), np.nan)
     out_conf = np.zeros((plan.n_views, n_frames, plan.n_points))
-    prepared = _prepare_pathways(plan, models, windows)  # [(T, 3, Hh, Ww)] per pathway
+    prepared = _prepare_pathways(
+        plan, models, windows
+    )  # [(T, 3, H_out, W_out)] per pathway
 
-    # results[t][pw_idx] = (points_norm (J, 2), conf (J,))
+    # results[t][pw_idx] = (points_norm (C_out, 2), conf (C_out,))
     results: list[list] = [[None] * n_pass for _ in range(n_frames)]
     steps = progress(range(n_frames)) if progress is not None else range(n_frames)
     step_iter = iter(steps)
@@ -353,7 +359,7 @@ def detect_sequence(
         for i in range(0, n_frames, bs_t):
             pn, cc = model.predict_points(
                 stacked[i : i + bs_t], method=method, radius=radius
-            )  # (b, Pm, J, 2), (b, Pm, J)
+            )  # (b, Pm, C_out, 2), (b, Pm, C_out)
             for tt in range(pn.shape[0]):
                 for local in range(p_m):
                     landed(i + tt, pw_idxs[local], pn[tt, local], cc[tt, local])
@@ -365,10 +371,12 @@ def detect_sequence(
     for t in range(n_frames):
         for pw_idx, pw in enumerate(pathways):
             pn, cc = results[t][pw_idx]
-            raw_xy = map_to_view(
+            raw_xy = normalized_peaks_to_original_pixels(
                 pn, pw.transform, models[pw.model].input_size, source_sizes[pw.source]
             )
-            scatter_pathway(raw_xy, cc, pw.mapping, out_pts[:, t], out_conf[:, t])
+            route_channels_to_points_in_views(
+                raw_xy, cc, pw.mapping, out_pts[:, t], out_conf[:, t]
+            )
     return out_pts, out_conf
 
 
@@ -379,8 +387,8 @@ def detect(
     *,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
-) -> tuple[Float[np.ndarray, "V N 2"], Float[np.ndarray, "V N"]]:
-    """Detect one multi-source frame -> ``(V, N, 2)`` pixels and ``(V, N)`` conf.
+) -> tuple[Float[np.ndarray, "V P 2"], Float[np.ndarray, "V P"]]:
+    """Detect one multi-source frame -> ``(V, P, 2)`` pixels and ``(V, P)`` conf.
 
     Parameters
     ----------
@@ -396,7 +404,7 @@ def detect(
     Returns
     -------
     pts, conf : np.ndarray
-        ``(V, N, 2)`` pixels and ``(V, N)`` confidence.
+        ``(V, P, 2)`` pixels and ``(V, P)`` confidence.
     """
     windows = {name: img[None] for name, img in images.items()}
     pts, conf = detect_sequence(plan, models, windows, method=method, radius=radius)
@@ -439,9 +447,9 @@ def detect_candidates_sequence(
     Returns
     -------
     pts2d : np.ndarray
-        Arg-max 2D pixels of shape ``(V, T, N, 2)``.
+        Arg-max 2D pixels of shape ``(V, T, P, 2)``.
     conf : np.ndarray
-        Per-point confidence of shape ``(V, T, N)``.
+        Per-point confidence of shape ``(V, T, P)``.
     candidates : deeperfly.pictorial.Candidates
         The top-``k`` candidate peak set.
     """
@@ -455,13 +463,15 @@ def detect_candidates_sequence(
     n_frames = len(next(iter(windows.values())))
     pathways = plan.pathways
 
-    V, N = plan.n_views, plan.n_points
-    pts = np.full((V, n_frames, N, 2), np.nan)
-    conf = np.zeros((V, n_frames, N))
-    cand_xy = np.full((V, n_frames, N, k, 2), np.nan)
-    cand_score = np.zeros((V, n_frames, N, k))
+    V, P = plan.n_views, plan.n_points
+    pts = np.full((V, n_frames, P, 2), np.nan)
+    conf = np.zeros((V, n_frames, P))
+    cand_xy = np.full((V, n_frames, P, k, 2), np.nan)
+    cand_score = np.zeros((V, n_frames, P, k))
 
-    prepared = _prepare_pathways(plan, models, windows)  # [(T, 3, Hh, Ww)] per pathway
+    prepared = _prepare_pathways(
+        plan, models, windows
+    )  # [(T, 3, H_out, W_out)] per pathway
     by_model: dict[str, list[int]] = {}
     for pw_idx, pw in enumerate(pathways):
         by_model.setdefault(pw.model, []).append(pw_idx)
@@ -474,7 +484,9 @@ def detect_candidates_sequence(
             # heatmaps decoded/peaked in a single batched call.
             batch = torch.stack([prepared[p][t] for p in pw_idxs])  # (Pm, 3, H, W)
             # Standard (B, V, ...) input: this frame is B=1 over Pm views; strip B back.
-            heatmaps = model.predict_heatmaps(batch.unsqueeze(0))[0]  # (Pm, J, Hh, Ww)
+            heatmaps = model.predict_heatmaps(batch.unsqueeze(0))[
+                0
+            ]  # (Pm, C_out, H_out, W_out)
             pn, c = heatmap_to_points(heatmaps, method=method, radius=radius)
             cxy, csc = pictorial.peak_candidates(
                 heatmaps, k, radius=radius, method=method
@@ -482,14 +494,16 @@ def detect_candidates_sequence(
             for local, pw_idx in enumerate(pw_idxs):
                 pw = pathways[pw_idx]
                 src_size = source_sizes[pw.source]
-                raw_pn = map_to_view(
+                raw_pn = normalized_peaks_to_original_pixels(
                     pn[local], pw.transform, model.input_size, src_size
                 )
-                scatter_pathway(raw_pn, c[local], pw.mapping, pts[:, t], conf[:, t])
-                raw_cxy = map_to_view(
+                route_channels_to_points_in_views(
+                    raw_pn, c[local], pw.mapping, pts[:, t], conf[:, t]
+                )
+                raw_cxy = normalized_peaks_to_original_pixels(
                     cxy[local], pw.transform, model.input_size, src_size
                 )
-                scatter_pathway(
+                route_channels_to_points_in_views(
                     raw_cxy, csc[local], pw.mapping, cand_xy[:, t], cand_score[:, t]
                 )
     return pts, conf, pictorial.Candidates(xy=cand_xy, score=cand_score)

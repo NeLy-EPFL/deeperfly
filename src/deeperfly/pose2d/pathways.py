@@ -5,7 +5,7 @@ fusing them at "one per camera":
 
 - **sources** -- named footage globs, each decoded once.
 - **views** -- the geometric cameras (``[cameras.*]``); the ``V`` axis of the
-  ``(V, T, N, 2)`` points array.
+  ``(V, T, P, 2)`` points array.
 - **models** -- detector models (see :mod:`deeperfly.pose2d.models`).
 - **pathways** -- ``source -> preprocessor -> model``, each a named inference run.
 
@@ -22,7 +22,7 @@ A source may feed several pathways: the front camera, for instance, is one
 source feeding two pathways (one mirrored), each mapping into view ``f``. A point
 predicted in a pathway's (possibly mirrored/cropped/resized) model frame is
 mapped back into its view's frame by inverting the pathway's preprocessing -- see
-:func:`map_to_view`, which inverts any
+:func:`normalized_peaks_to_original_pixels`, which inverts any
 :class:`~deeperfly.preprocessing.FrameTransform`.
 """
 
@@ -76,7 +76,7 @@ class Pathway:
     mapping: Int[np.ndarray, "E 3"]
 
 
-def map_to_view(
+def normalized_peaks_to_original_pixels(
     points_norm: Float[np.ndarray, "*lead 2"],
     transform: FrameTransform,
     model_input_hw: tuple[int, int],
@@ -115,18 +115,18 @@ def map_to_view(
     return transform.unmap_points(prep_px, source_size)
 
 
-def scatter_pathway(
-    raw_xy: Float[np.ndarray, "J *k 2"],
-    conf: Float[np.ndarray, "J *k"],
+def route_channels_to_points_in_views(
+    raw_xy: Float[np.ndarray, "C_out *k 2"],
+    conf: Float[np.ndarray, "C_out *k"],
     mapping: Int[np.ndarray, "E 3"],
-    out_pts: Float[np.ndarray, "V N *k 2"],
-    out_conf: Float[np.ndarray, "V N *k"],
+    out_pts: Float[np.ndarray, "V P *k 2"],
+    out_conf: Float[np.ndarray, "V P *k"],
 ) -> None:
     """Scatter a pathway's channels into ``out_pts`` / ``out_conf`` (in place).
 
     For each ``(i, v, p)`` mapping triple, writes channel ``i`` to ``[v, p]``.
-    Handles both the single-peak arrays (``raw_xy`` ``(J, 2)``) and the candidate
-    arrays (``(J, K, 2)``); any trailing ``K`` axis rides along. Entries no triple
+    Handles both the single-peak arrays (``raw_xy`` ``(C_out, 2)``) and the candidate
+    arrays (``(C_out, K, 2)``); any trailing ``K`` axis rides along. Entries no triple
     targets keep their preset values (``NaN`` for points, ``0`` for conf).
     """
     i, v, p = mapping[:, 0], mapping[:, 1], mapping[:, 2]
@@ -143,7 +143,7 @@ class DetectionPlan:
     view_names
         The view (camera) order -- the ``V`` axis of the points array.
     n_points
-        The skeleton point count -- the ``N`` axis.
+        The skeleton point count -- the ``P`` axis.
     sources
         The footage sources, in config order.
     preprocessors
@@ -173,7 +173,7 @@ class DetectionPlan:
         return self.models[pathway.model]
 
     def visibility_mask(self) -> np.ndarray:
-        """Boolean ``(V, N)`` mask: which ``(view, point)`` pairs any pathway writes."""
+        """Boolean ``(V, P)`` mask: which ``(view, point)`` pairs any pathway writes."""
         mask = np.zeros((self.n_views, self.n_points), dtype=bool)
         for pw in self.pathways:
             mask[pw.mapping[:, 1], pw.mapping[:, 2]] = True

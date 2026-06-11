@@ -8,7 +8,10 @@ import pytest
 from helpers import point_sources_table
 
 from deeperfly.config import Config
-from deeperfly.pose2d.pathways import map_to_view, scatter_pathway
+from deeperfly.pose2d.pathways import (
+    normalized_peaks_to_original_pixels,
+    route_channels_to_points_in_views,
+)
 from deeperfly.preprocessing import Fliplr, FrameTransform, Resize
 
 
@@ -65,34 +68,40 @@ def _plan(specs, **kwargs):
     return _config(pathways, point_sources_table(point_names, ps_specs), **kwargs)
 
 
-# -- coordinate inverse (map_to_view) ----------------------------------------
+# -- coordinate inverse (normalized_peaks_to_original_pixels) ----------------
 
 
-def test_map_to_view_plain_scales_to_source_pixels():
+def test_normalized_peaks_to_original_pixels_plain_scales_to_source_pixels():
     # No preprocessor: a model peak at normalized (x, y) maps to ~ (x*W, y*H) in
     # source pixels (within the half-pixel resize convention).
     pts = np.array([[0.5, 0.5]])
-    out = map_to_view(pts, FrameTransform(()), (256, 512), (480, 960))
+    out = normalized_peaks_to_original_pixels(
+        pts, FrameTransform(()), (256, 512), (480, 960)
+    )
     np.testing.assert_allclose(out, [[0.5 * 960, 0.5 * 480]], atol=1.0)
 
 
-def test_map_to_view_mirror_undoes_flip():
+def test_normalized_peaks_to_original_pixels_mirror_undoes_flip():
     # With a fliplr preprocessor the x coordinate is reflected back into the source
     # frame; y is unchanged.
     transform = FrameTransform((Fliplr(),))
     src = (480, 960)
-    plain = map_to_view(np.array([[0.3, 0.4]]), FrameTransform(()), (256, 512), src)
-    mirrored = map_to_view(np.array([[0.3, 0.4]]), transform, (256, 512), src)
+    plain = normalized_peaks_to_original_pixels(
+        np.array([[0.3, 0.4]]), FrameTransform(()), (256, 512), src
+    )
+    mirrored = normalized_peaks_to_original_pixels(
+        np.array([[0.3, 0.4]]), transform, (256, 512), src
+    )
     # The mirrored x is the reflection of the plain x about the image centre.
     np.testing.assert_allclose(mirrored[0, 0], (960 - 1) - plain[0, 0], atol=1e-6)
     np.testing.assert_allclose(mirrored[0, 1], plain[0, 1], atol=1e-6)
 
 
-def test_map_to_view_roundtrips_with_map_points():
+def test_normalized_peaks_to_original_pixels_roundtrips_with_map_points():
     transform = FrameTransform((Fliplr(),))
     src = (480, 960)
     norm = np.array([[0.2, 0.7], [0.9, 0.1]])
-    view_px = map_to_view(norm, transform, (256, 512), src)
+    view_px = normalized_peaks_to_original_pixels(norm, transform, (256, 512), src)
     # Forward map (source -> mirrored -> model input) then normalize recovers norm.
     mirror_px = transform.map_points(view_px, src)
     resize = FrameTransform((Resize(width=512, height=256),))
@@ -105,20 +114,20 @@ def test_map_to_view_roundtrips_with_map_points():
 # -- scatter ------------------------------------------------------------------
 
 
-def test_scatter_pathway_routes_channels_and_leaves_nan():
+def test_route_channels_to_points_in_views_routes_channels_and_leaves_nan():
     mapping = np.array([[0, 0, 5], [2, 1, 7]])  # (i, v, p)
     raw_xy = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     conf = np.array([0.1, 0.2, 0.3])
     out_pts = np.full((2, 10, 2), np.nan)
     out_conf = np.zeros((2, 10))
-    scatter_pathway(raw_xy, conf, mapping, out_pts, out_conf)
+    route_channels_to_points_in_views(raw_xy, conf, mapping, out_pts, out_conf)
     np.testing.assert_array_equal(out_pts[0, 5], [1.0, 2.0])  # channel 0 -> (0, 5)
     np.testing.assert_array_equal(out_pts[1, 7], [5.0, 6.0])  # channel 2 -> (1, 7)
     assert out_conf[0, 5] == 0.1 and out_conf[1, 7] == 0.3
     assert np.isnan(out_pts[0, 0]).all()  # untouched stays NaN
 
 
-def test_scatter_pathway_candidate_axis():
+def test_route_channels_to_points_in_views_candidate_axis():
     # The same scatter handles a trailing K (candidate) axis.
     mapping = np.array([[1, 0, 3]])
     raw_xy = np.zeros((2, 4, 2))
@@ -127,7 +136,7 @@ def test_scatter_pathway_candidate_axis():
     score[1] = 0.5
     out_pts = np.full((1, 5, 4, 2), np.nan)
     out_conf = np.zeros((1, 5, 4))
-    scatter_pathway(raw_xy, score, mapping, out_pts, out_conf)
+    route_channels_to_points_in_views(raw_xy, score, mapping, out_pts, out_conf)
     np.testing.assert_array_equal(out_pts[0, 3], 9.0)
     np.testing.assert_array_equal(out_conf[0, 3], 0.5)
 
