@@ -53,6 +53,8 @@ markdown_extensions:
   - attr_list
   - md_in_html
   - tables
+  - pymdownx.arithmatex:    # render $...$ / $$...$$ LaTeX math via MathJax
+      generic: true
   - toc:
       permalink: true
   - pymdownx.details
@@ -70,6 +72,11 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_javascript:
+  # MathJax config + library, loaded for the LaTeX math in "How it works".
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 plugins:
   - search
