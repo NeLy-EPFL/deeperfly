@@ -595,7 +595,7 @@ def render_videos(
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for spec in read_video_specs(config):
+    for spec in read_video_specs(config):  # type: ignore[arg-type]
         path = outdir / f"{spec.video_name}.mp4"
         # Stream frame by frame into the encoder -- never hold the whole clip.
         with VideoWriter(path, fps=fps) as writer:

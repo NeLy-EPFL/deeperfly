@@ -356,7 +356,7 @@ def _score_hypotheses(
     v, n, k, _ = cand_xy.shape
     proj = np.asarray(cameras.project(x))  # (V, P, M, 2)
     d = np.linalg.norm(proj[:, :, :, None, :] - cand_xy[:, :, None, :, :], axis=-1)
-    valid_cand = np.isfinite(cand_xy).all(-1)  # (V, P, K)
+    valid_cand: np.ndarray = np.isfinite(cand_xy).all(-1)  # (V, P, K)
     d = np.where(valid_cand[:, :, None, :], d, np.inf)  # (V, P, M, K)
     nearest_k = np.argmin(d, axis=-1)  # (V, P, M)
     nearest_d = np.min(d, axis=-1)  # (V, P, M)
@@ -366,7 +366,7 @@ def _score_hypotheses(
     nearest_xy = cand_xy[vi, ni, nearest_k]  # (V, P, M, 2)
     nearest_s = cand_score[vi, ni, nearest_k]  # (V, P, M)
 
-    hyp_finite = np.isfinite(x).all(-1)  # (P, M)
+    hyp_finite: np.ndarray = np.isfinite(x).all(-1)  # (P, M)
     inlier = (nearest_d < inlier_px) & hyp_finite[None]  # (V, P, M)
     obs = np.where(inlier[..., None], nearest_xy, np.nan)
     evidence = np.where(inlier, nearest_s, 0.0).sum(0)  # (P, M)

@@ -70,11 +70,13 @@ class VideoReader(FrameReader):
             stream = container.streams.video[0]
             rate = stream.average_rate or stream.guessed_rate
             time_base = stream.time_base
+            assert rate is not None and time_base is not None
             for target in sorted(set(indices)):
                 # PTS (in time_base units) of the target frame; seek to its keyframe.
                 ts = int(target / rate / time_base)
                 container.seek(ts, stream=stream, backward=True, any_frame=False)
                 for frame in container.decode(stream):
+                    assert frame.pts is not None
                     idx = int(round(float(frame.pts * time_base * rate)))
                     if idx >= target:
                         picked[target] = frame.to_ndarray(format="rgb24")
@@ -239,6 +241,7 @@ class VideoWriter:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
         if self._stream is None:
             self._open(frame.shape[1], frame.shape[0])
+        assert self._size is not None
         w, h = self._size
         vframe = av.VideoFrame.from_ndarray(
             np.ascontiguousarray(frame[:h, :w]), format="rgb24"

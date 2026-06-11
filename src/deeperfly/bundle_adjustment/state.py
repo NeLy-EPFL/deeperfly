@@ -17,6 +17,7 @@ The same packed state is consumed by the solver in
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -46,14 +47,14 @@ class BAState(NamedTuple):
     observation tensor.
     """
 
-    values: Float[Array, "n_params"]
-    fixed: Bool[Array, "n_params"]
-    rvecs_idx: Int[Array, "V 3"]
-    tvecs_idx: Int[Array, "V 3"]
-    intrs_idx: Int[Array, "V P"]
-    dists_idx: Int[Array, "V K"]
-    pts3d_idx: Int[Array, "N 3"]
-    pts2d: Float[Array, "V N 2"]
+    values: Float[np.ndarray, "n_params"]
+    fixed: Bool[np.ndarray, "n_params"]
+    rvecs_idx: Int[np.ndarray, "V 3"]
+    tvecs_idx: Int[np.ndarray, "V 3"]
+    intrs_idx: Int[np.ndarray, "V P"]
+    dists_idx: Int[np.ndarray, "V K"]
+    pts3d_idx: Int[np.ndarray, "N 3"]
+    pts2d: Float[np.ndarray, "V N 2"]
 
 
 def initialize_pts3d(
@@ -86,16 +87,16 @@ def initialize_pts3d(
 
 
 def build_state(
-    rvecs: Float[Array, "V 3"],
-    tvecs: Float[Array, "V 3"],
-    intrs: Float[Array, "V P"],
-    dists: Float[Array, "V K"],
-    pts2d: Float[Array, "V N 2"],
+    rvecs: Float[np.ndarray, "V 3"],
+    tvecs: Float[np.ndarray, "V 3"],
+    intrs: Float[np.ndarray, "V P"],
+    dists: Float[np.ndarray, "V K"],
+    pts2d: Float[np.ndarray, "V N 2"],
     names: list[str] | None = None,
     *,
-    fixed: list[str] = (),
-    shared: list[list[str]] = (),
-    pts3d: Float[Array, "N 3"] | None = None,
+    fixed: Sequence[str] = (),
+    shared: Sequence[Sequence[str]] = (),
+    pts3d: Float[np.ndarray, "N 3"] | None = None,
 ) -> BAState:
     """Build a :class:`BAState` from per-camera arrays and fix/share specs.
 
@@ -138,8 +139,9 @@ def build_state(
     name_to_row = {name: i for i, name in enumerate(names)}
 
     if pts3d is None:
-        pts3d = initialize_pts3d(pts2d, rvecs, tvecs, intrs)
-    pts3d = np.asarray(pts3d, dtype=float)
+        pts3d = np.asarray(initialize_pts3d(pts2d, rvecs, tvecs, intrs), dtype=float)
+    else:
+        pts3d = np.asarray(pts3d, dtype=float)
 
     arrs = [rvecs, tvecs, intrs, dists, pts3d]
     values = np.concatenate([a.ravel() for a in arrs])

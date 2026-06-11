@@ -14,6 +14,7 @@ dispatches to :func:`bundle_adjust`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from jaxtyping import Float
@@ -42,8 +43,8 @@ def bundle_adjust(
     cameras: CameraGroup,
     pts2d: Float[ndarray, "V N 2"],
     *,
-    fixed: list[str] = (),
-    shared: list[list[str]] = (),
+    fixed: Sequence[str] = (),
+    shared: Sequence[Sequence[str]] = (),
     pts3d: Float[ndarray, "N 3"] | None = None,
     **solver_kwargs,
 ) -> tuple[OptimizeResult, CameraGroup, Float[ndarray, "N 3"]]:

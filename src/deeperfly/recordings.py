@@ -243,7 +243,7 @@ def source_image_sizes(
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in source_sources(config, sources=sources, input=input):
         head = io.open_reader(src)[[0]]
-        sizes[name] = tuple(int(d) for d in head.shape[1:3])
+        sizes[name] = (int(head.shape[1]), int(head.shape[2]))
     return sizes
 
 

@@ -154,15 +154,15 @@ class PoseResult:
             The assembled result (cameras, skeleton, points and ``meta``).
         """
         with h5py.File(path, "r") as f:
-            meta = json.loads(f.attrs["meta"])
+            meta = json.loads(f.attrs["meta"])  # type: ignore[arg-type]
             version = meta.pop("deeperfly_format_version", None)
             if version != FORMAT_VERSION:
                 raise ValueError(
                     f"{path} has deeperfly format version {version!r}, expected "
                     f"{FORMAT_VERSION}; re-run the pipeline to regenerate it"
                 )
-            skeleton = _read_skeleton(f["skeleton"])
-            cameras = _read_cameras(
+            skeleton = _read_skeleton(f["skeleton"])  # type: ignore[arg-type]
+            cameras = _read_cameras(  # type: ignore[arg-type]
                 f["bundle_adjustment/cameras"]
                 if "bundle_adjustment/cameras" in f
                 else f["pose2d/cameras"]
@@ -170,21 +170,21 @@ class PoseResult:
             pts2d = pts3d = reproj = None
             for stage in ("triangulation", "pictorial_structures", "pose2d"):
                 if pts2d is None and f"{stage}/points" in f:
-                    pts2d = f[f"{stage}/points"][()]
+                    pts2d = f[f"{stage}/points"][()]  # type: ignore[index]
                 if pts3d is None and f"{stage}/points3d" in f:
-                    pts3d = f[f"{stage}/points3d"][()]
+                    pts3d = f[f"{stage}/points3d"][()]  # type: ignore[index]
                 if reproj is None and f"{stage}/reproj_error" in f:
-                    reproj = f[f"{stage}/reproj_error"][()]
-            conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None
+                    reproj = f[f"{stage}/reproj_error"][()]  # type: ignore[index]
+            conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
         if pts2d is None:
             raise ValueError(f"{path} has no 2D points (no pose2d group)")
         return cls(
             cameras=cameras,
             skeleton=skeleton,
-            pts2d=pts2d,
-            conf=conf,
-            pts3d=pts3d,
-            reproj_error=reproj,
+            pts2d=pts2d,  # type: ignore[arg-type]
+            conf=conf,  # type: ignore[arg-type]
+            pts3d=pts3d,  # type: ignore[arg-type]
+            reproj_error=reproj,  # type: ignore[arg-type]
             meta=meta,
         )
 
@@ -329,22 +329,22 @@ class StageStore:
 
     def read_skeleton(self) -> Skeleton | None:
         with self._open() as f:
-            return _read_skeleton(f["skeleton"]) if f and "skeleton" in f else None
+            return _read_skeleton(f["skeleton"]) if f and "skeleton" in f else None  # type: ignore[arg-type]
 
     def read_pose2d(self) -> tuple[np.ndarray, np.ndarray | None] | None:
         """The pristine ``pose2d`` detections ``(pts2d, conf)``, or ``None``."""
         with self._open() as f:
             if f is None or "pose2d/points" not in f:
                 return None
-            conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None
-            return f["pose2d/points"][()], conf
+            conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
+            return f["pose2d/points"][()], conf  # type: ignore[index, return-value]
 
     def read_cameras(self, stage: str) -> CameraGroup | None:
         """The rig stored by ``stage`` (``pose2d`` or ``bundle_adjustment``)."""
         with self._open() as f:
             if f is None or f"{stage}/cameras" not in f:
                 return None
-            return _read_cameras(f[f"{stage}/cameras"])
+            return _read_cameras(f[f"{stage}/cameras"])  # type: ignore[arg-type]
 
     def read_points(
         self, stage: str
@@ -354,8 +354,8 @@ class StageStore:
             if f is None or stage not in f:
                 return None
             g = f[stage]
-            return tuple(
-                g[name][()] if name in g else None
+            return tuple(  # type: ignore[return-value]
+                g[name][()] if name in g else None  # type: ignore[index, operator]
                 for name in ("points", "points3d", "reproj_error")
             )
 
@@ -367,8 +367,8 @@ class StageStore:
             if f is None or "pose2d/candidates/xy" not in f:
                 return None
             return Candidates(
-                xy=f["pose2d/candidates/xy"][()],
-                score=f["pose2d/candidates/score"][()],
+                xy=f["pose2d/candidates/xy"][()],  # type: ignore[index]
+                score=f["pose2d/candidates/score"][()],  # type: ignore[index]
             )
 
     def read_image_sizes(self) -> dict[str, tuple[int, int]] | None:
@@ -412,9 +412,13 @@ def _write_cameras(g: h5py.Group, cameras: CameraGroup) -> None:
 
 
 def _read_cameras(g: h5py.Group) -> CameraGroup:
-    names = [n.decode() if isinstance(n, bytes) else n for n in g["names"][()]]
+    names = [n.decode() if isinstance(n, bytes) else n for n in g["names"][()]]  # type: ignore[index]
     return CameraGroup.from_arrays(
-        names, g["rvecs"][()], g["tvecs"][()], g["intrs"][()], g["dists"][()]
+        names,
+        g["rvecs"][()],
+        g["tvecs"][()],
+        g["intrs"][()],
+        g["dists"][()],  # type: ignore[index]
     )
 
 
@@ -442,13 +446,13 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
     )
     palette = {
         name: (v.decode() if isinstance(v, bytes) else v)
-        for name, v in g["palette"].attrs.items()
+        for name, v in g["palette"].attrs.items()  # type: ignore[index]
     }
     return Skeleton(
-        name=g.attrs["name"],
-        point_names=decode(g["point_names"][()]),
-        limb_names=decode(g["limb_names"][()]),
-        limb_id=g["limb_id"][()],
-        bones=g["bones"][()],
+        name=str(g.attrs["name"]),
+        point_names=decode(g["point_names"][()]),  # type: ignore[index]
+        limb_names=decode(g["limb_names"][()]),  # type: ignore[index]
+        limb_id=g["limb_id"][()],  # type: ignore[index]
+        bones=g["bones"][()],  # type: ignore[index]
         palette=palette,
     )
