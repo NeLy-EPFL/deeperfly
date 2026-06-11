@@ -194,6 +194,7 @@ def reconstruct(
     *,
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
+    weights: Float[np.ndarray, "V T N"] | None = None,
 ) -> tuple[
     Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
 ]:
@@ -214,6 +215,11 @@ def reconstruct(
         Per-view reprojection error (px) above which a view may be dropped.
     max_drops
         Maximum number of drop-and-retriangulate passes.
+    weights
+        Optional per-observation weights ``(V, T, N)`` for a confidence-weighted
+        DLT; ``None`` (default) is plain DLT. The drop logic stays geometric
+        (driven by reprojection error), so confidence only shapes how the kept
+        views are combined.
 
     Returns
     -------
@@ -227,7 +233,7 @@ def reconstruct(
     pts2d = np.array(pts2d, dtype=float)
     n_views = pts2d.shape[0]
     for _ in range(max_drops):
-        pts3d = triangulate(cameras, pts2d)
+        pts3d = triangulate(cameras, pts2d, weights)
         err = reprojection_error(cameras, pts3d, pts2d).reshape(n_views, -1)  # (V, M)
         flat = pts2d.reshape(n_views, -1, 2)
         n_valid = np.isfinite(flat).all(-1).sum(0)  # (M,)
@@ -239,7 +245,7 @@ def reconstruct(
             break
         cols = np.flatnonzero(drop)
         flat[worst_view[cols], cols, :] = np.nan  # view of pts2d (in place)
-    pts3d = triangulate(cameras, pts2d)
+    pts3d = triangulate(cameras, pts2d, weights)
     err = reprojection_error(cameras, pts3d, pts2d)
     return pts3d, pts2d, err
 
@@ -250,6 +256,7 @@ def reconstruct_ransac(
     *,
     threshold: float = 15.0,
     min_inliers: int = 2,
+    weights: Float[np.ndarray, "V T N"] | None = None,
 ) -> tuple[
     Float[np.ndarray, "T N 3"], Float[np.ndarray, "V T N 2"], Float[np.ndarray, "V T N"]
 ]:
@@ -270,6 +277,10 @@ def reconstruct_ransac(
         Inlier reprojection threshold (px) for the consensus set.
     min_inliers
         Minimum number of agreeing views for a point to be triangulated.
+    weights
+        Optional per-observation weights ``(V, T, N)``. Passed through to
+        :func:`deeperfly.triangulation.triangulate_ransac` to weight the
+        candidate fits and final refit; consensus scoring stays unweighted.
 
     Returns
     -------
@@ -283,7 +294,7 @@ def reconstruct_ransac(
     """
     pts2d = np.array(pts2d, dtype=float)
     pts3d, inliers = triangulate_ransac(
-        cameras, pts2d, threshold=threshold, min_inliers=min_inliers
+        cameras, pts2d, threshold=threshold, min_inliers=min_inliers, weights=weights
     )
     cleaned = np.where(inliers[..., None], pts2d, np.nan)
     err = reprojection_error(cameras, pts3d, cleaned)
@@ -326,6 +337,7 @@ def run_from_points2d(
     do_calibrate: bool = True,
     calibrate_kwargs: dict | None = None,
     triangulation: str = "ransac",
+    weigh_by_confidence: bool = False,
     do_pictorial: bool = False,
     candidates: pictorial.Candidates | None = None,
     ps_kwargs: dict | None = None,
@@ -360,6 +372,11 @@ def run_from_points2d(
         consensus set; ``ransac_threshold`` / ``min_inliers``), ``"greedy"`` (DLT
         dropping the worst-reprojecting view; ``reproj_threshold`` / ``max_drops``),
         or ``"dlt"`` (plain least squares, no outlier handling).
+    weigh_by_confidence
+        When ``True`` and ``conf`` is given, the chosen triangulation uses a
+        confidence-weighted DLT (each view's rows scaled by ``sqrt(conf)``). For
+        ``"ransac"`` this weights the candidate fits and final refit but not the
+        consensus vote. Default ``False`` (uniform weights).
     do_pictorial
         When ``True``, first run pictorial-structures peak recovery over the
         detector's top-K ``candidates`` (:func:`deeperfly.pictorial.reconstruct`,
@@ -407,9 +424,14 @@ def run_from_points2d(
             cameras, skeleton, candidates, pts2d, **(ps_kwargs or {})
         )
 
+    weights = conf if (weigh_by_confidence and conf is not None) else None
     if method == "ransac":
         pts3d, pts2d, reproj = reconstruct_ransac(
-            cameras, pts2d, threshold=ransac_threshold, min_inliers=min_inliers
+            cameras,
+            pts2d,
+            threshold=ransac_threshold,
+            min_inliers=min_inliers,
+            weights=weights,
         )
     elif method == "greedy":
         pts3d, pts2d, reproj = reconstruct(
@@ -417,9 +439,10 @@ def run_from_points2d(
             pts2d,
             reproj_threshold=reproj_threshold,
             max_drops=max_drops,
+            weights=weights,
         )
     else:  # "dlt": plain least-squares triangulation, no outlier handling
-        pts3d = triangulate(cameras, pts2d)
+        pts3d = triangulate(cameras, pts2d, weights)
         reproj = reprojection_error(cameras, pts3d, pts2d)
 
     return PoseResult(

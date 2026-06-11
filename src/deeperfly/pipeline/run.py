@@ -265,10 +265,12 @@ def _run_pictorial_structures(ctx: _RunContext) -> bool:
 def _run_triangulation(ctx: _RunContext) -> bool:
     if _no_2d(ctx, "triangulation"):
         return False
+    _, conf = ctx.store.read_pose2d()  # detector confidences for optional weighting
     pts2d, pts3d, reproj = stages.stage_triangulation(
         ctx.config,
         stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
         stages.select_pts2d(ctx.enabled, ctx.store),
+        conf,
     )
     ctx.store.truncate_from("triangulation")
     ctx.store.write_points(

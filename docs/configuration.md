@@ -192,15 +192,22 @@ How the per-view 2D points become one 3D point:
 
 ```toml
 [pipeline.triangulation]
-method           = "ransac"   # ransac (default, robust) | greedy | dlt
-ransac_threshold = 15.0       # inlier reprojection cutoff (px), method = ransac
-min_inliers      = 2          # min agreeing views to accept a point (ransac)
-# reproj_threshold = 40.0     # method = greedy: per-view reprojection cutoff (px)
-# max_drops        = 5        # method = greedy: max views dropped per point
+method              = "ransac"   # ransac (default, robust) | greedy | dlt
+ransac_threshold    = 15.0       # inlier reprojection cutoff (px), method = ransac
+min_inliers         = 2          # min agreeing views to accept a point (ransac)
+# reproj_threshold  = 40.0       # method = greedy: per-view reprojection cutoff (px)
+# max_drops         = 5          # method = greedy: max views dropped per point
+weigh_by_confidence = false      # weight the DLT by detector confidence
 ```
 
 `ransac` keeps the largest multi-view consensus; `greedy` drops the
 worst-reprojecting view; `dlt` is plain least-squares with no outlier handling.
+
+`weigh_by_confidence` scales each view's contribution to the DLT by
+`sqrt(confidence)`, so surer detections pull the 3D point harder (non-positive or
+non-finite confidences drop the view). For `ransac` it weights the candidate fits
+and the final refit but not the inlier vote, which stays a geometric reprojection
+test so a confidently-wrong detection cannot vote itself into the consensus.
 
 ## Detector precision and memory — `[pipeline.pose2d]`
 
@@ -265,12 +272,20 @@ change them.
 
 ```toml
 [pipeline.bundle_adjustment]
-keypoints = [ "..." ]   # skeleton points that drive calibration (default: the 30 leg points)
-fixed     = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
-shared    = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
-max_nfev  = 2000        # forwarded to scipy.optimize.least_squares
-loss      = "linear"
+keypoints           = [ "..." ]   # skeleton points that drive calibration (default: the 30 leg points)
+fixed               = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
+shared              = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
+weigh_by_confidence = true        # scale each reprojection residual by sqrt(confidence)
+max_nfev            = 2000        # forwarded to scipy.optimize.least_squares
+loss                = "linear"
 ```
+
+`weigh_by_confidence` (default `true`) makes surer detections pull the
+calibration harder, scaling each reprojection residual by `sqrt(confidence)`;
+non-positive or non-finite confidences drop the observation, and if *every*
+weight is zero it falls back to uniform weighting. Set it `false` to weight all
+observations equally. (This is the mirror of
+`[pipeline.triangulation].weigh_by_confidence`, which defaults `false`.)
 
 See [library.md](library.md) for calling the bundle adjuster directly.
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from helpers import small_rotation
 
 from deeperfly import geometry as geom
@@ -88,6 +89,61 @@ def test_zero_weight_equivals_dropping_observation(rig):
 
     np.testing.assert_allclose(opt_w.rvecs, opt_drop.rvecs, atol=1e-6)
     np.testing.assert_allclose(opt_w.tvecs, opt_drop.tvecs, atol=1e-6)
+
+
+@pytest.mark.parametrize("bad", [-5.0, np.nan, np.inf, -np.inf])
+def test_nonpositive_or_nonfinite_weight_drops_observation(rig, bad):
+    """Confidence is not guaranteed non-negative/finite: such weights clamp to
+    zero (drop the observation) instead of poisoning the solve with NaN."""
+    truth = make_group(rig)
+    cloud = np.random.default_rng(1).uniform(-0.5, 0.5, size=(60, 3))
+    pts2d = np.array(truth.project(cloud))
+    pts2d[2, 7] += np.array([120.0, -90.0])  # corrupt one observation
+
+    rvecs0, tvecs0 = perturb(rig)
+    cams0 = make_group(rig, rvecs0, tvecs0)
+    fixed = ["*.intr", "f.rvec", "f.tvec"]
+    init = cloud.copy()
+
+    weights = np.ones(pts2d.shape[:2])
+    weights[2, 7] = bad
+    _, opt_w, _ = bundle_adjust(
+        cams0, pts2d, fixed=fixed, pts3d=init, weights=weights, max_nfev=2000
+    )
+
+    pts2d_drop = pts2d.copy()
+    pts2d_drop[2, 7] = np.nan
+    _, opt_drop, _ = bundle_adjust(
+        cams0, pts2d_drop, fixed=fixed, pts3d=init, max_nfev=2000
+    )
+
+    assert np.isfinite(opt_w.rvecs).all() and np.isfinite(opt_w.tvecs).all()
+    np.testing.assert_allclose(opt_w.rvecs, opt_drop.rvecs, atol=1e-6)
+    np.testing.assert_allclose(opt_w.tvecs, opt_drop.tvecs, atol=1e-6)
+
+
+def test_all_zero_weights_warn_and_fall_back_to_uniform(rig):
+    """All-zero weights would zero the reprojection cost; the solve falls back to
+    uniform weights (with a warning) rather than going ill-posed."""
+    truth = make_group(rig)
+    cloud = np.random.default_rng(2).uniform(-0.5, 0.5, size=(40, 3))
+    pts2d = np.array(truth.project(cloud))
+
+    rvecs0, tvecs0 = perturb(rig)
+    cams0 = make_group(rig, rvecs0, tvecs0)
+    fixed = ["*.intr", "f.rvec", "f.tvec"]
+    init = cloud.copy()
+
+    weights = np.zeros(pts2d.shape[:2])
+    with pytest.warns(UserWarning, match="all confidence weights are zero"):
+        _, opt_zero, _ = bundle_adjust(
+            cams0, pts2d, fixed=fixed, pts3d=init, weights=weights, max_nfev=2000
+        )
+    _, opt_uniform, _ = bundle_adjust(
+        cams0, pts2d, fixed=fixed, pts3d=init, max_nfev=2000
+    )
+    np.testing.assert_allclose(opt_zero.rvecs, opt_uniform.rvecs, atol=1e-6)
+    np.testing.assert_allclose(opt_zero.tvecs, opt_uniform.tvecs, atol=1e-6)
 
 
 def test_downweighting_outlier_improves_recovery(rig):

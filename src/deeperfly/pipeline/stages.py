@@ -189,13 +189,19 @@ def stage_bundle_adjustment(
     from ..triangulation import reprojection_error, triangulate
     from .core import calibrate
 
-    v, t = pts2d.shape[:2]
-    log.info("bundle adjustment: refining cameras (%d frames, %d views)", t, v)
     ba = config.bundle_adjustment
+    ba_conf = conf if ba.weigh_by_confidence else None
+    v, t = pts2d.shape[:2]
+    log.info(
+        "bundle adjustment: refining cameras (%d frames, %d views)%s",
+        t,
+        v,
+        " confidence-weighted" if ba_conf is not None else "",
+    )
     refined, _ = calibrate(
         cameras,
         pts2d,
-        conf,
+        ba_conf,
         skeleton,
         ba_keypoints=ba.keypoints,
         fixed=ba.fixed,
@@ -255,7 +261,7 @@ def stage_pictorial_structures(
     return pts2d, pts3d, reproj
 
 
-def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
+def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
     """Triangulate ``pts2d`` to 3D by the configured method.
 
     ``ransac`` builds each point from its largest multi-view consensus,
@@ -271,6 +277,10 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
     pts2d
         The 2D points (pristine ``pose2d`` or pictorial-corrected -- see
         :func:`select_pts2d`).
+    conf
+        Per-observation detector confidences ``(V, T, N)``. Used as DLT weights
+        only when ``[pipeline.triangulation].weigh_by_confidence`` is set;
+        ignored (and may be ``None``) otherwise.
 
     Returns
     -------
@@ -282,14 +292,22 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
 
     opts = config.triangulation
     method = _validate_triangulation(opts.method)
+    weights = conf if (opts.weigh_by_confidence and conf is not None) else None
     v, t = pts2d.shape[:2]
-    log.info("triangulation: method=%s (%d frames, %d views)", method, t, v)
+    log.info(
+        "triangulation: method=%s (%d frames, %d views)%s",
+        method,
+        t,
+        v,
+        " confidence-weighted" if weights is not None else "",
+    )
     if method == "ransac":
         pts3d, pts2d, reproj = reconstruct_ransac(
             cameras,
             pts2d,
             threshold=opts.ransac_threshold,
             min_inliers=opts.min_inliers,
+            weights=weights,
         )
     elif method == "greedy":
         pts3d, pts2d, reproj = reconstruct(
@@ -297,9 +315,10 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
             pts2d,
             reproj_threshold=opts.reproj_threshold,
             max_drops=opts.max_drops,
+            weights=weights,
         )
     else:  # "dlt": plain least-squares triangulation, no outlier handling
-        pts3d = triangulate(cameras, pts2d)
+        pts3d = triangulate(cameras, pts2d, weights)
         reproj = reprojection_error(cameras, pts3d, pts2d)
     return pts2d, pts3d, reproj
 

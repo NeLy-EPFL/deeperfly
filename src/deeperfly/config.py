@@ -107,6 +107,7 @@ class TriangulationParams:
     min_inliers: int = 2
     reproj_threshold: float = 40.0
     max_drops: int = 5
+    weigh_by_confidence: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,14 +131,16 @@ class BundleAdjustmentParams:
     """``[pipeline.bundle_adjustment]`` -- calibration over scipy ``least_squares``.
 
     ``keypoints`` (``None`` = all) restricts which skeleton points drive calibration;
-    ``fixed`` / ``shared`` hold or tie camera parameters; ``least_squares`` is the
-    leftover flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded straight
-    to :func:`scipy.optimize.least_squares`.
+    ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
+    scales each reprojection residual by ``sqrt(confidence)``; ``least_squares`` is
+    the leftover flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded
+    straight to :func:`scipy.optimize.least_squares`.
     """
 
     keypoints: list[int] | None = None
     fixed: list[str] = field(default_factory=list)
     shared: list[list[str]] = field(default_factory=list)
+    weigh_by_confidence: bool = True
     least_squares: dict = field(default_factory=dict)
 
 
@@ -312,10 +315,12 @@ class Config:
         keypoints = ba.pop("keypoints", None)
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
+        weigh_by_confidence = ba.pop("weigh_by_confidence", True)
         return BundleAdjustmentParams(
             keypoints=keypoints,
             fixed=list(fixed),
             shared=[list(s) for s in shared],
+            weigh_by_confidence=bool(weigh_by_confidence),
             least_squares=ba,  # leftover flat keys -> scipy.optimize.least_squares
         )
 

@@ -176,7 +176,7 @@ def _stub_compute_stages(monkeypatch):
         ba_calls.append(cameras)
         return cameras
 
-    def stub_tri(config, cameras, pts2d):
+    def stub_tri(config, cameras, pts2d, conf=None):
         tri_calls.append(config.triangulation)
         return pts2d, np.zeros((pts2d.shape[1], 38, 3)), None
 

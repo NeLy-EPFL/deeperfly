@@ -374,6 +374,7 @@ def project_pmat(
 def triangulate_dlt(
     pts2d: Float[Array, "V *pts 2"],
     pmats: Float[Array, "V 3 4"],
+    weights: Float[Array, "V *pts"] | None = None,
 ) -> Float[Array, "*pts 3"]:
     """Triangulate 3D points by direct linear transformation (DLT).
 
@@ -393,6 +394,15 @@ def triangulate_dlt(
         missing observations.
     pmats
         Projection matrices of shape ``(V, 3, 4)``.
+    weights
+        Optional per-(view, point) weights of shape ``(V, *pts)``. Each view's
+        two rows are scaled by ``sqrt(weight)``, so a view contributes ``weight``
+        times its squared algebraic error -- the same convention bundle
+        adjustment uses for detector confidences. The DLT solves a homogeneous
+        system, so a uniform positive weight leaves the result unchanged; ``None``
+        (default) is plain unweighted DLT. The NaN-zeroing above is exactly the
+        ``weight = 0`` case, so the two compose: a zero (or NaN) weight drops the
+        view. Negative and non-finite weights are clamped to zero.
 
     Returns
     -------
@@ -401,6 +411,10 @@ def triangulate_dlt(
     a = jnp.einsum("v...i,vj->...vij", pts2d, pmats[:, 2]) - pmats[:, :2]
     valid = jnp.moveaxis(jnp.isfinite(pts2d).all(axis=-1), 0, -1)
     a = jnp.where(valid[..., None, None], a, 0.0)
+    if weights is not None:
+        w = jnp.moveaxis(jnp.asarray(weights, dtype=a.dtype), 0, -1)  # (*pts, V)
+        w = jnp.where(jnp.isfinite(w), jnp.maximum(w, 0.0), 0.0)
+        a = a * jnp.sqrt(w)[..., None, None]
     a = a.reshape((*a.shape[:-3], -1, 4))
     ata = jnp.einsum("...ij,...ik->...jk", a, a)
     pts3dh = jnp.linalg.eigh(ata)[1][..., :, 0]

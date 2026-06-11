@@ -115,6 +115,48 @@ def test_calibrate_recovers_perturbed_rig(rig, cameras, fly, rng):
     assert result.cost < 1e-4
 
 
+def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng):
+    from deeperfly.config import Config
+    from deeperfly.pipeline.stages import stage_bundle_adjustment
+
+    truth = CameraGroup.from_arrays(
+        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
+    )
+    pts3d = fly_motion(rng, n_frames=20)
+    pts2d = np.array(truth.project(pts3d))
+    # Corrupt a handful of observations and flag them low-confidence, so the
+    # weighted and unweighted optima genuinely differ.
+    pts2d[3, ::4, 9] += [15.0, -12.0]
+    conf = np.ones(pts2d.shape[:3])
+    conf[3, ::4, 9] = 0.01
+
+    cams0 = perturbed_cameras(rig)
+    fixed = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]
+
+    def stage(flag, c):
+        cfg = Config.from_dict(
+            {
+                "pipeline": {
+                    "bundle_adjustment": {
+                        "fixed": fixed,
+                        "weigh_by_confidence": flag,
+                        "max_nfev": 800,
+                    }
+                }
+            }
+        )
+        return stage_bundle_adjustment(cfg, cams0, pts2d, c, fly)
+
+    off = stage(False, conf)
+    off_no_conf = stage(False, None)
+    on = stage(True, conf)
+
+    # flag=False ignores conf entirely (identical to passing no conf) ...
+    np.testing.assert_allclose(off.tvecs, off_no_conf.tvecs, atol=1e-9)
+    # ... while flag=True actually applies the (non-uniform) confidences.
+    assert not np.allclose(on.tvecs, off.tvecs, atol=1e-6)
+
+
 def test_front_camera_bridges_left_right_in_calibration(rig, cameras, fly, rng):
     """The front camera, seeing both body sides, is what co-registers the two
     camera clusters in bundle adjustment.
@@ -329,6 +371,31 @@ def test_run_unknown_triangulation_raises(cameras, fly, rng):
         run_from_points2d(
             cameras, fly, pts2d, do_calibrate=False, triangulation="bogus"
         )
+
+
+def test_run_weigh_by_confidence_uses_conf(cameras, fly, rng):
+    # A moderate error in one view of one point, flagged by low confidence:
+    # weighting by confidence should pull that point's 3D back toward the truth.
+    pts3d = fly_motion(rng, n_frames=4)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0, 0, 0] += [8.0, -6.0]
+    conf = np.ones(pts2d.shape[:3])
+    conf[0, 0, 0] = 0.02
+
+    common = dict(do_calibrate=False, triangulation="dlt")
+    off = run_from_points2d(
+        cameras, fly, pts2d, conf, weigh_by_confidence=False, **common
+    )
+    on = run_from_points2d(
+        cameras, fly, pts2d, conf, weigh_by_confidence=True, **common
+    )
+
+    truth = pts3d[0, 0]
+    d_off = np.linalg.norm(off.pts3d[0, 0] - truth)
+    d_on = np.linalg.norm(on.pts3d[0, 0] - truth)
+    assert d_on < d_off
+    # Points the detector was sure about are untouched by the weighting.
+    np.testing.assert_allclose(on.pts3d[0, 1:], off.pts3d[0, 1:], atol=1e-6)
 
 
 @pytest.mark.parametrize("triangulation", ["ransac", "greedy", "dlt"])

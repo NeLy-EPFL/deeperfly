@@ -500,7 +500,9 @@ class CameraGroup:
         return np.asarray(out)
 
     def triangulate(
-        self, pts2d: Float[np.ndarray, "V *pts 2"]
+        self,
+        pts2d: Float[np.ndarray, "V *pts 2"],
+        weights: Float[np.ndarray, "V *pts"] | None = None,
     ) -> Float[np.ndarray, "*pts 3"]:
         """Triangulate 3D points from 2D observations and this group's cameras.
 
@@ -508,6 +510,10 @@ class CameraGroup:
         ----------
         pts2d
             2D observations of shape ``(V, *pts, 2)``, NaN for missing.
+        weights
+            Optional per-(view, point) weights of shape ``(V, *pts)`` for a
+            confidence-weighted DLT; ``None`` (default) is plain DLT. See
+            :func:`deeperfly.geometry.triangulate_dlt`.
 
         Returns
         -------
@@ -518,4 +524,5 @@ class CameraGroup:
             (np.asarray(rvec_to_rmat(self.rvecs)), self.tvecs[..., None]), axis=-1
         )
         pmats = np.asarray(intr_to_kmat(self.intrs)) @ rtmat
-        return np.asarray(triangulate_dlt(np.asarray(pts2d), pmats))
+        w = None if weights is None else np.asarray(weights)
+        return np.asarray(triangulate_dlt(np.asarray(pts2d), pmats, w))
