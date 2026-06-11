@@ -102,8 +102,8 @@ def bundle_adjust_from_config(
 
     The ``[pipeline.bundle_adjustment]`` section supplies ``fixed`` / ``shared`` and
     the flat scipy ``least_squares`` kwargs (e.g. ``max_nfev`` / ``loss``). The
-    ``keypoints`` key (which restricts the calibration keypoints) is a pipeline-level
-    concern handled by :func:`deeperfly.pipeline.calibrate`, not here.
+    ``points_to_use`` key (which restricts the calibration keypoints) is a
+    pipeline-level concern handled by :func:`deeperfly.pipeline.calibrate`, not here.
 
     Parameters
     ----------

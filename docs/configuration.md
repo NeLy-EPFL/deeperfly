@@ -272,7 +272,7 @@ change them.
 
 ```toml
 [pipeline.bundle_adjustment]
-keypoints           = [ "..." ]   # skeleton points that drive calibration (default: the 30 leg points)
+points_to_use       = [ "..." ]   # skeleton point names that drive calibration (default: the 30 leg points)
 fixed               = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
 shared              = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
 weigh_by_confidence = true        # scale each reprojection residual by sqrt(confidence)

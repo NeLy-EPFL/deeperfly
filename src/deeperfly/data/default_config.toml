@@ -49,13 +49,12 @@ workers = 0   # decode threads (0 = auto, one per CPU)
 # Named preprocessors: an ordered op list applied to a pathway's frames before
 # the model. The detector's points are mapped back into the view frame by
 # inverting these ops, so a mirror here never moves the reconstructed skeleton.
+# A pathway may omit `preprocessor` entirely -- that means no ops (identity),
+# the same as referencing a preprocessor whose `ops = []`.
 # Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
 #      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
 [[preprocessors]]
-name = "noflip"
-ops = []
-[[preprocessors]]
-name = "fliplr"
+name = "flip"
 ops = [{ op = "fliplr" }]
 
 # Models: `class` selects the network ("hourglass" = DeepFly2D); `weights` is a
@@ -77,51 +76,47 @@ n_out_channels = 19
 # The front source feeds two pathways (one mirrored). Each pathway needs a unique
 # `name` so [point_sources] can reference it.
 [[pathways]]
-name = "rh_noflip"
+name = "rh"
 source = "vid_rh"
-preprocessor = "noflip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "rm_noflip"
+name = "rm"
 source = "vid_rm"
-preprocessor = "noflip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "rf_noflip"
+name = "rf"
 source = "vid_rf"
-preprocessor = "noflip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "f_noflip"
+name = "f"
 source = "vid_f"
-preprocessor = "noflip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "f_fliplr"
+name = "f_flip"
 source = "vid_f"
-preprocessor = "fliplr"
+preprocessor = "flip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "lf_fliplr"
+name = "lf_flip"
 source = "vid_lf"
-preprocessor = "fliplr"
+preprocessor = "flip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "lm_fliplr"
+name = "lm_flip"
 source = "vid_lm"
-preprocessor = "fliplr"
+preprocessor = "flip"
 model = "deepfly2d"
 
 [[pathways]]
-name = "lh_fliplr"
+name = "lh_flip"
 source = "vid_lh"
-preprocessor = "fliplr"
+preprocessor = "flip"
 model = "deepfly2d"
 
 # ===========================================================================
@@ -218,140 +213,140 @@ azimuth_deg = 120
 # the mirrored pass the left.
 # ===========================================================================
 [point_sources.rh]
-rf_thorax_coxa     = { pathway = "rh_noflip", out_channel = 0 }
-rf_coxa_trochanter = { pathway = "rh_noflip", out_channel = 1 }
-rf_femur_tibia     = { pathway = "rh_noflip", out_channel = 2 }
-rf_tibia_tarsus    = { pathway = "rh_noflip", out_channel = 3 }
-rf_claw            = { pathway = "rh_noflip", out_channel = 4 }
-rm_thorax_coxa     = { pathway = "rh_noflip", out_channel = 5 }
-rm_coxa_trochanter = { pathway = "rh_noflip", out_channel = 6 }
-rm_femur_tibia     = { pathway = "rh_noflip", out_channel = 7 }
-rm_tibia_tarsus    = { pathway = "rh_noflip", out_channel = 8 }
-rm_claw            = { pathway = "rh_noflip", out_channel = 9 }
-rh_thorax_coxa     = { pathway = "rh_noflip", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rh_noflip", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rh_noflip", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rh_noflip", out_channel = 13 }
-rh_claw            = { pathway = "rh_noflip", out_channel = 14 }
-r_antenna          = { pathway = "rh_noflip", out_channel = 15 }
-r_abdomen0         = { pathway = "rh_noflip", out_channel = 16 }
-r_abdomen1         = { pathway = "rh_noflip", out_channel = 17 }
-r_abdomen2         = { pathway = "rh_noflip", out_channel = 18 }
+rf_thorax_coxa     = { pathway = "rh", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rh", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rh", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rh", out_channel = 3  }
+rf_claw            = { pathway = "rh", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rh", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rh", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rh", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rh", out_channel = 8  }
+rm_claw            = { pathway = "rh", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rh", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rh", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rh", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rh", out_channel = 13 }
+rh_claw            = { pathway = "rh", out_channel = 14 }
+r_antenna          = { pathway = "rh", out_channel = 15 }
+r_abdomen0         = { pathway = "rh", out_channel = 16 }
+r_abdomen1         = { pathway = "rh", out_channel = 17 }
+r_abdomen2         = { pathway = "rh", out_channel = 18 }
 
 [point_sources.rm]
-rf_thorax_coxa     = { pathway = "rm_noflip", out_channel = 0 }
-rf_coxa_trochanter = { pathway = "rm_noflip", out_channel = 1 }
-rf_femur_tibia     = { pathway = "rm_noflip", out_channel = 2 }
-rf_tibia_tarsus    = { pathway = "rm_noflip", out_channel = 3 }
-rf_claw            = { pathway = "rm_noflip", out_channel = 4 }
-rm_thorax_coxa     = { pathway = "rm_noflip", out_channel = 5 }
-rm_coxa_trochanter = { pathway = "rm_noflip", out_channel = 6 }
-rm_femur_tibia     = { pathway = "rm_noflip", out_channel = 7 }
-rm_tibia_tarsus    = { pathway = "rm_noflip", out_channel = 8 }
-rm_claw            = { pathway = "rm_noflip", out_channel = 9 }
-rh_thorax_coxa     = { pathway = "rm_noflip", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rm_noflip", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rm_noflip", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rm_noflip", out_channel = 13 }
-rh_claw            = { pathway = "rm_noflip", out_channel = 14 }
-r_antenna          = { pathway = "rm_noflip", out_channel = 15 }
-r_abdomen0         = { pathway = "rm_noflip", out_channel = 16 }
-r_abdomen1         = { pathway = "rm_noflip", out_channel = 17 }
-r_abdomen2         = { pathway = "rm_noflip", out_channel = 18 }
+rf_thorax_coxa     = { pathway = "rm", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rm", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rm", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rm", out_channel = 3  }
+rf_claw            = { pathway = "rm", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rm", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rm", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rm", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rm", out_channel = 8  }
+rm_claw            = { pathway = "rm", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rm", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rm", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rm", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rm", out_channel = 13 }
+rh_claw            = { pathway = "rm", out_channel = 14 }
+r_antenna          = { pathway = "rm", out_channel = 15 }
+r_abdomen0         = { pathway = "rm", out_channel = 16 }
+r_abdomen1         = { pathway = "rm", out_channel = 17 }
+r_abdomen2         = { pathway = "rm", out_channel = 18 }
 
 [point_sources.rf]
-rf_thorax_coxa     = { pathway = "rf_noflip", out_channel = 0 }
-rf_coxa_trochanter = { pathway = "rf_noflip", out_channel = 1 }
-rf_femur_tibia     = { pathway = "rf_noflip", out_channel = 2 }
-rf_tibia_tarsus    = { pathway = "rf_noflip", out_channel = 3 }
-rf_claw            = { pathway = "rf_noflip", out_channel = 4 }
-rm_thorax_coxa     = { pathway = "rf_noflip", out_channel = 5 }
-rm_coxa_trochanter = { pathway = "rf_noflip", out_channel = 6 }
-rm_femur_tibia     = { pathway = "rf_noflip", out_channel = 7 }
-rm_tibia_tarsus    = { pathway = "rf_noflip", out_channel = 8 }
-rm_claw            = { pathway = "rf_noflip", out_channel = 9 }
-rh_thorax_coxa     = { pathway = "rf_noflip", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rf_noflip", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rf_noflip", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rf_noflip", out_channel = 13 }
-rh_claw            = { pathway = "rf_noflip", out_channel = 14 }
-r_antenna          = { pathway = "rf_noflip", out_channel = 15 }
+rf_thorax_coxa     = { pathway = "rf", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rf", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rf", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rf", out_channel = 3  }
+rf_claw            = { pathway = "rf", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rf", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rf", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rf", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rf", out_channel = 8  }
+rm_claw            = { pathway = "rf", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rf", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rf", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rf", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rf", out_channel = 13 }
+rh_claw            = { pathway = "rf", out_channel = 14 }
+r_antenna          = { pathway = "rf", out_channel = 15 }
 
 [point_sources.f]
-rf_femur_tibia     = { pathway = "f_noflip", out_channel = 2 }
-rf_tibia_tarsus    = { pathway = "f_noflip", out_channel = 3 }
-rf_claw            = { pathway = "f_noflip", out_channel = 4 }
-rm_femur_tibia     = { pathway = "f_noflip", out_channel = 7 }
-rm_tibia_tarsus    = { pathway = "f_noflip", out_channel = 8 }
-rm_claw            = { pathway = "f_noflip", out_channel = 9 }
-r_antenna          = { pathway = "f_noflip", out_channel = 15 }
-lf_femur_tibia     = { pathway = "f_fliplr", out_channel = 2 }
-lf_tibia_tarsus    = { pathway = "f_fliplr", out_channel = 3 }
-lf_claw            = { pathway = "f_fliplr", out_channel = 4 }
-lm_femur_tibia     = { pathway = "f_fliplr", out_channel = 7 }
-lm_tibia_tarsus    = { pathway = "f_fliplr", out_channel = 8 }
-lm_claw            = { pathway = "f_fliplr", out_channel = 9 }
-l_antenna          = { pathway = "f_fliplr", out_channel = 15 }
+rf_femur_tibia     = { pathway = "f", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "f", out_channel = 3  }
+rf_claw            = { pathway = "f", out_channel = 4  }
+rm_femur_tibia     = { pathway = "f", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "f", out_channel = 8  }
+rm_claw            = { pathway = "f", out_channel = 9  }
+r_antenna          = { pathway = "f", out_channel = 15 }
+lf_femur_tibia     = { pathway = "f_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "f_flip", out_channel = 3  }
+lf_claw            = { pathway = "f_flip", out_channel = 4  }
+lm_femur_tibia     = { pathway = "f_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "f_flip", out_channel = 8  }
+lm_claw            = { pathway = "f_flip", out_channel = 9  }
+l_antenna          = { pathway = "f_flip", out_channel = 15 }
 
 [point_sources.lf]
-lf_thorax_coxa     = { pathway = "lf_fliplr", out_channel = 0 }
-lf_coxa_trochanter = { pathway = "lf_fliplr", out_channel = 1 }
-lf_femur_tibia     = { pathway = "lf_fliplr", out_channel = 2 }
-lf_tibia_tarsus    = { pathway = "lf_fliplr", out_channel = 3 }
-lf_claw            = { pathway = "lf_fliplr", out_channel = 4 }
-lm_thorax_coxa     = { pathway = "lf_fliplr", out_channel = 5 }
-lm_coxa_trochanter = { pathway = "lf_fliplr", out_channel = 6 }
-lm_femur_tibia     = { pathway = "lf_fliplr", out_channel = 7 }
-lm_tibia_tarsus    = { pathway = "lf_fliplr", out_channel = 8 }
-lm_claw            = { pathway = "lf_fliplr", out_channel = 9 }
-lh_thorax_coxa     = { pathway = "lf_fliplr", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lf_fliplr", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lf_fliplr", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lf_fliplr", out_channel = 13 }
-lh_claw            = { pathway = "lf_fliplr", out_channel = 14 }
-l_antenna          = { pathway = "lf_fliplr", out_channel = 15 }
+lf_thorax_coxa     = { pathway = "lf_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lf_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lf_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lf_flip", out_channel = 3  }
+lf_claw            = { pathway = "lf_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lf_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lf_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lf_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lf_flip", out_channel = 8  }
+lm_claw            = { pathway = "lf_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lf_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lf_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lf_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lf_flip", out_channel = 13 }
+lh_claw            = { pathway = "lf_flip", out_channel = 14 }
+l_antenna          = { pathway = "lf_flip", out_channel = 15 }
 
 [point_sources.lm]
-lf_thorax_coxa     = { pathway = "lm_fliplr", out_channel = 0 }
-lf_coxa_trochanter = { pathway = "lm_fliplr", out_channel = 1 }
-lf_femur_tibia     = { pathway = "lm_fliplr", out_channel = 2 }
-lf_tibia_tarsus    = { pathway = "lm_fliplr", out_channel = 3 }
-lf_claw            = { pathway = "lm_fliplr", out_channel = 4 }
-lm_thorax_coxa     = { pathway = "lm_fliplr", out_channel = 5 }
-lm_coxa_trochanter = { pathway = "lm_fliplr", out_channel = 6 }
-lm_femur_tibia     = { pathway = "lm_fliplr", out_channel = 7 }
-lm_tibia_tarsus    = { pathway = "lm_fliplr", out_channel = 8 }
-lm_claw            = { pathway = "lm_fliplr", out_channel = 9 }
-lh_thorax_coxa     = { pathway = "lm_fliplr", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lm_fliplr", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lm_fliplr", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lm_fliplr", out_channel = 13 }
-lh_claw            = { pathway = "lm_fliplr", out_channel = 14 }
-l_antenna          = { pathway = "lm_fliplr", out_channel = 15 }
-l_abdomen0         = { pathway = "lm_fliplr", out_channel = 16 }
-l_abdomen1         = { pathway = "lm_fliplr", out_channel = 17 }
-l_abdomen2         = { pathway = "lm_fliplr", out_channel = 18 }
+lf_thorax_coxa     = { pathway = "lm_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lm_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lm_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lm_flip", out_channel = 3  }
+lf_claw            = { pathway = "lm_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lm_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lm_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lm_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lm_flip", out_channel = 8  }
+lm_claw            = { pathway = "lm_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lm_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lm_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lm_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lm_flip", out_channel = 13 }
+lh_claw            = { pathway = "lm_flip", out_channel = 14 }
+l_antenna          = { pathway = "lm_flip", out_channel = 15 }
+l_abdomen0         = { pathway = "lm_flip", out_channel = 16 }
+l_abdomen1         = { pathway = "lm_flip", out_channel = 17 }
+l_abdomen2         = { pathway = "lm_flip", out_channel = 18 }
 
 [point_sources.lh]
-lf_thorax_coxa     = { pathway = "lh_fliplr", out_channel = 0 }
-lf_coxa_trochanter = { pathway = "lh_fliplr", out_channel = 1 }
-lf_femur_tibia     = { pathway = "lh_fliplr", out_channel = 2 }
-lf_tibia_tarsus    = { pathway = "lh_fliplr", out_channel = 3 }
-lf_claw            = { pathway = "lh_fliplr", out_channel = 4 }
-lm_thorax_coxa     = { pathway = "lh_fliplr", out_channel = 5 }
-lm_coxa_trochanter = { pathway = "lh_fliplr", out_channel = 6 }
-lm_femur_tibia     = { pathway = "lh_fliplr", out_channel = 7 }
-lm_tibia_tarsus    = { pathway = "lh_fliplr", out_channel = 8 }
-lm_claw            = { pathway = "lh_fliplr", out_channel = 9 }
-lh_thorax_coxa     = { pathway = "lh_fliplr", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lh_fliplr", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lh_fliplr", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lh_fliplr", out_channel = 13 }
-lh_claw            = { pathway = "lh_fliplr", out_channel = 14 }
-l_antenna          = { pathway = "lh_fliplr", out_channel = 15 }
-l_abdomen0         = { pathway = "lh_fliplr", out_channel = 16 }
-l_abdomen1         = { pathway = "lh_fliplr", out_channel = 17 }
-l_abdomen2         = { pathway = "lh_fliplr", out_channel = 18 }
+lf_thorax_coxa     = { pathway = "lh_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lh_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lh_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lh_flip", out_channel = 3  }
+lf_claw            = { pathway = "lh_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lh_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lh_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lh_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lh_flip", out_channel = 8  }
+lm_claw            = { pathway = "lh_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lh_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lh_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lh_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lh_flip", out_channel = 13 }
+lh_claw            = { pathway = "lh_flip", out_channel = 14 }
+l_antenna          = { pathway = "lh_flip", out_channel = 15 }
+l_abdomen0         = { pathway = "lh_flip", out_channel = 16 }
+l_abdomen1         = { pathway = "lh_flip", out_channel = 17 }
+l_abdomen2         = { pathway = "lh_flip", out_channel = 18 }
 
 # ===========================================================================
 # Pipeline: a linear sequence of stages, each an on/off switch in [pipeline]
@@ -412,12 +407,16 @@ decode_buffer = 4
 # scipy.optimize.least_squares; its kwargs (max_nfev, loss, f_scale, ...) sit
 # directly in this table.
 [pipeline.bundle_adjustment]
-# Keypoint indices (into [skeleton]) that drive calibration. The leg joints sit at
-# sharp limb corners and detect most reliably, so the default uses the 30 leg
-# points only. Omit this key to calibrate on all keypoints.
-keypoints = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,       # left legs
-    19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,  # right legs
+# Skeleton point names (from [skeleton].point_names) that drive calibration. The
+# leg joints sit at sharp limb corners and detect most reliably, so the default
+# uses the 30 leg points only. Omit this key to calibrate on all keypoints.
+points_to_use = [
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
 ]
 fixed = [
     "*.intr",     # keep all intrinsics fixed
@@ -426,16 +425,17 @@ fixed = [
     "rm.tvec[2]",
 ]
 shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
-max_frames = 100         # calibrate on at most this many frames (subsampled from the recording)
-frame_sampling = "even"  # which frames to keep when subsampling:
-                         #   even       - evenly spaced over the recording (default; temporal spread)
-                         #   confidence - the highest-confidence frame in each time bin
-                         #                (uses detector confidence; independent of weigh_by_confidence)
-                         #   coverage   - the frame in each time bin with the most
-                         #                keypoints seen by >= 2 cameras (best-conditioned)
-                         #   diversity  - frames whose postures are most spread apart, so the
-                         #                target is seen in many distinct configurations
-max_nfev = 2000          # forwarded to scipy.optimize.least_squares
+weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
+max_frames = 200            # calibrate on at most this many frames (subsampled from the recording)
+frame_sampling = "even"     # which frames to keep when subsampling:
+                            #   even       - evenly spaced over the recording (default; temporal spread)
+                            #   confidence - the highest-confidence frame in each time bin
+                            #                (uses detector confidence; independent of weigh_by_confidence)
+                            #   coverage   - the frame in each time bin with the most
+                            #                keypoints seen by >= 2 cameras (best-conditioned)
+                            #   diversity  - frames whose postures are most spread apart, so the
+                            #                target is seen in many distinct configurations
+max_nfev = 2000             # forwarded to scipy.optimize.least_squares
 loss = "linear"
 
 
@@ -452,13 +452,14 @@ lam = 1.0                # bone-length prior weight
 
 # Triangulation: how the per-view 2D points become one 3D point.
 [pipeline.triangulation]
-method = "ransac"        # ransac - largest multi-view consensus (default, robust)
-                         # greedy - drop the worst-reprojecting view
-                         # dlt    - plain least-squares, no outlier handling
-ransac_threshold = 15.0  # inlier reprojection cutoff (px) for method = ransac
-min_inliers = 2          # min agreeing views to accept a point (ransac)
-# reproj_threshold = 40.0  # method = greedy: per-view reprojection cutoff (px)
-# max_drops = 5            # method = greedy: max views dropped per offending point
+weigh_by_confidence = true  # whether keypoints with higher detector confidence get more weight
+method = "dlt"              # ransac - largest multi-view consensus (default, robust)
+                            # greedy - drop the worst-reprojecting view
+                            # dlt    - plain least-squares, no outlier handling
+# ransac_threshold = 15.0   # inlier reprojection cutoff (px) for method = ransac
+# min_inliers = 2           # min agreeing views to accept a point (ransac)
+# reproj_threshold = 40.0   # method = greedy: per-view reprojection cutoff (px)
+# max_drops = 5             # method = greedy: max views dropped per offending point
 
 
 # ---------------------------------------------------------------------------

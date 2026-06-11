@@ -130,7 +130,8 @@ class IoParams:
 class BundleAdjustmentParams:
     """``[pipeline.bundle_adjustment]`` -- calibration over scipy ``least_squares``.
 
-    ``keypoints`` (``None`` = all) restricts which skeleton points drive calibration;
+    ``points_to_use`` (``None`` = all) names which skeleton points drive calibration
+    (resolved to indices against the skeleton in :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
     ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
     scales each reprojection residual by ``sqrt(confidence)``; ``max_frames`` /
     ``frame_sampling`` choose how many frames to calibrate on and which (see
@@ -139,7 +140,7 @@ class BundleAdjustmentParams:
     :func:`scipy.optimize.least_squares`.
     """
 
-    keypoints: list[int] | None = None
+    points_to_use: list[str] | None = None
     fixed: list[str] = field(default_factory=list)
     shared: list[list[str]] = field(default_factory=list)
     weigh_by_confidence: bool = True
@@ -316,14 +317,16 @@ class Config:
     @property
     def bundle_adjustment(self) -> BundleAdjustmentParams:
         ba = dict(_dig(self.data, ("pipeline", "bundle_adjustment")))
-        keypoints = ba.pop("keypoints", None)
+        points_to_use = ba.pop("points_to_use", None)
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
         weigh_by_confidence = ba.pop("weigh_by_confidence", True)
         max_frames = ba.pop("max_frames", 100)
         frame_sampling = ba.pop("frame_sampling", "even")
         return BundleAdjustmentParams(
-            keypoints=keypoints,
+            points_to_use=None
+            if points_to_use is None
+            else [str(p) for p in points_to_use],
             fixed=list(fixed),
             shared=[list(s) for s in shared],
             weigh_by_confidence=bool(weigh_by_confidence),

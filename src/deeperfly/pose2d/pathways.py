@@ -59,9 +59,11 @@ class Pathway:
         ``[point_sources.<view>]`` tables.
     source, preprocessor, model
         The names referenced from ``[[sources]]`` / ``[[preprocessors]]`` /
-        ``[[models]]``.
+        ``[[models]]``. ``preprocessor`` is ``None`` when the pathway omits it
+        (no frame ops; ``transform`` is the identity).
     transform
-        The resolved preprocessor (the pathway's geometric frame prep).
+        The resolved preprocessor (the pathway's geometric frame prep); the
+        identity when ``preprocessor`` is omitted.
     mapping
         An ``(E, 3)`` int array of ``(i, v, p)`` triples (resolved from
         ``[point_sources]``): model output channel ``i`` -> point ``p`` of view
@@ -70,7 +72,7 @@ class Pathway:
 
     name: str
     source: str
-    preprocessor: str
+    preprocessor: str | None
     model: str
     transform: FrameTransform
     mapping: Int[np.ndarray, "E 3"]
@@ -397,7 +399,9 @@ def _parse_pathways(
     point_index: dict[str, int],
     point_sources,
 ) -> list[Pathway]:
-    specs: list[tuple[str, str, str, str]] = []  # name, source, preprocessor, model
+    specs: list[
+        tuple[str, str, str | None, str]
+    ] = []  # name, source, preprocessor, model
     seen: set[str] = set()
     for i, pw in enumerate(_require_list(raw, "[[pathways]]")):
         where = f"[[pathways]][{i}]"
@@ -411,7 +415,7 @@ def _parse_pathways(
         if src not in sources:
             raise ValueError(f"{where} references unknown source {src!r}")
         prep = pw.get("preprocessor")
-        if prep not in preprocessors:
+        if prep is not None and prep not in preprocessors:
             raise ValueError(f"{where} references unknown preprocessor {prep!r}")
         model = pw.get("model")
         if model not in models:
@@ -431,7 +435,7 @@ def _parse_pathways(
             source=src,
             preprocessor=prep,
             model=model,
-            transform=preprocessors[prep],
+            transform=preprocessors[prep] if prep is not None else FrameTransform(()),
             mapping=mappings[name],
         )
         for name, src, prep, model in specs

@@ -7,16 +7,16 @@ It carries no geometry; it is consumed by triangulation (to mask unobservable
 points), bundle adjustment (bone-length priors), pictorial-structures recovery
 and visualization (drawing bones).
 
-The default fly skeleton is packaged as ``data/skeleton_fly.toml``; it tracks the
-same 38 points as NeLy-EPFL/DeepFly3D's ``skeleton_fly.py`` but orders the body
-sides left-first (left ``0..18``, right ``19..37``), with 10 limbs and 28
-within-leg/abdomen bones. Load it with :meth:`Skeleton.fly`.
+The default fly skeleton is the ``[skeleton]`` section of the packaged
+``data/default_config.toml``; it tracks the same 38 points as NeLy-EPFL/DeepFly3D's
+``skeleton_fly.py`` but orders the body sides left-first (left ``0..18``, right
+``19..37``), with 10 limbs and 28 within-leg/abdomen bones. Load it with
+:meth:`Skeleton.fly`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -26,9 +26,6 @@ if TYPE_CHECKING:
     from .config import Config
 
 __all__ = ["Skeleton"]
-
-_DATA_DIR = Path(__file__).parent / "data"
-_FLY_TOML = _DATA_DIR / "skeleton_fly.toml"
 
 
 @dataclass(frozen=True)
@@ -69,7 +66,7 @@ class Skeleton:
         """The default 38-point Drosophila skeleton (DeepFly3D 7-camera rig)."""
         from .config import Config
 
-        return cls.from_config(Config.from_toml(_FLY_TOML))
+        return cls.from_config(Config.default())
 
     @classmethod
     def from_config(cls, config: "Config") -> Skeleton:

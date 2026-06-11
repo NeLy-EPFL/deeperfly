@@ -160,6 +160,29 @@ def stage_pose2d(
     return cameras, skeleton, pts2d, conf, candidates, image_sizes
 
 
+def _resolve_calibration_points(names: list[str] | None, skeleton) -> list[int] | None:
+    """``[pipeline.bundle_adjustment].points_to_use`` names -> skeleton indices.
+
+    ``None`` (the key omitted) passes through as ``None`` -- calibrate on every
+    point. Otherwise each name is resolved against ``skeleton.point_names``.
+
+    Raises
+    ------
+    ValueError
+        If a name is not one of the skeleton's points.
+    """
+    if names is None:
+        return None
+    index = {name: i for i, name in enumerate(skeleton.point_names)}
+    try:
+        return [index[name] for name in names]
+    except KeyError as e:
+        raise ValueError(
+            f"[pipeline.bundle_adjustment].points_to_use references unknown "
+            f"skeleton point {e.args[0]!r}"
+        ) from None
+
+
 def stage_bundle_adjustment(
     config: Config, cameras: CameraGroup, pts2d, conf, skeleton
 ) -> CameraGroup:
@@ -190,6 +213,7 @@ def stage_bundle_adjustment(
     from .core import calibrate
 
     ba = config.bundle_adjustment
+    ba_keypoints = _resolve_calibration_points(ba.points_to_use, skeleton)
     weighted = ba.weigh_by_confidence and conf is not None
     v, t = pts2d.shape[:2]
     log.info(
@@ -205,7 +229,7 @@ def stage_bundle_adjustment(
         pts2d,
         conf,
         skeleton,
-        ba_keypoints=ba.keypoints,
+        ba_keypoints=ba_keypoints,
         fixed=ba.fixed,
         shared=ba.shared,
         weigh_by_confidence=ba.weigh_by_confidence,

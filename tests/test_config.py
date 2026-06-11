@@ -80,7 +80,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
         {
             "pipeline": {
                 "bundle_adjustment": {
-                    "keypoints": [0, 1, 2],
+                    "points_to_use": ["lf_claw", "lm_claw", "lh_claw"],
                     "fixed": ["*.intr"],
                     "shared": [["a.tvec[2]", "b.tvec[2]"]],
                     "weigh_by_confidence": False,
@@ -94,7 +94,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     )
     ba = c.bundle_adjustment
     assert isinstance(ba, BundleAdjustmentParams)
-    assert ba.keypoints == [0, 1, 2]
+    assert ba.points_to_use == ["lf_claw", "lm_claw", "lh_claw"]
     assert ba.fixed == ["*.intr"]
     assert ba.shared == [["a.tvec[2]", "b.tvec[2]"]]
     assert ba.weigh_by_confidence is False
@@ -107,7 +107,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
 def test_bundle_adjustment_defaults_when_absent():
     ba = Config.from_dict({}).bundle_adjustment
     assert (
-        ba.keypoints is None
+        ba.points_to_use is None
         and ba.fixed == []
         and ba.shared == []
         and ba.weigh_by_confidence is True  # weighting on by default

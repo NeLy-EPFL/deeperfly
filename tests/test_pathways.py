@@ -213,6 +213,15 @@ def test_pathway_rejects_unknown_references():
         _config(_one_pathway(model="nope"), ps)
 
 
+def test_pathway_omitting_preprocessor_defaults_to_identity():
+    # No `preprocessor` key -> no frame ops (identity), like an empty `ops = []`.
+    pathway = [{"name": "rh_p", "source": "s0", "model": "m"}]
+    plan = _config(pathway, _ps("rh", "rh_p", rf_thorax_coxa=0))
+    (pw,) = plan.pathways
+    assert pw.preprocessor is None
+    assert pw.transform == FrameTransform(())
+
+
 def test_duplicate_pathway_name_rejected():
     with pytest.raises(ValueError, match="duplicate name"):
         _config(
