@@ -58,10 +58,10 @@ class BAState(NamedTuple):
 
 
 def initialize_pts3d(
-    pts2d: Float[Array, "V *pts 2"],
-    rvecs: Float[Array, "V 3"],
-    tvecs: Float[Array, "V 3"],
-    intrs: Float[Array, "V P"] | Float[Array, "P"],
+    pts2d: Float[np.ndarray, "V *pts 2"],
+    rvecs: Float[np.ndarray, "V 3"],
+    tvecs: Float[np.ndarray, "V 3"],
+    intrs: Float[np.ndarray, "V P"] | Float[np.ndarray, "P"],
 ) -> Float[Array, "*pts 3"]:
     """Triangulate initial 3D points from 2D observations and camera poses.
 

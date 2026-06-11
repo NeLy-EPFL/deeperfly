@@ -162,11 +162,12 @@ class PoseResult:
                     f"{FORMAT_VERSION}; re-run the pipeline to regenerate it"
                 )
             skeleton = _read_skeleton(f["skeleton"])  # type: ignore[arg-type]
-            cameras = _read_cameras(  # type: ignore[arg-type]
+            cameras_group = (
                 f["bundle_adjustment/cameras"]
                 if "bundle_adjustment/cameras" in f
                 else f["pose2d/cameras"]
             )
+            cameras = _read_cameras(cameras_group)  # type: ignore[arg-type]
             pts2d = pts3d = reproj = None
             for stage in ("triangulation", "pictorial_structures", "pose2d"):
                 if pts2d is None and f"{stage}/points" in f:
@@ -415,9 +416,9 @@ def _read_cameras(g: h5py.Group) -> CameraGroup:
     names = [n.decode() if isinstance(n, bytes) else n for n in g["names"][()]]  # type: ignore[index]
     return CameraGroup.from_arrays(
         names,
-        g["rvecs"][()],
-        g["tvecs"][()],
-        g["intrs"][()],
+        g["rvecs"][()],  # type: ignore[index]
+        g["tvecs"][()],  # type: ignore[index]
+        g["intrs"][()],  # type: ignore[index]
         g["dists"][()],  # type: ignore[index]
     )
 

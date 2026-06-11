@@ -232,7 +232,7 @@ def _draw(
 ) -> np.ndarray:
     """Draw bones then joints, back-to-front when ``depth`` is given."""
     pts = np.asarray(pts, dtype=float)
-    finite: np.ndarray = np.isfinite(pts).all(-1)
+    finite: np.ndarray = np.asarray(np.isfinite(pts).all(-1))
 
     def xy(i: int) -> tuple[int, int]:
         return int(round(pts[i, 0] * scale_x + x0)), int(
