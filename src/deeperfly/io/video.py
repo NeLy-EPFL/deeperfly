@@ -241,7 +241,7 @@ class VideoWriter:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
         if self._stream is None:
             self._open(frame.shape[1], frame.shape[0])
-        assert self._size is not None
+        assert self._stream is not None and self._size is not None
         w, h = self._size
         vframe = av.VideoFrame.from_ndarray(
             np.ascontiguousarray(frame[:h, :w]), format="rgb24"

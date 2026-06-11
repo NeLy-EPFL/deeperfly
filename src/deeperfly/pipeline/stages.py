@@ -287,6 +287,11 @@ def stage_pictorial_structures(
     """
     from .. import pictorial
 
+    if skeleton is None:
+        raise ValueError(
+            "pictorial_structures requires a skeleton, but none was stored; "
+            "re-run with [pipeline].do_pose2d to write one"
+        )
     ps = config.pictorial
     v, t = pts2d.shape[:2]
     log.info("pictorial structures: recovering peaks (%d frames, %d views)", t, v)
