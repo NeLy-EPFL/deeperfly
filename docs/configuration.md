@@ -12,13 +12,13 @@ their defaults.
 
 ## The detection plan
 
-2D detection is described by four top-level lists — `[[sources]]`,
-`[[preprocessors]]`, `[[models]]`, `[[pathways]]` — plus a `[point_sources]`
-mapping table. A neural network turns a preprocessed image into output channels;
-the plan says which footage feeds which model (the pathways) and where each
-output channel lands in the skeleton (`[point_sources]`). The default fly rig is
-**7 sources → 8 pathways → 7 views** (the front camera is read twice, once
-mirrored).
+2D detection is described by the top-level `[[sources]]` footage list plus the
+detector's own machinery under `[pose2d]` — `[[pose2d.preprocessors]]`,
+`[[pose2d.models]]`, `[[pose2d.pathways]]` — and a `[pose2d.output_points]` mapping
+table. A neural network turns a preprocessed image into output channels; the plan
+says which footage feeds which model (the pathways) and where each output channel
+lands in the skeleton (`[pose2d.output_points]`). The default fly rig is **7
+sources → 8 pathways → 7 views** (the front camera is read twice, once mirrored).
 
 **Sources** name the footage, the one setting almost every recording needs. Each
 `filename` is a glob matched inside the recording directory:
@@ -42,10 +42,10 @@ references by name (full op grammar in the *Preprocessor op grammar* section
 below):
 
 ```toml
-[[preprocessors]]
+[[pose2d.preprocessors]]
 name = "plain"
 ops  = []
-[[preprocessors]]
+[[pose2d.preprocessors]]
 name = "mirror"
 ops  = [{ op = "fliplr" }]
 ```
@@ -56,7 +56,7 @@ download), `input_size` the `(height, width)` it expects, `mean` the scalar
 subtracted after `/255`, and `n_out_channels` the output heatmap count.
 
 ```toml
-[[models]]
+[[pose2d.models]]
 name = "deepfly2d"
 class = "hourglass"
 weights = ""
@@ -69,13 +69,13 @@ n_out_channels = 19
 only says *what to detect on*; each needs a unique `name`:
 
 ```toml
-[[pathways]]
+[[pose2d.pathways]]
 name = "rh_noflip"; source = "vid_rh"; preprocessor = "noflip"; model = "deepfly2d"
-[[pathways]]        # the front source, mirrored pass
+[[pose2d.pathways]]        # the front source, mirrored pass
 name = "f_fliplr";  source = "vid_f";  preprocessor = "fliplr"; model = "deepfly2d"
 ```
 
-**`[point_sources.<view>]`** says *where the outputs land*: for each view, a table
+**`[pose2d.output_points.<view>]`** says *where the outputs land*: for each view, a table
 keyed by point name where `point = { pathway, out_channel }` fills that point from
 output channel `out_channel` of the named pathway. Keying on `(view, point)` makes
 every point's data come from exactly one place (a duplicate is a config error); a
@@ -83,12 +83,12 @@ every point's data come from exactly one place (a duplicate is a config error); 
 visibility, with no separate table.
 
 ```toml
-[point_sources.rh]                 # right-side view: 19 channels of one pathway
+[pose2d.output_points.rh]                 # right-side view: 19 channels of one pathway
 rf_thorax_coxa = { pathway = "rh_noflip", out_channel = 0 }
 # ... through ...
 r_abdomen2     = { pathway = "rh_noflip", out_channel = 18 }
 
-[point_sources.f]                  # one view fed by two pathways, disjoint points
+[pose2d.output_points.f]                  # one view fed by two pathways, disjoint points
 rf_femur_tibia = { pathway = "f_noflip", out_channel = 2 }   # right, un-flipped
 lf_femur_tibia = { pathway = "f_fliplr", out_channel = 2 }   # left, mirrored
 ```
@@ -108,10 +108,9 @@ do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
 do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
 do_triangulation        = true   # triangulate 2D -> 3D
 do_visualization        = true   # render the videos
-# fps = 100.0   # optional; omit to detect from the input videos
 ```
 
-Each enabled stage has its own `[pipeline.<stage>]` parameter table (below).
+Each enabled stage has its own top-level `[<stage>]` parameter table (below).
 Pictorial structures is the opt-in stage most commonly flipped on.
 
 ## Resume and recompute — fingerprints and `--overwrite`
@@ -119,7 +118,7 @@ Pictorial structures is the opt-in stage most commonly flipped on.
 An *enabled* stage reuses its result while its config is unchanged and its
 output is in the output directory — so re-running a finished recording is a
 cheap no-op, and **editing the config recomputes exactly the affected stages**.
-Tweak `[pipeline.triangulation]` or the videos and re-run: the slow 2D
+Tweak `[triangulation]` or the videos and re-run: the slow 2D
 detection is reused, only triangulation/visualization recompute (each stage's
 parameters are recorded in `<outdir>/run.json` when it completes).
 Performance-only knobs (`batch_size`, `decode_buffer`, `[io.image]`) never
@@ -150,7 +149,7 @@ reused — so both workflows work: edit `out/config.toml` and re-run with
 This runs only when its `do_pictorial_structures` switch is on.
 
 ```toml
-[pipeline.pictorial_structures]   # peak recovery before triangulation
+[pictorial_structures]   # peak recovery before triangulation
 k        = 5       # candidate peaks per joint
 temporal = false   # add a temporal-consistency term
 lam      = 1.0     # bone-length prior weight
@@ -163,19 +162,19 @@ re-runs `pose2d` once (announced loudly); after that, tweaking `temporal` /
 `do_pose2d = false` from a 2D result that stored no candidates skips the stage
 with a notice.
 
-## Output videos — `[pipeline.visualization]`
+## Output videos — `[visualization]`
 
-Each `[[pipeline.visualization.videos]]` is one output MP4, composited from an
+Each `[[visualization.videos]]` is one output MP4, composited from an
 ordered list of `panels`; each panel draws one op (`imshow`, `skeleton_2d`,
 `skeleton_3d`) for one camera view at a pixel offset. Common edits:
 
 ```toml
-[pipeline.visualization]
+[visualization]
 background  = "black"
 # output_fps = 30    # explicit output fps for every video
 # speed      = 0.5   # or scale the input fps instead (0.5 = slow motion)
 
-[pipeline.visualization.kwargs]   # draw-op defaults shared by every video
+[visualization.kwargs]   # draw-op defaults shared by every video
 imshow      = { width = 480, height = 240 }
 skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
 skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
@@ -186,12 +185,12 @@ The generated config ships two montage videos (`pose2d`, `pose3d`) wired to the
 kwargs merge across three levels (global → per-video → per-panel), most specific
 winning. Video frames are read and written with PyAV.
 
-## Triangulation — `[pipeline.triangulation]`
+## Triangulation — `[triangulation]`
 
 How the per-view 2D points become one 3D point:
 
 ```toml
-[pipeline.triangulation]
+[triangulation]
 method              = "ransac"   # ransac (default, robust) | greedy | dlt
 ransac_threshold    = 15.0       # inlier reprojection cutoff (px), method = ransac
 min_inliers         = 2          # min agreeing views to accept a point (ransac)
@@ -209,10 +208,10 @@ non-finite confidences drop the view). For `ransac` it weights the candidate fit
 and the final refit but not the inlier vote, which stays a geometric reprojection
 test so a confidently-wrong detection cannot vote itself into the consensus.
 
-## Detector precision and memory — `[pipeline.pose2d]`
+## Detector precision and memory — `[pose2d]`
 
 ```toml
-[pipeline.pose2d]
+[pose2d]
 precision     = "bfloat16"  # the default: as fast as float16 under CUDA autocast
                             # (~1.5-2x over float32) with a wider range (no overflow).
                             # "float32" is the reference; ignored on CPU/MPS
@@ -221,9 +220,11 @@ batch_size    = 16          # GPU forward batch (images/forward); throughput pla
 decode_buffer = 4           # decode queue depth, in multiples of batch_size
 ```
 
-This table holds only performance knobs; *what* to detect (sources, models,
-pathways — including per-model `weights`) is the detection plan above.
-`batch_size` is the GPU forward batch; `decode_buffer` is a *memory* knob (peak
+These are the `[pose2d]` table's performance knobs; *what* to detect (sources,
+models, pathways — including per-model `weights`) is the detection plan, which
+shares the same `[pose2d]` table (and the top-level `[[sources]]`) and is
+documented above. `batch_size` is the GPU forward batch; `decode_buffer` is a
+*memory* knob (peak
 frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
 GPU fed when decode is jittery, lower it to shave memory.
 
@@ -240,7 +241,7 @@ thread count:
 
 See [video.md](video.md) for the reader API.
 
-## Preprocessor op grammar — `[[preprocessors]]` `ops`
+## Preprocessor op grammar — `[[pose2d.preprocessors]]` `ops`
 
 A preprocessor is an ordered list of frame ops applied to a pathway's frames
 before the model — to feed the detector a mirrored/cropped/rotated view. Steps
@@ -248,7 +249,7 @@ run in the order written (flips and rotations do not commute, so the order is
 yours):
 
 ```toml
-[[preprocessors]]
+[[pose2d.preprocessors]]
 name = "corrected"
 ops  = [
     { op = "rot90", k = 1 },                                  # k CCW quarter-turns (any sign)
@@ -263,7 +264,7 @@ ops (plus the model's resize to its `input_size`), so the points always land in
 the raw source frame the view's intrinsics describe. The flip is therefore a
 detector-input concern only — it never reflects the reconstructed 3D skeleton.
 
-## Bundle adjustment — `[pipeline.bundle_adjustment]`
+## Bundle adjustment — `[bundle_adjustment]`
 
 Bundle adjustment uses the fly itself as the target, solved with
 `scipy.optimize.least_squares` — its kwargs (`max_nfev`, `loss`, ...) sit
@@ -271,7 +272,7 @@ directly in the table. The defaults suit the standard rig; you rarely need to
 change them.
 
 ```toml
-[pipeline.bundle_adjustment]
+[bundle_adjustment]
 points_to_use       = [ "..." ]   # skeleton point names that drive bundle adjustment (default: the 30 leg points)
 fixed               = ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"]   # held constant; fixes the world gauge
 shared              = []          # e.g. [["lf.tvec[2]", "rf.tvec[2]"]] to tie cameras' z distances
@@ -285,7 +286,7 @@ bundle adjustment harder, scaling each reprojection residual by `sqrt(confidence
 non-positive or non-finite confidences drop the observation, and if *every*
 weight is zero it falls back to uniform weighting. Set it `false` to weight all
 observations equally. (This is the mirror of
-`[pipeline.triangulation].weigh_by_confidence`, which defaults `false`.)
+`[triangulation].weigh_by_confidence`, which defaults `false`.)
 
 See [library.md](library.md) for calling the bundle adjuster directly.
 
@@ -315,5 +316,5 @@ azimuth_deg = 0
 The tracked points and their structure (38-point, 7-camera *Drosophila* rig):
 `point_names`, `limb_points` kinematic chains (each a list of point names), and
 the plotting `limb_palette`. Which view sees which point is not set here — it is
-the union of the `[point_sources]` tables. Edit this only to track a different
+the union of the `[pose2d.output_points]` tables. Edit this only to track a different
 animal — see [library.md](library.md) and [architecture.md](architecture.md).

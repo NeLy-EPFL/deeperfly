@@ -74,7 +74,7 @@ priors and multi-view geometry. deeperfly splits this into two orthogonal knobs:
 a `triangulation` strategy that *vetoes* bad views, and an optional `pictorial`
 stage that *recovers* the right peak first.
 
-- **`triangulation`** (`[pipeline.triangulation].method`):
+- **`triangulation`** (`[triangulation].method`):
   - **`ransac`** (default) — triangulate each point from its largest multi-view
     consensus set; a gross outlier never enters the fit.
   - **`greedy`** — greedily drop the worst-reprojecting view of each offending

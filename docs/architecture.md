@@ -3,7 +3,7 @@
 `deeperfly run` is one linear sequence of stages — `pose2d` →
 `bundle_adjustment` → `pictorial_structures` (disabled by default) → `triangulation` →
 `visualization` — each toggled by a `do_<stage>` boolean in `[pipeline]`, with its
-own `[pipeline.<stage>]` parameter sub-table. Each stage writes its own group in
+own top-level `[<stage>]` parameter table. Each stage writes its own group in
 `poses.h5`.
 
 ## Data flow
@@ -141,7 +141,7 @@ flowchart TD
 Each view is detected independently; the views only meet *geometrically*. The
 reconstruction is two orthogonal choices — `run_from_points2d(...,
 triangulation=..., do_pictorial=...)` for the library, or
-`[pipeline.triangulation].method` + `[pipeline].do_pictorial_structures` for the
+`[triangulation].method` + `[pipeline].do_pictorial_structures` for the
 CLI:
 
 **`triangulation`** — how the per-view 2D points become one 3D point:
