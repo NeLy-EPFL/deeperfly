@@ -1,7 +1,7 @@
 # Contributing to deeperfly
 
 Development setup. For how the pipeline works, see
-[docs/architecture.md](docs/architecture.md).
+[docs/explanation/pipeline.md](docs/explanation/pipeline.md).
 
 ## Requirements
 
@@ -46,6 +46,22 @@ The hooks run ruff, keep `uv.lock` in sync, and strip notebook outputs with
 ```bash
 uvx pre-commit run --all-files
 ```
+
+## Documentation
+
+The docs site is built with [MkDocs](https://www.mkdocs.org/) + Material and
+lives in [`docs/`](docs) (configured by [`mkdocs.yml`](mkdocs.yml)). The library
+API reference is generated from the source docstrings by
+[mkdocstrings](https://mkdocstrings.github.io/). Preview it locally with live
+reload:
+
+```bash
+uv run --group docs mkdocs serve       # http://127.0.0.1:8000
+uv run --group docs mkdocs build --strict   # what CI runs
+```
+
+Pushing to `main` rebuilds and publishes the site to GitHub Pages
+(see [`.github/workflows/docs.yml`](.github/workflows/docs.yml)).
 
 ## License
 

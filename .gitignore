@@ -31,3 +31,6 @@ deeperfly_outputs*/
 
 # Scratch / working files (not for version control)
 scratch/
+
+# MkDocs build output
+site/
