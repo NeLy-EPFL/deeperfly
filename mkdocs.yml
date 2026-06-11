@@ -8,6 +8,8 @@ copyright: GPL-3.0-only
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/favicon.ico
   features:
     - navigation.sections     # render top-level nav groups as sidebar sections
     - navigation.top          # back-to-top button
