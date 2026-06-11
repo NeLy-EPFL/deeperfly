@@ -16,7 +16,6 @@ from .console import _configure_logging
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
 
-
 # -- typer app ---------------------------------------------------------------
 #
 # The CLI is built with Typer: typed signatures over click, with usage/--help

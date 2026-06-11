@@ -22,8 +22,8 @@ from deeperfly import Config, cli, pipeline, recordings
 from deeperfly.cli.app import _normalize_overwrite_argv
 from deeperfly.cli.report import _fmt_bytes
 from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
-from deeperfly.results import PoseResult
 from deeperfly.pose2d import stream as pose2d_stream
+from deeperfly.results import PoseResult
 
 FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
@@ -122,22 +122,31 @@ def _stub_detect(monkeypatch, tmp_path):
     every detection, so a test can assert whether pose2d recomputed or was
     reused from cache.
     """
+    from types import SimpleNamespace
+
     T, H, W = 3, 16, 16
     calls: list[bool] = []
-    sizes = {n: (H, W) for n in FLY_CAMERAS}
+    # Per-source raw sizes (the default plan's 7 sources are vid_<view>).
+    sizes = {f"vid_{view}": (H, W) for view in FLY_CAMERAS}
     monkeypatch.setattr(
-        pipeline.stages, "camera_image_sizes", lambda config, **kw: sizes
+        pipeline.stages, "source_image_sizes", lambda config, **kw: sizes
     )
-    monkeypatch.setattr(pipeline.stages, "load_detector", lambda checkpoint: object())
+    monkeypatch.setattr(
+        pipeline.stages,
+        "load_models",
+        lambda plan: {
+            "deepfly2d": SimpleNamespace(
+                set_precision=lambda p: None, device=lambda: "cpu"
+            )
+        },
+    )
     # The recording footage is stubbed away, so skip the pre-run footage validation a
     # real fresh pose2d run does (covered separately by the input-resolution tests).
     monkeypatch.setattr(
         pipeline.run, "require_input_footage", lambda config, **kw: None
     )
 
-    def fake_detect_2d(
-        config, model, sides, flips, *, want_candidates=False, k=5, **kw
-    ):
+    def fake_detect_2d(config, plan, models, *, want_candidates=False, k=5, **kw):
         from deeperfly.pictorial import Candidates
 
         calls.append(True)
@@ -167,7 +176,7 @@ def _stub_compute_stages(monkeypatch):
         ba_calls.append(cameras)
         return cameras
 
-    def stub_tri(config, cameras, pts2d):
+    def stub_tri(config, cameras, pts2d, conf=None):
         tri_calls.append(config.triangulation)
         return pts2d, np.zeros((pts2d.shape[1], 38, 3)), None
 
@@ -243,11 +252,32 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
 
 
 def _footage_cfg(tmp_path):
-    """A minimal two-camera config whose pose2d run reads real footage."""
+    """A minimal but complete two-source/two-view plan that reads real footage."""
+    from deeperfly.skeleton import Skeleton
+
+    names = Skeleton.fly().point_names
+
+    def output_points(view, pathway):
+        lines = [f"[pose2d.output_points.{view}]"]
+        lines += [
+            f'{names[i]} = {{ pathway = "{pathway}", out_channel = {i} }}'
+            for i in range(19)
+        ]
+        return "\n".join(lines) + "\n"
+
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[cameras.cam0]\n[cameras.cam1]\n"
-        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
+        '[[sources]]\nname = "cam0"\n[[sources]]\nname = "cam1"\n'
+        '[[pose2d.preprocessors]]\nname = "plain"\nops = []\n'
+        '[[pose2d.models]]\nname = "m"\nclass = "hourglass"\n'
+        "input_size = [256, 512]\nn_out_channels = 19\n"
+        '[[pose2d.pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
+        '[[pose2d.pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
+        "[cameras.cam0]\nazimuth_deg = 0\ndistance = 10\nfocal_length_px = 100\n"
+        "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
+        + output_points("cam0", "p0")
+        + output_points("cam1", "p1")
+        + "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
         "do_triangulation = false\ndo_visualization = false\n"
     )
     return cfg
@@ -326,7 +356,12 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
 
 # -- input resolution: multiple inputs, wildcards, --recursive ----------------
 
-_RES_CFG = Config.from_dict({"cameras": {"cam0": {}, "cam1": {}}})
+_RES_CFG = Config.from_dict(
+    {
+        "sources": [{"name": "cam0"}, {"name": "cam1"}],
+        "cameras": {"cam0": {}, "cam1": {}},
+    }
+)
 
 
 def _make_recording(d, *, ext="mp4", count=1):
@@ -796,6 +831,19 @@ def _run_args(tmp_path, cfg=None, *, extra=(), log_level="error"):
     return args
 
 
+def test_fresh_run_logs_running_not_recomputing(tmp_path, monkeypatch, caplog):
+    """A first run over an empty output dir announces plain "running <stage>" --
+    there is no cached result, so nothing is being "recomputed"."""
+    cfg = _default_cfg(tmp_path, bundle_adjustment=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    with caplog.at_level("INFO", logger="deeperfly"):
+        cli.main(_run_args(tmp_path, cfg, log_level="info"))
+    assert not any("recomputing" in r.message for r in caplog.records)
+    for stage in ("pose2d", "triangulation"):
+        assert any(f"running {stage}" == r.message for r in caplog.records)
+
+
 def test_enabled_pose2d_reused_when_cached(tmp_path, monkeypatch):
     """An enabled stage whose config is unchanged reuses its cache on re-run."""
     cfg = _default_cfg(
@@ -1068,42 +1116,51 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
     with caplog.at_level("INFO"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
     msgs = "\n".join(r.message for r in caplog.records)
-    assert "input image sizes" in msgs
-    assert "forward passes/frame" in msgs
-    assert "network input 256x512" in msgs
+    assert "source image sizes" in msgs
+    assert "pathways" in msgs
+    assert "forward batch" in msgs
 
 
 # -- automatic weight provisioning -------------------------------------------
 
 
-def test_load_detector_downloads_cached(tmp_path, monkeypatch):
-    # With no explicit checkpoint, load_detector downloads the cached torch
+def test_model_load_downloads_cached(tmp_path, monkeypatch):
+    # With no explicit weights, an hourglass model downloads the cached torch
     # weights and loads the detector from them.
-    from deeperfly.pose2d import detector, download
+    from deeperfly.pose2d import detector, download, models
+    from deeperfly.pose2d.models import ModelSpec
 
     sentinel = tmp_path / "sh8_deepfly.pth"
     monkeypatch.setattr(download, "download_torch_weights", lambda: sentinel)
     monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
-    assert pose2d_stream.load_detector(None) == ("loaded", sentinel)
+    lm = models.load_model(ModelSpec(name="m", cls="hourglass", weights=None))
+    assert lm.module == ("loaded", sentinel)
 
 
-def test_load_detector_explicit_checkpoint(tmp_path, monkeypatch):
-    from deeperfly.pose2d import detector, download
+def test_model_load_explicit_weights(tmp_path, monkeypatch):
+    from deeperfly.pose2d import detector, download, models
+    from deeperfly.pose2d.models import ModelSpec
 
     monkeypatch.setattr(
         download,
         "download_torch_weights",
-        lambda: pytest.fail("should not download when a checkpoint is given"),
+        lambda: pytest.fail("should not download when weights are given"),
     )
     monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
     ckpt = tmp_path / "custom.pth"
     ckpt.write_bytes(b"weights")
-    assert pose2d_stream.load_detector(str(ckpt)) == ("loaded", str(ckpt))
+    lm = models.load_model(ModelSpec(name="m", cls="hourglass", weights=str(ckpt)))
+    assert lm.module == ("loaded", str(ckpt))
 
 
-def test_load_detector_missing_checkpoint_raises(tmp_path):
+def test_model_load_missing_weights_raises(tmp_path):
+    from deeperfly.pose2d import models
+    from deeperfly.pose2d.models import ModelSpec
+
     with pytest.raises(SystemExit, match="no detector checkpoint"):
-        pose2d_stream.load_detector(str(tmp_path / "nope.pth"))
+        models.load_model(
+            ModelSpec(name="m", cls="hourglass", weights=str(tmp_path / "nope.pth"))
+        )
 
 
 # -- doctor (installation / runtime report) ----------------------------------
@@ -1165,7 +1222,7 @@ def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, m
     cfg.write_text(
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
         "do_pictorial_structures = true\ndo_triangulation = true\ndo_visualization = false\n"
-        f'[pipeline.triangulation]\nmethod = "{method}"\n'
+        f'[triangulation]\nmethod = "{method}"\n'
     )
     with caplog.at_level("WARNING"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
@@ -1209,13 +1266,44 @@ def test_resume_uses_stored_cameras_with_full_config(result, tmp_path):
 
 
 def test_detect_sequence_progress_called_per_frame(monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+
     from deeperfly.pose2d import inference
+    from deeperfly.preprocessing import FrameTransform
 
     T = 4
-    frames = [np.zeros((T, 8, 8, 3), np.uint8) for _ in range(2)]
-    monkeypatch.setattr(
-        inference, "detect", lambda *a, **k: (np.zeros((2, 38, 2)), np.zeros((2, 38)))
-    )
+
+    # A fake model that resizes to a tiny input and emits a flat peak per channel,
+    # so the run needs no real weights -- we only check the progress ticks.
+    class _FakeModel:
+        input_size = (4, 4)
+
+        def device(self):
+            return "cpu"
+
+        def prepare(self, frames):
+            t = torch.as_tensor(np.asarray(frames)).float()
+            return torch.zeros((*t.shape[:-3], 3, 4, 4))
+
+        def predict_points(self, inputs, *, method="weighted", radius=2):
+            lead = tuple(inputs.shape[:-3])  # (B, V) of the standard (B, V, 3, H, W)
+            return np.zeros((*lead, 19, 2), np.float32), np.ones(
+                (*lead, 19), np.float32
+            )
+
+    def _pw(view):
+        return SimpleNamespace(
+            source="s",
+            model="m",
+            transform=FrameTransform(()),
+            mapping=np.array([[i, view, i] for i in range(19)]),
+        )
+
+    plan = SimpleNamespace(n_views=2, n_points=38, pathways=[_pw(0), _pw(1)])
+    models = {"m": _FakeModel()}
+    windows = {"s": np.zeros((T, 8, 8, 3), np.uint8)}
     seen: list[int] = []
 
     def progress(it):
@@ -1223,9 +1311,7 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
             seen.append(x)
             yield x
 
-    pts, conf = inference.detect_sequence(
-        object(), frames, ["right", "left"], [False, True], progress=progress
-    )
+    pts, conf = inference.detect_sequence(plan, models, windows, progress=progress)
     assert seen == list(range(T))
     assert pts.shape == (2, T, 38, 2)
 
@@ -1245,7 +1331,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
             return ("frames", self._src)
 
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
-    cfg = Config.from_dict({"pipeline": {"pose2d": {}}})
+    cfg = Config.from_dict({"pose2d": {}})
     names = result.cameras.names
     v0, v1 = names[0], names[1]
     res = PoseResult(result.cameras, result.skeleton, result.pts2d, conf=result.conf)
@@ -1269,48 +1355,6 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
 
     # 4) no imshow views -> nothing sourced.
     assert pipeline.source_view_frames(cfg, res, [], sources=None) == {}
-
-
-# -- per-camera preprocess frame transform wiring ----------------------------
-
-
-def test_source_view_frames_applies_preprocess_transform(result, tmp_path, monkeypatch):
-    # Overlay footage must get the same per-camera transform the detector saw, so
-    # 2D/3D overlays (now in transformed-frame coords) land on matching frames.
-    from deeperfly import io, preprocessing
-
-    rng = np.random.default_rng(0)
-    names = result.cameras.names
-    raw = {n: rng.integers(0, 256, (2, 4, 6, 3), np.uint8) for n in names}
-
-    # the run's resolved footage maps each view to one "file" (its name); the reader
-    # returns that view's raw footage.
-    class _FakeReader:
-        def __init__(self, src):
-            self._src = src
-
-        def __getitem__(self, key):
-            return raw[self._src[0]]
-
-    monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
-
-    v0, v1 = names[0], names[1]
-    cameras = {n: {"input": n} for n in names}
-    cameras[v0] = {
-        "input": v0,
-        "preprocess": [{"op": "rot90", "k": 1}, {"op": "fliplr"}],
-    }
-    cfg = Config.from_dict({"cameras": cameras, "pipeline": {"pose2d": {}}})
-    got = pipeline.source_view_frames(
-        cfg, result, [v0, v1], sources={n: [n] for n in names}
-    )
-    np.testing.assert_array_equal(
-        got[v0],
-        preprocessing.FrameTransform(
-            (preprocessing.Rot90(k=1), preprocessing.Fliplr())
-        ).apply(raw[v0]),
-    )
-    np.testing.assert_array_equal(got[v1], raw[v1])  # no table -> untouched
 
 
 def test_prefetch_windows_applies_per_source_transform(monkeypatch):
@@ -1365,16 +1409,15 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
     np.testing.assert_array_equal(cam_b, b)
 
 
-def test_camera_image_sizes_returns_raw_dims(monkeypatch):
-    # Sizes are the *raw* footage dims for every camera -- intrinsics resolve
-    # against the raw frame and are mapped through the preprocess chain
-    # downstream (CameraGroup.from_config), so a rot90 must NOT swap here.
+def test_source_image_sizes_returns_raw_dims(monkeypatch):
+    # Sizes are the *raw* footage dims per source -- a view's intrinsics describe
+    # its source's raw frame.
     from deeperfly import io
 
     monkeypatch.setattr(
         recordings,
-        "camera_sources",
-        lambda config, **kw: [("rh", "A"), ("lf", "B")],
+        "source_sources",
+        lambda config, **kw: [("cam0", "A"), ("cam1", "B")],
     )
     head = np.zeros((1, 4, 6, 3), np.uint8)
 
@@ -1384,11 +1427,8 @@ def test_camera_image_sizes_returns_raw_dims(monkeypatch):
 
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader())
     cfg = Config.from_dict(
-        {
-            "cameras": {"rh": {"preprocess": [{"op": "rot90"}]}, "lf": {}},
-            "pipeline": {"pose2d": {}},
-        }
+        {"sources": [{"name": "cam0"}, {"name": "cam1"}], "pose2d": {}}
     )
-    sizes = recordings.camera_image_sizes(cfg, input="x")
-    assert sizes["rh"] == (4, 6)  # raw (H, W), untouched by the quarter-turn
-    assert sizes["lf"] == (4, 6)
+    sizes = recordings.source_image_sizes(cfg, input="x")
+    assert sizes["cam0"] == (4, 6)  # raw (H, W)
+    assert sizes["cam1"] == (4, 6)

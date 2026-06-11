@@ -3,32 +3,18 @@
 The detector is stubbed out: we project a known 3D fly through the synthetic test
 rig to get ground-truth 2D, then build candidate peak sets (optionally with a
 wrong arg-max "decoy" plus the true location as a secondary peak) and check that
-PS recovers the joint where the default reproject path can only veto it.
+PS recovers the joint where the default triangulation path can only veto it.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import fly_masked
 
 from deeperfly import pictorial
-from deeperfly.cameras import CameraGroup
-from deeperfly.results import PoseResult
 from deeperfly.pipeline import _bone_prior, reconstruct, run_from_points2d
-from deeperfly.skeleton import Skeleton
-from deeperfly.triangulation import apply_visibility
-
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
+from deeperfly.results import PoseResult
 
 
 def fly_cloud(rng, n_pts=38):
@@ -37,7 +23,7 @@ def fly_cloud(rng, n_pts=38):
 
 
 def candidates_from_proj(proj, k, *, score=0.9):
-    """``(V, 1, N, K, 2)`` / ``(V, 1, N, K)`` with the true projection as peak 0."""
+    """``(V, 1, P, K, 2)`` / ``(V, 1, P, K)`` with the true projection as peak 0."""
     v, n, _ = proj.shape
     xy = np.full((v, 1, n, k, 2), np.nan)
     sc = np.zeros((v, 1, n, k))
@@ -71,51 +57,6 @@ def test_peak_candidates_pads_when_too_few():
     assert np.isnan(xy[0, 1:]).all() and (score[0, 1:] == 0).all()
 
 
-def test_extract_candidates_flip_and_side_mapping():
-    # One left camera (flipped, fills indices 0..18) with a peak in channel 3.
-    j, hh, ww = 19, 16, 32
-    hm = np.zeros((1, j, hh, ww))
-    hm[0, 3, 6, 20] = 1.0  # (row=6, col=20)
-    w, h = 320, 160
-    xy, score = pictorial.extract_candidates(
-        hm, sides=["left"], flips=[True], image_size=[(w, h)], k=2
-    )
-    assert xy.shape == (1, 38, 2, 2) and score.shape == (1, 38, 2)
-    # Left side -> skeleton index 0 + 3; x flipped: (1 - 20/ww) * w.
-    np.testing.assert_allclose(
-        xy[0, 3, 0], [(1 - 20 / ww) * w, (6 / hh) * h], atol=1e-6
-    )
-    assert np.isnan(xy[0, 19:]).all()  # right side untouched by a left camera
-
-
-def test_extract_candidates_front_camera_both_sides():
-    # The front camera is two passes on one physical view: a right pass and a
-    # flipped left pass. Candidates from both must land on the same output row,
-    # filling indices 19..37 (right) and 0..18 (left).
-    j, hh, ww = 19, 16, 32
-    hm = np.zeros((2, j, hh, ww))  # two passes (right, left) for view 0
-    hm[0, 3, 6, 20] = 1.0  # right pass, channel 3
-    hm[1, 5, 4, 10] = 1.0  # left pass, channel 5
-    w, h = 320, 160
-    xy, score = pictorial.extract_candidates(
-        hm,
-        sides=["right", "left"],
-        flips=[False, True],
-        image_size=[(w, h)],
-        k=2,
-        views=[0, 0],
-        n_views=1,
-    )
-    assert xy.shape == (1, 38, 2, 2) and score.shape == (1, 38, 2)
-    # Right pass -> index 19 + 3, un-flipped x.
-    np.testing.assert_allclose(xy[0, 22, 0], [(20 / ww) * w, (6 / hh) * h], atol=1e-6)
-    # Left pass -> index 5, x flipped: (1 - 10/ww) * w.
-    np.testing.assert_allclose(
-        xy[0, 5, 0], [(1 - 10 / ww) * w, (4 / hh) * h], atol=1e-6
-    )
-    assert score[0, 22, 0] == 1.0 and score[0, 5, 0] == 1.0
-
-
 # -- skeleton chains ---------------------------------------------------------
 
 
@@ -134,8 +75,8 @@ def test_skeleton_chains_partition_fly(fly):
 
 
 def test_bone_length_targets_matches_manual(cameras, fly, rng):
-    pts3d = fly_cloud(rng)[None].repeat(4, 0)  # (F=4, N, 3)
-    pts2d = np.asarray(cameras.project(pts3d))  # (V, F, N, 2)
+    pts3d = fly_cloud(rng)[None].repeat(4, 0)  # (F=4, P, 3)
+    pts2d = np.asarray(cameras.project(pts3d))  # (V, F, P, 2)
     i, j, targets = pictorial.bone_length_targets(cameras, pts2d, fly)
     # The true bone lengths, recovered exactly from clean multi-view geometry.
     expect = np.linalg.norm(pts3d[0, i] - pts3d[0, j], axis=-1)
@@ -158,7 +99,7 @@ def test_bone_prior_uses_shared_targets(cameras, fly, rng):
 
 def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     pts3d = fly_cloud(rng)
-    proj = np.asarray(cameras.project(pts3d))  # (V, N, 2)
+    proj = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     k = 5
     xy, sc = candidates_from_proj(proj, k)
 
@@ -176,13 +117,13 @@ def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     ps3d, _, _ = pictorial.reconstruct(
         cameras, fly, cands, argmax, bone_max_frames=None
     )
-    # Reproject path triangulates the arg-max (including the decoy).
-    rp3d, _, _ = reconstruct(cameras, apply_visibility(argmax, fly, cameras.names))
+    # The greedy path triangulates the arg-max (including the decoy).
+    rp3d, _, _ = reconstruct(cameras, fly_masked(argmax))
 
     ps_err = np.linalg.norm(ps3d[0, joint] - pts3d[joint])
     rp_err = np.linalg.norm(rp3d[0, joint] - pts3d[joint])
     assert ps_err < 1e-3  # PS recovers the true 3D from the secondary peak
-    assert rp_err > 10 * ps_err  # reproject is dragged off by the decoy
+    assert rp_err > 10 * ps_err  # the greedy fit is dragged off by the decoy
 
 
 def test_pictorial_clean_matches_truth(cameras, fly, rng):
@@ -290,8 +231,8 @@ def test_single_view_joint_is_nan(cameras, fly, rng):
 
 
 def test_run_from_points2d_pictorial(cameras, fly, rng):
-    pts3d = fly_cloud(rng)[None]  # (T=1, N, 3)
-    proj = np.asarray(cameras.project(pts3d))  # (V, 1, N, 2)
+    pts3d = fly_cloud(rng)[None]  # (T=1, P, 3)
+    proj = np.asarray(cameras.project(pts3d))  # (V, 1, P, 2)
     xy = np.full((*proj.shape[:3], 3, 2), np.nan)
     sc = np.zeros((*proj.shape[:3], 3))
     xy[..., 0, :] = proj
@@ -302,7 +243,7 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
         cameras,
         fly,
         proj[:, :, :, 0, :] if proj.ndim == 5 else proj,
-        do_calibrate=False,
+        do_bundle_adjust=False,
         do_pictorial=True,
         candidates=cands,
     )
@@ -315,4 +256,4 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
 def test_pictorial_requires_candidates(cameras, fly, rng):
     proj = np.asarray(cameras.project(fly_cloud(rng)[None]))
     with pytest.raises(ValueError, match="requires candidates"):
-        run_from_points2d(cameras, fly, proj, do_calibrate=False, do_pictorial=True)
+        run_from_points2d(cameras, fly, proj, do_bundle_adjust=False, do_pictorial=True)

@@ -1,23 +1,20 @@
 """Tests for the merged config + the slim, config-driven CLI.
 
-Covers ``deeperfly init`` (writing the packaged template), the drift guard that
-keeps the template's inlined skeleton in step with ``Skeleton.fly()``, and the
-``[inputs]`` filename->camera resolution used by ``deeperfly run``.
+Covers ``deeperfly init`` (writing the packaged template) and the ``[inputs]``
+filename->camera resolution used by ``deeperfly run``.
 """
 
 from __future__ import annotations
 
 import tomllib
 
-import numpy as np
 import pytest
 
 from deeperfly import cli
 from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config, DEFAULT_CONFIG_PATH
-from deeperfly.recordings import camera_files, camera_patterns
+from deeperfly.config import DEFAULT_CONFIG_PATH, Config
+from deeperfly.recordings import camera_files, source_patterns
 from deeperfly.skeleton import Skeleton
-
 
 # -- deeperfly init ----------------------------------------------------------
 
@@ -43,8 +40,10 @@ def test_init_writes_parseable_config(tmp_path):
         "lh",
     ]
     assert Skeleton.from_config(cfg).n_points == 38
-    # Each camera carries its own footage glob (`input`).
-    assert all("input" in spec for spec in cameras.values())
+    # Footage globs live on the sources; the detection plan parses end to end.
+    assert all("filename" in s for s in config["sources"])
+    plan = cfg.detection_plan()
+    assert len(plan.sources) == 7 and len(plan.pathways) == 8
 
 
 def test_init_refuses_to_clobber(tmp_path):
@@ -55,23 +54,6 @@ def test_init_refuses_to_clobber(tmp_path):
     assert dst.read_text() == "keep me\n"  # untouched
     cli.main(["init", str(dst), "--force"])  # --force overwrites
     assert dst.read_text() == DEFAULT_CONFIG_PATH.read_text()
-
-
-# -- template drift guard ----------------------------------------------------
-
-
-def test_template_skeleton_matches_fly():
-    config = Config.from_toml(DEFAULT_CONFIG_PATH)
-    sk = Skeleton.from_config(config)
-    fly = Skeleton.fly()
-    assert sk.joint_names == fly.joint_names
-    assert sk.limb_names == fly.limb_names
-    np.testing.assert_array_equal(sk.limb_id, fly.limb_id)
-    np.testing.assert_array_equal(sk.bones, fly.bones)
-    assert sk.palette == fly.palette
-    assert set(sk.visibility) == set(fly.visibility)
-    for cam in fly.visibility:
-        np.testing.assert_array_equal(sk.visibility[cam], fly.visibility[cam])
 
 
 # -- [inputs] filename -> camera resolution ----------------------------------
@@ -132,7 +114,9 @@ def test_camera_files_missing_returns_empty(tmp_path):
     assert camera_files(tmp_path, "camera_9") == []
 
 
-def test_camera_patterns_defaults_to_camera_name():
-    # A camera with no `input` uses its own name as the pattern; [cameras] sets order.
-    config = Config.from_dict({"cameras": {"rh": {"input": "cam0.mp4"}, "lf": {}}})
-    assert camera_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}
+def test_source_patterns_defaults_to_source_name():
+    # A source with no `filename` uses its own name as the pattern; [[sources]] order.
+    config = Config.from_dict(
+        {"sources": [{"name": "rh", "filename": "cam0.mp4"}, {"name": "lf"}]}
+    )
+    assert source_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

@@ -7,7 +7,7 @@ the **NaN convention**: a 2D observation of ``NaN`` means "this camera did not
 separate mask array travels downstream.
 
 All functions use the **view-leading** layout: ``pts2d`` has shape ``(V, *pts, 2)``
-(``(V, N, 2)`` for one frame, ``(V, T, N, 2)`` for a sequence); triangulated
+(``(V, P, 2)`` for one frame, ``(V, T, P, 2)`` for a sequence); triangulated
 points come back as ``(*pts, 3)``.
 """
 
@@ -16,59 +16,17 @@ from __future__ import annotations
 from itertools import combinations
 
 import numpy as np
-from jaxtyping import Bool, Float
+from jaxtyping import Float
 
 from .cameras import CameraGroup
-from .skeleton import Skeleton
 
-
-def apply_visibility(
-    pts2d: Float[np.ndarray, "V *pts 2"],
-    skeleton: Skeleton,
-    camera_names: list[str],
-) -> Float[np.ndarray, "V *pts 2"]:
-    """Return a copy of ``pts2d`` with invisible (camera, point) entries NaN'd.
-
-    Parameters
-    ----------
-    pts2d
-        2D observations of shape ``(V, *pts, 2)``; the leading axis is views.
-    skeleton
-        Skeleton whose :attr:`~deeperfly.skeleton.Skeleton.visibility` decides
-        which points each named camera can see.
-    camera_names
-        Names labelling the leading view axis, matched against the skeleton's
-        visibility. Cameras unknown to the skeleton keep all their points (see
-        :meth:`Skeleton.visibility_mask`).
-
-    Returns
-    -------
-    np.ndarray
-        A copy of ``pts2d`` with invisible ``(camera, point)`` entries set to NaN.
-
-    Raises
-    ------
-    ValueError
-        If the view or point counts of ``pts2d`` disagree with the skeleton.
-    """
-    pts2d = np.array(pts2d, dtype=float)
-    mask = skeleton.visibility_mask(camera_names)  # (V, N)
-    n_view, n_pts = mask.shape
-    if pts2d.shape[0] != n_view:
-        raise ValueError(
-            f"pts2d has {pts2d.shape[0]} views but {n_view} camera names given"
-        )
-    if pts2d.shape[-2] != n_pts:
-        raise ValueError(f"pts2d has {pts2d.shape[-2]} points but skeleton has {n_pts}")
-    # Broadcast (V, N) over any middle (e.g. time) axes -> (V, *pts).
-    n_mid = pts2d.ndim - 3
-    m = mask.reshape((n_view, *([1] * n_mid), n_pts))
-    return np.where(m[..., None], pts2d, np.nan)
+__all__ = ["triangulate", "reprojection_error", "triangulate_ransac"]
 
 
 def triangulate(
     cameras: CameraGroup,
     pts2d: Float[np.ndarray, "V *pts 2"],
+    weights: Float[np.ndarray, "V *pts"] | None = None,
 ) -> Float[np.ndarray, "*pts 3"]:
     """Triangulate 3D points from 2D observations (NaN-aware DLT).
 
@@ -81,13 +39,17 @@ def triangulate(
         The camera rig.
     pts2d
         2D observations of shape ``(V, *pts, 2)``, NaN for missing.
+    weights
+        Optional per-(view, point) weights of shape ``(V, *pts)`` for a
+        confidence-weighted DLT (each view's rows scaled by ``sqrt(weight)``);
+        ``None`` (default) is plain DLT.
 
     Returns
     -------
     np.ndarray
         Triangulated 3D points of shape ``(*pts, 3)``.
     """
-    return cameras.triangulate(pts2d)
+    return cameras.triangulate(pts2d, weights)
 
 
 def reprojection_error(
@@ -126,6 +88,7 @@ def triangulate_ransac(
     *,
     threshold: float = 15.0,
     min_inliers: int = 2,
+    weights: Float[np.ndarray, "V *pts"] | None = None,
 ) -> tuple[Float[np.ndarray, "*pts 3"], Bool[np.ndarray, "V *pts"]]:
     """Robustly triangulate 3D points, rejecting gross 2D outliers (RANSAC).
 
@@ -142,7 +105,7 @@ def triangulate_ransac(
     error), and the point is re-triangulated from all its inlier views. Points
     with fewer than ``min_inliers`` agreeing views come back ``NaN``.
 
-    Operates per point over any leading layout (``(V, N, 2)``, ``(V, T, N, 2)``).
+    Operates per point over any leading layout (``(V, P, 2)``, ``(V, T, P, 2)``).
 
     Parameters
     ----------
@@ -156,6 +119,13 @@ def triangulate_ransac(
         outliers rather than gate inliers).
     min_inliers
         Minimum agreeing views required to accept a point (>= 2).
+    weights
+        Optional per-(view, point) weights of shape ``(V, *pts)``. When given,
+        the two-view candidate fits and the final inlier refit use a
+        confidence-weighted DLT (see :func:`triangulate`). Consensus scoring is
+        deliberately left **unweighted**: inliers are still counted by raw
+        reprojection error, so a confidently-mislocated detection cannot vote
+        itself into the consensus -- which is the whole point of RANSAC.
 
     Returns
     -------
@@ -188,7 +158,9 @@ def triangulate_ransac(
         sel[[i, j]] = True
         sel = sel.reshape((n_views, *([1] * (pts2d.ndim - 1))))
         masked = np.where(sel, pts2d, np.nan)
-        cand = triangulate(cameras, masked)  # (*pts, 3); NaN if pair can't see it
+        # NaN out-of-pair views zero their own rows, so the candidate fit only
+        # ever weights the two selected views.
+        cand = triangulate(cameras, masked, weights)  # (*pts, 3); NaN if unseen
         err = reprojection_error(cameras, cand, pts2d)  # (V, *pts)
         inl = err < threshold  # NaN (unobserved / un-triangulated) -> False
         count = inl.sum(axis=0)  # (*pts)
@@ -199,7 +171,7 @@ def triangulate_ransac(
         best_inliers = np.where(take[None], inl, best_inliers)
 
     refit = np.where(best_inliers[..., None], pts2d, np.nan)
-    pts3d = triangulate(cameras, refit)
+    pts3d = triangulate(cameras, refit, weights)
     accept = best_inliers.sum(axis=0) >= min_inliers  # (*pts)
     pts3d = np.where(accept[..., None], pts3d, np.nan)
     return pts3d, best_inliers

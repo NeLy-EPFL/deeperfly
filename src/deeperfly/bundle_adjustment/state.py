@@ -103,8 +103,8 @@ def build_state(
     ----------
     rvecs, tvecs, intrs, dists
         Per-camera parameters of shape ``(V, 3)``, ``(V, 3)``, ``(V, P)`` and
-        ``(V, K)``. Unlike the old broadcast convention, intrinsics and
-        distortion are *per camera* here -- share them explicitly via ``shared``.
+        ``(V, K)``. Intrinsics and distortion are *per camera* -- share them
+        explicitly via ``shared``.
     pts2d
         Observed 2D points of shape ``(V, N, 2)`` with NaNs for missing.
     names

@@ -245,3 +245,23 @@ def test_triangulate_dlt_batched_point_shape(rng, rig):
     got = np.asarray(geom.triangulate_dlt(pts2d, pmats))
     assert got.shape == (3, 4, 3)
     assert np.allclose(got, cloud, atol=1e-6)
+
+
+def test_triangulate_dlt_weighted_zero_weight_matches_drop(rng, rig):
+    # Weighting a view to zero is exactly the NaN-drop of that view; clamping
+    # also covers non-positive / non-finite weights (sqrt never sees a negative).
+    cloud = rng.uniform(-0.5, 0.5, size=(5, 3))
+    pmats = _pmats(rig)
+    pts2d = np.array(geom.project_pmat(cloud, pmats))
+    pts2d[0] += 30.0  # corrupt view 0
+
+    dropped = pts2d.copy()
+    dropped[0] = np.nan
+    via_nan = np.asarray(geom.triangulate_dlt(dropped, pmats))
+
+    for bad in (0.0, -2.0, np.nan, np.inf):
+        w = np.ones(pts2d.shape[:-1])
+        w[0] = bad
+        got = np.asarray(geom.triangulate_dlt(pts2d, pmats, w))
+        assert np.isfinite(got).all()
+        assert np.allclose(got, via_nan, atol=1e-6)

@@ -7,10 +7,10 @@ be re-run later from pristine upstream outputs:
 .. code-block:: text
 
     attrs["meta"]            json: {deeperfly_format_version: 2, created_utc, ...}
-    skeleton/                the skeleton (joint names, bones, visibility, palette)
+    skeleton/                the skeleton (point names, bones, visibility, palette)
     pose2d/
-        points               (V, T, N, 2) arg-max 2D detections (visibility-masked)
-        conf                 (V, T, N) detection confidences
+        points               (V, T, P, 2) arg-max 2D detections (visibility-masked)
+        conf                 (V, T, P) detection confidences
         cameras/             the config rig as built at detect time
         attrs["image_sizes"] json {camera_name: [h, w]} of the raw footage frames
         candidates/          top-K peaks (xy, score) -- present iff the
@@ -18,13 +18,13 @@ be re-run later from pristine upstream outputs:
     bundle_adjustment/
         cameras/             the BA-refined rig
     pictorial_structures/
-        points               (V, T, N, 2) PS-corrected 2D
-        points3d             (T, N, 3) initial 3D estimate
-        reproj_error         (V, T, N)
+        points               (V, T, P, 2) PS-corrected 2D
+        points3d             (T, P, 3) initial 3D estimate
+        reproj_error         (V, T, P)
     triangulation/
-        points               (V, T, N, 2) cleaned 2D (outlier-rejecting methods)
-        points3d             (T, N, 3)
-        reproj_error         (V, T, N)
+        points               (V, T, P, 2) cleaned 2D (outlier-rejecting methods)
+        points3d             (T, P, 3)
+        reproj_error         (V, T, P)
 
 :class:`StageStore` is the per-stage read/write access used by the staged run;
 :class:`PoseResult` is the assembled in-memory view (the *best* points present:
@@ -32,8 +32,8 @@ triangulation over pictorial over pose2d, BA cameras over the config rig). The
 HDF5 file fully reconstructs the cameras and skeleton, so results are portable
 without the original config files.
 
-Arrays use the view-leading layout: ``pts2d`` is ``(V, T, N, 2)``, ``conf`` is
-``(V, T, N)``, ``pts3d`` is ``(T, N, 3)``. NaN encodes missing observations /
+Arrays use the view-leading layout: ``pts2d`` is ``(V, T, P, 2)``, ``conf`` is
+``(V, T, P)``, ``pts3d`` is ``(T, P, 3)``. NaN encodes missing observations /
 un-triangulated points and is preserved by the float64 datasets.
 """
 
@@ -56,6 +56,8 @@ from .skeleton import Skeleton
 if TYPE_CHECKING:
     from .pictorial import Candidates
 
+__all__ = ["PoseResult", "StageStore"]
+
 FORMAT_VERSION = 2
 _STR = h5py.string_dtype("utf-8")
 
@@ -74,10 +76,10 @@ class PoseResult:
 
     cameras: CameraGroup
     skeleton: Skeleton
-    pts2d: Float[np.ndarray, "V T N 2"]
-    conf: Float[np.ndarray, "V T N"] | None = None
-    pts3d: Float[np.ndarray, "T N 3"] | None = None
-    reproj_error: Float[np.ndarray, "V T N"] | None = None
+    pts2d: Float[np.ndarray, "V T P 2"]
+    conf: Float[np.ndarray, "V T P"] | None = None
+    pts3d: Float[np.ndarray, "T P 3"] | None = None
+    reproj_error: Float[np.ndarray, "V T P"] | None = None
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -257,7 +259,7 @@ class StageStore:
         skeleton
             The skeleton (written run-wide).
         pts2d, conf
-            The detections, ``(V, T, N, 2)`` and ``(V, T, N)``.
+            The detections, ``(V, T, P, 2)`` and ``(V, T, P)``.
         image_sizes
             ``camera_name -> (height, width)`` of the raw footage frames (lets
             a later run rebuild the config rig without re-reading footage).
@@ -422,7 +424,7 @@ def _read_cameras(g: h5py.Group) -> CameraGroup:
 def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.attrs["name"] = s.name
     g.create_dataset(
-        "joint_names", data=np.array(s.joint_names, dtype=object), dtype=_STR
+        "point_names", data=np.array(s.point_names, dtype=object), dtype=_STR
     )
     g.create_dataset(
         "limb_names", data=np.array(s.limb_names, dtype=object), dtype=_STR
@@ -432,26 +434,21 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     pal = g.create_group("palette")
     for name, color in s.palette.items():
         pal.attrs[name] = color
-    vis = g.create_group("visibility")
-    for name, idx in s.visibility.items():
-        vis.create_dataset(name, data=idx)
 
 
 def _read_skeleton(g: h5py.Group) -> Skeleton:
     decode = lambda arr: tuple(  # noqa: E731
         x.decode() if isinstance(x, bytes) else x for x in arr
     )
-    visibility = {name: g["visibility"][name][()] for name in g.get("visibility", {})}
     palette = {
         name: (v.decode() if isinstance(v, bytes) else v)
         for name, v in g["palette"].attrs.items()
     }
     return Skeleton(
         name=g.attrs["name"],
-        joint_names=decode(g["joint_names"][()]),
+        point_names=decode(g["point_names"][()]),
         limb_names=decode(g["limb_names"][()]),
         limb_id=g["limb_id"][()],
         bones=g["bones"][()],
         palette=palette,
-        visibility=visibility,
     )

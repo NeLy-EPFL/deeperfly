@@ -5,27 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.cameras import CameraGroup
-from deeperfly.skeleton import Skeleton
 from deeperfly.triangulation import (
-    apply_visibility,
     reprojection_error,
     triangulate,
     triangulate_ransac,
 )
-from helpers import CAMERA_NAMES
-
-
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
 
 
 def _fly_cloud(rng, n=38, scale=2.0):
@@ -35,28 +19,21 @@ def _fly_cloud(rng, n=38, scale=2.0):
 
 def test_roundtrip_recovers_points(cameras, rng):
     pts3d = _fly_cloud(rng)
-    pts2d = np.asarray(cameras.project(pts3d))  # (V, N, 2)
+    pts2d = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     recovered = triangulate(cameras, pts2d)
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
 
 
-def test_apply_visibility_nans_invisible(cameras, fly, rng):
+def test_triangulation_with_nan_observations(cameras, rng):
+    # Visibility now travels purely as NaN (no separate mask): drop a couple of
+    # (view, point) observations and triangulation still recovers them from the
+    # remaining views.
     pts3d = _fly_cloud(rng)
-    pts2d = np.asarray(cameras.project(pts3d))
-    masked = apply_visibility(pts2d, fly, CAMERA_NAMES)
-    vis = fly.visibility_mask(CAMERA_NAMES)
-    # Exactly the invisible (view, point) entries became NaN.
-    assert np.isnan(masked).any(axis=-1).tolist() == (~vis).tolist()
-    # Visible entries are untouched.
-    np.testing.assert_array_equal(masked[vis], pts2d[vis])
-
-
-def test_triangulation_after_visibility(cameras, fly, rng):
-    pts3d = _fly_cloud(rng)
-    pts2d = apply_visibility(np.asarray(cameras.project(pts3d)), fly, CAMERA_NAMES)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0, :5] = np.nan  # camera 0 does not see the first five points
+    pts2d[3, 7] = np.nan
     recovered = triangulate(cameras, pts2d)
-    # Every fly point is seen by >= 2 cameras, so all are recovered.
-    assert not np.isnan(recovered).any()
+    assert not np.isnan(recovered).any()  # >= 2 views remain for every point
     np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
 
 
@@ -88,7 +65,7 @@ def test_reprojection_error_nan_where_unobserved(cameras, rng):
 
 
 def test_sequence_layout(cameras, rng):
-    # (V, T, N, 2) observations triangulate to (T, N, 3).
+    # (V, T, P, 2) observations triangulate to (T, P, 3).
     pts3d = rng.normal(scale=2.0, size=(5, 38, 3))
     pts2d = np.asarray(cameras.project(pts3d))
     assert pts2d.shape == (len(cameras), 5, 38, 2)
@@ -197,3 +174,96 @@ def test_ransac_tie_break_prefers_tighter_consensus(cameras):
     recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=5.0)
     np.testing.assert_allclose(recovered[0], P, atol=1e-6)
     assert inliers[:3, 0].all() and not inliers[3:, 0].any()
+
+
+# -- confidence-weighted DLT -------------------------------------------------
+
+
+def test_uniform_weights_match_unweighted(cameras, rng):
+    # The DLT solves a homogeneous system, so any uniform positive weight (and
+    # ``None``) leaves the result unchanged.
+    pts3d = _fly_cloud(rng)
+    pts2d = np.asarray(cameras.project(pts3d))
+    base = triangulate(cameras, pts2d)
+    ones = triangulate(cameras, pts2d, np.ones(pts2d.shape[:-1]))
+    scaled = triangulate(cameras, pts2d, np.full(pts2d.shape[:-1], 7.0))
+    np.testing.assert_allclose(ones, base, atol=1e-6)
+    np.testing.assert_allclose(scaled, base, atol=1e-6)
+    np.testing.assert_allclose(base, pts3d, atol=1e-6)
+
+
+def test_zero_weight_drops_the_view(cameras, rng):
+    # A weight of zero zeroes that view's rows -- exactly the NaN-drop case.
+    pts3d = _fly_cloud(rng, n=6)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0] += 50.0  # corrupt every observation in view 0
+
+    dropped = pts2d.copy()
+    dropped[0] = np.nan
+    via_nan = triangulate(cameras, dropped)
+
+    w = np.ones(pts2d.shape[:-1])
+    w[0] = 0.0
+    via_weight = triangulate(cameras, pts2d, w)
+    np.testing.assert_allclose(via_weight, via_nan, atol=1e-6)
+
+
+@pytest.mark.parametrize("bad", [-5.0, -1e9, np.nan, np.inf, -np.inf])
+def test_nonpositive_or_nonfinite_weight_drops_the_view(cameras, rng, bad):
+    # Detector confidence is not guaranteed non-negative/finite; such weights are
+    # clamped to zero (drop the view) rather than producing NaN through sqrt.
+    pts3d = _fly_cloud(rng, n=6)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0] += 50.0
+
+    dropped = pts2d.copy()
+    dropped[0] = np.nan
+    via_nan = triangulate(cameras, dropped)
+
+    w = np.ones(pts2d.shape[:-1])
+    w[0] = bad
+    via_weight = triangulate(cameras, pts2d, w)
+    assert np.isfinite(via_weight).all()
+    np.testing.assert_allclose(via_weight, via_nan, atol=1e-6)
+
+
+def test_weighting_biases_toward_confident_views(cameras, rng):
+    # A moderate (non-gross) error in one view: down-weighting it pulls the
+    # estimate back toward the truth, while the other points are untouched.
+    pts3d = _fly_cloud(rng, n=4)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[0, 0] += [8.0, -6.0]
+
+    unweighted = triangulate(cameras, pts2d)
+    w = np.ones(pts2d.shape[:-1])
+    w[0, 0] = 0.05  # distrust the corrupted observation
+    weighted = triangulate(cameras, pts2d, w)
+
+    d_unweighted = np.linalg.norm(unweighted[0] - pts3d[0])
+    d_weighted = np.linalg.norm(weighted[0] - pts3d[0])
+    assert d_weighted < d_unweighted
+    np.testing.assert_allclose(weighted[1:], pts3d[1:], atol=1e-6)
+
+
+def test_ransac_weighted_clean_recovers_truth(cameras, rng):
+    pts3d = _fly_cloud(rng)
+    pts2d = np.asarray(cameras.project(pts3d))
+    w = rng.uniform(0.2, 1.0, size=pts2d.shape[:-1])
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=1.0, weights=w)
+    np.testing.assert_allclose(recovered, pts3d, atol=1e-6)
+    assert inliers.all()
+
+
+def test_ransac_consensus_ignores_confidence(cameras, rng):
+    # A confidently-wrong detection must not buy its way into the consensus:
+    # scoring stays a geometric reprojection test, weights only shape the fits.
+    pts3d = _fly_cloud(rng, n=6)
+    pts2d = np.array(cameras.project(pts3d))
+    pts2d[2, 0] += 300.0  # gross outlier in view 2 of point 0
+    w = np.ones(pts2d.shape[:-1])
+    w[2, 0] = 1e3  # ... but the detector was (wrongly) very confident
+
+    recovered, inliers = triangulate_ransac(cameras, pts2d, threshold=5.0, weights=w)
+    np.testing.assert_allclose(recovered[0], pts3d[0], atol=1e-6)
+    assert not inliers[2, 0]
+    assert inliers[:, 1:].all()

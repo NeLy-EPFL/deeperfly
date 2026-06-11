@@ -124,6 +124,12 @@ def run_recording(
         progress=progress,
     )
 
+    # Which stages carry a result from a previous run, snapshotted before the
+    # loop (record.set drops downstream entries as stages complete). A stage
+    # with no prior record runs for the first time -- that is not a "recompute"
+    # and warrants no reason.
+    had_record = {name: record.get(name) is not None for name in STAGES}
+
     recomputed = False  # has any enabled stage recomputed this run? -> cascade
     for name in STAGES:
         if not enabled[name]:
@@ -143,14 +149,18 @@ def run_recording(
                 )
                 continue
             reason = why
-        _log_recompute(name, reason)
+        if had_record[name]:
+            _log_recompute(name, reason)
+        else:
+            log.info("running %s", name)
         if _RUNNERS[name](ctx):
             record.set(name, expected)
             recomputed = True
 
 
 def _log_recompute(name: str, reason: str) -> None:
-    """Announce a recompute; loudly for the slow detection stage."""
+    """Announce that a stage's cached result is stale and being recomputed;
+    loudly for the slow detection stage."""
     if name == "pose2d":
         if "candidates" in reason:
             reason += (
@@ -214,7 +224,7 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
     refined = stages.stage_bundle_adjustment(
         ctx.config,
         # Always the un-refined config rig, never a prior BA output, so an edited
-        # [cameras] / [pipeline.bundle_adjustment] recalibrates from the config.
+        # [cameras] / [bundle_adjustment] re-runs bundle adjustment from the config.
         stages.config_rig_from_store(ctx.config, ctx.store),
         pts2d,
         conf,
@@ -255,10 +265,12 @@ def _run_pictorial_structures(ctx: _RunContext) -> bool:
 def _run_triangulation(ctx: _RunContext) -> bool:
     if _no_2d(ctx, "triangulation"):
         return False
+    _, conf = ctx.store.read_pose2d()  # detector confidences for optional weighting
     pts2d, pts3d, reproj = stages.stage_triangulation(
         ctx.config,
         stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
         stages.select_pts2d(ctx.enabled, ctx.store),
+        conf,
     )
     ctx.store.truncate_from("triangulation")
     ctx.store.write_points(
@@ -276,8 +288,8 @@ def _run_visualization(ctx: _RunContext) -> bool:
             ctx.outdir,
         )
         return False
-    # MP4s rendered by a previous config but no longer specced are left on disk
-    # (the output dir may hold user files); just point them out.
+    # MP4s an earlier run rendered that the current config does not spec are
+    # left on disk (the output dir may hold user files); just point them out.
     stored = ctx.record.get("visualization") or {}
     stale = sorted(
         {v.get("video_name") for v in stored.get("videos", [])}
@@ -286,7 +298,7 @@ def _run_visualization(ctx: _RunContext) -> bool:
     )
     if stale:
         log.info(
-            "video(s) no longer in the config (their MP4s are left in place): %s",
+            "video(s) not in the current config (their MP4s are left in place): %s",
             ", ".join(stale),
         )
     stages.render_videos(

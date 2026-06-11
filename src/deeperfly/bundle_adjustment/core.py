@@ -13,6 +13,7 @@ The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
 
 from __future__ import annotations
 
+import warnings
 from typing import NamedTuple
 
 import jax
@@ -114,7 +115,7 @@ def bundle_adjust(
         See :class:`deeperfly.bundle_adjustment.state.BAState`.
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`. Use ``loss="huber"``
-        with ``f_scale`` set to a pixel threshold for robust calibration.
+        with ``f_scale`` set to a pixel threshold for robust bundle adjustment.
         ``"huber"``, ``"cauchy"`` and ``"arctan"`` are translated to IRLS-form
         callables (same cost and gradient, ``rho'' = 0``) because scipy's
         native second-order rescaling of those losses degenerates on outlier
@@ -124,6 +125,9 @@ def bundle_adjust(
         Optional per-observation weights of shape ``(V, N)``. Each reprojection
         residual is scaled by ``sqrt(weight)`` (so the cost is ``weight``
         times the squared pixel error) -- pass detector confidences here.
+        Negative and non-finite weights are clamped to zero (which drops that
+        observation); if *every* observed weight is zero the solve would be
+        ill-posed, so it falls back to uniform weights with a warning.
     bone_pairs
         Optional ``(B, 2)`` point-index pairs adding a soft bone-length prior:
         for each pair a residual ``bone_weight * (||p_i - p_j|| - target)`` is
@@ -149,7 +153,22 @@ def bundle_adjust(
     if weights is None:
         sqrt_w = np.ones(n_obs)
     else:
-        sqrt_w = np.sqrt(np.asarray(weights, dtype=float)[obs_view, obs_pt])
+        w = np.asarray(weights, dtype=float)[obs_view, obs_pt]
+        # Detector confidence is not guaranteed non-negative or finite; clamp so
+        # the sqrt below stays real and a junk weight just drops that observation
+        # (weight 0 -> zero residual and Jacobian rows, inert in the solve).
+        w = np.where(np.isfinite(w), np.maximum(w, 0.0), 0.0)
+        if w.size and not w.any():
+            # Every observation weighs zero: the reprojection cost vanishes and the
+            # solve is ill-posed (only the bone prior, if any, would constrain it).
+            # Fall back to uniform weights so confidence can't silently disable BA.
+            warnings.warn(
+                "all confidence weights are zero (or non-positive); "
+                "falling back to uniform weights for bundle adjustment",
+                stacklevel=2,
+            )
+            w = np.ones(n_obs)
+        sqrt_w = np.sqrt(w)
 
     use_bones = bone_pairs is not None and len(bone_pairs) > 0
     if use_bones:

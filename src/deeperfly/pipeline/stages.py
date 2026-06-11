@@ -18,9 +18,9 @@ import numpy as np
 
 from ..cameras import CameraGroup
 from ..config import STAGES, Config
+from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
+from ..recordings import source_image_sizes
 from ..results import PoseResult, StageStore
-from ..pose2d.stream import _null_progress, detect_2d, load_detector, resolve_fps
-from ..recordings import camera_image_sizes
 from . import fingerprint
 
 log = logging.getLogger("deeperfly")
@@ -104,97 +104,96 @@ def stage_pose2d(
     skeleton : Skeleton
         The configured skeleton.
     pts2d, conf : np.ndarray
-        The visibility-masked detections ``(V, T, N, 2)`` and confidences
-        ``(V, T, N)``.
+        The detections ``(V, T, P, 2)`` and confidences ``(V, T, P)``. A
+        ``(view, point)`` pair no pathway maps is ``NaN``.
     candidates : deeperfly.pictorial.Candidates or None
         The top-K peak set when ``want_candidates``, else ``None``.
     image_sizes : dict
         ``camera_name -> (height, width)`` of the raw footage frames.
     """
-    from ..pose2d import detector, inference
-    from ..triangulation import apply_visibility
-
-    transforms = config.frame_transforms()
-    image_sizes = camera_image_sizes(config, sources=sources, input=input)
+    plan = config.detection_plan()
+    source_sizes = source_image_sizes(config, sources=sources, input=input)
     log.info(
-        "raw input image sizes (h, w): %s",
-        {n: tuple(s) for n, s in image_sizes.items()},
+        "raw source image sizes (h, w): %s",
+        {n: tuple(s) for n, s in source_sizes.items()},
     )
-    cameras = config.camera_group(image_sizes=image_sizes)
-    unknown = set(transforms) - set(cameras.names)
-    if unknown:
-        log.warning(
-            "preprocess entries for unknown cameras are ignored: %s",
-            sorted(unknown),
-        )
-    active = {
-        n: t
-        for n, t in transforms.items()
-        if n in cameras.names and not t.is_identity()
+    # Each view's intrinsics describe its source's raw frame; gather per-view sizes
+    # to resolve principal points (when omitted) for the rig.
+    view_sources = plan.view_sources()
+    image_sizes = {
+        v: source_sizes[s] for v, s in view_sources.items() if s in source_sizes
     }
-    if active:
-        log.info(
-            "frame preprocessing (per camera): %s",
-            {n: t.to_json() for n, t in active.items()},
-        )
-        log.info(
-            "preprocessed image sizes (h, w): %s",
-            {n: t.output_size(image_sizes[n]) for n, t in active.items()},
-        )
+    cameras = config.camera_group(image_sizes=image_sizes)
     skeleton = config.skeleton()
 
     pose2d = config.pose2d
-    log.info("loading detector (checkpoint: %s)", pose2d.checkpoint or "cached")
-    model = load_detector(pose2d.checkpoint)
-    precision = pose2d.precision
-    detector.set_precision(
-        model, precision
-    )  # float16 -> CUDA autocast (no-op on CPU/MPS)
+    log.info("loading %d model(s): %s", len(plan.models), ", ".join(plan.models))
+    models = load_models(plan)
+    for model in models.values():
+        model.set_precision(pose2d.precision)  # float16 -> CUDA autocast (no-op on CPU)
     log.info(
         "detector ready on device %s (precision: %s)",
-        detector.detector_device(model),
-        precision,
+        next(iter(models.values())).device(),
+        pose2d.precision,
     )
 
     k = config.pictorial.k
-    sides, flips = inference.fly_camera_layout(cameras.names)
-    n_passes = len(inference.expand_passes(sides, flips)[0])
-    batch_size = pose2d.batch_size
     log.info(
-        "detecting 2D poses: %d views, %d forward passes/frame, network input %dx%d, "
-        "forward batch %d frames",
-        len(image_sizes),
-        n_passes,
-        inference.IMG_SIZE[0],
-        inference.IMG_SIZE[1],
-        batch_size,
+        "detecting 2D poses: %d sources, %d pathways, %d views, forward batch %d frames",
+        len(plan.sources),
+        len(plan.pathways),
+        plan.n_views,
+        pose2d.batch_size,
     )
     pts2d, conf, candidates = detect_2d(
         config,
-        model,
-        sides,
-        flips,
+        plan,
+        models,
         sources=sources,
         input=input,
         want_candidates=want_candidates,
         k=k,
         progress=progress,
     )
-    # Mask (camera, point) pairs the rig cannot see once, here, so the cached 2D
-    # and every downstream stage see the same visibility-masked points.
-    pts2d = apply_visibility(pts2d, skeleton, cameras.names)
+    # A (view, point) pair no pathway writes stays NaN from the scatter, so the
+    # cached 2D and every downstream stage agree on what each view observes.
     return cameras, skeleton, pts2d, conf, candidates, image_sizes
+
+
+def _resolve_bundle_adjustment_points(
+    names: list[str] | None, skeleton
+) -> list[int] | None:
+    """``[bundle_adjustment].points_to_use`` names -> skeleton indices.
+
+    ``None`` (the key omitted) passes through as ``None`` -- bundle-adjust on every
+    point. Otherwise each name is resolved against ``skeleton.point_names``.
+
+    Raises
+    ------
+    ValueError
+        If a name is not one of the skeleton's points.
+    """
+    if names is None:
+        return None
+    index = {name: i for i, name in enumerate(skeleton.point_names)}
+    try:
+        return [index[name] for name in names]
+    except KeyError as e:
+        raise ValueError(
+            f"[bundle_adjustment].points_to_use references unknown "
+            f"skeleton point {e.args[0]!r}"
+        ) from None
 
 
 def stage_bundle_adjustment(
     config: Config, cameras: CameraGroup, pts2d, conf, skeleton
 ) -> CameraGroup:
-    """Refine ``cameras`` with bundle adjustment (fly-as-calibration-target).
+    """Refine ``cameras`` with bundle adjustment (the fly itself is the target).
 
-    Calibrates on the arg-max 2D. The caller always hands in the *un-refined*
+    Bundle-adjusts on the arg-max 2D. The caller always hands in the *un-refined*
     config rig (:func:`config_rig_from_store`), so editing the rig or
-    ``[pipeline.bundle_adjustment]`` and recomputing this stage recalibrates
-    from the edited config rather than a prior BA output.
+    ``[bundle_adjustment]`` and recomputing this stage re-runs bundle
+    adjustment from the edited config rather than a prior BA output.
 
     Parameters
     ----------
@@ -213,19 +212,31 @@ def stage_bundle_adjustment(
         The refined rig.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import calibrate
+    from .core import bundle_adjust_cameras
 
-    v, t = pts2d.shape[:2]
-    log.info("bundle adjustment: refining cameras (%d frames, %d views)", t, v)
     ba = config.bundle_adjustment
-    refined, _ = calibrate(
+    ba_keypoints = _resolve_bundle_adjustment_points(ba.points_to_use, skeleton)
+    weighted = ba.weigh_by_confidence and conf is not None
+    v, t = pts2d.shape[:2]
+    log.info(
+        "bundle adjustment: refining cameras (%d frames, %d views)%s",
+        t,
+        v,
+        " confidence-weighted" if weighted else "",
+    )
+    # conf is always handed in (frame_sampling="confidence" may use it); whether it
+    # also weighs the residuals is the separate weigh_by_confidence switch.
+    refined, _ = bundle_adjust_cameras(
         cameras,
         pts2d,
         conf,
         skeleton,
-        ba_keypoints=ba.keypoints,
+        ba_keypoints=ba_keypoints,
         fixed=ba.fixed,
         shared=ba.shared,
+        weigh_by_confidence=ba.weigh_by_confidence,
+        max_frames=ba.max_frames,
+        frame_sampling=ba.frame_sampling,
         **ba.least_squares,
     )
 
@@ -281,12 +292,12 @@ def stage_pictorial_structures(
     return pts2d, pts3d, reproj
 
 
-def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
+def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
     """Triangulate ``pts2d`` to 3D by the configured method.
 
     ``ransac`` builds each point from its largest multi-view consensus,
     ``greedy`` drops the worst-reprojecting view, ``dlt`` is plain least squares
-    (see :func:`deeperfly.pipeline._resolve_triangulation`).
+    (see :func:`deeperfly.pipeline._validate_triangulation`).
 
     Parameters
     ----------
@@ -297,6 +308,10 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
     pts2d
         The 2D points (pristine ``pose2d`` or pictorial-corrected -- see
         :func:`select_pts2d`).
+    conf
+        Per-observation detector confidences ``(V, T, P)``. Used as DLT weights
+        only when ``[triangulation].weigh_by_confidence`` is set;
+        ignored (and may be ``None``) otherwise.
 
     Returns
     -------
@@ -304,18 +319,26 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
         The (possibly cleaned) 2D, the 3D points, and the reprojection error.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import _resolve_triangulation, reconstruct, reconstruct_ransac
+    from .core import _validate_triangulation, reconstruct, reconstruct_ransac
 
     opts = config.triangulation
-    method = _resolve_triangulation(opts.method)
+    method = _validate_triangulation(opts.method)
+    weights = conf if (opts.weigh_by_confidence and conf is not None) else None
     v, t = pts2d.shape[:2]
-    log.info("triangulation: method=%s (%d frames, %d views)", method, t, v)
+    log.info(
+        "triangulation: method=%s (%d frames, %d views)%s",
+        method,
+        t,
+        v,
+        " confidence-weighted" if weights is not None else "",
+    )
     if method == "ransac":
         pts3d, pts2d, reproj = reconstruct_ransac(
             cameras,
             pts2d,
             threshold=opts.ransac_threshold,
             min_inliers=opts.min_inliers,
+            weights=weights,
         )
     elif method == "greedy":
         pts3d, pts2d, reproj = reconstruct(
@@ -323,9 +346,10 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d):
             pts2d,
             reproj_threshold=opts.reproj_threshold,
             max_drops=opts.max_drops,
+            weights=weights,
         )
     else:  # "dlt": plain least-squares triangulation, no outlier handling
-        pts3d = triangulate(cameras, pts2d)
+        pts3d = triangulate(cameras, pts2d, weights)
         reproj = reprojection_error(cameras, pts3d, pts2d)
     return pts2d, pts3d, reproj
 
@@ -454,37 +478,35 @@ def source_view_frames(
     SystemExit
         If neither in-memory frames nor resolved footage are available.
     """
-    from .. import io, preprocessing
+    from .. import io
 
     if not views:
         return {}
     names = result.cameras.names
-    # The detector ran on transformed frames, so the 2D/3D overlays live in
-    # transformed-frame coordinates; the overlay footage must match (apply the
-    # same per-camera preprocess transform).
-    transforms = config.frame_transforms()
     workers = config.io.image_workers
-
-    def transform(v, frames):
-        return transforms.get(v, preprocessing.FrameTransform()).apply(frames)
+    # 2D/3D overlays live in the raw view frame (the detector mapped its points
+    # back through the pathway), so the overlay footage is the raw source footage
+    # of the source feeding each view -- no transform. Fall back to view==source
+    # when the config carries no detection plan (a viz-only library call).
+    try:
+        view_sources = config.detection_plan().view_sources()
+    except (ValueError, KeyError):
+        view_sources = {}
+    src_for = {v: view_sources.get(v, v) for v in views}
 
     if in_memory is not None:
-        return {v: transform(v, in_memory[names.index(v)]) for v in views}
+        return {v: in_memory[names.index(v)] for v in views}
 
     sources = sources or {}
-    if all(sources.get(v) for v in views):
+    if all(sources.get(src_for[v]) for v in views):
         return {
-            v: transform(
-                v,
-                io.open_reader(sources[v], workers=workers)[:],
-            )
-            for v in views
+            v: io.open_reader(sources[src_for[v]], workers=workers)[:] for v in views
         }
     raise SystemExit(
         "image (imshow) panels need the original frames, but none are in memory and "
         "the run resolved no footage. Re-run with the recording as the input "
         "('deeperfly run <recording>'), or drop the imshow panels from "
-        "[[pipeline.visualization.videos]]."
+        "[[visualization.videos]]."
     )
 
 
@@ -496,10 +518,10 @@ def render_videos(
     sources: dict[str, list[Path]] | None = None,
     progress=None,
 ) -> None:
-    """Render every ``[[pipeline.visualization.videos]]`` to ``<outdir>/<name>.mp4``.
+    """Render every ``[[visualization.videos]]`` to ``<outdir>/<name>.mp4``.
 
     Each video is composited by :mod:`deeperfly.visualization.compose` from its panels (see
-    the config's ``[pipeline.visualization]`` section), overwriting any existing MP4.
+    the config's ``[visualization]`` section), overwriting any existing MP4.
     A video whose panels reproject the 3D skeleton is skipped with a
     reason when the result has no 3D pose (e.g. no triangulation/pictorial stage
     ran); frames for ``imshow`` panels are sourced only across the videos that
@@ -523,9 +545,7 @@ def render_videos(
 
     specs = config.videos
     if not specs:
-        log.info(
-            "no [[pipeline.visualization.videos]] in the config; nothing to render"
-        )
+        log.info("no [[visualization.videos]] in the config; nothing to render")
         return
 
     pending = []

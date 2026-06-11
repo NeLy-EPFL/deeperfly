@@ -20,6 +20,11 @@ wheels/
 *.mp4
 *.avi
 
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
 # Pipeline outputs (do not commit binary artifacts)
 deeperfly_outputs*/
 *.h5

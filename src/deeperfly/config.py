@@ -32,9 +32,20 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cameras import CameraGroup
-    from .skeleton import Skeleton
+    from .pose2d.pathways import DetectionPlan
     from .preprocessing import FrameTransform
+    from .skeleton import Skeleton
     from .visualization.compose import VideoSpec
+
+__all__ = [
+    "Config",
+    "Pose2dParams",
+    "TriangulationParams",
+    "PictorialParams",
+    "IoParams",
+    "BundleAdjustmentParams",
+    "DEFAULT_CONFIG_PATH",
+]
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
@@ -44,7 +55,7 @@ log = logging.getLogger("deeperfly")
 
 #: The linear pipeline stages, in run order. Each is independently toggled by a
 #: ``[pipeline].do_<stage>`` boolean (see :meth:`Config.stage_flags`) and
-#: parameterized by its own ``[pipeline.<stage>]`` sub-table.
+#: parameterized by its own top-level ``[<stage>]`` table.
 STAGES = (
     "pose2d",
     "bundle_adjustment",
@@ -54,7 +65,7 @@ STAGES = (
 )
 
 #: Default for each ``do_<stage>`` when the key is omitted: detection,
-#: calibration, triangulation and visualization run by default; pictorial
+#: bundle adjustment, triangulation and visualization run by default; pictorial
 #: structures is opt-in.
 STAGE_DEFAULTS = {
     "pose2d": True,
@@ -70,16 +81,18 @@ STAGE_DEFAULTS = {
 
 @dataclass(frozen=True)
 class Pose2dParams:
-    """``[pipeline.pose2d]`` -- the 2D detector knobs.
+    """``[pose2d]`` -- the 2D detector performance knobs.
 
     ``batch_size`` is the GPU forward batch (images/forward); ``decode_buffer`` is
-    the decode queue depth in multiples of it. Both are clamped to ``>= 1``.
+    the decode queue depth in multiples of it. Both are clamped to ``>= 1``. The
+    *what to detect* (preprocessors, models, pathways, output points) is the
+    detection plan that shares the ``[pose2d]`` table (:meth:`Config.detection_plan`),
+    not these knobs.
     """
 
     precision: str = "bfloat16"
     batch_size: int = 16
     decode_buffer: int = 4
-    checkpoint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "batch_size", max(1, int(self.batch_size)))
@@ -88,18 +101,19 @@ class Pose2dParams:
 
 @dataclass(frozen=True)
 class TriangulationParams:
-    """``[pipeline.triangulation]`` -- method + per-method thresholds."""
+    """``[triangulation]`` -- method + per-method thresholds."""
 
     method: str = "ransac"
     ransac_threshold: float = 15.0
     min_inliers: int = 2
     reproj_threshold: float = 40.0
     max_drops: int = 5
+    weigh_by_confidence: bool = False
 
 
 @dataclass(frozen=True)
 class PictorialParams:
-    """``[pipeline.pictorial_structures]`` -- DeepFly3D peak-recovery knobs."""
+    """``[pictorial_structures]`` -- DeepFly3D peak-recovery knobs."""
 
     k: int = 5
     temporal: bool = False
@@ -115,31 +129,45 @@ class IoParams:
 
 @dataclass(frozen=True)
 class BundleAdjustmentParams:
-    """``[pipeline.bundle_adjustment]`` -- calibration over scipy ``least_squares``.
+    """``[bundle_adjustment]`` -- bundle adjustment over scipy ``least_squares``.
 
-    ``keypoints`` (``None`` = all) restricts which skeleton points drive calibration;
-    ``fixed`` / ``shared`` hold or tie camera parameters; ``least_squares`` is the
-    leftover flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded straight
-    to :func:`scipy.optimize.least_squares`.
+    ``points_to_use`` (``None`` = all) names which skeleton points drive bundle adjustment
+    (resolved to indices against the skeleton in :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
+    ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
+    scales each reprojection residual by ``sqrt(confidence)``; ``max_frames`` /
+    ``frame_sampling`` choose how many frames to bundle-adjust on and which (see
+    :func:`deeperfly.pipeline.core._subsample`); ``least_squares`` is the leftover
+    flat keys (``max_nfev``, ``loss``, ``f_scale``, ...) forwarded straight to
+    :func:`scipy.optimize.least_squares`.
     """
 
-    keypoints: list[int] | None = None
+    points_to_use: list[str] | None = None
     fixed: list[str] = field(default_factory=list)
     shared: list[list[str]] = field(default_factory=list)
+    weigh_by_confidence: bool = True
+    max_frames: int | None = 100
+    frame_sampling: str = "even"
     least_squares: dict = field(default_factory=dict)
 
 
 # -- helpers -----------------------------------------------------------------
 
 
+#: The detection-plan sub-tables that share the ``[pose2d]`` table with its
+#: runtime knobs (see :meth:`Config.detection_plan`). They are parsed separately
+#: (:meth:`deeperfly.pose2d.pathways.DetectionPlan.from_config`), so the strict
+#: :func:`_params` validator ignores them when building :class:`Pose2dParams`.
+_POSE2D_PLAN_KEYS = frozenset({"preprocessors", "models", "pathways", "output_points"})
+
+
 def _dig(data: dict, path: tuple[str, ...]) -> dict:
-    """The nested sub-table at ``path`` (e.g. ``("pipeline", "pose2d")``), or ``{}``."""
+    """The nested sub-table at ``path`` (e.g. ``("pose2d",)``), or ``{}``."""
     for key in path:
         data = data.get(key, {}) if isinstance(data, dict) else {}
     return data if isinstance(data, dict) else {}
 
 
-def _params(data: dict, path: tuple[str, ...], cls):
+def _params(data: dict, path: tuple[str, ...], cls, *, ignore: frozenset = frozenset()):
     """Build a frozen ``*Params`` from the sub-table at ``path``.
 
     Keys absent from the table fall through to the dataclass field defaults (the
@@ -150,9 +178,13 @@ def _params(data: dict, path: tuple[str, ...], cls):
     data
         The parsed config mapping.
     path
-        Key path to the sub-table, e.g. ``("pipeline", "pose2d")``.
+        Key path to the sub-table, e.g. ``("pose2d",)``.
     cls
         The frozen ``*Params`` dataclass to build.
+    ignore
+        Keys to skip -- neither validated nor passed to ``cls``. Used for the
+        ``[pose2d]`` table, which also holds the detection-plan sub-tables
+        (:data:`_POSE2D_PLAN_KEYS`).
 
     Returns
     -------
@@ -166,7 +198,7 @@ def _params(data: dict, path: tuple[str, ...], cls):
     """
     sub = _dig(data, path)
     fields = {f.name for f in dataclasses.fields(cls)}
-    unknown = sorted(set(sub) - fields)
+    unknown = sorted(set(sub) - fields - ignore)
     if unknown:
         loc = "[" + ".".join(path) + "]"
         raise ValueError(
@@ -276,15 +308,15 @@ class Config:
 
     @property
     def pose2d(self) -> Pose2dParams:
-        return _params(self.data, ("pipeline", "pose2d"), Pose2dParams)
+        return _params(self.data, ("pose2d",), Pose2dParams, ignore=_POSE2D_PLAN_KEYS)
 
     @property
     def triangulation(self) -> TriangulationParams:
-        return _params(self.data, ("pipeline", "triangulation"), TriangulationParams)
+        return _params(self.data, ("triangulation",), TriangulationParams)
 
     @property
     def pictorial(self) -> PictorialParams:
-        return _params(self.data, ("pipeline", "pictorial_structures"), PictorialParams)
+        return _params(self.data, ("pictorial_structures",), PictorialParams)
 
     @property
     def io(self) -> IoParams:
@@ -296,24 +328,26 @@ class Config:
 
     @property
     def bundle_adjustment(self) -> BundleAdjustmentParams:
-        ba = dict(_dig(self.data, ("pipeline", "bundle_adjustment")))
-        keypoints = ba.pop("keypoints", None)
+        ba = dict(_dig(self.data, ("bundle_adjustment",)))
+        points_to_use = ba.pop("points_to_use", None)
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
+        weigh_by_confidence = ba.pop("weigh_by_confidence", True)
+        max_frames = ba.pop("max_frames", 100)
+        frame_sampling = ba.pop("frame_sampling", "even")
         return BundleAdjustmentParams(
-            keypoints=keypoints,
+            points_to_use=None
+            if points_to_use is None
+            else [str(p) for p in points_to_use],
             fixed=list(fixed),
             shared=[list(s) for s in shared],
+            weigh_by_confidence=bool(weigh_by_confidence),
+            max_frames=None if max_frames is None else int(max_frames),
+            frame_sampling=str(frame_sampling),
             least_squares=ba,  # leftover flat keys -> scipy.optimize.least_squares
         )
 
     # -- pipeline orchestration ---------------------------------------------
-
-    @property
-    def fps(self) -> float | None:
-        """``[pipeline].fps`` if set, else ``None`` (the caller detects/falls back)."""
-        fps = self.data.get("pipeline", {}).get("fps")
-        return None if fps is None else float(fps)
 
     def stage_flags(self) -> dict[str, bool]:
         """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
@@ -331,12 +365,12 @@ class Config:
 
     @property
     def visualization(self) -> dict:
-        """The raw ``[pipeline.visualization]`` table (consumed by :attr:`videos`)."""
-        return self.data.get("pipeline", {}).get("visualization", {})
+        """The raw ``[visualization]`` table (consumed by :attr:`videos`)."""
+        return self.data.get("visualization", {})
 
     @property
     def videos(self) -> "list[VideoSpec]":
-        """The output-video specs (``[[pipeline.visualization.videos]]``)."""
+        """The output-video specs (``[[visualization.videos]]``)."""
         from .visualization.compose import read_video_specs
 
         return read_video_specs(self)
@@ -371,6 +405,20 @@ class Config:
 
         return parse_frame_transforms(self)
 
+    def detection_plan(self) -> "DetectionPlan":
+        """The 2D detection plan (``[[sources]]`` + ``[[pose2d.preprocessors]]``/``[[pose2d.models]]``/``[[pose2d.pathways]]``).
+
+        Returns
+        -------
+        DetectionPlan
+            The parsed, validated plan mapping footage sources through
+            preprocessors and models into the skeleton (see
+            :class:`deeperfly.pose2d.pathways.DetectionPlan`).
+        """
+        from .pose2d.pathways import DetectionPlan
+
+        return DetectionPlan.from_config(self)
+
     def camera_table(self) -> tuple[dict, dict]:
         """Split ``[cameras]`` into the shared defaults and the per-camera specs.
 
@@ -384,17 +432,32 @@ class Config:
         defaults = cams.pop("defaults", {})
         return defaults, cams
 
-    def camera_patterns(self) -> dict[str, str]:
-        """Map each camera to its footage glob (``[cameras.<name>].input``).
+    def source_patterns(self) -> dict[str, str]:
+        """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).
+
+        Read directly from the ``[[sources]]`` table (without building the whole
+        detection plan) so recording discovery stays cheap. A source with no
+        ``filename`` key uses its own name as the glob pattern.
 
         Returns
         -------
         dict of str to str
-            ``camera_name -> footage glob`` in config order; a camera with no
-            ``input`` key uses its own name as the glob pattern.
+            ``source_name -> footage glob`` in config order.
+
+        Raises
+        ------
+        ValueError
+            If a source entry has no string ``name``.
         """
-        _, cams = self.camera_table()
-        return {name: spec.get("input", name) for name, spec in cams.items()}
+        out: dict[str, str] = {}
+        for s in self.data.get("sources", []) or []:
+            name = s.get("name")
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"[[sources]] entry needs a string 'name', got {name!r}"
+                )
+            out[name] = s.get("filename", name)
+        return out
 
     # -- snapshot round-trip -------------------------------------------------
 

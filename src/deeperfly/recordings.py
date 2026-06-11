@@ -13,6 +13,20 @@ from .config import Config
 
 log = logging.getLogger("deeperfly")
 
+__all__ = [
+    "camera_files",
+    "source_patterns",
+    "source_sources",
+    "source_image_sizes",
+    "default_outdir",
+    "Recording",
+    "find_recording",
+    "OutdirPlan",
+    "plan_outdirs",
+    "resolve_recordings",
+    "require_input_footage",
+]
+
 
 # -- input -> camera frame resolution ----------------------------------------
 
@@ -149,10 +163,10 @@ def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
     return files
 
 
-def camera_patterns(config: Config) -> dict[str, str]:
-    """``camera-name -> footage glob`` (the per-camera ``input`` key), in config order.
+def source_patterns(config: Config) -> dict[str, str]:
+    """``source-name -> footage glob`` (the ``[[sources]]`` ``input`` key), in order.
 
-    A camera with no ``input`` entry defaults to its own name as the pattern.
+    A source with no ``input`` entry defaults to its own name as the pattern.
 
     Parameters
     ----------
@@ -162,37 +176,37 @@ def camera_patterns(config: Config) -> dict[str, str]:
     Returns
     -------
     dict of str to str
-        ``camera_name -> footage glob`` in config order.
+        ``source_name -> footage glob`` in config order.
     """
-    return config.camera_patterns()
+    return config.source_patterns()
 
 
-def camera_sources(
+def source_sources(
     config: Config, *, sources: dict[str, list[Path]] | None = None, input=None
 ) -> list[tuple[str, list[Path]]]:
-    """``(name, footage-files)`` per camera (in ``[cameras]`` order).
+    """``(name, footage-files)`` per source (in ``[[sources]]`` order).
 
     Prefers the files ``deeperfly run`` already resolved (``sources``) so footage is
-    globbed once per run; otherwise resolves each camera from ``input`` with the
-    per-camera ``input`` globs (a library caller). With neither, every camera
+    globbed once per run; otherwise resolves each source from ``input`` with the
+    per-source ``input`` globs (a library caller). With neither, every source
     resolves to an empty list.
 
     Parameters
     ----------
     config
-        The run config (for the per-camera globs).
+        The run config (for the per-source globs).
     sources
-        Optional pre-resolved ``camera_name -> footage files`` map (preferred).
+        Optional pre-resolved ``source_name -> footage files`` map (preferred).
     input
-        Optional recording root to glob each camera from when ``sources`` is unset.
+        Optional recording root to glob each source from when ``sources`` is unset.
 
     Returns
     -------
     list of (str, list of Path)
-        ``(name, footage-files)`` per camera in ``[cameras]`` order; each source
-        is the list passed to :func:`deeperfly.io.open_reader`.
+        ``(name, footage-files)`` per source in ``[[sources]]`` order; each is
+        the list passed to :func:`deeperfly.io.open_reader`.
     """
-    patterns = config.camera_patterns()
+    patterns = config.source_patterns()
     if sources and all(name in sources for name in patterns):
         return [(name, sources[name]) for name in patterns]
     if input is None:
@@ -200,35 +214,34 @@ def camera_sources(
     return [(name, camera_files(Path(input), pat)) for name, pat in patterns.items()]
 
 
-def camera_image_sizes(
+def source_image_sizes(
     config: Config, *, sources: dict[str, list[Path]] | None = None, input=None
 ) -> dict[str, tuple[int, int]]:
-    """``name -> (height, width)`` of the raw footage, from a single frame per camera.
+    """``name -> (height, width)`` of the raw footage, from a single frame per source.
 
-    Used to resolve each view's intrinsics: the config's intrinsics describe the
-    raw frame, and :meth:`~deeperfly.cameras.CameraGroup.from_config` maps them
-    through the camera's preprocess chain (which is also anchored on this raw
-    size). Reads only frame 0 (host), so it is cheap and independent of the full
-    streaming decode.
+    Used to resolve each view's intrinsics (the view's intrinsics describe its
+    source's raw frame) and to anchor each pathway's coordinate inverse. Reads
+    only frame 0 (host), so it is cheap and independent of the full streaming
+    decode.
 
     Parameters
     ----------
     config
         The run config (I/O backends).
     sources
-        Optional pre-resolved ``camera_name -> footage files`` map.
+        Optional pre-resolved ``source_name -> footage files`` map.
     input
-        Optional recording root (see :func:`camera_sources`).
+        Optional recording root (see :func:`source_sources`).
 
     Returns
     -------
     dict of str to tuple of int
-        ``camera_name -> (height, width)`` of the raw (untransformed) frame.
+        ``source_name -> (height, width)`` of the raw frame.
     """
     from . import io
 
     sizes: dict[str, tuple[int, int]] = {}
-    for name, src in camera_sources(config, sources=sources, input=input):
+    for name, src in source_sources(config, sources=sources, input=input):
         head = io.open_reader(src)[[0]]
         sizes[name] = tuple(int(d) for d in head.shape[1:3])
     return sizes
@@ -365,8 +378,8 @@ def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     from natsort import natsorted
 
     exts = _footage_exts()
-    patterns = camera_patterns(config)
-    # Raw matches (any file) per camera, so "no match" is distinguishable from
+    patterns = source_patterns(config)
+    # Raw matches (any file) per source, so "no match" is distinguishable from
     # "matched, but not footage".
     raw = {
         name: [p for p in root.glob(_camera_glob(pat)) if p.is_file()]
@@ -687,7 +700,7 @@ def require_input_footage(
         If the recording is missing, not a directory, or has no footage for some
         camera.
     """
-    patterns = camera_patterns(config)
+    patterns = source_patterns(config)
     if sources is None and input is not None:
         root = Path(input)
         if not root.exists():

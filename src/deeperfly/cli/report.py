@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,8 @@ from rich.text import Text
 from ..config import DEFAULT_CONFIG_PATH
 from ..results import PoseResult
 from .console import _info_line, console
+
+log = logging.getLogger("deeperfly")
 
 
 def _cmd_init(args: argparse.Namespace) -> None:
@@ -138,18 +141,19 @@ def _probe_torch() -> dict:
     info: dict = {"installed": False}
     try:
         import torch
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        log.debug("torch not importable: %s", exc)
         return info
     info.update(installed=True, version=torch.__version__)
     try:
         if torch.cuda.is_available():
             info["cuda"] = torch.cuda.get_device_name(0)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("torch.cuda probe failed: %s", exc)
     try:
         info["mps"] = bool(torch.backends.mps.is_available())
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("torch.backends.mps probe failed: %s", exc)
     return info
 
 

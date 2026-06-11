@@ -2,7 +2,7 @@
 
 Markerless 3D pose estimation of tethered *Drosophila* from a multi-camera rig.
 It estimates camera parameters and 2D/3D keypoint locations from behavioral
-recordings: 2D pose → camera calibration → triangulation → visualization.
+recordings: 2D pose → bundle adjustment → triangulation → visualization.
 
 It is a modern rewrite of
 [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D),
@@ -46,7 +46,7 @@ deeperfly inspect recording/deeperfly_outputs/poses.h5   # inspect the result
 ```
 
 `deeperfly run` does everything in one command: detect 2D pose in every view,
-calibrate the cameras, triangulate to 3D, then render a skeleton video. Outputs
+bundle-adjust the cameras, triangulate to 3D, then render a skeleton video. Outputs
 land in `recording/deeperfly_outputs/` (override with
 `-o`): `poses.h5`, the rendered video, and a copy of the config used.
 
@@ -74,7 +74,7 @@ UV_TORCH_BACKEND=auto uv add git+https://github.com/NeLy-EPFL/deeperfly
 ```python
 from deeperfly import CameraGroup, Config, Skeleton, run_from_points2d
 
-cameras = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+cameras = CameraGroup.from_config(Config.from_toml("config.toml"))
 result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```
@@ -89,7 +89,7 @@ for full walkthroughs.
 - [docs/architecture.md](docs/architecture.md) — how the pipeline works: stages, 3D correction (triangulation ransac/greedy/dlt ± pictorial), the detector.
 - [docs/video.md](docs/video.md) — frame read/write: PyAV video, OpenCV image sequences (CPU decode).
 - [docs/comparison.md](docs/comparison.md) — what changed from DeepFly3D / DeepFly2D / PyBundleAdjustment.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests and benchmarks.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development install, tests, linting.
 
 ## License
 

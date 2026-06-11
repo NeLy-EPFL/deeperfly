@@ -4,7 +4,7 @@ Each stage's *result-affecting* config subset is captured as a plain JSON-able
 dict (a *fingerprint*) and recorded in ``<outdir>/run.json`` when the stage
 completes. On a later run a stage is reused only when its recorded fingerprint
 still matches the current config **and** its output is present -- so editing,
-say, ``[pipeline.triangulation]`` automatically recomputes triangulation (and
+say, ``[triangulation]`` automatically recomputes triangulation (and
 everything downstream) while the slow ``pose2d`` cache is reused untouched.
 Performance-only knobs (``batch_size``, ``decode_buffer``, ``[io.image]``
 workers) are deliberately excluded: they never invalidate a cache.
@@ -110,9 +110,8 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
     skel = config.skeleton()
     digest = {
         "name": skel.name,
-        "joint_names": list(skel.joint_names),
+        "point_names": list(skel.point_names),
         "bones": skel.bones.tolist(),
-        "visibility": {k: v.tolist() for k, v in skel.visibility.items()},
     }
     if cosmetic:  # the visualization stage also draws limbs/colors
         digest["limb_names"] = list(skel.limb_names)
@@ -122,37 +121,11 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
 
 
 def _camera_geometry(config: Config) -> dict:
-    """The ``[cameras]`` table minus the footage glob, plus the preprocess chains.
-
-    The raw ``preprocess`` value is stripped from each spec (it is an
-    unnormalized TOML list) and the normalized form is attached at the top
-    level instead -- it shapes the resolved rig (the spec's raw-frame
-    intrinsics are mapped through it). The key is added only when some chain
-    is non-identity, so the no-preprocess majority keeps byte-identical
-    fingerprints (a *new* expected key would invalidate every cached
-    downstream stage under the subset diff).
-    """
-
-    def strip(spec: dict) -> dict:
-        return {k: v for k, v in spec.items() if k not in ("input", "preprocess")}
-
+    """The ``[cameras]`` table -- the views' pure geometry (intrinsics/extrinsics)."""
     defaults, cams = config.camera_table()
-    out = {
-        "defaults": strip(defaults),
-        "cameras": {name: strip(spec) for name, spec in cams.items()},
-    }
-    preprocess = _preprocess(config)
-    if preprocess:
-        out["preprocess"] = preprocess
-    return out
-
-
-def _preprocess(config: Config) -> dict:
-    """The non-identity per-camera frame transforms (they move the detections)."""
     return {
-        name: t.to_json()
-        for name, t in config.frame_transforms().items()
-        if not t.is_identity()
+        "defaults": dict(defaults),
+        "cameras": {n: dict(s) for n, s in cams.items()},
     }
 
 
@@ -220,11 +193,33 @@ def stage_fingerprint(
     """
     if stage == "pose2d":
         p = config.pose2d
+        plan = config.detection_plan()
         fp = {
             "precision": p.precision,
-            "checkpoint": p.checkpoint,
-            "camera_patterns": config.camera_patterns(),
-            "preprocess": _preprocess(config),
+            "sources": plan.source_patterns(),
+            "preprocessors": {
+                name: t.to_json() for name, t in plan.preprocessors.items()
+            },
+            "models": {
+                name: {
+                    "class": s.cls,
+                    "weights": s.weights,
+                    "input_size": list(s.input_size),
+                    "mean": s.mean,
+                    "n_out_channels": s.n_out_channels,
+                    "kwargs": s.kwargs,
+                }
+                for name, s in plan.models.items()
+            },
+            "pathways": [
+                {
+                    "source": pw.source,
+                    "preprocessor": pw.preprocessor,
+                    "model": pw.model,
+                    "mapping": pw.mapping.tolist(),
+                }
+                for pw in plan.pathways
+            ],
             "skeleton": _skeleton_digest(config),
         }
         if enabled["pictorial_structures"]:
@@ -263,7 +258,6 @@ def stage_fingerprint(
         return _norm(
             {
                 "videos": [dataclasses.asdict(spec) for spec in config.videos],
-                "fps": config.fps,
                 "skeleton": _skeleton_digest(config, cosmetic=True),
                 "pose_from": pose_sources(enabled, store),
                 "cameras_from": _cameras_entry(config, enabled, store),

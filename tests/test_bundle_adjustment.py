@@ -14,18 +14,18 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, small_rotation
 
 from deeperfly import geometry as geom
 from deeperfly.bundle_adjustment import (
+    build_state,
     bundle_adjust,
     bundle_adjust_from_config,
-    build_state,
+    core,
     initialize_pts3d,
 )
-from deeperfly.bundle_adjustment import core
 from deeperfly.cameras import CameraGroup
 from deeperfly.config import Config
-from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, small_rotation
 
 
 def make_group(rig) -> CameraGroup:
@@ -346,14 +346,12 @@ def test_bundle_adjust_from_config(rig):
             }
             for i, name in enumerate(rig["names"])
         },
-        "pipeline": {
-            "bundle_adjustment": {
-                "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
-                "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
-                # scipy least_squares kwargs sit flat in the table (no solver sub-table).
-                "max_nfev": 2000,
-                "loss": "linear",
-            },
+        "bundle_adjustment": {
+            "fixed": ["*.intr", "f.rvec", "f.tvec", "rm.tvec[2]"],
+            "shared": [["f.tvec[2]", "lf.tvec[2]", "rf.tvec[2]"]],
+            # scipy least_squares kwargs sit flat in the table (no solver sub-table).
+            "max_nfev": 2000,
+            "loss": "linear",
         },
     }
     res, opt, _ = bundle_adjust_from_config(Config.from_dict(config), pts2d)

@@ -4,22 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from helpers import leg_indices
 
 from deeperfly.config import Config
 from deeperfly.skeleton import Skeleton
-from helpers import CAMERA_NAMES, leg_indices
-
-
-@pytest.fixture
-def fly() -> Skeleton:
-    return Skeleton.fly()
 
 
 def test_counts(fly):
     assert fly.n_points == 38
     assert fly.n_limbs == 10
     assert fly.bones.shape == (28, 2)
-    assert len(fly.joint_names) == 38
+    assert len(fly.point_names) == 38
     assert fly.limb_id.shape == (38,)
 
 
@@ -29,12 +24,12 @@ def test_bone_indices_in_range(fly):
 
 
 def test_palette(fly):
-    # One color per limb, with the bright antenna/stripe cues set in the config.
+    # One color per limb, with the bright antenna/abdomen cues set in the config.
     assert set(fly.palette) == set(fly.limb_names)
     assert fly.palette["l_antenna"] == "#0a4f6b"
     assert fly.palette["r_antenna"] == "#8c1525"
-    assert fly.palette["l_stripe"] == "#a9dbe4"
-    assert fly.palette["r_stripe"] == "#e6b3a8"
+    assert fly.palette["l_abdomen"] == "#a9dbe4"
+    assert fly.palette["r_abdomen"] == "#e6b3a8"
 
 
 def test_left_right_legs_disjoint(fly):
@@ -44,24 +39,6 @@ def test_left_right_legs_disjoint(fly):
     assert set(left).isdisjoint(right)
     # Left legs are the low indices, right legs the high ones.
     assert left.max() < right.min()
-
-
-def test_visibility_mask_matches_table(fly):
-    mask = fly.visibility_mask(CAMERA_NAMES)
-    assert mask.shape == (7, 38)
-    # Per-camera visible counts derived from DeepFly3D's camera_see_joint.
-    assert mask.sum(axis=1).tolist() == [19, 19, 16, 14, 16, 19, 19]
-    # Right cameras never see left-side points and vice versa.
-    rh = CAMERA_NAMES.index("rh")
-    lh = CAMERA_NAMES.index("lh")
-    assert not mask[rh, leg_indices(fly, "l")].any()
-    assert not mask[lh, leg_indices(fly, "r")].any()
-
-
-def test_unknown_camera_sees_everything(fly):
-    mask = fly.visibility_mask(["mystery_cam"])
-    assert mask.shape == (1, 38)
-    assert mask.all()
 
 
 def test_bone_index_pairs(fly):
@@ -74,10 +51,9 @@ def test_from_config_dict_roundtrip(fly):
     spec = {
         "skeleton": {
             "name": "toy",
-            "joint_names": ["a", "b", "c"],
-            "limb_joints": {"L": [0, 1, 2]},
-            "palette": {"L": "#123456"},
-            "visibility": {"cam0": [0, 1], "cam1": [1, 2]},
+            "point_names": ["a", "b", "c"],
+            "limb_points": {"L": [0, 1, 2]},
+            "limb_palette": {"L": "#123456"},
         }
     }
     s = Skeleton.from_config(Config.from_dict(spec))
@@ -87,12 +63,10 @@ def test_from_config_dict_roundtrip(fly):
     # The limb's three points form a two-edge chain.
     np.testing.assert_array_equal(s.bones, [[0, 1], [1, 2]])
     assert s.palette == {"L": "#123456"}
-    mask = s.visibility_mask(["cam0", "cam1"])
-    np.testing.assert_array_equal(mask, [[True, True, False], [False, True, True]])
 
 
-def test_limb_joints_derive_structure(fly):
-    # limb_names / limb_id / bones are all derived from the limb_joints mapping.
+def test_limb_points_derive_structure(fly):
+    # limb_names / limb_id / bones are all derived from the limb_points mapping.
     assert fly.limb_names[0] == "lf_leg" and fly.limb_names[3] == "l_antenna"
     assert fly.limb_id[:5].tolist() == [0, 0, 0, 0, 0]
     assert fly.limb_id[15] == 3  # the single-point l_antenna limb
@@ -100,7 +74,19 @@ def test_limb_joints_derive_structure(fly):
     np.testing.assert_array_equal(fly.bones[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
 
 
-def test_out_of_range_limb_joint_raises():
-    spec = {"skeleton": {"joint_names": ["a", "b"], "limb_joints": {"L": [0, 2]}}}
+def test_out_of_range_limb_point_raises():
+    spec = {"skeleton": {"point_names": ["a", "b"], "limb_points": {"L": [0, 2]}}}
     with pytest.raises(ValueError, match="outside"):
         Skeleton.from_config(Config.from_dict(spec))
+
+
+def test_limb_points_resolve_names():
+    # limb_points may list point names; an unknown name is rejected.
+    spec = {
+        "skeleton": {"point_names": ["a", "b", "c"], "limb_points": {"L": ["a", "c"]}}
+    }
+    s = Skeleton.from_config(Config.from_dict(spec))
+    np.testing.assert_array_equal(s.bones, [[0, 2]])
+    bad = {"skeleton": {"point_names": ["a", "b"], "limb_points": {"L": ["a", "z"]}}}
+    with pytest.raises(ValueError, match="unknown point name"):
+        Skeleton.from_config(Config.from_dict(bad))

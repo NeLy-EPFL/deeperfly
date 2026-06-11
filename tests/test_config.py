@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from deeperfly import Config
-from deeperfly.preprocessing import Rot90
 from deeperfly.config import (
     DEFAULT_CONFIG_PATH,
     STAGE_DEFAULTS,
@@ -22,7 +21,6 @@ from deeperfly.config import (
     TriangulationParams,
 )
 from deeperfly.visualization.compose import VideoSpec
-
 
 # -- defaults: one source of truth -------------------------------------------
 
@@ -52,26 +50,20 @@ def test_template_matches_python_defaults():
 
 
 def test_overrides_win_over_defaults():
-    c = Config.from_dict(
-        {"pipeline": {"pose2d": {"batch_size": 32, "precision": "float32"}}}
-    )
+    c = Config.from_dict({"pose2d": {"batch_size": 32, "precision": "float32"}})
     assert c.pose2d.batch_size == 32
     assert c.pose2d.precision == "float32"
     assert c.pose2d.decode_buffer == 4  # untouched -> default
 
 
 def test_pose2d_clamps_batch_and_buffer():
-    c = Config.from_dict(
-        {"pipeline": {"pose2d": {"batch_size": 0, "decode_buffer": 0}}}
-    )
+    c = Config.from_dict({"pose2d": {"batch_size": 0, "decode_buffer": 0}})
     assert c.pose2d.batch_size == 1 and c.pose2d.decode_buffer == 1
 
 
 def test_unknown_stage_key_fails_loudly():
     with pytest.raises(ValueError, match="unknown key"):
-        Config.from_dict(
-            {"pipeline": {"triangulation": {"ransac_thresh": 1.0}}}
-        ).triangulation
+        Config.from_dict({"triangulation": {"ransac_thresh": 1.0}}).triangulation
 
 
 # -- bundle adjustment: flat scipy kwargs ------------------------------------
@@ -80,53 +72,63 @@ def test_unknown_stage_key_fails_loudly():
 def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     c = Config.from_dict(
         {
-            "pipeline": {
-                "bundle_adjustment": {
-                    "keypoints": [0, 1, 2],
-                    "fixed": ["*.intr"],
-                    "shared": [["a.tvec[2]", "b.tvec[2]"]],
-                    "max_nfev": 500,
-                    "loss": "huber",
-                }
+            "bundle_adjustment": {
+                "points_to_use": ["lf_claw", "lm_claw", "lh_claw"],
+                "fixed": ["*.intr"],
+                "shared": [["a.tvec[2]", "b.tvec[2]"]],
+                "weigh_by_confidence": False,
+                "max_frames": 50,
+                "frame_sampling": "coverage",
+                "max_nfev": 500,
+                "loss": "huber",
             }
         }
     )
     ba = c.bundle_adjustment
     assert isinstance(ba, BundleAdjustmentParams)
-    assert ba.keypoints == [0, 1, 2]
+    assert ba.points_to_use == ["lf_claw", "lm_claw", "lh_claw"]
     assert ba.fixed == ["*.intr"]
     assert ba.shared == [["a.tvec[2]", "b.tvec[2]"]]
+    assert ba.weigh_by_confidence is False
+    assert ba.max_frames == 50
+    assert ba.frame_sampling == "coverage"
+    # the recognized fields are pulled out, not left as scipy least_squares kwargs.
     assert ba.least_squares == {"max_nfev": 500, "loss": "huber"}
 
 
 def test_bundle_adjustment_defaults_when_absent():
     ba = Config.from_dict({}).bundle_adjustment
     assert (
-        ba.keypoints is None
+        ba.points_to_use is None
         and ba.fixed == []
         and ba.shared == []
+        and ba.weigh_by_confidence is True  # weighting on by default
+        and ba.max_frames == 100
+        and ba.frame_sampling == "even"
         and ba.least_squares == {}
     )
 
 
-# -- per-camera consolidation ------------------------------------------------
+# -- sources and views -------------------------------------------------------
 
 
-def test_camera_patterns_and_frame_transforms_from_per_camera_tables():
+def test_source_patterns_and_camera_table():
     c = Config.from_dict(
         {
+            "sources": [
+                {"name": "cam0", "filename": "v0.mp4"},
+                {"name": "cam1"},  # no filename -> own name
+            ],
             "cameras": {
                 "defaults": {"focal_length_px": 800.0},
-                "rh": {"input": "cam0.mp4", "preprocess": [{"op": "rot90"}]},
-                "lf": {},  # no input -> own name; no preprocess -> identity
-            }
+                "rh": {},
+                "lf": {},
+            },
         }
     )
-    assert c.camera_patterns() == {"rh": "cam0.mp4", "lf": "lf"}
-    transforms = c.frame_transforms()
-    assert transforms["rh"].ops == (Rot90(k=1),)
-    assert "lf" not in transforms  # identity cameras are absent
-    # camera_table() splits the reserved `defaults` key from the real cameras.
+    # Footage globs come from the [[sources]] table (views are pure geometry).
+    assert c.source_patterns() == {"cam0": "v0.mp4", "cam1": "cam1"}
+    # camera_table() splits the reserved `defaults` key from the real views.
     defaults, cams = c.camera_table()
     assert defaults == {"focal_length_px": 800.0}
     assert set(cams) == {"rh", "lf"}
@@ -138,15 +140,13 @@ def test_camera_patterns_and_frame_transforms_from_per_camera_tables():
 def test_videos_returns_typed_specs():
     c = Config.from_dict(
         {
-            "pipeline": {
-                "visualization": {
-                    "videos": [
-                        {
-                            "video_name": "v",
-                            "panels": [{"plot": "skeleton_2d", "view": "f"}],
-                        }
-                    ]
-                }
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [{"plot": "skeleton_2d", "view": "f"}],
+                    }
+                ]
             }
         }
     )

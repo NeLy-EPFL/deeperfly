@@ -9,11 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from deeperfly import geometry as geom
-from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
-from deeperfly.config import Config
-from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
 from helpers import (
     AZIMUTHS_DEG,
     CAMERA_NAMES,
@@ -24,10 +19,15 @@ from helpers import (
     reference_rmat,
 )
 
+from deeperfly import geometry as geom
+from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
+from deeperfly.config import Config
+from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
+
 
 @pytest.fixture
 def config() -> Config:
-    """Config equivalent to examples/cameras.toml (cameras only)."""
+    """Reference camera rig config (cameras only)."""
     return Config.from_dict(
         {
             "cameras": {
@@ -313,27 +313,23 @@ def test_group_from_config_infers_principal_point_per_view():
     )
 
 
-def test_group_from_config_maps_intrinsics_through_preprocess():
-    # Raw sizes go in; the per-camera preprocess chain maps the rig into the
-    # canonical frame (left: cropped -> shifted pp; right: untouched).
+def test_group_from_config_ignores_non_rig_keys():
+    # A view is pure geometry now: footage/preprocess keys (if present) are not
+    # part of the rig and its intrinsics describe the raw source frame.
     config = {
         "cameras": {
             "defaults": {"focal_length_px": 800.0, "distance": 5.0},
             "left": {
                 "azimuth_deg": 0.0,
-                "preprocess": [
-                    {"op": "crop", "x": 10, "y": 10, "width": 80, "height": 80}
-                ],
+                "input": "cam0.mp4",
+                "preprocess": [{"op": "fliplr"}],
             },
-            "right": {"azimuth_deg": 90.0},
         },
     }
-    image_sizes = {"left": (100, 100), "right": (480, 640)}
+    image_sizes = {"left": (100, 100)}
     group = CameraGroup.from_config(Config.from_dict(config), image_sizes=image_sizes)
-    assert np.allclose(group["left"].intr, [800.0, 800.0, 39.5, 39.5])
-    assert np.allclose(
-        group["right"].intr, [800.0, 800.0, (640 - 1) / 2, (480 - 1) / 2]
-    )
+    # Principal point is the raw image center, unaffected by the (ignored) keys.
+    assert np.allclose(group["left"].intr, [800.0, 800.0, 49.5, 49.5])
 
 
 def test_group_from_config_missing_principal_point_no_sizes_raises():

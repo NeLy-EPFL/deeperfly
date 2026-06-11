@@ -7,26 +7,25 @@ It carries no geometry; it is consumed by triangulation (to mask unobservable
 points), bundle adjustment (bone-length priors), pictorial-structures recovery
 and visualization (drawing bones).
 
-The default fly skeleton is packaged as ``data/skeleton_fly.toml``; it tracks the
-same 38 points as NeLy-EPFL/DeepFly3D's ``skeleton_fly.py`` but orders the body
-sides left-first (left ``0..18``, right ``19..37``), with 10 limbs and 28
-within-leg/stripe bones. Load it with :meth:`Skeleton.fly`.
+The default fly skeleton is the ``[skeleton]`` section of the packaged
+``data/default_config.toml``; it tracks the same 38 points as NeLy-EPFL/DeepFly3D's
+``skeleton_fly.py`` but orders the body sides left-first (left ``0..18``, right
+``19..37``), with 10 limbs and 28 within-leg/abdomen bones. Load it with
+:meth:`Skeleton.fly`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from jaxtyping import Bool, Int
+from jaxtyping import Int
 
 if TYPE_CHECKING:
     from .config import Config
 
-_DATA_DIR = Path(__file__).parent / "data"
-_FLY_TOML = _DATA_DIR / "skeleton_fly.toml"
+__all__ = ["Skeleton"]
 
 
 @dataclass(frozen=True)
@@ -37,28 +36,28 @@ class Skeleton:
     ----------
     name
         Identifier for the skeleton (e.g. ``"fly38"``).
-    joint_names
+    point_names
         Human-readable name per tracked point, in order (length ``n_points``).
     limb_names, limb_id, bones
-        Limb structure derived from the config's ``limb_joints`` mapping (see
-        :func:`_parse_limb_joints`): the limb names (length ``n_limbs``), each
+        Limb structure derived from the config's ``limb_points`` mapping (see
+        :func:`_parse_limb_points`): the limb names (length ``n_limbs``), each
         point's limb index (shape ``(n_points,)``), and the within-view 2D edges
         as point-index pairs (shape ``(n_bones, 2)``).
     palette
         Mapping ``limb_name -> hex color`` for plotting. Limbs absent from the
         mapping fall back to a default colormap in the visualization helpers.
-    visibility
-        Mapping ``camera_name -> array of visible point indices`` for a known
-        rig. Cameras absent from the mapping are treated as seeing every point.
+
+    Which view sees which point lives in the detection plan (the pathways'
+    ``(channel, view, point)`` mappings), not here: an unobserved ``(view, point)``
+    is simply ``NaN`` in the points array.
     """
 
     name: str
-    joint_names: tuple[str, ...]
+    point_names: tuple[str, ...]
     limb_names: tuple[str, ...]
-    limb_id: Int[np.ndarray, "N"]
+    limb_id: Int[np.ndarray, "P"]
     bones: Int[np.ndarray, "B 2"]
     palette: dict[str, str]
-    visibility: dict[str, Int[np.ndarray, "M"]]
 
     # -- construction --------------------------------------------------------
 
@@ -67,7 +66,7 @@ class Skeleton:
         """The default 38-point Drosophila skeleton (DeepFly3D 7-camera rig)."""
         from .config import Config
 
-        return cls.from_config(Config.from_toml(_FLY_TOML))
+        return cls.from_config(Config.default())
 
     @classmethod
     def from_config(cls, config: "Config") -> Skeleton:
@@ -86,34 +85,29 @@ class Skeleton:
         Raises
         ------
         ValueError
-            If a ``visibility`` entry has out-of-range point indices.
+            If a ``limb_points`` entry names an unknown point or an
+            out-of-range point index.
         """
         spec = config.data["skeleton"]
-        n = len(spec["joint_names"])
-        limb_names, limb_id, bones = _parse_limb_joints(spec.get("limb_joints", {}), n)
-        palette = {str(k): str(v) for k, v in spec.get("palette", {}).items()}
-        visibility = {
-            name: np.asarray(idx, dtype=np.int64)
-            for name, idx in spec.get("visibility", {}).items()
-        }
-        for name, idx in visibility.items():
-            if idx.size and (idx.min() < 0 or idx.max() >= n):
-                raise ValueError(f"visibility[{name!r}] has out-of-range indices")
+        point_names = tuple(spec["point_names"])
+        limb_names, limb_id, bones = _parse_limb_points(
+            spec.get("limb_points", {}), point_names
+        )
+        palette = {str(k): str(v) for k, v in spec.get("limb_palette", {}).items()}
         return cls(
             name=spec.get("name", "skeleton"),
-            joint_names=tuple(spec["joint_names"]),
+            point_names=point_names,
             limb_names=limb_names,
             limb_id=limb_id,
             bones=bones,
             palette=palette,
-            visibility=visibility,
         )
 
     # -- basic views ---------------------------------------------------------
 
     @property
     def n_points(self) -> int:
-        return len(self.joint_names)
+        return len(self.point_names)
 
     @property
     def n_limbs(self) -> int:
@@ -123,29 +117,6 @@ class Skeleton:
         return self.n_points
 
     # -- derived structure ---------------------------------------------------
-
-    def visibility_mask(self, camera_names: list[str]) -> Bool[np.ndarray, "V N"]:
-        """Boolean ``(V, N)`` mask: can camera ``v`` see point ``n``?
-
-        Cameras without an entry in :attr:`visibility` are taken to see every
-        point (all ``True``), so an unknown rig degrades to "everything visible".
-
-        Parameters
-        ----------
-        camera_names
-            Camera names labelling the rows of the returned mask.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean array of shape ``(V, N)`` (``V = len(camera_names)``).
-        """
-        mask = np.ones((len(camera_names), self.n_points), dtype=bool)
-        for v, name in enumerate(camera_names):
-            if name in self.visibility:
-                mask[v] = False
-                mask[v, self.visibility[name]] = True
-        return mask
 
     def bone_index_pairs(
         self,
@@ -160,20 +131,22 @@ class Skeleton:
         return self.bones[:, 0], self.bones[:, 1]
 
 
-def _parse_limb_joints(
-    limb_joints: dict[str, list[int]], n_points: int
-) -> tuple[tuple[str, ...], Int[np.ndarray, "N"], Int[np.ndarray, "B 2"]]:
-    """Expand a ``{limb_name: [joint_indices]}`` mapping into limb structure.
+def _parse_limb_points(
+    limb_points: dict[str, list], point_names: tuple[str, ...]
+) -> tuple[tuple[str, ...], Int[np.ndarray, "P"], Int[np.ndarray, "B 2"]]:
+    """Expand a ``{limb_name: [points]}`` mapping into limb structure.
 
-    ``limb_joints`` is the single source of truth for a skeleton's limbs: each
-    entry lists a limb's points in kinematic-chain order.
+    ``limb_points`` is the single source of truth for a skeleton's limbs: each
+    entry lists a limb's points in kinematic-chain order. A point may be given by
+    its name (resolved against ``point_names``) or by its integer index.
 
     Parameters
     ----------
-    limb_joints
-        Mapping ``limb_name -> [point indices]`` in kinematic-chain order.
-    n_points
-        Total number of tracked points (for index validation).
+    limb_points
+        Mapping ``limb_name -> [points]`` in kinematic-chain order; each point is
+        a name in ``point_names`` or an integer index.
+    point_names
+        The ordered tracked-point names (for name resolution + index validation).
 
     Returns
     -------
@@ -189,22 +162,36 @@ def _parse_limb_joints(
     Raises
     ------
     ValueError
-        If a limb references a point index outside ``[0, n_points)``.
+        If a limb names an unknown point or references an index outside
+        ``[0, n_points)``.
     """
-    limb_names = tuple(limb_joints)
+    n_points = len(point_names)
+    index = {name: i for i, name in enumerate(point_names)}
+    limb_names = tuple(limb_points)
     limb_id = np.full(n_points, -1, dtype=np.int64)
     bones: list[list[int]] = []
-    for lid, joints in enumerate(limb_joints.values()):
-        joints = [int(j) for j in joints]
-        for j in joints:
+    for lid, points in enumerate(limb_points.values()):
+        resolved = [_point_index(p, index, limb_names[lid]) for p in points]
+        for j in resolved:
             if not 0 <= j < n_points:
                 raise ValueError(
                     f"limb {limb_names[lid]!r} references point index {j} "
                     f"outside [0, {n_points})"
                 )
             limb_id[j] = lid
-        bones.extend([a, b] for a, b in zip(joints, joints[1:]))
+        bones.extend([a, b] for a, b in zip(resolved, resolved[1:]))
     return limb_names, limb_id, _edges(bones, n_points, "bones")
+
+
+def _point_index(point, index: dict[str, int], limb_name: str) -> int:
+    """A limb point given by name or integer index -> its integer index."""
+    if isinstance(point, str):
+        if point not in index:
+            raise ValueError(
+                f"limb {limb_name!r} references unknown point name {point!r}"
+            )
+        return index[point]
+    return int(point)
 
 
 def _edges(raw: list, n_points: int, what: str) -> Int[np.ndarray, "E 2"]:

@@ -3,8 +3,9 @@
 A faithful copy of DeepFly2D's stacked hourglass (NeLy-EPFL/DeepFly2D
 ``df2d/model.py``) so the original DeepFly2D weights run directly, with no
 conversion (load them with :func:`deeperfly.pose2d.weights.load_model`).
-Stacked ``(N, 3, H, W)`` float inputs in, final-stack ``(N, J, h, w)`` heatmaps
-out (:func:`predict_heatmaps`). The plain detect path
+Stacked ``(B, V, 3, H, W)`` float inputs in -- the ``V`` views run in parallel and
+independent -- final-stack ``(B, V, C_out, H_out, W_out)`` heatmaps out (:func:`predict_heatmaps`);
+plain 4D ``(N, 3, H, W)`` is also accepted as the no-view case. The plain detect path
 (:func:`deeperfly.pose2d.inference.detect`) instead drives :func:`predict_points`,
 which decodes the peaks on-device and returns only those.
 """
@@ -15,6 +16,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+#: Lay the CUDA conv batch out ``channels_last`` (NHWC in memory, same NCHW logical
+#: shape) so cuDNN picks its faster Tensor-Core conv kernels. A CUDA-only win;
+#: CPU/MPS keep the default contiguous layout regardless. Set ``False`` to force
+#: the plain NCHW path (e.g. to A/B the speedup or work around a cuDNN regression).
+USE_CHANNELS_LAST = True
 
 
 class Bottleneck(nn.Module):
@@ -149,6 +156,19 @@ class HourglassNet(nn.Module):
         )
 
     def forward(self, x):
+        # Standard input is ``(B, V, C, H, W)``: the V views run in parallel and
+        # independent, so they're folded into the conv batch here (a future
+        # cross-view model would instead keep V and mix across it). Plain 4D
+        # ``(N, C, H, W)`` is the degenerate no-V case. Under fp16/bf16 autocast on
+        # CUDA the folded batch is laid out ``channels_last`` (NHWC in memory; the
+        # logical NCHW shape is unchanged) so cuDNN picks its faster Tensor-Core
+        # conv kernels -- ~10% on this net. The float32 path keeps NCHW, where
+        # channels_last gives no win (and is a touch slower at small batch).
+        lead = x.shape[:-3]
+        if x.dim() == 5:
+            x = x.reshape(-1, *x.shape[-3:])
+        if x.is_cuda and USE_CHANNELS_LAST and torch.is_autocast_enabled():
+            x = x.contiguous(memory_format=torch.channels_last)
         out = []
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.layer1(x)
@@ -160,6 +180,8 @@ class HourglassNet(nn.Module):
             out.append(score)
             if i < self.num_stacks - 1:
                 x = x + self.fc_[i](y) + self.score_[i](score)
+        if len(lead) == 2:  # unfold the view axis back out of the batch
+            out = [o.reshape(*lead, *o.shape[1:]) for o in out]
         return out
 
 
@@ -278,7 +300,8 @@ def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
     """
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
-    fn = _forward_fn(model, dev, x.shape[0])
+    batch = int(np.prod(x.shape[:-3]))  # folded conv batch (B*V for a 5D input)
+    fn = _forward_fn(model, dev, batch)
     dtype = _autocast_dtype(model, dev)
     if dtype is not None:  # fp16/bf16 autocast on CUDA; conv runs low, reductions f32
         with torch.autocast(dev.type, dtype=dtype):
@@ -290,19 +313,21 @@ def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
 
 @torch.inference_mode()
 def predict_heatmaps(model: HourglassNet, inputs: np.ndarray) -> np.ndarray:
-    """Final-stack heatmaps for ``(N, 3, H, W)`` float inputs.
+    """Final-stack heatmaps for ``(B, V, 3, H, W)`` float inputs.
 
     Parameters
     ----------
     model
         The detector.
     inputs
-        Network inputs of shape ``(N, 3, H, W)``.
+        Network inputs of shape ``(B, V, 3, H, W)`` (the ``V`` views run in parallel
+        and independent); plain 4D ``(N, 3, H, W)`` is also accepted.
 
     Returns
     -------
     np.ndarray
-        The final-stack heatmaps as host NumPy.
+        The final-stack heatmaps as host NumPy, shaped ``(B, V, C_out, H_out, W_out)`` (or
+        ``(N, C_out, H_out, W_out)`` for a 4D input).
     """
     out = _forward_last(model, inputs)
     if out.device.type == "cuda":
@@ -321,8 +346,8 @@ def predict_points(
     """Fused forward + on-device heatmap decode: ``(points_norm, conf)`` as NumPy.
 
     The arg-max peak decode (:func:`deeperfly.pose2d.inference.heatmap_to_points`)
-    runs on the *same device as the forward*, so only the tiny ``(N, J, 2)`` peaks
-    and ``(N, J)`` confidences leave the GPU -- never the full ``(N, J, h, w)``
+    runs on the *same device as the forward*, so only the tiny ``(B, V, C_out, 2)`` peaks
+    and ``(B, V, C_out)`` confidences leave the GPU -- never the full ``(B, V, C_out, H_out, W_out)``
     heatmap, and never a float64 arg-max over the whole grid on the host. Results
     match the NumPy decode to float32 epsilon; ``method`` / ``radius`` select the
     sub-pixel refinement exactly as the NumPy path does.
@@ -335,7 +360,7 @@ def predict_points(
     model
         The detector.
     inputs
-        Network inputs of shape ``(N, 3, H, W)``.
+        Network inputs of shape ``(B, V, 3, H, W)`` (or 4D ``(N, 3, H, W)``).
     method, radius
         Sub-pixel refinement options (see
         :func:`~deeperfly.pose2d.inference.refine_peaks`).
@@ -343,11 +368,11 @@ def predict_points(
     Returns
     -------
     points_norm : np.ndarray
-        Normalized ``(N, J, 2)`` peaks.
+        Normalized ``(B, V, C_out, 2)`` peaks (``(N, C_out, 2)`` for a 4D input).
     conf : np.ndarray
-        Per-joint confidence of shape ``(N, J)``.
+        Per-joint confidence of shape ``(B, V, C_out)`` (``(N, C_out)`` for a 4D input).
     """
-    out = _forward_last(model, inputs)  # (N, J, h, w) on device, float32
+    out = _forward_last(model, inputs)  # (N, C_out, H_out, W_out) on device, float32
     xy, conf = _decode_peaks(out, method=method, radius=radius)
     if out.device.type == "cuda":
         torch.cuda.synchronize()
@@ -359,13 +384,13 @@ def _decode_peaks(
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
     """Torch port of :func:`deeperfly.pose2d.inference.heatmap_to_points`.
 
-    ``heatmaps`` is ``(*lead, h, w)`` on any device; returns normalized ``(x, y)``
+    ``heatmaps`` is ``(*lead, H_out, W_out)`` on any device; returns normalized ``(x, y)``
     peaks ``(*lead, 2)`` and raw peak confidence ``(*lead,)``, both on the input's
     device. Mirrors the NumPy decoder's arg-max + sub-pixel refinement so the fused
     GPU path is numerically equivalent.
     """
     *lead, hh, ww = heatmaps.shape
-    flat = heatmaps.reshape(-1, hh * ww)  # (M, h*w)
+    flat = heatmaps.reshape(-1, hh * ww)  # (M, H_out*W_out)
     conf, idx = flat.max(dim=-1)  # (M,) peak value, (M,) flat index
     row, col = idx // ww, idx % ww
     cx, cy = _refine_peaks(
@@ -383,7 +408,7 @@ def _refine_peaks(
     method: str = "weighted",
     radius: int = 2,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """Refine one integer peak per ``(M, h, w)`` heatmap to sub-pixel ``(cx, cy)``.
+    """Refine one integer peak per ``(M, H_out, W_out)`` heatmap to sub-pixel ``(cx, cy)``.
 
     The torch counterpart of :func:`deeperfly.pose2d.inference.refine_peaks` (single
     peak per channel): ``"argmax"`` keeps the cell, ``"weighted"`` takes the

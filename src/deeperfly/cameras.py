@@ -9,7 +9,7 @@ image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
 A :class:`CameraGroup` is an ordered collection of named cameras, typically built
 from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
 *only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
-``CameraGroup`` with a separate ``[pipeline.bundle_adjustment]`` section.
+``CameraGroup`` with a separate ``[bundle_adjustment]`` section.
 
 Extrinsics are specified as an orbit around a ``look_at`` target: the camera
 sits ``distance`` away in the direction given by ``azimuth_deg`` /
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from .config import Config
     from .preprocessing import FrameTransform
 
+__all__ = ["Camera", "CameraGroup", "resolve_extrinsics"]
+
 # World "up" that fixes the camera roll in the look-at orientation.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
 
@@ -46,9 +48,9 @@ _WORLD_UP = np.array([0.0, 0.0, 1.0])
 # required; the rest default to the origin / zero angles.
 _ORBIT_KEYS = ("look_at", "distance", "azimuth_deg", "elevation_deg", "roll_deg")
 
-# Extrinsics keys from the old free-form spec grammar, rejected with a pointer
-# to the orbit keys rather than silently ignored.
-_REMOVED_KEYS = (
+# Extrinsics keys a config might reach for but that are not supported; rejected
+# with a pointer to the orbit keys rather than silently ignored.
+_UNSUPPORTED_EXTRINSICS_KEYS = (
     "rvec",
     "tvec",
     "rotation_matrix",
@@ -161,13 +163,13 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     Raises
     ------
     ValueError
-        If ``distance`` is missing, a removed key from the old free-form spec
-        grammar is given, or ``elevation_deg`` is +/-90 (camera roll undefined).
+        If ``distance`` is missing, an unsupported extrinsics key is given, or
+        ``elevation_deg`` is +/-90 (camera roll undefined).
     """
-    removed = [k for k in _REMOVED_KEYS if k in spec]
-    if removed:
+    unsupported = [k for k in _UNSUPPORTED_EXTRINSICS_KEYS if k in spec]
+    if unsupported:
         raise ValueError(
-            f"unsupported extrinsics keys {removed}: cameras are specified as "
+            f"unsupported extrinsics keys {unsupported}: cameras are specified as "
             f"an orbit via {list(_ORBIT_KEYS)}"
         )
     if "distance" not in spec:
@@ -376,20 +378,21 @@ class CameraGroup:
         """Build a group from a config.
 
         Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
-        override the defaults. The per-camera ``input`` (footage glob) key
-        belongs to other stages and is ignored here. Spec intrinsics describe
-        the *raw* footage frame; a per-camera ``preprocess`` chain maps them
-        into the canonical (transformed) frame the rest of the pipeline uses.
+        override the defaults. A camera here is a geometric *view*: its
+        intrinsics describe its source's raw footage frame, the frame a pathway
+        maps its detections back into (see
+        :mod:`deeperfly.pose2d.pathways`). Detector-input geometry (mirror,
+        crop, resize) lives in the pathways, not on the view.
 
         Parameters
         ----------
         config
             A :class:`~deeperfly.config.Config`.
         image_sizes
-            Maps a camera name to its raw footage ``(height, width)``, used to
-            infer that camera's principal point (image center) when neither the
-            camera spec nor ``[cameras.defaults]`` specifies
-            ``principal_point_px``, and to anchor the preprocess affine.
+            Maps a view name to its source's raw footage ``(height, width)``,
+            used to infer that view's principal point (image center) when
+            neither the camera spec nor ``[cameras.defaults]`` specifies
+            ``principal_point_px``.
 
         Returns
         -------
@@ -402,14 +405,12 @@ class CameraGroup:
             If the config defines no cameras.
         """
         defaults, specs = config.camera_table()
-        transforms = config.frame_transforms()
         image_sizes = image_sizes or {}
         cameras = {
             name: Camera.from_spec(
                 _rig_keys({**defaults, **spec}),
                 name=name,
                 image_size=image_sizes.get(name),
-                transform=transforms.get(name),
             )
             for name, spec in specs.items()
         }
@@ -499,7 +500,9 @@ class CameraGroup:
         return np.asarray(out)
 
     def triangulate(
-        self, pts2d: Float[np.ndarray, "V *pts 2"]
+        self,
+        pts2d: Float[np.ndarray, "V *pts 2"],
+        weights: Float[np.ndarray, "V *pts"] | None = None,
     ) -> Float[np.ndarray, "*pts 3"]:
         """Triangulate 3D points from 2D observations and this group's cameras.
 
@@ -507,6 +510,10 @@ class CameraGroup:
         ----------
         pts2d
             2D observations of shape ``(V, *pts, 2)``, NaN for missing.
+        weights
+            Optional per-(view, point) weights of shape ``(V, *pts)`` for a
+            confidence-weighted DLT; ``None`` (default) is plain DLT. See
+            :func:`deeperfly.geometry.triangulate_dlt`.
 
         Returns
         -------
@@ -517,4 +524,5 @@ class CameraGroup:
             (np.asarray(rvec_to_rmat(self.rvecs)), self.tvecs[..., None]), axis=-1
         )
         pmats = np.asarray(intr_to_kmat(self.intrs)) @ rtmat
-        return np.asarray(triangulate_dlt(np.asarray(pts2d), pmats))
+        w = None if weights is None else np.asarray(weights)
+        return np.asarray(triangulate_dlt(np.asarray(pts2d), pmats, w))

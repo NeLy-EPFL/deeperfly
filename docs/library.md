@@ -1,9 +1,10 @@
 # Library usage
 
-The public API lives at the top level (`from deeperfly import ...`): `Camera`,
-`CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
-`bundle_adjust_from_config`, `run_from_points2d`, and the `geometry`,
-`triangulation`, `pictorial`, `pipeline` submodules.
+The public API lives at the top level (`from deeperfly import ...`): `Config`,
+`Camera`, `CameraGroup`, `Skeleton`, `PoseResult`, `bundle_adjust`,
+`bundle_adjust_from_config`, `run_from_points2d`, `run_recording`, and the
+`geometry`, `triangulation`, `pictorial`, `pipeline`, `recordings`, and `io`
+submodules.
 
 Sections of a `config.toml` are independently usable: load it once with
 `Config.from_toml`, then `CameraGroup.from_config(config)` reads only the
@@ -14,7 +15,7 @@ cameras, `Skeleton.from_config(config)` only `[skeleton]`.
 ```python
 from deeperfly import CameraGroup, Config, bundle_adjust
 
-group = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+group = CameraGroup.from_config(Config.from_toml("config.toml"))
 pts2d = group.project(pts3d)                       # (V, N, 2) observations
 result, optimized, points = bundle_adjust(group, pts2d, fixed=["*.intr"])
 ```
@@ -24,7 +25,7 @@ result, optimized, points = bundle_adjust(group, pts2d, fixed=["*.intr"])
 ```python
 from deeperfly import CameraGroup, Config, Skeleton, run_from_points2d
 
-cameras = CameraGroup.from_config(Config.from_toml("examples/cameras.toml"))
+cameras = CameraGroup.from_config(Config.from_toml("config.toml"))
 result = run_from_points2d(cameras, Skeleton.fly(), pts2d, conf)
 result.save("fly.h5")
 ```
@@ -54,4 +55,3 @@ with io.VideoWriter("out.mp4", fps=30) as writer:
 
 - [`examples/bundle_adjustment.ipynb`](../examples/bundle_adjustment.ipynb) — the bundle-adjustment walkthrough.
 - [`examples/pipeline_walkthrough.ipynb`](../examples/pipeline_walkthrough.ipynb) — the pipeline one stage at a time.
-- [`examples/pipeline_demo.py`](../examples/pipeline_demo.py) — a synthetic end-to-end run (no weights required).

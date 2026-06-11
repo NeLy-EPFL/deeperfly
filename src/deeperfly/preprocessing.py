@@ -4,7 +4,7 @@ A :class:`FrameTransform` is an ordered sequence of standard image operations
 -- left-right / up-down flip, quarter-turn rotation, crop and resize -- applied
 to a camera's frames right after they are read, in the order written in the
 config. The transformed frame is the canonical frame for the whole run
-(detector, 2D points, calibration, overlays); nothing maps back to the raw
+(detector, 2D points, bundle adjustment, overlays); nothing maps back to the raw
 footage.
 
 Camera intrinsics in the config refer to the *raw* footage frame: every op
@@ -35,6 +35,17 @@ from .io.base import to_numpy
 
 if TYPE_CHECKING:
     from .config import Config
+
+__all__ = [
+    "Fliplr",
+    "Flipud",
+    "Rot90",
+    "Crop",
+    "Resize",
+    "FrameTransform",
+    "frame_transform_from_ops",
+    "parse_frame_transforms",
+]
 
 _OP_NAMES = ("fliplr", "flipud", "rot90", "crop", "resize")
 _INTERPOLATIONS = ("bilinear", "nearest")
@@ -325,6 +336,12 @@ def _normalize_ops(ops) -> tuple[FrameOp, ...]:
     return tuple(out)
 
 
+def _apply_affine(a: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Apply a 3x3 homogeneous pixel map ``a`` to ``(..., 2)`` points ``(x, y)``."""
+    pts = np.asarray(pts, dtype=float)
+    return pts @ a[:2, :2].T + a[:2, 2]
+
+
 @dataclass(frozen=True)
 class FrameTransform:
     """An ordered op sequence for one camera's frames (default: identity).
@@ -388,6 +405,47 @@ class FrameTransform:
             size = op.output_size(size)
         return a
 
+    def map_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        """Map raw-frame pixel points ``(x, y)`` into the transformed frame.
+
+        Parameters
+        ----------
+        pts
+            Points of shape ``(..., 2)`` in raw-frame pixel-center coordinates.
+        size
+            The raw frame ``(height, width)`` the chain is anchored on.
+
+        Returns
+        -------
+        np.ndarray
+            The points of shape ``(..., 2)`` in the transformed frame.
+        """
+        return _apply_affine(self.affine(size), pts)
+
+    def unmap_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        """Map transformed-frame pixel points ``(x, y)`` back to the raw frame.
+
+        The inverse of :meth:`map_points`: a detector/model peak located in the
+        transformed (preprocessed) frame is brought back into the raw frame the
+        camera's intrinsics describe -- this is how a pathway's points return to
+        their view (undoing a mirror, resize, crop, ...). ``size`` is the *raw*
+        frame size the chain is anchored on (not the transformed size).
+
+        Parameters
+        ----------
+        pts
+            Points of shape ``(..., 2)`` in transformed-frame pixel-center
+            coordinates.
+        size
+            The raw frame ``(height, width)`` the chain is anchored on.
+
+        Returns
+        -------
+        np.ndarray
+            The points of shape ``(..., 2)`` in the raw frame.
+        """
+        return _apply_affine(np.linalg.inv(self.affine(size)), pts)
+
     def map_intrinsics(
         self, intr: np.ndarray, dist: np.ndarray, raw_size: tuple[int, int]
     ) -> np.ndarray:
@@ -437,8 +495,9 @@ class FrameTransform:
             if bad:
                 raise ValueError(
                     f"non-radial distortion coefficients (index {bad}) do not "
-                    f"survive a flip/rot90 preprocess op; calibrate for the "
-                    f"flipped/rotated frame or drop the tangential/thin-prism terms"
+                    f"survive a flip/rot90 preprocess op; supply distortion "
+                    f"coefficients valid for the flipped/rotated frame or drop "
+                    f"the tangential/thin-prism terms"
                 )
         new_c = lin @ np.array([cx, cy]) + off
         new_f = np.abs(lin) @ np.array([fx, fy])
@@ -526,6 +585,39 @@ def _parse_op(step, where: str) -> FrameOp:
         raise ValueError(f"{where}: {exc}") from exc
 
 
+def frame_transform_from_ops(ops, where: str) -> FrameTransform:
+    """Build a :class:`FrameTransform` from a list of ``{ op = ... }`` tables.
+
+    The shared parser behind ``[cameras.<name>].preprocess`` and the named
+    ``[[pose2d.preprocessors]]`` of the detection plan, so both accept the exact same
+    op grammar (and fail the same way on a typo).
+
+    Parameters
+    ----------
+    ops
+        An ordered list of op tables (or empty / ``None`` for the identity).
+    where
+        A label for error messages (e.g. ``"[[pose2d.preprocessors]] 'mirror'"``).
+
+    Returns
+    -------
+    FrameTransform
+        The parsed, normalized transform.
+
+    Raises
+    ------
+    ValueError
+        If ``ops`` is not a list, or any op table is malformed.
+    """
+    if not ops:
+        return FrameTransform(())
+    if not isinstance(ops, list):
+        raise ValueError(f"{where} must be a list of op tables, got {ops!r}")
+    return FrameTransform(
+        tuple(_parse_op(step, f"{where}[{i}]") for i, step in enumerate(ops))
+    )
+
+
 def parse_frame_transforms(
     config: "Config",
 ) -> dict[str, FrameTransform]:
@@ -557,9 +649,9 @@ def parse_frame_transforms(
     Raises
     ------
     ValueError
-        On the removed table form (``[cameras.<camera>.preprocess]`` with
-        ``fliplr``/``flipud``/``rot90`` keys), an unknown op or op key, or a
-        malformed op parameter (so config typos fail loudly).
+        If ``preprocess`` is not an ordered list of op tables, or names an
+        unknown op or op key, or carries a malformed op parameter (so config
+        typos fail loudly).
     """
     defaults, cameras = config.camera_table()
     if "preprocess" in defaults:
@@ -572,17 +664,13 @@ def parse_frame_transforms(
         spec = cam.get("preprocess")
         if not spec:
             continue
-        if isinstance(spec, dict):
-            raise ValueError(
-                f"[cameras.{name}.preprocess] is now an ordered *list* of steps; "
-                f"the fliplr/flipud/rot90 table form was removed. Write e.g.\n"
-                f'  preprocess = [{{ op = "fliplr" }}, {{ op = "rot90", k = 1 }}]\n'
-                f"(or [[cameras.{name}.preprocess]] blocks), applied in the "
-                f"order written."
-            )
         if not isinstance(spec, list):
             raise ValueError(
-                f"[cameras.{name}].preprocess must be a list of op tables, got {spec!r}"
+                f"[cameras.{name}].preprocess must be an ordered list of op "
+                f'tables, e.g.\n  preprocess = [{{ op = "fliplr" }}, '
+                f'{{ op = "rot90", k = 1 }}]\n'
+                f"(or [[cameras.{name}.preprocess]] blocks), applied in the "
+                f"order written; got {spec!r}"
             )
         ops = tuple(
             _parse_op(step, f"[cameras.{name}].preprocess[{i}]")

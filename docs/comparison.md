@@ -6,11 +6,11 @@
 | Upstream project | Role | `deeperfly` counterpart |
 | --- | --- | --- |
 | [DeepFly2D](https://github.com/NeLy-EPFL/DeepFly2D) | 2D pose: a PyTorch stacked-hourglass detector | [`pose2d/`](../src/deeperfly/pose2d) — a faithful PyTorch port running the original weights directly |
-| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline.py`](../src/deeperfly/pipeline.py), [`triangulation.py`](../src/deeperfly/triangulation.py), [`pictorial.py`](../src/deeperfly/pictorial.py) |
-| [PyBundleAdjustment](https://github.com/semihgunel/PyBundleAdjustment) | scipy-based bundle adjustment for calibration | [`bundle_adjustment/`](../src/deeperfly/bundle_adjustment) |
+| [DeepFly3D](https://github.com/NeLy-EPFL/DeepFly3D) | The orchestrating 2D→3D pipeline + GUI ([Günel et al., *eLife* 2019](https://doi.org/10.7554/eLife.48571)) | [`pipeline/`](../src/deeperfly/pipeline), [`triangulation.py`](../src/deeperfly/triangulation.py), [`pictorial.py`](../src/deeperfly/pictorial.py) |
+| [PyBundleAdjustment](https://github.com/semihgunel/PyBundleAdjustment) | scipy-based bundle adjustment | [`bundle_adjustment/`](../src/deeperfly/bundle_adjustment) |
 
 The science is faithful to the originals — same camera rig, same detector
-weights, same fly-as-calibration-target bundle adjustment, same pictorial-
+weights, same fly-as-target bundle adjustment, same pictorial-
 structures idea. What changed is the implementation: everything geometric is
 JAX (JIT- and autodiff-friendly), the whole thing is headless and scriptable,
 and the I/O is modern.
@@ -41,11 +41,11 @@ and downloads the weights on first use. It runs on CUDA (NVIDIA) and Metal/MPS
 deeperfly does **not** include training code — it consumes the released weights.
 Train or fine-tune with the upstream DeepFly2D repository.
 
-### Calibration / bundle adjustment
+### Bundle adjustment
 
-Like the originals, deeperfly calibrates with **no external target**: the fly's
-own detected joints are the calibration points, refined by bundle adjustment
-(`pipeline.calibrate`). The solver is still SciPy's `least_squares` (TRF + LSMR),
+Like the originals, deeperfly runs bundle adjustment with **no external target**:
+the fly's own detected joints are the points it refines
+(`pipeline.bundle_adjust_cameras`). The solver is still SciPy's `least_squares` (TRF + LSMR),
 but the per-observation residual and its **Jacobian are computed analytically in
 JAX** (`jax.vmap` + `jax.jacfwd`) and assembled into a sparse matrix from a
 precomputed sparsity pattern.
@@ -74,14 +74,12 @@ priors and multi-view geometry. deeperfly splits this into two orthogonal knobs:
 a `triangulation` strategy that *vetoes* bad views, and an optional `pictorial`
 stage that *recovers* the right peak first.
 
-- **`triangulation`** (`[pipeline.triangulation].method`):
+- **`triangulation`** (`[triangulation].method`):
   - **`ransac`** (default) — triangulate each point from its largest multi-view
     consensus set; a gross outlier never enters the fit.
   - **`greedy`** — greedily drop the worst-reprojecting view of each offending
     point. Cheaper; refines a (possibly contaminated) least-squares fit.
-    (`reproject` is a legacy alias.)
-  - **`dlt`** — plain least-squares triangulation, no outlier handling. (`none`
-    is an alias.)
+  - **`dlt`** — plain least-squares triangulation, no outlier handling.
 - **`do_pictorial_structures`** (`[pipeline].do_pictorial_structures`) — a re-implementation of the
   DeepFly3D idea over the top-K candidate peaks. Because the fly skeleton's bones
   form a forest of simple chains (each leg a 5-joint path), the MAP estimate is

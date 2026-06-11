@@ -14,13 +14,6 @@ from deeperfly.results import PoseResult, StageStore
 from deeperfly.skeleton import Skeleton
 
 
-@pytest.fixture
-def cameras(rig) -> CameraGroup:
-    return CameraGroup.from_arrays(
-        rig["names"], rig["rvecs"], rig["tvecs"], rig["intrs"], rig["dists"]
-    )
-
-
 def _result(cameras, rng):
     v, t, n = len(cameras), 4, 38
     pts2d = rng.normal(size=(v, t, n, 2))
@@ -82,13 +75,10 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     res.save(path)
     sk = PoseResult.load(path).skeleton
     assert sk.name == "fly38"
-    assert sk.joint_names == Skeleton.fly().joint_names
+    assert sk.point_names == Skeleton.fly().point_names
     assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
-    np.testing.assert_array_equal(
-        sk.visibility_mask(cameras.names),
-        Skeleton.fly().visibility_mask(cameras.names),
-    )
+    np.testing.assert_array_equal(sk.limb_id, Skeleton.fly().limb_id)
 
 
 def test_optional_fields_absent(cameras, rng, tmp_path):
@@ -148,7 +138,7 @@ def test_store_pose2d_roundtrip(cameras, rng, tmp_path):
     np.testing.assert_array_equal(gotconf, conf)
     assert store.read_cameras("pose2d").names == cameras.names
     assert store.read_image_sizes() == _image_sizes(cameras)
-    assert store.read_skeleton().joint_names == Skeleton.fly().joint_names
+    assert store.read_skeleton().point_names == Skeleton.fly().point_names
 
 
 def test_store_candidates_roundtrip(cameras, rng, tmp_path):

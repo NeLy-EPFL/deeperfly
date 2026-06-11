@@ -13,7 +13,7 @@ Development setup. For how the pipeline works, see
 Clone the repo and sync a dev environment with the test dependencies:
 
 ```bash
-git clone https://github.com/tkclam/deeperfly
+git clone https://github.com/NeLy-EPFL/deeperfly
 cd deeperfly
 uv sync --group test       # .venv with the editable package + test deps
 ```
@@ -45,15 +45,6 @@ The hooks run ruff, keep `uv.lock` in sync, and strip notebook outputs with
 
 ```bash
 uvx pre-commit run --all-files
-```
-
-## Benchmarks
-
-Ad-hoc benchmark and experiment scripts live in [`dev/`](dev), e.g.:
-
-```bash
-uv run python dev/bench_video.py   # video decode vs detector throughput
-uv run python dev/bench_ba.py      # bundle adjustment
 ```
 
 ## License
