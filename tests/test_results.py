@@ -260,3 +260,35 @@ def test_store_missing_file_reads_empty(tmp_path):
     assert store.read_pose2d() is None
     assert store.read_candidates() is None
     store.truncate_from("triangulation")  # no-op, no error
+
+
+def test_store_footage_paths_roundtrip(cameras, rng, tmp_path):
+    import os
+
+    outdir = tmp_path / "deeperfly_outputs"
+    outdir.mkdir()
+    store = StageStore(outdir / "results.h5")
+    vids = {name: tmp_path / f"{name}.mp4" for name in cameras.names}
+    for path in vids.values():
+        path.write_bytes(b"x")
+    v, t, n = len(cameras), 2, 38
+    store.write_pose2d(
+        cameras=cameras,
+        skeleton=Skeleton.fly(),
+        pts2d=rng.normal(size=(v, t, n, 2)),
+        conf=rng.uniform(size=(v, t, n)),
+        image_sizes=_image_sizes(cameras),
+        footage={name: [path] for name, path in vids.items()},
+    )
+    got = store.read_footage()
+    assert set(got) == set(cameras.names)
+    name0 = cameras.names[0]
+    assert got[name0]["abs"] == [str(vids[name0].resolve())]
+    # relative paths are anchored at the results.h5 directory
+    assert got[name0]["rel"] == [os.path.relpath(vids[name0].resolve(), outdir)]
+
+
+def test_store_footage_absent_when_not_written(cameras, rng, tmp_path):
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)  # no footage argument
+    assert store.read_footage() is None

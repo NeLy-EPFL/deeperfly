@@ -265,3 +265,65 @@ def test_triangulate_dlt_weighted_zero_weight_matches_drop(rng, rig):
         got = np.asarray(geom.triangulate_dlt(pts2d, pmats, w))
         assert np.isfinite(got).all()
         assert np.allclose(got, via_nan, atol=1e-6)
+
+
+# -- undistortion / back-projection ------------------------------------------
+
+
+def test_undistort_inverts_distort(rng):
+    # Round-trip through the full radial + tangential + thin-prism model.
+    dist = np.array([0.12, -0.05, 0.001, -0.0015, 0.01, 0.02, -0.001, 0.0005])
+    for _ in range(50):
+        xy = rng.uniform(-0.3, 0.3, size=2)
+        xy_d = np.asarray(geom.distort_one(xy, dist))
+        xy_rec = np.asarray(geom.undistort_one(xy_d, dist))
+        assert np.allclose(xy_rec, xy, atol=1e-9)
+
+
+def test_undistort_empty_is_identity(rng):
+    xy = rng.uniform(-1.0, 1.0, size=2)
+    assert np.allclose(np.asarray(geom.undistort_one(xy, np.zeros(0))), xy)
+
+
+def test_undistort_matches_opencv(rng):
+    # Cross-check against cv2.undistortPoints for a 5-coefficient model.
+    dist = np.array([0.1, -0.03, 0.001, -0.002, 0.005])
+    kmat = np.array([[800.0, 0.0, 320.0], [0.0, 800.0, 240.0], [0.0, 0.0, 1.0]])
+    for _ in range(25):
+        xy = rng.uniform(-0.25, 0.25, size=2)
+        xy_d = np.asarray(geom.distort_one(xy, dist))
+        pixel = (kmat @ np.array([xy_d[0], xy_d[1], 1.0]))[:2]
+        expected = cv2.undistortPoints(
+            pixel.reshape(1, 1, 2), kmat, dist.reshape(1, -1)
+        ).reshape(2)
+        got = np.asarray(geom.undistort_one(xy_d, dist))
+        assert np.allclose(got, expected, atol=1e-6)
+
+
+def test_backproject_ray_reprojects_to_pixel(cameras, rng):
+    cam = next(iter(cameras))
+    for _ in range(20):
+        pt3d = rng.uniform(-1.5, 1.5, size=3)
+        pixel = cam.project(pt3d)
+        origin, direction = cam.backproject_ray(pixel)
+        # the original point lies on its own back-projection ray
+        on_ray = np.asarray(geom.closest_point_on_ray(origin, direction, pt3d))
+        assert np.allclose(on_ray, pt3d, atol=1e-6)
+        assert np.allclose(cam.project(on_ray), pixel, atol=1e-6)
+
+
+def test_closest_point_on_ray_reprojects_and_is_closest(cameras, rng):
+    cam = next(iter(cameras))
+    for _ in range(20):
+        x_old = rng.uniform(-1.5, 1.5, size=3)
+        # drag to a pixel away from x_old's projection
+        pixel = cam.project(x_old) + rng.uniform(-20.0, 20.0, size=2)
+        origin, direction = cam.backproject_ray(pixel)
+        x_new = np.asarray(geom.closest_point_on_ray(origin, direction, x_old))
+        # (1) reprojects exactly onto the dragged pixel
+        assert np.allclose(cam.project(x_new), pixel, atol=1e-5)
+        # (2) no other point on the ray is closer to x_old
+        d_new = np.linalg.norm(x_new - x_old)
+        for s in (-0.7, -0.2, 0.3, 1.1):
+            other = x_new + s * np.asarray(direction)
+            assert d_new <= np.linalg.norm(other - x_old) + 1e-9

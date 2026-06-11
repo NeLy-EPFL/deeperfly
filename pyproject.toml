@@ -50,6 +50,12 @@ dependencies = [
     "natsort>=8.4.0",
 ]
 
+[project.optional-dependencies]
+# The interactive viewer/corrector (`deeperfly gui`). Optional: the core package
+# and CLI import fine without it. PySide6 is the official Qt for Python binding
+# (LGPLv3). Install with `pip install deeperfly[gui]` / `uv sync --extra gui`.
+gui = ["PySide6>=6.6"]
+
 [project.urls]
 Homepage = "https://github.com/NeLy-EPFL/deeperfly"
 Documentation = "https://nely-epfl.github.io/deeperfly/"
@@ -72,6 +78,7 @@ dev = [
 test = [
     "pytest>=9.0.3",
     "pytest-cov>=6.0",
+    "PySide6>=6.6",   # exercise the optional GUI tests headlessly (QT_QPA_PLATFORM=offscreen)
 ]
 docs = [
     # The documentation site (MkDocs + Material). The library API reference is

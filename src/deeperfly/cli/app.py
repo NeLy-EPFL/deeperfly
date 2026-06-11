@@ -13,6 +13,7 @@ import typer
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
 from .console import _configure_logging
+from .gui import _cmd_gui
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
 
@@ -179,6 +180,36 @@ def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
     """Report installation/runtime: accelerators, frame I/O, weights."""
     _configure_logging(log_level.value)
     _cmd_doctor(argparse.Namespace())
+
+
+@app.command()
+def gui(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    footage_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--footage-dir",
+            help="directory to search for the footage if the paths recorded in "
+            "results.h5 no longer resolve",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Open the interactive viewer/corrector on a result (needs the 'gui' extra).
+
+    View every camera with its 2D skeleton overlay, drag keypoints to correct
+    the 2D pose, or switch to 3D mode to drag a reprojected 3D point (the other
+    views update live). Corrections are written to a corrections.h5 sidecar and
+    never modify results.h5. Install the viewer with 'pip install deeperfly[gui]'.
+    """
+    _configure_logging(log_level.value)
+    _cmd_gui(argparse.Namespace(path=path, footage_dir=footage_dir))
 
 
 def _normalize_overwrite_argv(argv: list[str]) -> list[str]:

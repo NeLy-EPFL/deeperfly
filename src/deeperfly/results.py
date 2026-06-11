@@ -40,6 +40,7 @@ un-triangulated points and is preserved by the float64 datasets.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -244,6 +245,7 @@ class StageStore:
         pts2d,
         conf,
         image_sizes: dict[str, tuple[int, int]],
+        footage: dict[str, list[Path]] | None = None,
         candidates: "Candidates | None" = None,
         meta: dict | None = None,
     ) -> None:
@@ -264,6 +266,11 @@ class StageStore:
         image_sizes
             ``camera_name -> (height, width)`` of the raw footage frames (lets
             a later run rebuild the config rig without re-reading footage).
+        footage
+            ``camera_name -> footage files`` for the recording. Each camera's
+            paths are recorded both resolved-absolute and relative to this file's
+            directory, so a viewer handed only the result can find the videos
+            (see :meth:`read_footage`). ``None`` records no footage.
         candidates
             The top-K candidate peaks to cache (when pictorial_structures is
             enabled), or ``None``.
@@ -286,6 +293,20 @@ class StageStore:
             g.attrs["image_sizes"] = json.dumps(
                 {name: [int(h), int(w)] for name, (h, w) in image_sizes.items()}
             )
+            if footage:
+                outdir = self.path.parent
+                g.attrs["footage"] = json.dumps(
+                    {
+                        name: {
+                            "abs": [str(Path(p).resolve()) for p in files],
+                            "rel": [
+                                os.path.relpath(Path(p).resolve(), outdir)
+                                for p in files
+                            ],
+                        }
+                        for name, files in footage.items()
+                    }
+                )
             if candidates is not None:
                 gc = g.create_group("candidates")
                 gc.create_dataset("xy", data=candidates.xy)
@@ -381,6 +402,22 @@ class StageStore:
             if raw is None:
                 return None
             return {name: (h, w) for name, (h, w) in json.loads(raw).items()}
+
+    def read_footage(self) -> dict[str, dict[str, list[str]]] | None:
+        """``camera_name -> {"abs": [...], "rel": [...]}`` footage paths, or ``None``.
+
+        The absolute paths are as resolved when ``pose2d`` ran; the relative
+        paths are relative to this file's directory. ``None`` for files written
+        before footage was recorded (a viewer then falls back to asking for the
+        directory). See :meth:`write_pose2d`.
+        """
+        with self._open() as f:
+            if f is None or "pose2d" not in f:
+                return None
+            raw = f["pose2d"].attrs.get("footage")
+            if raw is None:
+                return None
+            return json.loads(raw)
 
     # -- internals -------------------------------------------------------------
 
