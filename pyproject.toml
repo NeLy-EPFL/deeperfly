@@ -52,6 +52,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/NeLy-EPFL/deeperfly"
+Documentation = "https://nely-epfl.github.io/deeperfly/"
 Repository = "https://github.com/NeLy-EPFL/deeperfly"
 Issues = "https://github.com/NeLy-EPFL/deeperfly/issues"
 
@@ -70,6 +71,14 @@ dev = [
 test = [
     "pytest>=9.0.3",
     "pytest-cov>=6.0",
+]
+docs = [
+    # The documentation site (MkDocs + Material). The library API reference is
+    # generated from the source docstrings by mkdocstrings (griffe reads the
+    # source statically, so the heavy runtime deps are not imported to build it).
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+    "ruff>=0.6",   # mkdocstrings uses it to format the rendered API signatures
 ]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,89 @@
+site_name: deeperfly
+site_description: Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig
+site_url: https://nely-epfl.github.io/deeperfly/
+repo_url: https://github.com/NeLy-EPFL/deeperfly
+repo_name: NeLy-EPFL/deeperfly
+edit_uri: edit/main/docs/
+copyright: GPL-3.0-only
+
+theme:
+  name: material
+  features:
+    - navigation.sections     # render top-level nav groups as sidebar sections
+    - navigation.top          # back-to-top button
+    - navigation.tracking     # update the URL with the active anchor
+    - content.code.copy       # copy button on code blocks
+    - toc.follow
+    - search.suggest
+  palette:
+    # light / dark toggle
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guides:
+      - CLI usage: guides/cli.md
+      - Writing configs: guides/configuration.md
+      - Library API: guides/library.md
+  - How it works:
+      - Pipeline stages: explanation/pipeline.md
+      - Conventions & glossary: explanation/conventions.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Output format: reference/output-format.md
+      - Library API: reference/api.md
+  - Contributing: https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        # Render ```mermaid blocks as diagrams (the data-flow diagrams in
+        # "How it works" rely on this).
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # griffe reads the source statically from src/, so building the API
+          # reference does not import torch/jax.
+          paths: [src]
+          options:
+            docstring_style: numpy
+            docstring_section_style: table
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            filters: ["!^_"]
