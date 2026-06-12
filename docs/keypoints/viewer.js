@@ -129,6 +129,10 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   document.getElementById('toggle-ontop').addEventListener('change', (e) => {
     overlay.setOnTop(e.target.checked); requestRender();
   });
+  document.getElementById('toggle-wings').addEventListener('change', (e) => {
+    for (const it of meshGroup.userData.items) if (it.isWing) it.mesh.visible = e.target.checked;
+    requestRender();
+  });
   document.getElementById('opacity').addEventListener('input', (e) => {
     const o = parseFloat(e.target.value);
     meshGroup.visible = o > 0;
@@ -136,10 +140,15 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
     requestRender();
   });
   document.getElementById('dot-size').addEventListener('input', (e) => {
-    overlay.setDotSize(parseFloat(e.target.value)); requestRender();
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { overlay.setDotSize(v); requestRender(); }
   });
   document.getElementById('line-width').addEventListener('input', (e) => {
-    overlay.setLineWidth(parseFloat(e.target.value)); requestRender();
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { overlay.setLineWidth(v); requestRender(); }
+  });
+  document.getElementById('skel-opacity').addEventListener('input', (e) => {
+    overlay.setOpacity(parseFloat(e.target.value)); requestRender();
   });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
 
@@ -195,15 +204,19 @@ function buildMeshes(model, colors) {
     const geometry = geometryForGeom(model, g, model.geom_type[g]);
     if (!geometry) continue;
     const rgb = colors.geom_rgb[g] || [0.7, 0.7, 0.7];
-    const flyColor = new THREE.Color(rgb[0], rgb[1], rgb[2]);
+    // colors.json holds sRGB values (from flygym); tag them as such so three
+    // doesn't treat them as linear and wash the dark colours out.
+    const flyColor = new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
     const material = new THREE.MeshStandardMaterial({
-      color: GRAY.clone(), roughness: 0.75, metalness: 0.0,
+      color: flyColor.clone(), roughness: 0.75, metalness: 0.0,
       transparent: true, opacity: INITIAL_OPACITY, side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.matrixAutoUpdate = false;
+    const isWing = model.geom(g).name.includes('wing');
+    mesh.visible = !isWing; // wings hidden by default
     group.add(mesh);
-    items.push({ mesh, g, flyColor });
+    items.push({ mesh, g, flyColor, isWing });
   }
   group.userData.items = items;
   return group;
@@ -247,7 +260,7 @@ function meshGeometry(model, dataid) {
 // visible. Nodes are unit spheres scaled by `dotSize`; bones are unit cylinders
 // scaled to span their endpoints with radius `lineWidth` (both in model mm, so a
 // real adjustable thickness on every platform — unlike WebGL line width).
-const DEFAULT_DOT = 0.055, DEFAULT_LINE = 0.02;
+const DEFAULT_DOT = 0.0275, DEFAULT_LINE = 0.01;
 
 function buildOverlay(keypoints) {
   const group = new THREE.Group();
@@ -301,6 +314,7 @@ function buildOverlay(keypoints) {
     setDotSize: (s) => { dotSize = s; for (const p of points) p.ball.scale.setScalar(s); },
     setLineWidth: (w) => { lineWidth = w; syncBones(); },
     setOnTop: (onTop) => { for (const m of materials) m.depthTest = !onTop; },
+    setOpacity: (o) => { for (const m of materials) m.opacity = o; },
   };
 }
 

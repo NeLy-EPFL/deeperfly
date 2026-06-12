@@ -83,8 +83,16 @@ LEG_SUFFIX_TO_BODY = {
     "tibia_tarsus": "{leg}_tarsus1",
     "claw": "{leg}_tarsus5",  # + distal tip offset
 }
-ABDOMEN_BODY = {0: "c_abdomen12", 1: "c_abdomen4", 2: "c_abdomen6"}
-ABDOMEN_LATERAL_MM = 0.15  # split coincident L/R midline markers so both show
+# The abdomen markers have no exact NeuroMechFly counterpart; these are the
+# hand-tuned (body, body-frame offset in mm) placements per point.
+ABDOMEN_POINTS = {
+    "l_abdomen0": ("c_abdomen3", [0.0, 0.05, 0.30]),
+    "l_abdomen1": ("c_abdomen5", [-0.06, 0.05, 0.27]),
+    "l_abdomen2": ("c_abdomen6", [-0.23, 0.05, 0.20]),
+    "r_abdomen0": ("c_abdomen3", [0.0, -0.05, 0.30]),
+    "r_abdomen1": ("c_abdomen5", [-0.06, -0.05, 0.27]),
+    "r_abdomen2": ("c_abdomen6", [-0.23, -0.05, 0.20]),
+}
 
 
 def build_model() -> mj.MjModel:
@@ -163,10 +171,8 @@ def map_keypoint(model: mj.MjModel, name: str) -> tuple[str, np.ndarray, bool]:
         # The pedicel–head joint, i.e. the origin of the pedicel body.
         return f"{name[0]}_pedicel", np.zeros(3), False
     if "abdomen" in name:
-        side, idx = name[0], int(name[-1])
-        body = ABDOMEN_BODY[idx]
-        lateral = ABDOMEN_LATERAL_MM if side == "l" else -ABDOMEN_LATERAL_MM
-        return body, np.array([0.0, lateral, 0.0]), True
+        body, offset = ABDOMEN_POINTS[name]
+        return body, np.array(offset), True
     raise ValueError(f"no NeuroMechFly mapping rule for keypoint {name!r}")
 
 
@@ -192,8 +198,25 @@ def joint_group(child: str) -> tuple[str, str]:
 # Only these DOFs get a slider: the 7 actuated leg DOFs (per NeuroMechFly) for
 # each of the 6 legs, plus the 3 head DOFs. Everything else stays at its neutral
 # angle (still in neutral_qpos, so the body remains posed).
-GROUP_ORDER = ["lf_leg", "lm_leg", "lh_leg", "rf_leg", "rm_leg", "rh_leg", "head"]
+GROUP_ORDER = [
+    "lf_leg",
+    "lm_leg",
+    "lh_leg",
+    "rf_leg",
+    "rm_leg",
+    "rh_leg",
+    "head",
+    "abdomen",
+]
 HEAD_DOFS = {"c_thorax-c_head-yaw", "c_thorax-c_head-pitch", "c_thorax-c_head-roll"}
+# The abdomen kinematic chain, pitch DOFs only (c_thorax -> 12 -> 3 -> 4 -> 5 -> 6).
+ABDOMEN_DOFS = {
+    "c_thorax-c_abdomen12-pitch",
+    "c_abdomen12-c_abdomen3-pitch",
+    "c_abdomen3-c_abdomen4-pitch",
+    "c_abdomen4-c_abdomen5-pitch",
+    "c_abdomen5-c_abdomen6-pitch",
+}
 
 
 def controllable_leg_dofs(leg: str) -> set[str]:
@@ -208,7 +231,9 @@ def controllable_leg_dofs(leg: str) -> set[str]:
     }
 
 
-CONTROLLABLE = HEAD_DOFS.union(*(controllable_leg_dofs(leg) for leg in LEG_PREFIXES))
+CONTROLLABLE = HEAD_DOFS.union(
+    ABDOMEN_DOFS, *(controllable_leg_dofs(leg) for leg in LEG_PREFIXES)
+)
 
 
 def build_pose_json(model: mj.MjModel) -> dict:

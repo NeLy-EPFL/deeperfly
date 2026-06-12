@@ -156,6 +156,10 @@
   {
    "key": "head",
    "label": "Head"
+  },
+  {
+   "key": "abdomen",
+   "label": "Abdomen"
   }
  ],
  "joints": [
@@ -191,6 +195,61 @@
    ],
    "label": "head \u00b7 roll",
    "group": "head"
+  },
+  {
+   "name": "c_thorax-c_abdomen12-pitch",
+   "qposadr": 34,
+   "neutral": 0.0,
+   "range": [
+    -3.141592653589793,
+    3.141592653589793
+   ],
+   "label": "abdomen12 \u00b7 pitch",
+   "group": "abdomen"
+  },
+  {
+   "name": "c_abdomen12-c_abdomen3-pitch",
+   "qposadr": 37,
+   "neutral": 0.0,
+   "range": [
+    -3.141592653589793,
+    3.141592653589793
+   ],
+   "label": "abdomen3 \u00b7 pitch",
+   "group": "abdomen"
+  },
+  {
+   "name": "c_abdomen3-c_abdomen4-pitch",
+   "qposadr": 40,
+   "neutral": 0.0,
+   "range": [
+    -3.141592653589793,
+    3.141592653589793
+   ],
+   "label": "abdomen4 \u00b7 pitch",
+   "group": "abdomen"
+  },
+  {
+   "name": "c_abdomen4-c_abdomen5-pitch",
+   "qposadr": 43,
+   "neutral": 0.0,
+   "range": [
+    -3.141592653589793,
+    3.141592653589793
+   ],
+   "label": "abdomen5 \u00b7 pitch",
+   "group": "abdomen"
+  },
+  {
+   "name": "c_abdomen5-c_abdomen6-pitch",
+   "qposadr": 46,
+   "neutral": 0.0,
+   "range": [
+    -3.141592653589793,
+    3.141592653589793
+   ],
+   "label": "abdomen6 \u00b7 pitch",
+   "group": "abdomen"
   },
   {
    "name": "c_thorax-lf_coxa-yaw",

@@ -222,22 +222,22 @@
    "name": "l_abdomen0",
    "limb": "l_abdomen",
    "color": "#a9dbe4",
-   "body": "c_abdomen12",
+   "body": "c_abdomen3",
    "offset": [
     0.0,
-    0.15,
-    0.0
+    0.05,
+    0.3
    ]
   },
   {
    "name": "l_abdomen1",
    "limb": "l_abdomen",
    "color": "#a9dbe4",
-   "body": "c_abdomen4",
+   "body": "c_abdomen5",
    "offset": [
-    0.0,
-    0.15,
-    0.0
+    -0.06,
+    0.05,
+    0.27
    ]
   },
   {
@@ -246,9 +246,9 @@
    "color": "#a9dbe4",
    "body": "c_abdomen6",
    "offset": [
-    0.0,
-    0.15,
-    0.0
+    -0.23,
+    0.05,
+    0.2
    ]
   },
   {
@@ -431,22 +431,22 @@
    "name": "r_abdomen0",
    "limb": "r_abdomen",
    "color": "#e6b3a8",
-   "body": "c_abdomen12",
+   "body": "c_abdomen3",
    "offset": [
     0.0,
-    -0.15,
-    0.0
+    -0.05,
+    0.3
    ]
   },
   {
    "name": "r_abdomen1",
    "limb": "r_abdomen",
    "color": "#e6b3a8",
-   "body": "c_abdomen4",
+   "body": "c_abdomen5",
    "offset": [
-    0.0,
-    -0.15,
-    0.0
+    -0.06,
+    -0.05,
+    0.27
    ]
   },
   {
@@ -455,9 +455,9 @@
    "color": "#e6b3a8",
    "body": "c_abdomen6",
    "offset": [
-    0.0,
-    -0.15,
-    0.0
+    -0.23,
+    -0.05,
+    0.2
    ]
   }
  ],

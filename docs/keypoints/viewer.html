@@ -24,6 +24,9 @@
         font-size: 12px; color: var(--muted); }
   .slider-row label { flex: 0 0 auto; }
   .slider-row input[type=range] { flex: 1 1 auto; accent-color: var(--accent); }
+  .slider-row input[type=number] { flex: 0 0 auto; margin-left: auto; width: 78px;
+        padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px;
+        font-size: 12px; background: #fff; color: var(--panel-fg); }
   button, label.toggle { font-size: 12px; }
   button#reset { padding: 6px 10px; border: 1px solid var(--border);
         background: #fff; border-radius: 6px; cursor: pointer; }
@@ -73,9 +76,10 @@
     <div class="controls">
       <button id="reset" title="Restore the resting pose">Reset to neutral</button>
       <label class="toggle"><input type="checkbox" id="toggle-points" checked> Keypoints</label>
-      <label class="toggle"><input type="checkbox" id="toggle-colors"> Colours</label>
+      <label class="toggle"><input type="checkbox" id="toggle-colors" checked> Colours</label>
       <label class="toggle" title="Draw the skeleton over the mesh, or let the mesh occlude it">
         <input type="checkbox" id="toggle-ontop" checked> Skeleton on top</label>
+      <label class="toggle"><input type="checkbox" id="toggle-wings"> Wings</label>
     </div>
     <div class="slider-row">
       <label for="opacity">Mesh opacity</label>
@@ -83,11 +87,15 @@
     </div>
     <div class="slider-row">
       <label for="dot-size">Node size</label>
-      <input type="range" id="dot-size" min="0.01" max="0.15" step="0.005" value="0.055">
+      <input type="number" id="dot-size" min="0" max="0.5" step="0.0025" value="0.0275">
     </div>
     <div class="slider-row">
       <label for="line-width">Edge width</label>
-      <input type="range" id="line-width" min="0.004" max="0.08" step="0.002" value="0.02">
+      <input type="number" id="line-width" min="0" max="0.5" step="0.0025" value="0.01">
+    </div>
+    <div class="slider-row">
+      <label for="skel-opacity">Skeleton opacity</label>
+      <input type="range" id="skel-opacity" min="0" max="1" step="0.01" value="1">
     </div>
     <div id="groups"></div>
     <div id="legend"></div>
