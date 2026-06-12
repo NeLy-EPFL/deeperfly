@@ -26,6 +26,7 @@ const fail = (msg, err) => {
 main().catch((e) => fail('Unexpected error while starting up.', e));
 
 async function main() {
+  setupTheme();
   overlayMsg.textContent = 'Loading MuJoCo (WebAssembly)…';
   const mj = await loadMujoco();
 
@@ -62,6 +63,23 @@ async function main() {
 
 const GRAY = new THREE.Color(0.78, 0.78, 0.80);
 const INITIAL_OPACITY = 0.82;
+
+// The panel defaults to dark. When embedded in the MkDocs Material docs (same
+// origin), mirror the site's light/dark palette and follow its toggle live;
+// when opened standalone (or cross-origin), stay on the dark default.
+function setupTheme() {
+  const root = document.documentElement;
+  const apply = (dark) => root.setAttribute('data-theme', dark ? 'dark' : 'light');
+  apply(true);
+  try {
+    const pbody = window.parent !== window ? window.parent.document.body : null;
+    if (!pbody) return;
+    const sync = () => apply(pbody.getAttribute('data-md-color-scheme') === 'slate');
+    sync();
+    new MutationObserver(sync).observe(pbody,
+      { attributes: true, attributeFilter: ['data-md-color-scheme'] });
+  } catch (_) { /* cross-origin / standalone: keep the dark default */ }
+}
 
 // Camera presets mirroring deeperfly's orbit rig (see cameras.py /
 // default_config.toml [cameras.*]): the camera sits at
@@ -138,9 +156,6 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
 
   buildSliders(pose, keypoints, mj, model, data, qpos, markDirty);
 
-  document.getElementById('toggle-points').addEventListener('change', (e) => {
-    overlay.group.visible = e.target.checked; requestRender();
-  });
   document.getElementById('toggle-colors').addEventListener('change', (e) => {
     for (const { mesh, flyColor } of meshGroup.userData.items)
       mesh.material.color.copy(e.target.checked ? flyColor : GRAY);
@@ -167,8 +182,14 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { overlay.setLineWidth(v); requestRender(); }
   });
-  document.getElementById('skel-opacity').addEventListener('input', (e) => {
-    overlay.setOpacity(parseFloat(e.target.value)); requestRender();
+  document.getElementById('node-opacity').addEventListener('input', (e) => {
+    overlay.setNodeOpacity(parseFloat(e.target.value)); requestRender();
+  });
+  document.getElementById('edge-opacity').addEventListener('input', (e) => {
+    overlay.setEdgeOpacity(parseFloat(e.target.value)); requestRender();
+  });
+  document.getElementById('toggle-combine-abdomen').addEventListener('change', (e) => {
+    overlay.setCombined(e.target.checked); requestRender();
   });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
   wireViewPresets(camera, controls, requestRender);
@@ -309,57 +330,103 @@ const DEFAULT_DOT = 0.0275, DEFAULT_LINE = 0.01;
 
 function buildOverlay(keypoints) {
   const group = new THREE.Group();
-  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE;
+  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE, combined = false;
 
   // depthTest is off by default (overlay drawn "on top"); transparent:true puts
   // the overlay in the same render pass as the mesh, so when depthTest is turned
   // back on the higher renderOrder + the mesh's depth let the mesh occlude it.
-  const materials = [];
+  // Node (sphere) and edge (cylinder) materials are tracked apart so their
+  // opacities can be set independently.
+  const nodeMats = [], edgeMats = [];
   const sphereGeom = new THREE.SphereGeometry(1, 16, 12);
-  const points = keypoints.points.map((p) => {
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(p.color), depthTest: false, transparent: true });
-    materials.push(mat);
-    const ball = new THREE.Mesh(sphereGeom, mat);
-    ball.renderOrder = 2;
-    ball.scale.setScalar(dotSize);
-    group.add(ball);
-    return { ball, offset: p.offset, body: p.body, name: p.name, bodyId: p.bodyId };
-  });
-
-  const positions = new Float32Array(keypoints.points.length * 3);
   const cylGeom = new THREE.CylinderGeometry(1, 1, 1, 8); // unit; axis +Y
-  const bones = keypoints.bones.map((pair) => {
+  const newNode = (color) => {
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(keypoints.points[pair[0]].color),
-      depthTest: false, transparent: true });
-    materials.push(mat);
+      color: new THREE.Color(color), depthTest: false, transparent: true });
+    nodeMats.push(mat);
+    const ball = new THREE.Mesh(sphereGeom, mat);
+    ball.renderOrder = 2; ball.scale.setScalar(dotSize);
+    group.add(ball);
+    return ball;
+  };
+  const newEdge = (color) => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color), depthTest: false, transparent: true });
+    edgeMats.push(mat);
     const cyl = new THREE.Mesh(cylGeom, mat);
     cyl.renderOrder = 1;
     group.add(cyl);
-    return { cyl, i: pair[0], j: pair[1] };
-  });
+    return cyl;
+  };
+
+  const points = keypoints.points.map((p) => ({
+    ball: newNode(p.color), offset: p.offset, body: p.body, name: p.name, bodyId: p.bodyId,
+  }));
+
+  const positions = new Float32Array(keypoints.points.length * 3);
+  const bones = keypoints.bones.map((pair) => (
+    { cyl: newEdge(keypoints.points[pair[0]].color), i: pair[0], j: pair[1] }));
+
+  // Combined ("medial") abdomen markers: average each left/right pair into one
+  // midline chain, shown in white instead of the two side chains when the
+  // "Combine abdomen" toggle is on.
+  const nameIdx = new Map(keypoints.points.map((p, i) => [p.name, i]));
+  const medialSrc = [0, 1, 2]
+    .map((n) => [nameIdx.get(`l_abdomen${n}`), nameIdx.get(`r_abdomen${n}`)])
+    .filter((pair) => pair.every((i) => i != null));
+  const abdIdx = new Set(medialSrc.flat()); // side points/bones hidden when combined
+  const medialPos = new Float32Array(medialSrc.length * 3);
+  const medialBalls = medialSrc.map(() => { const m = newNode('#ffffff'); m.visible = false; return m; });
+  const medialBones = [];
+  for (let k = 0; k + 1 < medialSrc.length; k++) {
+    const cyl = newEdge('#ffffff'); cyl.visible = false;
+    medialBones.push({ cyl, i: k, j: k + 1 });
+  }
 
   const a = new THREE.Vector3(), b = new THREE.Vector3(), dir = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
+  const placeCyl = (cyl, pa, pb) => {
+    dir.subVectors(pb, pa);
+    const len = dir.length();
+    cyl.position.addVectors(pa, pb).multiplyScalar(0.5);
+    cyl.quaternion.setFromUnitVectors(up, dir.normalize());
+    cyl.scale.set(lineWidth, len, lineWidth);
+  };
   const syncBones = () => {
     for (const { cyl, i, j } of bones) {
-      a.fromArray(positions, 3 * i);
-      b.fromArray(positions, 3 * j);
-      dir.subVectors(b, a);
-      const len = dir.length();
-      cyl.position.addVectors(a, b).multiplyScalar(0.5);
-      cyl.quaternion.setFromUnitVectors(up, dir.normalize());
-      cyl.scale.set(lineWidth, len, lineWidth);
+      placeCyl(cyl, a.fromArray(positions, 3 * i), b.fromArray(positions, 3 * j));
+    }
+    if (combined) {
+      for (let k = 0; k < medialSrc.length; k++) {
+        const [li, ri] = medialSrc[k];
+        for (let c = 0; c < 3; c++) medialPos[3 * k + c] = (positions[3 * li + c] + positions[3 * ri + c]) / 2;
+        medialBalls[k].position.fromArray(medialPos, 3 * k);
+      }
+      for (const { cyl, i, j } of medialBones) {
+        placeCyl(cyl, a.fromArray(medialPos, 3 * i), b.fromArray(medialPos, 3 * j));
+      }
     }
   };
 
   return {
     group, points, positions, syncBones,
-    setDotSize: (s) => { dotSize = s; for (const p of points) p.ball.scale.setScalar(s); },
+    setDotSize: (s) => {
+      dotSize = s;
+      for (const p of points) p.ball.scale.setScalar(s);
+      for (const m of medialBalls) m.scale.setScalar(s);
+    },
     setLineWidth: (w) => { lineWidth = w; syncBones(); },
-    setOnTop: (onTop) => { for (const m of materials) m.depthTest = !onTop; },
-    setOpacity: (o) => { for (const m of materials) m.opacity = o; },
+    setOnTop: (onTop) => { for (const m of [...nodeMats, ...edgeMats]) m.depthTest = !onTop; },
+    setNodeOpacity: (o) => { for (const m of nodeMats) m.opacity = o; },
+    setEdgeOpacity: (o) => { for (const m of edgeMats) m.opacity = o; },
+    setCombined: (on) => {
+      combined = on;
+      for (const i of abdIdx) points[i].ball.visible = !on;
+      for (const { cyl, i, j } of bones) if (abdIdx.has(i) && abdIdx.has(j)) cyl.visible = !on;
+      for (const m of medialBalls) m.visible = on;
+      for (const { cyl } of medialBones) cyl.visible = on;
+      if (on) syncBones();
+    },
   };
 }
 

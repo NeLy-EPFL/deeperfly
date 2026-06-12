@@ -5,41 +5,53 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NeuroMechFly keypoint locations</title>
 <style>
-  :root { --panel-bg: #f6f7f9; --panel-fg: #1f2329; --muted: #6b7280;
-          --border: #e2e5e9; --accent: #3f51b5; }
+  /* Dark is the default theme; viewer.js adds data-theme="light" to follow the
+     MkDocs Material palette toggle when the page is embedded in the docs. */
+  :root { --panel-bg: #1f2329; --panel-fg: #e6e8eb; --muted: #9aa0a6;
+          --border: #363b42; --accent: #8c9eff; --input-bg: #2a2f37;
+          --code-bg: #2a2f37; --stage-a: #2a2d36; --stage-b: #16181d; }
+  :root[data-theme="light"] { --panel-bg: #f6f7f9; --panel-fg: #1f2329; --muted: #6b7280;
+          --border: #e2e5e9; --accent: #3f51b5; --input-bg: #fff;
+          --code-bg: #eceef1; --stage-a: #e9edf2; --stage-b: #c9d1db; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont,
         "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   #app { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
   #stage { position: relative; flex: 1 1 auto; min-width: 0;
-           background: radial-gradient(circle at 50% 35%, #2a2d36 0%, #16181d 100%); }
+           background: radial-gradient(circle at 50% 35%, var(--stage-a) 0%, var(--stage-b) 100%); }
   #stage canvas { display: block; width: 100%; height: 100%; }
   #panel { flex: 0 0 320px; max-width: 60%; height: 100%; overflow-y: auto;
            background: var(--panel-bg); color: var(--panel-fg);
            border-left: 1px solid var(--border); padding: 14px 16px; }
   #panel h1 { font-size: 15px; margin: 2px 0 2px; }
   #panel p.sub { font-size: 12px; color: var(--muted); margin: 0 0 12px; line-height: 1.45; }
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-  .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  .section { margin-bottom: 14px; }
+  .section > h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+        color: var(--muted); font-weight: 700; margin: 0 0 8px; padding-bottom: 4px;
+        border-bottom: 1px solid var(--border); }
+  .ctl-label { font-size: 12px; color: var(--muted); align-self: center; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .slider-row { display: flex; align-items: center; gap: 8px; margin-top: 10px;
         font-size: 12px; color: var(--muted); }
   .slider-row label { flex: 0 0 auto; }
   .slider-row input[type=range] { flex: 1 1 auto; accent-color: var(--accent); }
   .slider-row input[type=number] { flex: 0 0 auto; margin-left: auto; width: 78px;
         padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px;
-        font-size: 12px; background: #fff; color: var(--panel-fg); }
-  button, label.toggle { font-size: 12px; }
+        font-size: 12px; background: var(--input-bg); color: var(--panel-fg); }
+  button, label.toggle { font-size: 12px; color: var(--panel-fg); }
   .controls button { padding: 6px 10px; border: 1px solid var(--border);
-        background: #fff; border-radius: 6px; cursor: pointer; }
+        background: var(--input-bg); border-radius: 6px; cursor: pointer; }
   .controls button:hover { border-color: var(--accent); color: var(--accent); }
-  .cam-views { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 12px; }
-  .cam-views .cam-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .cam-views { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
   .cam-views button { padding: 4px 7px; min-width: 30px; border: 1px solid var(--border);
-        background: #fff; border-radius: 6px; cursor: pointer; font-size: 11px; }
+        background: var(--input-bg); color: var(--panel-fg); border-radius: 6px;
+        cursor: pointer; font-size: 11px; }
   .cam-views button:hover { border-color: var(--accent); color: var(--accent); }
   label.toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
-        padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background:#fff; }
+        padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--input-bg); }
   details { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 7px;
-        background: #fff; overflow: hidden; }
+        background: var(--input-bg); overflow: hidden; }
   details > summary { cursor: pointer; padding: 7px 10px; font-size: 12.5px; font-weight: 600;
         display: flex; align-items: center; gap: 7px; user-select: none; }
   details > summary::-webkit-details-marker { display: none; }
@@ -49,7 +61,7 @@
         color: var(--muted); }
   .joint input[type=range] { width: 100%; margin: 1px 0 0; accent-color: var(--accent); }
   #legend { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
-  #legend code { background:#eceef1; padding:0 3px; border-radius:3px; }
+  #legend code { background: var(--code-bg); padding:0 3px; border-radius:3px; }
   #overlay { position: absolute; inset: 0; display: flex; align-items: center;
         justify-content: center; flex-direction: column; gap: 12px; color: #e8eaed;
         background: rgba(20,22,27,.86); font-size: 14px; text-align:center; padding: 20px; }
@@ -78,45 +90,74 @@
        the colored balls and sticks are deeperfly's 38 tracked keypoints. Drag to
        orbit, scroll to zoom. Move the joint sliders to see how each keypoint tracks
        the body.</p>
-    <div class="controls">
-      <button id="reset" title="Set every joint to its resting angle">Set to neutral pose</button>
-      <button id="zero" title="Set every joint angle to 0">Set to zero pose</button>
-      <label class="toggle"><input type="checkbox" id="toggle-points" checked> Keypoints</label>
-      <label class="toggle"><input type="checkbox" id="toggle-colors" checked> Colors</label>
-      <label class="toggle" title="Draw the skeleton over the mesh, or let the mesh occlude it">
-        <input type="checkbox" id="toggle-ontop" checked> Skeleton on top</label>
-      <label class="toggle"><input type="checkbox" id="toggle-wings"> Wings</label>
-    </div>
-    <div class="cam-views" title="Snap the camera to a preset viewing angle">
-      <span class="cam-label">View</span>
-      <button data-view="rh">RH</button>
-      <button data-view="rm">RM</button>
-      <button data-view="rf">RF</button>
-      <button data-view="f">F</button>
-      <button data-view="lf">LF</button>
-      <button data-view="lm">LM</button>
-      <button data-view="lh">LH</button>
-      <button data-view="h" title="Hind">H</button>
-      <button data-view="b" title="Bottom">B</button>
-      <button data-view="t" title="Top">T</button>
-    </div>
-    <div class="slider-row">
-      <label for="opacity">Mesh opacity</label>
-      <input type="range" id="opacity" min="0" max="1" step="0.01" value="0.82">
-    </div>
-    <div class="slider-row">
-      <label for="dot-size">Node size</label>
-      <input type="number" id="dot-size" min="0" max="0.5" step="0.0025" value="0.0275">
-    </div>
-    <div class="slider-row">
-      <label for="line-width">Edge width</label>
-      <input type="number" id="line-width" min="0" max="0.5" step="0.0025" value="0.01">
-    </div>
-    <div class="slider-row">
-      <label for="skel-opacity">Skeleton opacity</label>
-      <input type="range" id="skel-opacity" min="0" max="1" step="0.01" value="1">
-    </div>
-    <div id="groups"></div>
+    <section class="section">
+      <h2>Pose</h2>
+      <div class="controls">
+        <span class="ctl-label">Set pose to:</span>
+        <button id="reset" title="Every joint at its resting angle">Neutral</button>
+        <button id="zero" title="Every joint angle at 0">Zero</button>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>View</h2>
+      <div class="cam-views" title="Snap the camera to a preset viewing angle">
+        <button data-view="rh">RH</button>
+        <button data-view="rm">RM</button>
+        <button data-view="rf">RF</button>
+        <button data-view="f">F</button>
+        <button data-view="lf">LF</button>
+        <button data-view="lm">LM</button>
+        <button data-view="lh">LH</button>
+        <button data-view="h" title="Hind">H</button>
+        <button data-view="b" title="Bottom">B</button>
+        <button data-view="t" title="Top">T</button>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Mesh</h2>
+      <div class="controls">
+        <label class="toggle"><input type="checkbox" id="toggle-colors" checked> Colors</label>
+        <label class="toggle"><input type="checkbox" id="toggle-wings"> Wings</label>
+      </div>
+      <div class="slider-row">
+        <label for="opacity">Opacity</label>
+        <input type="range" id="opacity" min="0" max="1" step="0.01" value="0.82">
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Skeleton</h2>
+      <div class="controls">
+        <label class="toggle" title="Draw the skeleton over the mesh, or let the mesh occlude it">
+          <input type="checkbox" id="toggle-ontop" checked> On top</label>
+        <label class="toggle" title="Merge the left and right abdomen chains into one midline chain">
+          <input type="checkbox" id="toggle-combine-abdomen"> Combine abdomen</label>
+      </div>
+      <div class="slider-row">
+        <label for="dot-size">Node size</label>
+        <input type="number" id="dot-size" min="0" max="0.5" step="0.0025" value="0.0275">
+      </div>
+      <div class="slider-row">
+        <label for="line-width">Edge width</label>
+        <input type="number" id="line-width" min="0" max="0.5" step="0.0025" value="0.01">
+      </div>
+      <div class="slider-row">
+        <label for="node-opacity">Node opacity</label>
+        <input type="range" id="node-opacity" min="0" max="1" step="0.01" value="1">
+      </div>
+      <div class="slider-row">
+        <label for="edge-opacity">Edge opacity</label>
+        <input type="range" id="edge-opacity" min="0" max="1" step="0.01" value="1">
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Joint angles</h2>
+      <div id="groups"></div>
+    </section>
+
     <div id="legend"></div>
   </aside>
 </div>
