@@ -34,3 +34,5 @@ scratch/
 
 # MkDocs build output
 site/
+# mkdocs-jupyter render cache
+.cache/
