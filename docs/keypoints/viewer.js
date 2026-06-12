@@ -26,6 +26,7 @@ const fail = (msg, err) => {
 main().catch((e) => fail('Unexpected error while starting up.', e));
 
 async function main() {
+  setupTheme();
   overlayMsg.textContent = 'Loading MuJoCo (WebAssembly)…';
   const mj = await loadMujoco();
 
@@ -62,6 +63,43 @@ async function main() {
 
 const GRAY = new THREE.Color(0.78, 0.78, 0.80);
 const INITIAL_OPACITY = 0.82;
+
+// The panel defaults to dark. When embedded in the MkDocs Material docs (same
+// origin), mirror the site's light/dark palette and follow its toggle live;
+// when opened standalone (or cross-origin), stay on the dark default.
+function setupTheme() {
+  const root = document.documentElement;
+  const apply = (dark) => root.setAttribute('data-theme', dark ? 'dark' : 'light');
+  apply(true);
+  try {
+    const pbody = window.parent !== window ? window.parent.document.body : null;
+    if (!pbody) return;
+    const sync = () => apply(pbody.getAttribute('data-md-color-scheme') === 'slate');
+    sync();
+    new MutationObserver(sync).observe(pbody,
+      { attributes: true, attributeFilter: ['data-md-color-scheme'] });
+  } catch (_) { /* cross-origin / standalone: keep the dark default */ }
+}
+
+// Camera presets mirroring deeperfly's orbit rig (see cameras.py /
+// default_config.toml [cameras.*]): the camera sits at
+// target + distance * [cos(el)cos(az), cos(el)sin(az), sin(el)] and looks back
+// at the target, world z up. The seven side views reuse the rig's azimuths
+// (right hind .. left hind through the front); H/B/T add the hind/bottom/top
+// poles. Bottom and top look along z, so they carry a non-z `up` to stay
+// well-defined.
+const VIEW_PRESETS = {
+  rh: { az: -120, el: 0 },
+  rm: { az: -90, el: 0 },
+  rf: { az: -45, el: 0 },
+  f: { az: 0, el: 0 },
+  lf: { az: 45, el: 0 },
+  lm: { az: 90, el: 0 },
+  lh: { az: 120, el: 0 },
+  h: { az: 180, el: 0 },
+  b: { az: 0, el: -90, up: [1, 0, 0] },
+  t: { az: 0, el: 90, up: [1, 0, 0] },
+};
 
 function loadModel(mj, path) {
   // The high-level binding name has shifted across builds; try the known spellings.
@@ -116,11 +154,8 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   const overlay = buildOverlay(keypoints);
   scene.add(meshGroup, overlay.group);
 
-  buildSliders(pose, keypoints, mj, model, data, qpos, markDirty);
+  const slidersApi = buildSliders(pose, keypoints, mj, model, data, qpos, markDirty);
 
-  document.getElementById('toggle-points').addEventListener('change', (e) => {
-    overlay.group.visible = e.target.checked; requestRender();
-  });
   document.getElementById('toggle-colors').addEventListener('change', (e) => {
     for (const { mesh, flyColor } of meshGroup.userData.items)
       mesh.material.color.copy(e.target.checked ? flyColor : GRAY);
@@ -129,6 +164,10 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   document.getElementById('toggle-ontop').addEventListener('change', (e) => {
     overlay.setOnTop(e.target.checked); requestRender();
   });
+  document.getElementById('toggle-wings').addEventListener('change', (e) => {
+    for (const it of meshGroup.userData.items) if (it.isWing) it.mesh.visible = e.target.checked;
+    requestRender();
+  });
   document.getElementById('opacity').addEventListener('input', (e) => {
     const o = parseFloat(e.target.value);
     meshGroup.visible = o > 0;
@@ -136,12 +175,28 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
     requestRender();
   });
   document.getElementById('dot-size').addEventListener('input', (e) => {
-    overlay.setDotSize(parseFloat(e.target.value)); requestRender();
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { overlay.setDotSize(v); requestRender(); }
   });
   document.getElementById('line-width').addEventListener('input', (e) => {
-    overlay.setLineWidth(parseFloat(e.target.value)); requestRender();
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { overlay.setLineWidth(v); requestRender(); }
+  });
+  document.getElementById('node-opacity').addEventListener('input', (e) => {
+    overlay.setNodeOpacity(parseFloat(e.target.value)); requestRender();
+  });
+  document.getElementById('edge-opacity').addEventListener('input', (e) => {
+    overlay.setEdgeOpacity(parseFloat(e.target.value)); requestRender();
+  });
+  document.getElementById('toggle-combine-abdomen').addEventListener('change', (e) => {
+    overlay.setCombined(e.target.checked); requestRender();
   });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
+  wireViewPresets(camera, controls, requestRender);
+  setupInteraction({
+    renderer, camera, controls, meshGroup, overlay, mj, model, data, qpos, pose,
+    requestRender, markDirty, refreshSliders: slidersApi.refresh,
+  });
 
   function resize() {
     const w = stage.clientWidth, h = stage.clientHeight;
@@ -186,8 +241,251 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   requestRender(); // initial draw
 }
 
+// Snap the camera to a preset orbit angle when a "View" button is clicked,
+// preserving the current zoom (distance to target). OrbitControls fixes its
+// orbit axis from camera.up at construction, so when a preset uses a non-z up
+// (top/bottom) we refresh that axis before re-solving.
+function wireViewPresets(camera, controls, requestRender) {
+  const dir = new THREE.Vector3();
+  const yUp = new THREE.Vector3(0, 1, 0);
+  // OrbitControls fixes its orbit axis from camera.up at construction, so when
+  // we change up (top/bottom presets, or the reset) we refresh that axis too.
+  const setUp = (u) => {
+    camera.up.set(u[0], u[1], u[2]);
+    controls._quat.setFromUnitVectors(camera.up, yUp);
+    controls._quatInverse.copy(controls._quat).invert();
+  };
+  const setView = (v) => {
+    const az = v.az * Math.PI / 180, el = v.el * Math.PI / 180;
+    dir.set(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el));
+    const dist = camera.position.distanceTo(controls.target); // preserve zoom
+    setUp(v.up || [0, 0, 1]);
+    camera.position.copy(controls.target).addScaledVector(dir, dist);
+    controls.update(); // re-points the camera at the target
+    requestRender();
+  };
+  for (const [id, v] of Object.entries(VIEW_PRESETS)) {
+    const btn = document.querySelector(`button[data-view="${id}"]`);
+    if (btn) btn.addEventListener('click', () => setView(v));
+  }
+
+  // "Reset view": restore the exact starting framing — angle, pan (target) and
+  // zoom (distance) — captured here before any interaction. Unlike the presets,
+  // this restores the full camera/target state, not just the viewing angle.
+  const home = {
+    pos: camera.position.clone(),
+    target: controls.target.clone(),
+    up: camera.up.toArray(),
+  };
+  const resetBtn = document.getElementById('reset-view');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    setUp(home.up);
+    controls.target.copy(home.target);
+    camera.position.copy(home.pos);
+    controls.update();
+    requestRender();
+  });
+}
+
+// Hover-to-identify (raycast the meshes and keypoint nodes, highlight + tooltip)
+// and Shift+drag-to-pose (drag a part to a new spot; a small finite-difference
+// Jacobian / damped-least-squares IK over that part's kinematic chain solves the
+// joint angles, restricted to the controllable DoFs so it matches the sliders).
+function setupInteraction(ctx) {
+  const { renderer, camera, controls, meshGroup, overlay,
+          mj, model, data, qpos, pose, requestRender, markDirty, refreshSliders } = ctx;
+  const dom = renderer.domElement;
+  const tip = document.getElementById('tip');
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+
+  // Controllable DoFs and their limits (same set/ranges the sliders expose).
+  const controllable = new Set(pose.joints.map((j) => j.qposadr));
+  const rangeByAddr = new Map(pose.joints.map((j) => [j.qposadr, j.range]));
+
+  const setNDC = (e) => {
+    const r = dom.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    return r;
+  };
+  // Pick: prefer a keypoint node (small, drawn on top) over a body mesh.
+  const pick = (e) => {
+    setNDC(e);
+    meshGroup.updateWorldMatrix(true, true);
+    overlay.group.updateWorldMatrix(true, true);
+    raycaster.setFromCamera(ndc, camera);
+    const nodes = overlay.nodeMeshes.filter((m) => m.visible && m.material.opacity > 0.02);
+    const meshes = meshGroup.visible
+      ? meshGroup.userData.items.filter((it) => it.mesh.visible).map((it) => it.mesh) : [];
+    const hit = (raycaster.intersectObjects(nodes, false)[0]) ||
+                (raycaster.intersectObjects(meshes, false)[0]);
+    return hit ? { obj: hit.object, point: hit.point, ud: hit.object.userData } : null;
+  };
+
+  // World position of a body-local offset, read from the current solve.
+  const worldOf = (o, body) => {
+    const bx = data.xpos, bm = data.xmat, p = 3 * body, r = 9 * body;
+    return [
+      bx[p]     + bm[r]     * o[0] + bm[r + 1] * o[1] + bm[r + 2] * o[2],
+      bx[p + 1] + bm[r + 3] * o[0] + bm[r + 4] * o[1] + bm[r + 5] * o[2],
+      bx[p + 2] + bm[r + 6] * o[0] + bm[r + 7] * o[1] + bm[r + 8] * o[2],
+    ];
+  };
+  // Controllable joint DoFs from `bodyId` up to the (fixed) root.
+  const chainDofs = (bodyId) => {
+    const dofs = [];
+    for (let b = bodyId; b > 0; b = model.body_parentid[b]) {
+      const adr = model.body_jntadr[b], n = model.body_jntnum[b];
+      for (let k = 0; k < n; k++) {
+        const q = model.jnt_qposadr[adr + k];
+        if (controllable.has(q)) dofs.push(q);
+      }
+    }
+    return dofs;
+  };
+
+  // --- hover highlight + tooltip ---
+  let hovered = null, restoreHover = null;
+  const clearHover = () => {
+    if (restoreHover) { restoreHover(); restoreHover = null; requestRender(); }
+    hovered = null; tip.style.display = 'none'; dom.style.cursor = '';
+  };
+  const setHover = (obj) => {
+    if (obj === hovered) return;
+    if (restoreHover) restoreHover();
+    hovered = obj;
+    if (obj.userData.kind === 'mesh') {
+      const m = obj.material, e0 = m.emissive.clone();
+      m.emissive.copy(m.color).multiplyScalar(0.55);
+      restoreHover = () => m.emissive.copy(e0);
+    } else {
+      const s0 = obj.scale.x;
+      obj.scale.setScalar(s0 * 1.7);
+      restoreHover = () => obj.scale.setScalar(s0);
+    }
+    requestRender();
+  };
+
+  // --- Shift+drag IK ---
+  let drag = null;
+  const plane = new THREE.Plane(), target = new THREE.Vector3(), n = new THREE.Vector3();
+
+  const startDrag = (e) => {
+    if (!e.shiftKey || e.button !== 0) return false;
+    const hit = pick(e);
+    if (!hit || hit.ud.noDrag) return false;
+    const bodyId = hit.ud.bodyId;
+    const dofs = chainDofs(bodyId);
+    if (!dofs.length) return false; // e.g. the fixed thorax has nothing to move
+    let offset;
+    if (hit.ud.kind === 'node') {
+      offset = hit.ud.offset;
+    } else { // mesh: express the grabbed point in the body's local frame
+      const bx = data.xpos, bm = data.xmat, p = 3 * bodyId, r = 9 * bodyId;
+      const dx = hit.point.x - bx[p], dy = hit.point.y - bx[p + 1], dz = hit.point.z - bx[p + 2];
+      offset = [
+        bm[r] * dx + bm[r + 3] * dy + bm[r + 6] * dz,
+        bm[r + 1] * dx + bm[r + 4] * dy + bm[r + 7] * dz,
+        bm[r + 2] * dx + bm[r + 5] * dy + bm[r + 8] * dz,
+      ];
+    }
+    camera.getWorldDirection(n);
+    plane.setFromNormalAndCoplanarPoint(n, hit.point); // drag in a camera-facing plane
+    drag = { bodyId, offset, dofs };
+    controls.enabled = false;
+    clearHover();
+    dom.setPointerCapture(e.pointerId);
+    dom.style.cursor = 'grabbing';
+    return true;
+  };
+
+  const ikSolve = (tgt, body, offset, dofs) => {
+    const eps = 1e-4, lambda = 0.04, maxStep = 0.3, k = dofs.length;
+    for (let iter = 0; iter < 4; iter++) {
+      mj.mj_kinematics(model, data);
+      const cur = worldOf(offset, body);
+      const err = [tgt[0] - cur[0], tgt[1] - cur[1], tgt[2] - cur[2]];
+      if (Math.hypot(err[0], err[1], err[2]) < 1e-3) break;
+      const J = [];
+      for (let c = 0; c < k; c++) {
+        const a = dofs[c], q0 = data.qpos[a];
+        data.qpos[a] = q0 + eps;
+        mj.mj_kinematics(model, data);
+        const pc = worldOf(offset, body);
+        data.qpos[a] = q0;
+        J.push([(pc[0] - cur[0]) / eps, (pc[1] - cur[1]) / eps, (pc[2] - cur[2]) / eps]);
+      }
+      // M = J Jᵀ + λI  (3×3, symmetric PD); solve M y = err; dq = Jᵀ y.
+      const M = [[lambda, 0, 0], [0, lambda, 0], [0, 0, lambda]];
+      for (let c = 0; c < k; c++)
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) M[i][j] += J[c][i] * J[c][j];
+      const y = solve3(M, err);
+      for (let c = 0; c < k; c++) {
+        let dq = J[c][0] * y[0] + J[c][1] * y[1] + J[c][2] * y[2];
+        dq = Math.max(-maxStep, Math.min(maxStep, dq));
+        const a = dofs[c], rng = rangeByAddr.get(a);
+        let q = data.qpos[a] + dq;
+        if (rng) q = Math.max(rng[0], Math.min(rng[1], q));
+        data.qpos[a] = q; qpos[a] = q;
+      }
+    }
+  };
+
+  const moveDrag = (e) => {
+    setNDC(e);
+    raycaster.setFromCamera(ndc, camera);
+    if (!raycaster.ray.intersectPlane(plane, target)) return;
+    try { ikSolve([target.x, target.y, target.z], drag.bodyId, drag.offset, drag.dofs); }
+    catch (err) { console.error('IK step failed', err); }
+    refreshSliders();
+    markDirty();
+  };
+  const endDrag = (e) => {
+    if (!drag) return;
+    drag = null; controls.enabled = true; dom.style.cursor = '';
+    try { dom.releasePointerCapture(e.pointerId); } catch (_) { /* not captured */ }
+  };
+
+  // Capture phase so a Shift+drag is claimed before OrbitControls can orbit.
+  dom.addEventListener('pointerdown', (e) => {
+    if (startDrag(e)) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+  dom.addEventListener('pointermove', (e) => {
+    if (drag) { moveDrag(e); return; }
+    const hit = pick(e);
+    if (!hit) { clearHover(); return; }
+    setHover(hit.obj);
+    const r = dom.getBoundingClientRect();
+    tip.style.left = `${e.clientX - r.left}px`;
+    tip.style.top = `${e.clientY - r.top}px`;
+    tip.innerHTML = `<span class="k">${hit.ud.kind === 'node' ? 'keypoint' : 'segment'}</span>${hit.ud.name}`;
+    tip.style.display = 'block';
+    dom.style.cursor = e.shiftKey ? 'grab' : 'pointer';
+  });
+  dom.addEventListener('pointerup', endDrag);
+  dom.addEventListener('pointerleave', () => { if (!drag) clearHover(); });
+}
+
+// Solve the 3×3 system M y = v (M symmetric positive-definite here).
+function solve3(M, v) {
+  const [a, b, c] = M[0], [d, e, f] = M[1], [g, h, i] = M[2];
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-12) return [0, 0, 0];
+  const inv = [
+    [A, -(b * i - c * h), b * f - c * e],
+    [B, a * i - c * g, -(a * f - c * d)],
+    [C, -(a * h - b * g), a * e - b * d],
+  ];
+  return [
+    (inv[0][0] * v[0] + inv[0][1] * v[1] + inv[0][2] * v[2]) / det,
+    (inv[1][0] * v[0] + inv[1][1] * v[1] + inv[1][2] * v[2]) / det,
+    (inv[2][0] * v[0] + inv[2][1] * v[1] + inv[2][2] * v[2]) / det,
+  ];
+}
+
 // Build one Three.js mesh per MuJoCo geom (mesh + capsule cover this model).
-// Each mesh starts flat grey; the "Colours" toggle swaps in its flygym colour.
+// Each mesh starts flat grey; the "Colors" toggle swaps in its flygym color.
 function buildMeshes(model, colors) {
   const group = new THREE.Group();
   const items = [];
@@ -195,15 +493,20 @@ function buildMeshes(model, colors) {
     const geometry = geometryForGeom(model, g, model.geom_type[g]);
     if (!geometry) continue;
     const rgb = colors.geom_rgb[g] || [0.7, 0.7, 0.7];
-    const flyColor = new THREE.Color(rgb[0], rgb[1], rgb[2]);
+    // colors.json holds sRGB values (from flygym); tag them as such so three
+    // doesn't treat them as linear and wash the dark colors out.
+    const flyColor = new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
     const material = new THREE.MeshStandardMaterial({
-      color: GRAY.clone(), roughness: 0.75, metalness: 0.0,
+      color: flyColor.clone(), roughness: 0.75, metalness: 0.0,
       transparent: true, opacity: INITIAL_OPACITY, side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.matrixAutoUpdate = false;
+    const isWing = model.geom(g).name.includes('wing');
+    mesh.visible = !isWing; // wings hidden by default
+    mesh.userData = { kind: 'mesh', g, name: model.geom(g).name, bodyId: model.geom_bodyid[g] };
     group.add(mesh);
-    items.push({ mesh, g, flyColor });
+    items.push({ mesh, g, flyColor, isWing });
   }
   group.userData.items = items;
   return group;
@@ -247,60 +550,115 @@ function meshGeometry(model, dataid) {
 // visible. Nodes are unit spheres scaled by `dotSize`; bones are unit cylinders
 // scaled to span their endpoints with radius `lineWidth` (both in model mm, so a
 // real adjustable thickness on every platform — unlike WebGL line width).
-const DEFAULT_DOT = 0.055, DEFAULT_LINE = 0.02;
+const DEFAULT_DOT = 0.0275, DEFAULT_LINE = 0.01;
 
 function buildOverlay(keypoints) {
   const group = new THREE.Group();
-  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE;
+  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE, combined = false;
 
   // depthTest is off by default (overlay drawn "on top"); transparent:true puts
   // the overlay in the same render pass as the mesh, so when depthTest is turned
   // back on the higher renderOrder + the mesh's depth let the mesh occlude it.
-  const materials = [];
+  // Node (sphere) and edge (cylinder) materials are tracked apart so their
+  // opacities can be set independently.
+  const nodeMats = [], edgeMats = [];
   const sphereGeom = new THREE.SphereGeometry(1, 16, 12);
-  const points = keypoints.points.map((p) => {
+  const cylGeom = new THREE.CylinderGeometry(1, 1, 1, 8); // unit; axis +Y
+  const newNode = (color) => {
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(p.color), depthTest: false, transparent: true });
-    materials.push(mat);
+      color: new THREE.Color(color), depthTest: false, transparent: true });
+    nodeMats.push(mat);
     const ball = new THREE.Mesh(sphereGeom, mat);
-    ball.renderOrder = 2;
-    ball.scale.setScalar(dotSize);
+    ball.renderOrder = 2; ball.scale.setScalar(dotSize);
     group.add(ball);
+    return ball;
+  };
+  const newEdge = (color) => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color), depthTest: false, transparent: true });
+    edgeMats.push(mat);
+    const cyl = new THREE.Mesh(cylGeom, mat);
+    cyl.renderOrder = 1;
+    group.add(cyl);
+    return cyl;
+  };
+
+  const points = keypoints.points.map((p) => {
+    const ball = newNode(p.color);
+    ball.userData = { kind: 'node', name: p.name, bodyId: p.bodyId, offset: p.offset };
     return { ball, offset: p.offset, body: p.body, name: p.name, bodyId: p.bodyId };
   });
 
   const positions = new Float32Array(keypoints.points.length * 3);
-  const cylGeom = new THREE.CylinderGeometry(1, 1, 1, 8); // unit; axis +Y
-  const bones = keypoints.bones.map((pair) => {
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(keypoints.points[pair[0]].color),
-      depthTest: false, transparent: true });
-    materials.push(mat);
-    const cyl = new THREE.Mesh(cylGeom, mat);
-    cyl.renderOrder = 1;
-    group.add(cyl);
-    return { cyl, i: pair[0], j: pair[1] };
+  const bones = keypoints.bones.map((pair) => (
+    { cyl: newEdge(keypoints.points[pair[0]].color), i: pair[0], j: pair[1] }));
+
+  // Combined ("medial") abdomen markers: average each left/right pair into one
+  // midline chain, shown in white instead of the two side chains when the
+  // "Combine abdomen" toggle is on.
+  const nameIdx = new Map(keypoints.points.map((p, i) => [p.name, i]));
+  const medialSrc = [0, 1, 2]
+    .map((n) => [nameIdx.get(`l_abdomen${n}`), nameIdx.get(`r_abdomen${n}`)])
+    .filter((pair) => pair.every((i) => i != null));
+  const abdIdx = new Set(medialSrc.flat()); // side points/bones hidden when combined
+  const medialPos = new Float32Array(medialSrc.length * 3);
+  const medialBalls = medialSrc.map((_, k) => {
+    const m = newNode('#ffffff'); m.visible = false;
+    m.userData = { kind: 'node', name: `abdomen ${k} (midline)`, noDrag: true };
+    return m;
   });
+  const medialBones = [];
+  for (let k = 0; k + 1 < medialSrc.length; k++) {
+    const cyl = newEdge('#ffffff'); cyl.visible = false;
+    medialBones.push({ cyl, i: k, j: k + 1 });
+  }
 
   const a = new THREE.Vector3(), b = new THREE.Vector3(), dir = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
+  const placeCyl = (cyl, pa, pb) => {
+    dir.subVectors(pb, pa);
+    const len = dir.length();
+    cyl.position.addVectors(pa, pb).multiplyScalar(0.5);
+    cyl.quaternion.setFromUnitVectors(up, dir.normalize());
+    cyl.scale.set(lineWidth, len, lineWidth);
+  };
   const syncBones = () => {
     for (const { cyl, i, j } of bones) {
-      a.fromArray(positions, 3 * i);
-      b.fromArray(positions, 3 * j);
-      dir.subVectors(b, a);
-      const len = dir.length();
-      cyl.position.addVectors(a, b).multiplyScalar(0.5);
-      cyl.quaternion.setFromUnitVectors(up, dir.normalize());
-      cyl.scale.set(lineWidth, len, lineWidth);
+      placeCyl(cyl, a.fromArray(positions, 3 * i), b.fromArray(positions, 3 * j));
+    }
+    if (combined) {
+      for (let k = 0; k < medialSrc.length; k++) {
+        const [li, ri] = medialSrc[k];
+        for (let c = 0; c < 3; c++) medialPos[3 * k + c] = (positions[3 * li + c] + positions[3 * ri + c]) / 2;
+        medialBalls[k].position.fromArray(medialPos, 3 * k);
+      }
+      for (const { cyl, i, j } of medialBones) {
+        placeCyl(cyl, a.fromArray(medialPos, 3 * i), b.fromArray(medialPos, 3 * j));
+      }
     }
   };
 
+  const nodeMeshes = [...points.map((p) => p.ball), ...medialBalls];
+
   return {
-    group, points, positions, syncBones,
-    setDotSize: (s) => { dotSize = s; for (const p of points) p.ball.scale.setScalar(s); },
+    group, points, positions, syncBones, nodeMeshes,
+    setDotSize: (s) => {
+      dotSize = s;
+      for (const p of points) p.ball.scale.setScalar(s);
+      for (const m of medialBalls) m.scale.setScalar(s);
+    },
     setLineWidth: (w) => { lineWidth = w; syncBones(); },
-    setOnTop: (onTop) => { for (const m of materials) m.depthTest = !onTop; },
+    setOnTop: (onTop) => { for (const m of [...nodeMats, ...edgeMats]) m.depthTest = !onTop; },
+    setNodeOpacity: (o) => { for (const m of nodeMats) m.opacity = o; },
+    setEdgeOpacity: (o) => { for (const m of edgeMats) m.opacity = o; },
+    setCombined: (on) => {
+      combined = on;
+      for (const i of abdIdx) points[i].ball.visible = !on;
+      for (const { cyl, i, j } of bones) if (abdIdx.has(i) && abdIdx.has(j)) cyl.visible = !on;
+      for (const m of medialBalls) m.visible = on;
+      for (const { cyl } of medialBones) cyl.visible = on;
+      if (on) syncBones();
+    },
   };
 }
 
@@ -365,21 +723,31 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
     container.appendChild(details);
   }
 
-  document.getElementById('reset').addEventListener('click', () => {
+  // Push every slider's displayed value back from the current qpos (used after
+  // a "set pose" or an interactive drag moves joints behind the sliders' back).
+  const refresh = () => {
     for (const { input, val, j, deg } of sliders) {
-      input.value = j.neutral;
-      qpos[j.qposadr] = j.neutral;
-      data.qpos[j.qposadr] = j.neutral;
-      val.textContent = deg(j.neutral);
+      input.value = qpos[j.qposadr];
+      val.textContent = deg(qpos[j.qposadr]);
     }
+  };
+  // Load a full qpos vector (all DOFs, not just the sliders) and sync the panel.
+  const setPose = (values) => {
+    for (let i = 0; i < values.length; i++) { qpos[i] = values[i]; data.qpos[i] = values[i]; }
+    refresh();
     onChange();
-  });
+  };
+  document.getElementById('reset').addEventListener('click', () => setPose(pose.neutral_qpos));
+  document.getElementById('zero').addEventListener('click',
+    () => setPose(new Array(pose.neutral_qpos.length).fill(0)));
 
   // Legend.
   const legend = document.getElementById('legend');
   const approx = keypoints.approximate.length;
   legend.innerHTML =
     `${keypoints.points.length} keypoints · ${pose.joints.length} joint DOFs.` +
-    (approx ? `<br>The ${approx} abdomen markers have no exact NeuroMechFly ` +
-      `counterpart and are placed for illustration.` : '');
+    (approx ? `<br>The ${approx} abdomen markers form two lateral chains; ` +
+      `"Combine abdomen" merges them at the midline.` : '');
+
+  return { refresh };
 }
