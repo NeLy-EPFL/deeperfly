@@ -1,3 +1,8 @@
+---
+hide:
+  - toc          # no headings to list; give the freed column to the viewer
+---
+
 # Keypoint locations
 
 deeperfly tracks a **38-point skeleton** on the fly: five points per leg
@@ -21,14 +26,24 @@ angles (RH–LH) plus hind, bottom and top.
 
 [Open the viewer full-screen ↗](../keypoints/viewer.html){:target="_blank" rel="noopener"}
 
-!!! note "Leg and antenna keypoints are exact; abdomen markers are approximate"
+!!! note "Leg, claw and antenna keypoints sit exactly on the model"
 
     Each leg keypoint is the *joint between two segments*, which coincides with a
     NeuroMechFly body origin, so those points sit exactly on the model; the claw
     is the distal tip of the fifth tarsal segment, and each antenna sits at the
-    pedicel–head joint. The three abdominal markers per side have no exact
-    NeuroMechFly counterpart and are placed on the midline segments for
-    illustration only.
+    pedicel–head joint. The abdomen markers are placed with per-point offsets
+    that reproduce the original DeepFly3D annotation on the NeuroMechFly body.
+
+!!! note "Why there are two abdomen chains"
+
+    For annotation consistency, the three abdomen points per side are labeled on
+    the **top of the abdomen's silhouette**, at the first, third and fifth stripe
+    (counting from the proximal end). Because that silhouette edge is annotated
+    separately in the left and right views, the points triangulate slightly
+    *lateral* to the body midline rather than onto it — and the left and right
+    annotations resolve to different 3-D points. deeperfly therefore keeps the two
+    chains separate; tick **Combine abdomen** in the viewer to merge each
+    left/right pair into a single midline chain by taking its midpoint.
 
 The model is rendered with [MuJoCo](https://mujoco.org/) compiled to WebAssembly,
 running entirely in your browser — no data is uploaded. It is the

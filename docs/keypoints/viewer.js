@@ -509,6 +509,6 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
   const approx = keypoints.approximate.length;
   legend.innerHTML =
     `${keypoints.points.length} keypoints · ${pose.joints.length} joint DOFs.` +
-    (approx ? `<br>The ${approx} abdomen markers have no exact NeuroMechFly ` +
-      `counterpart and are placed for illustration.` : '');
+    (approx ? `<br>The ${approx} abdomen markers form two lateral chains; ` +
+      `"Combine abdomen" merges them at the midline.` : '');
 }
