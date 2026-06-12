@@ -63,6 +63,26 @@ async function main() {
 const GRAY = new THREE.Color(0.78, 0.78, 0.80);
 const INITIAL_OPACITY = 0.82;
 
+// Camera presets mirroring deeperfly's orbit rig (see cameras.py /
+// default_config.toml [cameras.*]): the camera sits at
+// target + distance * [cos(el)cos(az), cos(el)sin(az), sin(el)] and looks back
+// at the target, world z up. The seven side views reuse the rig's azimuths
+// (right hind .. left hind through the front); H/B/T add the hind/bottom/top
+// poles. Bottom and top look along z, so they carry a non-z `up` to stay
+// well-defined.
+const VIEW_PRESETS = {
+  rh: { az: -120, el: 0 },
+  rm: { az: -90, el: 0 },
+  rf: { az: -45, el: 0 },
+  f: { az: 0, el: 0 },
+  lf: { az: 45, el: 0 },
+  lm: { az: 90, el: 0 },
+  lh: { az: 120, el: 0 },
+  h: { az: 180, el: 0 },
+  b: { az: 0, el: -90, up: [1, 0, 0] },
+  t: { az: 0, el: 90, up: [1, 0, 0] },
+};
+
 function loadModel(mj, path) {
   // The high-level binding name has shifted across builds; try the known spellings.
   if (typeof mj.mj_loadXML === 'function') return mj.mj_loadXML(path);
@@ -151,6 +171,7 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
     overlay.setOpacity(parseFloat(e.target.value)); requestRender();
   });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
+  wireViewPresets(camera, controls, requestRender);
 
   function resize() {
     const w = stage.clientWidth, h = stage.clientHeight;
@@ -195,8 +216,32 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   requestRender(); // initial draw
 }
 
+// Snap the camera to a preset orbit angle when a "View" button is clicked,
+// preserving the current zoom (distance to target). OrbitControls fixes its
+// orbit axis from camera.up at construction, so when a preset uses a non-z up
+// (top/bottom) we refresh that axis before re-solving.
+function wireViewPresets(camera, controls, requestRender) {
+  const dir = new THREE.Vector3();
+  const yUp = new THREE.Vector3(0, 1, 0);
+  const setView = (v) => {
+    const az = v.az * Math.PI / 180, el = v.el * Math.PI / 180;
+    dir.set(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el));
+    const dist = camera.position.distanceTo(controls.target);
+    camera.up.set(...(v.up || [0, 0, 1]));
+    controls._quat.setFromUnitVectors(camera.up, yUp);
+    controls._quatInverse.copy(controls._quat).invert();
+    camera.position.copy(controls.target).addScaledVector(dir, dist);
+    controls.update(); // re-points the camera at the target
+    requestRender();
+  };
+  for (const [id, v] of Object.entries(VIEW_PRESETS)) {
+    const btn = document.querySelector(`button[data-view="${id}"]`);
+    if (btn) btn.addEventListener('click', () => setView(v));
+  }
+}
+
 // Build one Three.js mesh per MuJoCo geom (mesh + capsule cover this model).
-// Each mesh starts flat grey; the "Colours" toggle swaps in its flygym colour.
+// Each mesh starts flat grey; the "Colors" toggle swaps in its flygym color.
 function buildMeshes(model, colors) {
   const group = new THREE.Group();
   const items = [];
@@ -205,7 +250,7 @@ function buildMeshes(model, colors) {
     if (!geometry) continue;
     const rgb = colors.geom_rgb[g] || [0.7, 0.7, 0.7];
     // colors.json holds sRGB values (from flygym); tag them as such so three
-    // doesn't treat them as linear and wash the dark colours out.
+    // doesn't treat them as linear and wash the dark colors out.
     const flyColor = new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
     const material = new THREE.MeshStandardMaterial({
       color: flyColor.clone(), roughness: 0.75, metalness: 0.0,
@@ -379,15 +424,18 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
     container.appendChild(details);
   }
 
-  document.getElementById('reset').addEventListener('click', () => {
+  // Load a full qpos vector (all DOFs, not just the sliders) and sync the panel.
+  const setPose = (values) => {
+    for (let i = 0; i < values.length; i++) { qpos[i] = values[i]; data.qpos[i] = values[i]; }
     for (const { input, val, j, deg } of sliders) {
-      input.value = j.neutral;
-      qpos[j.qposadr] = j.neutral;
-      data.qpos[j.qposadr] = j.neutral;
-      val.textContent = deg(j.neutral);
+      input.value = qpos[j.qposadr];
+      val.textContent = deg(qpos[j.qposadr]);
     }
     onChange();
-  });
+  };
+  document.getElementById('reset').addEventListener('click', () => setPose(pose.neutral_qpos));
+  document.getElementById('zero').addEventListener('click',
+    () => setPose(new Array(pose.neutral_qpos.length).fill(0)));
 
   // Legend.
   const legend = document.getElementById('legend');

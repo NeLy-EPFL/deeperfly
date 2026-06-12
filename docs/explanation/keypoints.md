@@ -7,11 +7,12 @@ ordering are defined by the `[skeleton]` table of the packaged config (see
 [Conventions & glossary](conventions.md)).
 
 The viewer below shows where those keypoints sit on the body. The fly is the
-**NeuroMechFly** biomechanical model; the coloured balls and connecting sticks
-are deeperfly's keypoints, coloured by limb (left = blue, right = red, lightening
+**NeuroMechFly** biomechanical model; the colored balls and connecting sticks
+are deeperfly's keypoints, colored by limb (left = blue, right = red, lightening
 front → hind). Drag to orbit, scroll to zoom, and move the joint sliders to see
 how each keypoint tracks the body as the pose changes. The sliders start at the
-model's resting pose; **Reset to neutral** returns to it.
+model's resting pose; **Set to neutral pose** returns to it, and **Set to zero
+pose** sets every joint angle to 0.
 
 <iframe src="../../keypoints/viewer.html" title="Interactive NeuroMechFly keypoint viewer"
         loading="lazy" width="100%" height="720" style="border:1px solid var(--md-default-fg-color--lightest); border-radius:6px;">

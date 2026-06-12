@@ -29,11 +29,11 @@ Outputs (all under ``docs/keypoints/assets/``):
     rest of the body stays posed at its resting angles.
 ``colors.json``
     A representative RGB per geom, derived from flygym's ``visuals.yaml`` (the
-    "Colours" toggle paints the mesh with these instead of a flat grey).
+    "Colors" toggle paints the mesh with these instead of a flat grey).
 ``keypoints.json``
     The 38 deeperfly points (read from the packaged ``default_config.toml`` so
     they stay in lockstep with the library), each mapped to a NeuroMechFly body
-    plus a local offset, with the limb colours and within-limb bones. The
+    plus a local offset, with the limb colors and within-limb bones. The
     overlay is read from these at runtime.
 ``ATTRIBUTION.txt``
     Upstream licence/attribution for the redistributed model. Kept as ``.txt`` so
@@ -235,6 +235,82 @@ CONTROLLABLE = HEAD_DOFS.union(
     ABDOMEN_DOFS, *(controllable_leg_dofs(leg) for leg in LEG_PREFIXES)
 )
 
+# Per-DOF joint-angle limits in DEGREES, given in the legacy naming convention
+# ({LEG}_{joint}_{axis}) and converted to model joint names. Legs only; head and
+# abdomen DOFs keep a generous default range.
+_LIMIT_JOINT_BODIES = {
+    "ThC": ("c_thorax", "{leg}_coxa"),
+    "CTr": ("{leg}_coxa", "{leg}_trochanterfemur"),
+    "FTi": ("{leg}_trochanterfemur", "{leg}_tibia"),
+    "TiTa": ("{leg}_tibia", "{leg}_tarsus1"),
+}
+
+
+def _limit_entry(legacy: str, lo_hi: tuple[int, int]) -> tuple[str, tuple[int, int]]:
+    """Map a legacy ``LF_ThC_yaw`` limit to ``(model_name, (lo, hi))``.
+
+    flygym negates the rotation axis for right-side roll and yaw, so the angle
+    sign -- and therefore the limit bounds -- flip relative to the legacy
+    convention (left ``roll (0, 180)`` mirrors to right ``roll (-180, 0)``).
+    """
+    leg, joint, axis = legacy.split("_")
+    parent, child = _LIMIT_JOINT_BODIES[joint]
+    leg = leg.lower()
+    name = f"{parent.format(leg=leg)}-{child.format(leg=leg)}-{axis}"
+    lo, hi = lo_hi
+    if leg[0] == "r" and axis != "pitch":
+        lo, hi = -hi, -lo
+    return name, (lo, hi)
+
+
+JOINT_LIMITS_DEG = dict(
+    _limit_entry(k, v)
+    for k, v in {
+        "LF_ThC_yaw": (-180, 180),
+        "LF_ThC_pitch": (-90, 90),
+        "LF_ThC_roll": (-180, 180),
+        "LF_CTr_pitch": (-180, 180),
+        "LF_CTr_roll": (-180, 180),
+        "LF_FTi_pitch": (-180, 180),
+        "LF_TiTa_pitch": (-180, 0),
+        "LM_ThC_yaw": (-50, 50),
+        "LM_ThC_pitch": (-180, 180),
+        "LM_ThC_roll": (0, 180),
+        "LM_CTr_pitch": (-180, 180),
+        "LM_CTr_roll": (-180, 180),
+        "LM_FTi_pitch": (-180, 180),
+        "LM_TiTa_pitch": (-180, 0),
+        "LH_ThC_yaw": (-50, 50),
+        "LH_ThC_pitch": (-50, 50),
+        "LH_ThC_roll": (0, 180),
+        "LH_CTr_pitch": (-180, 0),
+        "LH_CTr_roll": (-180, 180),
+        "LH_FTi_pitch": (-180, 180),
+        "LH_TiTa_pitch": (-180, 0),
+        "RF_ThC_yaw": (-180, 180),
+        "RF_ThC_pitch": (-90, 90),
+        "RF_ThC_roll": (-180, 180),
+        "RF_CTr_pitch": (-180, 180),
+        "RF_CTr_roll": (-180, 180),
+        "RF_FTi_pitch": (-180, 180),
+        "RF_TiTa_pitch": (-180, 0),
+        "RM_ThC_yaw": (-50, 50),
+        "RM_ThC_pitch": (-180, 180),
+        "RM_ThC_roll": (-180, 0),
+        "RM_CTr_pitch": (-180, 180),
+        "RM_CTr_roll": (-180, 180),
+        "RM_FTi_pitch": (-180, 180),
+        "RM_TiTa_pitch": (-180, 0),
+        "RH_ThC_yaw": (-50, 50),
+        "RH_ThC_pitch": (-50, 50),
+        "RH_ThC_roll": (-180, 0),
+        "RH_CTr_pitch": (-180, 0),
+        "RH_CTr_roll": (-180, 180),
+        "RH_FTi_pitch": (-180, 180),
+        "RH_TiTa_pitch": (-180, 0),
+    }.items()
+)
+
 
 def build_pose_json(model: mj.MjModel) -> dict:
     """Controllable-DOF metadata + the full neutral qpos, for the slider panel."""
@@ -258,10 +334,13 @@ def build_pose_json(model: mj.MjModel) -> dict:
         )
         adr = int(model.jnt_qposadr[j])
         neutral = float(neutral_qpos[adr])
-        # Joints are unlimited; give a generous symmetric range that contains the
-        # neutral angle so every slider can swing at least +/-180 deg from zero.
-        lo = min(-math.pi, neutral - 0.1)
-        hi = max(math.pi, neutral + 0.1)
+        if name in JOINT_LIMITS_DEG:
+            lo, hi = (math.radians(d) for d in JOINT_LIMITS_DEG[name])
+        else:
+            # Otherwise unlimited; give a generous symmetric range that contains
+            # the neutral angle so every slider can swing at least +/-180 deg.
+            lo = min(-math.pi, neutral - 0.1)
+            hi = max(math.pi, neutral + 0.1)
         key, label = joint_group(child)
         joints.append(
             {
@@ -302,7 +381,7 @@ def joint_group_label(key: str) -> str:
 
 
 def build_keypoints_json(model: mj.MjModel) -> dict:
-    """The 38 deeperfly points, their NeuroMechFly targets, colours and bones."""
+    """The 38 deeperfly points, their NeuroMechFly targets, colors and bones."""
     with open(CONFIG_TOML, "rb") as fh:
         skel = tomllib.load(fh)["skeleton"]
     point_names: list[str] = skel["point_names"]
@@ -357,7 +436,7 @@ def build_keypoints_json(model: mj.MjModel) -> dict:
 def segment_colors() -> dict[str, list[float]]:
     """Map each body segment to a representative RGB from flygym's visuals.yaml.
 
-    Textured materials have no flat colour, so we take the texture's base colour
+    Textured materials have no flat color, so we take the texture's base color
     (``rgb1``, or the mean of ``rgb1``/``rgb2`` for gradients); plain materials use
     their ``rgba``. Wildcards in ``apply_to`` match segment names as in flygym.
     """
@@ -424,7 +503,7 @@ def main() -> int:
     pose = build_pose_json(model)
     (OUT_DIR / "pose.json").write_text(json.dumps(pose, indent=1))
 
-    print("Building colors.json (per-geom flygym colours) ...")
+    print("Building colors.json (per-geom flygym colors) ...")
     (OUT_DIR / "colors.json").write_text(json.dumps(build_colors_json(model)))
 
     print("Building keypoints.json (38 points -> bodies) ...")
