@@ -128,5 +128,10 @@ with io.VideoWriter("out.mp4", fps=30) as writer:
 
 ## Examples
 
-- [`examples/bundle_adjustment.ipynb`](https://github.com/NeLy-EPFL/deeperfly/blob/main/examples/bundle_adjustment.ipynb) — the bundle-adjustment walkthrough.
-- [`examples/pipeline_walkthrough.ipynb`](https://github.com/NeLy-EPFL/deeperfly/blob/main/examples/pipeline_walkthrough.ipynb) — the pipeline one stage at a time.
+Two runnable notebooks, rendered here with their outputs (the Plotly figures
+stay interactive):
+
+- [Bundle adjustment](../examples/bundle_adjustment.ipynb) — build a multi-camera
+  rig, perturb it, and recover it with `bundle_adjust`.
+- [Pipeline walkthrough](../examples/pipeline_walkthrough.ipynb) — the full
+  2D→3D pipeline one stage at a time.

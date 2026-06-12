@@ -39,6 +39,9 @@ nav:
       - CLI usage: guides/cli.md
       - Writing configs: guides/configuration.md
       - Library API: guides/library.md
+  - Examples:
+      - Bundle adjustment: examples/bundle_adjustment.ipynb
+      - Pipeline walkthrough: examples/pipeline_walkthrough.ipynb
   - How it works:
       - Pipeline stages: explanation/pipeline.md
       - Keypoint locations: explanation/keypoints.md
@@ -81,6 +84,14 @@ extra_javascript:
 
 plugins:
   - search
+  # Render the example notebooks (symlinked into docs/examples/) straight into
+  # the site. execute: false -> use the outputs already stored in the .ipynb, so
+  # the build stays fast and needs no torch/jax/data; the Plotly figures stay
+  # interactive.
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
+      ignore_h1_titles: false
   - mkdocstrings:
       handlers:
         python:

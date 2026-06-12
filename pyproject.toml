@@ -72,7 +72,12 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
-    "matplotlib>=3.10",   # ad-hoc plotting in the example notebooks (not used by the package)
+    # Notebook plotting only (examples/*.ipynb; not used by the package). Plotly
+    # draws the interactive figures, which stay interactive when the notebooks are
+    # rendered into the docs; matplotlib still draws a few static panels in
+    # pipeline_walkthrough.ipynb.
+    "matplotlib>=3.10",
+    "plotly>=6.8.0",
 ]
 test = [
     "pytest>=9.0.3",
@@ -86,6 +91,10 @@ docs = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
     "ruff>=0.6",   # mkdocstrings uses it to format the rendered API signatures
+    # Renders the example notebooks (examples/*.ipynb) into the site from their
+    # stored outputs (execute: false), so the Plotly figures stay interactive
+    # without importing torch/jax at build time.
+    "mkdocs-jupyter>=0.25",
 ]
 
 [tool.pytest.ini_options]
