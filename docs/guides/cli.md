@@ -14,7 +14,7 @@ deeperfly run --help        # a command's options
 ## `deeperfly init` — write a config
 
 ```bash
-deeperfly init [OUTPUT] [--force]
+deeperfly init [OUTPUT] [--overwrite]
 ```
 
 Writes the packaged, fully commented default config so you can edit it in place.
@@ -22,11 +22,11 @@ Writes the packaged, fully commented default config so you can edit it in place.
 | Argument / option | Default | Meaning |
 | --- | --- | --- |
 | `OUTPUT` | `config.toml` | Destination path. |
-| `--force` | off | Overwrite an existing file (otherwise it errors). |
+| `--overwrite` | off | Overwrite an existing file (otherwise it warns and leaves it untouched). |
 
 ```bash
 deeperfly init                       # -> config.toml
-deeperfly init rig.toml --force      # overwrite rig.toml
+deeperfly init rig.toml --overwrite  # overwrite rig.toml
 ```
 
 See [Writing configs](configuration.md) for what to edit.

@@ -22,16 +22,15 @@ def _cmd_init(args: argparse.Namespace) -> None:
     Parameters
     ----------
     args
-        The ``init`` namespace (``output``, ``force``).
-
-    Raises
-    ------
-    SystemExit
-        If the destination exists and ``--force`` was not given.
+        The ``init`` namespace (``output``, ``overwrite``).
     """
     dst = Path(args.output)
-    if dst.exists() and not args.force:
-        raise SystemExit(f"{dst} already exists (pass --force to overwrite)")
+    if dst.exists() and not args.overwrite:
+        console.print(
+            f"[yellow]{dst} already exists[/yellow]; pass --overwrite to replace it "
+            "(left unchanged)"
+        )
+        return
     dst.write_text(DEFAULT_CONFIG_PATH.read_text())
     console.print(f"[green]wrote[/green] {dst}")
     # markup=False: the message shows literal [cameras] config sections, which rich

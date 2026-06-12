@@ -23,13 +23,11 @@ uv tool install git+https://github.com/NeLy-EPFL/deeperfly --python 3.13 --torch
 ## Run
 
 ```bash
-deeperfly doctor                                         # check the install
-deeperfly init config.toml                               # write a config to edit
-deeperfly run recording/ -c config.toml                  # 2D -> 3D -> video
-deeperfly inspect recording/deeperfly_outputs/results.h5   # summarize the result
+deeperfly doctor                                             # check the install
+deeperfly init config.toml                                   # write a config (edit if needed)
+deeperfly run examples/data/ -c config.toml                  # 2D -> 3D -> video
+deeperfly inspect examples/data/deeperfly_outputs/results.h5 # summarize the result
 ```
-
-The config is optional — `deeperfly run recording/` uses sensible defaults.
 
 ## Where to go next
 

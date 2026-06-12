@@ -17,3 +17,6 @@ repos:
   rev: 0.8.1
   hooks:
     - id: nbstripout
+      # The example notebooks are rendered into the docs site from their stored
+      # outputs (mkdocs-jupyter, execute: false), so keep their outputs intact.
+      exclude: '^(examples|docs/examples)/.*\.ipynb$'

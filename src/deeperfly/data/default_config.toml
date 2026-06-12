@@ -424,10 +424,10 @@ points_to_use = [
     "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
 ]
 fixed = [
-    "*.intr",     # keep all intrinsics fixed
-    "f.rvec",     # anchor the front camera's orientation ...
-    "f.tvec",     # ... and position (fixes the world gauge)
-    "rm.tvec[2]",
+    "*.intr",       # keep all intrinsics fixed
+    # "f.rvec",     # anchor the front camera's orientation ...
+    # "f.tvec",     # ... and position (fixes the world gauge)
+    # "rm.tvec[2]",
 ]
 shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
 weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
@@ -458,7 +458,7 @@ lam = 1.0                # bone-length prior weight
 # Triangulation: how the per-view 2D points become one 3D point.
 [triangulation]
 weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
-method = "ransac"           # ransac - largest multi-view consensus (default, robust)
+method = "dlt"              # ransac - largest multi-view consensus (default, robust)
                             # greedy - drop the worst-reprojecting view
                             # dlt    - plain least-squares, no outlier handling
 ransac_threshold = 15.0     # inlier reprojection cutoff (px) for method = ransac

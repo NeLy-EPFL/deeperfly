@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "examples/**"          # the example notebooks are rendered into the site
       - "mkdocs.yml"
       - "src/**"
       - ".github/workflows/docs.yml"
