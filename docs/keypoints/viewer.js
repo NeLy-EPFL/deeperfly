@@ -154,7 +154,7 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   const overlay = buildOverlay(keypoints);
   scene.add(meshGroup, overlay.group);
 
-  buildSliders(pose, keypoints, mj, model, data, qpos, markDirty);
+  const slidersApi = buildSliders(pose, keypoints, mj, model, data, qpos, markDirty);
 
   document.getElementById('toggle-colors').addEventListener('change', (e) => {
     for (const { mesh, flyColor } of meshGroup.userData.items)
@@ -193,6 +193,10 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
   wireViewPresets(camera, controls, requestRender);
+  setupInteraction({
+    renderer, camera, controls, meshGroup, overlay, mj, model, data, qpos, pose,
+    requestRender, markDirty, refreshSliders: slidersApi.refresh,
+  });
 
   function resize() {
     const w = stage.clientWidth, h = stage.clientHeight;
@@ -261,6 +265,203 @@ function wireViewPresets(camera, controls, requestRender) {
   }
 }
 
+// Hover-to-identify (raycast the meshes and keypoint nodes, highlight + tooltip)
+// and Shift+drag-to-pose (drag a part to a new spot; a small finite-difference
+// Jacobian / damped-least-squares IK over that part's kinematic chain solves the
+// joint angles, restricted to the controllable DoFs so it matches the sliders).
+function setupInteraction(ctx) {
+  const { renderer, camera, controls, meshGroup, overlay,
+          mj, model, data, qpos, pose, requestRender, markDirty, refreshSliders } = ctx;
+  const dom = renderer.domElement;
+  const tip = document.getElementById('tip');
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+
+  // Controllable DoFs and their limits (same set/ranges the sliders expose).
+  const controllable = new Set(pose.joints.map((j) => j.qposadr));
+  const rangeByAddr = new Map(pose.joints.map((j) => [j.qposadr, j.range]));
+
+  const setNDC = (e) => {
+    const r = dom.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    return r;
+  };
+  // Pick: prefer a keypoint node (small, drawn on top) over a body mesh.
+  const pick = (e) => {
+    setNDC(e);
+    meshGroup.updateWorldMatrix(true, true);
+    overlay.group.updateWorldMatrix(true, true);
+    raycaster.setFromCamera(ndc, camera);
+    const nodes = overlay.nodeMeshes.filter((m) => m.visible && m.material.opacity > 0.02);
+    const meshes = meshGroup.visible
+      ? meshGroup.userData.items.filter((it) => it.mesh.visible).map((it) => it.mesh) : [];
+    const hit = (raycaster.intersectObjects(nodes, false)[0]) ||
+                (raycaster.intersectObjects(meshes, false)[0]);
+    return hit ? { obj: hit.object, point: hit.point, ud: hit.object.userData } : null;
+  };
+
+  // World position of a body-local offset, read from the current solve.
+  const worldOf = (o, body) => {
+    const bx = data.xpos, bm = data.xmat, p = 3 * body, r = 9 * body;
+    return [
+      bx[p]     + bm[r]     * o[0] + bm[r + 1] * o[1] + bm[r + 2] * o[2],
+      bx[p + 1] + bm[r + 3] * o[0] + bm[r + 4] * o[1] + bm[r + 5] * o[2],
+      bx[p + 2] + bm[r + 6] * o[0] + bm[r + 7] * o[1] + bm[r + 8] * o[2],
+    ];
+  };
+  // Controllable joint DoFs from `bodyId` up to the (fixed) root.
+  const chainDofs = (bodyId) => {
+    const dofs = [];
+    for (let b = bodyId; b > 0; b = model.body_parentid[b]) {
+      const adr = model.body_jntadr[b], n = model.body_jntnum[b];
+      for (let k = 0; k < n; k++) {
+        const q = model.jnt_qposadr[adr + k];
+        if (controllable.has(q)) dofs.push(q);
+      }
+    }
+    return dofs;
+  };
+
+  // --- hover highlight + tooltip ---
+  let hovered = null, restoreHover = null;
+  const clearHover = () => {
+    if (restoreHover) { restoreHover(); restoreHover = null; requestRender(); }
+    hovered = null; tip.style.display = 'none'; dom.style.cursor = '';
+  };
+  const setHover = (obj) => {
+    if (obj === hovered) return;
+    if (restoreHover) restoreHover();
+    hovered = obj;
+    if (obj.userData.kind === 'mesh') {
+      const m = obj.material, e0 = m.emissive.clone();
+      m.emissive.copy(m.color).multiplyScalar(0.55);
+      restoreHover = () => m.emissive.copy(e0);
+    } else {
+      const s0 = obj.scale.x;
+      obj.scale.setScalar(s0 * 1.7);
+      restoreHover = () => obj.scale.setScalar(s0);
+    }
+    requestRender();
+  };
+
+  // --- Shift+drag IK ---
+  let drag = null;
+  const plane = new THREE.Plane(), target = new THREE.Vector3(), n = new THREE.Vector3();
+
+  const startDrag = (e) => {
+    if (!e.shiftKey || e.button !== 0) return false;
+    const hit = pick(e);
+    if (!hit || hit.ud.noDrag) return false;
+    const bodyId = hit.ud.bodyId;
+    const dofs = chainDofs(bodyId);
+    if (!dofs.length) return false; // e.g. the fixed thorax has nothing to move
+    let offset;
+    if (hit.ud.kind === 'node') {
+      offset = hit.ud.offset;
+    } else { // mesh: express the grabbed point in the body's local frame
+      const bx = data.xpos, bm = data.xmat, p = 3 * bodyId, r = 9 * bodyId;
+      const dx = hit.point.x - bx[p], dy = hit.point.y - bx[p + 1], dz = hit.point.z - bx[p + 2];
+      offset = [
+        bm[r] * dx + bm[r + 3] * dy + bm[r + 6] * dz,
+        bm[r + 1] * dx + bm[r + 4] * dy + bm[r + 7] * dz,
+        bm[r + 2] * dx + bm[r + 5] * dy + bm[r + 8] * dz,
+      ];
+    }
+    camera.getWorldDirection(n);
+    plane.setFromNormalAndCoplanarPoint(n, hit.point); // drag in a camera-facing plane
+    drag = { bodyId, offset, dofs };
+    controls.enabled = false;
+    clearHover();
+    dom.setPointerCapture(e.pointerId);
+    dom.style.cursor = 'grabbing';
+    return true;
+  };
+
+  const ikSolve = (tgt, body, offset, dofs) => {
+    const eps = 1e-4, lambda = 0.04, maxStep = 0.3, k = dofs.length;
+    for (let iter = 0; iter < 4; iter++) {
+      mj.mj_kinematics(model, data);
+      const cur = worldOf(offset, body);
+      const err = [tgt[0] - cur[0], tgt[1] - cur[1], tgt[2] - cur[2]];
+      if (Math.hypot(err[0], err[1], err[2]) < 1e-3) break;
+      const J = [];
+      for (let c = 0; c < k; c++) {
+        const a = dofs[c], q0 = data.qpos[a];
+        data.qpos[a] = q0 + eps;
+        mj.mj_kinematics(model, data);
+        const pc = worldOf(offset, body);
+        data.qpos[a] = q0;
+        J.push([(pc[0] - cur[0]) / eps, (pc[1] - cur[1]) / eps, (pc[2] - cur[2]) / eps]);
+      }
+      // M = J Jᵀ + λI  (3×3, symmetric PD); solve M y = err; dq = Jᵀ y.
+      const M = [[lambda, 0, 0], [0, lambda, 0], [0, 0, lambda]];
+      for (let c = 0; c < k; c++)
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) M[i][j] += J[c][i] * J[c][j];
+      const y = solve3(M, err);
+      for (let c = 0; c < k; c++) {
+        let dq = J[c][0] * y[0] + J[c][1] * y[1] + J[c][2] * y[2];
+        dq = Math.max(-maxStep, Math.min(maxStep, dq));
+        const a = dofs[c], rng = rangeByAddr.get(a);
+        let q = data.qpos[a] + dq;
+        if (rng) q = Math.max(rng[0], Math.min(rng[1], q));
+        data.qpos[a] = q; qpos[a] = q;
+      }
+    }
+  };
+
+  const moveDrag = (e) => {
+    setNDC(e);
+    raycaster.setFromCamera(ndc, camera);
+    if (!raycaster.ray.intersectPlane(plane, target)) return;
+    try { ikSolve([target.x, target.y, target.z], drag.bodyId, drag.offset, drag.dofs); }
+    catch (err) { console.error('IK step failed', err); }
+    refreshSliders();
+    markDirty();
+  };
+  const endDrag = (e) => {
+    if (!drag) return;
+    drag = null; controls.enabled = true; dom.style.cursor = '';
+    try { dom.releasePointerCapture(e.pointerId); } catch (_) { /* not captured */ }
+  };
+
+  // Capture phase so a Shift+drag is claimed before OrbitControls can orbit.
+  dom.addEventListener('pointerdown', (e) => {
+    if (startDrag(e)) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+  dom.addEventListener('pointermove', (e) => {
+    if (drag) { moveDrag(e); return; }
+    const hit = pick(e);
+    if (!hit) { clearHover(); return; }
+    setHover(hit.obj);
+    const r = dom.getBoundingClientRect();
+    tip.style.left = `${e.clientX - r.left}px`;
+    tip.style.top = `${e.clientY - r.top}px`;
+    tip.innerHTML = `<span class="k">${hit.ud.kind === 'node' ? 'keypoint' : 'segment'}</span>${hit.ud.name}`;
+    tip.style.display = 'block';
+    dom.style.cursor = e.shiftKey ? 'grab' : 'pointer';
+  });
+  dom.addEventListener('pointerup', endDrag);
+  dom.addEventListener('pointerleave', () => { if (!drag) clearHover(); });
+}
+
+// Solve the 3×3 system M y = v (M symmetric positive-definite here).
+function solve3(M, v) {
+  const [a, b, c] = M[0], [d, e, f] = M[1], [g, h, i] = M[2];
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-12) return [0, 0, 0];
+  const inv = [
+    [A, -(b * i - c * h), b * f - c * e],
+    [B, a * i - c * g, -(a * f - c * d)],
+    [C, -(a * h - b * g), a * e - b * d],
+  ];
+  return [
+    (inv[0][0] * v[0] + inv[0][1] * v[1] + inv[0][2] * v[2]) / det,
+    (inv[1][0] * v[0] + inv[1][1] * v[1] + inv[1][2] * v[2]) / det,
+    (inv[2][0] * v[0] + inv[2][1] * v[1] + inv[2][2] * v[2]) / det,
+  ];
+}
+
 // Build one Three.js mesh per MuJoCo geom (mesh + capsule cover this model).
 // Each mesh starts flat grey; the "Colors" toggle swaps in its flygym color.
 function buildMeshes(model, colors) {
@@ -281,6 +482,7 @@ function buildMeshes(model, colors) {
     mesh.matrixAutoUpdate = false;
     const isWing = model.geom(g).name.includes('wing');
     mesh.visible = !isWing; // wings hidden by default
+    mesh.userData = { kind: 'mesh', g, name: model.geom(g).name, bodyId: model.geom_bodyid[g] };
     group.add(mesh);
     items.push({ mesh, g, flyColor, isWing });
   }
@@ -359,9 +561,11 @@ function buildOverlay(keypoints) {
     return cyl;
   };
 
-  const points = keypoints.points.map((p) => ({
-    ball: newNode(p.color), offset: p.offset, body: p.body, name: p.name, bodyId: p.bodyId,
-  }));
+  const points = keypoints.points.map((p) => {
+    const ball = newNode(p.color);
+    ball.userData = { kind: 'node', name: p.name, bodyId: p.bodyId, offset: p.offset };
+    return { ball, offset: p.offset, body: p.body, name: p.name, bodyId: p.bodyId };
+  });
 
   const positions = new Float32Array(keypoints.points.length * 3);
   const bones = keypoints.bones.map((pair) => (
@@ -376,7 +580,11 @@ function buildOverlay(keypoints) {
     .filter((pair) => pair.every((i) => i != null));
   const abdIdx = new Set(medialSrc.flat()); // side points/bones hidden when combined
   const medialPos = new Float32Array(medialSrc.length * 3);
-  const medialBalls = medialSrc.map(() => { const m = newNode('#ffffff'); m.visible = false; return m; });
+  const medialBalls = medialSrc.map((_, k) => {
+    const m = newNode('#ffffff'); m.visible = false;
+    m.userData = { kind: 'node', name: `abdomen ${k} (midline)`, noDrag: true };
+    return m;
+  });
   const medialBones = [];
   for (let k = 0; k + 1 < medialSrc.length; k++) {
     const cyl = newEdge('#ffffff'); cyl.visible = false;
@@ -408,8 +616,10 @@ function buildOverlay(keypoints) {
     }
   };
 
+  const nodeMeshes = [...points.map((p) => p.ball), ...medialBalls];
+
   return {
-    group, points, positions, syncBones,
+    group, points, positions, syncBones, nodeMeshes,
     setDotSize: (s) => {
       dotSize = s;
       for (const p of points) p.ball.scale.setScalar(s);
@@ -491,13 +701,18 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
     container.appendChild(details);
   }
 
-  // Load a full qpos vector (all DOFs, not just the sliders) and sync the panel.
-  const setPose = (values) => {
-    for (let i = 0; i < values.length; i++) { qpos[i] = values[i]; data.qpos[i] = values[i]; }
+  // Push every slider's displayed value back from the current qpos (used after
+  // a "set pose" or an interactive drag moves joints behind the sliders' back).
+  const refresh = () => {
     for (const { input, val, j, deg } of sliders) {
       input.value = qpos[j.qposadr];
       val.textContent = deg(qpos[j.qposadr]);
     }
+  };
+  // Load a full qpos vector (all DOFs, not just the sliders) and sync the panel.
+  const setPose = (values) => {
+    for (let i = 0; i < values.length; i++) { qpos[i] = values[i]; data.qpos[i] = values[i]; }
+    refresh();
     onChange();
   };
   document.getElementById('reset').addEventListener('click', () => setPose(pose.neutral_qpos));
@@ -511,4 +726,6 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
     `${keypoints.points.length} keypoints · ${pose.joints.length} joint DOFs.` +
     (approx ? `<br>The ${approx} abdomen markers form two lateral chains; ` +
       `"Combine abdomen" merges them at the midline.` : '');
+
+  return { refresh };
 }
