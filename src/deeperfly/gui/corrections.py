@@ -8,7 +8,7 @@ points the user has not touched. The mask is authoritative (so a deliberately
 NaN-valued correction is still distinguishable from "not edited"), and lets a
 single point be reset cleanly.
 
-The layout (schema v1):
+The layout (schema v2):
 
 .. code-block:: text
 
@@ -16,9 +16,13 @@ The layout (schema v1):
     pose2d_corrections/
         points                  (V, T, P, 2) edited 2D points (NaN where not edited)
         edited                  (V, T, P) bool
+        fixed                   (V, T, P) bool  -- "finalized" per-view points used as
+                                                   3D-refinement constraints (subset of edited)
     pose3d_corrections/
         points3d                (T, P, 3) edited 3D points (NaN where not edited)
         edited                  (T, P) bool
+
+The ``fixed`` mask is new in v2; v1 sidecars (without it) load with ``fixed`` all-False.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from jaxtyping import Bool, Float
 
 __all__ = ["Corrections", "save_corrections", "load_corrections"]
 
-CORRECTIONS_FORMAT_VERSION = 1
+CORRECTIONS_FORMAT_VERSION = 2
 
 
 @dataclass
@@ -42,14 +46,18 @@ class Corrections:
     """In-memory overlay of manual edits on top of a :class:`PoseResult`.
 
     ``points`` arrays hold the edited values (NaN elsewhere); the ``edited``
-    masks say which entries are real edits. ``dirty`` tracks unsaved in-memory
-    changes (set on every edit, cleared by :func:`save_corrections`).
+    masks say which entries are real edits. ``pts2d_fixed`` marks the per-view
+    2D points the operator has "finalized" -- they stay put under further edits
+    and act as constraints when the 3D point is re-solved (always a subset of
+    ``pts2d_edited``). ``dirty`` tracks unsaved in-memory changes (set on every
+    edit, cleared by :func:`save_corrections`).
     """
 
     pts2d: Float[np.ndarray, "V T P 2"]
     pts2d_edited: Bool[np.ndarray, "V T P"]
     pts3d: Float[np.ndarray, "T P 3"]
     pts3d_edited: Bool[np.ndarray, "T P"]
+    pts2d_fixed: Bool[np.ndarray, "V T P"]
     dirty: bool = field(default=False)
 
     @classmethod
@@ -60,6 +68,7 @@ class Corrections:
             pts2d_edited=np.zeros((n_views, n_frames, n_points), dtype=bool),
             pts3d=np.full((n_frames, n_points, 3), np.nan),
             pts3d_edited=np.zeros((n_frames, n_points), dtype=bool),
+            pts2d_fixed=np.zeros((n_views, n_frames, n_points), dtype=bool),
         )
 
     @property
@@ -67,10 +76,18 @@ class Corrections:
         """Whether any 2D or 3D point has been edited."""
         return bool(self.pts2d_edited.any() or self.pts3d_edited.any())
 
-    def set_pts2d(self, view: int, frame: int, point: int, xy) -> None:
-        """Record a 2D edit of ``point`` in ``view`` at ``frame``."""
+    def set_pts2d(
+        self, view: int, frame: int, point: int, xy, *, fixed: bool = False
+    ) -> None:
+        """Record a 2D edit of ``point`` in ``view`` at ``frame``.
+
+        With ``fixed=True`` the point is also marked finalized (a constraint for
+        3D refinement); ``fixed=False`` leaves the existing fixed flag untouched.
+        """
         self.pts2d[view, frame, point] = np.asarray(xy, dtype=float)
         self.pts2d_edited[view, frame, point] = True
+        if fixed:
+            self.pts2d_fixed[view, frame, point] = True
         self.dirty = True
 
     def set_pts3d(self, frame: int, point: int, xyz) -> None:
@@ -83,6 +100,7 @@ class Corrections:
         """Drop the 2D edit of ``point`` in ``view`` at ``frame`` (back to original)."""
         self.pts2d[view, frame, point] = np.nan
         self.pts2d_edited[view, frame, point] = False
+        self.pts2d_fixed[view, frame, point] = False
         self.dirty = True
 
     def clear_3d(self, frame: int, point: int) -> None:
@@ -118,6 +136,7 @@ def save_corrections(
         g2 = f.create_group("pose2d_corrections")
         g2.create_dataset("points", data=corrections.pts2d)
         g2.create_dataset("edited", data=corrections.pts2d_edited)
+        g2.create_dataset("fixed", data=corrections.pts2d_fixed)
         g3 = f.create_group("pose3d_corrections")
         g3.create_dataset("points3d", data=corrections.pts3d)
         g3.create_dataset("edited", data=corrections.pts3d_edited)
@@ -156,6 +175,11 @@ def load_corrections(
         pts2d_edited = np.asarray(f["pose2d_corrections/edited"][()], dtype=bool)  # type: ignore[index]
         pts3d = np.asarray(f["pose3d_corrections/points3d"][()], dtype=float)  # type: ignore[index]
         pts3d_edited = np.asarray(f["pose3d_corrections/edited"][()], dtype=bool)  # type: ignore[index]
+        # "fixed" is new in schema v2; v1 sidecars load with it all-False.
+        if "pose2d_corrections/fixed" in f:
+            pts2d_fixed = np.asarray(f["pose2d_corrections/fixed"][()], dtype=bool)  # type: ignore[index]
+        else:
+            pts2d_fixed = np.zeros(pts2d_edited.shape, dtype=bool)
     want2d = (n_views, n_frames, n_points, 2)
     want3d = (n_frames, n_points, 3)
     if pts2d.shape != want2d or pts3d.shape != want3d:
@@ -168,5 +192,6 @@ def load_corrections(
         pts2d_edited=pts2d_edited,
         pts3d=np.asarray(pts3d, dtype=float),
         pts3d_edited=pts3d_edited,
+        pts2d_fixed=pts2d_fixed,
         dirty=False,
     )

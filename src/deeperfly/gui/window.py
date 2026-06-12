@@ -4,8 +4,11 @@
 to the widgets: it lays out one :class:`~deeperfly.gui.view.PoseView` per camera,
 scrubs frames, switches between View / Edit 2D / Edit 3D, and routes a drag to
 the right edit. In Edit 2D a drag moves only that view's 2D point; in Edit 3D a
-drag re-solves the 3D point and refreshes every view's reprojection. Save writes
-the corrections sidecar; ``results.h5`` is never modified.
+drag re-solves the 3D point and refreshes every view's reprojection live, and on
+release pins the dragged view at the drop pixel (a finalized constraint that the
+re-solve holds while the other views follow). A right-click toggles that "fixed"
+flag directly (e.g. to un-pin a view). Save writes the corrections sidecar;
+``results.h5`` is never modified.
 """
 
 from __future__ import annotations
@@ -90,6 +93,7 @@ class MainWindow(QMainWindow):
             view.set_skeleton(skeleton.bones, colors)
             view.pointDragged.connect(self._on_point_dragged)
             view.pointDragging.connect(self._on_point_dragging)
+            view.pointFixToggled.connect(self._on_point_fix_toggled)
             grid.addWidget(self._labelled(name, view), v // cols, v % cols)
             self._views.append(view)
 
@@ -168,18 +172,30 @@ class MainWindow(QMainWindow):
                 view.set_image(img)
             view.set_points(pts[v])
             view.set_editable(editable)
+        self._refresh_fixed_marks()
 
     def _refresh_points(self) -> None:
         """Repaint just the overlays (after an edit) without reloading images."""
         pts = self._points_for_mode()
         for v, view in enumerate(self._views):
             view.set_points(pts[v])
+        self._refresh_fixed_marks()
+
+    def _refresh_fixed_marks(self) -> None:
+        """Show the "fixed" rings on each view, but only in Edit 3D."""
+        fixed = (
+            self._state.corrections.pts2d_fixed[:, self._state.frame]
+            if self._mode == EditMode.edit_3d
+            else None
+        )
+        for v, view in enumerate(self._views):
+            view.set_fixed(None if fixed is None else fixed[v])
 
     def _points_for_mode(self):
         if self._mode == EditMode.edit_3d:
-            projected = self._state.display_pts3d_projected()
-            if projected is not None:
-                return projected
+            refined = self._state.display_pts2d_refine()
+            if refined is not None:
+                return refined
         return self._state.display_pts2d()
 
     # -- signal handlers ------------------------------------------------------
@@ -221,8 +237,23 @@ class MainWindow(QMainWindow):
         if self._mode == EditMode.edit_2d:
             self._state.apply_2d_edit(view, point, (x, y))
         elif self._mode == EditMode.edit_3d:
-            self._state.apply_3d_edit(view, point, (x, y))
+            # Dropping pins the dragged view at the release pixel so it stays put
+            # (does not snap to the constrained reprojection) and constrains the
+            # 3D solve; the live mid-drag re-solve above does not pin.
+            self._state.apply_3d_edit(view, point, (x, y), fix=True)
         # Repaint from state: a no-op 3D edit (NaN point) snaps the marker back.
+        self._refresh_points()
+        self._update_title()
+
+    def _on_point_fix_toggled(self, view: int, point: int) -> None:
+        """Right-click in Edit 3D: finalize/unfinalize this view's point.
+
+        Toggling the fixed flag re-solves the 3D point from the fixed views, so
+        the non-fixed views' reprojections move; the ring updates via the refresh.
+        """
+        if self._mode != EditMode.edit_3d:
+            return
+        self._state.toggle_fixed(view, point)
         self._refresh_points()
         self._update_title()
 

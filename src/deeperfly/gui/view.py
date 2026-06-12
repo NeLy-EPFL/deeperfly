@@ -49,6 +49,8 @@ class PoseView(QGraphicsView):
     pointDragged = Signal(int, int, float, float)
     #: Emitted continuously while dragging (same payload), for live cross-view updates.
     pointDragging = Signal(int, int, float, float)
+    #: Emitted on right-click of a point: ``(view_index, point_index)`` to toggle "fixed".
+    pointFixToggled = Signal(int, int)
 
     def __init__(self, view_index: int, parent=None):
         super().__init__(parent)
@@ -62,6 +64,7 @@ class PoseView(QGraphicsView):
         self._colors: list[QColor] = []
         self._bones = np.empty((0, 2), dtype=int)
         self._pts: np.ndarray | None = None
+        self._fixed: np.ndarray | None = None
         self._editable = False
         self._highlight: int | None = None
         self._dragging: int | None = None
@@ -118,10 +121,25 @@ class PoseView(QGraphicsView):
         self._fit()
 
     def set_points(self, pts2d: np.ndarray) -> None:
-        """Move the joint/bone items to ``pts2d`` (``(P, 2)``); hide NaN points."""
+        """Move the joint/bone items to ``pts2d`` (``(P, 2)``); hide NaN points.
+
+        While a drag is in progress the dragged joint is pinned to the cursor and
+        is *not* overwritten by ``pts2d``. The live 3D re-solve reprojects that
+        joint a hair off the cursor whenever another view constrains it, and
+        letting that fight the mouse feels like resistance; the dragged joint
+        follows the mouse blindly until release, when the model-consistent
+        position is shown on the next refresh.
+        """
         # A writable copy: projected 3D points arrive as a (read-only) JAX buffer,
         # and a drag writes the dragged joint straight into this array.
-        self._pts = np.array(pts2d, dtype=float)
+        new = np.array(pts2d, dtype=float)
+        if (
+            self._dragging is not None
+            and self._pts is not None
+            and self._dragging < len(new)
+        ):
+            new[self._dragging] = self._pts[self._dragging]
+        self._pts = new
         for i, item in enumerate(self._point_items):
             self._place_point(i)
         for j, (a, b) in enumerate(self._bones):
@@ -135,6 +153,13 @@ class PoseView(QGraphicsView):
 
     def set_editable(self, editable: bool) -> None:
         self._editable = editable
+
+    def set_fixed(self, fixed: np.ndarray | None) -> None:
+        """Mark which points are "fixed"/finalized (``(P,)`` bool), drawn with a
+        bold ring; ``None`` clears all fixed marks."""
+        self._fixed = None if fixed is None else np.asarray(fixed, dtype=bool)
+        for i in range(len(self._point_items)):
+            self._place_point(i)
 
     def set_highlight(self, point: int | None) -> None:
         """Visually emphasize ``point`` (the active joint), or clear with ``None``."""
@@ -152,11 +177,18 @@ class PoseView(QGraphicsView):
         x, y = self._pts[i]
         radius = _POINT_RADIUS * (2.0 if i == self._highlight else 1.0)
         item.setRect(x - radius, y - radius, 2 * radius, 2 * radius)
-        item.setPen(
-            QPen(Qt.GlobalColor.white, 1.5)
-            if i == self._highlight
-            else QPen(Qt.GlobalColor.black, 0.5)
+        fixed = (
+            self._fixed is not None
+            and i < len(self._fixed)
+            and bool(self._fixed[i])
         )
+        if fixed:
+            # A bold yellow ring marks a finalized (locked) per-view point.
+            item.setPen(QPen(Qt.GlobalColor.yellow, 2.5))
+        elif i == self._highlight:
+            item.setPen(QPen(Qt.GlobalColor.white, 1.5))
+        else:
+            item.setPen(QPen(Qt.GlobalColor.black, 0.5))
         item.setVisible(True)
 
     def _fit(self) -> None:
@@ -190,6 +222,13 @@ class PoseView(QGraphicsView):
             point = self._nearest_point(scene_pos)
             if point is not None:
                 self._dragging = point
+                event.accept()
+                return
+        if self._editable and event.button() == Qt.MouseButton.RightButton:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            point = self._nearest_point(scene_pos)
+            if point is not None:
+                self.pointFixToggled.emit(self._view_index, point)
                 event.accept()
                 return
         super().mousePressEvent(event)

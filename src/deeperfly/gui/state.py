@@ -5,13 +5,22 @@ testable core that the widgets drive. It exposes the *displayed* points
 (corrected-over-original) for the current frame, applies 2D and 3D edits, and
 holds the dirty/edit-mode flags.
 
-The 3D edit is the interesting one: dragging a point in one view to a pixel must
-move the 3D point to the location that (1) reprojects exactly onto that pixel in
-that view and (2) is closest to where the point was. That is the orthogonal
-projection of the old 3D point onto the back-projection ray of the dragged pixel
+The 3D edit is the interesting one. There is always a single internal 3D point
+per keypoint; a drag re-estimates it and then refreshes every view's reprojection
+with the same forward model used to draw it. Imperfect calibration means no single
+3D point reprojects exactly onto all views at once, so a per-view point can be
+*fixed* (finalized): a fixed view keeps its locked pixel and acts as a constraint.
+Dropping a drag pins the dragged view there (it becomes fixed at the release
+pixel), so the placed point stays put instead of snapping to the reprojection.
+
+On a drag we re-solve the 3D point by a constrained DLT
+(:func:`deeperfly.triangulation.triangulate`) over the fixed views' locked pixels
+plus the dragged view's cursor; with fewer than two such observations (the common
+"nothing fixed yet" case) it falls back to the orthogonal projection of the old 3D
+point onto the back-projection ray of the dragged pixel
 (:func:`deeperfly.geometry.backproject_ray_one` +
-:func:`deeperfly.geometry.closest_point_on_ray`), after which every other view's
-reprojection is recomputed with the same forward model used to draw it.
+:func:`deeperfly.geometry.closest_point_on_ray`), which lands the point exactly
+under the cursor. Non-fixed views then follow the new 3D point's reprojection.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from jaxtyping import Float
 
 from ..geometry import closest_point_on_ray
 from ..results import PoseResult
+from ..triangulation import triangulate
 from .corrections import Corrections
 
 __all__ = ["EditMode", "EditorState"]
@@ -127,6 +137,24 @@ class EditorState:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
 
+    def display_pts2d_refine(
+        self, frame: int | None = None
+    ) -> Float[np.ndarray, "V P 2"] | None:
+        """The per-view 2D drawn in Edit 3D: the 3D point reprojected into every
+        view, with each *fixed* view overridden by its locked pixel, or ``None``.
+
+        This is the "corrected 2D" result of a refined frame: non-fixed views are
+        a single 3D point's reprojection while fixed views hold the operator's
+        finalized pixels (which generally do not all agree with one 3D point).
+        """
+        proj = self.display_pts3d_projected(frame)
+        if proj is None:
+            return None
+        t = self._resolve_frame(frame)
+        fixed = self.corrections.pts2d_fixed[:, t]  # (V, P)
+        locked = self.corrections.pts2d[:, t]  # (V, P, 2)
+        return np.where(fixed[..., None], locked, proj)
+
     # -- edits ----------------------------------------------------------------
 
     def apply_2d_edit(
@@ -136,15 +164,25 @@ class EditorState:
         self.corrections.set_pts2d(view, self._resolve_frame(frame), point, xy)
 
     def apply_3d_edit(
-        self, view: int, point: int, xy, frame: int | None = None
+        self, view: int, point: int, xy, frame: int | None = None, *, fix: bool = False
     ) -> Float[np.ndarray, "3"] | None:
         """Re-solve ``point``'s 3D location from a drag to pixel ``xy`` in ``view``.
 
+        The 3D point is re-estimated by a constrained DLT over the *fixed* views'
+        locked pixels plus the dragged view's cursor; non-fixed views then follow
+        its reprojection. With fewer than two such observations (e.g. nothing is
+        fixed yet) it falls back to the orthogonal projection of the old 3D point
+        onto the back-projection ray of ``xy``, which lands the point exactly
+        under the cursor (the original Edit 3D behavior).
+
+        With ``fix=True`` (a drag *release*) the dragged view is finalized at
+        ``xy``: it is pinned there as a locked constraint so it stays exactly
+        where it was dropped instead of snapping to the reprojection. The live
+        re-solve mid-drag uses ``fix=False`` so a view is only pinned on release
+        (or if it was already fixed, in which case its lock follows the cursor).
+
         Returns the new 3D point, or ``None`` if there is no 3D point to move
-        (no triangulation, or the point is NaN at this frame). The returned
-        point lies on the back-projection ray of ``xy`` through ``view`` (so it
-        reprojects exactly onto ``xy`` there) and is the closest such point to
-        the pre-drag 3D location.
+        (no triangulation, or no usable constraint and the point is NaN here).
 
         Parameters
         ----------
@@ -156,29 +194,95 @@ class EditorState:
             The pixel the user dragged the point to, ``(2,)``.
         frame
             The frame to edit (defaults to the current frame).
+        fix
+            Whether to finalize (pin) the dragged view at ``xy`` -- set on a drag
+            release so the dropped point persists; left ``False`` for the live
+            mid-drag re-solve.
         """
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
-        pts3d = self.display_pts3d(t)
-        assert pts3d is not None
-        x_old = pts3d[point]
-        if not np.all(np.isfinite(x_old)):
+        xy = np.asarray(xy, dtype=float)
+        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
+
+        # Observations for the constrained DLT: each fixed view at its locked
+        # pixel, plus the dragged view at the cursor (overriding if it is fixed).
+        obs = np.full((self.n_views, 2), np.nan)
+        obs[fixed] = self.corrections.pts2d[fixed, t, point]
+        obs[view] = xy
+
+        if int(np.isfinite(obs).all(axis=1).sum()) >= 2:
+            x_new = np.asarray(
+                triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
+            )
+        else:
+            pts3d = self.display_pts3d(t)
+            assert pts3d is not None
+            x_old = pts3d[point]
+            if not np.all(np.isfinite(x_old)):
+                return None
+            camera = list(self.result.cameras)[view]
+            origin, direction = camera.backproject_ray(xy)
+            x_new = np.asarray(
+                closest_point_on_ray(
+                    jnp.asarray(origin), jnp.asarray(direction), jnp.asarray(x_old)
+                ),
+                dtype=float,
+            )
+        if not np.all(np.isfinite(x_new)):
             return None
-        camera = list(self.result.cameras)[view]
-        origin, direction = camera.backproject_ray(np.asarray(xy, dtype=float))
-        x_new = np.asarray(
-            closest_point_on_ray(
-                jnp.asarray(origin), jnp.asarray(direction), jnp.asarray(x_old)
-            ),
-            dtype=float,
-        )
         self.corrections.set_pts3d(t, point, x_new)
+        if fix or bool(fixed[view]):
+            self.corrections.set_pts2d(view, t, point, xy, fixed=True)
         return x_new
 
+    def toggle_fixed(
+        self, view: int, point: int, frame: int | None = None
+    ) -> bool | None:
+        """Toggle whether ``point`` in ``view`` is finalized (a 3D constraint).
+
+        Fixing snapshots the view's current displayed 2D as a locked pixel;
+        unfixing drops it back to following the reprojection. Either way the 3D
+        point is re-estimated from the (new) fixed set so the non-fixed views
+        update. Returns the new fixed state, or ``None`` if there is no 3D point
+        to refine or the point is not visible in this view.
+        """
+        if self.result.pts3d is None:
+            return None
+        t = self._resolve_frame(frame)
+        cur2d = self.display_pts2d_refine(t)
+        if cur2d is None:
+            return None
+        now_fixed = not bool(self.corrections.pts2d_fixed[view, t, point])
+        if now_fixed:
+            xy = cur2d[view, point]
+            if not np.all(np.isfinite(xy)):
+                return None  # cannot fix a point that is not visible in this view
+            self.corrections.set_pts2d(view, t, point, xy, fixed=True)
+        else:
+            self.corrections.clear_2d(view, t, point)
+        self._resolve_3d_from_fixed(point, t)
+        return now_fixed
+
+    def _resolve_3d_from_fixed(self, point: int, t: int) -> None:
+        """Re-triangulate ``point``'s 3D location from its fixed views alone.
+
+        A no-op below two fixed views (the 3D point keeps its current value).
+        """
+        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
+        if int(fixed.sum()) < 2:
+            return
+        obs = np.full((self.n_views, 2), np.nan)
+        obs[fixed] = self.corrections.pts2d[fixed, t, point]
+        x_new = np.asarray(
+            triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
+        )
+        if np.all(np.isfinite(x_new)):
+            self.corrections.set_pts3d(t, point, x_new)
+
     def reset_point(self, point: int, frame: int | None = None) -> None:
-        """Drop every correction (all views' 2D and the 3D) of ``point`` at ``frame``."""
+        """Drop every correction (all views' 2D, the fixed flags, the 3D) of ``point``."""
         t = self._resolve_frame(frame)
         for view in range(self.n_views):
-            self.corrections.clear_2d(view, t, point)
+            self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
         self.corrections.clear_3d(t, point)
