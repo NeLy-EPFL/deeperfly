@@ -31,6 +31,10 @@
         border-bottom: 1px solid var(--border); }
   .ctl-label { font-size: 12px; color: var(--muted); align-self: center; }
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .controls + .controls { margin-top: 10px; }
+  /* The "Drag to pose" toggle lights up when active so the changed interaction
+     mode (one-finger drag moves a part instead of orbiting) is obvious. */
+  label.toggle:has(#toggle-edit:checked) { border-color: var(--accent); color: var(--accent); }
   .slider-row { display: flex; align-items: center; gap: 8px; margin-top: 10px;
         font-size: 12px; color: var(--muted); }
   .slider-row label { flex: 0 0 auto; }
@@ -95,7 +99,7 @@
   <div id="stage">
     <div id="overlay"><div class="spinner"></div><div id="overlay-msg">Loading MuJoCo &amp; model…</div></div>
     <div id="tip"></div>
-    <div id="hint">Hover to identify · <b>Shift</b>+drag a part to pose it</div>
+    <div id="hint">Hover to identify · <b>Shift</b>+drag — or turn on <b>Drag&nbsp;to&nbsp;pose</b> (touch) — to move a part</div>
   </div>
   <aside id="panel">
     <h1>NeuroMechFly keypoint locations</h1>
@@ -109,6 +113,10 @@
         <span class="ctl-label">Set pose to:</span>
         <button id="reset" title="Every joint at its resting angle">Neutral</button>
         <button id="zero" title="Every joint angle at 0">Zero</button>
+      </div>
+      <div class="controls">
+        <label class="toggle" title="When on, drag a keypoint or body part to pose it — works with one finger on a touchscreen (no Shift needed). Drag empty space to orbit; pinch to zoom.">
+          <input type="checkbox" id="toggle-edit"> Drag to pose</label>
       </div>
     </section>
 

@@ -288,9 +288,11 @@ function wireViewPresets(camera, controls, requestRender) {
 }
 
 // Hover-to-identify (raycast the meshes and keypoint nodes, highlight + tooltip)
-// and Shift+drag-to-pose (drag a part to a new spot; a small finite-difference
+// and drag-to-pose (drag a part to a new spot; a small finite-difference
 // Jacobian / damped-least-squares IK over that part's kinematic chain solves the
 // joint angles, restricted to the controllable DoFs so it matches the sliders).
+// A drag is armed by holding Shift or by enabling the "Drag to pose" toggle — the
+// latter is the touchscreen path, where there is no Shift key.
 function setupInteraction(ctx) {
   const { renderer, camera, controls, meshGroup, overlay,
           mj, model, data, qpos, pose, requestRender, markDirty, refreshSliders } = ctx;
@@ -298,6 +300,28 @@ function setupInteraction(ctx) {
   const tip = document.getElementById('tip');
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
+
+  // "Drag to pose" mode: a touch-friendly stand-in for the Shift modifier (no
+  // Shift key on a touchscreen). When on, a plain one-finger / left-button drag
+  // that lands on a part moves it; empty space still orbits and two fingers still
+  // zoom/pan. Shift+drag keeps working regardless, so desktop loses nothing.
+  let editMode = false;
+  const editToggle = document.getElementById('toggle-edit');
+  if (editToggle) {
+    editMode = editToggle.checked;
+    editToggle.addEventListener('change', () => { editMode = editToggle.checked; dom.style.cursor = ''; });
+  }
+
+  // Position + fill the floating label at the pointer (the part under the
+  // cursor on hover, or the grabbed part during a drag — the only "what is this?"
+  // cue on touch, where there is no hover).
+  const showTipAt = (e, ud) => {
+    const r = dom.getBoundingClientRect();
+    tip.style.left = `${e.clientX - r.left}px`;
+    tip.style.top = `${e.clientY - r.top}px`;
+    tip.innerHTML = `<span class="k">${ud.kind === 'node' ? 'keypoint' : 'segment'}</span>${ud.name}`;
+    tip.style.display = 'block';
+  };
 
   // Controllable DoFs and their limits (same set/ranges the sliders expose).
   const controllable = new Set(pose.joints.map((j) => j.qposadr));
@@ -371,7 +395,7 @@ function setupInteraction(ctx) {
   const plane = new THREE.Plane(), target = new THREE.Vector3(), n = new THREE.Vector3();
 
   const startDrag = (e) => {
-    if (!e.shiftKey || e.button !== 0) return false;
+    if (e.button !== 0 || !e.isPrimary || !(editMode || e.shiftKey)) return false;
     const hit = pick(e);
     if (!hit || hit.ud.noDrag) return false;
     const bodyId = hit.ud.bodyId;
@@ -391,9 +415,10 @@ function setupInteraction(ctx) {
     }
     camera.getWorldDirection(n);
     plane.setFromNormalAndCoplanarPoint(n, hit.point); // drag in a camera-facing plane
-    drag = { bodyId, offset, dofs };
+    drag = { bodyId, offset, dofs, ud: hit.ud };
     controls.enabled = false;
     clearHover();
+    showTipAt(e, hit.ud); // label what was grabbed (the only such cue on touch)
     dom.setPointerCapture(e.pointerId);
     dom.style.cursor = 'grabbing';
     return true;
@@ -432,6 +457,7 @@ function setupInteraction(ctx) {
   };
 
   const moveDrag = (e) => {
+    showTipAt(e, drag.ud); // keep the grabbed-part label under the pointer
     setNDC(e);
     raycaster.setFromCamera(ndc, camera);
     if (!raycaster.ray.intersectPlane(plane, target)) return;
@@ -443,10 +469,13 @@ function setupInteraction(ctx) {
   const endDrag = (e) => {
     if (!drag) return;
     drag = null; controls.enabled = true; dom.style.cursor = '';
+    tip.style.display = 'none'; // touch leaves no pointermove to clear it otherwise
     try { dom.releasePointerCapture(e.pointerId); } catch (_) { /* not captured */ }
   };
 
-  // Capture phase so a Shift+drag is claimed before OrbitControls can orbit.
+  // Capture phase so an armed drag is claimed before OrbitControls can orbit;
+  // when startDrag declines (empty space, or no modifier/mode), the event falls
+  // through to OrbitControls and a one-finger drag orbits as usual.
   dom.addEventListener('pointerdown', (e) => {
     if (startDrag(e)) { e.stopImmediatePropagation(); e.preventDefault(); }
   }, true);
@@ -455,14 +484,11 @@ function setupInteraction(ctx) {
     const hit = pick(e);
     if (!hit) { clearHover(); return; }
     setHover(hit.obj);
-    const r = dom.getBoundingClientRect();
-    tip.style.left = `${e.clientX - r.left}px`;
-    tip.style.top = `${e.clientY - r.top}px`;
-    tip.innerHTML = `<span class="k">${hit.ud.kind === 'node' ? 'keypoint' : 'segment'}</span>${hit.ud.name}`;
-    tip.style.display = 'block';
-    dom.style.cursor = e.shiftKey ? 'grab' : 'pointer';
+    showTipAt(e, hit.ud);
+    dom.style.cursor = (editMode || e.shiftKey) && !hit.ud.noDrag ? 'grab' : 'pointer';
   });
   dom.addEventListener('pointerup', endDrag);
+  dom.addEventListener('pointercancel', endDrag);
   dom.addEventListener('pointerleave', () => { if (!drag) clearHover(); });
 }
 
