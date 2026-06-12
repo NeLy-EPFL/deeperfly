@@ -248,13 +248,18 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
 function wireViewPresets(camera, controls, requestRender) {
   const dir = new THREE.Vector3();
   const yUp = new THREE.Vector3(0, 1, 0);
+  // OrbitControls fixes its orbit axis from camera.up at construction, so when
+  // we change up (top/bottom presets, or the reset) we refresh that axis too.
+  const setUp = (u) => {
+    camera.up.set(u[0], u[1], u[2]);
+    controls._quat.setFromUnitVectors(camera.up, yUp);
+    controls._quatInverse.copy(controls._quat).invert();
+  };
   const setView = (v) => {
     const az = v.az * Math.PI / 180, el = v.el * Math.PI / 180;
     dir.set(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el));
-    const dist = camera.position.distanceTo(controls.target);
-    camera.up.set(...(v.up || [0, 0, 1]));
-    controls._quat.setFromUnitVectors(camera.up, yUp);
-    controls._quatInverse.copy(controls._quat).invert();
+    const dist = camera.position.distanceTo(controls.target); // preserve zoom
+    setUp(v.up || [0, 0, 1]);
     camera.position.copy(controls.target).addScaledVector(dir, dist);
     controls.update(); // re-points the camera at the target
     requestRender();
@@ -263,6 +268,23 @@ function wireViewPresets(camera, controls, requestRender) {
     const btn = document.querySelector(`button[data-view="${id}"]`);
     if (btn) btn.addEventListener('click', () => setView(v));
   }
+
+  // "Reset view": restore the exact starting framing — angle, pan (target) and
+  // zoom (distance) — captured here before any interaction. Unlike the presets,
+  // this restores the full camera/target state, not just the viewing angle.
+  const home = {
+    pos: camera.position.clone(),
+    target: controls.target.clone(),
+    up: camera.up.toArray(),
+  };
+  const resetBtn = document.getElementById('reset-view');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    setUp(home.up);
+    controls.target.copy(home.target);
+    camera.position.copy(home.pos);
+    controls.update();
+    requestRender();
+  });
 }
 
 // Hover-to-identify (raycast the meshes and keypoint nodes, highlight + tooltip)

@@ -47,6 +47,7 @@
         background: var(--input-bg); color: var(--panel-fg); border-radius: 6px;
         cursor: pointer; font-size: 11px; }
   .cam-views button:hover { border-color: var(--accent); color: var(--accent); }
+  .cam-views button.reset { margin-left: auto; padding-left: 9px; padding-right: 9px; }
   label.toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
         padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
         background: var(--input-bg); }
@@ -124,6 +125,8 @@
         <button data-view="h" title="Hind">H</button>
         <button data-view="b" title="Bottom">B</button>
         <button data-view="t" title="Top">T</button>
+        <button id="reset-view" class="reset"
+                title="Reset the camera angle, pan and zoom to the default view">Reset</button>
       </div>
     </section>
 
