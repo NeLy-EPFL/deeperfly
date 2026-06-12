@@ -67,14 +67,14 @@ def init(
     output: Annotated[
         str, typer.Argument(help="destination (defaults to config.toml)")
     ] = "config.toml",
-    force: Annotated[
-        bool, typer.Option("--force", help="overwrite an existing file")
+    overwrite: Annotated[
+        bool, typer.Option("--overwrite", help="overwrite an existing file")
     ] = False,
     log_level: LogLevelOption = LogLevel.info,
 ) -> None:
     """Write a default config.toml to edit (destination defaults to config.toml)."""
     _configure_logging(log_level.value)
-    _cmd_init(argparse.Namespace(output=output, force=force))
+    _cmd_init(argparse.Namespace(output=output, overwrite=overwrite))
 
 
 @app.command()

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import tomllib
 
-import pytest
-
 from deeperfly import cli
 from deeperfly.cameras import CameraGroup
 from deeperfly.config import DEFAULT_CONFIG_PATH, Config
@@ -46,13 +44,14 @@ def test_init_writes_parseable_config(tmp_path):
     assert len(plan.sources) == 7 and len(plan.pathways) == 8
 
 
-def test_init_refuses_to_clobber(tmp_path):
+def test_init_refuses_to_clobber(tmp_path, capsys):
     dst = tmp_path / "config.toml"
     dst.write_text("keep me\n")
-    with pytest.raises(SystemExit):
-        cli.main(["init", str(dst)])
+    cli.main(["init", str(dst)])  # without --overwrite: warns, leaves the file alone
     assert dst.read_text() == "keep me\n"  # untouched
-    cli.main(["init", str(dst), "--force"])  # --force overwrites
+    # rich may hard-wrap the message; normalize whitespace before matching.
+    assert "already exists" in " ".join(capsys.readouterr().out.split())
+    cli.main(["init", str(dst), "--overwrite"])  # --overwrite replaces it
     assert dst.read_text() == DEFAULT_CONFIG_PATH.read_text()
 
 

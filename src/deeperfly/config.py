@@ -103,7 +103,7 @@ class Pose2dParams:
 class TriangulationParams:
     """``[triangulation]`` -- method + per-method thresholds."""
 
-    method: str = "ransac"
+    method: str = "dlt"
     ransac_threshold: float = 15.0
     min_inliers: int = 2
     reproj_threshold: float = 40.0
