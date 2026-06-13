@@ -224,12 +224,15 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     _doctor_row("image read", "opencv" if have_cv2 else "opencv not installed")
 
     _doctor_header("gui")
-    have_qt = importlib.util.find_spec("PySide6") is not None
+    have_web = (
+        importlib.util.find_spec("fastapi") is not None
+        and importlib.util.find_spec("uvicorn") is not None
+    )
     _doctor_row(
         "deeperfly gui",
-        "PySide6 available"
-        if have_qt
-        else "not installed -- run 'pip install deeperfly[gui]'",
+        "FastAPI + uvicorn available"
+        if have_web
+        else "missing -- core deps absent, reinstall deeperfly",
     )
 
     _doctor_header("weights")
