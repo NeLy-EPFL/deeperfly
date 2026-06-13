@@ -199,17 +199,53 @@ def gui(
             "results.h5 no longer resolve",
         ),
     ] = None,
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help="address to bind the server to; the loopback default keeps the "
+            "editor private (bind a routable address only behind a trusted "
+            "network -- it is unauthenticated; prefer an 'ssh -L' tunnel)",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="TCP port to serve on (0 picks a free one)"),
+    ] = 8000,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="do not open a browser on startup"),
+    ] = False,
+    keep_alive: Annotated[
+        bool,
+        typer.Option(
+            "--keep-alive",
+            help="keep the server running after the browser is closed (by default "
+            "it stops a few seconds after the last tab closes; a refresh reconnects)",
+        ),
+    ] = False,
     log_level: LogLevelOption = LogLevel.info,
 ) -> None:
-    """Open the interactive viewer/corrector on a result (needs the 'gui' extra).
+    """Serve the interactive web viewer/corrector for a result.
 
-    View every camera with its 2D skeleton overlay, drag keypoints to correct
-    the 2D pose, or switch to 3D mode to drag a reprojected 3D point (the other
-    views update live). Corrections are written to a corrections.h5 sidecar and
-    never modify results.h5. Install the viewer with 'pip install deeperfly[gui]'.
+    Starts a local server and opens a browser editor. View every camera with its
+    2D skeleton overlay, drag keypoints to correct the 2D pose, or switch to 3D
+    mode to drag a reprojected 3D point (the other views update live).
+    Corrections are written to a corrections.h5 sidecar and never modify
+    results.h5. It runs headless and can be reached from another machine's
+    browser (default-bound to localhost; tunnel with 'ssh -L' for remote use).
     """
     _configure_logging(log_level.value)
-    _cmd_gui(argparse.Namespace(path=path, footage_dir=footage_dir))
+    _cmd_gui(
+        argparse.Namespace(
+            path=path,
+            footage_dir=footage_dir,
+            host=host,
+            port=port,
+            no_browser=no_browser,
+            keep_alive=keep_alive,
+        )
+    )
 
 
 def _normalize_overwrite_argv(argv: list[str]) -> list[str]:

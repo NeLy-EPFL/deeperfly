@@ -1,0 +1,347 @@
+:root {
+  color-scheme: dark;
+  --bg: #1e1e1e;
+  --panel: #2a2a2a;
+  --border: #3a3a3a;
+  --fg: #e0e0e0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#views {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  min-height: 0;
+  min-width: 0;
+}
+
+#stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Grid layout: the stage holds every cell in an equal grid that fills the
+   viewport (grid-auto-rows: 1fr); the thumbnail strip is hidden. */
+#views.layout-grid #stage {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), 1fr);
+  grid-auto-rows: 1fr;
+  gap: 6px;
+}
+
+#views.layout-grid #strip {
+  display: none;
+}
+
+/* Focus layout: the stage is one large editable view; the strip is a column of
+   live, clickable thumbnails (the other cameras), each shrinking to share the
+   height so all stay visible. */
+#views.layout-focus #stage {
+  display: flex;
+}
+
+#views.layout-focus #stage > .cell {
+  flex: 1;
+}
+
+#views.layout-focus #stage > .cell.is-focused {
+  border-color: #4a90d9;
+}
+
+#views.layout-focus #strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 clamp(140px, 18vw, 240px);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#views.layout-focus #strip > .cell {
+  flex: 1 1 0;
+  min-height: 64px;
+  cursor: pointer;
+}
+
+#views.layout-focus #strip > .cell:hover {
+  border-color: #5a5a5a;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.cell-label {
+  padding: 2px 6px;
+  text-align: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.cell canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  touch-action: none; /* let pointer drags work on touch without scrolling */
+}
+
+#controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#controls label,
+#controls .field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The frame slider gets a row to itself, so let it span the full width. */
+.frame-row label {
+  flex: 1;
+}
+
+.frame-row #frame-slider {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+/* Two-choice "switch": a row of buttons, exactly one active -- a compact
+   stand-in for a 2-option dropdown (Mode, Layout). */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.segmented .seg-btn {
+  border: none;
+  border-radius: 0;
+  background: #333;
+  padding: 3px 10px;
+}
+
+.segmented .seg-btn + .seg-btn {
+  border-left: 1px solid var(--border);
+}
+
+.segmented .seg-btn:not(.is-active):hover {
+  background: #3d3d3d;
+}
+
+.segmented .seg-btn.is-active {
+  background: #4a90d9;
+  color: #fff;
+}
+
+#frame-number {
+  width: 70px;
+}
+
+#controls .spacer {
+  flex: 1;
+}
+
+#controls .sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+}
+
+#status {
+  color: #7ec699;
+  min-width: 48px;
+  text-align: right;
+}
+
+select,
+input,
+button {
+  background: #333;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* On-demand modal overlays (keyboard help, camera-rig plot). */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 10;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+.modal-wide {
+  width: 80vw;
+  height: 80vh;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  background: #333;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.icon-btn {
+  padding: 2px 8px;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 14px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.modal-canvas-body {
+  flex: 1;
+  padding: 0;
+  display: flex;
+  background: #111;
+}
+
+#scene-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.modal-foot {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  color: #999;
+  text-align: center;
+  font-size: 12px;
+}
+
+/* A right-aligned button row (e.g. the unsaved-changes close prompt). */
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+button.primary {
+  background: #4a90d9;
+  border-color: #4a90d9;
+  color: #fff;
+}
+
+button.danger {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
+}
+
+/* Keyboard-shortcut help table. */
+table.shortcuts {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+table.shortcuts td {
+  padding: 4px 10px;
+  vertical-align: top;
+}
+
+table.shortcuts td.key {
+  text-align: right;
+  white-space: nowrap;
+  color: #9cd1ff;
+}
+
+table.shortcuts kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}

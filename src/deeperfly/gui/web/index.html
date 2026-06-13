@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>deeperfly gui</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="views">
+        <div id="stage"></div>
+        <div id="strip"></div>
+      </div>
+      <div id="controls">
+        <div class="control-row frame-row">
+          <label>Frame <input id="frame-slider" type="range" /></label>
+          <input id="frame-number" type="number" />
+          <span id="frame-total"></span>
+        </div>
+        <div class="control-row">
+          <div class="field" id="mode-wrap">Mode <div id="mode-switch" class="segmented"></div></div>
+          <div class="field" id="layout-wrap">Layout <div id="layout-switch" class="segmented"></div></div>
+          <span class="sep"></span>
+          <label><input id="show-skeleton" type="checkbox" checked /> Skeleton</label>
+          <label><input id="show-labels" type="checkbox" /> Labels</label>
+          <label id="latent-wrap"><input id="show-latent" type="checkbox" /> 3D estimate</label>
+          <label id="pin-wrap"><input id="pin-mode" type="checkbox" /> Pin on tap</label>
+          <span class="sep"></span>
+          <button id="reset-view" title="Revert the last-selected point in its view (r)">Reset point (view)</button>
+          <button id="reset-all" title="Revert the last-selected point in every view (Shift+R)">Reset point (all)</button>
+          <span class="spacer"></span>
+          <button id="cameras" title="Show the camera rig in 3D (c)">Cameras</button>
+          <button id="help" title="Keyboard shortcuts (?)">?</button>
+          <span id="status"></span>
+          <button id="save" title="Save corrections (Ctrl/Cmd+S)">Save</button>
+          <button id="close-editor" title="Stop the server and close the editor">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="close-overlay" class="overlay" hidden>
+      <div class="modal">
+        <div class="modal-head"><span>Unsaved changes</span></div>
+        <div class="modal-body">You have unsaved corrections. Save them before closing the editor?</div>
+        <div class="modal-actions">
+          <button id="close-cancel">Cancel</button>
+          <button id="close-discard" class="danger">Close without saving</button>
+          <button id="close-save" class="primary">Save &amp; close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="stopped-overlay" class="overlay" hidden>
+      <div class="modal">
+        <div class="modal-head"><span>Editor closed</span></div>
+        <div class="modal-body">The deeperfly gui server has stopped. You can close this browser tab.</div>
+      </div>
+    </div>
+
+    <div id="help-overlay" class="overlay" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <span>Keyboard shortcuts</span>
+          <button id="help-close" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="help-body" class="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="scene-overlay" class="overlay" hidden>
+      <div class="modal modal-wide">
+        <div class="modal-head">
+          <span>Camera layout</span>
+          <button id="scene-close" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body modal-canvas-body">
+          <canvas id="scene-canvas"></canvas>
+        </div>
+        <div class="modal-foot">Drag to orbit · scroll to zoom · double-click to reframe</div>
+      </div>
+    </div>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

@@ -48,13 +48,15 @@ dependencies = [
     "av>=13",
     "opencv-python-headless>=4.13",
     "natsort>=8.4.0",
+    # The interactive web viewer/corrector (`deeperfly gui`): FastAPI + uvicorn
+    # serve a browser front-end (the compiled assets ship in the wheel under
+    # deeperfly/gui/web). Kept in the core deps -- they're tiny next to torch/jax
+    # and `deeperfly gui` is a first-class subcommand, so a plain install must be
+    # able to run it. The `[standard]` uvicorn extra pulls the WebSocket +
+    # http-tools speedups; both are still imported lazily (only `gui` needs them).
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
-
-[project.optional-dependencies]
-# The interactive viewer/corrector (`deeperfly gui`). Optional: the core package
-# and CLI import fine without it. PySide6 is the official Qt for Python binding
-# (LGPLv3). Install with `pip install deeperfly[gui]` / `uv sync --extra gui`.
-gui = ["PySide6>=6.6"]
 
 [project.urls]
 Homepage = "https://github.com/NeLy-EPFL/deeperfly"
@@ -82,7 +84,10 @@ dev = [
 test = [
     "pytest>=9.0.3",
     "pytest-cov>=6.0",
-    "PySide6>=6.6",   # exercise the optional GUI tests headlessly (QT_QPA_PLATFORM=offscreen)
+    # Exercise the web GUI: FastAPI's TestClient (httpx-backed) drives the API +
+    # WebSocket in-process, no real server or browser needed. FastAPI/uvicorn
+    # themselves are core deps; only the httpx test client is test-only.
+    "httpx>=0.27",
 ]
 docs = [
     # The documentation site (MkDocs + Material). The library API reference is

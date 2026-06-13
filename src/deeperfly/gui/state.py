@@ -286,3 +286,15 @@ class EditorState:
         for view in range(self.n_views):
             self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
         self.corrections.clear_3d(t, point)
+
+    def reset_point_view(self, view: int, point: int, frame: int | None = None) -> None:
+        """Drop just ``view``'s 2D correction (and fixed flag) for ``point``.
+
+        Unlike :meth:`reset_point`, the shared 3D point is left in place; if two or
+        more views remain fixed it is re-solved from them so the other views still
+        agree (a no-op below two fixed views). Use this to revert one view without
+        discarding the work in the others.
+        """
+        t = self._resolve_frame(frame)
+        self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
+        self._resolve_3d_from_fixed(point, t)

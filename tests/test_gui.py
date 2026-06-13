@@ -1,21 +1,18 @@
-"""Tests for the optional GUI's Qt-free core and (headless) widgets.
+"""Tests for the GUI's editor core: state, corrections sidecar, footage resolution.
 
 The editor logic -- :class:`EditorState`, the corrections sidecar, footage
-resolution -- carries no Qt dependency and is tested directly. The widget tests
-are guarded by ``pytest.importorskip("PySide6")`` and run on the ``offscreen``
-Qt platform (set below), so they work in CI without a display.
+resolution -- carries no web/Qt dependency and is tested directly here. The
+FastAPI server that drives it over HTTP/WebSocket is tested in
+``test_gui_server.py``.
 """
 
 from __future__ import annotations
-
-import os
 
 import numpy as np
 import pytest
 
 from deeperfly.gui import (
     Corrections,
-    EditMode,
     EditorState,
     load_corrections,
     resolve_footage,
@@ -84,6 +81,16 @@ def test_reset_point_clears_corrections(result):
     state.reset_point(4, frame=0)
     assert not state.corrections.pts2d_edited[:, 0, 4].any()
     assert not state.corrections.pts3d_edited[0, 4]
+
+
+def test_reset_point_view_clears_only_that_view(result):
+    state = EditorState.from_result(result)
+    state.apply_2d_edit(0, 4, (1.0, 2.0), frame=0)
+    state.apply_2d_edit(1, 4, (3.0, 4.0), frame=0)
+
+    state.reset_point_view(0, 4, frame=0)
+    assert not state.corrections.pts2d_edited[0, 0, 4]  # reverted
+    assert state.corrections.pts2d_edited[1, 0, 4]  # the other view is left alone
 
 
 # -- EditorState: 3D refinement (fixed/finalized constraints) -----------------
@@ -328,232 +335,3 @@ def test_corrections_empty_shapes(result):
     assert not corr.pts2d_edited.any()
     assert not corr.pts2d_fixed.any()
     assert not corr.any_edits
-
-
-# -- headless widgets ---------------------------------------------------------
-
-
-@pytest.fixture
-def qapp():
-    # The offscreen platform must be selected before the QApplication is created.
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    return qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
-
-
-def _blank_source(result):
-    from helpers import HEIGHT, WIDTH
-
-    from deeperfly.gui.readers import FrameSource
-
-    image_sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
-    return FrameSource({}, image_sizes=image_sizes)
-
-
-def test_window_builds_with_blank_frames(qapp, result, tmp_path):
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    assert len(window._views) == result.n_views
-    state.corrections.dirty = False  # avoid the unsaved-changes dialog on close
-    window.close()
-
-
-def test_window_2d_drag_updates_state(qapp, result, tmp_path):
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_2d))
-    window._views[0].pointDragged.emit(0, 2, 100.0, 50.0)
-
-    assert state.dirty
-    assert np.allclose(state.display_pts2d(0)[0, 2], [100.0, 50.0])
-
-    state.corrections.dirty = False
-    window.close()
-
-
-def test_set_points_keeps_a_writable_array(qapp):
-    # Projected 3D points arrive as a (read-only) JAX buffer; the view must hold a
-    # writable copy so a drag can write the dragged joint straight into it.
-    import jax.numpy as jnp
-
-    from deeperfly.gui.view import PoseView
-
-    view = PoseView(0)
-    pts = jnp.asarray(np.zeros((5, 2)))  # read-only
-    assert not np.asarray(pts).flags.writeable
-    view.set_points(pts)
-    assert view._pts.flags.writeable
-    view._pts[0] = [1.0, 2.0]  # would raise "assignment destination is read-only"
-    assert np.allclose(view._pts[0], [1.0, 2.0])
-
-
-def test_3d_drag_live_updates_every_view(qapp, result, tmp_path):
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_3d))
-
-    point = 5
-    before = [np.array(v._pts[point]) for v in window._views]
-    target = before[0] + np.array([10.0, -7.0])
-    # A mid-drag move (not a release) must already move every view's reprojection.
-    window._views[0].pointDragging.emit(0, point, float(target[0]), float(target[1]))
-    after = [np.array(v._pts[point]) for v in window._views]
-
-    assert np.allclose(after[0], target, atol=1e-3)  # dragged view lands on cursor
-    assert any(  # at least one other view followed live
-        not np.allclose(before[i], after[i]) for i in range(1, len(window._views))
-    )
-    assert state.dirty
-
-    state.corrections.dirty = False
-    window.close()
-
-
-def test_window_right_click_fixes_point_in_edit_3d(qapp, result, tmp_path):
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_3d))
-
-    point = 5
-    window._views[1].pointFixToggled.emit(1, point)
-    assert state.corrections.pts2d_fixed[1, state.frame, point]
-    # the ring shows on that view
-    assert window._views[1]._fixed is not None and window._views[1]._fixed[point]
-    # other views are not marked
-    assert not window._views[0]._fixed[point]
-
-    # a right-click outside Edit 3D is ignored
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_2d))
-    window._views[2].pointFixToggled.emit(2, point)
-    assert not state.corrections.pts2d_fixed[2, state.frame, point]
-
-    state.corrections.dirty = False
-    window.close()
-
-
-def test_dragged_joint_follows_cursor_despite_fixed_constraint(qapp, result, tmp_path):
-    # Regression: while dragging, the dragged joint must track the mouse exactly.
-    # With another view fixed, the constrained 3D re-solve reprojects the dragged
-    # joint a hair off the cursor; that live update must not overwrite the
-    # cursor-pinned joint mid-drag (it would feel like resistance).
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_3d))
-
-    point = 5
-    # Fix view 1 so view 0's drag is genuinely constrained (2-observation DLT).
-    window._views[1].pointFixToggled.emit(1, point)
-
-    view0 = window._views[0]
-    target = np.array(view0._pts[point]) + np.array([12.0, -9.0])
-    # Reproduce the state a real mouseMoveEvent sets up before emitting.
-    view0._dragging = point
-    view0._pts[point] = target
-    view0.pointDragging.emit(0, point, float(target[0]), float(target[1]))
-
-    # The dragged joint stays exactly under the cursor (no resistance) even though
-    # the constrained reprojection for view 0 lands elsewhere.
-    assert np.allclose(view0._pts[point], target, atol=1e-6)
-    proj = state.display_pts3d_projected()[0, point]
-    assert not np.allclose(proj, target, atol=1e-3)  # the model disagrees, as expected
-
-    view0._dragging = None
-    state.corrections.dirty = False
-    window.close()
-
-
-def test_3d_drag_release_pins_view_in_window(qapp, result, tmp_path):
-    # End-to-end: a real press/drag/release in Edit 3D pins the dropped view at
-    # the cursor (fixed flag + ring) so it does not snap, even with another view
-    # already fixed to constrain the solve.
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
-    )
-    window._mode_combo.setCurrentIndex(window._mode_combo.findData(EditMode.edit_3d))
-
-    point = 5
-    window._views[0].pointFixToggled.emit(0, point)  # a constraining fixed view
-
-    view2 = window._views[2]
-    target = np.array(view2._pts[point]) + np.array([13.0, -10.0])
-    # Reproduce the events a real mouse drag emits: live moves, then a release
-    # (mouseReleaseEvent clears _dragging before emitting pointDragged).
-    view2._dragging = point
-    view2._pts[point] = target
-    view2.pointDragging.emit(2, point, float(target[0]), float(target[1]))
-    view2._dragging = None
-    view2.pointDragged.emit(2, point, float(target[0]), float(target[1]))
-
-    assert state.corrections.pts2d_fixed[2, state.frame, point]  # pinned
-    assert view2._fixed is not None and view2._fixed[point]  # ring shows
-    assert np.allclose(view2._pts[point], target, atol=1e-4)  # no snap
-
-    state.corrections.dirty = False
-    window.close()
-
-
-def test_window_save_writes_sidecar(qapp, result, tmp_path):
-    from deeperfly.gui.window import MainWindow
-
-    source = _blank_source(result)
-    state = EditorState.from_result(result)
-    corrections_path = tmp_path / "corrections.h5"
-    window = MainWindow(
-        state,
-        source,
-        results_path=str(tmp_path / "results.h5"),
-        corrections_path=corrections_path,
-    )
-    state.apply_2d_edit(0, 1, (3.0, 4.0), frame=0)
-    window._on_save()
-
-    assert corrections_path.exists()
-    assert not state.dirty
-    window.close()  # not dirty -> no dialog
