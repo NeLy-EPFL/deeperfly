@@ -13,8 +13,10 @@ from deeperfly.pipeline.fingerprint import (
     RunRecord,
     cameras_source,
     fingerprint_diff,
+    nmf_source,
     pose_sources,
     pts2d_source,
+    pts3d_source,
     stage_fingerprint,
     stage_valid,
 )
@@ -269,6 +271,52 @@ def test_triangulation_fingerprint_embeds_config_rig_only_without_ba(store, came
     assert stage_fingerprint(
         "triangulation", base, enabled, store
     ) == stage_fingerprint("triangulation", geom, enabled, store)
+
+
+def test_pts3d_and_nmf_source_selectors(store, cameras):
+    config = _cfg()
+    enabled = {n: True for n in config.stage_flags()}
+    assert pts3d_source(enabled, store) is None  # nothing stored
+    assert nmf_source(enabled, store) is None
+
+    _seed_pose2d(store, cameras)
+    v, t, n = len(cameras), 2, 38
+    store.write_points(
+        "triangulation",
+        pts2d=np.zeros((v, t, n, 2)),
+        pts3d=np.zeros((t, n, 3)),
+        reproj_error=None,
+    )
+    assert pts3d_source(enabled, store) == "triangulation"
+    # a disabled triangulation is not selected even when present
+    assert pts3d_source(dict(enabled, triangulation=False), store) is None
+
+    store.write_ik(
+        angles=np.zeros((t, 4)), angle_names=["a"] * 4, model_pts3d=np.zeros((t, n, 3))
+    )
+    assert nmf_source(enabled, store) == "inverse_kinematics"
+    assert nmf_source(dict(enabled, inverse_kinematics=False), store) is None
+
+
+def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, cameras):
+    base = _cfg()
+    enabled = base.stage_flags()
+    bounds = _cfg({"inverse_kinematics.bounds.RF_FTi_pitch": [10, 160]})
+    legs = _cfg({"inverse_kinematics.legs": ["rf", "lf"]})
+    # a bounds override and a leg restriction both change the fingerprint
+    assert fingerprint_diff(
+        stage_fingerprint("inverse_kinematics", base, enabled, store),
+        stage_fingerprint("inverse_kinematics", bounds, enabled, store),
+    )
+    assert fingerprint_diff(
+        stage_fingerprint("inverse_kinematics", base, enabled, store),
+        stage_fingerprint("inverse_kinematics", legs, enabled, store),
+    )
+    # an identical config is cache-valid
+    assert not fingerprint_diff(
+        stage_fingerprint("inverse_kinematics", base, enabled, store),
+        stage_fingerprint("inverse_kinematics", _cfg(), enabled, store),
+    )
 
 
 # -- stage_valid -------------------------------------------------------------------

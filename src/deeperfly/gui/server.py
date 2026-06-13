@@ -199,6 +199,7 @@ def _meta_payload(session: Session) -> dict:
         "n_frames": session.n_frames,
         "n_points": s.n_points,
         "has_3d": s.has_3d,
+        "has_nmf": s.has_nmf,
         "camera_names": list(s.camera_names),
         "image_sizes": {
             name: [int(h), int(w)] for name, (h, w) in session.image_sizes.items()
@@ -248,6 +249,7 @@ def _points_payload(session: Session, t: int, mode: str) -> dict:
     fixed = s.corrections.pts2d_fixed[:, t]  # (V, P)
     invisible = s.corrections.pts2d_invisible[:, t]  # (V, P)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
+    nmf = s.display_nmf_projected(t) if s.has_nmf else None
     return {
         "frame": t,
         "mode": mode,
@@ -255,6 +257,7 @@ def _points_payload(session: Session, t: int, mode: str) -> dict:
         "fixed": fixed.tolist(),
         "invisible": invisible.tolist(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
+        "nmf": None if nmf is None else _points_to_json(np.asarray(nmf)),
         "dirty": bool(s.dirty),
     }
 

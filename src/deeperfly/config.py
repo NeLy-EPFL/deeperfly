@@ -44,6 +44,7 @@ __all__ = [
     "PictorialParams",
     "IoParams",
     "BundleAdjustmentParams",
+    "InverseKinematicsParams",
     "DEFAULT_CONFIG_PATH",
 ]
 
@@ -61,17 +62,19 @@ STAGES = (
     "bundle_adjustment",
     "pictorial_structures",
     "triangulation",
+    "inverse_kinematics",
     "visualization",
 )
 
 #: Default for each ``do_<stage>`` when the key is omitted: detection,
 #: bundle adjustment, triangulation and visualization run by default; pictorial
-#: structures is opt-in.
+#: structures and inverse kinematics are opt-in.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
     "pictorial_structures": False,
     "triangulation": True,
+    "inverse_kinematics": False,
     "visualization": True,
 }
 
@@ -148,6 +151,25 @@ class BundleAdjustmentParams:
     max_frames: int | None = 100
     frame_sampling: str = "even"
     least_squares: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InverseKinematicsParams:
+    """``[inverse_kinematics]`` -- fit a NeuroMechFly model's joint angles to the 3D pose.
+
+    ``template`` names a packaged kinematic template (``"neuromechfly"``) or a path
+    to a template TOML; ``legs`` restricts which legs are fit (``None`` = all);
+    ``bounds`` holds per-DOF degree overrides keyed ``"<LEG>_<joint>_<dof>"`` (e.g.
+    ``{"RF_FTi_pitch": [10, 160]}``); ``max_nfev`` / ``loss`` / ``f_scale`` are
+    forwarded to the per-frame :func:`scipy.optimize.least_squares` solve.
+    """
+
+    template: str = "neuromechfly"
+    legs: list[str] | None = None
+    max_nfev: int = 100
+    loss: str = "linear"
+    f_scale: float = 1.0
+    bounds: dict[str, list[float]] = field(default_factory=dict)
 
 
 # -- helpers -----------------------------------------------------------------
@@ -345,6 +367,48 @@ class Config:
             max_frames=None if max_frames is None else int(max_frames),
             frame_sampling=str(frame_sampling),
             least_squares=ba,  # leftover flat keys -> scipy.optimize.least_squares
+        )
+
+    @property
+    def inverse_kinematics(self) -> InverseKinematicsParams:
+        ik = dict(_dig(self.data, ("inverse_kinematics",)))
+        bounds = {
+            str(k): [float(b) for b in v] for k, v in ik.pop("bounds", {}).items()
+        }
+        template = str(ik.pop("template", "neuromechfly"))
+        legs = ik.pop("legs", None)
+        max_nfev = ik.pop("max_nfev", 100)
+        loss = ik.pop("loss", "linear")
+        f_scale = ik.pop("f_scale", 1.0)
+        if ik:  # any leftover key is a typo -- match _params' strict validation
+            raise ValueError(
+                f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; allowed: "
+                "['bounds', 'f_scale', 'legs', 'loss', 'max_nfev', 'template']"
+            )
+        return InverseKinematicsParams(
+            template=template,
+            legs=None if legs is None else [str(leg) for leg in legs],
+            max_nfev=int(max_nfev),
+            loss=str(loss),
+            f_scale=float(f_scale),
+            bounds=bounds,
+        )
+
+    def ik_template(self):
+        """The configured kinematic template (``[inverse_kinematics].template`` + bounds).
+
+        Returns
+        -------
+        deeperfly.inverse_kinematics.template.KinematicTemplate
+            The packaged or path-loaded template, with the legs restricted and the
+            ``[inverse_kinematics.bounds]`` degree overrides applied.
+        """
+        from .inverse_kinematics.template import KinematicTemplate
+
+        p = self.inverse_kinematics
+        overrides = {k: (v[0], v[1]) for k, v in p.bounds.items()}
+        return KinematicTemplate.load(
+            p.template, legs=p.legs, bounds_overrides=overrides
         )
 
     # -- pipeline orchestration ---------------------------------------------

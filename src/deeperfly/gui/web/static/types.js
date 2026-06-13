@@ -37,6 +37,7 @@
  * @property {number} n_frames
  * @property {number} n_points
  * @property {boolean} has_3d
+ * @property {boolean} has_nmf  whether a fitted NMF model overlay is available
  * @property {string[]} camera_names
  * @property {Record<string, [number, number]>} image_sizes  camera -> [height, width]
  * @property {string[]} point_names
@@ -55,6 +56,7 @@
  * @property {boolean[][]} fixed  [view][point]
  * @property {boolean[][]} invisible  [view][point]  obscured: dropped from triangulation
  * @property {Point[][] | null} proj  [view][point] latent 3D reprojection (display only), or null
+ * @property {Point[][] | null} nmf  [view][point] fitted NMF model reprojection (display only), or null
  * @property {boolean} dirty
  */
 

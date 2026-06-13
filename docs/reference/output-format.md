@@ -41,6 +41,11 @@ triangulation/
     points                  (V, T, P, 2)  cleaned 2D (outlier-rejecting methods)
     points3d                (T, P, 3)
     reproj_error            (V, T, P)
+inverse_kinematics/
+    angles                  (T, D)        fitted joint angles (radians)
+    angle_names             (D,)          the angle names, in column order
+    points3d                (T, P, 3)     fitted model joints (world; skeleton order)
+    attrs["meta"]           json {template, alignment} of the fit
 ```
 
 A `cameras/` group stores `names`, `rvecs`, `tvecs`, `intrs` (`[fx, fy, cx, cy]`),
@@ -63,6 +68,7 @@ the best result without knowing which stages ran:
 | `reproj_error` | `triangulation` → `pictorial_structures` |
 | `cameras` | `bundle_adjustment` → `pose2d` (config rig) |
 | `conf` | `pose2d` |
+| `nmf_pts3d` | `inverse_kinematics` (the fitted model joints) |
 
 `PoseResult.save(path)` is the library one-shot (no staged groups): it writes
 `pts2d`/`conf` to `pose2d/` and, when a 3D pose is present, the 2D/3D/error to

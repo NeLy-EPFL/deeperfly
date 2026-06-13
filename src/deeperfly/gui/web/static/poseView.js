@@ -48,6 +48,7 @@ const INVISIBLE_COLOR = "#a86bff"; // dashed ring on an invisible (obscured) poi
 const INVISIBLE_FILL_ALPHA = 0.35; // an obscured joint's fill is dimmed to read as "ghosted"
 const SELECT_COLOR = "#3fd0ff"; // ring on the last-selected point (cyan; lime = fixed)
 const LATENT_COLOR = "rgba(255,176,64,0.95)"; // the latent-skeleton overlay (amber, drawn on top)
+const NMF_COLOR = "rgba(80,230,180,0.95)"; // the fitted NMF model overlay (mint, distinct from latent amber)
 
 export class PoseView {
   /**
@@ -67,6 +68,8 @@ export class PoseView {
     this.pts = [];
     /** @type {Point[] | null} */
     this.latent = null; // latent 3D reprojection (display only), drawn when latentVisible
+    /** @type {Point[] | null} */
+    this.nmf = null; // fitted NMF model reprojection (display only), drawn when nmfVisible
     /** @type {boolean[] | null} */
     this.fixed = null;
     /** @type {boolean[] | null} */
@@ -81,6 +84,7 @@ export class PoseView {
     this.zoomable = false;
     this.overlayVisible = true;
     this.latentVisible = false;
+    this.nmfVisible = false;
     this.labelsVisible = false;
     /** @type {number | null} */
     this.dragging = null;
@@ -249,6 +253,12 @@ export class PoseView {
     if (this.latentVisible) this.draw();
   }
 
+  /** @param {Point[] | null} pts  the fitted NMF model reprojection to ghost, or null */
+  setNmf(pts) {
+    this.nmf = pts;
+    if (this.nmfVisible) this.draw();
+  }
+
   /** @param {number | null} point */
   setHighlight(point) {
     if (this.highlight === point) return;
@@ -286,6 +296,13 @@ export class PoseView {
   setLatentVisible(visible) {
     if (this.latentVisible === visible) return;
     this.latentVisible = visible;
+    this.draw();
+  }
+
+  /** @param {boolean} visible  whether the fitted NMF model is ghosted on top */
+  setNmfVisible(visible) {
+    if (this.nmfVisible === visible) return;
+    this.nmfVisible = visible;
     this.draw();
   }
 
@@ -420,6 +437,39 @@ export class PoseView {
     // it underneath an opaque overlay would hide it. It can also show on its own
     // (e.g. with the skeleton toggled off).
     if (this.latentVisible && this.latent) this.drawLatent();
+    if (this.nmfVisible && this.nmf) this.drawNmf();
+  }
+
+  // The fitted NeuroMechFly model reprojected: a solid skeleton in one bright
+  // colour, distinct from the dashed latent overlay, so it reads as the model the
+  // IK stage fit. When alignment + IK are good it lands right on the legs.
+  drawNmf() {
+    const ctx = this.ctx;
+    const nmf = this.nmf;
+    if (!nmf) return;
+    ctx.save();
+    ctx.strokeStyle = NMF_COLOR;
+    ctx.fillStyle = NMF_COLOR;
+    ctx.lineWidth = 2;
+    for (const [a, b] of this.bones) {
+      const pa = nmf[a];
+      const pb = nmf[b];
+      if (!pa || !pb) continue;
+      const [ax, ay] = this.toCanvas(pa[0], pa[1]);
+      const [bx, by] = this.toCanvas(pb[0], pb[1]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    for (const p of nmf) {
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   // The latent 3D reprojection: a dashed skeleton with small hollow joints in one

@@ -25,6 +25,7 @@ The top-level layout:
 [bundle_adjustment]    # camera refinement
 [pictorial_structures] # opt-in peak recovery
 [triangulation]        # 2D -> 3D
+[inverse_kinematics]   # opt-in: 3D -> NeuroMechFly joint angles
 [visualization]        # output videos
 ```
 
@@ -131,6 +132,7 @@ table.
 | `do_bundle_adjustment` | bool | `true` | Refine the cameras. |
 | `do_pictorial_structures` | bool | `false` | DeepFly3D-style peak recovery (opt-in). |
 | `do_triangulation` | bool | `true` | Triangulate 2D → 3D. |
+| `do_inverse_kinematics` | bool | `false` | Fit NeuroMechFly joint angles to the 3D pose (opt-in). |
 | `do_visualization` | bool | `true` | Render the videos. |
 
 ## `[pose2d]` — 2D detection { #pose2d }
@@ -261,6 +263,26 @@ How the per-view 2D points become one 3D point.
 | `max_drops` | int | `5` | Max views dropped per offending point (`greedy`). |
 | `weigh_by_confidence` | bool | `false` | Scale the DLT by `sqrt(confidence)` (the mirror of the BA knob, which defaults `true`). |
 
+## `[inverse_kinematics]` — joint angles { #inverse_kinematics }
+
+Runs only when `do_inverse_kinematics = true`. Fits a NeuroMechFly-style
+articulated model to the triangulated 3D pose: each leg is aligned to a body frame
+derived from the data and solved per frame with bounded least squares. Writes the
+joint angles **and** the fitted model joints (which reproject onto the raw images —
+see the `skeleton_nmf` panel and the GUI's NMF overlay) to `results.h5`.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `template` | str | `"neuromechfly"` | A packaged template name, or a path to a template TOML. |
+| `legs` | list[str] | all | Which legs to fit (e.g. `["rf", "lf"]`). |
+| `max_nfev` | int | `100` | Per-frame `scipy.optimize.least_squares` iteration cap. |
+| `loss` | str | `"linear"` | Least-squares loss (`"linear"`, `"huber"`, `"cauchy"`, …). |
+| `f_scale` | float | `1.0` | Robust-loss scale (units of the 3D pose). |
+
+A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits in
+**degrees**, keyed `"<LEG>_<joint>_<dof>"` (joints `ThC`/`CTr`/`FTi`/`TiTa`; dofs
+`yaw`/`pitch`/`roll`), e.g. `RF_FTi_pitch = [10, 160]`.
+
 ## `[visualization]` — output videos { #visualization }
 
 Global settings plus one `[[visualization.videos]]` per output MP4.
@@ -292,7 +314,7 @@ winning.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), or `"skeleton_3d"` (the 3D skeleton reprojected into the view). |
+| `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into the view), or `"skeleton_nmf"` (the fitted inverse-kinematics model reprojected into the view). |
 | `view` | str | *required* | Camera/view name. |
 | `x0`, `y0` | int | `0` | Top-left pixel of the panel. |
 | `scale` | float | `1.0` | Uniform scale. |
@@ -300,6 +322,7 @@ winning.
 | `background` | str or [r, g, b] | inherits | Per-panel fill. |
 | *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `palette`, …). |
 
-A `skeleton_3d` panel needs a 3D pose; a video that requires 3D is skipped (with
-a logged reason) when the result has none. Videos are encoded H.264 / libx264 via
-PyAV on the CPU.
+A `skeleton_3d` panel needs a 3D pose, and a `skeleton_nmf` panel needs the
+inverse-kinematics model; a video that requires either is skipped (with a logged
+reason) when the result has none. Videos are encoded H.264 / libx264 via PyAV on
+the CPU.

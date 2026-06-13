@@ -292,3 +292,62 @@ def test_store_footage_absent_when_not_written(cameras, rng, tmp_path):
     store = StageStore(tmp_path / "results.h5")
     _write_base(store, cameras, rng)  # no footage argument
     assert store.read_footage() is None
+
+
+# -- inverse_kinematics group --------------------------------------------------
+
+
+def test_store_ik_roundtrip(cameras, rng, tmp_path):
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    assert not store.has("inverse_kinematics")
+    t, n, d = 4, 38, 5
+    angles = rng.normal(size=(t, d))
+    names = [f"Angle_RF_J{i}" for i in range(d)]
+    model = rng.normal(size=(t, n, 3))
+    model[1, 7] = np.nan  # an unobserved model joint
+    store.write_ik(
+        angles=angles,
+        angle_names=names,
+        model_pts3d=model,
+        meta={"template": "neuromechfly"},
+    )
+
+    assert store.has("inverse_kinematics")
+    got_angles, got_names, got_model = store.read_ik()
+    np.testing.assert_array_equal(got_angles, angles)
+    assert got_names == names
+    np.testing.assert_array_equal(got_model, model)  # NaN preserved
+
+
+def test_poseresult_load_picks_up_nmf(cameras, rng, tmp_path):
+    """PoseResult.load surfaces the fitted model joints as nmf_pts3d."""
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    store.write_points(
+        "triangulation",
+        pts2d=rng.normal(size=(len(cameras), 4, 38, 2)),
+        pts3d=rng.normal(size=(4, 38, 3)),
+        reproj_error=rng.uniform(size=(len(cameras), 4, 38)),
+    )
+    model = rng.normal(size=(4, 38, 3))
+    store.write_ik(
+        angles=rng.normal(size=(4, 5)), angle_names=["a"] * 5, model_pts3d=model
+    )
+    res = PoseResult.load(store.path)
+    assert res.nmf_pts3d is not None
+    np.testing.assert_array_equal(res.nmf_pts3d, model)
+
+
+def test_store_truncate_from_drops_ik(cameras, rng, tmp_path):
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    store.write_ik(
+        angles=rng.normal(size=(4, 5)),
+        angle_names=["a"] * 5,
+        model_pts3d=rng.normal(size=(4, 38, 3)),
+    )
+    assert store.has("inverse_kinematics")
+    store.truncate_from("inverse_kinematics")
+    assert not store.has("inverse_kinematics")
+    assert store.read_ik() is None

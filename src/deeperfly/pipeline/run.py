@@ -303,6 +303,30 @@ def _run_triangulation(ctx: _RunContext) -> bool:
     return True
 
 
+def _run_inverse_kinematics(ctx: _RunContext) -> bool:
+    pts3d = stages.select_pts3d(ctx.enabled, ctx.store)
+    if pts3d is None:
+        log.warning(
+            "skipping inverse_kinematics: no 3D pose available -- enable "
+            "[pipeline].do_triangulation (or do_pictorial_structures)"
+        )
+        return False
+    result = stages.stage_inverse_kinematics(
+        ctx.config, ctx.store.read_skeleton(), pts3d
+    )
+    ctx.store.truncate_from("inverse_kinematics")
+    ctx.store.write_ik(
+        angles=result.angles,
+        angle_names=result.angle_names,
+        model_pts3d=result.model_pts3d,
+        meta={
+            "template": ctx.config.inverse_kinematics.template,
+            "alignment": result.alignment.to_json(),
+        },
+    )
+    return True
+
+
 def _run_visualization(ctx: _RunContext) -> bool:
     result = stages.assemble_result(ctx.config, ctx.enabled, ctx.store)
     if result is None:
@@ -336,5 +360,6 @@ _RUNNERS = {
     "bundle_adjustment": _run_bundle_adjustment,
     "pictorial_structures": _run_pictorial_structures,
     "triangulation": _run_triangulation,
+    "inverse_kinematics": _run_inverse_kinematics,
     "visualization": _run_visualization,
 }

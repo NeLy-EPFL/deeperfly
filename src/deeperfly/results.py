@@ -25,6 +25,11 @@ be re-run later from pristine upstream outputs:
         points               (V, T, P, 2) cleaned 2D (outlier-rejecting methods)
         points3d             (T, P, 3)
         reproj_error         (V, T, P)
+    inverse_kinematics/
+        angles               (T, D) fitted joint angles (radians)
+        angle_names          (D,) the angle names, in column order
+        points3d             (T, P, 3) fitted model joints (world; skeleton order)
+        attrs["template"]    the template name; attrs["alignment"] the body frame
 
 :class:`StageStore` is the per-stage read/write access used by the staged run;
 :class:`PoseResult` is the assembled in-memory view (the *best* points present:
@@ -68,6 +73,7 @@ _STAGE_MARKER = {
     "bundle_adjustment": "bundle_adjustment/cameras",
     "pictorial_structures": "pictorial_structures/points",
     "triangulation": "triangulation/points3d",
+    "inverse_kinematics": "inverse_kinematics/angles",
 }
 
 
@@ -81,11 +87,12 @@ class PoseResult:
     conf: Float[np.ndarray, "V T P"] | None = None
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     reproj_error: Float[np.ndarray, "V T P"] | None = None
+    nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.pts2d = np.asarray(self.pts2d, dtype=float)
-        for name in ("conf", "pts3d", "reproj_error"):
+        for name in ("conf", "pts3d", "reproj_error", "nmf_pts3d"):
             arr = getattr(self, name)
             if arr is not None:
                 setattr(self, name, np.asarray(arr, dtype=float))
@@ -178,6 +185,11 @@ class PoseResult:
                 if reproj is None and f"{stage}/reproj_error" in f:
                     reproj = f[f"{stage}/reproj_error"][()]  # type: ignore[index]
             conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
+            nmf = (
+                f["inverse_kinematics/points3d"][()]  # type: ignore[index]
+                if "inverse_kinematics/points3d" in f
+                else None
+            )
         if pts2d is None:
             raise ValueError(f"{path} has no 2D points (no pose2d group)")
         return cls(
@@ -187,6 +199,7 @@ class PoseResult:
             conf=conf,  # type: ignore[arg-type]
             pts3d=pts3d,  # type: ignore[arg-type]
             reproj_error=reproj,  # type: ignore[arg-type]
+            nmf_pts3d=nmf,  # type: ignore[arg-type]
             meta=meta,
         )
 
@@ -332,6 +345,61 @@ class StageStore:
             ):
                 if arr is not None:
                     g.create_dataset(name, data=np.asarray(arr, dtype=float))
+
+    def write_ik(
+        self,
+        *,
+        angles,
+        angle_names,
+        model_pts3d,
+        meta: dict | None = None,
+    ) -> None:
+        """Replace the ``inverse_kinematics`` group (joint angles + fitted model joints).
+
+        Parameters
+        ----------
+        angles
+            Fitted joint angles ``(T, D)`` in radians.
+        angle_names
+            The ``D`` angle names, in column order.
+        model_pts3d
+            The fitted model joints ``(T, P, 3)`` in world coordinates (skeleton
+            point order), for reprojection / the overlay.
+        meta
+            Free-form metadata stored on the group's ``attrs`` (e.g. the template
+            name and the alignment), JSON-encoded.
+        """
+        with h5py.File(self.path, "a") as f:
+            if "inverse_kinematics" in f:
+                del f["inverse_kinematics"]
+            g = f.create_group("inverse_kinematics")
+            g.create_dataset("angles", data=np.asarray(angles, dtype=float))
+            g.create_dataset(
+                "angle_names",
+                data=np.array(list(angle_names), dtype=object),
+                dtype=_STR,
+            )
+            g.create_dataset("points3d", data=np.asarray(model_pts3d, dtype=float))
+            if meta:
+                g.attrs["meta"] = json.dumps(meta, default=str)
+
+    def read_ik(
+        self,
+    ) -> tuple[np.ndarray, list[str], np.ndarray] | None:
+        """``(angles, angle_names, model_pts3d)`` of the IK stage, or ``None``."""
+        with self._open() as f:
+            if f is None or "inverse_kinematics/angles" not in f:
+                return None
+            g = f["inverse_kinematics"]
+            names = [
+                n.decode() if isinstance(n, bytes) else n
+                for n in g["angle_names"][()]  # type: ignore[index]
+            ]
+            return (
+                g["angles"][()],  # type: ignore[index]
+                names,
+                g["points3d"][()],  # type: ignore[index]
+            )
 
     def truncate_from(self, stage: str) -> None:
         """Delete ``stage``'s group and every later stage's group.

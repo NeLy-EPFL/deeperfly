@@ -142,7 +142,7 @@ from a 2D result that stored no candidates skips the stage with a notice.
 
 Each `[[visualization.videos]]` is one output MP4, composited from an ordered
 list of `panels`; each panel draws one op (`imshow`, `skeleton_2d`,
-`skeleton_3d`) for one camera view at a pixel offset. Common edits:
+`skeleton_3d`, `skeleton_nmf`) for one camera view at a pixel offset. Common edits:
 
 ```toml
 [visualization]

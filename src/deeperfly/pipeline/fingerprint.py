@@ -143,12 +143,27 @@ def pts2d_source(enabled: dict[str, bool], store: StageStore) -> str:
     return "pose2d"
 
 
+def pts3d_source(enabled: dict[str, bool], store: StageStore) -> str | None:
+    """Which stage's 3D points a downstream stage consumes (triangulation, else pictorial)."""
+    for stage in ("triangulation", "pictorial_structures"):
+        if enabled[stage] and store.has(stage):
+            return stage
+    return None
+
+
 def pose_sources(enabled: dict[str, bool], store: StageStore) -> dict[str, str | None]:
     """Which stage outputs the visualization draws (2D and 3D separately)."""
     for stage in ("triangulation", "pictorial_structures"):
         if enabled[stage] and store.has(stage):
             return {"pts2d": stage, "pts3d": stage}
     return {"pts2d": "pose2d", "pts3d": None}
+
+
+def nmf_source(enabled: dict[str, bool], store: StageStore) -> str | None:
+    """Whether the fitted IK model is available to draw (the ``skeleton_nmf`` overlay)."""
+    if enabled["inverse_kinematics"] and store.has("inverse_kinematics"):
+        return "inverse_kinematics"
+    return None
 
 
 def _cameras_entry(config: Config, enabled: dict[str, bool], store: StageStore):
@@ -254,16 +269,40 @@ def stage_fingerprint(
                 "pts2d_from": pts2d_source(enabled, store),
             }
         )
+    if stage == "inverse_kinematics":
+        p = config.inverse_kinematics
+        return _norm(
+            {
+                "template": _ik_template_digest(config),
+                "max_nfev": p.max_nfev,
+                "loss": p.loss,
+                "f_scale": p.f_scale,
+                "skeleton": _skeleton_digest(config),
+                "pts3d_from": pts3d_source(enabled, store),
+            }
+        )
     if stage == "visualization":
         return _norm(
             {
                 "videos": [dataclasses.asdict(spec) for spec in config.videos],
                 "skeleton": _skeleton_digest(config, cosmetic=True),
                 "pose_from": pose_sources(enabled, store),
+                "nmf_from": nmf_source(enabled, store),
                 "cameras_from": _cameras_entry(config, enabled, store),
             }
         )
     raise ValueError(f"unknown stage {stage!r}")
+
+
+def _ik_template_digest(config: Config) -> dict:
+    """The template choice + resolved per-DOF bounds (captures bounds overrides)."""
+    t = config.ik_template()
+    bounds = {}
+    for leg in t.legs:
+        lo, hi = leg.bounds
+        for name, blo, bhi in zip(leg.dof_names, lo, hi):
+            bounds[name] = [float(blo), float(bhi)]
+    return {"name": t.name, "dof_names": t.dof_names, "bounds": bounds}
 
 
 # -- comparison ----------------------------------------------------------------

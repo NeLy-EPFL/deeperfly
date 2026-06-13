@@ -1,0 +1,93 @@
+# NeuroMechFly inverse-kinematics template.
+#
+# Describes the articulated leg/head model the `inverse_kinematics` stage fits to
+# the 3D pose. Derived from NeLy-EPFL/sequential-inverse-kinematics (`body_config`),
+# reimplemented here so deeperfly carries no ikpy/flygym dependency.
+#
+# Leg-local frame: x = anterior, y = left, z = dorsal (up). The rest leg points
+# straight down (-z); with every joint angle zero the chain reproduces that pose.
+# A leg is a serial chain from the body-fixed thorax-coxa (ThC) out to the claw.
+# Each joint rotates the running frame about its DOF `axis` vectors (applied in the
+# listed order); the next joint's `segment` then offsets the position down the rest
+# axis by the *measured* segment length (lengths come from the data, not this file).
+#
+# Joint angle limits are the `[bounds.<side>]` tables below, in DEGREES. Override
+# any of them per leg from the run config, e.g.
+#   [inverse_kinematics.bounds]
+#   RF_FTi_pitch = [10, 160]
+
+name = "neuromechfly"
+
+# The legs to expand the generic chain over (point names are <leg>_<suffix>).
+legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
+
+# -- the generic single-leg chain (shared by all six legs) -------------------
+
+[[joints]]
+name = "ThC"            # thorax-coxa: 3-DOF ball joint at the body-fixed coxa
+suffix = "thorax_coxa"
+dofs = [
+    { name = "yaw",   axis = [0.0, 0.0, 1.0] },
+    { name = "pitch", axis = [0.0, 1.0, 0.0] },
+    { name = "roll",  axis = [1.0, 0.0, 0.0] },
+]
+
+[[joints]]
+name = "CTr"            # coxa-trochanter
+suffix = "coxa_trochanter"
+segment = "coxa"
+dofs = [
+    { name = "pitch", axis = [0.0, 1.0, 0.0] },
+    { name = "roll",  axis = [1.0, 0.0, 0.0] },
+]
+
+[[joints]]
+name = "FTi"            # femur-tibia
+suffix = "femur_tibia"
+segment = "femur"
+dofs = [
+    { name = "pitch", axis = [0.0, 1.0, 0.0] },
+]
+
+[[joints]]
+name = "TiTa"           # tibia-tarsus
+suffix = "tibia_tarsus"
+segment = "tibia"
+dofs = [
+    { name = "pitch", axis = [0.0, 1.0, 0.0] },
+]
+
+[[joints]]
+name = "Claw"           # tarsus tip (end effector, no DOFs)
+suffix = "claw"
+segment = "tarsus"
+
+# -- joint angle limits (degrees) --------------------------------------------
+# Right side from NeuroMechFly; left side mirrors the roll/yaw ranges. The middle
+# and hind legs reuse the front-leg ranges by default -- tighten them per leg in
+# the run config if needed.
+
+[bounds.r]
+ThC_yaw = [-50, 50]
+ThC_pitch = [-40, 60]
+ThC_roll = [-130, 50]
+CTr_pitch = [-180, 0]
+CTr_roll = [-150, 0]
+FTi_pitch = [0, 170]
+TiTa_pitch = [-150, 0]
+
+[bounds.l]
+ThC_yaw = [-50, 50]
+ThC_pitch = [-40, 60]
+ThC_roll = [-50, 130]
+CTr_pitch = [-180, 0]
+CTr_roll = [0, 150]
+FTi_pitch = [0, 170]
+TiTa_pitch = [-150, 0]
+
+# -- head / antenna ----------------------------------------------------------
+# The antenna tips are fit by the vector method (their direction from a derived
+# head origin), not a serial chain. A no-op when these points are not tracked.
+
+[head]
+antennae = ["l_antenna", "r_antenna"]

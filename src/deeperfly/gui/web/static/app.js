@@ -169,6 +169,10 @@ class App {
   /** @type {HTMLInputElement} */
   latentCheck = el("show-latent");
   /** @type {HTMLLabelElement} */
+  nmfWrap = el("nmf-wrap");
+  /** @type {HTMLInputElement} */
+  nmfCheck = el("show-nmf");
+  /** @type {HTMLLabelElement} */
   pinWrap = el("pin-wrap");
   /** @type {HTMLInputElement} */
   pinCheck = el("pin-mode");
@@ -286,6 +290,9 @@ class App {
     // The latent overlay is the reprojected 3D estimate -- meaningless without 3D.
     this.latentWrap.style.display = this.meta.has_3d ? "" : "none";
     this.latentCheck.addEventListener("change", () => this.applyLatent());
+    // The NMF overlay is the fitted inverse-kinematics model -- only when present.
+    this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.nmfCheck.addEventListener("change", () => this.applyNmf());
 
     this.pinCheck.addEventListener("change", () => {
       this.pinMode = this.pinCheck.checked;
@@ -426,6 +433,7 @@ class App {
       view.setFixed(showFixed ? p.fixed[v] : null);
       view.setInvisible(showFixed ? p.invisible[v] : null);
       view.setLatent(p.proj ? p.proj[v] : null);
+      view.setNmf(p.nmf ? p.nmf[v] : null);
     });
     this.dirty = p.dirty;
     this.updateDirty();
@@ -455,6 +463,11 @@ class App {
   applyLatent() {
     const visible = this.latentCheck.checked;
     this.views.forEach((view) => view.setLatentVisible(visible));
+  }
+
+  applyNmf() {
+    const visible = this.nmfCheck.checked;
+    this.views.forEach((view) => view.setNmfVisible(visible));
   }
 
   /** @param {HTMLInputElement} check  flip a checkbox from a shortcut, then apply */
@@ -752,6 +765,11 @@ class App {
     if (has3d) {
       b.push({ key: "p", label: "p", desc: "Toggle 3D estimate overlay", run: () => this.toggleCheck(this.latentCheck, () => this.applyLatent()) });
       b.push({ key: "x", label: "x", desc: "Toggle pin-on-tap (Edit 3D)", run: () => this.togglePin() });
+    }
+    if (this.meta.has_nmf) {
+      b.push({ key: "m", label: "m", desc: "Toggle NMF model overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
+    }
+    if (has3d) {
       b.push({ key: "l", label: "l", desc: "Fix / unfix the selected point (Edit 3D)", run: () => this.toggleSelectedFixed() });
       b.push({ key: "o", label: "o", desc: "Obscure / reveal the selected point (Edit 3D)", run: () => this.toggleSelectedInvisible() });
     }

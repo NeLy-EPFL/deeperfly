@@ -108,6 +108,11 @@ class EditorState:
         return self.result.pts3d is not None
 
     @property
+    def has_nmf(self) -> bool:
+        """Whether the result carries a fitted NMF model (enables its overlay)."""
+        return self.result.nmf_pts3d is not None
+
+    @property
     def camera_names(self) -> list[str]:
         return self.result.cameras.names
 
@@ -152,6 +157,21 @@ class EditorState:
         if pts3d is None:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
+
+    def display_nmf_projected(
+        self, frame: int | None = None
+    ) -> Float[np.ndarray, "V P 2"] | None:
+        """The fitted NMF model joints for ``frame`` reprojected into every view, or ``None``.
+
+        Read-only display overlay (the model is a pipeline output, not edited here):
+        the IK-fit model joints (in the skeleton's point order) projected with the
+        same forward model the other overlays use, so the model lines up with the
+        keypoints it was fit to.
+        """
+        if self.result.nmf_pts3d is None:
+            return None
+        t = self._resolve_frame(frame)
+        return np.asarray(self.result.cameras.project(self.result.nmf_pts3d[t]))
 
     def display_pts2d_refine(
         self, frame: int | None = None

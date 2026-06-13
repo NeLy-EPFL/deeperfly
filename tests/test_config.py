@@ -109,6 +109,55 @@ def test_bundle_adjustment_defaults_when_absent():
     )
 
 
+def test_inverse_kinematics_defaults_when_absent():
+    ik = Config.from_dict({}).inverse_kinematics
+    assert (
+        ik.template == "neuromechfly"
+        and ik.legs is None
+        and ik.max_nfev == 100
+        and ik.loss == "linear"
+        and ik.f_scale == 1.0
+        and ik.bounds == {}
+    )
+
+
+def test_inverse_kinematics_reads_overrides():
+    ik = Config.from_dict(
+        {
+            "inverse_kinematics": {
+                "template": "neuromechfly",
+                "legs": ["rf", "lf"],
+                "max_nfev": 50,
+                "bounds": {"RF_FTi_pitch": [10, 160]},
+            }
+        }
+    ).inverse_kinematics
+    assert ik.legs == ["rf", "lf"] and ik.max_nfev == 50
+    assert ik.bounds == {"RF_FTi_pitch": [10.0, 160.0]}
+
+
+def test_inverse_kinematics_unknown_key_fails_loudly():
+    with pytest.raises(ValueError, match=r"\[inverse_kinematics\] has unknown key"):
+        Config.from_dict({"inverse_kinematics": {"bogus": 1}}).inverse_kinematics
+
+
+def test_ik_template_applies_legs_and_bounds():
+    cfg = Config.from_dict(
+        {
+            "inverse_kinematics": {
+                "legs": ["rf"],
+                "bounds": {"RF_FTi_pitch": [10, 160]},
+            }
+        }
+    )
+    t = cfg.ik_template()
+    assert [leg.name for leg in t.legs] == ["rf"]
+    fti = next(j for j in t.legs[0].joints if j.name == "FTi").dofs[0]
+    import numpy as np
+
+    assert round(np.rad2deg(fti.lo)) == 10 and round(np.rad2deg(fti.hi)) == 160
+
+
 # -- sources and views -------------------------------------------------------
 
 

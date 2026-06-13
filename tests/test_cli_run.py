@@ -64,6 +64,7 @@ def test_stage_flags_defaults():
         "bundle_adjustment": True,
         "pictorial_structures": False,
         "triangulation": True,
+        "inverse_kinematics": False,
         "visualization": True,
     }
 
@@ -352,6 +353,49 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
         ]
     )
     assert PoseResult.load(outdir / "results.h5").pts3d is not None
+
+
+def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
+    """Enabling inverse_kinematics on a cached 3D pose writes the IK group end-to-end."""
+    from deeperfly.results import StageStore
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    PoseResult(
+        result.cameras,
+        result.skeleton,
+        result.pts2d,
+        conf=result.conf,
+        pts3d=result.pts3d,
+        reproj_error=result.reproj_error,
+    ).save(outdir / "results.h5")
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(
+        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
+        "do_triangulation = true\ndo_inverse_kinematics = true\n"
+        "do_visualization = false\n"
+        "[inverse_kinematics]\nmax_nfev = 60\n"
+    )
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "ghost"),
+            "-c",
+            str(cfg),
+            "-o",
+            str(outdir),
+            "--log-level",
+            "error",
+        ]
+    )
+
+    store = StageStore(outdir / "results.h5")
+    assert store.has("inverse_kinematics")
+    angles, names, model = store.read_ik()
+    assert angles.shape[0] == result.pts3d.shape[0]  # one row per frame
+    assert len(names) == angles.shape[1]
+    assert model.shape == (result.pts3d.shape[0], result.skeleton.n_points, 3)
+    assert PoseResult.load(outdir / "results.h5").nmf_pts3d is not None
 
 
 # -- input resolution: multiple inputs, wildcards, --recursive ----------------

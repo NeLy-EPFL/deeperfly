@@ -368,6 +368,56 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
     return pts2d, pts3d, reproj
 
 
+def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
+    """Fit the NeuroMechFly model's joint angles to the triangulated 3D pose.
+
+    Parameters
+    ----------
+    config
+        The run config (the template, joint limits and solver options).
+    skeleton
+        The skeleton (resolves the template's point names to ``pts3d`` columns).
+    pts3d
+        The 3D pose ``(T, P, 3)`` (triangulation, else pictorial -- see
+        :func:`select_pts3d`).
+
+    Returns
+    -------
+    deeperfly.inverse_kinematics.IKResult
+        The joint angles, fitted model joints (world), and the alignment.
+    """
+    from ..inverse_kinematics import solve_inverse_kinematics
+
+    if skeleton is None:
+        raise ValueError(
+            "inverse_kinematics requires a skeleton, but none was stored; "
+            "re-run with [pipeline].do_pose2d to write one"
+        )
+    template = config.ik_template()
+    p = config.inverse_kinematics
+    log.info(
+        "inverse kinematics: fitting %d leg(s) over %d frames (template %r)",
+        len(template.legs),
+        pts3d.shape[0],
+        template.name,
+    )
+    result = solve_inverse_kinematics(
+        pts3d,
+        skeleton,
+        template,
+        max_nfev=p.max_nfev,
+        loss=p.loss,
+        f_scale=p.f_scale,
+    )
+    finite = np.isfinite(result.angles).all(axis=0).sum()
+    log.info(
+        "inverse kinematics: %d/%d joint-angle tracks fully solved",
+        int(finite),
+        result.angles.shape[1],
+    )
+    return result
+
+
 # -- stage-input selectors -----------------------------------------------------
 
 
@@ -421,6 +471,15 @@ def select_pts2d(enabled: dict[str, bool], store: StageStore) -> np.ndarray | No
     return None if base is None else base[0]
 
 
+def select_pts3d(enabled: dict[str, bool], store: StageStore) -> np.ndarray | None:
+    """The 3D points inverse kinematics consumes (triangulation, else pictorial)."""
+    source = fingerprint.pts3d_source(enabled, store)
+    if source is None:
+        return None
+    _pts = store.read_points(source)
+    return None if _pts is None else _pts[1]  # points3d
+
+
 def assemble_result(
     config: Config, enabled: dict[str, bool], store: StageStore
 ) -> PoseResult | None:
@@ -448,6 +507,11 @@ def assemble_result(
             better2d, pts3d, reproj = _pts
             if better2d is not None:
                 pts2d = better2d
+    nmf_pts3d = None
+    if fingerprint.nmf_source(enabled, store) is not None:
+        ik = store.read_ik()
+        if ik is not None:
+            nmf_pts3d = ik[2]  # the fitted model joints (world)
     return PoseResult(
         cameras=select_cameras(config, enabled, store),
         skeleton=store.read_skeleton(),  # type: ignore[arg-type]
@@ -455,6 +519,7 @@ def assemble_result(
         conf=conf,
         pts3d=pts3d,
         reproj_error=reproj,
+        nmf_pts3d=nmf_pts3d,
     )
 
 
@@ -576,6 +641,14 @@ def render_videos(
                 "no 3D pose (enable [pipeline].do_triangulation or do_pictorial_structures)",
                 spec.video_name,
             )
+        elif result.nmf_pts3d is None and any(
+            p.plot == "skeleton_nmf" for p in spec.panels
+        ):
+            log.warning(
+                "skipping video %r: it overlays the fitted NMF model but the result "
+                "has no IK pose (enable [pipeline].do_inverse_kinematics)",
+                spec.video_name,
+            )
         else:
             pending.append(spec)
     if not pending:
@@ -593,6 +666,7 @@ def render_videos(
         pts2d=result.pts2d,
         pts3d=result.pts3d,
         conf=result.conf,
+        nmf_pts3d=result.nmf_pts3d,
     )
     make_progress = progress or _null_progress
     for spec in pending:

@@ -52,6 +52,7 @@ def test_meta_payload(client, result):
     assert meta["n_frames"] == result.n_frames
     assert meta["n_points"] == result.pts2d.shape[2]
     assert meta["has_3d"] is True
+    assert meta["has_nmf"] is False  # the default result carries no fitted NMF model
     assert list(meta["camera_names"]) == list(result.cameras.names)
     assert len(meta["point_colors"]) == result.pts2d.shape[2]
     assert len(meta["bones"]) == len(result.skeleton.bones)
@@ -82,6 +83,31 @@ def test_frame_returns_jpeg(client, result):
 
 def test_frame_unknown_camera_404(client):
     assert client.get("/api/frame/nope/0").status_code == 404
+
+
+def test_nmf_overlay_payload(result, tmp_path):
+    """A result with a fitted NMF model exposes it via has_nmf + the points 'nmf' field."""
+    import dataclasses
+
+    # reuse the 3D points as a stand-in model; the server just reprojects them.
+    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    image_sizes = {name: (HEIGHT, WIDTH) for name in res.cameras.names}
+    session = Session.build(
+        EditorState.from_result(res),
+        FrameSource({}, image_sizes=image_sizes),
+        results_path=str(tmp_path / "results.h5"),
+        corrections_path=tmp_path / "corrections.h5",
+        image_sizes=image_sizes,
+    )
+    client = TestClient(create_app(session))
+
+    assert client.get("/api/meta").json()["has_nmf"] is True
+    payload = client.get("/api/points/0?mode=view").json()
+    nmf = payload["nmf"]
+    assert nmf is not None and len(nmf) == res.n_views
+    assert all(len(row) == res.pts2d.shape[2] for row in nmf)
+    # the model reprojects to finite pixels in at least one view
+    assert any(q is not None for row in nmf for q in row)
 
 
 # -- points -------------------------------------------------------------------

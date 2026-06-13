@@ -188,6 +188,7 @@ class Sources:
     pts2d: Float[np.ndarray, "V T P 2"] | None = None
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     conf: Float[np.ndarray, "V T P"] | None = None
+    nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
 
     def _view_index(self, view: str) -> int:
         return self.camera_group.names.index(view)
@@ -214,6 +215,8 @@ class Sources:
     def n_frames(self) -> int:
         if self.pts3d is not None:
             return int(self.pts3d.shape[0])
+        if self.nmf_pts3d is not None:
+            return int(self.nmf_pts3d.shape[0])
         if self.pts2d is not None:
             return int(self.pts2d.shape[1])
         if self.frames:
@@ -261,11 +264,29 @@ def _op_skeleton_3d(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> N
     )
 
 
+def _op_skeleton_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
+    if src.nmf_pts3d is None:
+        raise ValueError("skeleton_nmf panel needs Sources.nmf_pts3d")
+    # The fitted model joints are in the skeleton's point order with its bones, so
+    # the 3D skeleton drawer reprojects them into the view directly.
+    _cv.draw_skeleton_3d(
+        canvas,
+        src.nmf_pts3d[t],
+        src.camera_group[panel.view],
+        src.skeleton,
+        x0=panel.x0,
+        y0=panel.y0,
+        scale=panel.scales(*src.view_size(panel.view)),
+        **panel.options,
+    )
+
+
 #: ``plot`` name -> draw op. Extend to add new panel kinds.
 OPS: dict[str, Callable[[np.ndarray, Panel, Sources, int], None]] = {
     "imshow": _op_imshow,
     "skeleton_2d": _op_skeleton_2d,
     "skeleton_3d": _op_skeleton_3d,
+    "skeleton_nmf": _op_skeleton_nmf,
 }
 
 

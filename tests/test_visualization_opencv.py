@@ -475,6 +475,26 @@ def test_compose_frame_overlays_skeleton_on_image(result, fly, frames):
     assert frame.any()
 
 
+def test_skeleton_nmf_op_overlays_fitted_model(result, fly, frames):
+    """The skeleton_nmf op reprojects Sources.nmf_pts3d onto each view."""
+    spec = compose.read_video_specs(_two_panel_config("skeleton_nmf"))[0]
+    src = compose.Sources(
+        fly, result.cameras, frames, pts2d=result.pts2d, nmf_pts3d=result.pts3d
+    )
+    frame = compose.compose_frame(spec, src, t=0)
+    assert frame.shape == (96, 256, 3)
+    assert frame.any()
+
+
+def test_skeleton_nmf_op_requires_nmf_points(result, fly, frames):
+    spec = compose.VideoSpec(
+        video_name="v", panels=[compose.Panel(plot="skeleton_nmf", view="rh")]
+    )
+    src = compose.Sources(fly, result.cameras, frames, pts3d=result.pts3d)
+    with pytest.raises(ValueError, match="skeleton_nmf panel needs Sources.nmf_pts3d"):
+        compose.compose_frame(spec, src, t=0)
+
+
 def test_render_video_stacks_all_frames(result, fly, frames):
     spec = compose.read_video_specs(_two_panel_config("skeleton_3d"))[0]
     src = compose.Sources(
@@ -503,7 +523,7 @@ def test_packaged_config_videos_parse():
 
     cfg = Config.from_toml(files("deeperfly.data") / "default_config.toml")
     specs = compose.read_video_specs(cfg)
-    assert {s.video_name for s in specs} == {"pose2d", "pose3d"}
+    assert {s.video_name for s in specs} == {"pose2d", "pose3d", "pose_nmf"}
     assert all(p.plot in compose.OPS for s in specs for p in s.panels)
     # the global [visualization.kwargs] sets line_thickness=2 on every skeleton panel
     skel = [p for s in specs for p in s.panels if p.plot.startswith("skeleton")]
