@@ -68,11 +68,20 @@ class EditorState:
     def from_result(
         cls, result: PoseResult, corrections: Corrections | None = None
     ) -> EditorState:
-        """Build a state for ``result``, with an empty overlay if none is given."""
+        """Build a state for ``result``, with an empty overlay if none is given.
+
+        A fresh overlay seeds the per-view "obscured" state from the detector: a
+        NaN 2D detection means that camera did not see the keypoint, so the view
+        starts obscured (dropped from triangulation, just following the
+        reprojection) and the operator can drag it in to un-obscure it. The 3D
+        point itself is left as the pipeline solved it (already triangulated from
+        the finite views). A loaded sidecar keeps its own saved invisible mask.
+        """
         if corrections is None:
             corrections = Corrections.empty(
                 result.n_views, result.n_frames, cls._n_points(result)
             )
+            corrections.pts2d_invisible = ~np.isfinite(result.pts2d).all(axis=-1)
         return cls(result=result, corrections=corrections)
 
     @staticmethod
@@ -355,3 +364,9 @@ class EditorState:
         t = self._resolve_frame(frame)
         self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
         self._resolve_3d_from_fixed(point, t)
+
+    def reset_frame(self, frame: int | None = None) -> None:
+        """Drop every correction in ``frame`` -- all points, all views' 2D, the
+        fixed/obscured flags, and 3D -- back to the pipeline's original pose."""
+        t = self._resolve_frame(frame)
+        self.corrections.clear_frame(t)

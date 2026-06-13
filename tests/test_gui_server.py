@@ -161,8 +161,13 @@ def test_ws_toggle_invisible_flips_mask_and_sets_dirty(client, result):
     view, point = 1, 5
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
-            {"type": "toggle_invisible", "view": view, "point": point,
-             "frame": 0, "mode": "edit_3d"}
+            {
+                "type": "toggle_invisible",
+                "view": view,
+                "point": point,
+                "frame": 0,
+                "mode": "edit_3d",
+            }
         )
         reply = ws.receive_json()
     assert reply["dirty"] is True
@@ -197,17 +202,52 @@ def test_ws_reset_point_view_reverts_one_view(client):
     with client.websocket_connect("/ws") as ws:
         for view, xy in ((0, (12.0, 34.0)), (1, (56.0, 78.0))):
             ws.send_json(
-                {"type": "edit_2d", "view": view, "point": point,
-                 "x": xy[0], "y": xy[1], "frame": 0, "mode": "edit_2d"}
+                {
+                    "type": "edit_2d",
+                    "view": view,
+                    "point": point,
+                    "x": xy[0],
+                    "y": xy[1],
+                    "frame": 0,
+                    "mode": "edit_2d",
+                }
             )
             ws.receive_json()
         ws.send_json(
-            {"type": "reset_point_view", "view": 0, "point": point, "frame": 0, "mode": "edit_2d"}
+            {
+                "type": "reset_point_view",
+                "view": 0,
+                "point": point,
+                "frame": 0,
+                "mode": "edit_2d",
+            }
         )
         reply = ws.receive_json()
     # View 0 reverts off its edit; view 1's edit is untouched.
     assert not np.allclose(reply["points"][0][point], [12.0, 34.0])
     assert np.allclose(reply["points"][1][point], [56.0, 78.0])
+
+
+def test_ws_reset_frame_reverts_every_point(client):
+    with client.websocket_connect("/ws") as ws:
+        for view, point, xy in ((0, 3, (12.0, 34.0)), (1, 5, (56.0, 78.0))):
+            ws.send_json(
+                {
+                    "type": "edit_2d",
+                    "view": view,
+                    "point": point,
+                    "x": xy[0],
+                    "y": xy[1],
+                    "frame": 0,
+                    "mode": "edit_2d",
+                }
+            )
+            ws.receive_json()
+        ws.send_json({"type": "reset_frame", "frame": 0, "mode": "edit_2d"})
+        reply = ws.receive_json()
+    # Both edits are gone from the frame.
+    assert not np.allclose(reply["points"][0][3], [12.0, 34.0])
+    assert not np.allclose(reply["points"][1][5], [56.0, 78.0])
 
 
 def test_save_writes_sidecar_and_clears_dirty(client, session):
@@ -273,7 +313,9 @@ def _serve(session, **create_kw):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    )
     holder["server"] = server
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -285,7 +327,9 @@ def _serve(session, **create_kw):
 
 
 def test_closing_the_last_tab_stops_the_server(session):
-    server, thread, port = _serve(session, exit_on_disconnect=True, disconnect_grace=0.3)
+    server, thread, port = _serve(
+        session, exit_on_disconnect=True, disconnect_grace=0.3
+    )
     with ws_connect(f"ws://127.0.0.1:{port}/ws"):
         pass  # a browser tab opens its socket, then closes it (the tab is closed)
     thread.join(timeout=5)
@@ -294,14 +338,18 @@ def test_closing_the_last_tab_stops_the_server(session):
 
 def test_refresh_reconnect_cancels_the_shutdown(session):
     grace = 1.0
-    server, thread, port = _serve(session, exit_on_disconnect=True, disconnect_grace=grace)
+    server, thread, port = _serve(
+        session, exit_on_disconnect=True, disconnect_grace=grace
+    )
     url = f"ws://127.0.0.1:{port}/ws"
 
     ws1 = ws_connect(url)  # the page loads, holding its socket
     ws1.close()  # a refresh drops it...
     ws2 = ws_connect(url)  # ...and the reload reconnects within the grace period
     time.sleep(grace * 2)  # past when the (now-cancelled) shutdown would have fired
-    assert not server.should_exit, "a reconnect within the grace period cancels the shutdown"
+    assert not server.should_exit, (
+        "a reconnect within the grace period cancels the shutdown"
+    )
     assert thread.is_alive()
 
     ws2.close()  # closing the reconnected tab finally stops the server
@@ -312,7 +360,9 @@ def test_refresh_reconnect_cancels_the_shutdown(session):
 def test_keep_alive_survives_a_tab_close(session):
     # exit_on_disconnect off (the --keep-alive opt-out): the server stays up.
     grace = 0.2
-    server, thread, port = _serve(session, exit_on_disconnect=False, disconnect_grace=grace)
+    server, thread, port = _serve(
+        session, exit_on_disconnect=False, disconnect_grace=grace
+    )
     with ws_connect(f"ws://127.0.0.1:{port}/ws"):
         pass
     time.sleep(grace * 3)

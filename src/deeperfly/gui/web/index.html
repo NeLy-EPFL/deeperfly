@@ -14,28 +14,32 @@
       </div>
       <div id="controls">
         <div class="control-row frame-row">
-          <label>Frame <input id="frame-slider" type="range" /></label>
-          <input id="frame-number" type="number" />
+          <label title="Jump to a frame — drag the slider or use ← / → (Shift for ±10)">Frame <input id="frame-slider" type="range" /></label>
+          <input id="frame-number" type="number" title="Current frame — type a number to jump there" />
           <span id="frame-total"></span>
         </div>
         <div class="control-row">
-          <div class="field" id="mode-wrap">Mode <div id="mode-switch" class="segmented"></div></div>
-          <div class="field" id="layout-wrap">Layout <div id="layout-switch" class="segmented"></div></div>
+          <div class="field" id="mode-wrap" title="What a drag edits — 2D moves the point in this view only; 3D re-solves the 3D point and updates every view (keys 2 / 3)">Mode <div id="mode-switch" class="segmented"></div></div>
+          <div class="field" id="layout-wrap" title="Camera arrangement — Focus shows one big view plus thumbnails; Grid shows every camera equally (keys f / g)">Layout <div id="layout-switch" class="segmented"></div></div>
           <span class="sep"></span>
-          <label><input id="show-skeleton" type="checkbox" checked /> Skeleton</label>
-          <label><input id="show-labels" type="checkbox" /> Labels</label>
-          <label id="latent-wrap"><input id="show-latent" type="checkbox" /> 3D estimate</label>
-          <label id="pin-wrap"><input id="pin-mode" type="checkbox" /> Pin on tap</label>
+          <label title="Show the editable skeleton overlay (s)"><input id="show-skeleton" type="checkbox" checked /> Skeleton</label>
+          <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> Labels</label>
+          <label id="latent-wrap" title="Ghost the triangulated 3D estimate, reprojected onto each view (p)"><input id="show-latent" type="checkbox" /> 3D estimate</label>
+          <label id="pin-wrap" title="Edit 3D: a tap pins / unpins a point instead of dragging it (x)"><input id="pin-mode" type="checkbox" /> Pin on tap</label>
           <span class="sep"></span>
           <div class="field" id="point-status" title="The selected point's state in the selected view (l: fix, o: obscure)" hidden>
             <span id="point-status-name" class="point-status-name">—</span>
             <div id="point-status-states" class="segmented"></div>
           </div>
-          <button id="reset-view" title="Revert the last-selected point in its view (r)">Reset point (view)</button>
-          <button id="reset-all" title="Revert the last-selected point in every view (Shift+R)">Reset point (all)</button>
+          <div class="field reset-group">Reset
+            <button id="reset-view" title="Revert the selected point in its view (r)">Point in view</button>
+            <button id="reset-all" title="Revert the selected point in every view (Shift+R)">Point in all views</button>
+            <button id="reset-frame" title="Revert every point in this frame, all views">Whole frame</button>
+          </div>
           <span class="spacer"></span>
-          <button id="cameras" title="Show the camera rig in 3D (c)">Cameras</button>
-          <button id="help" title="Keyboard shortcuts (?)">?</button>
+          <button id="keypoints" title="Reference: where each keypoint sits on the fly — opens in a new tab (k)">Keypoints ↗</button>
+          <button id="cameras" title="Show the 3D camera rig layout (c)">Camera rig</button>
+          <button id="help" title="Show keyboard shortcuts (?)">?</button>
           <span id="status"></span>
           <button id="save" title="Save corrections (Ctrl/Cmd+S)">Save</button>
           <button id="close-editor" title="Stop the server and close the editor">Close</button>
@@ -66,7 +70,7 @@
       <div class="modal">
         <div class="modal-head">
           <span>Keyboard shortcuts</span>
-          <button id="help-close" class="icon-btn" aria-label="Close">✕</button>
+          <button id="help-close" class="icon-btn" aria-label="Close" title="Close (Esc)">✕</button>
         </div>
         <div id="help-body" class="modal-body"></div>
       </div>
@@ -75,8 +79,8 @@
     <div id="scene-overlay" class="overlay" hidden>
       <div class="modal modal-wide">
         <div class="modal-head">
-          <span>Camera layout</span>
-          <button id="scene-close" class="icon-btn" aria-label="Close">✕</button>
+          <span>Camera rig</span>
+          <button id="scene-close" class="icon-btn" aria-label="Close" title="Close (Esc)">✕</button>
         </div>
         <div class="modal-body modal-canvas-body">
           <canvas id="scene-canvas"></canvas>

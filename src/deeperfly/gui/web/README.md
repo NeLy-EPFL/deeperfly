@@ -8,8 +8,10 @@ ES modules served straight from `static/`.
 - `static/` — the source, served at `/static/`:
   - `app.js` — controller: layout (grid / focus + thumbnails), frame scrubbing,
     Edit 2D / Edit 3D mode switching, the display toggles (skeleton, keypoint
-    labels, 3D-estimate overlay), hover/selection, the per-view / all-views Reset
-    buttons, the camera-rig plot + keyboard-shortcut help, and edit routing.
+    labels, 3D-estimate overlay), hover/selection, the Reset group (point in
+    view / point in all views / whole frame), the camera-rig plot, the
+    keypoint-locations reference link (opens the docs viewer in a new tab) +
+    keyboard-shortcut help, and edit routing.
   - `poseView.js` — one `<canvas>` per camera: frame + draggable skeleton overlay,
     with wheel-zoom + drag-to-pan on the large view(s); also draws the ghosted
     3D-estimate reprojection and optional per-joint name labels.

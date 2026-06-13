@@ -135,6 +135,16 @@ class Corrections:
         self.pts3d_edited[frame, point] = False
         self.dirty = True
 
+    def clear_frame(self, frame: int) -> None:
+        """Drop every 2D and 3D edit (and fixed/obscured flags) in ``frame``."""
+        self.pts2d[:, frame] = np.nan
+        self.pts2d_edited[:, frame] = False
+        self.pts2d_fixed[:, frame] = False
+        self.pts2d_invisible[:, frame] = False
+        self.pts3d[frame] = np.nan
+        self.pts3d_edited[frame] = False
+        self.dirty = True
+
 
 def save_corrections(
     path: str | Path, corrections: Corrections, *, source: str | Path = ""
@@ -209,7 +219,9 @@ def load_corrections(
         else:
             pts2d_fixed = np.zeros(pts2d_edited.shape, dtype=bool)
         if "pose2d_corrections/invisible" in f:
-            pts2d_invisible = np.asarray(f["pose2d_corrections/invisible"][()], dtype=bool)  # type: ignore[index]
+            pts2d_invisible = np.asarray(
+                f["pose2d_corrections/invisible"][()], dtype=bool
+            )  # type: ignore[index]
         else:
             pts2d_invisible = np.zeros(pts2d_edited.shape, dtype=bool)
     want2d = (n_views, n_frames, n_points, 2)

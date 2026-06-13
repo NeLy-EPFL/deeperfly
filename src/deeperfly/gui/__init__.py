@@ -20,11 +20,14 @@ with ``ssh -L`` for remote correction).
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import socket
 import threading
 import time
 import webbrowser
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..results import PoseResult, StageStore
@@ -147,7 +150,7 @@ def serve(
     open_browser
         Whether to open a browser at the served URL on startup.
     exit_on_close
-        Stop the server once the last browser tab closes (a few seconds after its
+        Stop the server once the last browser tab closes (a brief grace after its
         socket drops, so a refresh can reconnect first). Set false to keep it
         running across tab closes (reconnect later or stop with the Close button /
         Ctrl+C).
@@ -180,7 +183,9 @@ def serve(
         session, on_shutdown=request_shutdown, exit_on_disconnect=exit_on_close
     )
 
-    display_host = "localhost" if host in ("0.0.0.0", "127.0.0.1", "::", "::1") else host
+    display_host = (
+        "localhost" if host in ("0.0.0.0", "127.0.0.1", "::", "::1") else host
+    )
     url = f"http://{display_host}:{port}/"
     log.info("deeperfly gui serving %s at %s", session.results_path, url)
     if open_browser:
@@ -211,4 +216,34 @@ def _open_when_ready(url: str, host: str, port: int, *, timeout: float = 15.0) -
                 break
         except OSError:
             time.sleep(0.1)
-    webbrowser.open(url)
+    # The launcher webbrowser shells out to may be an external wrapper that
+    # inherits our stderr and leaks its own diagnostics into the otherwise clean
+    # CLI output -- e.g. VS Code's `browser.sh` runs Node, which prints a
+    # `url.parse()` deprecation warning. The child has no use for our stdio, so
+    # silence it for the launch.
+    with _quiet_child_output():
+        webbrowser.open(url)
+
+
+@contextlib.contextmanager
+def _quiet_child_output() -> Iterator[None]:
+    """Redirect OS-level stdout/stderr to ``os.devnull`` for the block.
+
+    webbrowser offers no hook to redirect the browser process it spawns, so we
+    redirect the file descriptors around the launch and restore them after. This
+    runs on a dedicated startup thread for the brief, one-shot browser launch, so
+    the global redirection costs nothing -- nothing else is writing to the
+    terminal in that window. Python's logging handlers keep their `sys.stderr`
+    stream (fd 2), so logging resumes intact once the descriptors are restored.
+    """
+    with open(os.devnull, "w") as devnull:
+        saved_out, saved_err = os.dup(1), os.dup(2)
+        try:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            yield
+        finally:
+            os.dup2(saved_out, 1)
+            os.dup2(saved_err, 2)
+            os.close(saved_out)
+            os.close(saved_err)

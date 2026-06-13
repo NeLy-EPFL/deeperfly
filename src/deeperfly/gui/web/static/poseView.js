@@ -3,7 +3,10 @@
 //
 // A port of the old Qt PoseView, grown a few editor conveniences: the frame is
 // drawn fit-to-canvas (letterboxed) and can be zoomed (wheel, toward the cursor)
-// and panned (drag on empty space); the skeleton is drawn in image-pixel
+// and panned (drag on empty space). Frames are loaded via `loadFrame`; while a
+// new one decodes the previous frame stays up *blurred* (a cheap upscaled
+// thumbnail, not a per-frame filter) so scrubbing never flashes black -- the blur
+// reads as "not the live frame yet". The skeleton is drawn in image-pixel
 // coordinates mapped through that fit+zoom. Pointer events pick the nearest joint
 // within a screen-pixel tolerance. A press on a joint selects it; an actual drag
 // (past a small threshold) moves it, emitting a throttled `onDragging` and a final
@@ -41,7 +44,7 @@ const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
 const WHEEL_ZOOM_RATE = 0.0015; // wheel delta -> zoom factor sensitivity
 
 const FIXED_COLOR = "#7CFC00"; // ring on a fixed (finalized) point (lime green)
-const INVISIBLE_COLOR = "#ff5dd0"; // dashed ring on an invisible (obscured) point (magenta)
+const INVISIBLE_COLOR = "#a86bff"; // dashed ring on an invisible (obscured) point (violet, clear of the red right-side keypoints)
 const INVISIBLE_FILL_ALPHA = 0.35; // an obscured joint's fill is dimmed to read as "ghosted"
 const SELECT_COLOR = "#3fd0ff"; // ring on the last-selected point (cyan; lime = fixed)
 const LATENT_COLOR = "rgba(255,176,64,0.95)"; // the latent-skeleton overlay (amber, drawn on top)
@@ -84,6 +87,15 @@ export class PoseView {
     this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
     this.panning = false;
     this.moved = false; // has the current press moved past the drag threshold?
+
+    // Frame loading: while a newer frame decodes we keep drawing the last-loaded
+    // one *blurred* (so the view never blanks to black mid-scrub, but the blur
+    // reads as "this isn't the live frame yet"). `loadToken` drops out-of-order
+    // loads when scrubbing fast.
+    this.stale = false;
+    this.loadToken = 0;
+    /** @type {HTMLCanvasElement | null} */
+    this.staleCanvas = null; // a tiny downscaled copy of img -- upscaled = cheap blur
 
     // image -> CSS-pixel fit (recomputed on resize / new image)
     this.imgW = 1;
@@ -150,7 +162,51 @@ export class PoseView {
     this.img = img;
     this.imgW = img.naturalWidth || this.imgW;
     this.imgH = img.naturalHeight || this.imgH;
+    this.stale = false;
     this.layoutAndDraw();
+  }
+
+  /**
+   * Load a new frame image by URL. Until it decodes, the last-loaded frame stays
+   * on screen blurred (see `stale`), so scrubbing never flashes black. Loads that
+   * a faster scrub supersedes are dropped via `loadToken`.
+   * @param {string} url
+   */
+  loadFrame(url) {
+    const token = ++this.loadToken;
+    // Snapshot the current frame *once* on the sharp -> stale transition; while
+    // stale `img` doesn't change, so the snapshot (and its blur) stays valid.
+    if (this.img && !this.stale) {
+      this.renderStaleThumb();
+      this.stale = true;
+    }
+    this.draw();
+    const img = new Image();
+    img.onload = () => {
+      if (token !== this.loadToken) return; // a newer frame already supersedes this
+      this.setImage(img);
+    };
+    img.src = url;
+  }
+
+  // Downscale the current frame into a tiny offscreen canvas. Drawing that small
+  // canvas back up to full size (with smoothing) is the blur -- far cheaper than a
+  // per-draw `ctx.filter`, which matters because draw() also runs on every hover.
+  renderStaleThumb() {
+    const img = this.img;
+    if (!img) return;
+    const MAX = 64; // longest side of the downscaled copy
+    const w = img.naturalWidth || this.imgW;
+    const h = img.naturalHeight || this.imgH;
+    const s = Math.min(1, MAX / Math.max(w, h));
+    const tw = Math.max(1, Math.round(w * s));
+    const th = Math.max(1, Math.round(h * s));
+    const c = this.staleCanvas ?? (this.staleCanvas = document.createElement("canvas"));
+    c.width = tw;
+    c.height = th;
+    const cx = /** @type {CanvasRenderingContext2D} */ (c.getContext("2d"));
+    cx.clearRect(0, 0, tw, th);
+    cx.drawImage(img, 0, 0, tw, th);
   }
 
   // Image size hint so the canvas keeps the right aspect before the first frame.
@@ -287,8 +343,19 @@ export class PoseView {
     ctx.clearRect(0, 0, cssW, cssH);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, cssW, cssH);
-    if (this.img) {
-      ctx.drawImage(this.img, this.offX, this.offY, this.imgW * this.scale, this.imgH * this.scale);
+    const dw = this.imgW * this.scale;
+    const dh = this.imgH * this.scale;
+    if (this.stale && this.staleCanvas) {
+      // Blurred placeholder: upscaling the tiny snapshot (with smoothing on) is the
+      // blur, which already reads as "loading, not the live frame". Don't dim it --
+      // a brightness change flickers as the sharp frame swaps back in.
+      const smooth = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(this.staleCanvas, this.offX, this.offY, dw, dh);
+      ctx.imageSmoothingEnabled = smooth;
+    } else if (this.img) {
+      ctx.drawImage(this.img, this.offX, this.offY, dw, dh);
     }
     if (this.overlayVisible) {
       // bones first, joints on top

@@ -69,7 +69,7 @@
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
- * @property {"edit_2d" | "edit_3d" | "toggle_fixed" | "toggle_invisible" | "reset_point" | "reset_point_view"} type
+ * @property {"edit_2d" | "edit_3d" | "toggle_fixed" | "toggle_invisible" | "reset_point" | "reset_point_view" | "reset_frame"} type
  * @property {number} [view]
  * @property {number} [point]
  * @property {number} [x]
