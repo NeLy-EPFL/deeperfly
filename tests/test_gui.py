@@ -93,6 +93,19 @@ def test_reset_point_view_clears_only_that_view(result):
     assert state.corrections.pts2d_edited[1, 0, 4]  # the other view is left alone
 
 
+def test_reset_frame_clears_only_that_frame(result):
+    state = EditorState.from_result(result)
+    state.apply_2d_edit(0, 4, (1.0, 2.0), frame=0)
+    state.apply_2d_edit(1, 7, (3.0, 4.0), frame=0)
+    state.apply_3d_edit(1, 4, state.display_pts3d_projected(0)[1, 4] + 5.0, frame=0)
+    state.apply_2d_edit(0, 4, (5.0, 6.0), frame=1)  # a different frame, left untouched
+
+    state.reset_frame(frame=0)
+    assert not state.corrections.pts2d_edited[:, 0].any()  # every point/view reverted
+    assert not state.corrections.pts3d_edited[0].any()
+    assert state.corrections.pts2d_edited[0, 1, 4]  # the other frame is left alone
+
+
 # -- EditorState: 3D refinement (fixed/finalized constraints) -----------------
 
 
@@ -295,6 +308,34 @@ def test_reset_point_clears_invisible(result):
     assert not state.corrections.pts2d_invisible[:, 0, 4].any()
 
 
+def test_fresh_overlay_seeds_invisible_from_nan_detections(result):
+    # A NaN 2D detection means that camera did not see the keypoint, so a fresh
+    # overlay starts that per-view point obscured (and everything else visible).
+    result.pts2d[0, 1, 4] = np.nan
+    result.pts2d[2, 0, 5, 0] = np.nan  # a single NaN coordinate counts as missing
+    state = EditorState.from_result(result)
+
+    invisible = state.corrections.pts2d_invisible
+    assert invisible[0, 1, 4]
+    assert invisible[2, 0, 5]
+    expected = ~np.isfinite(result.pts2d).all(axis=-1)
+    np.testing.assert_array_equal(invisible, expected)
+    # seeding a default is not an edit: the session opens clean
+    assert not state.dirty
+    assert not state.corrections.any_edits
+
+
+def test_loaded_corrections_keep_their_own_invisible_mask(result):
+    # A provided overlay (e.g. loaded from a sidecar) is authoritative -- its
+    # saved invisible mask is not re-seeded from the result's NaNs.
+    result.pts2d[0, 1, 4] = np.nan
+    corrections = Corrections.empty(
+        result.n_views, result.n_frames, result.pts2d.shape[2]
+    )
+    state = EditorState.from_result(result, corrections)
+    assert not state.corrections.pts2d_invisible.any()
+
+
 # -- corrections sidecar ------------------------------------------------------
 
 
@@ -447,3 +488,33 @@ def test_corrections_empty_shapes(result):
     assert not corr.pts2d_fixed.any()
     assert not corr.pts2d_invisible.any()
     assert not corr.any_edits
+
+
+# -- browser launch: silence the external opener's stdio ----------------------
+
+
+def test_quiet_child_output_swallows_then_restores(tmp_path):
+    """`_quiet_child_output` drops OS-level writes in-block and restores fd 2 after.
+
+    This guards the fix that keeps an external browser opener's noise (e.g. VS
+    Code's `browser.sh` -> Node `url.parse()` warning) out of the CLI output.
+    """
+    import os
+
+    from deeperfly.gui import _quiet_child_output
+
+    # Stand in for the terminal: point fd 2 at a file we can read back.
+    sink = tmp_path / "stderr.log"
+    fd = os.open(sink, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    saved = os.dup(2)
+    os.dup2(fd, 2)
+    os.close(fd)
+    try:
+        with _quiet_child_output():
+            os.write(2, b"swallowed\n")  # a noisy child inheriting our stderr
+        os.write(2, b"kept\n")  # fd 2 restored -> reaches the sink again
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+
+    assert sink.read_text() == "kept\n"

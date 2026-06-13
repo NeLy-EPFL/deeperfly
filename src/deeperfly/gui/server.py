@@ -50,15 +50,16 @@ def create_app(
     *,
     on_shutdown: Callable[[], None] | None = None,
     exit_on_disconnect: bool = False,
-    disconnect_grace: float = 5.0,
+    disconnect_grace: float = 0.5,
 ) -> FastAPI:
     """Build the FastAPI app serving and editing ``session``.
 
     ``on_shutdown``, when given, is invoked to stop the running server -- by
     ``POST /api/shutdown`` (the GUI's Close button) and, when ``exit_on_disconnect``
     is set, ``disconnect_grace`` seconds after the last browser drops its ``/ws``
-    socket (closing the tab). The grace period lets a page refresh -- which also
-    drops the socket -- reconnect and cancel the pending shutdown. The browser
+    socket (closing the tab). The grace is short so a real close stops the server
+    almost instantly, yet still lets a page refresh -- which also drops the socket --
+    reconnect (fast, on localhost) and cancel the pending shutdown. The browser
     holds exactly one socket open for its whole lifetime, so the live socket count
     tracks open tabs. :func:`deeperfly.gui.serve` passes a callback that flips
     uvicorn's ``should_exit``; tests pass a plain stub.
@@ -87,7 +88,9 @@ def create_app(
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
     else:  # pragma: no cover -- the assets ship in the package, so this is unexpected
-        log.warning("web assets missing at %s (expected alongside server.py)", static_dir)
+        log.warning(
+            "web assets missing at %s (expected alongside server.py)", static_dir
+        )
 
     @app.get("/")
     def index() -> Response:
@@ -155,6 +158,7 @@ def create_app(
             # A reconnect (typically a page refresh) cancels a pending shutdown.
             pending_exit.cancel()
             pending_exit = None
+            log.info("browser reconnected; shutdown cancelled")
         try:
             while True:
                 msg = await websocket.receive_json()
@@ -317,6 +321,8 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_point(int(msg["point"]), t)
     elif typ == "reset_point_view":
         s.reset_point_view(int(msg["view"]), int(msg["point"]), t)
+    elif typ == "reset_frame":
+        s.reset_frame(t)
     else:  # pragma: no cover -- an unknown type is a client bug; ignore it
         log.warning("ignoring unknown edit message type %r", typ)
     return _points_payload(session, t, mode)

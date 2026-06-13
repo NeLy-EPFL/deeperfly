@@ -172,7 +172,7 @@ body {
   border-left: 1px solid var(--border);
 }
 
-.segmented .seg-btn:not(.is-active):hover {
+.segmented .seg-btn:not(.is-active):not(:disabled):hover {
   background: #3d3d3d;
 }
 
@@ -185,9 +185,16 @@ body {
   width: 70px;
 }
 
+/* The three reset actions read as one group: a "Reset" label then buttons whose
+   labels complete the verb ("Reset" + "Point in view" / ... / "Whole frame"). */
+.reset-group {
+  gap: 6px;
+}
+
 /* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state
    switch. The active chip is colour-coded to match the on-canvas rings: Fixed is
-   lime, Obscured is magenta, Normal keeps the default blue. */
+   lime, Obscured is violet, Normal keeps the default blue. (Obscured is violet,
+   not magenta, so it reads clearly apart from the red right-side keypoints.) */
 .point-status-name {
   color: #bbb;
   font-variant-numeric: tabular-nums;
@@ -199,7 +206,7 @@ body {
 }
 
 #point-status-states .seg-btn:nth-child(3).is-active {
-  background: #b5479a;
+  background: #7a44d4;
 }
 
 #controls .spacer {

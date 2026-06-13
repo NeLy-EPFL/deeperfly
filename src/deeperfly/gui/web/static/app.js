@@ -40,10 +40,15 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, global?: boolean, hidden?: boolean, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
-/** @typedef {{ root: HTMLDivElement, set: (value: string) => void }} Segmented */
+/** @typedef {{ root: HTMLDivElement, set: (value: string) => void, setDisabled: (disabled: boolean) => void }} Segmented */
 
 // Default to the focus layout once the grid would make each cell cramped.
 const FOCUS_DEFAULT_VIEWS = 5;
+
+// The published "NeuroMechFly keypoint locations" reference (the docs site). It is
+// opened in a new tab on demand, so its heavy model + WASM assets are fetched only
+// when the operator asks for it -- never on editor load.
+const KEYPOINTS_DOC_URL = "https://nely-epfl.github.io/deeperfly/keypoints/viewer.html";
 
 /**
  * @template {HTMLElement} T
@@ -79,6 +84,7 @@ function segmented(options, onChange) {
   return {
     root,
     set: (value) => buttons.forEach((btn, v) => btn.classList.toggle("is-active", v === value)),
+    setDisabled: (disabled) => buttons.forEach((btn) => (btn.disabled = disabled)),
   };
 }
 
@@ -100,8 +106,6 @@ class App {
   views = [];
   /** @type {HTMLDivElement[]} */
   cells = [];
-  /** @type {HTMLImageElement[]} */
-  images = [];
   /** @type {EditSocket} */
   socket;
   frame = 0;
@@ -178,6 +182,10 @@ class App {
   resetViewBtn = el("reset-view");
   /** @type {HTMLButtonElement} */
   resetAllBtn = el("reset-all");
+  /** @type {HTMLButtonElement} */
+  resetFrameBtn = el("reset-frame");
+  /** @type {HTMLButtonElement} */
+  keypointsBtn = el("keypoints");
   /** @type {HTMLButtonElement} */
   camerasBtn = el("cameras");
   /** @type {HTMLButtonElement} */
@@ -284,6 +292,8 @@ class App {
     });
     this.resetViewBtn.addEventListener("click", () => this.resetSelectedView());
     this.resetAllBtn.addEventListener("click", () => this.resetSelectedAll());
+    this.resetFrameBtn.addEventListener("click", () => this.resetFrame());
+    this.keypointsBtn.addEventListener("click", () => this.openKeypoints());
     this.camerasBtn.addEventListener("click", () => this.toggleScene());
     this.helpBtn.addEventListener("click", () => this.toggleHelp());
     this.helpClose.addEventListener("click", () => this.closeHelp());
@@ -337,10 +347,6 @@ class App {
       const size = this.meta.image_sizes[name];
       if (size) view.setImageSize(size[0], size[1]);
       this.views.push(view);
-
-      const img = new Image();
-      img.onload = () => view.setImage(img);
-      this.images.push(img);
     });
   }
 
@@ -399,7 +405,7 @@ class App {
     this.slider.value = String(t);
     this.number.value = String(t);
     this.meta.camera_names.forEach((name, v) => {
-      this.images[v].src = frameUrl(name, t);
+      this.views[v].loadFrame(frameUrl(name, t));
     });
     await this.refreshPoints();
     if (this.sceneOpen) this.refreshScene();
@@ -475,7 +481,8 @@ class App {
   }
 
   // Mark the selected joint (a cyan ring in its own view only) and enable the
-  // Reset buttons once there is something to reset.
+  // per-point Reset buttons once there is a point to reset. (The whole-frame
+  // reset needs no selection, so it stays enabled.)
   updateSelected() {
     this.views.forEach((view, v) => {
       view.setSelected(v === this.selectedView ? this.selectedPoint : null);
@@ -499,12 +506,21 @@ class App {
   }
 
   // Show the selected joint's name, its view, and its per-view state -- only in
-  // Edit 3D (the state has no meaning in Edit 2D). Hidden when nothing is selected.
+  // Edit 3D (the state has no meaning in Edit 2D). The widget stays visible with
+  // its state chips disabled (and a "—" placeholder) until a joint is selected, so
+  // the control reads as present-but-unavailable, like the Reset buttons.
   updateStatusWidget() {
     const p = this.selectedPoint;
-    const show = this.mode === "edit_3d" && p !== null;
+    const show = this.mode === "edit_3d";
     this.pointStatus.hidden = !show;
-    if (p === null || !show) return;
+    if (!show) return;
+    const has = p !== null;
+    this.stateSwitch.setDisabled(!has);
+    if (!has) {
+      this.pointStatusName.textContent = "—";
+      this.stateSwitch.set(""); // no joint -> no active chip
+      return;
+    }
     const name = this.meta.point_names[p] ?? `#${p}`;
     const cam = this.meta.camera_names[this.selectedView] ?? `view ${this.selectedView}`;
     this.pointStatusName.textContent = `${name} · ${cam}`;
@@ -606,6 +622,12 @@ class App {
     this.socket.send({ type: "reset_point", point: this.selectedPoint, frame: this.frame, mode: this.mode });
   }
 
+  // Revert every joint in the current frame across all views (and their 3D
+  // points) -- a clean slate for the frame, independent of any selection.
+  resetFrame() {
+    this.socket.send({ type: "reset_frame", frame: this.frame, mode: this.mode });
+  }
+
   async save() {
     const r = await saveCorrections();
     this.dirty = r.dirty;
@@ -660,6 +682,15 @@ class App {
     this.socket?.ws.close();
     await shutdownServer();
     this.stoppedOverlay.hidden = false;
+  }
+
+  // -- keypoint reference -----------------------------------------------------
+
+  // Open the NeuroMechFly keypoint-locations reference (the docs viewer) in a new
+  // tab. Linking out keeps the editor lean: that page's model/WASM assets load only
+  // when the operator opens it, never with the editor.
+  openKeypoints() {
+    window.open(KEYPOINTS_DOC_URL, "_blank", "noopener");
   }
 
   // -- camera-rig 3D plot -----------------------------------------------------
@@ -727,6 +758,7 @@ class App {
     b.push({ key: "r", label: "r", desc: "Reset selected point in its view", run: () => this.resetSelectedView() });
     b.push({ key: "R", label: "Shift+R", desc: "Reset selected point in all views", run: () => this.resetSelectedAll() });
     b.push({ key: "c", label: "c", desc: "Show / hide the camera rig in 3D", run: () => this.toggleScene() });
+    b.push({ key: "k", label: "k", desc: "Open the keypoint reference (docs, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "s", mod: true, global: true, label: "Ctrl/⌘+S", desc: "Save corrections", run: () => this.save() });
     b.push({ key: "?", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
     return b;
