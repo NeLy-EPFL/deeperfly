@@ -13,6 +13,13 @@ with the same forward model used to draw it. Imperfect calibration means no sing
 Dropping a drag pins the dragged view there (it becomes fixed at the release
 pixel), so the placed point stays put instead of snapping to the reprojection.
 
+A per-view point can instead be *invisible* (obscured): a camera that genuinely
+cannot see the keypoint is dropped from the triangulation entirely and its dot
+just follows the reprojection (it cannot be dragged). Marking a view invisible
+re-solves the 3D point from the remaining visible views, so a bad/occluded
+observation stops dragging the estimate off. Invisible is mutually exclusive with
+fixed (a point is at most one of fixed / invisible / plain).
+
 On a drag we re-solve the 3D point by a constrained DLT
 (:func:`deeperfly.triangulation.triangulate`) over the fixed views' locked pixels
 plus the dragged view's cursor; with fewer than two such observations (the common
@@ -181,6 +188,9 @@ class EditorState:
         re-solve mid-drag uses ``fix=False`` so a view is only pinned on release
         (or if it was already fixed, in which case its lock follows the cursor).
 
+        Dragging an *obscured* view un-obscures it (back to the normal state) and
+        proceeds: the operator is placing it, so it rejoins the estimate.
+
         Returns the new 3D point, or ``None`` if there is no 3D point to move
         (no triangulation, or no usable constraint and the point is NaN here).
 
@@ -202,6 +212,10 @@ class EditorState:
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
+        if self.corrections.pts2d_invisible[view, t, point]:
+            # Dragging an obscured view un-obscures it: the operator is placing it,
+            # so it re-enters the normal flow (and contributes to the re-solve below).
+            self.corrections.set_invisible(view, t, point, False)
         xy = np.asarray(xy, dtype=float)
         fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
 
@@ -274,6 +288,49 @@ class EditorState:
             return
         obs = np.full((self.n_views, 2), np.nan)
         obs[fixed] = self.corrections.pts2d[fixed, t, point]
+        x_new = np.asarray(
+            triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
+        )
+        if np.all(np.isfinite(x_new)):
+            self.corrections.set_pts3d(t, point, x_new)
+
+    def toggle_invisible(
+        self, view: int, point: int, frame: int | None = None
+    ) -> bool | None:
+        """Toggle whether ``point`` in ``view`` is obscured (dropped from triangulation).
+
+        An obscured view contributes nothing to the 3D point and simply follows its
+        reprojection (it cannot be dragged); toggling re-solves the 3D from the
+        remaining visible views so the estimate updates. Setting it clears any 2D
+        edit / fixed flag for that view (invisible is mutually exclusive with fixed).
+        Returns the new invisible state, or ``None`` if there is no 3D to refine.
+        """
+        if self.result.pts3d is None:
+            return None
+        t = self._resolve_frame(frame)
+        now_invisible = not bool(self.corrections.pts2d_invisible[view, t, point])
+        self.corrections.set_invisible(view, t, point, now_invisible)
+        self._resolve_3d_from_visible(point, t)
+        return now_invisible
+
+    def _resolve_3d_from_visible(self, point: int, t: int) -> None:
+        """Re-triangulate ``point``'s 3D location from its non-obscured views.
+
+        With two or more fixed views the fixed pixels define the point (deferring
+        to :meth:`_resolve_3d_from_fixed`, which already ignores the obscured,
+        non-fixed views); otherwise the point is triangulated from every visible
+        view's displayed 2D (the detector point unless edited/fixed), with the
+        obscured views dropped. A no-op below two usable observations.
+        """
+        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
+        if int(fixed.sum()) >= 2:
+            self._resolve_3d_from_fixed(point, t)
+            return
+        invisible = self.corrections.pts2d_invisible[:, t, point]  # (V,)
+        obs = self.display_pts2d(t)[:, point].astype(float)  # (V, 2)
+        obs[invisible] = np.nan
+        if int(np.isfinite(obs).all(axis=1).sum()) < 2:
+            return
         x_new = np.asarray(
             triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
         )

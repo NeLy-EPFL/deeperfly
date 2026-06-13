@@ -185,6 +185,23 @@ body {
   width: 70px;
 }
 
+/* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state
+   switch. The active chip is colour-coded to match the on-canvas rings: Fixed is
+   lime, Obscured is magenta, Normal keeps the default blue. */
+.point-status-name {
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#point-status-states .seg-btn:nth-child(2).is-active {
+  background: #4f9e2f;
+}
+
+#point-status-states .seg-btn:nth-child(3).is-active {
+  background: #b5479a;
+}
+
 #controls .spacer {
   flex: 1;
 }

@@ -27,6 +27,10 @@
           <label id="latent-wrap"><input id="show-latent" type="checkbox" /> 3D estimate</label>
           <label id="pin-wrap"><input id="pin-mode" type="checkbox" /> Pin on tap</label>
           <span class="sep"></span>
+          <div class="field" id="point-status" title="The selected point's state in the selected view (l: fix, o: obscure)" hidden>
+            <span id="point-status-name" class="point-status-name">—</span>
+            <div id="point-status-states" class="segmented"></div>
+          </div>
           <button id="reset-view" title="Revert the last-selected point in its view (r)">Reset point (view)</button>
           <button id="reset-all" title="Revert the last-selected point in every view (Shift+R)">Reset point (all)</button>
           <span class="spacer"></span>

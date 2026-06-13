@@ -219,6 +219,82 @@ def test_reset_point_clears_fixed(result):
     assert not state.corrections.pts2d_fixed[:, 0, 4].any()
 
 
+# -- EditorState: invisible (obscured) views ----------------------------------
+
+
+def test_toggle_invisible_re_solves_3d_without_the_marked_view(result):
+    # The fixture's 2D are exact projections of its 3D, so a clean subset
+    # re-triangulates the true point. Corrupt one view's 2D *and* the stored 3D so
+    # the displayed point starts wrong; marking the bad view invisible must drop it
+    # and recover the true 3D from the remaining views (not a no-op).
+    state = EditorState.from_result(result)
+    bad_view, point, frame = 0, 5, 0
+    true_3d = result.pts3d[frame, point].copy()
+    result.pts2d[bad_view, frame, point] += np.array([40.0, -30.0])  # garbage detection
+    result.pts3d[frame, point] = true_3d + np.array([0.5, -0.4, 0.3])  # wrong base 3D
+    assert not np.allclose(state.display_pts3d(frame)[point], true_3d)
+
+    assert state.toggle_invisible(bad_view, point, frame) is True
+    assert state.corrections.pts2d_invisible[bad_view, frame, point]
+    assert np.allclose(state.display_pts3d(frame)[point], true_3d, atol=1e-6)
+
+
+def test_toggle_invisible_then_back_restores_the_view(result):
+    state = EditorState.from_result(result)
+    view, point, frame = 0, 5, 0
+    assert state.toggle_invisible(view, point, frame) is True
+    assert state.toggle_invisible(view, point, frame) is False
+    assert not state.corrections.pts2d_invisible[view, frame, point]
+
+
+def test_invisible_and_fixed_are_mutually_exclusive(result):
+    state = EditorState.from_result(result)
+    view, point, frame = 1, 5, 0
+
+    # fixing then obscuring drops the fixed flag/pixel
+    state.toggle_fixed(view, point, frame)
+    assert state.corrections.pts2d_fixed[view, frame, point]
+    state.toggle_invisible(view, point, frame)
+    assert state.corrections.pts2d_invisible[view, frame, point]
+    assert not state.corrections.pts2d_fixed[view, frame, point]
+    assert not state.corrections.pts2d_edited[view, frame, point]
+
+    # obscuring then fixing drops the invisible flag
+    state.toggle_fixed(view, point, frame)
+    assert state.corrections.pts2d_fixed[view, frame, point]
+    assert not state.corrections.pts2d_invisible[view, frame, point]
+
+
+def test_dragging_an_invisible_view_un_obscures_it(result):
+    # Dragging an obscured view places it: the flag clears (back to normal) and the
+    # 3D re-solves so the dragged view lands under the cursor. A release on a
+    # formerly-obscured view does not pin it (fix=False), so it stays normal.
+    state = EditorState.from_result(result)
+    view, point, frame = 2, 5, 0
+    state.toggle_invisible(view, point, frame)
+    assert state.corrections.pts2d_invisible[view, frame, point]
+
+    drag = state.display_pts2d_refine(frame)[view, point] + np.array([8.0, 6.0])
+    assert state.apply_3d_edit(view, point, drag, frame, fix=False) is not None
+    assert not state.corrections.pts2d_invisible[view, frame, point]  # back to normal
+    assert not state.corrections.pts2d_fixed[view, frame, point]
+    assert np.allclose(state.display_pts2d_refine(frame)[view, point], drag, atol=1e-4)
+
+
+def test_toggle_invisible_unavailable_without_3d(result):
+    result.pts3d = None
+    state = EditorState.from_result(result)
+    assert state.toggle_invisible(0, 0, 0) is None
+
+
+def test_reset_point_clears_invisible(result):
+    state = EditorState.from_result(result)
+    state.toggle_invisible(1, 4, frame=0)
+    assert state.corrections.pts2d_invisible[1, 0, 4]
+    state.reset_point(4, frame=0)
+    assert not state.corrections.pts2d_invisible[:, 0, 4].any()
+
+
 # -- corrections sidecar ------------------------------------------------------
 
 
@@ -259,6 +335,22 @@ def test_corrections_roundtrip_preserves_fixed(tmp_path, result):
     np.testing.assert_array_equal(loaded.pts2d_fixed, state.corrections.pts2d_fixed)
 
 
+def test_corrections_roundtrip_preserves_invisible(tmp_path, result):
+    state = EditorState.from_result(result)
+    state.toggle_invisible(0, 5, frame=0)
+    state.toggle_invisible(3, 5, frame=0)
+
+    path = tmp_path / "corrections.h5"
+    save_corrections(path, state.corrections)
+    loaded = load_corrections(
+        path, result.n_views, result.n_frames, result.pts2d.shape[2]
+    )
+    assert loaded is not None
+    np.testing.assert_array_equal(
+        loaded.pts2d_invisible, state.corrections.pts2d_invisible
+    )
+
+
 def test_load_corrections_v1_without_fixed_defaults_to_false(tmp_path, result):
     import h5py
 
@@ -276,6 +368,25 @@ def test_load_corrections_v1_without_fixed_defaults_to_false(tmp_path, result):
     assert loaded is not None
     assert loaded.pts2d_fixed.shape == state.corrections.pts2d_edited.shape
     assert not loaded.pts2d_fixed.any()
+
+
+def test_load_corrections_without_invisible_defaults_to_false(tmp_path, result):
+    import h5py
+
+    state = EditorState.from_result(result)
+    state.apply_2d_edit(0, 1, (5.0, 6.0), frame=0)
+    path = tmp_path / "corrections.h5"
+    save_corrections(path, state.corrections)
+    # simulate a v2 sidecar written before the "invisible" dataset existed
+    with h5py.File(path, "a") as f:
+        del f["pose2d_corrections/invisible"]
+
+    loaded = load_corrections(
+        path, result.n_views, result.n_frames, result.pts2d.shape[2]
+    )
+    assert loaded is not None
+    assert loaded.pts2d_invisible.shape == state.corrections.pts2d_edited.shape
+    assert not loaded.pts2d_invisible.any()
 
 
 def test_load_corrections_missing_returns_none(tmp_path):
@@ -334,4 +445,5 @@ def test_corrections_empty_shapes(result):
     assert np.isnan(corr.pts2d).all()
     assert not corr.pts2d_edited.any()
     assert not corr.pts2d_fixed.any()
+    assert not corr.pts2d_invisible.any()
     assert not corr.any_edits

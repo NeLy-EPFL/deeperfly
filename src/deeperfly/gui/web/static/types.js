@@ -47,12 +47,13 @@
  */
 
 /**
- * The per-view 2D overlay (and fixed mask) to draw for one frame.
+ * The per-view 2D overlay (with the fixed/invisible masks) to draw for one frame.
  * @typedef {object} PointsPayload
  * @property {number} frame
  * @property {EditMode} mode
  * @property {Point[][]} points  [view][point]
  * @property {boolean[][]} fixed  [view][point]
+ * @property {boolean[][]} invisible  [view][point]  obscured: dropped from triangulation
  * @property {Point[][] | null} proj  [view][point] latent 3D reprojection (display only), or null
  * @property {boolean} dirty
  */
@@ -68,7 +69,7 @@
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
- * @property {"edit_2d" | "edit_3d" | "toggle_fixed" | "reset_point" | "reset_point_view"} type
+ * @property {"edit_2d" | "edit_3d" | "toggle_fixed" | "toggle_invisible" | "reset_point" | "reset_point_view"} type
  * @property {number} [view]
  * @property {number} [point]
  * @property {number} [x]

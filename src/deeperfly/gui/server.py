@@ -230,7 +230,7 @@ def _cameras_3d(session: Session) -> list[dict]:
 
 
 def _points_payload(session: Session, t: int, mode: str) -> dict:
-    """The per-view 2D overlay (and fixed mask) to draw for frame ``t`` in ``mode``.
+    """The per-view 2D overlay (with the fixed/invisible masks) for frame ``t`` in ``mode``.
 
     ``proj`` is the current 3D estimate reprojected into every view (with no fixed
     overrides) -- the display-only "latent skeleton" the front-end can ghost over
@@ -242,12 +242,14 @@ def _points_payload(session: Session, t: int, mode: str) -> dict:
     else:
         pts = s.display_pts2d(t)
     fixed = s.corrections.pts2d_fixed[:, t]  # (V, P)
+    invisible = s.corrections.pts2d_invisible[:, t]  # (V, P)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
     return {
         "frame": t,
         "mode": mode,
         "points": _points_to_json(np.asarray(pts)),
         "fixed": fixed.tolist(),
+        "invisible": invisible.tolist(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
         "dirty": bool(s.dirty),
     }
@@ -309,6 +311,8 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         )
     elif typ == "toggle_fixed":
         s.toggle_fixed(int(msg["view"]), int(msg["point"]), t)
+    elif typ == "toggle_invisible":
+        s.toggle_invisible(int(msg["view"]), int(msg["point"]), t)
     elif typ == "reset_point":
         s.reset_point(int(msg["point"]), t)
     elif typ == "reset_point_view":

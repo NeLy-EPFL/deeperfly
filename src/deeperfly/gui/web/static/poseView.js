@@ -9,9 +9,10 @@
 // (past a small threshold) moves it, emitting a throttled `onDragging` and a final
 // `onDragged` -- a click without movement just selects, so it never creates a
 // spurious edit. Right-click (or a tap while "pin mode" is on) toggles a point's
-// fixed flag. Hovering a joint reports it via `onHover` so the app can emphasize
-// the same point across every view. The app stays in control of what a drag does
-// to the 3D point behind it.
+// fixed flag. An "invisible" (obscured) joint is drawn ghosted; dragging it is
+// allowed and reports `wasInvisible` on `onDragged` so the app can un-obscure it.
+// Hovering a joint reports it via `onHover` so the app can emphasize the same point
+// across every view. The app stays in control of what a drag does to the 3D point.
 //
 // Beyond the editable overlay the view can also draw two read-only extras that the
 // app toggles: the "latent" skeleton (the current 3D estimate reprojected and drawn
@@ -26,7 +27,7 @@
 /**
  * @typedef {object} PoseViewCallbacks
  * @property {(view: number, point: number, x: number, y: number) => void} onDragging
- * @property {(view: number, point: number, x: number, y: number) => void} onDragged
+ * @property {(view: number, point: number, x: number, y: number, wasInvisible: boolean) => void} onDragged
  * @property {(view: number, point: number) => void} onToggleFixed
  * @property {(view: number, point: number) => void} onSelect  a joint was clicked/grabbed
  * @property {(point: number | null) => void} onHover  the hovered joint changed (cross-view)
@@ -40,6 +41,8 @@ const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
 const WHEEL_ZOOM_RATE = 0.0015; // wheel delta -> zoom factor sensitivity
 
 const FIXED_COLOR = "#7CFC00"; // ring on a fixed (finalized) point (lime green)
+const INVISIBLE_COLOR = "#ff5dd0"; // dashed ring on an invisible (obscured) point (magenta)
+const INVISIBLE_FILL_ALPHA = 0.35; // an obscured joint's fill is dimmed to read as "ghosted"
 const SELECT_COLOR = "#3fd0ff"; // ring on the last-selected point (cyan; lime = fixed)
 const LATENT_COLOR = "rgba(255,176,64,0.95)"; // the latent-skeleton overlay (amber, drawn on top)
 
@@ -63,6 +66,8 @@ export class PoseView {
     this.latent = null; // latent 3D reprojection (display only), drawn when latentVisible
     /** @type {boolean[] | null} */
     this.fixed = null;
+    /** @type {boolean[] | null} */
+    this.invisible = null;
     /** @type {string[]} */
     this.pointNames = [];
     /** @type {number | null} */
@@ -76,6 +81,7 @@ export class PoseView {
     this.labelsVisible = false;
     /** @type {number | null} */
     this.dragging = null;
+    this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
     this.panning = false;
     this.moved = false; // has the current press moved past the drag threshold?
 
@@ -172,6 +178,12 @@ export class PoseView {
   /** @param {boolean[] | null} fixed */
   setFixed(fixed) {
     this.fixed = fixed;
+    this.draw();
+  }
+
+  /** @param {boolean[] | null} invisible  per-point "obscured" mask, or null when not in 3D */
+  setInvisible(invisible) {
+    this.invisible = invisible;
     this.draw();
   }
 
@@ -298,13 +310,21 @@ export class PoseView {
         if (!p) continue;
         const [cx, cy] = this.toCanvas(p[0], p[1]);
         const isHover = i === this.highlight;
+        const isFixed = this.fixed != null && i < this.fixed.length && this.fixed[i];
+        const isInvisible = this.invisible != null && i < this.invisible.length && this.invisible[i];
         const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
+        // An obscured joint reads as "ghosted": a dimmed fill under a dashed ring.
+        ctx.globalAlpha = isInvisible ? INVISIBLE_FILL_ALPHA : 1;
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.fillStyle = this.colors[i] || "#fff";
         ctx.fill();
-        const isFixed = this.fixed != null && i < this.fixed.length && this.fixed[i];
-        if (isFixed) {
+        ctx.globalAlpha = 1;
+        if (isInvisible) {
+          ctx.strokeStyle = INVISIBLE_COLOR;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([3, 2]);
+        } else if (isFixed) {
           ctx.strokeStyle = FIXED_COLOR;
           ctx.lineWidth = 2.5;
         } else if (isHover) {
@@ -315,6 +335,7 @@ export class PoseView {
           ctx.lineWidth = 1;
         }
         ctx.stroke();
+        ctx.setLineDash([]);
         // The last-selected joint gets an extra outer ring (only its own view sets
         // `selected`), distinct from the lime "fixed" ring so the two can coexist.
         if (i === this.selected) {
@@ -450,8 +471,11 @@ export class PoseView {
       }
       if (e.button !== 0) return; // only the primary button drags
       e.preventDefault();
-      this.dragging = point;
       this.cb.onSelect(this.viewIndex, point); // selecting happens on press, not release
+      // An obscured joint can still be dragged -- doing so un-obscures it (the app
+      // un-flags it on release via `wasInvisible`).
+      this.dragInvisible = this.invisible != null && !!this.invisible[point];
+      this.dragging = point;
       this.canvas.setPointerCapture(e.pointerId);
       return;
     }
@@ -528,7 +552,7 @@ export class PoseView {
       if (this.moved) {
         const [ix, iy] = this.toImage(...this.cssXY(e));
         this.pts[point] = [ix, iy];
-        this.cb.onDragged(this.viewIndex, point, ix, iy);
+        this.cb.onDragged(this.viewIndex, point, ix, iy, this.dragInvisible);
       }
       return;
     }

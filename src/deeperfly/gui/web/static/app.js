@@ -2,9 +2,12 @@
 // The editor controller: lays out one PoseView per camera and routes edits to
 // the server. It mirrors the old Qt MainWindow -- a 2D drag moves only that
 // view's point; a 3D drag re-solves the 3D point and refreshes every view live,
-// pinning the dragged view on release; right-click (or a tap in "pin mode")
-// toggles a view's fixed flag. There are two correction modes, Edit 2D and Edit
-// 3D (the latter only when the result carries 3D points).
+// pinning the dragged view on release; right-click (or a tap in "pin mode") toggles
+// a view's fixed flag. A selected joint's per-view state (normal / fixed / obscured)
+// is shown in a status widget and set by clicking it or by the `l` / `o` keys; an
+// obscured view is dropped from the triangulation, and dragging it un-obscures it.
+// There are two correction modes, Edit 2D and Edit 3D (the latter only when the
+// result carries 3D points).
 //
 // Two layouts share the same PoseView instances. "grid" shows every camera in an
 // equal grid; "focus" shows one large editable view plus a strip of live,
@@ -114,6 +117,12 @@ class App {
   /** @type {number | null} */
   selectedPoint = null;
   selectedView = 0;
+  // The latest per-view fixed/invisible masks (from the points payload), so the
+  // status widget can report the selected joint's state. Null outside Edit 3D.
+  /** @type {boolean[][] | null} */
+  fixedMask = null;
+  /** @type {boolean[][] | null} */
+  invisibleMask = null;
   // On-demand 3D camera-rig plot (built lazily the first time it is opened).
   /** @type {Scene3D | null} */
   scene = null;
@@ -159,6 +168,12 @@ class App {
   pinWrap = el("pin-wrap");
   /** @type {HTMLInputElement} */
   pinCheck = el("pin-mode");
+  /** @type {HTMLDivElement} */
+  pointStatus = el("point-status");
+  /** @type {HTMLSpanElement} */
+  pointStatusName = el("point-status-name");
+  /** @type {Segmented} */
+  stateSwitch;
   /** @type {HTMLButtonElement} */
   resetViewBtn = el("reset-view");
   /** @type {HTMLButtonElement} */
@@ -251,6 +266,13 @@ class App {
     this.layoutSwitch.set(this.layout);
     el("layout-switch").append(this.layoutSwitch.root);
 
+    // The selected joint's per-view state (Edit 3D): click a chip to set it.
+    this.stateSwitch = segmented(
+      [["Normal", "normal"], ["Fixed", "fixed"], ["Obscured", "invisible"]],
+      (v) => this.setSelectedState(v)
+    );
+    el("point-status-states").append(this.stateSwitch.root);
+
     this.skeletonCheck.addEventListener("change", () => this.applySkeleton());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The latent overlay is the reprojected 3D estimate -- meaningless without 3D.
@@ -289,7 +311,7 @@ class App {
     /** @type {import("./poseView.js").PoseViewCallbacks} */
     const cb = {
       onDragging: (v, p, x, y) => this.onDragging(v, p, x, y),
-      onDragged: (v, p, x, y) => this.onDragged(v, p, x, y),
+      onDragged: (v, p, x, y, wasInvisible) => this.onDragged(v, p, x, y, wasInvisible),
       onToggleFixed: (v, p) => this.onToggleFixed(v, p),
       onSelect: (v, p) => this.onSelect(v, p),
       onHover: (p) => this.onHover(p),
@@ -391,13 +413,17 @@ class App {
   applyPoints(p) {
     if (p.frame !== this.frame) return; // a stale reply after a fast scrub
     const showFixed = this.mode === "edit_3d";
+    this.fixedMask = showFixed ? p.fixed : null;
+    this.invisibleMask = showFixed ? p.invisible : null;
     this.views.forEach((view, v) => {
       view.setPoints(p.points[v]);
       view.setFixed(showFixed ? p.fixed[v] : null);
+      view.setInvisible(showFixed ? p.invisible[v] : null);
       view.setLatent(p.proj ? p.proj[v] : null);
     });
     this.dirty = p.dirty;
     this.updateDirty();
+    this.updateStatusWidget();
   }
 
   /** @param {EditMode} mode */
@@ -457,6 +483,48 @@ class App {
     const has = this.selectedPoint !== null;
     this.resetViewBtn.disabled = !has;
     this.resetAllBtn.disabled = !has;
+    this.updateStatusWidget();
+  }
+
+  // -- point status widget ----------------------------------------------------
+
+  /** @returns {"normal" | "fixed" | "invisible"} the selected joint's state in its view */
+  selectedState() {
+    const v = this.selectedView;
+    const p = this.selectedPoint;
+    if (p === null) return "normal";
+    if (this.invisibleMask && this.invisibleMask[v][p]) return "invisible";
+    if (this.fixedMask && this.fixedMask[v][p]) return "fixed";
+    return "normal";
+  }
+
+  // Show the selected joint's name, its view, and its per-view state -- only in
+  // Edit 3D (the state has no meaning in Edit 2D). Hidden when nothing is selected.
+  updateStatusWidget() {
+    const p = this.selectedPoint;
+    const show = this.mode === "edit_3d" && p !== null;
+    this.pointStatus.hidden = !show;
+    if (p === null || !show) return;
+    const name = this.meta.point_names[p] ?? `#${p}`;
+    const cam = this.meta.camera_names[this.selectedView] ?? `view ${this.selectedView}`;
+    this.pointStatusName.textContent = `${name} · ${cam}`;
+    this.stateSwitch.set(this.selectedState());
+  }
+
+  // Click a state chip to set the selected joint to that state. The states are
+  // mutually exclusive, so one toggle takes it anywhere: toggling fixed/obscured
+  // sets it (clearing the other), and "normal" clears whichever flag is set.
+  /** @param {string} target  "normal" | "fixed" | "invisible" */
+  setSelectedState(target) {
+    if (this.mode !== "edit_3d" || this.selectedPoint === null) return;
+    const current = this.selectedState();
+    if (target === current) return;
+    const v = this.selectedView;
+    const p = this.selectedPoint;
+    if (target === "fixed") this.onToggleFixed(v, p);
+    else if (target === "invisible") this.onToggleInvisible(v, p);
+    else if (current === "fixed") this.onToggleFixed(v, p); // -> normal
+    else if (current === "invisible") this.onToggleInvisible(v, p); // -> normal
   }
 
   // -- edit routing -----------------------------------------------------------
@@ -480,12 +548,14 @@ class App {
    * @param {number} x
    * @param {number} y
    */
-  onDragged(view, point, x, y) {
+  onDragged(view, point, x, y, wasInvisible = false) {
     if (this.mode === "edit_2d") {
       this.socket.send({ type: "edit_2d", view, point, x, y, frame: this.frame, mode: this.mode });
     } else if (this.mode === "edit_3d") {
-      // Releasing pins the dragged view at the drop pixel (a finalized constraint).
-      this.socket.send({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: true, mode: this.mode });
+      // Releasing pins the dragged view at the drop pixel (a finalized constraint),
+      // except when it was obscured: dragging un-obscures it back to the normal
+      // (reprojection-following) state rather than pinning it.
+      this.socket.send({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: !wasInvisible, mode: this.mode });
     }
   }
 
@@ -497,6 +567,25 @@ class App {
     if (this.mode === "edit_3d") {
       this.socket.send({ type: "toggle_fixed", view, point, frame: this.frame, mode: this.mode });
     }
+  }
+
+  /**
+   * @param {number} view
+   * @param {number} point
+   */
+  onToggleInvisible(view, point) {
+    if (this.mode === "edit_3d") {
+      this.socket.send({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
+    }
+  }
+
+  // Keyboard shortcuts (l / o): act on the last-selected joint in its view.
+  toggleSelectedFixed() {
+    if (this.selectedPoint !== null) this.onToggleFixed(this.selectedView, this.selectedPoint);
+  }
+
+  toggleSelectedInvisible() {
+    if (this.selectedPoint !== null) this.onToggleInvisible(this.selectedView, this.selectedPoint);
   }
 
   // Revert the last-selected joint in just the view it was selected in.
@@ -632,6 +721,8 @@ class App {
     if (has3d) {
       b.push({ key: "p", label: "p", desc: "Toggle 3D estimate overlay", run: () => this.toggleCheck(this.latentCheck, () => this.applyLatent()) });
       b.push({ key: "x", label: "x", desc: "Toggle pin-on-tap (Edit 3D)", run: () => this.togglePin() });
+      b.push({ key: "l", label: "l", desc: "Fix / unfix the selected point (Edit 3D)", run: () => this.toggleSelectedFixed() });
+      b.push({ key: "o", label: "o", desc: "Obscure / reveal the selected point (Edit 3D)", run: () => this.toggleSelectedInvisible() });
     }
     b.push({ key: "r", label: "r", desc: "Reset selected point in its view", run: () => this.resetSelectedView() });
     b.push({ key: "R", label: "Shift+R", desc: "Reset selected point in all views", run: () => this.resetSelectedAll() });

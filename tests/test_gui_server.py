@@ -94,6 +94,8 @@ def test_points_payload_shapes(client, result):
     assert len(payload["points"]) == result.n_views
     assert all(len(row) == n_points for row in payload["points"])
     assert len(payload["fixed"]) == result.n_views
+    assert len(payload["invisible"]) == result.n_views
+    assert all(len(row) == n_points for row in payload["invisible"])
     assert payload["dirty"] is False
     # every drawn point is either null or an [x, y] pair (NaN serializes to null)
     for row in payload["points"]:
@@ -153,6 +155,21 @@ def test_ws_edit_3d_updates_all_views_and_sets_dirty(client, result):
     # at least one other view's reprojection moved as the 3D point was re-solved
     other = (view + 1) % result.n_views
     assert not np.allclose(reply["points"][other][point], base[other][point])
+
+
+def test_ws_toggle_invisible_flips_mask_and_sets_dirty(client, result):
+    view, point = 1, 5
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "toggle_invisible", "view": view, "point": point,
+             "frame": 0, "mode": "edit_3d"}
+        )
+        reply = ws.receive_json()
+    assert reply["dirty"] is True
+    assert reply["invisible"][view][point] is True
+    # the marked view drops out of the estimate; the other views stay finite
+    other = (view + 1) % result.n_views
+    assert reply["invisible"][other][point] is False
 
 
 def test_ws_edit_2d_is_local_to_its_view(client):
