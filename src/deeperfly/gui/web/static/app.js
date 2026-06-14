@@ -31,7 +31,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, fetchMeta, fetchPoints, fetchScene, frameUrl, saveCorrections, shutdownServer } from "./api.js";
+import { EditSocket, fetchMeta, fetchPoints, fetchScene, frameUrl, meshUrl, saveCorrections, shutdownServer } from "./api.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
 
@@ -173,6 +173,10 @@ class App {
   /** @type {HTMLInputElement} */
   nmfCheck = el("show-nmf");
   /** @type {HTMLLabelElement} */
+  meshWrap = el("mesh-wrap");
+  /** @type {HTMLInputElement} */
+  meshCheck = el("show-mesh");
+  /** @type {HTMLLabelElement} */
   pinWrap = el("pin-wrap");
   /** @type {HTMLInputElement} */
   pinCheck = el("pin-mode");
@@ -293,6 +297,9 @@ class App {
     // The NMF overlay is the fitted inverse-kinematics model -- only when present.
     this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.nmfCheck.addEventListener("change", () => this.applyNmf());
+    // The NMF mesh overlay (a heavier, server-rendered image layer) -- same gate.
+    this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.meshCheck.addEventListener("change", () => this.applyMesh());
 
     this.pinCheck.addEventListener("change", () => {
       this.pinMode = this.pinCheck.checked;
@@ -414,6 +421,7 @@ class App {
     this.meta.camera_names.forEach((name, v) => {
       this.views[v].loadFrame(frameUrl(name, t));
     });
+    if (this.meshCheck.checked) this.loadMeshes();
     await this.refreshPoints();
     if (this.sceneOpen) this.refreshScene();
   }
@@ -468,6 +476,19 @@ class App {
   applyNmf() {
     const visible = this.nmfCheck.checked;
     this.views.forEach((view) => view.setNmfVisible(visible));
+  }
+
+  applyMesh() {
+    const visible = this.meshCheck.checked;
+    this.views.forEach((view) => view.setMeshVisible(visible));
+    if (visible) this.loadMeshes();
+  }
+
+  /** Load every view's posed-mesh overlay for the current frame (when the toggle is on). */
+  loadMeshes() {
+    this.meta.camera_names.forEach((name, v) => {
+      this.views[v].loadMesh(meshUrl(name, this.frame));
+    });
   }
 
   /** @param {HTMLInputElement} check  flip a checkbox from a shortcut, then apply */
@@ -768,6 +789,7 @@ class App {
     }
     if (this.meta.has_nmf) {
       b.push({ key: "m", label: "m", desc: "Toggle NMF model overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
+      b.push({ key: "M", label: "Shift+M", desc: "Toggle NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
     }
     if (has3d) {
       b.push({ key: "l", label: "l", desc: "Fix / unfix the selected point (Edit 3D)", run: () => this.toggleSelectedFixed() });

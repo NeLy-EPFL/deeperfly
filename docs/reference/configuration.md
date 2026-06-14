@@ -314,7 +314,7 @@ winning.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into the view), or `"skeleton_nmf"` (the fitted inverse-kinematics model reprojected into the view). |
+| `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into the view), `"skeleton_nmf"` (the fitted inverse-kinematics model skeleton reprojected into the view), or `"mesh_nmf"` (the fitted NeuroMechFly *mesh*, shaded and reprojected; `alpha` sets its opacity). |
 | `view` | str | *required* | Camera/view name. |
 | `x0`, `y0` | int | `0` | Top-left pixel of the panel. |
 | `scale` | float | `1.0` | Uniform scale. |
@@ -322,7 +322,11 @@ winning.
 | `background` | str or [r, g, b] | inherits | Per-panel fill. |
 | *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `palette`, …). |
 
-A `skeleton_3d` panel needs a 3D pose, and a `skeleton_nmf` panel needs the
-inverse-kinematics model; a video that requires either is skipped (with a logged
-reason) when the result has none. Videos are encoded H.264 / libx264 via PyAV on
-the CPU.
+A `skeleton_3d` panel needs a 3D pose, and the `skeleton_nmf` / `mesh_nmf` panels
+need the inverse-kinematics model; a video that requires one is skipped (with a
+logged reason) when the result has none. Videos are encoded H.264 / libx264 via
+PyAV on the CPU.
+
+The `inverse_kinematics` overlays are also available live in `deeperfly gui`: the
+**NMF model** toggle ghosts the fitted skeleton over each view, and the **NMF
+mesh** toggle renders the posed NeuroMechFly mesh (a heavier, on-demand layer).

@@ -642,7 +642,7 @@ def render_videos(
                 spec.video_name,
             )
         elif result.nmf_pts3d is None and any(
-            p.plot == "skeleton_nmf" for p in spec.panels
+            p.plot in ("skeleton_nmf", "mesh_nmf") for p in spec.panels
         ):
             log.warning(
                 "skipping video %r: it overlays the fitted NMF model but the result "

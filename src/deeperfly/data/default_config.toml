@@ -525,7 +525,8 @@ background = "black"
 imshow      = { width = 480, height = 240 }
 skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
 skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
-skeleton_nmf = { line_thickness = 2, width = 480, height = 240 }  # fitted NMF model overlay
+skeleton_nmf = { line_thickness = 2, width = 480, height = 240 }  # fitted NMF model skeleton overlay
+mesh_nmf     = { alpha = 0.55, width = 480, height = 240 }        # fitted NMF model mesh overlay
 
 [[visualization.videos]]
 video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
@@ -583,4 +584,24 @@ panels = [
     { plot = "skeleton_nmf", view = "rh", x0 = 0,   y0 = 720 },
     { plot = "imshow",       view = "lh", x0 = 480, y0 = 720 },
     { plot = "skeleton_nmf", view = "lh", x0 = 480, y0 = 720 },
+]
+
+[[visualization.videos]]
+video_name = "pose_mesh"  # camera frames with the fitted NeuroMechFly *mesh* overlaid
+                          # (needs do_inverse_kinematics = true; skipped otherwise)
+panels = [
+    { plot = "imshow",   view = "f",  x0 = 240, y0 = 0   },
+    { plot = "mesh_nmf", view = "f",  x0 = 240, y0 = 0   },
+    { plot = "imshow",   view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "mesh_nmf", view = "rf", x0 = 0,   y0 = 240 },
+    { plot = "imshow",   view = "lf", x0 = 480, y0 = 240 },
+    { plot = "mesh_nmf", view = "lf", x0 = 480, y0 = 240 },
+    { plot = "imshow",   view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "mesh_nmf", view = "rm", x0 = 0,   y0 = 480 },
+    { plot = "imshow",   view = "lm", x0 = 480, y0 = 480 },
+    { plot = "mesh_nmf", view = "lm", x0 = 480, y0 = 480 },
+    { plot = "imshow",   view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "mesh_nmf", view = "rh", x0 = 0,   y0 = 720 },
+    { plot = "imshow",   view = "lh", x0 = 480, y0 = 720 },
+    { plot = "mesh_nmf", view = "lh", x0 = 480, y0 = 720 },
 ]

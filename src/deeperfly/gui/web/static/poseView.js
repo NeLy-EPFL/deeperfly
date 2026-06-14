@@ -60,6 +60,9 @@ export class PoseView {
   constructor(viewIndex, canvas, cb, pinMode) {
     /** @type {HTMLImageElement | null} */
     this.img = null;
+    /** @type {HTMLImageElement | null} */
+    this.meshImg = null; // posed NMF mesh overlay (RGBA), drawn over the frame when meshVisible
+    this.meshToken = 0; // drops superseded mesh loads on a fast scrub
     /** @type {[number, number][]} */
     this.bones = [];
     /** @type {string[]} */
@@ -85,6 +88,7 @@ export class PoseView {
     this.overlayVisible = true;
     this.latentVisible = false;
     this.nmfVisible = false;
+    this.meshVisible = false;
     this.labelsVisible = false;
     /** @type {number | null} */
     this.dragging = null;
@@ -189,6 +193,33 @@ export class PoseView {
     img.onload = () => {
       if (token !== this.loadToken) return; // a newer frame already supersedes this
       this.setImage(img);
+    };
+    img.src = url;
+  }
+
+  /** @param {boolean} visible  whether the posed NMF mesh is drawn over the frame */
+  setMeshVisible(visible) {
+    if (this.meshVisible === visible) return;
+    this.meshVisible = visible;
+    this.draw();
+  }
+
+  /**
+   * Load this view's posed-mesh overlay (a heavy server-side render). It draws in
+   * when it decodes, so the frame + skeleton never wait on it; a faster scrub drops
+   * superseded loads via `meshToken`.
+   * @param {string} url
+   */
+  loadMesh(url) {
+    const token = ++this.meshToken;
+    const img = new Image();
+    img.onload = () => {
+      if (token !== this.meshToken) return;
+      this.meshImg = img;
+      if (this.meshVisible) this.draw();
+    };
+    img.onerror = () => {
+      if (token === this.meshToken) this.meshImg = null;
     };
     img.src = url;
   }
@@ -373,6 +404,11 @@ export class PoseView {
       ctx.imageSmoothingEnabled = smooth;
     } else if (this.img) {
       ctx.drawImage(this.img, this.offX, this.offY, dw, dh);
+    }
+    // The posed NMF mesh sits between the frame and the editable skeleton, so the
+    // keypoints stay legible on top of it. Its PNG alpha gives the translucency.
+    if (this.meshVisible && this.meshImg) {
+      ctx.drawImage(this.meshImg, this.offX, this.offY, dw, dh);
     }
     if (this.overlayVisible) {
       // bones first, joints on top

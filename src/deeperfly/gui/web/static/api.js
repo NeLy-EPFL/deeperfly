@@ -58,6 +58,16 @@ export function frameUrl(camera, frame) {
   return `/api/frame/${encodeURIComponent(camera)}/${frame}`;
 }
 
+/**
+ * URL of the posed NeuroMechFly mesh overlay (RGBA PNG) for a camera + frame.
+ * @param {string} camera
+ * @param {number} frame
+ * @returns {string}
+ */
+export function meshUrl(camera, frame) {
+  return `/api/mesh/${encodeURIComponent(camera)}/${frame}`;
+}
+
 // A tiny request->reply WebSocket client: send an edit, get the refreshed points
 // payload back through the `onPoints` callback.
 export class EditSocket {

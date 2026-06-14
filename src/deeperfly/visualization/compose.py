@@ -281,12 +281,38 @@ def _op_skeleton_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> 
     )
 
 
+def _op_mesh_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
+    if src.nmf_pts3d is None:
+        raise ValueError("mesh_nmf panel needs Sources.nmf_pts3d")
+    from ..inverse_kinematics.mesh import load_nmf_mesh
+    from . import mesh as _mesh
+
+    nmf = load_nmf_mesh()
+    verts, valid = nmf.pose(src.nmf_pts3d[t])
+    view_h, view_w = src.view_size(panel.view)
+    _mesh.draw_mesh_overlay(
+        canvas,
+        verts,
+        nmf.faces,
+        nmf.face_rgb,
+        valid,
+        src.camera_group[panel.view],
+        view_h,
+        view_w,
+        x0=panel.x0,
+        y0=panel.y0,
+        scale=panel.scales(view_h, view_w),
+        **panel.options,
+    )
+
+
 #: ``plot`` name -> draw op. Extend to add new panel kinds.
 OPS: dict[str, Callable[[np.ndarray, Panel, Sources, int], None]] = {
     "imshow": _op_imshow,
     "skeleton_2d": _op_skeleton_2d,
     "skeleton_3d": _op_skeleton_3d,
     "skeleton_nmf": _op_skeleton_nmf,
+    "mesh_nmf": _op_mesh_nmf,
 }
 
 

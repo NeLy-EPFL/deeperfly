@@ -495,6 +495,52 @@ def test_skeleton_nmf_op_requires_nmf_points(result, fly, frames):
         compose.compose_frame(spec, src, t=0)
 
 
+def test_mesh_rgba_rasterizes_the_posed_model(result):
+    """The mesh rasterizer projects a posed model to an RGBA overlay with coverage."""
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.visualization.mesh import render_mesh_rgba
+
+    mesh = load_nmf_mesh()
+    verts, valid = mesh.pose(mesh.kp_neutral)  # model near the world origin
+    cam = result.cameras["rf"]
+    rgba = render_mesh_rgba(verts, mesh.faces, mesh.face_rgb, valid, cam, 512, 1024)
+    assert rgba.shape == (512, 1024, 4)
+    assert (rgba[..., 3] > 0).any()  # the model covers some pixels
+    # alpha is bounded and colored pixels coincide with coverage
+    assert rgba[..., 3].max() <= 255
+
+
+def test_mesh_nmf_op_overlays_the_mesh(result, fly, frames):
+    cfg = Config.from_dict(
+        {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "v",
+                        "panels": [
+                            {"plot": "imshow", "view": "rh"},
+                            {"plot": "mesh_nmf", "view": "rh", "alpha": 0.6},
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    spec = compose.read_video_specs(cfg)[0]
+    src = compose.Sources(fly, result.cameras, frames, nmf_pts3d=result.pts3d)
+    frame = compose.compose_frame(spec, src, t=0)  # composites without error
+    assert frame.ndim == 3 and frame.any()
+
+
+def test_mesh_nmf_op_requires_nmf_points(result, fly, frames):
+    spec = compose.VideoSpec(
+        video_name="v", panels=[compose.Panel(plot="mesh_nmf", view="rh")]
+    )
+    src = compose.Sources(fly, result.cameras, frames, pts3d=result.pts3d)
+    with pytest.raises(ValueError, match="mesh_nmf panel needs Sources.nmf_pts3d"):
+        compose.compose_frame(spec, src, t=0)
+
+
 def test_render_video_stacks_all_frames(result, fly, frames):
     spec = compose.read_video_specs(_two_panel_config("skeleton_3d"))[0]
     src = compose.Sources(
@@ -523,7 +569,12 @@ def test_packaged_config_videos_parse():
 
     cfg = Config.from_toml(files("deeperfly.data") / "default_config.toml")
     specs = compose.read_video_specs(cfg)
-    assert {s.video_name for s in specs} == {"pose2d", "pose3d", "pose_nmf"}
+    assert {s.video_name for s in specs} == {
+        "pose2d",
+        "pose3d",
+        "pose_nmf",
+        "pose_mesh",
+    }
     assert all(p.plot in compose.OPS for s in specs for p in s.panels)
     # the global [visualization.kwargs] sets line_thickness=2 on every skeleton panel
     skel = [p for s in specs for p in s.panels if p.plot.startswith("skeleton")]

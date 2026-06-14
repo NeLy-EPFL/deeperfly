@@ -117,6 +117,30 @@ def create_app(
             headers={"Cache-Control": "max-age=3600"},
         )
 
+    mesh_cache: dict[tuple[str, int], bytes] = {}
+
+    @app.get("/api/mesh/{camera}/{t}")
+    def mesh(camera: str, t: int) -> Response:
+        """The posed NeuroMechFly mesh for ``camera`` at frame ``t`` as an RGBA PNG.
+
+        404 when the result carries no fitted model (IK off). Rendered on demand and
+        memoized per ``(camera, frame)`` so scrubbing back is instant; the overlay is
+        heavy enough that re-rendering every scrub would lag.
+        """
+        if not session.state.has_nmf:
+            raise HTTPException(404, "no inverse-kinematics model to overlay")
+        key = (camera, _clamp_frame(session, t))
+        if key not in mesh_cache:
+            png = _render_mesh_png(session, camera, key[1])
+            if png is None:
+                raise HTTPException(404, f"no mesh overlay for {camera!r} at {t}")
+            mesh_cache[key] = png
+        return Response(
+            content=mesh_cache[key],
+            media_type="image/png",
+            headers={"Cache-Control": "max-age=3600"},
+        )
+
     @app.get("/api/points/{t}")
     def points(t: int, mode: str = "view") -> dict:
         return _points_payload(session, _clamp_frame(session, t), mode)
@@ -183,6 +207,41 @@ def create_app(
                 )
 
     return app
+
+
+# -- mesh overlay -------------------------------------------------------------
+
+
+def _render_mesh_png(session: Session, camera: str, t: int) -> bytes | None:
+    """Render the posed NMF mesh for ``camera`` at frame ``t`` to RGBA PNG bytes.
+
+    Sized to the camera's footage frame (so it overlays the served frame exactly).
+    Returns ``None`` if the model or the packaged mesh asset is unavailable.
+    """
+    s = session.state
+    if s.result.nmf_pts3d is None or camera not in s.result.cameras.names:
+        return None
+    try:
+        from ..inverse_kinematics.mesh import load_nmf_mesh
+        from ..visualization.mesh import render_mesh_rgba
+    except Exception:  # pragma: no cover -- a missing asset disables the overlay
+        return None
+    cam = s.result.cameras[camera]
+    h, w = session.image_sizes.get(camera) or _intr_size(cam)
+    mesh = load_nmf_mesh()
+    verts, valid = mesh.pose(s.result.nmf_pts3d[t])
+    rgba = render_mesh_rgba(
+        verts, mesh.faces, mesh.face_rgb, valid, cam, int(h), int(w)
+    )
+    # cv2 writes BGRA; reorder RGBA -> BGRA so the PNG colors are correct.
+    ok, buf = cv2.imencode(".png", rgba[..., [2, 1, 0, 3]])
+    return buf.tobytes() if ok else None
+
+
+def _intr_size(cam) -> tuple[int, int]:
+    """``(height, width)`` inferred from a camera's principal point (no footage)."""
+    intr = np.asarray(cam.intr)
+    return int(round(2 * intr[3] + 1)), int(round(2 * intr[2] + 1))
 
 
 # -- payload builders ---------------------------------------------------------

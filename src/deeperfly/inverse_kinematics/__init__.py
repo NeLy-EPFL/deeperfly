@@ -24,12 +24,15 @@ import numpy as np
 from ..skeleton import Skeleton
 from .align import Alignment, body_alignment
 from .core import solve_head, solve_leg
+from .mesh import NmfMesh, load_nmf_mesh
 from .template import KinematicTemplate
 
 __all__ = [
     "IKResult",
     "KinematicTemplate",
     "Alignment",
+    "NmfMesh",
+    "load_nmf_mesh",
     "solve_inverse_kinematics",
 ]
 

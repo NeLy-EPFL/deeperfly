@@ -109,6 +109,18 @@ def test_nmf_overlay_payload(result, tmp_path):
     # the model reprojects to finite pixels in at least one view
     assert any(q is not None for row in nmf for q in row)
 
+    # the posed-mesh overlay endpoint returns an RGBA PNG for a known camera
+    cam = res.cameras.names[0]
+    r = client.get(f"/api/mesh/{cam}/0")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:4] == b"\x89PNG"
+
+
+def test_mesh_overlay_absent_without_ik(client):
+    """The mesh overlay endpoint 404s when the result carries no fitted model."""
+    assert client.get("/api/mesh/rf/0").status_code == 404
+
 
 # -- points -------------------------------------------------------------------
 

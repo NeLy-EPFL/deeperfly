@@ -226,3 +226,41 @@ def test_template_unknown_leg_rejected():
 def test_template_unknown_name_rejected():
     with pytest.raises(FileNotFoundError):
         KinematicTemplate.load("not-a-template")
+
+
+# -- NeuroMechFly mesh overlay -----------------------------------------------
+
+
+def test_nmf_mesh_pose_at_neutral_is_identity():
+    """Posing at the model's own neutral keypoints reproduces the baked mesh."""
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+
+    mesh = load_nmf_mesh()
+    verts, valid = mesh.pose(mesh.kp_neutral)
+    assert valid.all()
+    np.testing.assert_allclose(verts, mesh.vertices, atol=1e-3)
+
+
+def test_nmf_mesh_drops_occluded_segment():
+    """A leg segment with missing endpoints is dropped; the rest still poses."""
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+
+    mesh = load_nmf_mesh()
+    pts = mesh.kp_neutral.copy()
+    pts[mesh.slot_prox[1]] = np.nan  # NaN one leg bone's endpoints
+    pts[mesh.slot_dist[1]] = np.nan
+    verts, valid = mesh.pose(pts)
+    assert valid.any() and not valid.all()
+    # the dropped bone's vertices are NaN; the body slot (0) stays finite
+    body = mesh.vert_slot == 0
+    assert np.isfinite(verts[body]).all()
+
+
+def test_nmf_mesh_follows_a_translated_pose():
+    """Shifting every keypoint shifts the whole posed mesh by the same offset."""
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+
+    mesh = load_nmf_mesh()
+    shift = np.array([3.0, -2.0, 1.0])
+    verts, _ = mesh.pose(mesh.kp_neutral + shift)
+    np.testing.assert_allclose(verts, mesh.vertices + shift, atol=1e-3)
