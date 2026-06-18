@@ -45,8 +45,23 @@ inverse_kinematics/
     angles                  (T, D)        fitted joint angles (radians)
     angle_names             (D,)          the angle names, in column order
     points3d                (T, P, 3)     fitted model joints (world; skeleton order)
-    attrs["meta"]           json {template, alignment} of the fit
+    attrs["meta"]           json {template, alignment, chain_scales, body_scale} of the fit
 ```
+
+`angle_names` are the flygym joint names `<parent_body>-<child_body>-<dof>`: e.g.
+`c_thorax-rf_coxa-{yaw,pitch,roll}` / `rf_coxa-rf_trochanterfemur-{pitch,roll}` /
+`rf_trochanterfemur-rf_tibia-pitch` / `rf_tibia-rf_tarsus1-pitch` for a leg,
+`c_thorax-c_head-{yaw,pitch,roll}` for the head, and the `c_thorax-c_abdomen12-pitch`
+… `c_abdomen5-c_abdomen6-pitch` chain for the abdomen (the head/abdomen columns are
+present only when `fit_head` / `fit_abdomen` are on). `points3d` carries the model's prediction for every fitted
+keypoint in skeleton order (leg joints, antenna tips, abdomen markers; other points
+`NaN`), so it reprojects with the skeleton's own bones. The meta's `chain_scales`
+(`{"head": …, "abdomen": …}`) are the head/abdomen size relative to the model that
+the stage estimates from each chain's contour length (its markers' reach along the
+chain), applied to the fit and the mesh overlay. `body_scale` is the overlay's
+single body size for the recording (registered once from the median thorax-coxa
+spread); the mesh overlay holds the body, head, and abdomen at this fixed size and
+varies only rotation + translation per frame, so the body does not breathe.
 
 A `cameras/` group stores `names`, `rvecs`, `tvecs`, `intrs` (`[fx, fy, cx, cy]`),
 and `dists`. The `skeleton/` group stores `point_names`, `limb_names`, `limb_id`,

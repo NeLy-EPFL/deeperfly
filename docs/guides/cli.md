@@ -1,10 +1,10 @@
 # CLI usage
 
-`deeperfly` has four commands: `init` (write a config), `run` (the pipeline),
-`inspect` (summarize a result), and `doctor` (report the install). Every command
-takes `--log-level` (`debug` / `info` / `warning` / `error` / `critical`;
-`warning` or higher hides the per-stage logs and the progress bar) and `-h` /
-`--help`.
+`deeperfly` has five commands: `init` (write a config), `run` (the pipeline),
+`gui` (correct a result), `inspect` (summarize a result), and `doctor` (report the
+install). Every command takes `--log-level` (`debug` / `info` / `warning` /
+`error` / `critical`; `warning` or higher hides the per-stage logs and the progress
+bar) and `-h` / `--help`.
 
 ```bash
 deeperfly --help            # the command list
@@ -110,6 +110,32 @@ cached output (bundle adjustment, pictorial structures, triangulation) feeds
 downstream only while that stage is enabled. An enabled stage whose input is
 unavailable is skipped, with the reason logged. The caching model is explained in
 the [pipeline explainer](../explanation/pipeline.md#caching-and-re-runs).
+
+## `deeperfly gui` — correct a result
+
+```bash
+deeperfly gui PATH [--footage-dir DIR] [--host HOST] [--port PORT] [--no-browser] [--keep-alive]
+```
+
+Opens the interactive web viewer/corrector for a result: every camera view with its
+2D skeleton overlay, drag-to-fix keypoints in 2D or 3D, and the live NeuroMechFly
+overlays. Corrections go to a `corrections.h5` sidecar and never modify
+`results.h5`. See the [Correction GUI guide](gui.md) for the editor itself.
+
+| Argument / option | Default | Meaning |
+| --- | --- | --- |
+| `PATH` | — | A `results.h5`, or a directory containing one (e.g. `<recording>/deeperfly_outputs`). |
+| `--footage-dir` | recorded paths | Directory to search for the footage when the paths recorded in `results.h5` no longer resolve. |
+| `--host` | `127.0.0.1` | Address to bind. The loopback default keeps the editor private; it is **unauthenticated**, so bind a routable address only behind a trusted network — prefer an `ssh -L` tunnel. |
+| `--port` | `8000` | TCP port to serve on (`0` picks a free one). |
+| `--no-browser` | off | Do not open a browser on startup (e.g. when tunnelling). |
+| `--keep-alive` | off | Keep the server running after the last tab closes (by default it stops a few seconds later; a refresh reconnects). |
+
+```bash
+deeperfly gui recording/deeperfly_outputs           # open the editor
+deeperfly gui results.h5 --port 0                    # any free port
+deeperfly gui results.h5 --no-browser                # headless / over a tunnel
+```
 
 ## `deeperfly inspect` — summarize a result
 

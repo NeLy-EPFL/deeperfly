@@ -266,22 +266,83 @@ How the per-view 2D points become one 3D point.
 ## `[inverse_kinematics]` — joint angles { #inverse_kinematics }
 
 Runs only when `do_inverse_kinematics = true`. Fits a NeuroMechFly-style
-articulated model to the triangulated 3D pose: each leg is aligned to a body frame
-derived from the data and solved per frame with bounded least squares. Writes the
-joint angles **and** the fitted model joints (which reproject onto the raw images —
-see the `skeleton_nmf` panel and the GUI's NMF overlay) to `results.h5`.
+articulated model to the triangulated 3D pose: the six legs (aligned to a body
+frame derived from the data, with segment lengths measured from the data), plus the
+**head** (yaw/pitch/roll recovered from the two antenna tips) and the **abdomen** (a
+five-segment sagittal pitch chain recovered from the abdomen markers). The head and
+abdomen use fixed model geometry baked from the NeuroMechFly MJCF and are registered
+by a similarity transform from the six thorax-coxa keypoints. Everything is solved
+per frame with bounded least squares. Writes the joint angles **and** the fitted
+model joints (which reproject onto the raw images — see the `skeleton_nmf` / `mesh_nmf`
+panels and the GUI's NMF overlays) to `results.h5`.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `template` | str | `"neuromechfly"` | A packaged template name, or a path to a template TOML. |
 | `legs` | list[str] | all | Which legs to fit (e.g. `["rf", "lf"]`). |
+| `fit_head` | bool | `true` | Fit head yaw/pitch/roll from the antenna tips. |
+| `fit_abdomen` | bool | `true` | Fit the abdomen pitch chain from the abdomen markers. |
 | `max_nfev` | int | `100` | Per-frame `scipy.optimize.least_squares` iteration cap. |
 | `loss` | str | `"linear"` | Least-squares loss (`"linear"`, `"huber"`, `"cauchy"`, …). |
 | `f_scale` | float | `1.0` | Robust-loss scale (units of the 3D pose). |
+| `regularization` | float | `0.01` | Head/abdomen toward-previous-frame angle prior (smooths the trajectory and pins redundant DOFs the sparse markers leave free). |
 
 A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits in
-**degrees**, keyed `"<LEG>_<joint>_<dof>"` (joints `ThC`/`CTr`/`FTi`/`TiTa`; dofs
-`yaw`/`pitch`/`roll`), e.g. `RF_FTi_pitch = [10, 160]`.
+**degrees**. Keys are the flygym joint angle names `"<parent_body>-<child_body>-<dof>"`
+(dofs `yaw`/`pitch`/`roll`) — the same names written to `results.h5` — e.g.
+`"rf_trochanterfemur-rf_tibia-pitch" = [10, 160]` for a leg,
+`"c_thorax-c_head-pitch" = [-30, 30]` for the head, or
+`"c_abdomen12-c_abdomen3-pitch" = [-45, 20]` for the abdomen. By default each abdomen
+hinge is limited to **ventral
+(downward) flexion only**, up to 30° (`[-30, 0]`): the few near-midline abdomen
+markers under-constrain the five-segment chain, so a symmetric range lets the solver
+fold it into a non-physical zig-zag, while a downward-only range keeps the fit a
+smooth ventral curl.
+
+### Marker placement — `[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]` { #ik-markers }
+
+*Where* each head/abdomen keypoint sits relative to the NeuroMechFly model is a
+**labeling-scheme choice** — e.g. the packaged abdomen markers reproduce the original
+DeepFly3D annotation as small offsets from the model's abdomen joints (see
+[Keypoint locations](../explanation/keypoints.md)). These tables let a different
+skeleton retarget those markers **without re-running the model build**: when a table
+is present it **replaces** that chain's default markers. Each entry is keyed by the
+skeleton point name:
+
+```toml
+[inverse_kinematics.abdomen]
+l_abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.05, 0.30] }
+r_abdomen0 = { body = "c_abdomen3", offset = [0.0, -0.05, 0.30] }
+# ... the full set of abdomen markers you track
+
+[inverse_kinematics.head]
+l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
+r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `body` | str | *required* | The model body the marker is rigidly attached to. The chain (head/abdomen) and the marker's chain depth follow from it. The abdomen bodies are `c_abdomen12`/`c_abdomen3`/`c_abdomen4`/`c_abdomen5`/`c_abdomen6`; the head bodies are the head subtree (`c_head`, `l_pedicel`/`r_pedicel`, eyes, …). |
+| `offset` | [float, float, float] | *required* | Offset from that body's origin (the joint), in the body's frame — the model units the rest of the IK uses. The marker's neutral position is `body_frame · offset`. |
+| `depth` | int | the body's chain depth | Override the chain depth (rarely needed; the body determines it). |
+
+The joint geometry (anchors, axes) stays the model's; only the markers move. Omit
+both tables to keep the packaged NeuroMechFly markers. Custom markers also flow into
+the GUI's live re-fit (it reads this same config beside `results.h5`).
+
+The `mesh_nmf` overlay (videos + GUI) renders the posed model mesh on the GPU when a
+headless OpenGL (EGL) context is available — roughly 10× faster than, and with exact
+depth ordering over, the pure-CPU rasterizer it falls back to where no GL device is
+present. The body, head, and abdomen are placed at the recording's single
+`body_scale` (registered once from the median thorax-coxa spread), so the overlay
+holds a constant size and only its pose (rotation + translation) changes per frame —
+the fly is rigid, so this stops the body breathing with per-frame coxa noise.
+
+Which body parts the overlay draws is configurable, separately for the videos and the
+editor: `[visualization].mesh_hide` (rendered videos) and `[gui].mesh_hide` (the
+correction GUI) each list parts to drop, **defaulting to `["wings"]`**. The
+vocabulary is `wings` / `halteres` / `eyes` / `antennae` / `head` / `thorax` /
+`abdomen` / `legs`.
 
 ## `[visualization]` — output videos { #visualization }
 
@@ -294,6 +355,7 @@ Global settings plus one `[[visualization.videos]]` per output MP4.
 | `background` | str or [r, g, b] | `"black"` | Canvas fill (overridable per video / per panel). |
 | `output_fps` | float | input fps | Explicit output frame rate for every video. |
 | `speed` | float | `1.0` | Scale the input fps instead (`0.5` = slow motion). `output_fps` wins if both are set. |
+| `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the videos (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). |
 
 **`[visualization.kwargs]`** — draw-op defaults shared by every video, keyed by
 the `plot` op name (`imshow`, `skeleton_2d`, `skeleton_3d`). Kwargs merge across
@@ -328,5 +390,29 @@ logged reason) when the result has none. Videos are encoded H.264 / libx264 via
 PyAV on the CPU.
 
 The `inverse_kinematics` overlays are also available live in `deeperfly gui`: the
-**NMF model** toggle ghosts the fitted skeleton over each view, and the **NMF
-mesh** toggle renders the posed NeuroMechFly mesh (a heavier, on-demand layer).
+**NMF skeleton** toggle ghosts the fitted model joints over each view and the **NMF
+mesh** toggle renders the posed NeuroMechFly mesh on the client GPU (smooth-shaded
+WebGL, rendered at the view's display resolution). They can also be inspected in 3D
+together with the cameras and the triangulated pose via the **3D view** button. It
+opens a floating panel that overlays the editor without blocking it — drag its title
+bar to move it, its corner to resize, and inside it drag to orbit, Shift/right-drag to
+pan, and scroll to zoom right up to the model; because the rest of the GUI stays live,
+the **main frame slider** still scrubs the 3D pose through time. Both **re-fit to the operator's 3D
+corrections** — as the latent skeleton is edited, the model is re-solved for that
+frame and the overlay follows. The legs skin to the corrected keypoints; the head
+and abdomen are fixed model geometry, sized to this fly by a per-recording scale the
+IK stage **estimates from the data** (each chain's contour length — how far its
+markers reach along it — analogous to the coxa-derived body scale), so a longer
+abdomen or bigger head is matched without a manual knob. The same scale is used by the `mesh_nmf` video op,
+whose GPU rasterizer uploads each frame's posed geometry once and renders every
+camera from it (so a multi-view mesh video renders an order of magnitude faster than
+the old per-view software path).
+
+## `[gui]` — correction editor { #gui }
+
+Display-only settings for `deeperfly gui` (no effect on the pipeline or `results.h5`);
+read from the `config.toml` snapshot beside the `results.h5`.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the editor (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). The rendered videos use `[visualization].mesh_hide`. |

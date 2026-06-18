@@ -38,6 +38,7 @@ nav:
   - Guides:
       - CLI usage: guides/cli.md
       - Writing configs: guides/configuration.md
+      - Correction GUI: guides/gui.md
       - Library API: guides/library.md
   - Examples:
       - Bundle adjustment: examples/bundle_adjustment.ipynb
