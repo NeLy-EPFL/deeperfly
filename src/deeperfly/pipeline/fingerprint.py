@@ -274,6 +274,8 @@ def stage_fingerprint(
         return _norm(
             {
                 "template": _ik_template_digest(config),
+                "articulation": _ik_articulation_digest(config),
+                "regularization": p.regularization,
                 "max_nfev": p.max_nfev,
                 "loss": p.loss,
                 "f_scale": p.f_scale,
@@ -285,6 +287,7 @@ def stage_fingerprint(
         return _norm(
             {
                 "videos": [dataclasses.asdict(spec) for spec in config.videos],
+                "mesh_hide": list(config.visualization.get("mesh_hide", ["wings"])),
                 "skeleton": _skeleton_digest(config, cosmetic=True),
                 "pose_from": pose_sources(enabled, store),
                 "nmf_from": nmf_source(enabled, store),
@@ -303,6 +306,21 @@ def _ik_template_digest(config: Config) -> dict:
         for name, blo, bhi in zip(leg.dof_names, lo, hi):
             bounds[name] = [float(blo), float(bhi)]
     return {"name": t.name, "dof_names": t.dof_names, "bounds": bounds}
+
+
+def _ik_articulation_digest(config: Config) -> dict | None:
+    """The fitted head/abdomen chains + their resolved per-DOF bounds, or ``None``."""
+    art = config.ik_articulation()
+    if art is None:
+        return None
+    chains = {}
+    for chain in art.chains:
+        lo, hi = chain.bounds
+        chains[chain.name] = {
+            name: [float(blo), float(bhi)]
+            for name, blo, bhi in zip(chain.dof_names, lo, hi)
+        }
+    return chains
 
 
 # -- comparison ----------------------------------------------------------------

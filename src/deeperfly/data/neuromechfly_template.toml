@@ -12,9 +12,13 @@
 # axis by the *measured* segment length (lengths come from the data, not this file).
 #
 # Joint angle limits are the `[bounds.<side>]` tables below, in DEGREES. Override
-# any of them per leg from the run config, e.g.
+# any of them per leg from the run config, keyed by the flygym joint angle name, e.g.
 #   [inverse_kinematics.bounds]
-#   RF_FTi_pitch = [10, 160]
+#   "rf_trochanterfemur-rf_tibia-pitch" = [10, 160]
+#
+# Each joint's `joint` field is the flygym joint base `<parent_body>-<child_body>`
+# ({leg} expands per leg); a DOF's angle name is `<joint>-<dof>`, e.g.
+# `c_thorax-rf_coxa-roll`.
 
 name = "neuromechfly"
 
@@ -26,6 +30,7 @@ legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
 [[joints]]
 name = "ThC"            # thorax-coxa: 3-DOF ball joint at the body-fixed coxa
 suffix = "thorax_coxa"
+joint = "c_thorax-{leg}_coxa"
 dofs = [
     { name = "yaw",   axis = [0.0, 0.0, 1.0] },
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
@@ -36,6 +41,7 @@ dofs = [
 name = "CTr"            # coxa-trochanter
 suffix = "coxa_trochanter"
 segment = "coxa"
+joint = "{leg}_coxa-{leg}_trochanterfemur"
 dofs = [
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
     { name = "roll",  axis = [1.0, 0.0, 0.0] },
@@ -45,6 +51,7 @@ dofs = [
 name = "FTi"            # femur-tibia
 suffix = "femur_tibia"
 segment = "femur"
+joint = "{leg}_trochanterfemur-{leg}_tibia"
 dofs = [
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
 ]
@@ -53,6 +60,7 @@ dofs = [
 name = "TiTa"           # tibia-tarsus
 suffix = "tibia_tarsus"
 segment = "tibia"
+joint = "{leg}_tibia-{leg}_tarsus1"
 dofs = [
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
 ]

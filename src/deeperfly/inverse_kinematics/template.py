@@ -61,12 +61,15 @@ class Joint:
 
     ``segment`` names the segment that leads *into* this joint from its parent
     (``""`` for the root ThC, which sits at the chain origin); the segment's length
-    is measured from the data at solve time.
+    is measured from the data at solve time. ``joint`` is the flygym joint base name
+    ``<parent_body>-<child_body>`` for this leg (e.g. ``"c_thorax-rf_coxa"``); each
+    DOF's angle name is ``<joint>-<dof>`` (``"c_thorax-rf_coxa-roll"``).
     """
 
     name: str
     point: str
     segment: str
+    joint: str
     dofs: tuple[Dof, ...]
 
 
@@ -88,11 +91,11 @@ class LegChain:
 
     @property
     def dof_names(self) -> list[str]:
-        """``Angle_<LEG>_<joint>_<dof>`` for every DOF, in chain order."""
-        side_leg = self.name.upper()
-        return [
-            f"Angle_{side_leg}_{j.name}_{d.name}" for j in self.joints for d in j.dofs
-        ]
+        """``<parent_body>-<child_body>-<dof>`` (the flygym joint name) for every DOF.
+
+        E.g. ``c_thorax-rf_coxa-roll``, ``rf_coxa-rf_trochanterfemur-pitch``.
+        """
+        return [f"{j.joint}-{d.name}" for j in self.joints for d in j.dofs]
 
     @property
     def axes(self) -> np.ndarray:
@@ -143,9 +146,9 @@ class KinematicTemplate:
         legs
             Which legs to fit (subset of the file's ``legs``); ``None`` = all.
         bounds_overrides
-            ``"<LEG>_<joint>_<dof>" -> (lo_deg, hi_deg)`` degree overrides
-            (e.g. ``{"RF_FTi_pitch": (10, 160)}``), applied after the per-side
-            defaults. Case-insensitive on the leg prefix.
+            ``"<parent>-<child>-<dof>" -> (lo_deg, hi_deg)`` degree overrides keyed by
+            the flygym joint name (e.g. ``{"rf_trochanterfemur-rf_tibia-pitch": (10,
+            160)}``), applied after the per-side defaults. Case-insensitive.
 
         Returns
         -------
@@ -228,10 +231,16 @@ def _build_leg(
     for jspec in joints_spec:
         jname = jspec["name"]
         point = f"{leg}_{jspec['suffix']}"
+        joint = jspec.get("joint", "").format(
+            leg=leg
+        )  # flygym base, "c_thorax-rf_coxa"
         dofs: list[Dof] = []
         for dspec in jspec.get("dofs", []):
-            key = f"{jname}_{dspec['name']}"
-            lo_deg, hi_deg = _resolve_bounds(leg, key, side_bounds.get(key), overrides)
+            side_key = f"{jname}_{dspec['name']}"  # side-default key, e.g. "ThC_roll"
+            dof_name = f"{joint}-{dspec['name']}"  # flygym DOF, "c_thorax-rf_coxa-roll"
+            lo_deg, hi_deg = _resolve_bounds(
+                dof_name, side_bounds.get(side_key), overrides
+            )
             dofs.append(
                 Dof(
                     name=dspec["name"],
@@ -245,6 +254,7 @@ def _build_leg(
                 name=jname,
                 point=point,
                 segment=str(jspec.get("segment", "")),
+                joint=joint,
                 dofs=tuple(dofs),
             )
         )
@@ -252,13 +262,12 @@ def _build_leg(
 
 
 def _resolve_bounds(
-    leg: str,
-    key: str,
+    dof_name: str,
     default: list | tuple | None,
     overrides: dict[str, tuple[float, float]],
 ) -> tuple[float, float]:
-    """Per-DOF degree bounds: a ``<LEG>_<key>`` override wins over the side default."""
-    override = overrides.get(f"{leg}_{key}".lower())
+    """Per-DOF degree bounds: a config override (keyed by the flygym DOF name) wins."""
+    override = overrides.get(dof_name.lower())
     if override is not None:
         return float(override[0]), float(override[1])
     if default is None:

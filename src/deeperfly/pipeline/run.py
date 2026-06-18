@@ -322,6 +322,8 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
         meta={
             "template": ctx.config.inverse_kinematics.template,
             "alignment": result.alignment.to_json(),
+            "chain_scales": result.chain_scales,
+            "body_scale": result.body_scale,
         },
     )
     return True

@@ -332,11 +332,19 @@ def test_poseresult_load_picks_up_nmf(cameras, rng, tmp_path):
     )
     model = rng.normal(size=(4, 38, 3))
     store.write_ik(
-        angles=rng.normal(size=(4, 5)), angle_names=["a"] * 5, model_pts3d=model
+        angles=rng.normal(size=(4, 5)),
+        angle_names=["a"] * 5,
+        model_pts3d=model,
+        meta={"chain_scales": {"head": 1.25, "abdomen": 2.1}, "body_scale": 0.87},
     )
     res = PoseResult.load(store.path)
     assert res.nmf_pts3d is not None
     np.testing.assert_array_equal(res.nmf_pts3d, model)
+    # the data-estimated head/abdomen size rides along on the IK group meta
+    assert res.nmf_chain_scales == {"head": 1.25, "abdomen": 2.1}
+    assert res.nmf_head_scale == 1.25 and res.nmf_abdomen_scale == 2.1
+    # the per-recording constant body scale rides along too (defaults to 1.0)
+    assert res.nmf_body_scale == 0.87
 
 
 def test_store_truncate_from_drops_ik(cameras, rng, tmp_path):

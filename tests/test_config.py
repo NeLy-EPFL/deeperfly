@@ -128,12 +128,12 @@ def test_inverse_kinematics_reads_overrides():
                 "template": "neuromechfly",
                 "legs": ["rf", "lf"],
                 "max_nfev": 50,
-                "bounds": {"RF_FTi_pitch": [10, 160]},
+                "bounds": {"rf_trochanterfemur-rf_tibia-pitch": [10, 160]},
             }
         }
     ).inverse_kinematics
     assert ik.legs == ["rf", "lf"] and ik.max_nfev == 50
-    assert ik.bounds == {"RF_FTi_pitch": [10.0, 160.0]}
+    assert ik.bounds == {"rf_trochanterfemur-rf_tibia-pitch": [10.0, 160.0]}
 
 
 def test_inverse_kinematics_unknown_key_fails_loudly():
@@ -141,12 +141,64 @@ def test_inverse_kinematics_unknown_key_fails_loudly():
         Config.from_dict({"inverse_kinematics": {"bogus": 1}}).inverse_kinematics
 
 
+def test_gui_mesh_hide_defaults_to_wings_and_reads_overrides():
+    assert Config.from_dict({}).gui.mesh_hide == ["wings"]
+    cfg = Config.from_dict({"gui": {"mesh_hide": ["wings", "legs"]}})
+    assert cfg.gui.mesh_hide == ["wings", "legs"]
+
+
+def test_gui_unknown_key_fails_loudly():
+    with pytest.raises(ValueError, match=r"\[gui\]"):
+        Config.from_dict({"gui": {"bogus": 1}}).gui
+
+
+def test_inverse_kinematics_reads_marker_tables():
+    ik = Config.from_dict(
+        {
+            "inverse_kinematics": {
+                "abdomen": {
+                    "l_abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.05, 0.5]},
+                },
+                "head": {
+                    "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.0]},
+                },
+            }
+        }
+    ).inverse_kinematics
+    assert set(ik.markers) == {"head", "abdomen"}
+    assert ik.markers["abdomen"]["l_abdomen0"]["body"] == "c_abdomen3"
+
+
+def test_ik_articulation_applies_marker_offsets():
+    import numpy as np
+
+    base = Config.from_dict({}).ik_articulation().chain("abdomen")
+    i = base.marker_names.index("l_abdomen0")
+    cfg = Config.from_dict(
+        {
+            "inverse_kinematics": {
+                "fit_head": False,
+                "abdomen": {
+                    "l_abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.05, 0.5]},
+                    "r_abdomen0": {"body": "c_abdomen3", "offset": [0.0, -0.05, 0.5]},
+                },
+            }
+        }
+    )
+    art = cfg.ik_articulation()
+    assert [c.name for c in art.chains] == ["abdomen"]  # fit_head=False drops head
+    ab = art.chain("abdomen")
+    assert ab.marker_names == ("l_abdomen0", "r_abdomen0")  # table replaces the set
+    # a different offset moves the neutral marker (the default z-offset was 0.3)
+    assert not np.allclose(ab.marker_neutral[0], base.marker_neutral[i])
+
+
 def test_ik_template_applies_legs_and_bounds():
     cfg = Config.from_dict(
         {
             "inverse_kinematics": {
                 "legs": ["rf"],
-                "bounds": {"RF_FTi_pitch": [10, 160]},
+                "bounds": {"rf_trochanterfemur-rf_tibia-pitch": [10, 160]},
             }
         }
     )

@@ -88,7 +88,21 @@ class PoseResult:
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     reproj_error: Float[np.ndarray, "V T P"] | None = None
     nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
+    nmf_angles: Float[np.ndarray, "T D"] | None = None
+    nmf_angle_names: list[str] | None = None
+    nmf_chain_scales: dict[str, float] = field(default_factory=dict)
+    nmf_body_scale: float = 1.0
     meta: dict = field(default_factory=dict)
+
+    @property
+    def nmf_head_scale(self) -> float:
+        """Data-estimated overlay head size (1.0 if unknown); see ``nmf_chain_scales``."""
+        return float(self.nmf_chain_scales.get("head", 1.0))
+
+    @property
+    def nmf_abdomen_scale(self) -> float:
+        """Data-estimated overlay abdomen size (1.0 if unknown)."""
+        return float(self.nmf_chain_scales.get("abdomen", 1.0))
 
     def __post_init__(self) -> None:
         self.pts2d = np.asarray(self.pts2d, dtype=float)
@@ -185,11 +199,25 @@ class PoseResult:
                 if reproj is None and f"{stage}/reproj_error" in f:
                     reproj = f[f"{stage}/reproj_error"][()]  # type: ignore[index]
             conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
-            nmf = (
-                f["inverse_kinematics/points3d"][()]  # type: ignore[index]
-                if "inverse_kinematics/points3d" in f
-                else None
-            )
+            nmf = nmf_angles = nmf_angle_names = None
+            nmf_chain_scales: dict[str, float] = {}
+            nmf_body_scale = 1.0
+            if "inverse_kinematics/points3d" in f:
+                nmf = f["inverse_kinematics/points3d"][()]  # type: ignore[index]
+            if "inverse_kinematics/angles" in f:
+                nmf_angles = f["inverse_kinematics/angles"][()]  # type: ignore[index]
+                nmf_angle_names = [
+                    n.decode() if isinstance(n, bytes) else n
+                    for n in f["inverse_kinematics/angle_names"][()]  # type: ignore[index]
+                ]
+            if "inverse_kinematics" in f and "meta" in f["inverse_kinematics"].attrs:
+                ik_meta = json.loads(f["inverse_kinematics"].attrs["meta"])  # type: ignore[arg-type]
+                nmf_chain_scales = {
+                    str(k): float(v)
+                    for k, v in (ik_meta.get("chain_scales") or {}).items()
+                }
+                if ik_meta.get("body_scale") is not None:
+                    nmf_body_scale = float(ik_meta["body_scale"])
         if pts2d is None:
             raise ValueError(f"{path} has no 2D points (no pose2d group)")
         return cls(
@@ -200,6 +228,10 @@ class PoseResult:
             pts3d=pts3d,  # type: ignore[arg-type]
             reproj_error=reproj,  # type: ignore[arg-type]
             nmf_pts3d=nmf,  # type: ignore[arg-type]
+            nmf_angles=nmf_angles,  # type: ignore[arg-type]
+            nmf_angle_names=nmf_angle_names,
+            nmf_chain_scales=nmf_chain_scales,
+            nmf_body_scale=nmf_body_scale,
             meta=meta,
         )
 

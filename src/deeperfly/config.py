@@ -159,17 +159,41 @@ class InverseKinematicsParams:
 
     ``template`` names a packaged kinematic template (``"neuromechfly"``) or a path
     to a template TOML; ``legs`` restricts which legs are fit (``None`` = all);
-    ``bounds`` holds per-DOF degree overrides keyed ``"<LEG>_<joint>_<dof>"`` (e.g.
-    ``{"RF_FTi_pitch": [10, 160]}``); ``max_nfev`` / ``loss`` / ``f_scale`` are
-    forwarded to the per-frame :func:`scipy.optimize.least_squares` solve.
+    ``bounds`` holds per-DOF degree overrides keyed by the flygym joint angle name
+    ``"<parent>-<child>-<dof>"`` (e.g. ``{"rf_trochanterfemur-rf_tibia-pitch": [10,
+    160]}``); ``max_nfev`` / ``loss`` / ``f_scale`` are forwarded to the per-frame
+    :func:`scipy.optimize.least_squares` solve.
+
+    ``markers`` redefines the head/abdomen chain markers -- *where* each tracked
+    keypoint sits relative to the model, the labeling-scheme choice. It is keyed by
+    chain name (``"head"`` / ``"abdomen"``), each holding ``point -> {"body", "offset",
+    "depth"?}`` (from the ``[inverse_kinematics.head]`` / ``[inverse_kinematics.abdomen]``
+    config tables); see :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
     """
 
     template: str = "neuromechfly"
     legs: list[str] | None = None
+    fit_head: bool = True
+    fit_abdomen: bool = True
     max_nfev: int = 100
     loss: str = "linear"
     f_scale: float = 1.0
+    regularization: float = 0.01
     bounds: dict[str, list[float]] = field(default_factory=dict)
+    markers: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GuiParams:
+    """``[gui]`` -- the correction GUI's display settings (no effect on the pipeline).
+
+    ``mesh_hide`` lists the NeuroMechFly overlay body parts to hide in the editor
+    (default ``["wings"]``); choose from ``wings`` / ``halteres`` / ``eyes`` /
+    ``antennae`` / ``head`` / ``thorax`` / ``abdomen`` / ``legs``. The rendered
+    videos carry their own ``[visualization].mesh_hide`` list.
+    """
+
+    mesh_hide: list[str] = field(default_factory=lambda: ["wings"])
 
 
 # -- helpers -----------------------------------------------------------------
@@ -375,24 +399,43 @@ class Config:
         bounds = {
             str(k): [float(b) for b in v] for k, v in ik.pop("bounds", {}).items()
         }
+        # [inverse_kinematics.head] / [inverse_kinematics.abdomen]: per-chain marker
+        # placement (point -> {body, offset, depth?}), the labeling-scheme choice.
+        markers = {
+            chain: {str(p): dict(spec) for p, spec in ik.pop(chain).items()}
+            for chain in ("head", "abdomen")
+            if chain in ik
+        }
         template = str(ik.pop("template", "neuromechfly"))
         legs = ik.pop("legs", None)
+        fit_head = ik.pop("fit_head", True)
+        fit_abdomen = ik.pop("fit_abdomen", True)
         max_nfev = ik.pop("max_nfev", 100)
         loss = ik.pop("loss", "linear")
         f_scale = ik.pop("f_scale", 1.0)
+        regularization = ik.pop("regularization", 0.01)
         if ik:  # any leftover key is a typo -- match _params' strict validation
             raise ValueError(
                 f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; allowed: "
-                "['bounds', 'f_scale', 'legs', 'loss', 'max_nfev', 'template']"
+                "['abdomen', 'bounds', 'f_scale', 'fit_abdomen', 'fit_head', 'head', "
+                "'legs', 'loss', 'max_nfev', 'regularization', 'template']"
             )
         return InverseKinematicsParams(
             template=template,
             legs=None if legs is None else [str(leg) for leg in legs],
+            fit_head=bool(fit_head),
+            fit_abdomen=bool(fit_abdomen),
             max_nfev=int(max_nfev),
             loss=str(loss),
             f_scale=float(f_scale),
+            regularization=float(regularization),
             bounds=bounds,
+            markers=markers,
         )
+
+    @property
+    def gui(self) -> GuiParams:
+        return _params(self.data, ("gui",), GuiParams)
 
     def ik_template(self):
         """The configured kinematic template (``[inverse_kinematics].template`` + bounds).
@@ -409,6 +452,33 @@ class Config:
         overrides = {k: (v[0], v[1]) for k, v in p.bounds.items()}
         return KinematicTemplate.load(
             p.template, legs=p.legs, bounds_overrides=overrides
+        )
+
+    def ik_articulation(self):
+        """The configured head/abdomen articulation, or ``None`` if neither is fit.
+
+        Returns
+        -------
+        deeperfly.inverse_kinematics.articulation.Articulation or None
+            The baked chains selected by ``[inverse_kinematics].fit_head`` /
+            ``fit_abdomen``, with ``[inverse_kinematics.bounds]`` degree overrides
+            (keys like ``c_thorax-c_head-pitch`` / ``c_abdomen12-c_abdomen3-pitch``) and any
+            ``[inverse_kinematics.head]`` / ``[inverse_kinematics.abdomen]`` marker
+            placement overrides applied.
+        """
+        from .inverse_kinematics.articulation import Articulation
+
+        p = self.inverse_kinematics
+        fit = tuple(
+            name
+            for name, on in (("head", p.fit_head), ("abdomen", p.fit_abdomen))
+            if on
+        )
+        if not fit:
+            return None
+        overrides = {k: (v[0], v[1]) for k, v in p.bounds.items()}
+        return Articulation.load(
+            fit=fit, bounds_overrides=overrides, marker_overrides=p.markers
         )
 
     # -- pipeline orchestration ---------------------------------------------

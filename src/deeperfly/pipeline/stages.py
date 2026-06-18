@@ -394,10 +394,13 @@ def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
             "re-run with [pipeline].do_pose2d to write one"
         )
     template = config.ik_template()
+    articulation = config.ik_articulation()
     p = config.inverse_kinematics
+    extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
-        "inverse kinematics: fitting %d leg(s) over %d frames (template %r)",
+        "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r)",
         len(template.legs),
+        f" + {'/'.join(extra)}" if extra else "",
         pts3d.shape[0],
         template.name,
     )
@@ -405,9 +408,11 @@ def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
         pts3d,
         skeleton,
         template,
+        articulation=articulation,
         max_nfev=p.max_nfev,
         loss=p.loss,
         f_scale=p.f_scale,
+        regularization=p.regularization,
     )
     finite = np.isfinite(result.angles).all(axis=0).sum()
     log.info(
@@ -507,11 +512,11 @@ def assemble_result(
             better2d, pts3d, reproj = _pts
             if better2d is not None:
                 pts2d = better2d
-    nmf_pts3d = None
+    nmf_pts3d = nmf_angles = nmf_angle_names = None
     if fingerprint.nmf_source(enabled, store) is not None:
         ik = store.read_ik()
         if ik is not None:
-            nmf_pts3d = ik[2]  # the fitted model joints (world)
+            nmf_angles, nmf_angle_names, nmf_pts3d = ik  # angles, names, model joints
     return PoseResult(
         cameras=select_cameras(config, enabled, store),
         skeleton=store.read_skeleton(),  # type: ignore[arg-type]
@@ -520,6 +525,8 @@ def assemble_result(
         pts3d=pts3d,
         reproj_error=reproj,
         nmf_pts3d=nmf_pts3d,
+        nmf_angles=nmf_angles,
+        nmf_angle_names=nmf_angle_names,
     )
 
 
@@ -667,6 +674,12 @@ def render_videos(
         pts3d=result.pts3d,
         conf=result.conf,
         nmf_pts3d=result.nmf_pts3d,
+        nmf_angles=result.nmf_angles,
+        nmf_angle_names=result.nmf_angle_names,
+        nmf_head_scale=result.nmf_head_scale,
+        nmf_abdomen_scale=result.nmf_abdomen_scale,
+        nmf_body_scale=result.nmf_body_scale,
+        nmf_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
     )
     make_progress = progress or _null_progress
     for spec in pending:

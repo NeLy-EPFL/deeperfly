@@ -301,7 +301,9 @@ def test_pts3d_and_nmf_source_selectors(store, cameras):
 def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, cameras):
     base = _cfg()
     enabled = base.stage_flags()
-    bounds = _cfg({"inverse_kinematics.bounds.RF_FTi_pitch": [10, 160]})
+    bounds = _cfg(
+        {"inverse_kinematics.bounds.rf_trochanterfemur-rf_tibia-pitch": [10, 160]}
+    )
     legs = _cfg({"inverse_kinematics.legs": ["rf", "lf"]})
     # a bounds override and a leg restriction both change the fingerprint
     assert fingerprint_diff(
