@@ -17,6 +17,7 @@ in-process NumPy/JAX, so holding the lock briefly is harmless.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -141,6 +142,29 @@ def create_app(
             headers={"Cache-Control": "max-age=3600"},
         )
 
+    @app.get("/api/nmf/asset")
+    def nmf_asset() -> Response:
+        """The static NMF mesh topology + per-vertex colors (binary), for the client."""
+        data = _nmf_asset_bytes()
+        if data is None or not session.state.has_nmf:
+            raise HTTPException(404, "no inverse-kinematics model to overlay")
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "max-age=3600"},
+        )
+
+    @app.get("/api/nmf/verts/{t}")
+    async def nmf_verts(t: int) -> Response:
+        """The posed NMF vertices, normals + valid-face mask for ``t`` (re-fit from edits)."""
+        if not session.state.has_nmf:
+            raise HTTPException(404, "no inverse-kinematics model to overlay")
+        async with lock:
+            data = _nmf_verts_bytes(session, _clamp_frame(session, t))
+        if data is None:
+            raise HTTPException(404, f"no mesh overlay at frame {t}")
+        return Response(content=data, media_type="application/octet-stream")
+
     @app.get("/api/points/{t}")
     def points(t: int, mode: str = "view") -> dict:
         return _points_payload(session, _clamp_frame(session, t), mode)
@@ -223,14 +247,23 @@ def _render_mesh_png(session: Session, camera: str, t: int) -> bytes | None:
         return None
     try:
         from ..inverse_kinematics.mesh import load_nmf_mesh
-        from ..visualization.mesh import render_mesh_rgba
+        from ..visualization.mesh import render_mesh_rgba_auto
     except Exception:  # pragma: no cover -- a missing asset disables the overlay
         return None
     cam = s.result.cameras[camera]
     h, w = session.image_sizes.get(camera) or _intr_size(cam)
     mesh = load_nmf_mesh()
-    verts, valid = mesh.pose(s.result.nmf_pts3d[t])
-    rgba = render_mesh_rgba(
+    angles = None if s.result.nmf_angles is None else s.result.nmf_angles[t]
+    verts, valid = mesh.pose(
+        s.result.nmf_pts3d[t],
+        angles,
+        s.result.nmf_angle_names,
+        head_scale=s.result.nmf_head_scale,
+        abdomen_scale=s.result.nmf_abdomen_scale,
+        body_scale=s.result.nmf_body_scale,
+    )
+    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.nmf_hide_parts)
+    rgba = render_mesh_rgba_auto(
         verts, mesh.faces, mesh.face_rgb, valid, cam, int(h), int(w)
     )
     # cv2 writes BGRA; reorder RGBA -> BGRA so the PNG colors are correct.
@@ -242,6 +275,91 @@ def _intr_size(cam) -> tuple[int, int]:
     """``(height, width)`` inferred from a camera's principal point (no footage)."""
     intr = np.asarray(cam.intr)
     return int(round(2 * intr[3] + 1)), int(round(2 * intr[2] + 1))
+
+
+# -- client-rendered mesh (WebGL) ---------------------------------------------
+#
+# The browser renders the posed NMF mesh on the GPU, so the server only ships the
+# geometry: the topology + per-vertex colors once (`/api/nmf/asset`) and the posed
+# vertices per frame (`/api/nmf/verts/{t}`, re-fit live from the corrected pose).
+# Vertices/faces/colors are little-endian binary so the front-end can drop them
+# straight into typed arrays (no megabytes of JSON to parse on every scrub).
+
+
+@functools.lru_cache(maxsize=2)
+def _nmf_asset_bytes() -> bytes | None:
+    """The static mesh topology + per-vertex colors, packed once for the client.
+
+    Layout (little-endian): ``uint32 n_verts``, ``uint32 n_faces``,
+    ``uint32[n_faces * 3]`` triangle indices, ``uint8[n_verts * 3]`` vertex RGB.
+    """
+    try:
+        from ..inverse_kinematics.mesh import load_nmf_mesh
+    except Exception:  # pragma: no cover -- a missing asset disables the overlay
+        return None
+    mesh = load_nmf_mesh()
+    faces = np.asarray(mesh.faces, dtype="<u4")
+    n_verts = int(mesh.vertices.shape[0])
+    # Per-vertex color from the per-face palette: each vertex belongs to one baked
+    # mesh part, so all its faces share a color and the assignment is unambiguous.
+    vrgb = np.zeros((n_verts, 3), dtype=np.uint8)
+    face_rgb = np.asarray(mesh.face_rgb, dtype=np.uint8)
+    for k in range(3):
+        vrgb[faces[:, k]] = face_rgb
+    header = np.array([n_verts, faces.shape[0]], dtype="<u4")
+    return header.tobytes() + faces.tobytes() + vrgb.tobytes()
+
+
+def _nmf_verts_bytes(session: Session, t: int) -> bytes | None:
+    """The posed vertices + smooth normals + valid-face mask for ``t`` (re-fit from edits).
+
+    Layout (little-endian): ``float32[n_verts * 3]`` world vertices (NaN -> 0), then
+    ``float32[n_verts * 3]`` smooth per-vertex normals, then ``uint8[n_faces]`` --
+    ``1`` where all three of a face's vertices were posed. The normals let the client
+    smooth-shade the overlay (no faceting), and are computed here once per frame (the
+    head/abdomen size is the IK data estimate, not an operator knob).
+    """
+    posed = session.state.nmf_posed_verts(t)
+    if posed is None:
+        return None
+    from ..inverse_kinematics.mesh import load_nmf_mesh
+    from ..visualization.mesh import vertex_normals
+
+    verts, valid = posed
+    mesh = load_nmf_mesh()
+    faces = mesh.faces
+    # Hide the configured body parts (default: wings) by dropping their faces.
+    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.nmf_hide_parts)
+    normals = vertex_normals(np.asarray(verts, dtype=float), faces, valid)
+    verts = np.nan_to_num(np.asarray(verts, dtype="<f4"), nan=0.0)
+    return (
+        verts.tobytes()
+        + np.asarray(normals, dtype="<f4").tobytes()
+        + np.asarray(valid, dtype=np.uint8).tobytes()
+    )
+
+
+def _cameras_proj(session: Session) -> list[dict]:
+    """Each camera's pinhole projection for the client's WebGL overlay.
+
+    ``intr`` is ``[fx, fy, cx, cy]``, ``rmat`` the 3x3 world->camera rotation (row
+    major), ``tvec`` its translation, and ``size`` the footage ``[width, height]``
+    the intrinsics describe -- enough to build the exact projection
+    :meth:`CameraGroup.project` uses (validated to sub-pixel agreement).
+    """
+    out = []
+    for name, cam in zip(session.state.camera_names, session.state.result.cameras):
+        h, w = session.image_sizes.get(name) or _intr_size(cam)
+        out.append(
+            {
+                "name": name,
+                "intr": [float(v) for v in np.asarray(cam.intr)],
+                "rmat": [float(v) for v in np.asarray(cam.rmat).reshape(-1)],
+                "tvec": [float(v) for v in np.asarray(cam.tvec)],
+                "size": [int(w), int(h)],
+            }
+        )
+    return out
 
 
 # -- payload builders ---------------------------------------------------------
@@ -267,6 +385,7 @@ def _meta_payload(session: Session) -> dict:
         "bones": np.asarray(skel.bones, dtype=int).reshape(-1, 2).tolist(),
         "point_colors": colors.tolist(),
         "cameras_3d": _cameras_3d(session),
+        "cameras_proj": _cameras_proj(session),
         "dirty": bool(s.dirty),
     }
 
@@ -322,11 +441,17 @@ def _points_payload(session: Session, t: int, mode: str) -> dict:
 
 
 def _scene_payload(session: Session, t: int) -> dict:
-    """The frame's 3D keypoints (world frame) for the rig plot, or ``null`` if 2D-only."""
-    pts3d = session.state.display_pts3d(t)
+    """The frame's 3D pose for the scene view: the triangulated keypoints and the
+    fitted NMF model joints (both world frame, skeleton order), each ``null`` when
+    unavailable (2D-only, or no inverse-kinematics model)."""
+    s = session.state
+    pts3d = s.display_pts3d(t)
+    nmf = s.nmf_fit(t) if s.has_nmf else None
+    nmf3d = None if nmf is None else np.asarray(nmf[0])
     return {
         "frame": t,
         "points3d": None if pts3d is None else _points3d_to_json(np.asarray(pts3d)),
+        "nmf3d": None if nmf3d is None else _points3d_to_json(nmf3d),
     }
 
 

@@ -24,14 +24,17 @@
 //
 // Display extras the operator toggles: the editable skeleton itself, per-joint
 // name labels, and the read-only "3D estimate" skeleton (the triangulated estimate
-// reprojected, ghosted over every view). A separate on-demand modal shows the
-// camera rig in 3D (see scene3d.js). Almost everything has a keyboard shortcut;
-// `?` opens a help list of them.
+// reprojected, ghosted over every view). A non-modal floating panel shows the 3D
+// view -- the camera rig, the 3D pose, and the fitted NMF skeleton + mesh (see
+// scene3d.js); it overlays the editor without blocking it (drag the title bar to move
+// it, the corner to resize), so the main frame scrubber still steps the 3D pose
+// through time. Almost everything has a keyboard shortcut; `?` opens a help list of them.
 //
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, fetchMeta, fetchPoints, fetchScene, frameUrl, meshUrl, saveCorrections, shutdownServer } from "./api.js";
+import { EditSocket, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, frameUrl, saveCorrections, shutdownServer } from "./api.js";
+import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
 
@@ -127,7 +130,7 @@ class App {
   fixedMask = null;
   /** @type {boolean[][] | null} */
   invisibleMask = null;
-  // On-demand 3D camera-rig plot (built lazily the first time it is opened).
+  // On-demand 3D view (rig + 3D pose + NMF skeleton/mesh), built lazily on first open.
   /** @type {Scene3D | null} */
   scene = null;
   sceneOpen = false;
@@ -176,6 +179,11 @@ class App {
   meshWrap = el("mesh-wrap");
   /** @type {HTMLInputElement} */
   meshCheck = el("show-mesh");
+  /** @type {MeshGL | null} */
+  meshGL = null;
+  meshAssetLoaded = false;
+  meshReq = 0;
+  meshTimer = 0;
   /** @type {HTMLLabelElement} */
   pinWrap = el("pin-wrap");
   /** @type {HTMLInputElement} */
@@ -222,10 +230,30 @@ class App {
   helpBody = el("help-body");
   /** @type {HTMLDivElement} */
   sceneOverlay = el("scene-overlay");
+  /** @type {HTMLDivElement} */
+  sceneHead = el("scene-head");
   /** @type {HTMLButtonElement} */
   sceneClose = el("scene-close");
   /** @type {HTMLCanvasElement} */
   sceneCanvas = el("scene-canvas");
+  /** @type {HTMLInputElement} */
+  sceneAxesCheck = el("scene-axes");
+  /** @type {HTMLInputElement} */
+  sceneCamerasCheck = el("scene-cameras");
+  /** @type {HTMLInputElement} */
+  scenePoseCheck = el("scene-pose");
+  /** @type {HTMLLabelElement} */
+  sceneNmfWrap = el("scene-nmf-wrap");
+  /** @type {HTMLInputElement} */
+  sceneNmfCheck = el("scene-nmf");
+  /** @type {HTMLLabelElement} */
+  sceneMeshWrap = el("scene-mesh-wrap");
+  /** @type {HTMLInputElement} */
+  sceneMeshCheck = el("scene-mesh");
+  // True once the shared GL renderer holds the current frame's posed mesh verts (so
+  // the 3D view can render the mesh even when the 2D mesh overlay is off).
+  sceneMeshReady = false;
+  sceneMeshTimer = 0;
 
   async init() {
     this.meta = await fetchMeta();
@@ -297,7 +325,9 @@ class App {
     // The NMF overlay is the fitted inverse-kinematics model -- only when present.
     this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.nmfCheck.addEventListener("change", () => this.applyNmf());
-    // The NMF mesh overlay (a heavier, server-rendered image layer) -- same gate.
+    // The NMF mesh overlay (rendered on the client GPU) -- only when a fitted model
+    // is present. The head/abdomen size is estimated from the data by the IK stage
+    // (no operator knob), so the overlay just follows the model.
     this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.meshCheck.addEventListener("change", () => this.applyMesh());
 
@@ -312,12 +342,18 @@ class App {
     this.helpBtn.addEventListener("click", () => this.toggleHelp());
     this.helpClose.addEventListener("click", () => this.closeHelp());
     this.sceneClose.addEventListener("click", () => this.closeScene());
-    // Click outside the dialog body (on the dim backdrop) closes it.
+    this.initSceneDrag();
+    // The 3D-view layer toggles; the NMF layers only exist when a model was fit.
+    this.sceneNmfWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.sceneMeshWrap.style.display = this.meta.has_nmf ? "" : "none";
+    for (const c of [this.sceneAxesCheck, this.sceneCamerasCheck, this.scenePoseCheck, this.sceneNmfCheck, this.sceneMeshCheck]) {
+      c.addEventListener("change", () => this.applySceneToggles());
+    }
+    // Click outside the dialog body (on the dim backdrop) closes the modal dialogs. The
+    // 3D view is a non-modal floating panel (no backdrop), so it closes only via its ✕,
+    // the `c` toggle, or Esc.
     this.helpOverlay.addEventListener("click", (e) => {
       if (e.target === this.helpOverlay) this.closeHelp();
-    });
-    this.sceneOverlay.addEventListener("click", (e) => {
-      if (e.target === this.sceneOverlay) this.closeScene();
     });
     this.saveBtn.addEventListener("click", () => this.save());
     this.closeBtn.addEventListener("click", () => this.requestClose());
@@ -421,9 +457,12 @@ class App {
     this.meta.camera_names.forEach((name, v) => {
       this.views[v].loadFrame(frameUrl(name, t));
     });
-    if (this.meshCheck.checked) this.loadMeshes();
+    this.scheduleMeshRefresh();
     await this.refreshPoints();
-    if (this.sceneOpen) this.refreshScene();
+    if (this.sceneOpen) {
+      this.refreshScenePoints(); // snappy skeleton scrub
+      this.scheduleSceneMesh(); // mesh catches up once the scrub settles
+    }
   }
 
   async refreshPoints() {
@@ -443,6 +482,9 @@ class App {
       view.setLatent(p.proj ? p.proj[v] : null);
       view.setNmf(p.nmf ? p.nmf[v] : null);
     });
+    // The NMF mesh follows the (re-fit) latent skeleton: refresh it after an edit
+    // settles, coalescing a live drag's many replies into one GPU render.
+    this.scheduleMeshRefresh();
     this.dirty = p.dirty;
     this.updateDirty();
     this.updateStatusWidget();
@@ -481,14 +523,75 @@ class App {
   applyMesh() {
     const visible = this.meshCheck.checked;
     this.views.forEach((view) => view.setMeshVisible(visible));
-    if (visible) this.loadMeshes();
+    if (visible) this.refreshMesh();
   }
 
-  /** Load every view's posed-mesh overlay for the current frame (when the toggle is on). */
-  loadMeshes() {
-    this.meta.camera_names.forEach((name, v) => {
-      this.views[v].loadMesh(meshUrl(name, this.frame));
-    });
+  /** Ensure the static mesh topology + colors are loaded into the GPU (once). */
+  async ensureMeshAsset() {
+    if (!this.meta.has_nmf) return false;
+    if (!this.meshGL) this.meshGL = new MeshGL();
+    if (!this.meshGL.ok) return false;
+    if (!this.meshAssetLoaded) {
+      try {
+        this.meshGL.loadAsset(await fetchNmfAsset());
+        this.meshAssetLoaded = true;
+      } catch (e) {
+        console.error("could not load the NMF mesh asset", e);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Re-fetch the posed vertices for the current frame and render every view. */
+  async refreshMesh() {
+    if (!this.meshCheck.checked) return;
+    if (!(await this.ensureMeshAsset())) return;
+    const req = ++this.meshReq;
+    const frame = this.frame;
+    let buf;
+    try {
+      buf = await fetchNmfVerts(frame);
+    } catch (e) {
+      return; // overlay simply stays where it was
+    }
+    if (req !== this.meshReq || frame !== this.frame) return; // superseded
+    const gl = this.meshGL;
+    const nV = gl.nVerts;
+    const nF = gl.faces.length / 3;
+    // Payload: verts (nV*3 f32), smooth normals (nV*3 f32), valid faces (nF u8).
+    gl.setVerts(
+      new Float32Array(buf, 0, nV * 3),
+      new Float32Array(buf, nV * 12, nV * 3),
+      new Uint8Array(buf, nV * 24, nF),
+    );
+    // Render at the on-screen device-pixel size (capped) rather than the footage
+    // size, so the overlay is as crisp as the docs model viewer instead of an
+    // upscaled footage-resolution image.
+    const ss = this.meshSupersample();
+    const cams = this.meta.cameras_proj || [];
+    this.views.forEach((view, v) => view.captureMesh(gl.render(cams[v], ss)));
+  }
+
+  /**
+   * How many GL pixels to render per footage pixel, so the overlay matches the
+   * sharpest view it is shown in (the big editing view drives this). Capped to keep
+   * the offscreen canvas bounded.
+   */
+  meshSupersample() {
+    const dpr = window.devicePixelRatio || 1;
+    let best = 1;
+    for (const view of this.views) {
+      if (view.scale) best = Math.max(best, view.scale * dpr);
+    }
+    return Math.min(4, Math.max(1, best));
+  }
+
+  /** Coalesce rapid mesh refreshes (a scrub or a live drag) into one render. */
+  scheduleMeshRefresh() {
+    if (!this.meshCheck.checked) return;
+    clearTimeout(this.meshTimer);
+    this.meshTimer = setTimeout(() => this.refreshMesh(), 90);
   }
 
   /** @param {HTMLInputElement} check  flip a checkbox from a shortcut, then apply */
@@ -727,20 +830,112 @@ class App {
     window.open(KEYPOINTS_DOC_URL, "_blank", "noopener");
   }
 
-  // -- camera-rig 3D plot -----------------------------------------------------
+  // -- 3D scene view ----------------------------------------------------------
+
+  // Let the operator drag the floating 3D panel by its title bar. The header's own
+  // controls (close button, layer checkboxes) keep working: a press on one of them
+  // starts no drag. The panel is clamped to stay on screen.
+  initSceneDrag() {
+    /** @type {{ x: number, y: number } | null} */
+    let grab = null;
+    this.sceneHead.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      if (/** @type {HTMLElement} */ (e.target).closest("button, input, label")) return;
+      const r = this.sceneOverlay.getBoundingClientRect();
+      grab = { x: e.clientX - r.left, y: e.clientY - r.top };
+      this.sceneHead.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    this.sceneHead.addEventListener("pointermove", (e) => {
+      if (grab) this.placeScene(e.clientX - grab.x, e.clientY - grab.y);
+    });
+    const end = (/** @type {PointerEvent} */ e) => {
+      grab = null;
+      if (this.sceneHead.hasPointerCapture(e.pointerId)) this.sceneHead.releasePointerCapture(e.pointerId);
+    };
+    this.sceneHead.addEventListener("pointerup", end);
+    this.sceneHead.addEventListener("pointercancel", end);
+  }
+
+  // Move the floating panel's top-left to (left, top), kept within the viewport so it
+  // can't be dragged out of reach. Switches off any CSS edge anchoring first.
+  /** @param {number} left @param {number} top */
+  placeScene(left, top) {
+    const maxL = Math.max(0, window.innerWidth - this.sceneOverlay.offsetWidth);
+    const maxT = Math.max(0, window.innerHeight - this.sceneOverlay.offsetHeight);
+    this.sceneOverlay.style.left = `${Math.max(0, Math.min(maxL, left))}px`;
+    this.sceneOverlay.style.top = `${Math.max(0, Math.min(maxT, top))}px`;
+    this.sceneOverlay.style.right = "auto";
+    this.sceneOverlay.style.bottom = "auto";
+  }
 
   ensureScene() {
     if (this.scene) return this.scene;
     this.scene = new Scene3D(this.sceneCanvas);
     this.scene.setCameras(this.meta.cameras_3d);
     this.scene.setSkeleton(this.meta.bones, this.meta.point_colors);
+    // The mesh is drawn by the shared WebGL renderer; the scene only hands it the
+    // orbit camera. Null until the current frame's posed verts are uploaded.
+    this.scene.setMeshRenderer((cam, ss) =>
+      this.sceneMeshReady && this.meshGL ? this.meshGL.render(cam, ss) : null
+    );
+    this.applySceneToggles();
     return this.scene;
   }
 
-  async refreshScene() {
+  applySceneToggles() {
+    this.scene?.setVisibility({
+      axes: this.sceneAxesCheck.checked,
+      cameras: this.sceneCamerasCheck.checked,
+      pose: this.scenePoseCheck.checked,
+      nmf: this.sceneNmfCheck.checked,
+      mesh: this.sceneMeshCheck.checked,
+    });
+  }
+
+  // Upload the current frame's posed mesh verts to the shared GL renderer, so the
+  // 3D view can render the mesh independently of the 2D mesh-overlay toggle.
+  async ensureSceneMesh() {
+    if (!this.meta.has_nmf || !(await this.ensureMeshAsset())) return;
+    const frame = this.frame;
+    let buf;
+    try {
+      buf = await fetchNmfVerts(frame);
+    } catch (e) {
+      return; // the mesh layer just stays where it was (or empty)
+    }
+    if (frame !== this.frame) return; // superseded by a newer frame
+    const gl = this.meshGL;
+    const nV = gl.nVerts;
+    const nF = gl.faces.length / 3;
+    gl.setVerts(
+      new Float32Array(buf, 0, nV * 3),
+      new Float32Array(buf, nV * 12, nV * 3),
+      new Uint8Array(buf, nV * 24, nF),
+    );
+    this.sceneMeshReady = true;
+    if (this.sceneOpen) this.scene?.draw();
+  }
+
+  // Pull the frame's 3D pose (the cheap part) and repaint the skeletons at once.
+  async refreshScenePoints() {
     if (!this.scene) return;
     const s = await fetchScene(this.frame);
+    if (s.frame !== this.frame) return; // a stale reply after a fast scrub
     this.scene.setPoints3d(s.points3d);
+    this.scene.setNmf3d(s.nmf3d ?? null);
+  }
+
+  // Coalesce the 3D view's posed-mesh refreshes (the heavy part) during a scrub.
+  scheduleSceneMesh() {
+    if (!this.sceneOpen) return;
+    clearTimeout(this.sceneMeshTimer);
+    this.sceneMeshTimer = setTimeout(() => this.ensureSceneMesh(), 90);
+  }
+
+  async refreshScene() {
+    await this.refreshScenePoints();
+    await this.ensureSceneMesh();
   }
 
   async openScene() {
@@ -749,7 +944,7 @@ class App {
     this.sceneOpen = true;
     scene.resize(); // the canvas only has a size now that the modal is visible
     await this.refreshScene();
-    scene.resetView(); // frame the rig once the pose points are loaded
+    scene.resetView(); // frame the scene once the pose + mesh are loaded
   }
 
   closeScene() {
@@ -788,7 +983,7 @@ class App {
       b.push({ key: "x", label: "x", desc: "Toggle pin-on-tap (Edit 3D)", run: () => this.togglePin() });
     }
     if (this.meta.has_nmf) {
-      b.push({ key: "m", label: "m", desc: "Toggle NMF model overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
+      b.push({ key: "m", label: "m", desc: "Toggle NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
       b.push({ key: "M", label: "Shift+M", desc: "Toggle NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
     }
     if (has3d) {
@@ -797,7 +992,7 @@ class App {
     }
     b.push({ key: "r", label: "r", desc: "Reset selected point in its view", run: () => this.resetSelectedView() });
     b.push({ key: "R", label: "Shift+R", desc: "Reset selected point in all views", run: () => this.resetSelectedAll() });
-    b.push({ key: "c", label: "c", desc: "Show / hide the camera rig in 3D", run: () => this.toggleScene() });
+    b.push({ key: "c", label: "c", desc: "Show / hide the 3D view", run: () => this.toggleScene() });
     b.push({ key: "k", label: "k", desc: "Open the keypoint reference (docs, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "s", mod: true, global: true, label: "Ctrl/⌘+S", desc: "Save corrections", run: () => this.save() });
     b.push({ key: "?", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
@@ -808,7 +1003,7 @@ class App {
     const rows = this.bindings
       .filter((b) => !b.hidden)
       .map((b) => `<tr><td class="key"><kbd>${b.label}</kbd></td><td>${b.desc}</td></tr>`);
-    rows.push(`<tr><td class="key"><kbd>Esc</kbd></td><td>Close this dialog or the camera view</td></tr>`);
+    rows.push(`<tr><td class="key"><kbd>Esc</kbd></td><td>Close this dialog or the 3D view</td></tr>`);
     this.helpBody.innerHTML = `<table class="shortcuts"><tbody>${rows.join("")}</tbody></table>`;
   }
 

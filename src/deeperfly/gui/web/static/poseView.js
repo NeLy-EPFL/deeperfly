@@ -60,9 +60,10 @@ export class PoseView {
   constructor(viewIndex, canvas, cb, pinMode) {
     /** @type {HTMLImageElement | null} */
     this.img = null;
-    /** @type {HTMLImageElement | null} */
-    this.meshImg = null; // posed NMF mesh overlay (RGBA), drawn over the frame when meshVisible
-    this.meshToken = 0; // drops superseded mesh loads on a fast scrub
+    /** @type {HTMLCanvasElement | null} */
+    this.meshImg = null; // posed NMF mesh overlay (this view's copy), drawn when meshVisible
+    /** @type {HTMLCanvasElement | null} */
+    this.meshCanvas = null; // backing 2D canvas the GPU render is copied into
     /** @type {[number, number][]} */
     this.bones = [];
     /** @type {string[]} */
@@ -205,23 +206,31 @@ export class PoseView {
   }
 
   /**
-   * Load this view's posed-mesh overlay (a heavy server-side render). It draws in
-   * when it decodes, so the frame + skeleton never wait on it; a faster scrub drops
-   * superseded loads via `meshToken`.
-   * @param {string} url
+   * Capture this view's posed mesh from the shared WebGL canvas into its own
+   * backing canvas (the GL canvas is reused across views, so each view keeps a
+   * copy to composite under its skeleton). Pass `null` to clear the overlay.
+   * @param {HTMLCanvasElement | null} source  the rendered GL canvas (footage-sized)
    */
-  loadMesh(url) {
-    const token = ++this.meshToken;
-    const img = new Image();
-    img.onload = () => {
-      if (token !== this.meshToken) return;
-      this.meshImg = img;
+  captureMesh(source) {
+    if (!source) {
+      this.meshImg = null;
       if (this.meshVisible) this.draw();
-    };
-    img.onerror = () => {
-      if (token === this.meshToken) this.meshImg = null;
-    };
-    img.src = url;
+      return;
+    }
+    if (
+      !this.meshCanvas ||
+      this.meshCanvas.width !== source.width ||
+      this.meshCanvas.height !== source.height
+    ) {
+      this.meshCanvas = document.createElement("canvas");
+      this.meshCanvas.width = source.width;
+      this.meshCanvas.height = source.height;
+    }
+    const mctx = this.meshCanvas.getContext("2d");
+    mctx.clearRect(0, 0, this.meshCanvas.width, this.meshCanvas.height);
+    mctx.drawImage(source, 0, 0);
+    this.meshImg = this.meshCanvas;
+    if (this.meshVisible) this.draw();
   }
 
   // Downscale the current frame into a tiny offscreen canvas. Drawing that small
@@ -406,9 +415,13 @@ export class PoseView {
       ctx.drawImage(this.img, this.offX, this.offY, dw, dh);
     }
     // The posed NMF mesh sits between the frame and the editable skeleton, so the
-    // keypoints stay legible on top of it. Its PNG alpha gives the translucency.
+    // keypoints stay legible on top of it. The GPU renders the silhouette opaque;
+    // compositing it at reduced alpha makes it a translucent overlay.
     if (this.meshVisible && this.meshImg) {
+      const a = ctx.globalAlpha;
+      ctx.globalAlpha = 0.6;
       ctx.drawImage(this.meshImg, this.offX, this.offY, dw, dh);
+      ctx.globalAlpha = a;
     }
     if (this.overlayVisible) {
       // bones first, joints on top

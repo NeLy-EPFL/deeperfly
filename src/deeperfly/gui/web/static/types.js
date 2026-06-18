@@ -30,6 +30,16 @@
  */
 
 /**
+ * One camera's pinhole projection, for the client's WebGL mesh overlay.
+ * @typedef {object} CameraProj
+ * @property {string} name
+ * @property {[number, number, number, number]} intr  [fx, fy, cx, cy]
+ * @property {number[]} rmat  3x3 world->camera rotation, row major
+ * @property {[number, number, number]} tvec
+ * @property {[number, number]} size  footage [width, height]
+ */
+
+/**
  * One-time metadata the front-end needs to lay out and draw the editor.
  * @typedef {object} Meta
  * @property {string} results_path
@@ -44,6 +54,7 @@
  * @property {[number, number][]} bones
  * @property {[number, number, number][]} point_colors  0-255 RGB, one per point
  * @property {Camera3D[]} cameras_3d  per-camera world poses for the rig plot
+ * @property {CameraProj[]} cameras_proj  per-camera pinhole projection for the mesh overlay
  * @property {boolean} dirty
  */
 
@@ -61,10 +72,11 @@
  */
 
 /**
- * The current frame's triangulated 3D keypoints, for the rig plot.
+ * The current frame's 3D pose, for the 3D scene view.
  * @typedef {object} ScenePayload
  * @property {number} frame
- * @property {Point3[] | null} points3d  one per point, or null when 2D-only
+ * @property {Point3[] | null} points3d  triangulated keypoints, or null when 2D-only
+ * @property {Point3[] | null} nmf3d  fitted NMF model joints, or null when no IK model
  */
 
 /**

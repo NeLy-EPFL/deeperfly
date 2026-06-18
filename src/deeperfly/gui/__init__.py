@@ -109,14 +109,66 @@ def build_session(
     corrections = load_corrections(
         corrections_path, result.n_views, result.n_frames, n_points
     )
-    state = EditorState.from_result(result, corrections)
+    mesh_hide, template, articulation = _ik_config(results_dir)
+    state = EditorState.from_result(
+        result, corrections, template=template, articulation=articulation
+    )
     return Session.build(
         state,
         source,
         results_path=str(results_path),
         corrections_path=corrections_path,
         image_sizes=image_sizes,
+        nmf_hide_parts=mesh_hide,
     )
+
+
+def _ik_config(results_dir: Path):
+    """Overlay + IK-model settings from the run config snapshot beside ``results.h5``.
+
+    Returns ``(mesh_hide, template, articulation)``: the ``[gui].mesh_hide`` overlay
+    parts to hide (default ``["wings"]``), and the kinematic template + head/abdomen
+    articulation the pipeline fit -- so the editor's live re-fit uses the **same**
+    model (restricted legs, custom bounds, ``fit_head``/``fit_abdomen``, and custom
+    marker placement all carry over). ``template`` / ``articulation`` are ``None`` when
+    no config snapshot is present (a bare ``results.h5``), in which case the live
+    re-fit falls back to the packaged NeuroMechFly model. When the config fits neither
+    head nor abdomen, ``articulation`` is an explicit chain-less articulation (legs
+    only), not the packaged default.
+    """
+    from ..config import Config
+    from ..inverse_kinematics.articulation import Articulation
+
+    config_path = results_dir / "config.toml"
+    if not config_path.exists():
+        return ["wings"], None, None
+    try:
+        config = Config.from_toml(config_path)
+    except Exception:  # a malformed snapshot should not block the editor
+        log.warning(
+            "could not read the run config %s; using overlay defaults", config_path
+        )
+        return ["wings"], None, None
+
+    mesh_hide = ["wings"]
+    template = articulation = None
+    try:
+        mesh_hide = list(config.gui.mesh_hide)
+    except Exception:
+        log.warning(
+            "could not read [gui].mesh_hide from %s; hiding the wings", config_path
+        )
+    try:
+        template = config.ik_template()
+        articulation = config.ik_articulation() or Articulation.load(fit=())
+    except Exception:
+        log.warning(
+            "could not build the IK model from %s; the live overlay uses the packaged "
+            "NeuroMechFly model",
+            config_path,
+        )
+        template = articulation = None
+    return mesh_hide, template, articulation
 
 
 def serve(

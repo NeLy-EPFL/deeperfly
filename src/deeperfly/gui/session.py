@@ -10,6 +10,7 @@ session and adds the request handlers and the mutation lock.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,6 +40,10 @@ class Session:
     image_sizes
         ``camera_name -> (height, width)`` recorded by ``pose2d`` (or ``{}``),
         used to size the canvases before the first frame loads.
+    nmf_hide_parts
+        Body parts hidden from the NMF mesh overlay (``["wings"]`` by default; from
+        ``[gui].mesh_hide`` in the run config). The render videos carry their own
+        ``[visualization].mesh_hide`` list.
     """
 
     state: EditorState
@@ -47,6 +52,7 @@ class Session:
     corrections_path: Path
     n_frames: int
     image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
+    nmf_hide_parts: tuple[str, ...] = ("wings",)
 
     @classmethod
     def build(
@@ -57,6 +63,7 @@ class Session:
         results_path: str | Path,
         corrections_path: str | Path,
         image_sizes: dict[str, tuple[int, int]] | None = None,
+        nmf_hide_parts: "Sequence[str]" = ("wings",),
     ) -> Session:
         """Assemble a session, clipping ``n_frames`` to the available footage."""
         n_source = source.n_frames()
@@ -68,4 +75,5 @@ class Session:
             corrections_path=Path(corrections_path),
             n_frames=int(n_frames),
             image_sizes=dict(image_sizes or {}),
+            nmf_hide_parts=tuple(nmf_hide_parts),
         )

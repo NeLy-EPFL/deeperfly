@@ -68,6 +68,30 @@ export function meshUrl(camera, frame) {
   return `/api/mesh/${encodeURIComponent(camera)}/${frame}`;
 }
 
+/**
+ * The static NMF mesh topology + per-vertex colors (binary; fetched once). See
+ * `_nmf_asset_bytes` in server.py for the layout.
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function fetchNmfAsset() {
+  const r = await fetch("/api/nmf/asset");
+  if (!r.ok) throw new Error(`GET /api/nmf/asset -> ${r.status}`);
+  return r.arrayBuffer();
+}
+
+/**
+ * The posed NMF vertices + smooth normals + valid-face mask for a frame (re-fit from
+ * the edits). The head/abdomen size is the IK data estimate (no knob). See
+ * `_nmf_verts_bytes` in server.py.
+ * @param {number} frame
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function fetchNmfVerts(frame) {
+  const r = await fetch(`/api/nmf/verts/${frame}`);
+  if (!r.ok) throw new Error(`GET /api/nmf/verts/${frame} -> ${r.status}`);
+  return r.arrayBuffer();
+}
+
 // A tiny request->reply WebSocket client: send an edit, get the refreshed points
 // payload back through the `onPoints` callback.
 export class EditSocket {

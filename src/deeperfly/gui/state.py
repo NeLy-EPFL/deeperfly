@@ -32,7 +32,8 @@ under the cursor. Non-fixed views then follow the new 3D point's reprojection.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from enum import Enum
 
 import jax.numpy as jnp
@@ -43,8 +44,11 @@ from ..geometry import closest_point_on_ray
 from ..results import PoseResult
 from ..triangulation import triangulate
 from .corrections import Corrections
+from .nmf_live import NmfLive
 
 __all__ = ["EditMode", "EditorState"]
+
+log = logging.getLogger("deeperfly")
 
 
 class EditMode(str, Enum):
@@ -63,10 +67,18 @@ class EditorState:
     corrections: Corrections
     frame: int = 0
     mode: EditMode = EditMode.view
+    #: Per-frame live NMF re-fit (model joints, angles, names), keyed by frame.
+    nmf_live: NmfLive | None = None
+    _nmf_cache: dict[int, tuple] = field(default_factory=dict)
 
     @classmethod
     def from_result(
-        cls, result: PoseResult, corrections: Corrections | None = None
+        cls,
+        result: PoseResult,
+        corrections: Corrections | None = None,
+        *,
+        template=None,
+        articulation=None,
     ) -> EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
@@ -76,13 +88,27 @@ class EditorState:
         reprojection) and the operator can drag it in to un-obscure it. The 3D
         point itself is left as the pipeline solved it (already triangulated from
         the finite views). A loaded sidecar keeps its own saved invisible mask.
+
+        When the result carries a fitted NMF model and 3D pose, a :class:`NmfLive`
+        is built so the overlaid model re-fits to the operator's 3D corrections.
+        ``template`` / ``articulation`` (from the run config beside ``results.h5``)
+        make that re-fit use the *same* model the pipeline did; both default to the
+        packaged NeuroMechFly model.
         """
         if corrections is None:
             corrections = Corrections.empty(
                 result.n_views, result.n_frames, cls._n_points(result)
             )
             corrections.pts2d_invisible = ~np.isfinite(result.pts2d).all(axis=-1)
-        return cls(result=result, corrections=corrections)
+        nmf_live = None
+        if result.nmf_pts3d is not None and result.pts3d is not None:
+            try:
+                nmf_live = NmfLive(result, template=template, articulation=articulation)
+            except Exception:  # a refit-setup failure just disables the live overlay
+                log.exception(
+                    "could not set up the live NMF re-fit; using the static fit"
+                )
+        return cls(result=result, corrections=corrections, nmf_live=nmf_live)
 
     @staticmethod
     def _n_points(result: PoseResult) -> int:
@@ -163,15 +189,72 @@ class EditorState:
     ) -> Float[np.ndarray, "V P 2"] | None:
         """The fitted NMF model joints for ``frame`` reprojected into every view, or ``None``.
 
-        Read-only display overlay (the model is a pipeline output, not edited here):
-        the IK-fit model joints (in the skeleton's point order) projected with the
-        same forward model the other overlays use, so the model lines up with the
-        keypoints it was fit to.
+        Uses the live re-fit (the model re-solved from the operator's current 3D
+        corrections), projected with the same forward model the other overlays use,
+        so the model follows the latent skeleton as it is edited. Falls back to the
+        pipeline's static fit when the live re-fit is unavailable.
         """
-        if self.result.nmf_pts3d is None:
+        fit = self.nmf_fit(frame)
+        if fit is None:
             return None
+        return np.asarray(self.result.cameras.project(fit[0]))
+
+    def nmf_fit(
+        self, frame: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray | None, list[str] | None] | None:
+        """The NMF fit for ``frame``: ``(model_pts3d, angles, angle_names)`` or ``None``.
+
+        Re-solved from the frame's (corrected) 3D pose when a :class:`NmfLive` is
+        available -- so it tracks edits -- and memoized per frame (invalidated when
+        that frame's 3D changes). Otherwise returns the pipeline's static fit.
+        """
         t = self._resolve_frame(frame)
-        return np.asarray(self.result.cameras.project(self.result.nmf_pts3d[t]))
+        cached = self._nmf_cache.get(t)
+        if cached is not None:
+            return cached
+        out: tuple | None = None
+        if self.nmf_live is not None:
+            pts3d = self.display_pts3d(t)
+            if pts3d is not None:
+                model, angles = self.nmf_live.refit(pts3d)
+                out = (model, angles, self.nmf_live.angle_names)
+        elif self.result.nmf_pts3d is not None:
+            angles = (
+                None if self.result.nmf_angles is None else self.result.nmf_angles[t]
+            )
+            out = (self.result.nmf_pts3d[t], angles, self.result.nmf_angle_names)
+        if out is not None:
+            self._nmf_cache[t] = out
+        return out
+
+    def nmf_posed_verts(
+        self, frame: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """The frame's posed NMF mesh ``(vertices (Nv, 3), valid_faces (Nf,))``, or ``None``.
+
+        The head/abdomen size is the IK stage's data estimate (``nmf_chain_scales``),
+        not an operator knob -- the legs always skin to the corrected keypoints. The
+        body is placed at the recording's fixed ``nmf_body_scale`` (constant size,
+        per-frame rotation + translation only), so it does not breathe across frames.
+        """
+        fit = self.nmf_fit(frame)
+        if fit is None:
+            return None
+        from ..inverse_kinematics.mesh import load_nmf_mesh
+
+        model, angles, names = fit
+        return load_nmf_mesh().pose(
+            model,
+            angles,
+            names,
+            head_scale=self.result.nmf_head_scale,
+            abdomen_scale=self.result.nmf_abdomen_scale,
+            body_scale=self.result.nmf_body_scale,
+        )
+
+    def _invalidate_nmf(self, t: int) -> None:
+        """Drop the cached NMF fit for ``frame`` ``t`` after its 3D pose changed."""
+        self._nmf_cache.pop(t, None)
 
     def display_pts2d_refine(
         self, frame: int | None = None
@@ -275,6 +358,7 @@ class EditorState:
         if not np.all(np.isfinite(x_new)):
             return None
         self.corrections.set_pts3d(t, point, x_new)
+        self._invalidate_nmf(t)
         if fix or bool(fixed[view]):
             self.corrections.set_pts2d(view, t, point, xy, fixed=True)
         return x_new
@@ -322,6 +406,7 @@ class EditorState:
         )
         if np.all(np.isfinite(x_new)):
             self.corrections.set_pts3d(t, point, x_new)
+            self._invalidate_nmf(t)
 
     def toggle_invisible(
         self, view: int, point: int, frame: int | None = None
@@ -365,6 +450,7 @@ class EditorState:
         )
         if np.all(np.isfinite(x_new)):
             self.corrections.set_pts3d(t, point, x_new)
+            self._invalidate_nmf(t)
 
     def reset_point(self, point: int, frame: int | None = None) -> None:
         """Drop every correction (all views' 2D, the fixed flags, the 3D) of ``point``."""
@@ -372,6 +458,7 @@ class EditorState:
         for view in range(self.n_views):
             self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
         self.corrections.clear_3d(t, point)
+        self._invalidate_nmf(t)
 
     def reset_point_view(self, view: int, point: int, frame: int | None = None) -> None:
         """Drop just ``view``'s 2D correction (and fixed flag) for ``point``.
@@ -384,9 +471,11 @@ class EditorState:
         t = self._resolve_frame(frame)
         self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
         self._resolve_3d_from_fixed(point, t)
+        self._invalidate_nmf(t)
 
     def reset_frame(self, frame: int | None = None) -> None:
         """Drop every correction in ``frame`` -- all points, all views' 2D, the
         fixed/obscured flags, and 3D -- back to the pipeline's original pose."""
         t = self._resolve_frame(frame)
         self.corrections.clear_frame(t)
+        self._invalidate_nmf(t)

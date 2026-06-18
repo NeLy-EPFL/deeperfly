@@ -272,9 +272,42 @@ button:disabled {
   overflow: hidden;
 }
 
-.modal-wide {
-  width: 80vw;
-  height: 80vh;
+/* The 3D view is a non-modal floating window: it overlays the editor (so the rest of
+   the GUI, including the main frame scrubber, stays clickable) and can be dragged by
+   its title bar and resized from its bottom-right corner. */
+.scene-panel {
+  position: fixed;
+  left: 40vw;
+  top: 64px;
+  z-index: 9; /* above the editor, below the true modals (help / close, z-index 10) */
+  width: min(56vw, 760px);
+  height: min(64vh, 620px);
+  min-width: 360px;
+  min-height: 280px;
+  max-width: 96vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  resize: both; /* a drag grip at the bottom-right corner */
+}
+
+.scene-panel[hidden] {
+  display: none;
+}
+
+/* The title bar doubles as the drag handle (its controls keep their own cursor). */
+.scene-panel > #scene-head {
+  cursor: move;
+  touch-action: none;
+}
+
+.scene-panel > #scene-head .scene-toggles label {
+  cursor: default;
 }
 
 .modal-head {
@@ -291,6 +324,24 @@ button:disabled {
 .icon-btn {
   padding: 2px 8px;
   line-height: 1;
+}
+
+/* The 3D-view layer toggles sit in the modal head, between the title and close. */
+.scene-toggles {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.scene-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .modal-body {
