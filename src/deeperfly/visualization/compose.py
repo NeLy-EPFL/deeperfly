@@ -189,9 +189,42 @@ class Sources:
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     conf: Float[np.ndarray, "V T P"] | None = None
     nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
+    nmf_angles: Float[np.ndarray, "T D"] | None = None
+    nmf_angle_names: list[str] | None = None
+    nmf_head_scale: float = 1.0
+    nmf_abdomen_scale: float = 1.0
+    nmf_body_scale: float = 1.0
+    nmf_hide_parts: tuple[str, ...] = ("wings",)
+    _pose_cache: dict = field(default_factory=dict, repr=False, compare=False)
 
     def _view_index(self, view: str) -> int:
         return self.camera_group.names.index(view)
+
+    def nmf_posed(self, t: int) -> tuple[np.ndarray, np.ndarray]:
+        """The posed mesh ``(verts, valid_faces)`` for frame ``t`` (data-estimated scale).
+
+        Memoised on the most recent frame so every view of that frame reuses one
+        pose -- the GPU rasterizer in turn reuses one geometry upload across the
+        cameras (it keys on the vertex array's identity).
+        """
+        key = (int(t), self.nmf_head_scale, self.nmf_abdomen_scale, self.nmf_body_scale)
+        hit = self._pose_cache.get(key)
+        if hit is not None:
+            return hit
+        from ..inverse_kinematics.mesh import load_nmf_mesh
+
+        angles = None if self.nmf_angles is None else self.nmf_angles[t]
+        posed = load_nmf_mesh().pose(
+            self.nmf_pts3d[t],
+            angles,
+            self.nmf_angle_names,
+            head_scale=self.nmf_head_scale,
+            abdomen_scale=self.nmf_abdomen_scale,
+            body_scale=self.nmf_body_scale,
+        )
+        self._pose_cache.clear()  # only the current frame's pose is reused
+        self._pose_cache[key] = posed
+        return posed
 
     def view_size(self, view: str) -> tuple[int, int]:
         """``(height, width)`` of a view's panel, from its frames or intrinsics.
@@ -288,7 +321,12 @@ def _op_mesh_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None
     from . import mesh as _mesh
 
     nmf = load_nmf_mesh()
-    verts, valid = nmf.pose(src.nmf_pts3d[t])
+    # Pose once per frame (cached on Sources): every view reuses the same vertex
+    # array, so the GPU rasterizer uploads the frame's geometry only once. The
+    # head/abdomen size is data-estimated by the IK stage (not a panel knob).
+    verts, valid = src.nmf_posed(t)
+    # Drop the configured hidden parts (default: wings) from this overlay.
+    valid = valid & ~nmf.hidden_face_mask(src.nmf_hide_parts)
     view_h, view_w = src.view_size(panel.view)
     _mesh.draw_mesh_overlay(
         canvas,

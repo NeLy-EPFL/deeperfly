@@ -56,6 +56,12 @@ dependencies = [
     # http-tools speedups; both are still imported lazily (only `gui` needs them).
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # GPU rasterizer for the NeuroMechFly mesh overlay (videos + GUI). moderngl is a
+    # tiny pure-Python wrapper over OpenGL; importing it never needs a GPU (a context
+    # is only created lazily at render time, via headless EGL), and the overlay
+    # transparently falls back to the CPU rasterizer when no GL context is available
+    # -- so this is safe on headless boxes without a GL driver.
+    "moderngl>=5.10",
 ]
 
 [project.urls]

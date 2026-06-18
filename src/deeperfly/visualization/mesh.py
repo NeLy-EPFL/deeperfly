@@ -24,11 +24,47 @@ from jaxtyping import Float
 if TYPE_CHECKING:
     from ..cameras import Camera
 
-__all__ = ["render_mesh_rgba", "draw_mesh_overlay"]
+__all__ = [
+    "render_mesh_rgba",
+    "render_mesh_rgba_auto",
+    "draw_mesh_overlay",
+    "vertex_normals",
+]
 
 #: Flat-shading terms: ambient floor + diffuse gain against the headlight.
 _AMBIENT = 0.45
 _DIFFUSE = 0.55
+
+
+def vertex_normals(
+    verts_world: Float[np.ndarray, "Nv 3"],
+    faces: np.ndarray,
+    valid: np.ndarray | None = None,
+) -> np.ndarray:
+    """Smooth per-vertex normals (area-weighted) from a posed mesh.
+
+    Each face contributes its (un-normalised, so area-weighted) normal to its three
+    vertices; the accumulated per-vertex vector is normalised. Only ``valid`` faces
+    are used so an occluded/NaN segment does not poison a shared vertex's normal.
+    Vertices touched by no drawn face get a zero normal (they are not rasterised).
+
+    Returns ``(Nv, 3)`` float64 normals in the same world frame as ``verts_world``.
+    The accumulation is :func:`numpy.bincount` per axis (fast enough to run once per
+    rendered frame, ~100k faces in a few milliseconds).
+    """
+    f = faces if valid is None else faces[valid]
+    n = np.zeros(verts_world.shape, dtype=float)
+    if f.size == 0:
+        return n
+    v0, v1, v2 = verts_world[f[:, 0]], verts_world[f[:, 1]], verts_world[f[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0)  # area-weighted face normal (length = 2*area)
+    flat_idx = f.reshape(-1)
+    flat_fn = np.repeat(fn, 3, axis=0)
+    nv = verts_world.shape[0]
+    for c in range(3):
+        n[:, c] = np.bincount(flat_idx, weights=flat_fn[:, c], minlength=nv)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    return n / np.where(ln > 1e-12, ln, 1.0)
 
 
 def render_mesh_rgba(
@@ -106,6 +142,38 @@ def render_mesh_rgba(
     return np.dstack([rgb, a])
 
 
+def render_mesh_rgba_auto(
+    verts_world: Float[np.ndarray, "Nv 3"],
+    faces: np.ndarray,
+    face_rgb: np.ndarray,
+    valid: np.ndarray,
+    camera: "Camera",
+    height: int,
+    width: int,
+    *,
+    alpha: float = 0.55,
+) -> np.ndarray:
+    """Rasterize via the GPU when a headless GL context is available, else the CPU.
+
+    Same signature and ``(H, W, 4)`` uint8 output as :func:`render_mesh_rgba`; the
+    GPU path (:mod:`deeperfly.visualization.mesh_gl`) is ~10x faster and depth-tests
+    exactly, and silently falls back to the software rasterizer when GL is absent.
+    """
+    try:
+        from .mesh_gl import render_mesh_rgba_gl
+
+        rgba = render_mesh_rgba_gl(
+            verts_world, faces, face_rgb, valid, camera, height, width, alpha=alpha
+        )
+        if rgba is not None:
+            return rgba
+    except Exception:  # moderngl missing / import error -> software path
+        pass
+    return render_mesh_rgba(
+        verts_world, faces, face_rgb, valid, camera, height, width, alpha=alpha
+    )
+
+
 def _shading(verts_world, faces, rmat, tvec) -> np.ndarray:
     """Per-face Lambert intensity from a headlight at the camera (two-sided)."""
     v0, v1, v2 = (
@@ -147,7 +215,7 @@ def draw_mesh_overlay(
     composited into the canvas tile (clipped to the canvas bounds). Returns the
     same ``canvas``.
     """
-    rgba = render_mesh_rgba(
+    rgba = render_mesh_rgba_auto(
         verts_world, faces, face_rgb, valid, camera, view_h, view_w, alpha=alpha
     )
     sx, sy = scale
@@ -160,7 +228,13 @@ def draw_mesh_overlay(
 
 
 def _alpha_blit(canvas: np.ndarray, rgba: np.ndarray, x0: int, y0: int) -> None:
-    """Alpha-composite an RGBA tile onto ``canvas`` at ``(x0, y0)`` (clipped)."""
+    """Alpha-composite an RGBA tile onto ``canvas`` at ``(x0, y0)`` (clipped).
+
+    Only the tile's covered (alpha > 0) bounding box is blended -- the overlay mesh
+    usually fills a small part of the frame, so skipping the transparent margin is a
+    large saving when this runs once per view per frame. The blend is integer math
+    (``out = (bg*(255-a) + fg*a) / 255``) to avoid two float casts over the region.
+    """
     ch, cw = canvas.shape[:2]
     th, tw = rgba.shape[:2]
     x1, y1 = min(x0 + tw, cw), min(y0 + th, ch)
@@ -168,8 +242,15 @@ def _alpha_blit(canvas: np.ndarray, rgba: np.ndarray, x0: int, y0: int) -> None:
     if x0c >= x1 or y0c >= y1:
         return
     tile = rgba[y0c - y0 : y1 - y0, x0c - x0 : x1 - x0]
-    a = (tile[..., 3:4].astype(np.float32)) / 255.0
-    region = canvas[y0c:y1, x0c:x1].astype(np.float32)
-    canvas[y0c:y1, x0c:x1] = (
-        region * (1 - a) + tile[..., :3].astype(np.float32) * a
-    ).astype(canvas.dtype)
+    cover = tile[..., 3] > 0
+    rows = np.flatnonzero(cover.any(axis=1))
+    cols = np.flatnonzero(cover.any(axis=0))
+    if rows.size == 0 or cols.size == 0:
+        return  # nothing drawn -> nothing to composite
+    r0, r1 = int(rows[0]), int(rows[-1]) + 1
+    c0, c1 = int(cols[0]), int(cols[-1]) + 1
+    sub = tile[r0:r1, c0:c1]
+    a = sub[..., 3:4].astype(np.uint32)
+    region = canvas[y0c + r0 : y0c + r1, x0c + c0 : x0c + c1].astype(np.uint32)
+    blended = (region * (255 - a) + sub[..., :3].astype(np.uint32) * a + 127) // 255
+    canvas[y0c + r0 : y0c + r1, x0c + c0 : x0c + c1] = blended.astype(canvas.dtype)

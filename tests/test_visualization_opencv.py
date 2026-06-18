@@ -510,6 +510,78 @@ def test_mesh_rgba_rasterizes_the_posed_model(result):
     assert rgba[..., 3].max() <= 255
 
 
+def test_vertex_normals_are_unit_and_smooth():
+    """Smooth per-vertex normals are unit-length and ignore non-valid faces."""
+    from deeperfly.visualization.mesh import vertex_normals
+
+    # A unit cube (shared verts) -> a corner's normal points diagonally outward.
+    verts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [1, 2, 6],
+            [1, 6, 5],
+            [0, 4, 7],
+            [0, 7, 3],
+        ],
+    )
+    n = vertex_normals(verts, faces)
+    assert n.shape == verts.shape
+    np.testing.assert_allclose(np.linalg.norm(n, axis=1), 1.0, atol=1e-6)
+    # the +x+y+z corner (vertex 6) faces outward along the diagonal (area-weighting
+    # tilts it off the exact diagonal, but it still points up the +++ octant)
+    assert (n[6] > 0).all() and n[6] @ (np.ones(3) / np.sqrt(3)) > 0.9
+    # an all-invalid mask draws nothing -> zero normals
+    z = vertex_normals(verts, faces, np.zeros(len(faces), bool))
+    assert np.allclose(z, 0.0)
+
+
+def test_mesh_rgba_gl_matches_software_when_available(result):
+    """When a headless GL context exists, the GPU rasterizer agrees with the CPU one.
+
+    Skips where no EGL/GL context can be created (CI without a GPU driver), since the
+    overlay then simply falls back to the software rasterizer (covered above). The GPU
+    path projects with the camera's full pinhole, so it renders at the footage size
+    the intrinsics describe (which is exactly how the overlay ops call it).
+    """
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.visualization.mesh import render_mesh_rgba
+    from deeperfly.visualization.mesh_gl import gl_available, render_mesh_rgba_gl
+
+    if not gl_available():
+        pytest.skip("no headless GL context available")
+    mesh = load_nmf_mesh()
+    verts, valid = mesh.pose(mesh.kp_neutral)
+    cam = result.cameras["rf"]
+    cx, cy = float(cam.intr[2]), float(cam.intr[3])
+    w, h = int(round(2 * cx)), int(round(2 * cy))  # footage size the intrinsics imply
+    cpu = render_mesh_rgba(verts, mesh.faces, mesh.face_rgb, valid, cam, h, w)
+    gpu = render_mesh_rgba_gl(verts, mesh.faces, mesh.face_rgb, valid, cam, h, w)
+    assert gpu is not None and gpu.shape == cpu.shape
+    cov_cpu, cov_gpu = cpu[..., 3] > 0, gpu[..., 3] > 0
+    iou = (cov_cpu & cov_gpu).sum() / max((cov_cpu | cov_gpu).sum(), 1)
+    assert iou > 0.9  # same silhouette (smooth vs flat shading + exact depth test)
+
+
 def test_mesh_nmf_op_overlays_the_mesh(result, fly, frames):
     cfg = Config.from_dict(
         {
