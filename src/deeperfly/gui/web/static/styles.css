@@ -24,8 +24,17 @@ body {
 
 #app {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh;
+}
+
+/* The editor proper (views + controls) sits left of the retractable side panel. */
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
 #views {
@@ -243,6 +252,116 @@ button {
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* A small count chip on the "Corrections" toggle button (number of corrected frames). */
+.count-badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 9px;
+  background: #4a90d9;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.count-badge.is-zero {
+  background: #444;
+  color: #aaa;
+}
+
+/* The retractable corrected-frames side panel (right edge, full height). */
+#sidebar {
+  flex: 0 0 clamp(180px, 16vw, 260px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+
+#sidebar[hidden] {
+  display: none;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #333;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.sidebar-title {
+  flex: 1;
+}
+
+.sidebar-nav {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.frames-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.frames-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: left;
+  font-weight: 500;
+  color: #999;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.frames-table th:last-child {
+  text-align: right;
+}
+
+.frames-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid #2f2f2f;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.frames-table td:last-child {
+  text-align: right;
+  color: #999;
+}
+
+.frames-table tr:hover td {
+  background: #343434;
+}
+
+.frames-table tr.is-current td {
+  background: #34506e;
+  color: #fff;
+}
+
+.frames-table tr.is-current td:last-child {
+  color: #cfe3f7;
+}
+
+.frames-empty {
+  padding: 14px;
+  color: #888;
+  font-size: 12px;
 }
 
 /* On-demand modal overlays (keyboard help, camera-rig plot). */

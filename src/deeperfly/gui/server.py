@@ -173,6 +173,15 @@ def create_app(
     def scene(t: int) -> dict:
         return _scene_payload(session, _clamp_frame(session, t))
 
+    @app.get("/api/corrected")
+    def corrected() -> dict:
+        """The frames carrying manual corrections (sorted, with per-frame counts).
+
+        Drives the editor's corrected-frames list; the front-end refreshes it after
+        edits settle, so it tracks every drag, obscure, and reset live.
+        """
+        return {"frames": session.state.corrected_frames()}
+
     @app.post("/api/save")
     async def save() -> dict:
         async with lock:

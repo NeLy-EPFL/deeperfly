@@ -33,13 +33,14 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, frameUrl, saveCorrections, shutdownServer } from "./api.js";
+import { EditSocket, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, frameUrl, saveCorrections, shutdownServer } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
 
 /** @typedef {import("./types.js").Meta} Meta */
 /** @typedef {import("./types.js").PointsPayload} PointsPayload */
+/** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, global?: boolean, hidden?: boolean, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -140,6 +141,15 @@ class App {
   // (beforeunload) from nagging after the operator has already decided.
   closing = false;
   closeConfirmOpen = false;
+  // The corrected-frames side panel: the list (sorted, with per-frame counts), whether
+  // the panel is open, the row elements keyed by frame (for the current-frame
+  // highlight), and a debounce timer coalescing post-edit refreshes.
+  /** @type {CorrectedFrame[]} */
+  correctedFrames = [];
+  framesOpen = false;
+  /** @type {Map<number, HTMLTableRowElement>} */
+  frameRows = new Map();
+  correctedTimer = 0;
   /** @type {Binding[]} */
   bindings = [];
 
@@ -212,6 +222,22 @@ class App {
   closeBtn = el("close-editor");
   /** @type {HTMLSpanElement} */
   statusEl = el("status");
+  /** @type {HTMLButtonElement} */
+  framesToggleBtn = el("frames-toggle");
+  /** @type {HTMLSpanElement} */
+  framesCountEl = el("frames-count");
+  /** @type {HTMLElement} */
+  sidebarEl = el("sidebar");
+  /** @type {HTMLButtonElement} */
+  framesCollapseBtn = el("frames-collapse");
+  /** @type {HTMLButtonElement} */
+  framesPrevBtn = el("frames-prev");
+  /** @type {HTMLButtonElement} */
+  framesNextBtn = el("frames-next");
+  /** @type {HTMLTableSectionElement} */
+  framesTbody = /** @type {HTMLTableElement} */ (el("frames-table")).tBodies[0];
+  /** @type {HTMLDivElement} */
+  framesEmptyEl = el("frames-empty");
   /** @type {HTMLDivElement} */
   closeOverlay = el("close-overlay");
   /** @type {HTMLButtonElement} */
@@ -263,11 +289,12 @@ class App {
     this.buildControls();
     this.buildViews();
     this.relayout();
-    this.socket = new EditSocket((p) => this.applyPoints(p));
+    this.socket = new EditSocket((p) => this.applyPoints(p, true));
     await this.goToFrame(0);
     this.setMode(this.meta.has_3d ? "edit_3d" : "edit_2d");
     this.updateSelected();
     this.updateDirty();
+    await this.refreshCorrected(); // populate the list (any corrections loaded from disk)
     // Closing instantly when there is nothing to lose, prompting otherwise: the
     // browser shows its generic "leave site?" dialog only while edits are unsaved.
     window.addEventListener("beforeunload", (e) => {
@@ -338,6 +365,10 @@ class App {
     this.resetAllBtn.addEventListener("click", () => this.resetSelectedAll());
     this.resetFrameBtn.addEventListener("click", () => this.resetFrame());
     this.keypointsBtn.addEventListener("click", () => this.openKeypoints());
+    this.framesToggleBtn.addEventListener("click", () => this.toggleFrames());
+    this.framesCollapseBtn.addEventListener("click", () => this.closeFrames());
+    this.framesPrevBtn.addEventListener("click", () => this.jumpCorrected(-1));
+    this.framesNextBtn.addEventListener("click", () => this.jumpCorrected(1));
     this.camerasBtn.addEventListener("click", () => this.toggleScene());
     this.helpBtn.addEventListener("click", () => this.toggleHelp());
     this.helpClose.addEventListener("click", () => this.closeHelp());
@@ -454,6 +485,7 @@ class App {
     this.frame = t;
     this.slider.value = String(t);
     this.number.value = String(t);
+    this.updateActiveFrameRow();
     this.meta.camera_names.forEach((name, v) => {
       this.views[v].loadFrame(frameUrl(name, t));
     });
@@ -469,8 +501,12 @@ class App {
     this.applyPoints(await fetchPoints(this.frame, this.mode));
   }
 
-  /** @param {PointsPayload} p */
-  applyPoints(p) {
+  /**
+   * @param {PointsPayload} p
+   * @param {boolean} [fromEdit]  true for a WebSocket edit reply (which may change
+   *   the corrected-frames list); false for a plain frame fetch on navigation.
+   */
+  applyPoints(p, fromEdit = false) {
     if (p.frame !== this.frame) return; // a stale reply after a fast scrub
     const showFixed = this.mode === "edit_3d";
     this.fixedMask = showFixed ? p.fixed : null;
@@ -488,6 +524,9 @@ class App {
     this.dirty = p.dirty;
     this.updateDirty();
     this.updateStatusWidget();
+    // An edit may have added or cleared this frame's corrections; refresh the list
+    // (debounced, so a live drag's stream of replies coalesces into one fetch).
+    if (fromEdit) this.scheduleCorrectedRefresh();
   }
 
   /** @param {EditMode} mode */
@@ -778,6 +817,93 @@ class App {
     this.saveBtn.disabled = !this.dirty;
   }
 
+  // -- corrected-frames list --------------------------------------------------
+
+  // Pull the frames carrying corrections and repaint the side panel. Called on load
+  // (any sidecar loaded from disk) and, debounced, after each edit settles -- so the
+  // list tracks every drag, obscure, and reset live.
+  async refreshCorrected() {
+    let frames;
+    try {
+      frames = (await fetchCorrected()).frames;
+    } catch (_) {
+      return; // a transient failure just leaves the list as it was
+    }
+    this.correctedFrames = frames;
+    this.renderFrameList();
+  }
+
+  // Coalesce rapid refreshes (a live 3D drag fires a stream of edits) into one fetch.
+  scheduleCorrectedRefresh() {
+    clearTimeout(this.correctedTimer);
+    this.correctedTimer = setTimeout(() => this.refreshCorrected(), 150);
+  }
+
+  // Rebuild the table from the current list, update the count chip + empty state,
+  // and keep the current frame highlighted. Each row jumps to its frame on click.
+  renderFrameList() {
+    const n = this.correctedFrames.length;
+    this.framesCountEl.textContent = String(n);
+    this.framesCountEl.classList.toggle("is-zero", n === 0);
+    this.framesEmptyEl.hidden = n > 0;
+    this.frameRows.clear();
+    const rows = this.correctedFrames.map(({ frame, count }) => {
+      const tr = document.createElement("tr");
+      const fcell = document.createElement("td");
+      fcell.textContent = String(frame);
+      const ccell = document.createElement("td");
+      ccell.textContent = String(count);
+      tr.append(fcell, ccell);
+      tr.addEventListener("click", () => this.goToFrame(frame));
+      this.frameRows.set(frame, tr);
+      return tr;
+    });
+    this.framesTbody.replaceChildren(...rows);
+    this.updateActiveFrameRow();
+  }
+
+  // Highlight the row for the current frame (when it is a corrected one) and, while
+  // the panel is open, scroll it into view -- so scrubbing keeps the list in sync.
+  updateActiveFrameRow() {
+    this.frameRows.forEach((tr, frame) => {
+      const active = frame === this.frame;
+      tr.classList.toggle("is-current", active);
+      if (active && this.framesOpen) tr.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  openFrames() {
+    this.sidebarEl.hidden = false;
+    this.framesOpen = true;
+    this.updateActiveFrameRow(); // scroll the current frame into view now it is shown
+  }
+
+  closeFrames() {
+    this.sidebarEl.hidden = true;
+    this.framesOpen = false;
+  }
+
+  toggleFrames() {
+    if (this.framesOpen) this.closeFrames();
+    else this.openFrames();
+  }
+
+  // Step to the previous / next corrected frame (wrapping at the ends), so the
+  // operator can walk their corrections without hunting on the scrubber.
+  /** @param {number} dir  -1 for the previous corrected frame, +1 for the next */
+  jumpCorrected(dir) {
+    const frames = this.correctedFrames.map((f) => f.frame);
+    if (frames.length === 0) return;
+    let target;
+    if (dir > 0) {
+      target = frames.find((f) => f > this.frame) ?? frames[0]; // wrap to the first
+    } else {
+      const earlier = frames.filter((f) => f < this.frame);
+      target = earlier.length ? earlier[earlier.length - 1] : frames[frames.length - 1];
+    }
+    this.goToFrame(target);
+  }
+
   // -- close / shutdown -------------------------------------------------------
 
   // The Close button: stop the server outright when nothing is at stake, else
@@ -993,6 +1119,7 @@ class App {
     b.push({ key: "r", label: "r", desc: "Reset selected point in its view", run: () => this.resetSelectedView() });
     b.push({ key: "R", label: "Shift+R", desc: "Reset selected point in all views", run: () => this.resetSelectedAll() });
     b.push({ key: "c", label: "c", desc: "Show / hide the 3D view", run: () => this.toggleScene() });
+    b.push({ key: "j", label: "j", desc: "Show / hide the corrected-frames list", run: () => this.toggleFrames() });
     b.push({ key: "k", label: "k", desc: "Open the keypoint reference (docs, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "s", mod: true, global: true, label: "Ctrl/⌘+S", desc: "Save corrections", run: () => this.save() });
     b.push({ key: "?", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });

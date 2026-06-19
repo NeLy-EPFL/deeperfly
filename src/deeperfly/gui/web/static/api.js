@@ -37,6 +37,17 @@ export async function fetchScene(frame) {
   return r.json();
 }
 
+/**
+ * The frames carrying manual corrections, sorted, each with its corrected-point
+ * count -- the editor's corrected-frames list.
+ * @returns {Promise<{ frames: import("./types.js").CorrectedFrame[] }>}
+ */
+export async function fetchCorrected() {
+  const r = await fetch("/api/corrected");
+  if (!r.ok) throw new Error(`GET /api/corrected -> ${r.status}`);
+  return r.json();
+}
+
 /** @returns {Promise<{ dirty: boolean }>} */
 export async function saveCorrections() {
   const r = await fetch("/api/save", { method: "POST" });

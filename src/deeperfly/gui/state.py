@@ -149,6 +149,31 @@ class EditorState:
     def _resolve_frame(self, frame: int | None) -> int:
         return self.frame if frame is None else frame
 
+    # -- corrected frames -----------------------------------------------------
+
+    def corrected_frames(self) -> list[dict]:
+        """Every frame carrying a manual correction, with its corrected-point count.
+
+        A point counts as corrected in a frame when its 2D was moved in any view, its
+        3D was re-solved, or its per-view visibility differs from the detector's own
+        (the operator obscured a detected point, or revealed a missed one) -- exactly
+        the edits the corrections sidecar persists. The fresh overlay seeds the
+        obscured state from the NaN detections, so an untouched result reports nothing
+        here. Returned sorted by frame, each ``{"frame": t, "count": n}`` with ``n``
+        the number of corrected points -- what the GUI's frame list shows so the
+        operator can jump back to frames they have touched.
+        """
+        c = self.corrections
+        # A per-view point is "touched" if its 2D was edited or its visibility was
+        # flipped from the detector's natural state (a NaN detection seeds obscured).
+        seed_invisible = ~np.isfinite(self.result.pts2d).all(axis=-1)  # (V, T, P)
+        touched_2d = c.pts2d_edited | (c.pts2d_invisible != seed_invisible)  # (V, T, P)
+        per_point = touched_2d.any(axis=0) | c.pts3d_edited  # (T, P)
+        counts = per_point.sum(axis=1)  # (T,)
+        return [
+            {"frame": int(t), "count": int(counts[t])} for t in np.nonzero(counts)[0]
+        ]
+
     # -- displayed points (corrected over original) ---------------------------
 
     def display_pts2d(self, frame: int | None = None) -> Float[np.ndarray, "V P 2"]:

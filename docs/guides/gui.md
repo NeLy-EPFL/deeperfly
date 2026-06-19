@@ -73,6 +73,18 @@ Three reverts (in the controls bar), each back to the pipeline's original pose:
   flags, and the 3D point).
 - **Whole frame** — every point in the current frame, all views.
 
+## Corrected-frames list
+
+The **Corrections** button (`j`) opens a retractable panel on the right listing
+every frame you have touched, with the number of corrected keypoints in each. It
+updates live as you edit, obscure, or reset. Click a row to jump to that frame, or
+use the panel's `↑` / `↓` buttons to step through corrected frames (wrapping at the
+ends); the current frame stays highlighted as you scrub. A frame is listed when a
+keypoint's 2D was moved, its 3D was re-solved, or its visibility differs from the
+detector's own — so it mirrors exactly what the `corrections.h5` sidecar stores,
+including corrections loaded from a previous session. The button's badge shows the
+total count even while the panel is collapsed.
+
 ## NeuroMechFly overlays
 
 When the result carries a fitted inverse-kinematics model (the run enabled
@@ -145,5 +157,6 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | `x` | Pin-on-tap (Edit 3D) |
 | `l` / `o` | Fix / obscure the selected point (Edit 3D) |
 | `r` / `Shift+R` | Reset the selected point in its view / all views |
+| `j` | Show / hide the corrected-frames list |
 | `Ctrl`/`Cmd`+`S` | Save corrections |
 | `?` / `Esc` | Show shortcuts / close an overlay |

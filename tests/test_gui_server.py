@@ -312,6 +312,30 @@ def test_nmf_live_uses_the_configured_model(result):
     assert {n.split("-")[1].split("_")[0] for n in leg_angles} == {"rf", "lf"}
 
 
+def test_corrected_endpoint_lists_edited_frames(client):
+    """/api/corrected reports the frames carrying corrections, with point counts."""
+    assert client.get("/api/corrected").json()["frames"] == []  # nothing edited yet
+
+    with client.websocket_connect("/ws") as ws:
+        for view, point in ((0, 3), (1, 5)):  # two distinct points in frame 2
+            ws.send_json(
+                {
+                    "type": "edit_2d",
+                    "view": view,
+                    "point": point,
+                    "x": 12.0,
+                    "y": 34.0,
+                    "frame": 2,
+                    "mode": "edit_2d",
+                }
+            )
+            ws.receive_json()
+
+    frames = client.get("/api/corrected").json()["frames"]
+    assert [f["frame"] for f in frames] == [2]
+    assert frames[0]["count"] == 2
+
+
 # -- edits over the websocket -------------------------------------------------
 
 

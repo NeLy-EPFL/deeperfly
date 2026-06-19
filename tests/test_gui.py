@@ -106,6 +106,37 @@ def test_reset_frame_clears_only_that_frame(result):
     assert state.corrections.pts2d_edited[0, 1, 4]  # the other frame is left alone
 
 
+def test_corrected_frames_tracks_edits_and_resets(result):
+    state = EditorState.from_result(result)
+    assert state.corrected_frames() == []  # a fresh overlay carries no corrections
+
+    # two distinct points edited in frame 1, one 3D-edited in frame 4
+    state.apply_2d_edit(0, 3, (12.0, 34.0), frame=1)
+    state.apply_2d_edit(2, 7, (5.0, 6.0), frame=1)
+    state.apply_3d_edit(0, 9, state.display_pts3d_projected(4)[0, 9] + 5.0, frame=4)
+
+    listed = state.corrected_frames()
+    assert [f["frame"] for f in listed] == [1, 4]  # sorted ascending
+    counts = {f["frame"]: f["count"] for f in listed}
+    assert counts[1] == 2 and counts[4] == 1
+
+    state.reset_frame(frame=1)  # reverting a frame drops it from the list
+    assert [f["frame"] for f in state.corrected_frames()] == [4]
+
+
+def test_corrected_frames_counts_obscured_toggle(result):
+    """Obscuring a point the detector saw (or revealing one it missed) counts too."""
+    state = EditorState.from_result(result)
+    # pick a (view, point) the detector observed in frame 0 (so it starts visible)
+    visible = np.argwhere(np.isfinite(result.pts2d[:, 0]).all(axis=-1))
+    view, point = (int(v) for v in visible[0])
+    assert not state.corrections.pts2d_invisible[view, 0, point]
+
+    state.toggle_invisible(view, point, frame=0)
+    listed = state.corrected_frames()
+    assert [f["frame"] for f in listed] == [0] and listed[0]["count"] == 1
+
+
 # -- EditorState: 3D refinement (fixed/finalized constraints) -----------------
 
 

@@ -80,6 +80,14 @@
  */
 
 /**
+ * One frame in the corrected-frames list: the frame index and how many of its
+ * keypoints carry a manual correction.
+ * @typedef {object} CorrectedFrame
+ * @property {number} frame
+ * @property {number} count  number of corrected keypoints in the frame
+ */
+
+/**
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
