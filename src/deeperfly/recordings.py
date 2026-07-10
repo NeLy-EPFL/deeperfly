@@ -93,21 +93,110 @@ def _camera_glob(pattern: str) -> str:
     return f"{pattern}*"
 
 
-def camera_files(root: Path, pattern: str) -> list[Path]:
-    """A camera's footage files under ``root`` matching its ``input`` ``pattern``.
+def _case_insensitive_glob(pattern: str) -> str:
+    """Rewrite a glob so its ASCII letters match either case.
 
-    Globs ``pattern`` (see :func:`_camera_glob`), keeps files with a known footage
-    extension, and -- when several extensions match -- keeps the highest-priority
-    one. Naturally sorted. Video footage is a single file, so several matching
-    videos keep only the first (warned); images stay as the whole sequence. Empty
-    when nothing footage-like matches, so the caller can treat the camera as absent.
+    Wraps each ASCII letter that is not already inside a ``[...]`` character class
+    in a two-case class (``h`` -> ``[hH]``), leaving wildcards (``* ? [ ]``) and
+    path separators untouched. So ``camera_RH.mp4`` matches a ``CAMERA_rh.MP4`` on
+    a case-sensitive filesystem while ``camera_0/*`` still traverses a
+    subdirectory. Matching an anatomical name like ``camera_RH.mp4`` is thus
+    robust to however the acquisition capitalized ``CAMERA``, ``RH``, or ``MP4``.
+
+    Parameters
+    ----------
+    pattern
+        A filename glob (the output of :func:`_camera_glob`).
+
+    Returns
+    -------
+    str
+        An equivalent glob whose letters are case-insensitive.
+    """
+    out: list[str] = []
+    in_class = False
+    for char in pattern:
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        if char.isascii() and char.isalpha() and not in_class:
+            out.append(f"[{char.lower()}{char.upper()}]")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _as_alternates(pattern: str | list[str]) -> list[str]:
+    """A source's ``filename`` as an ordered list of alternate glob patterns.
+
+    A bare string is a single-element list; a list is used as-is. The alternates
+    are tried in order, the first that resolves any footage winning -- so a source
+    can name both its anatomical file and a legacy fallback
+    (``["camera_RH.mp4", "camera_0.mp4"]``) and match whichever the recording
+    actually holds.
+
+    Parameters
+    ----------
+    pattern
+        A source's ``filename`` value (a glob string, or a list of them).
+
+    Returns
+    -------
+    list of str
+        The alternate glob patterns, in priority order.
+    """
+    return [pattern] if isinstance(pattern, str) else list(pattern)
+
+
+def _raw_matches(root: Path, pattern: str | list[str]) -> list[Path]:
+    """The first alternate's raw (any-file) matches under ``root``, case-insensitively.
+
+    Unlike :func:`camera_files`, this keeps every matched file (not just footage),
+    so a caller can tell "matched, but not footage" from "matched nothing".
 
     Parameters
     ----------
     root
         The recording directory to glob inside.
     pattern
-        The camera's ``input`` glob (see :func:`_camera_glob`).
+        The source's ``filename`` value (see :func:`_as_alternates`).
+
+    Returns
+    -------
+    list of Path
+        The files matched by the first alternate that matches any file (else empty).
+    """
+    for alternate in _as_alternates(pattern):
+        files = [
+            p
+            for p in root.glob(_case_insensitive_glob(_camera_glob(alternate)))
+            if p.is_file()
+        ]
+        if files:
+            return files
+    return []
+
+
+def camera_files(root: Path, pattern: str | list[str]) -> list[Path]:
+    """A camera's footage files under ``root`` matching its ``input`` ``pattern``.
+
+    Tries each of ``pattern``'s alternates (see :func:`_as_alternates`) in order,
+    returning the first that resolves footage. For a given alternate: globs it
+    case-insensitively (see :func:`_camera_glob`, :func:`_case_insensitive_glob`),
+    keeps files with a known footage extension, and -- when several extensions
+    match -- keeps the highest-priority one. Naturally sorted. Video footage is a
+    single file, so several matching videos keep only the first (warned); images
+    stay as the whole sequence. Empty when no alternate resolves footage, so the
+    caller can treat the camera as absent.
+
+    Parameters
+    ----------
+    root
+        The recording directory to glob inside.
+    pattern
+        The camera's ``input`` glob, or a list of alternates (see
+        :func:`_as_alternates`).
 
     Returns
     -------
@@ -117,16 +206,20 @@ def camera_files(root: Path, pattern: str) -> list[Path]:
     from natsort import natsorted
 
     exts = _footage_exts()
-    files = [
-        p
-        for p in root.glob(_camera_glob(pattern))
-        if p.is_file() and p.suffix.lower() in exts
-    ]
-    present = {p.suffix.lower() for p in files}
-    if len(present) > 1:
-        keep = min(present, key=exts.index)
-        files = [p for p in files if p.suffix.lower() == keep]
-    return _first_if_video(root, pattern, natsorted(files))
+    for alternate in _as_alternates(pattern):
+        files = [
+            p
+            for p in root.glob(_case_insensitive_glob(_camera_glob(alternate)))
+            if p.is_file() and p.suffix.lower() in exts
+        ]
+        if not files:
+            continue
+        present = {p.suffix.lower() for p in files}
+        if len(present) > 1:
+            keep = min(present, key=exts.index)
+            files = [p for p in files if p.suffix.lower() == keep]
+        return _first_if_video(root, alternate, natsorted(files))
+    return []
 
 
 def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
@@ -163,10 +256,12 @@ def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
     return files
 
 
-def source_patterns(config: Config) -> dict[str, str]:
+def source_patterns(config: Config) -> dict[str, str | list[str]]:
     """``source-name -> footage glob`` (the ``[[sources]]`` ``input`` key), in order.
 
-    A source with no ``input`` entry defaults to its own name as the pattern.
+    A source with no ``input`` entry defaults to its own name as the pattern. A
+    value may be a single glob or a list of alternate globs tried in order (see
+    :func:`_as_alternates`).
 
     Parameters
     ----------
@@ -175,8 +270,8 @@ def source_patterns(config: Config) -> dict[str, str]:
 
     Returns
     -------
-    dict of str to str
-        ``source_name -> footage glob`` in config order.
+    dict of str to (str or list of str)
+        ``source_name -> footage glob(s)`` in config order.
     """
     return config.source_patterns()
 
@@ -381,10 +476,7 @@ def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     patterns = source_patterns(config)
     # Raw matches (any file) per source, so "no match" is distinguishable from
     # "matched, but not footage".
-    raw = {
-        name: [p for p in root.glob(_camera_glob(pat)) if p.is_file()]
-        for name, pat in patterns.items()
-    }
+    raw = {name: _raw_matches(root, pat) for name, pat in patterns.items()}
     present = {name: ps for name, ps in raw.items() if ps}
     if not present:
         return None  # nothing here looks like a camera's files: not a recording

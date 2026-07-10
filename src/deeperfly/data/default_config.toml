@@ -20,27 +20,32 @@
 # a view's frames from it. Decoupled from the cameras and pathways that reference
 # it by name, so one source can feed several pathways.
 # ===========================================================================
-[[sources]]            # name -> footage glob (a file, prefix, or wildcard)
+# `filename` is a footage glob (a file, prefix, or wildcard), or a list of
+# alternates tried in order -- the first that resolves footage wins. It is matched
+# case-insensitively, so `camera_RH.mp4` finds a `CAMERA_rh.MP4`. Each source below
+# names its self-describing anatomical file (RH = right hind, F = front, ...) and
+# falls back to the DeepFly3D positional index (`camera_0` .. `camera_6`).
+[[sources]]
 name = "vid_rh"
-filename = "camera_0.mp4"
+filename = ["camera_RH.mp4", "camera_0.mp4"]
 [[sources]]
 name = "vid_rm"
-filename = "camera_1.mp4"
+filename = ["camera_RM.mp4", "camera_1.mp4"]
 [[sources]]
 name = "vid_rf"
-filename = "camera_2.mp4"
+filename = ["camera_RF.mp4", "camera_2.mp4"]
 [[sources]]
 name = "vid_f"
-filename = "camera_3.mp4"
+filename = ["camera_F.mp4", "camera_3.mp4"]
 [[sources]]
 name = "vid_lf"
-filename = "camera_4.mp4"
+filename = ["camera_LF.mp4", "camera_4.mp4"]
 [[sources]]
 name = "vid_lm"
-filename = "camera_5.mp4"
+filename = ["camera_LM.mp4", "camera_5.mp4"]
 [[sources]]
 name = "vid_lh"
-filename = "camera_6.mp4"
+filename = ["camera_LH.mp4", "camera_6.mp4"]
 
 [io.image]
 workers = 0   # decode threads (0 = auto, one per CPU)
