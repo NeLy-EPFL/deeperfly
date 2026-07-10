@@ -45,7 +45,7 @@ class Source:
     """A named footage source: its glob pattern (``[[sources]]`` ``filename``)."""
 
     name: str
-    pattern: str
+    pattern: str | list[str]
 
 
 @dataclass(frozen=True)
@@ -167,8 +167,12 @@ class DetectionPlan:
     def n_views(self) -> int:
         return len(self.view_names)
 
-    def source_patterns(self) -> dict[str, str]:
-        """``source name -> footage glob`` in config order."""
+    def source_patterns(self) -> dict[str, str | list[str]]:
+        """``source name -> footage glob(s)`` in config order.
+
+        A value may be a single glob or a list of alternate globs (see
+        :meth:`deeperfly.config.Config.source_patterns`).
+        """
         return {s.name: s.pattern for s in self.sources}
 
     def model_for(self, pathway: Pathway) -> ModelSpec:
@@ -269,7 +273,11 @@ def _parse_sources(raw) -> list[Source]:
         if name in seen:
             raise ValueError(f"[[sources]] has a duplicate name {name!r}")
         seen.add(name)
-        out.append(Source(name=name, pattern=s.get("filename", name)))
+        from ..config import _source_filename
+
+        out.append(
+            Source(name=name, pattern=_source_filename(s.get("filename", name), name))
+        )
     return out
 
 

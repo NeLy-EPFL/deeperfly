@@ -253,6 +253,37 @@ def _params(data: dict, path: tuple[str, ...], cls, *, ignore: frozenset = froze
     return cls(**{k: v for k, v in sub.items() if k in fields})
 
 
+def _source_filename(filename, name: str) -> str | list[str]:
+    """Validate a ``[[sources]]`` ``filename`` value (a glob or list of globs).
+
+    Parameters
+    ----------
+    filename
+        The raw ``filename`` value from the config (a string, or a list of
+        strings -- alternate globs tried in order).
+    name
+        The source's name, for the error message.
+
+    Returns
+    -------
+    str or list of str
+        The validated ``filename`` value, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If ``filename`` is not a string or a list of strings.
+    """
+    if isinstance(filename, str):
+        return filename
+    if isinstance(filename, list) and all(isinstance(f, str) for f in filename):
+        return filename
+    raise ValueError(
+        f"[[sources]] {name!r} 'filename' must be a string or list of strings, "
+        f"got {filename!r}"
+    )
+
+
 # -- the Config class --------------------------------------------------------
 
 
@@ -566,31 +597,35 @@ class Config:
         defaults = cams.pop("defaults", {})
         return defaults, cams
 
-    def source_patterns(self) -> dict[str, str]:
+    def source_patterns(self) -> dict[str, str | list[str]]:
         """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).
 
         Read directly from the ``[[sources]]`` table (without building the whole
         detection plan) so recording discovery stays cheap. A source with no
-        ``filename`` key uses its own name as the glob pattern.
+        ``filename`` key uses its own name as the glob pattern. ``filename`` may be
+        a single glob or a list of alternate globs tried in order (the first that
+        resolves footage wins), so a source can name both its anatomical file and a
+        legacy fallback (``["camera_RH.mp4", "camera_0.mp4"]``).
 
         Returns
         -------
-        dict of str to str
-            ``source_name -> footage glob`` in config order.
+        dict of str to (str or list of str)
+            ``source_name -> footage glob(s)`` in config order.
 
         Raises
         ------
         ValueError
-            If a source entry has no string ``name``.
+            If a source entry has no string ``name``, or its ``filename`` is not a
+            string or list of strings.
         """
-        out: dict[str, str] = {}
+        out: dict[str, str | list[str]] = {}
         for s in self.data.get("sources", []) or []:
             name = s.get("name")
             if not isinstance(name, str):
                 raise ValueError(
                     f"[[sources]] entry needs a string 'name', got {name!r}"
                 )
-            out[name] = s.get("filename", name)
+            out[name] = _source_filename(s.get("filename", name), name)
         return out
 
     # -- snapshot round-trip -------------------------------------------------
