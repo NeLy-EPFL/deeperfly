@@ -130,7 +130,20 @@ def _camera_geometry(config: Config) -> dict:
 
 
 def cameras_source(enabled: dict[str, bool], store: StageStore) -> str:
-    """Which rig a downstream stage consumes: ``bundle_adjustment`` or ``config``."""
+    """Which rig a downstream stage consumes: photometric, bundle_adjustment, or config."""
+    if enabled["photometric_refinement"] and store.has("photometric_refinement"):
+        return "photometric_refinement"
+    if enabled["bundle_adjustment"] and store.has("bundle_adjustment"):
+        return "bundle_adjustment"
+    return "config"
+
+
+def photometric_input_source(enabled: dict[str, bool], store: StageStore) -> str:
+    """Which rig photometric_refinement refines: ``bundle_adjustment`` or ``config``.
+
+    Its own input (never itself); mirrors :func:`cameras_source` minus the photometric
+    entry, so toggling bundle adjustment recomputes photometric refinement.
+    """
     if enabled["bundle_adjustment"] and store.has("bundle_adjustment"):
         return "bundle_adjustment"
     return "config"
@@ -175,6 +188,20 @@ def _cameras_entry(config: Config, enabled: dict[str, bool], store: StageStore):
     stage's own fingerprint and cascade.
     """
     source = cameras_source(enabled, store)
+    if source == "config":
+        return {"config": _camera_geometry(config)}
+    return source
+
+
+def _photometric_input_entry(
+    config: Config, enabled: dict[str, bool], store: StageStore
+):
+    """The ``cameras_from`` entry for photometric_refinement's *own* input rig.
+
+    Like :func:`_cameras_entry` but resolved via :func:`photometric_input_source` (BA or
+    config, never photometric itself), so an edited config rig or BA output re-runs it.
+    """
+    source = photometric_input_source(enabled, store)
     if source == "config":
         return {"config": _camera_geometry(config)}
     return source
@@ -247,6 +274,14 @@ def stage_fingerprint(
             {
                 **dataclasses.asdict(config.bundle_adjustment),
                 "cameras": _camera_geometry(config),
+                "skeleton": _skeleton_digest(config),
+            }
+        )
+    if stage == "photometric_refinement":
+        return _norm(
+            {
+                **dataclasses.asdict(config.photometric_refinement),
+                "cameras_from": _photometric_input_entry(config, enabled, store),
                 "skeleton": _skeleton_digest(config),
             }
         )

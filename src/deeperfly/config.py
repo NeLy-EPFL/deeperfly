@@ -60,6 +60,7 @@ log = logging.getLogger("deeperfly")
 STAGES = (
     "pose2d",
     "bundle_adjustment",
+    "photometric_refinement",
     "pictorial_structures",
     "triangulation",
     "inverse_kinematics",
@@ -72,6 +73,7 @@ STAGES = (
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
+    "photometric_refinement": False,
     "pictorial_structures": False,
     "triangulation": True,
     "inverse_kinematics": False,
@@ -150,6 +152,46 @@ class BundleAdjustmentParams:
     weigh_by_confidence: bool = True
     max_frames: int | None = 100
     frame_sampling: str = "even"
+    least_squares: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PhotometricRefinementParams:
+    """``[photometric_refinement]`` -- image-based cross-side extrinsics refinement.
+
+    Refines the single 6-DOF rigid pose between the left ``{lf,lm,lh}`` and right
+    ``{rf,rm,rh}`` camera clusters by chamfer-matching reprojected far-leg bones onto
+    per-view leg-response distance transforms (see :mod:`deeperfly.photometric`). Fixes
+    the far legs reprojecting 1-2 leg-widths off, which sparse bundle adjustment cannot
+    reach (no cross-side keypoint co-visibility beyond the front bridge).
+
+    ``left``/``right``/``front`` name the camera clusters (``front`` is the fixed bridge);
+    ``max_frames``/``frame_sampling`` pick the frames (:func:`deeperfly.pipeline.core._subsample`);
+    the leg-response knobs (``method``, ``downscale``, ``downscale_views``,
+    ``leg_width_px``, ``polarity``, ``response_threshold``, ``dt_trunc_px``) build the DT
+    maps; ``samples_per_bone``/``gate_px``/``reg``/``chamfer_scale``/``kpt_scale``/
+    ``kpt_weight`` shape the objective; ``least_squares`` is the leftover flat keys
+    (``loss``, ``f_scale``, ``max_nfev``) forwarded to :func:`scipy.optimize.least_squares`.
+    """
+
+    left: list[str] = field(default_factory=lambda: ["lf", "lm", "lh"])
+    right: list[str] = field(default_factory=lambda: ["rh", "rm", "rf"])
+    front: list[str] = field(default_factory=lambda: ["f"])
+    max_frames: int | None = 40
+    frame_sampling: str = "diversity"
+    method: str = "ridge_fg"
+    downscale: float = 0.5
+    downscale_views: dict = field(default_factory=lambda: {"f": 0.7})
+    leg_width_px: float = 5.0
+    polarity: str = "auto"
+    response_threshold: float = 0.15
+    dt_trunc_px: float = 20.0
+    samples_per_bone: int = 9
+    gate_px: float | None = 9.0
+    reg: float = 3e-2
+    chamfer_scale: float = 10.0
+    kpt_scale: float = 4.0
+    kpt_weight: float = 1.0
     least_squares: dict = field(default_factory=dict)
 
 
@@ -422,6 +464,56 @@ class Config:
             max_frames=None if max_frames is None else int(max_frames),
             frame_sampling=str(frame_sampling),
             least_squares=ba,  # leftover flat keys -> scipy.optimize.least_squares
+        )
+
+    @property
+    def photometric_refinement(self) -> PhotometricRefinementParams:
+        pr = dict(_dig(self.data, ("photometric_refinement",)))
+        d = PhotometricRefinementParams()  # defaults
+        left = pr.pop("left", d.left)
+        right = pr.pop("right", d.right)
+        front = pr.pop("front", d.front)
+        max_frames = pr.pop("max_frames", d.max_frames)
+        downscale_views = pr.pop("downscale_views", d.downscale_views)
+        gate_px = pr.pop("gate_px", d.gate_px)
+        scalars = {}
+        for key, default in (
+            ("frame_sampling", d.frame_sampling),
+            ("method", d.method),
+            ("downscale", d.downscale),
+            ("leg_width_px", d.leg_width_px),
+            ("polarity", d.polarity),
+            ("response_threshold", d.response_threshold),
+            ("dt_trunc_px", d.dt_trunc_px),
+            ("samples_per_bone", d.samples_per_bone),
+            ("reg", d.reg),
+            ("chamfer_scale", d.chamfer_scale),
+            ("kpt_scale", d.kpt_scale),
+            ("kpt_weight", d.kpt_weight),
+        ):
+            scalars[key] = pr.pop(key, default)
+        return PhotometricRefinementParams(
+            left=[str(c) for c in left],
+            right=[str(c) for c in right],
+            front=[str(c) for c in front],
+            max_frames=None if max_frames is None else int(max_frames),
+            downscale_views={
+                str(k): float(v) for k, v in dict(downscale_views).items()
+            },
+            gate_px=None if gate_px is None else float(gate_px),
+            samples_per_bone=int(scalars.pop("samples_per_bone")),
+            frame_sampling=str(scalars.pop("frame_sampling")),
+            method=str(scalars.pop("method")),
+            polarity=str(scalars.pop("polarity")),
+            downscale=float(scalars.pop("downscale")),
+            leg_width_px=float(scalars.pop("leg_width_px")),
+            response_threshold=float(scalars.pop("response_threshold")),
+            dt_trunc_px=float(scalars.pop("dt_trunc_px")),
+            reg=float(scalars.pop("reg")),
+            chamfer_scale=float(scalars.pop("chamfer_scale")),
+            kpt_scale=float(scalars.pop("kpt_scale")),
+            kpt_weight=float(scalars.pop("kpt_weight")),
+            least_squares=pr,  # leftover flat keys -> scipy.optimize.least_squares
         )
 
     @property

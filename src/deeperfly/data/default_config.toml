@@ -142,6 +142,7 @@ azimuth_deg = 120
 #
 #   do_pose2d               -> [pose2d]               detect 2D per view
 #   do_bundle_adjustment    -> [bundle_adjustment]    refine the cameras
+#   do_photometric_refinement -> [photometric_refinement] image-based cross-side fix
 #   do_pictorial_structures -> [pictorial_structures] peak recovery
 #   do_triangulation        -> [triangulation]        2D -> 3D
 #   do_inverse_kinematics   -> [inverse_kinematics]   3D -> joint angles
@@ -162,6 +163,7 @@ azimuth_deg = 120
 [pipeline]
 do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
+do_photometric_refinement = false  # image-based cross-side extrinsics fix (opt-in)
 do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
 do_triangulation        = true   # triangulate 2D -> 3D
 do_inverse_kinematics   = true   # fit NeuroMechFly joint angles to the 3D pose (opt-in)
@@ -449,6 +451,41 @@ frame_sampling = "even"     # which frames to keep when subsampling:
                             #                target is seen in many distinct configurations
 max_nfev = 2000             # forwarded to scipy.optimize.least_squares
 loss = "linear"
+
+
+# ===========================================================================
+# Photometric cross-side refinement (opt-in; do_photometric_refinement).
+# Bundle adjustment ties the left {lf,lm,lh} and right {rf,rm,rh} camera clusters
+# only through the front camera's few co-visible keypoints, so the far (opposite-
+# side) legs reproject 1-2 leg-widths off even when the near legs are perfect.
+# This stage fits ONE 6-DOF rigid transform between the clusters (front camera is
+# the fixed gauge) so reprojected far-leg bones land on the image leg pixels -- a
+# robust chamfer objective over a per-view "leg-response" distance transform, with
+# the detected keypoints kept as an anchor. Runs after bundle adjustment and writes
+# its own rig, which triangulation then uses. Needs the raw footage.
+# ===========================================================================
+[photometric_refinement]
+left  = ["lf", "lm", "lh"]  # the moved cluster (its cameras + 3D points ride together)
+right = ["rh", "rm", "rf"]  # the fixed cluster (gauge)
+front = ["f"]               # the bridge camera (fixed)
+max_frames = 40             # far-side bias is quasi-static; a few dozen frames suffice
+frame_sampling = "diversity"  # spread postures (see [bundle_adjustment].frame_sampling)
+method = "ridge_fg"         # leg-response: Hessian ridge (thin legs) x foreground gate
+downscale = 0.5             # working resolution for the response/DT maps
+downscale_views = { f = 0.7 }  # keep the front camera larger (its far legs are small)
+leg_width_px = 5.0          # expected leg width at working resolution (ridge scale)
+polarity = "auto"           # bright/dark legs; "auto" picks by peak response
+response_threshold = 0.15   # leg-response value above which a pixel is a leg pixel
+dt_trunc_px = 20.0          # distance-transform truncation (~2-3 leg widths; the basin)
+samples_per_bone = 9        # chamfer sample points per reprojected bone
+gate_px = 9.0               # drop far bones whose init chamfer exceeds this (occluded)
+reg = 0.03                  # Tikhonov pull of the 6-DOF transform toward identity
+chamfer_scale = 10.0        # px scale prescaling the chamfer block (~leg width, raw)
+kpt_scale = 4.0             # px scale prescaling the keypoint-anchor block
+kpt_weight = 1.0            # weight of the keypoint anchor (pins the front bridge)
+loss = "cauchy"             # robust loss (forwarded to scipy.optimize.least_squares)
+f_scale = 1.0               # blocks are prescaled, so the robust scale is 1
+max_nfev = 80
 
 
 # Pictorial structures: DeepFly3D-style peak recovery over the detector's top-K

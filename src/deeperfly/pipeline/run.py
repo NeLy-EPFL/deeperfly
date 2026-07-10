@@ -255,6 +255,30 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
     return True
 
 
+def _run_photometric_refinement(ctx: _RunContext) -> bool:
+    if _no_2d(ctx, "photometric_refinement"):
+        return False
+    _pose2d = ctx.store.read_pose2d()
+    assert _pose2d is not None
+    pts2d, conf = _pose2d
+    refined = stages.stage_photometric_refinement(
+        ctx.config,
+        # The stage's own input rig (BA output if present, else config); never itself.
+        stages.photometric_input_cameras(ctx.config, ctx.enabled, ctx.store),
+        pts2d,
+        conf,
+        ctx.store.read_skeleton(),
+        _footage_by_view(ctx.config, ctx.sources),
+    )
+    if (
+        refined is None
+    ):  # footage unavailable -> graceful skip, downstream falls back to BA rig
+        return False
+    ctx.store.truncate_from("photometric_refinement")
+    ctx.store.write_cameras("photometric_refinement", refined)
+    return True
+
+
 def _run_pictorial_structures(ctx: _RunContext) -> bool:
     if _no_2d(ctx, "pictorial_structures"):
         return False
@@ -360,6 +384,7 @@ def _run_visualization(ctx: _RunContext) -> bool:
 _RUNNERS = {
     "pose2d": _run_pose2d,
     "bundle_adjustment": _run_bundle_adjustment,
+    "photometric_refinement": _run_photometric_refinement,
     "pictorial_structures": _run_pictorial_structures,
     "triangulation": _run_triangulation,
     "inverse_kinematics": _run_inverse_kinematics,

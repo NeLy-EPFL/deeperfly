@@ -71,6 +71,7 @@ _STR = h5py.string_dtype("utf-8")
 _STAGE_MARKER = {
     "pose2d": "pose2d/points",
     "bundle_adjustment": "bundle_adjustment/cameras",
+    "photometric_refinement": "photometric_refinement/cameras",
     "pictorial_structures": "pictorial_structures/points",
     "triangulation": "triangulation/points3d",
     "inverse_kinematics": "inverse_kinematics/angles",
@@ -163,7 +164,7 @@ class PoseResult:
         Assembly prefers the most-derived data present: ``pts2d`` from
         triangulation, else pictorial_structures, else pose2d; ``pts3d`` /
         ``reproj_error`` from triangulation, else pictorial_structures; cameras
-        from bundle_adjustment, else the pose2d config rig.
+        from photometric_refinement, else bundle_adjustment, else the pose2d config rig.
 
         Parameters
         ----------
@@ -184,10 +185,14 @@ class PoseResult:
                     f"{FORMAT_VERSION}; re-run the pipeline to regenerate it"
                 )
             skeleton = _read_skeleton(f["skeleton"])  # type: ignore[arg-type]
-            cameras_group = (
-                f["bundle_adjustment/cameras"]
-                if "bundle_adjustment/cameras" in f
-                else f["pose2d/cameras"]
+            cameras_group = next(
+                f[g]
+                for g in (
+                    "photometric_refinement/cameras",
+                    "bundle_adjustment/cameras",
+                    "pose2d/cameras",
+                )
+                if g in f
             )
             cameras = _read_cameras(cameras_group)  # type: ignore[arg-type]
             pts2d = pts3d = reproj = None

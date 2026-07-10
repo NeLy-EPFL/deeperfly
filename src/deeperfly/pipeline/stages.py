@@ -256,6 +256,140 @@ def stage_bundle_adjustment(
     return refined
 
 
+def photometric_input_cameras(
+    config: Config, enabled: dict[str, bool], store: StageStore
+) -> CameraGroup:
+    """The rig photometric_refinement refines (BA output if enabled+present, else config)."""
+    if fingerprint.photometric_input_source(enabled, store) == "bundle_adjustment":
+        cameras = store.read_cameras("bundle_adjustment")
+        assert cameras is not None
+        return cameras
+    return config_rig_from_store(config, store)
+
+
+def stage_photometric_refinement(
+    config: Config,
+    cameras: CameraGroup,
+    pts2d: np.ndarray,
+    conf: np.ndarray | None,
+    skeleton: Skeleton,
+    footage: dict[str, list[Path]] | None,
+) -> CameraGroup | None:
+    """Refine the cross-side camera pose by chamfer-matching far-leg reprojections.
+
+    Fixes the far legs reprojecting ~1-2 leg-widths off: fits one 6-DOF rigid transform
+    between the left/right camera clusters so reprojected far-leg bones land on the image
+    leg pixels (see :mod:`deeperfly.photometric`). Triangulates the sampled frames
+    internally from ``cameras`` (the stage runs before triangulation), so it does not
+    depend on a stored 3D result. Returns ``None`` (skip) if no footage is available.
+    """
+    from .. import io
+    from ..photometric import build_leg_maps, refine_extrinsics_photometric
+    from ..triangulation import triangulate
+    from .core import _subsample
+
+    if not footage:
+        log.warning(
+            "skipping photometric_refinement: no footage available (it needs the raw "
+            "frames; re-run with the recording present)"
+        )
+        return None
+
+    p = config.photometric_refinement
+    names = list(cameras.names)
+    v, t, npts = pts2d.shape[:3]
+    sel = _subsample(t, p.max_frames, p.frame_sampling, pts2d=pts2d, conf=conf)
+    pts2d_sel = pts2d[:, sel]  # (V, F, P, 2)
+    conf_sel = None if conf is None else conf[:, sel]
+    F = len(sel)
+
+    # Triangulate the sampled frames from the input rig (this stage precedes triangulation).
+    flat = pts2d_sel.reshape(v, F * npts, 2)
+    pts3d = np.nan_to_num(triangulate(cameras, flat)).reshape(F, npts, 3)
+
+    readers = {
+        n: io.open_reader([str(x) for x in footage[n]]) for n in names if n in footage
+    }
+    if len(readers) < len(names):
+        log.warning(
+            "photometric_refinement: footage missing for %s; refining on the rest",
+            [n for n in names if n not in readers],
+        )
+
+    log.info("photometric_refinement: building leg-response maps (%d frames)", F)
+    dt_maps, scale = build_leg_maps(
+        readers,
+        sel,
+        cameras,
+        pts3d,
+        skeleton,
+        downscale=p.downscale,
+        downscale_views=p.downscale_views,
+        method=p.method,
+        leg_width_px=p.leg_width_px,
+        polarity=p.polarity,
+        response_threshold=p.response_threshold,
+        trunc_px=p.dt_trunc_px,
+        left=tuple(p.left),
+        right=tuple(p.right),
+        front=tuple(p.front),
+    )
+    # Restrict to the cameras we could build maps for.
+    cams_used = CameraGroup({n: cameras[n] for n in dt_maps})
+    idx = {n: i for i, n in enumerate(names)}
+    pts2d_obs = {n: pts2d_sel[idx[n]] for n in dt_maps}
+    conf_dict = {n: conf_sel[idx[n]] for n in dt_maps} if conf_sel is not None else None
+
+    res = refine_extrinsics_photometric(
+        cams_used,
+        pts3d,
+        dt_maps,
+        scale,
+        skeleton,
+        pts2d_obs=pts2d_obs,
+        conf=conf_dict,
+        left=tuple(p.left),
+        right=tuple(p.right),
+        front=tuple(p.front),
+        samples_per_bone=p.samples_per_bone,
+        trunc_px=p.dt_trunc_px,
+        gate_px=p.gate_px,
+        reg=p.reg,
+        chamfer_scale=p.chamfer_scale,
+        kpt_scale=p.kpt_scale,
+        kpt_weight=p.kpt_weight,
+        **p.least_squares,
+    )
+    before = (
+        float(np.mean(list(res.chamfer_before.values())))
+        if res.chamfer_before
+        else float("nan")
+    )
+    after = (
+        float(np.mean(list(res.chamfer_after.values())))
+        if res.chamfer_after
+        else float("nan")
+    )
+    log.info(
+        "photometric_refinement: delta=%s  far-leg chamfer %.2f -> %.2f working px "
+        "(%d bone samples, %d anchor kpts, solver status %d)",
+        np.round(res.delta, 4),
+        before,
+        after,
+        res.n_chamfer,
+        res.n_anchor,
+        res.result.status,
+    )
+    # The refined rig moved only the left cameras; splice them into the full input rig
+    # (cameras without footage keep their input pose).
+    rvecs, tvecs = cameras.rvecs.copy(), cameras.tvecs.copy()
+    for i, n in enumerate(names):
+        if n in res.cameras.names:
+            rvecs[i] = res.cameras[n].rvec
+            tvecs[i] = res.cameras[n].tvec
+    return CameraGroup.from_arrays(names, rvecs, tvecs, cameras.intrs, cameras.dists)
+
+
 def stage_pictorial_structures(
     config: Config,
     cameras: CameraGroup,
