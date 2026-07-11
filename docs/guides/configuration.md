@@ -189,6 +189,11 @@ non-finite confidences drop the view). For `ransac` it weights the candidate fit
 and the final refit but not the inlier vote, which stays a geometric reprojection
 test so a confidently-wrong detection cannot vote itself into the consensus.
 
+Changing `method` (or any `[triangulation]` key) and re-running reuses the cached
+2D pose untouched and recomputes only triangulation and the videos — see
+[change one stage, reuse the rest](cli.md#example-change-one-stage-reuse-the-rest)
+for the exact commands.
+
 ## Detector precision and memory — `[pose2d]`
 
 ```toml

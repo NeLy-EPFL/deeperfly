@@ -111,6 +111,26 @@ downstream only while that stage is enabled. An enabled stage whose input is
 unavailable is skipped, with the reason logged. The caching model is explained in
 the [pipeline explainer](../explanation/pipeline.md#caching-and-re-runs).
 
+### Example: change one stage, reuse the rest
+
+A common edit is switching the triangulation method (or retuning the videos)
+*without* re-detecting the slow 2D pose. Change `[triangulation]` `method` in
+**one** config and re-run the same recording — no stage-skipping flag needed:
+
+```bash
+# A — keep your own config and pass it each time (-c wins, and refreshes the snapshot)
+deeperfly run recording/ -c my_config.toml
+
+# B — edit the snapshot the last run left in the output dir, re-run with no -c
+$EDITOR recording/deeperfly_outputs/config.toml   # e.g. method = "dlt" -> "ransac"
+deeperfly run recording/                          # add -o DIR if you used a custom output dir
+```
+
+Only triangulation and the videos after it recompute; the `pose2d` and bundle
+adjustment caches are reused automatically. Do **not** edit the output-dir
+snapshot *and* pass `-c` at the same time — `-c` wins and overwrites the
+snapshot, silently discarding your edit. Pick one config and stick with it.
+
 ## `deeperfly gui` — correct a result
 
 ```bash
