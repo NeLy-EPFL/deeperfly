@@ -164,6 +164,31 @@ def render(params, viewmats, Ks, W, H, sh_degree, bg, near, far, aa):
     return out, alpha, info
 
 
+@torch.no_grad()
+def prune_outside_masks(params, d, min_views):
+    """Drop gaussians whose centre reprojects OUTSIDE the fly mask in more than
+    (V - min_views) views -- a silhouette-consistency floater cull. A gaussian
+    inside the true volume lands in-mask in every view; a floater does not."""
+    means = params["means"]
+    R, t = d["viewmats"][:, :3, :3], d["viewmats"][:, :3, 3]
+    K, W, H = d["Ks"], d["W"], d["H"]
+    cam = torch.einsum("vij,nj->vni", R, means) + t[:, None, :]
+    z = cam[..., 2].clamp_min(1e-6)
+    u = (K[:, 0, 0:1] * cam[..., 0] / z + K[:, 0, 2:3]).round().long()
+    v = (K[:, 1, 1:2] * cam[..., 1] / z + K[:, 1, 2:3]).round().long()
+    inb = (u >= 0) & (u < W) & (v >= 0) & (v < H) & (cam[..., 2] > 0)
+    uu, vv = u.clamp(0, W - 1), v.clamp(0, H - 1)
+    m = d["mask"][..., 0]  # (V,H,W)
+    inm = torch.zeros_like(z, dtype=torch.bool)
+    for i in range(R.shape[0]):
+        inm[i] = inb[i] & (m[i][vv[i], uu[i]] > 0.5)
+    keep = inm.sum(0) >= min_views
+    n0 = means.shape[0]
+    for k in list(params.keys()):
+        params[k] = torch.nn.Parameter(params[k].data[keep])
+    print(f"  mask-prune: kept {int(keep.sum())}/{n0} (>= {min_views} views in-mask)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", required=True)
@@ -184,6 +209,12 @@ def main():
         help="supervise RGB only inside the mask (default: full frame w/ bg comp)",
     )
     ap.add_argument("--no-aa", action="store_true")
+    ap.add_argument(
+        "--prune-min-views",
+        type=int,
+        default=0,
+        help="post-fit: drop gaussians in-mask in < this many views (0=off, try V-1=6)",
+    )
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -279,6 +310,9 @@ def main():
                 f"  step {step:5d}  loss {loss.item():.4f}  psnr {psnr:5.2f}  "
                 f"N={params['means'].shape[0]}"
             )
+
+    if args.prune_min_views > 0:
+        prune_outside_masks(params, d, args.prune_min_views)
 
     save_outputs(params, d, args, out, near, far, aa, device)
 

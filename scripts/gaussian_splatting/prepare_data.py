@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 from pathlib import Path
 
 import cv2
@@ -109,6 +110,177 @@ def build_mask(
     return m
 
 
+# --------------------------------------------------------------------------- #
+# NeuroMechFly leg-mesh seeding
+#
+# deeperfly's 5 keypoints/leg (thorax_coxa, coxa_trochanter, femur_tibia,
+# tibia_tarsus, claw) map 1:1 onto NeuroMechFly's leg-segment meshes
+# (coxa, trochanterfemur, tibia, tarsus1..5). We place each segment mesh onto
+# its keypoint bone with a similarity fit (align the mesh's principal axis to
+# the bone, scale so its length matches, translate) -- no MuJoCo/IK needed --
+# then sample its surface. This seeds the thin legs with anatomically-shaped,
+# correctly-proportioned volume, which a random/hull init cannot resolve.
+# --------------------------------------------------------------------------- #
+LEG_JOINTS = ["thorax_coxa", "coxa_trochanter", "femur_tibia", "tibia_tarsus", "claw"]
+
+
+def load_stl(path: Path) -> np.ndarray:
+    """Load a binary (or ASCII) STL as a (T,3,3) array of triangle vertices."""
+    data = Path(path).read_bytes()
+    if len(data) >= 84:
+        n = struct.unpack("<I", data[80:84])[0]
+        if 84 + n * 50 == len(data):
+            dt = np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+            return np.frombuffer(data, dtype=dt, count=n, offset=84)["v"].astype(
+                np.float64
+            )
+    verts = [
+        [float(x) for x in ln.split()[1:4]]
+        for ln in data.decode("ascii", "ignore").splitlines()
+        if ln.strip().startswith("vertex")
+    ]
+    return np.asarray(verts, np.float64).reshape(-1, 3, 3)
+
+
+def sample_surface(tris: np.ndarray, n: int, rng) -> np.ndarray:
+    """Area-weighted uniform surface sampling of a triangle soup (T,3,3)."""
+    v0, v1, v2 = tris[:, 0], tris[:, 1], tris[:, 2]
+    area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+    if area.sum() <= 0:
+        return v0
+    idx = rng.choice(len(tris), size=n, p=area / area.sum())
+    u, w = rng.random(n), rng.random(n)
+    flip = u + w > 1.0
+    u[flip], w[flip] = 1 - u[flip], 1 - w[flip]
+    a, b, c = v0[idx], v1[idx], v2[idx]
+    return a + u[:, None] * (b - a) + w[:, None] * (c - a)
+
+
+def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation mapping unit vector ``a`` onto unit vector ``b`` (Rodrigues)."""
+    a = a / (np.linalg.norm(a) + 1e-12)
+    b = b / (np.linalg.norm(b) + 1e-12)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    if c > 1 - 1e-8:
+        return np.eye(3)
+    if c < -1 + 1e-8:  # antiparallel: 180 deg about any perpendicular axis
+        perp = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+        ax = np.cross(a, perp)
+        ax /= np.linalg.norm(ax)
+        K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+        return np.eye(3) + 2 * (K @ K)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K * (1.0 / (1.0 + c))
+
+
+def place_segment(verts: np.ndarray, kp_a: np.ndarray, kp_b: np.ndarray) -> np.ndarray:
+    """Similarity-fit mesh ``verts`` so its long axis spans bone kp_a -> kp_b."""
+    c = verts.mean(0)
+    Vc = verts - c
+    _, _, Vt = np.linalg.svd(Vc, full_matrices=False)
+    axis = Vt[0]
+    proj = Vc @ axis
+    tmin, tmax = float(proj.min()), float(proj.max())
+    p0 = c + axis * tmin  # proximal end in mesh coords
+    length_mesh = tmax - tmin
+    d = kp_b - kp_a
+    length_bone = float(np.linalg.norm(d))
+    if length_mesh < 1e-9 or length_bone < 1e-9:
+        return np.empty((0, 3))
+    R = _rot_align(axis, d / length_bone)
+    s = length_bone / length_mesh
+    return kp_a + s * ((verts - p0) @ R.T)
+
+
+def nmf_leg_seed(
+    point_names: list[str],
+    p3d: np.ndarray,
+    finite: np.ndarray,
+    mesh_dir: Path,
+    per_seg: int,
+    rng,
+) -> np.ndarray:
+    """Seed all six legs from NeuroMechFly segment meshes. Right-side legs reuse
+    the (mirrored) left meshes; similarity placement makes the mirror moot."""
+    name2idx = {n: i for i, n in enumerate(point_names)}
+    out = []
+    n_ok = 0
+    for leg in ["lf", "lm", "lh", "rf", "rm", "rh"]:
+        try:
+            idx = [name2idx[f"{leg}_{j}"] for j in LEG_JOINTS]
+        except KeyError:
+            continue
+        ml = "l" + leg[1]  # only left meshes exist -> lf/lm/lh
+        segs = [
+            (f"{ml}_coxa", idx[0], idx[1]),
+            (f"{ml}_trochanterfemur", idx[1], idx[2]),
+            (f"{ml}_tibia", idx[2], idx[3]),
+        ]
+        for mesh, ia, ib in segs:
+            fp = mesh_dir / f"{mesh}.stl"
+            if fp.exists() and finite[ia] and finite[ib]:
+                surf = sample_surface(load_stl(fp), per_seg, rng)
+                w = place_segment(surf, p3d[ia], p3d[ib])
+                if len(w):
+                    out.append(w)
+                    n_ok += 1
+        # tarsus chain: split (tibia_tarsus -> claw) into the 5 tarsomeres
+        ta, tb = idx[3], idx[4]
+        if finite[ta] and finite[tb]:
+            A, B = p3d[ta], p3d[tb]
+            for k in range(5):
+                fp = mesh_dir / f"{ml}_tarsus{k + 1}.stl"
+                if not fp.exists():
+                    continue
+                pa = A + (k / 5.0) * (B - A)
+                pb = A + ((k + 1) / 5.0) * (B - A)
+                surf = sample_surface(load_stl(fp), max(per_seg // 3, 120), rng)
+                w = place_segment(surf, pa, pb)
+                if len(w):
+                    out.append(w)
+                    n_ok += 1
+    if not out:
+        return np.empty((0, 3), np.float32)
+    print(f"  NeuroMechFly seed: {n_ok} leg segments placed")
+    return np.concatenate(out, 0).astype(np.float32)
+
+
+def carve_visual_hull(
+    masks: list[np.ndarray],
+    Rs: list[np.ndarray],
+    ts: list[np.ndarray],
+    intrs: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    res: int,
+    min_views: int,
+) -> np.ndarray:
+    """Space-carve a voxel grid: keep voxel centres that reproject inside the
+    fly mask in at least ``min_views`` of the views (silhouette intersection).
+
+    This is a strong, cheap geometric prior: the true fly+ball volume is
+    silhouette-consistent in every view, so it survives; empty background does
+    not. Thin legs leave phantom volume (silhouettes of thin structures
+    intersect loosely) but that only over-seeds -- unsupported init is pruned.
+    """
+    gx = np.linspace(lo[0], hi[0], res)
+    gy = np.linspace(lo[1], hi[1], res)
+    gz = np.linspace(lo[2], hi[2], res)
+    X, Y, Z = np.meshgrid(gx, gy, gz, indexing="ij")
+    P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1)  # (res^3, 3)
+    h, w = masks[0].shape
+    count = np.zeros(P.shape[0], np.int16)
+    for i in range(len(masks)):
+        uv = project(P, Rs[i], ts[i], intrs[i])
+        u = np.round(uv[:, 0]).astype(np.int64)
+        v = np.round(uv[:, 1]).astype(np.int64)
+        ok = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        uu, vv = np.clip(u, 0, w - 1), np.clip(v, 0, h - 1)
+        count += (ok & (masks[i][vv, uu] > 0)).astype(np.int16)
+    return P[count >= min_views]
+
+
 def sample_colors(
     points: np.ndarray,
     Rs: list[np.ndarray],
@@ -153,10 +325,52 @@ def main() -> None:
     )
     ap.add_argument("--no-bright-gate", action="store_true", help="hull-only mask")
     ap.add_argument(
-        "--n-random", type=int, default=12000, help="random init points in bbox"
+        "--n-random",
+        type=int,
+        default=3000,
+        help="light uniform bbox fill (robustness)",
     )
     ap.add_argument(
-        "--bone-samples", type=int, default=6, help="interior points per bone"
+        "--bone-samples", type=int, default=8, help="minimum interior points per bone"
+    )
+    ap.add_argument(
+        "--bone-spacing",
+        type=float,
+        default=0.02,
+        help="target spacing between bone samples, in units of fly radius",
+    )
+    ap.add_argument(
+        "--bone-jitter",
+        type=float,
+        default=0.012,
+        help="perpendicular jitter on bone samples (units of fly radius)",
+    )
+    ap.add_argument("--no-hull", action="store_true", help="disable visual-hull carve")
+    ap.add_argument("--hull-res", type=int, default=144, help="voxel grid resolution")
+    ap.add_argument(
+        "--hull-min-views",
+        type=int,
+        default=0,
+        help="min views in-mask to keep a voxel (0 => V-1)",
+    )
+    ap.add_argument(
+        "--n-hull", type=int, default=30000, help="points sampled from hull"
+    )
+    ap.add_argument(
+        "--hull-pad", type=float, default=0.18, help="carve bbox pad (units of radius)"
+    )
+    ap.add_argument(
+        "--no-nmf-legs",
+        action="store_true",
+        help="disable NeuroMechFly leg-mesh seeding",
+    )
+    ap.add_argument(
+        "--nmf-mesh-dir",
+        default="~/flygym/src/flygym/assets/model/neuromechfly/meshes/simplified_max2000faces",
+        help="dir of NeuroMechFly simplified segment STLs",
+    )
+    ap.add_argument(
+        "--nmf-per-seg", type=int, default=500, help="surface pts per leg segment mesh"
     )
     args = ap.parse_args()
 
@@ -184,6 +398,10 @@ def main() -> None:
         pts2d = f["pose2d/points"][:, args.frame]  # (V,P,2)
         p3d = f["triangulation/points3d"][args.frame]  # (P,3)
         bones = f["skeleton/bones"][:]
+        point_names = [
+            n.decode() if isinstance(n, bytes) else str(n)
+            for n in f["skeleton/point_names"][:]
+        ]
 
     V = len(names)
     Rs = [rvec_to_rmat(rvecs[i]) for i in range(V)]
@@ -235,21 +453,72 @@ def main() -> None:
     kp = p3d[finite]
     center = kp.mean(0)
     radius = float(np.linalg.norm(kp - center, axis=1).max())
+    rng = np.random.default_rng(0)
 
     pts = [kp]
-    # densify along skeleton bones
+
+    # (1) dense seeding ALONG skeleton bones, sample count proportional to bone
+    #     length, with a small perpendicular jitter so each bone seeds a thin
+    #     tube not a bare line -- this is what lets the thin legs form.
+    n_bone = 0
+    jit = args.bone_jitter * radius
     for a, b in bones:
         if finite[a] and finite[b]:
-            fr = np.linspace(0, 1, args.bone_samples + 2)[1:-1][:, None]
-            pts.append(p3d[a] * (1 - fr) + p3d[b] * fr)
-    # random fill inside padded bbox of the fly
-    lo, hi = kp.min(0), kp.max(0)
-    pad = 0.15 * (hi - lo)
-    rng = np.random.default_rng(0)
-    rand = rng.uniform(lo - pad, hi + pad, size=(args.n_random, 3))
-    pts.append(rand)
+            length = float(np.linalg.norm(p3d[b] - p3d[a]))
+            m = max(
+                args.bone_samples, int(round(length / (args.bone_spacing * radius)))
+            )
+            fr = np.linspace(0, 1, m)[:, None]
+            seg = p3d[a] * (1 - fr) + p3d[b] * fr
+            seg = seg + rng.normal(size=seg.shape) * jit
+            pts.append(seg.astype(np.float32))
+            n_bone += m
+
+    # (1b) NeuroMechFly leg-mesh seeding -- anatomically-shaped thin legs.
+    mesh_dir = Path(args.nmf_mesh_dir).expanduser()
+    if not args.no_nmf_legs and mesh_dir.exists():
+        nmf = nmf_leg_seed(point_names, p3d, finite, mesh_dir, args.nmf_per_seg, rng)
+        if len(nmf):
+            pts.append(nmf)
+    elif not args.no_nmf_legs:
+        print(f"  NeuroMechFly meshes not found at {mesh_dir} -> skipping leg seed")
+
+    # (2) visual-hull carve from the 7 masks -> volumetric init concentrated in
+    #     the actual fly+ball, not the (mostly empty) bounding box.
+    if not args.no_hull:
+        ext = kp.max(0) - kp.min(0)
+        half = 0.5 * ext + args.hull_pad * radius
+        lo, hi = center - half, center + half
+        min_views = args.hull_min_views if args.hull_min_views > 0 else V - 1
+        hull = carve_visual_hull(masks, Rs, ts, intrs, lo, hi, args.hull_res, min_views)
+        if len(hull):
+            n = min(args.n_hull, len(hull))
+            idx = rng.choice(len(hull), size=n, replace=len(hull) < args.n_hull)
+            vox = (hi - lo) / (args.hull_res - 1)
+            hpts = hull[idx] + rng.uniform(-0.5, 0.5, size=(n, 3)) * vox
+            pts.append(hpts.astype(np.float32))
+            print(
+                f"  visual hull: {len(hull)} voxels in >={min_views}/{V} masks "
+                f"-> {n} init pts"
+            )
+        else:
+            print("  visual hull empty -> relying on bone + bbox fill")
+
+    # (3) light uniform bbox fill for robustness
+    if args.n_random > 0:
+        lo2, hi2 = kp.min(0), kp.max(0)
+        pad = 0.15 * (hi2 - lo2)
+        pts.append(
+            rng.uniform(lo2 - pad, hi2 + pad, size=(args.n_random, 3)).astype(
+                np.float32
+            )
+        )
+
     points = np.concatenate(pts, 0).astype(np.float32)
     colors = sample_colors(points.astype(np.float64), Rs, ts, intrs, images, masks)
+    print(
+        f"  init: {len(kp)} keypoints + {n_bone} bone + hull/fill = {len(points)} pts"
+    )
 
     np.savez(
         out / "cameras.npz",
