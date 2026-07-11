@@ -12,6 +12,7 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-*
 
 # Images and videos
 *.png
