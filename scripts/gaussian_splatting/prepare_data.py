@@ -246,6 +246,115 @@ def nmf_leg_seed(
     return np.concatenate(out, 0).astype(np.float32)
 
 
+# NMF body hierarchy (child -> parent), joints at neutral; used to assemble the
+# rigid anterior body (thorax/head/antennae) by forward kinematics. The abdomen
+# is deliberately excluded -- it flexes and this fly's is distended, so the
+# neutral pose mismatches; the visual hull covers that large smooth mass well.
+NMF_PARENT = {
+    "c_thorax": None,
+    "c_head": "c_thorax",
+    "l_eye": "c_head",
+    "c_rostrum": "c_head",
+    "c_haustellum": "c_rostrum",
+    "l_pedicel": "c_head",
+    "l_funiculus": "l_pedicel",
+    "lf_coxa": "c_thorax",
+    "lm_coxa": "c_thorax",
+    "lh_coxa": "c_thorax",
+    "rf_coxa": "c_thorax",
+    "rm_coxa": "c_thorax",
+    "rh_coxa": "c_thorax",
+}
+NMF_BODY_MESHES = [
+    "c_thorax",
+    "c_head",
+    "c_rostrum",
+    "c_haustellum",
+    "l_eye",
+    "l_pedicel",
+    "l_funiculus",
+]
+NMF_POS_SCALE = 0.001  # rigging pos are mm; STL meshes are metres
+
+
+def _quat2R(q) -> np.ndarray:
+    w, x, y, z = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def _nmf_fk(rig: dict) -> dict:
+    """World (R,p) per body in the assembled NMF frame (neutral joints=0)."""
+    T = {}
+
+    def solve(name):
+        if name in T:
+            return T[name]
+        pos = np.asarray(rig[name]["pos"], float) * NMF_POS_SCALE
+        Rl = _quat2R(rig[name]["quat"])
+        par = NMF_PARENT[name]
+        if par is None:
+            T[name] = (Rl, pos)
+        else:
+            Rp, pp = solve(par)
+            T[name] = (Rp @ Rl, pp + Rp @ pos)
+        return T[name]
+
+    for n in NMF_PARENT:
+        solve(n)
+    return T
+
+
+def _umeyama(src: np.ndarray, dst: np.ndarray):
+    """Similarity (s, R, t) mapping src -> dst (Umeyama 1991)."""
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    S, D = src - mu_s, dst - mu_d
+    cov = (D.T @ S) / len(src)
+    U, sig, Vt = np.linalg.svd(cov)
+    dsign = np.sign(np.linalg.det(U @ Vt))
+    W = np.diag([1.0, 1.0, dsign])
+    R = U @ W @ Vt
+    s = float(np.trace(np.diag(sig) @ W) / ((S**2).sum() / len(src)))
+    t = mu_d - s * R @ mu_s
+    return s, R, t
+
+
+def nmf_body_seed(point_names, p3d, finite, mesh_dir, rig_path, per_seg, rng):
+    """Seed the rigid anterior body from NMF meshes: assemble via FK, fit to the
+    world with a similarity on the 6 thorax-coxa joints, surface-sample."""
+    import yaml
+
+    rig = yaml.safe_load(Path(rig_path).read_text())
+    T = _nmf_fk(rig)
+    n2i = {n: i for i, n in enumerate(point_names)}
+    legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
+    have = [lg for lg in legs if finite[n2i[f"{lg}_thorax_coxa"]]]
+    if len(have) < 3:
+        return np.empty((0, 3), np.float32)
+    src = np.array([T[f"{lg}_coxa"][1] for lg in have])
+    dst = np.array([p3d[n2i[f"{lg}_thorax_coxa"]] for lg in have])
+    s, R, t = _umeyama(src, dst)
+    resid = np.linalg.norm((s * (src @ R.T) + t) - dst, axis=1).mean()
+
+    out = []
+    for m in NMF_BODY_MESHES:
+        fp = mesh_dir / f"{m}.stl"
+        if not fp.exists() or m not in T:
+            continue
+        Rw, pw = T[m]
+        surf = sample_surface(load_stl(fp), per_seg, rng)
+        out.append((s * ((surf @ Rw.T + pw) @ R.T) + t).astype(np.float32))
+    if not out:
+        return np.empty((0, 3), np.float32)
+    print(f"  NeuroMechFly body: {len(out)} segs, coxa-fit residual {resid:.3f}")
+    return np.concatenate(out, 0)
+
+
 def carve_visual_hull(
     masks: list[np.ndarray],
     Rs: list[np.ndarray],
@@ -372,6 +481,11 @@ def main() -> None:
     ap.add_argument(
         "--nmf-per-seg", type=int, default=500, help="surface pts per leg segment mesh"
     )
+    ap.add_argument(
+        "--no-nmf-body",
+        action="store_true",
+        help="disable NeuroMechFly anterior-body (thorax/head) seeding",
+    )
     args = ap.parse_args()
 
     out = Path(args.out or f"scratchpad/gs_data/frame_{args.frame}")
@@ -482,6 +596,16 @@ def main() -> None:
             pts.append(nmf)
     elif not args.no_nmf_legs:
         print(f"  NeuroMechFly meshes not found at {mesh_dir} -> skipping leg seed")
+
+    # (1c) NeuroMechFly anterior-body seeding (thorax/head/antennae; abdomen ->
+    #      hull). Assembled via FK from rigging.yaml, fit to the 6 coxa joints.
+    rig_path = mesh_dir.parent.parent / "rigging.yaml"
+    if not args.no_nmf_body and mesh_dir.exists() and rig_path.exists():
+        body = nmf_body_seed(
+            point_names, p3d, finite, mesh_dir, rig_path, args.nmf_per_seg, rng
+        )
+        if len(body):
+            pts.append(body)
 
     # (2) visual-hull carve from the 7 masks -> volumetric init concentrated in
     #     the actual fly+ball, not the (mostly empty) bounding box.
