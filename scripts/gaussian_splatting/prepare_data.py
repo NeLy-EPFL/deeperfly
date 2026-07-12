@@ -569,7 +569,18 @@ def main() -> None:
     radius = float(np.linalg.norm(kp - center, axis=1).max())
     rng = np.random.default_rng(0)
 
-    pts = [kp]
+    # Each source carries a position-prior weight in [0,1]: how strongly a fit
+    # should anchor that gaussian to its seeded location. The NMF anatomical mesh
+    # is trusted most (mesh-as-geometry), the visual hull loosely, random fill
+    # not at all. Saved as ``prior_w`` for a surface-anchored (fixed) fit.
+    pts, wts = [], []
+
+    def add(arr, w):
+        if arr is not None and len(arr):
+            pts.append(np.asarray(arr, np.float32))
+            wts.append(np.full(len(arr), w, np.float32))
+
+    add(kp, 0.8)
 
     # (1) dense seeding ALONG skeleton bones, sample count proportional to bone
     #     length, with a small perpendicular jitter so each bone seeds a thin
@@ -585,15 +596,15 @@ def main() -> None:
             fr = np.linspace(0, 1, m)[:, None]
             seg = p3d[a] * (1 - fr) + p3d[b] * fr
             seg = seg + rng.normal(size=seg.shape) * jit
-            pts.append(seg.astype(np.float32))
+            add(seg, 0.5)
             n_bone += m
 
     # (1b) NeuroMechFly leg-mesh seeding -- anatomically-shaped thin legs.
     mesh_dir = Path(args.nmf_mesh_dir).expanduser()
     if not args.no_nmf_legs and mesh_dir.exists():
-        nmf = nmf_leg_seed(point_names, p3d, finite, mesh_dir, args.nmf_per_seg, rng)
-        if len(nmf):
-            pts.append(nmf)
+        add(
+            nmf_leg_seed(point_names, p3d, finite, mesh_dir, args.nmf_per_seg, rng), 1.0
+        )
     elif not args.no_nmf_legs:
         print(f"  NeuroMechFly meshes not found at {mesh_dir} -> skipping leg seed")
 
@@ -601,11 +612,12 @@ def main() -> None:
     #      hull). Assembled via FK from rigging.yaml, fit to the 6 coxa joints.
     rig_path = mesh_dir.parent.parent / "rigging.yaml"
     if not args.no_nmf_body and mesh_dir.exists() and rig_path.exists():
-        body = nmf_body_seed(
-            point_names, p3d, finite, mesh_dir, rig_path, args.nmf_per_seg, rng
+        add(
+            nmf_body_seed(
+                point_names, p3d, finite, mesh_dir, rig_path, args.nmf_per_seg, rng
+            ),
+            1.0,
         )
-        if len(body):
-            pts.append(body)
 
     # (2) visual-hull carve from the 7 masks -> volumetric init concentrated in
     #     the actual fly+ball, not the (mostly empty) bounding box.
@@ -619,8 +631,7 @@ def main() -> None:
             n = min(args.n_hull, len(hull))
             idx = rng.choice(len(hull), size=n, replace=len(hull) < args.n_hull)
             vox = (hi - lo) / (args.hull_res - 1)
-            hpts = hull[idx] + rng.uniform(-0.5, 0.5, size=(n, 3)) * vox
-            pts.append(hpts.astype(np.float32))
+            add(hull[idx] + rng.uniform(-0.5, 0.5, size=(n, 3)) * vox, 0.35)
             print(
                 f"  visual hull: {len(hull)} voxels in >={min_views}/{V} masks "
                 f"-> {n} init pts"
@@ -628,20 +639,18 @@ def main() -> None:
         else:
             print("  visual hull empty -> relying on bone + bbox fill")
 
-    # (3) light uniform bbox fill for robustness
+    # (3) light uniform bbox fill for robustness (no position prior)
     if args.n_random > 0:
         lo2, hi2 = kp.min(0), kp.max(0)
         pad = 0.15 * (hi2 - lo2)
-        pts.append(
-            rng.uniform(lo2 - pad, hi2 + pad, size=(args.n_random, 3)).astype(
-                np.float32
-            )
-        )
+        add(rng.uniform(lo2 - pad, hi2 + pad, size=(args.n_random, 3)), 0.0)
 
     points = np.concatenate(pts, 0).astype(np.float32)
+    prior_w = np.concatenate(wts, 0).astype(np.float32)
     colors = sample_colors(points.astype(np.float64), Rs, ts, intrs, images, masks)
     print(
-        f"  init: {len(kp)} keypoints + {n_bone} bone + hull/fill = {len(points)} pts"
+        f"  init: {len(kp)} keypoints + {n_bone} bone + hull/fill = {len(points)} pts "
+        f"({int((prior_w >= 0.99).sum())} on NMF mesh)"
     )
 
     np.savez(
@@ -656,6 +665,7 @@ def main() -> None:
         out / "init.npz",
         points=points,
         colors=colors,
+        prior_w=prior_w,
         center=center.astype(np.float32),
         radius=np.float32(radius),
     )

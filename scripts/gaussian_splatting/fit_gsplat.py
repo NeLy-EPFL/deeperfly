@@ -89,7 +89,25 @@ def load_data(data: Path, device):
         / 255.0
     )
     init = np.load(data / "init.npz")
+    prior_w = (
+        torch.tensor(init["prior_w"], dtype=torch.float32, device=device)
+        if "prior_w" in init.files
+        else None
+    )
+    # optional per-gaussian orientation/scale (mesh-surfel density init)
+    quats0 = (
+        torch.tensor(init["quats"], dtype=torch.float32, device=device)
+        if "quats" in init.files
+        else None
+    )
+    scales0 = (
+        torch.tensor(init["scales"], dtype=torch.float32, device=device)
+        if "scales" in init.files
+        else None
+    )
     return dict(
+        quats0=quats0,
+        scales0=scales0,
         names=names,
         W=W,
         H=H,
@@ -99,6 +117,7 @@ def load_data(data: Path, device):
         mask=mask,
         points=torch.tensor(init["points"], dtype=torch.float32, device=device),
         colors=torch.tensor(init["colors"], dtype=torch.float32, device=device),
+        prior_w=prior_w,
         center=np.asarray(init["center"], float),
         radius=float(init["radius"]),
     )
@@ -107,9 +126,17 @@ def load_data(data: Path, device):
 def build_params(d, sh_degree, init_scale, init_opacity, device):
     N = d["points"].shape[0]
     K = (sh_degree + 1) ** 2
-    scales = torch.full((N, 3), math.log(init_scale), device=device)
-    quats = torch.zeros((N, 4), device=device)
-    quats[:, 0] = 1.0
+    # mesh-surfel init: use per-gaussian scales/orientation when provided, else
+    # isotropic identity (point-cloud init).
+    if d.get("scales0") is not None:
+        scales = torch.log(d["scales0"].clamp_min(1e-8))
+    else:
+        scales = torch.full((N, 3), math.log(init_scale), device=device)
+    if d.get("quats0") is not None:
+        quats = d["quats0"].clone()
+    else:
+        quats = torch.zeros((N, 4), device=device)
+        quats[:, 0] = 1.0
     opac = torch.full((N,), math.log(init_opacity / (1 - init_opacity)), device=device)
     sh0 = rgb_to_sh(d["colors"]).unsqueeze(1)  # (N,1,3)
     shN = torch.zeros((N, K - 1, 3), device=device)
@@ -194,7 +221,17 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", default=None, help="default: <data>/gs_out")
     ap.add_argument("--iters", type=int, default=7000)
-    ap.add_argument("--strategy", choices=["default", "mcmc"], default="default")
+    ap.add_argument(
+        "--strategy", choices=["default", "mcmc", "fixed"], default="default"
+    )
+    ap.add_argument(
+        "--pos-prior",
+        type=float,
+        default=0.0,
+        help="surface-anchor strength: penalise gaussian drift from its seeded "
+        "position, weighted per-point by init prior_w (mesh-as-geometry). "
+        "Requires --strategy fixed (constant gaussian set).",
+    )
     ap.add_argument("--cap", type=int, default=150000, help="MCMC gaussian cap")
     ap.add_argument("--sh-degree", type=int, default=3)
     ap.add_argument(
@@ -209,6 +246,19 @@ def main():
         help="supervise RGB only inside the mask (default: full frame w/ bg comp)",
     )
     ap.add_argument("--no-aa", action="store_true")
+    ap.add_argument(
+        "--max-scale",
+        type=float,
+        default=0.0,
+        help="clamp each gaussian's largest axis to this*radius every step "
+        "(0=off); kills long stretched 'sharp line' gaussians",
+    )
+    ap.add_argument(
+        "--max-aspect",
+        type=float,
+        default=5.0,
+        help="clamp gaussian anisotropy (largest/smallest axis) when --max-scale on",
+    )
     ap.add_argument(
         "--prune-min-views",
         type=int,
@@ -243,7 +293,7 @@ def main():
             cap_max=args.cap, verbose=False, refine_stop_iter=int(args.iters * 0.7)
         )
         strat_state = strat.initialize_state()
-    else:
+    elif args.strategy == "default":
         strat = DefaultStrategy(
             verbose=False,
             refine_start_iter=500,
@@ -253,7 +303,16 @@ def main():
             absgrad=True,
         )
         strat_state = strat.initialize_state(scene_scale=scene_scale)
-    strat.check_sanity(params, optimizers)
+    else:  # fixed: surface-anchored, no densification
+        strat, strat_state = None, None
+    if strat is not None:
+        strat.check_sanity(params, optimizers)
+
+    # mesh-as-geometry: frozen seed positions + per-point anchor weights
+    means0 = params["means"].detach().clone()
+    prior_w = d["prior_w"] if d["prior_w"] is not None else None
+    if args.pos_prior > 0 and prior_w is None:
+        print("  [warn] --pos-prior set but init has no prior_w; ignoring")
 
     gt, mask = d["gt"], d["mask"]
     for step in range(args.iters):
@@ -282,6 +341,11 @@ def main():
         if args.strategy == "mcmc":
             loss = loss + 0.01 * torch.sigmoid(params["opacities"]).abs().mean()
             loss = loss + 0.01 * torch.exp(params["scales"]).abs().mean()
+        # surface anchor: pull each gaussian back toward its seeded mesh position,
+        # scaled per-point by prior_w (strong for NMF mesh, loose for hull).
+        if args.pos_prior > 0 and prior_w is not None:
+            drift = ((params["means"] - means0) ** 2).sum(-1)
+            loss = loss + args.pos_prior * (prior_w * drift).mean()
 
         loss.backward()
 
@@ -294,7 +358,7 @@ def main():
                 info,
                 lr=optimizers["means"].param_groups[0]["lr"],
             )
-        else:
+        elif args.strategy == "default":
             strat.step_post_backward(
                 params, optimizers, strat_state, step, info, packed=False
             )
@@ -303,6 +367,19 @@ def main():
             opt.step()
             opt.zero_grad(set_to_none=True)
 
+        # anti-streak: clamp gaussian extent + anisotropy so none stretches into
+        # a long thin line (a common failure with a fixed, un-densified set).
+        if args.max_scale > 0:
+            with torch.no_grad():
+                s = params["scales"].data
+                s.clamp_(
+                    min=math.log(1e-3 * scene_scale),
+                    max=math.log(args.max_scale * scene_scale),
+                )
+                if args.max_aspect > 0:
+                    mx = s.max(dim=1, keepdim=True).values
+                    s.clamp_(min=mx - math.log(args.max_aspect))
+
         if step % 500 == 0 or step == args.iters - 1:
             with torch.no_grad():
                 psnr = -10 * math.log10(((out_c - gt_comp) ** 2).mean().item() + 1e-12)
@@ -310,6 +387,16 @@ def main():
                 f"  step {step:5d}  loss {loss.item():.4f}  psnr {psnr:5.2f}  "
                 f"N={params['means'].shape[0]}"
             )
+
+    if prior_w is not None and params["means"].shape[0] == means0.shape[0]:
+        with torch.no_grad():
+            anch = prior_w >= 0.99
+            if anch.any():
+                drift = (params["means"][anch] - means0[anch]).norm(dim=-1)
+                print(
+                    f"  NMF-anchored drift: mean {drift.mean():.4f} "
+                    f"max {drift.max():.4f} (radius {scene_scale:.2f})"
+                )
 
     if args.prune_min_views > 0:
         prune_outside_masks(params, d, args.prune_min_views)
