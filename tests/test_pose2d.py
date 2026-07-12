@@ -111,11 +111,12 @@ def test_heatmap_to_points_argmax_and_conf():
     hm = np.zeros((1, 2, 64, 128), dtype=np.float32)
     hm[0, 0, 10, 20] = 5.0
     hm[0, 1, 30, 100] = 3.0
-    # A lone spike has no neighbourhood mass, so every method returns its cell.
+    # A lone spike has no neighbourhood mass, so every method returns its cell,
+    # decoded at the cell centre (+0.5; see heatmap_to_points).
     for method in ("argmax", "weighted", "taylor"):
         points, conf = inference.heatmap_to_points(hm, method=method)
-        np.testing.assert_allclose(points[0, 0], [20 / 128, 10 / 64])
-        np.testing.assert_allclose(points[0, 1], [100 / 128, 30 / 64])
+        np.testing.assert_allclose(points[0, 0], [(20 + 0.5) / 128, (10 + 0.5) / 64])
+        np.testing.assert_allclose(points[0, 1], [(100 + 0.5) / 128, (30 + 0.5) / 64])
         np.testing.assert_allclose(conf[0], [5.0, 3.0])
 
 
@@ -145,9 +146,14 @@ def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
     true_r, true_c = 10.7, 20.3  # centre between cells
     hm = np.exp(-((ys - true_r) ** 2 + (xs - true_c) ** 2) / 2.0)[None, None]
 
+    # Decoder returns cell-centre coordinates (+0.5), so a peak at heatmap index
+    # p decodes to p + 0.5; compare against the shifted truth.
     def err(method):
         pts, _ = inference.heatmap_to_points(hm, method=method)
-        return abs(pts[0, 0, 0] * ww - true_c), abs(pts[0, 0, 1] * hh - true_r)
+        return (
+            abs(pts[0, 0, 0] * ww - (true_c + 0.5)),
+            abs(pts[0, 0, 1] * hh - (true_r + 0.5)),
+        )
 
     ax, ay = err("argmax")
     sx, sy = err("weighted")

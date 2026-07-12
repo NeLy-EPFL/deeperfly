@@ -216,9 +216,17 @@ def heatmap_to_points(
     centroid, ``"taylor"`` is the DARK Newton step. Confidence stays the raw peak
     value.
 
-    Coordinates keep the same ``col / W_out``, ``row / H_out`` normalization as a plain
-    arg-max (DeepFly2D's ``heatmap2points``) and ``(x, y)`` ordering for the
-    geometry layer, so a single-pixel spike still decodes to exactly its cell.
+    Coordinates use the half-pixel *cell-centre* normalization
+    ``(col + 0.5) / W_out``, ``(row + 0.5) / H_out`` with ``(x, y)`` ordering for
+    the geometry layer, so a single-pixel spike decodes to the centre of its cell.
+    (DeepFly2D's ``heatmap2points`` divides the raw cell index by ``W_out`` /
+    ``H_out`` -- the top-left convention -- but its training targets peak at
+    ``floor(keypoint * heatmap_size)`` (``draw_labelmap``), so that decode is
+    biased half a cell toward the origin: ~0.5 * source/heatmap px, i.e. ~3.75 px
+    up-and-left on this rig's 960x480 frames. The ``+ 0.5`` is the matched inverse
+    -- the expected keypoint given an integer peak cell -- and lines up with the
+    half-pixel affine the resize/crop ops already use. Sub-pixel refinement cannot
+    recover it: the targets are integer-cell-centred, so the blobs are too.)
 
     Parameters
     ----------
@@ -249,7 +257,9 @@ def heatmap_to_points(
         method=method,
         radius=radius,
     )
-    points = np.stack([cx[:, 0] / ww, cy[:, 0] / hh], axis=-1)  # (M, 2)
+    # +0.5: cell-centre convention (see docstring); the matched inverse of the
+    # floor()-quantized training targets, and consistent with the resize affine.
+    points = np.stack([(cx[:, 0] + 0.5) / ww, (cy[:, 0] + 0.5) / hh], axis=-1)  # (M, 2)
     return points.reshape(*lead, 2), conf.reshape(*lead)
 
 

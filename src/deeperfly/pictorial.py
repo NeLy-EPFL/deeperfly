@@ -147,7 +147,10 @@ def peak_candidates(
         method=method,
         radius=radius,
     )
-    xy = np.stack([cx.reshape(*chan, k) / ww, cy.reshape(*chan, k) / hh], axis=-1)
+    # +0.5: cell-centre convention, matching inference.heatmap_to_points.
+    xy = np.stack(
+        [(cx.reshape(*chan, k) + 0.5) / ww, (cy.reshape(*chan, k) + 0.5) / hh], axis=-1
+    )
     valid = np.isfinite(val)
     xy = np.where(valid[..., None], xy, np.nan)
     score = np.where(valid, val, 0.0)

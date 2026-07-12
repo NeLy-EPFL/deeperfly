@@ -44,9 +44,9 @@ def test_peak_candidates_finds_ordered_bumps():
     hm[0] += 1.5 * np.exp(-((yy - 8) ** 2 + (xx - 40) ** 2) / 4.0)
     xy, score = pictorial.peak_candidates(hm, k=2, radius=2)
     assert score[0, 0] > score[0, 1]  # ordered by strength
-    # Strongest peak at (row=8, col=40) -> normalized (x, y).
-    np.testing.assert_allclose(xy[0, 0], [40 / ww, 8 / hh], atol=1e-6)
-    np.testing.assert_allclose(xy[0, 1], [10 / ww, 20 / hh], atol=1e-6)
+    # Strongest peak at (row=8, col=40) -> normalized (x, y), cell-centre (+0.5).
+    np.testing.assert_allclose(xy[0, 0], [(40 + 0.5) / ww, (8 + 0.5) / hh], atol=1e-6)
+    np.testing.assert_allclose(xy[0, 1], [(10 + 0.5) / ww, (20 + 0.5) / hh], atol=1e-6)
 
 
 def test_peak_candidates_pads_when_too_few():

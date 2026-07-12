@@ -397,7 +397,8 @@ def _decode_peaks(
     cx, cy = _refine_peaks(
         flat.reshape(-1, hh, ww), row, col, method=method, radius=radius
     )
-    xy = torch.stack([cx / ww, cy / hh], dim=-1)  # (M, 2)
+    # +0.5: cell-centre convention, matching inference.heatmap_to_points.
+    xy = torch.stack([(cx + 0.5) / ww, (cy + 0.5) / hh], dim=-1)  # (M, 2)
     return xy.reshape(*lead, 2), conf.reshape(*lead)
 
 
