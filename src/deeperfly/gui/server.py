@@ -421,12 +421,21 @@ def _cameras_3d(session: Session) -> list[dict]:
     return cams
 
 
-def _points_payload(session: Session, t: int, mode: str) -> dict:
+def _points_payload(
+    session: Session, t: int, mode: str, *, include_nmf: bool = True
+) -> dict:
     """The per-view 2D overlay (with the fixed/invisible masks) for frame ``t`` in ``mode``.
 
     ``proj`` is the current 3D estimate reprojected into every view (with no fixed
     overrides) -- the display-only "latent skeleton" the front-end can ghost over
     every view; it is ``null`` when the result carries no 3D points.
+
+    ``include_nmf`` (default ``True``) controls whether the fitted-model overlay is
+    computed. The NMF reprojection needs a per-frame inverse-kinematics re-fit, so a
+    live 3D drag -- which streams one edit per animation frame -- passes ``False`` to
+    skip it (the ``nmf`` key is then *omitted*, and the front-end keeps the overlay it
+    has until the drag settles). It is recomputed on the pin/settle reply and on plain
+    fetches.
     """
     s = session.state
     if mode == "edit_3d" and s.has_3d:
@@ -436,17 +445,19 @@ def _points_payload(session: Session, t: int, mode: str) -> dict:
     fixed = s.corrections.pts2d_fixed[:, t]  # (V, P)
     invisible = s.corrections.pts2d_invisible[:, t]  # (V, P)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
-    nmf = s.display_nmf_projected(t) if s.has_nmf else None
-    return {
+    payload = {
         "frame": t,
         "mode": mode,
         "points": _points_to_json(np.asarray(pts)),
         "fixed": fixed.tolist(),
         "invisible": invisible.tolist(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
-        "nmf": None if nmf is None else _points_to_json(np.asarray(nmf)),
         "dirty": bool(s.dirty),
     }
+    if include_nmf:
+        nmf = s.display_nmf_projected(t) if s.has_nmf else None
+        payload["nmf"] = None if nmf is None else _points_to_json(np.asarray(nmf))
+    return payload
 
 
 def _scene_payload(session: Session, t: int) -> dict:
@@ -499,6 +510,10 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     t = _clamp_frame(session, int(msg.get("frame", 0)))
     mode = str(msg.get("mode", "view"))
     typ = msg.get("type")
+    # A live 3D drag (edit_3d with fix=False) streams one edit per animation frame.
+    # The NMF overlay reprojection needs a per-frame IK re-fit, so recompute it only
+    # on the pin/settle reply -- not ~60x/s mid-drag (the dominant source of drag lag).
+    live_drag = typ == "edit_3d" and not bool(msg.get("fix", False))
     if typ == "edit_2d":
         s.apply_2d_edit(int(msg["view"]), int(msg["point"]), _xy(msg), t)
     elif typ == "edit_3d":
@@ -521,7 +536,12 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_frame(t)
     else:  # pragma: no cover -- an unknown type is a client bug; ignore it
         log.warning("ignoring unknown edit message type %r", typ)
-    return _points_payload(session, t, mode)
+    payload = _points_payload(session, t, mode, include_nmf=not live_drag)
+    # Echo the client's monotonic edit seq (when present) so the front-end can drop a
+    # superseded reply -- a mid-drag re-solve that lands after release would otherwise
+    # repaint the joint to a stale position (the snap-back).
+    payload["seq"] = msg.get("seq")
+    return payload
 
 
 def _xy(msg: dict) -> tuple[float, float]:

@@ -407,6 +407,54 @@ def test_ws_edit_2d_is_local_to_its_view(client):
     assert reply["dirty"] is True
 
 
+def test_ws_reply_echoes_edit_seq(client):
+    """Every edit reply echoes the sending edit's seq, so the front-end can drop a
+    superseded reply (a mid-drag re-solve landing after release)."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "edit_2d",
+                "view": 0,
+                "point": 3,
+                "x": 5.0,
+                "y": 6.0,
+                "frame": 0,
+                "mode": "edit_2d",
+                "seq": 42,
+            }
+        )
+        reply = ws.receive_json()
+    assert reply["seq"] == 42
+
+
+def test_ws_live_drag_omits_nmf_then_includes_on_release(result, tmp_path):
+    """A mid-drag edit_3d (fix=False) omits the 'nmf' key -- skipping the per-frame
+    IK re-fit that dominated drag latency -- while the pin/release reply (fix=True)
+    carries it again. The overlay's absence tells the client to hold what it has."""
+    client, _res = _nmf_client(result, tmp_path)
+    view, point = 2, 5
+    base = client.get("/api/points/0?mode=edit_3d").json()["points"]
+    target = [base[view][point][0] + 3.0, base[view][point][1] - 2.0]
+
+    with client.websocket_connect("/ws") as ws:
+        drag = {
+            "type": "edit_3d",
+            "view": view,
+            "point": point,
+            "x": target[0],
+            "y": target[1],
+            "frame": 0,
+            "mode": "edit_3d",
+        }
+        ws.send_json({**drag, "fix": False, "seq": 1})
+        mid = ws.receive_json()
+        ws.send_json({**drag, "fix": True, "seq": 2})
+        end = ws.receive_json()
+
+    assert "nmf" not in mid and mid["seq"] == 1  # mid-drag: refit skipped
+    assert end["nmf"] is not None and end["seq"] == 2  # release: overlay recomputed
+
+
 def test_ws_reset_point_view_reverts_one_view(client):
     point = 3
     with client.websocket_connect("/ws") as ws:

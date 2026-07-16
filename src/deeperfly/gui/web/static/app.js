@@ -112,6 +112,10 @@ class App {
   cells = [];
   /** @type {EditSocket} */
   socket;
+  // Monotonic id stamped on every edit sent over the socket. A reply carrying an
+  // older seq is a superseded mid-drag re-solve and is dropped in applyPoints, so a
+  // reply landing after release can't repaint the joint to a stale spot (snap-back).
+  editSeq = 0;
   frame = 0;
   /** @type {EditMode} */
   mode = "edit_2d";
@@ -508,15 +512,26 @@ class App {
    */
   applyPoints(p, fromEdit = false) {
     if (p.frame !== this.frame) return; // a stale reply after a fast scrub
+    // Drop a superseded edit's reply: a live 3D drag streams many edits, and an
+    // in-flight mid-drag re-solve that lands after release (or after a newer edit)
+    // must not repaint the joint to a stale position (the snap-back). Replies echo
+    // the sending edit's seq; only the latest edit's reply (seq === editSeq) wins.
+    // Plain frame fetches carry no seq and always apply.
+    if (fromEdit && p.seq !== this.editSeq) return;
     const showFixed = this.mode === "edit_3d";
     this.fixedMask = showFixed ? p.fixed : null;
     this.invisibleMask = showFixed ? p.invisible : null;
+    // `nmf` is omitted on mid-drag replies (the server skips the per-frame re-fit);
+    // when absent, leave each view's model overlay as-is instead of clearing it.
+    const hasNmf = "nmf" in p;
     this.views.forEach((view, v) => {
-      view.setPoints(p.points[v]);
-      view.setFixed(showFixed ? p.fixed[v] : null);
-      view.setInvisible(showFixed ? p.invisible[v] : null);
-      view.setLatent(p.proj ? p.proj[v] : null);
-      view.setNmf(p.nmf ? p.nmf[v] : null);
+      view.setFrameData({
+        points: p.points[v],
+        fixed: showFixed ? p.fixed[v] : null,
+        invisible: showFixed ? p.invisible[v] : null,
+        latent: p.proj ? p.proj[v] : null,
+        nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
+      });
     });
     // The NMF mesh follows the (re-fit) latent skeleton: refresh it after an edit
     // settles, coalescing a live drag's many replies into one GPU render.
@@ -721,6 +736,14 @@ class App {
 
   // -- edit routing -----------------------------------------------------------
 
+  // Send an edit over the socket, stamped with a monotonic seq the server echoes
+  // back so applyPoints can drop a superseded reply (a mid-drag re-solve that lands
+  // after release, or after a newer edit) instead of repainting a stale position.
+  /** @param {import("./types.js").EditMessage} msg */
+  sendEdit(msg) {
+    this.socket.send({ ...msg, seq: ++this.editSeq });
+  }
+
   /**
    * @param {number} view
    * @param {number} point
@@ -730,7 +753,7 @@ class App {
   onDragging(view, point, x, y) {
     // Only 3D needs a live re-solve; a 2D drag is local to its own view.
     if (this.mode === "edit_3d") {
-      this.socket.send({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: false, mode: this.mode });
+      this.sendEdit({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: false, mode: this.mode });
     }
   }
 
@@ -739,15 +762,18 @@ class App {
    * @param {number} point
    * @param {number} x
    * @param {number} y
+   * @param {boolean} [wasInvisible]  whether the grabbed joint was obscured (now un-obscured by the drag)
    */
   onDragged(view, point, x, y, wasInvisible = false) {
     if (this.mode === "edit_2d") {
-      this.socket.send({ type: "edit_2d", view, point, x, y, frame: this.frame, mode: this.mode });
+      this.sendEdit({ type: "edit_2d", view, point, x, y, frame: this.frame, mode: this.mode });
     } else if (this.mode === "edit_3d") {
-      // Releasing pins the dragged view at the drop pixel (a finalized constraint),
-      // except when it was obscured: dragging un-obscures it back to the normal
-      // (reprojection-following) state rather than pinning it.
-      this.socket.send({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: !wasInvisible, mode: this.mode });
+      // Releasing a drag pins the dragged view at the drop pixel (a finalized
+      // constraint) so the placed point stays put -- including a previously obscured
+      // view: dragging it in is the operator asserting where the point is, so it is
+      // both un-obscured (server-side) and finalized here rather than left to drift
+      // back to the reprojection.
+      this.sendEdit({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: true, mode: this.mode });
     }
   }
 
@@ -757,7 +783,7 @@ class App {
    */
   onToggleFixed(view, point) {
     if (this.mode === "edit_3d") {
-      this.socket.send({ type: "toggle_fixed", view, point, frame: this.frame, mode: this.mode });
+      this.sendEdit({ type: "toggle_fixed", view, point, frame: this.frame, mode: this.mode });
     }
   }
 
@@ -767,7 +793,7 @@ class App {
    */
   onToggleInvisible(view, point) {
     if (this.mode === "edit_3d") {
-      this.socket.send({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
+      this.sendEdit({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
     }
   }
 
@@ -783,7 +809,7 @@ class App {
   // Revert the last-selected joint in just the view it was selected in.
   resetSelectedView() {
     if (this.selectedPoint === null) return;
-    this.socket.send({
+    this.sendEdit({
       type: "reset_point_view",
       view: this.selectedView,
       point: this.selectedPoint,
@@ -795,13 +821,13 @@ class App {
   // Revert the last-selected joint across every view (and its 3D point).
   resetSelectedAll() {
     if (this.selectedPoint === null) return;
-    this.socket.send({ type: "reset_point", point: this.selectedPoint, frame: this.frame, mode: this.mode });
+    this.sendEdit({ type: "reset_point", point: this.selectedPoint, frame: this.frame, mode: this.mode });
   }
 
   // Revert every joint in the current frame across all views (and their 3D
   // points) -- a clean slate for the frame, independent of any selection.
   resetFrame() {
-    this.socket.send({ type: "reset_frame", frame: this.frame, mode: this.mode });
+    this.sendEdit({ type: "reset_frame", frame: this.frame, mode: this.mode });
   }
 
   async save() {

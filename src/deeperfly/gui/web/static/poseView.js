@@ -264,39 +264,37 @@ export class PoseView {
     this.layoutAndDraw();
   }
 
-  /** @param {Point[]} pts */
-  setPoints(pts) {
-    // Keep the actively dragged joint pinned to the cursor: the server's live
-    // re-solve reprojects it a hair off, and letting that fight the mouse feels
-    // like resistance (mirrors the old Qt PoseView.set_points).
-    const held = this.dragging !== null ? this.pts[this.dragging] : null;
-    this.pts = pts.slice();
-    if (this.dragging !== null && held) this.pts[this.dragging] = held;
+  /**
+   * Apply a fresh points-payload slice for this view in a *single* repaint. The
+   * per-reply update used to call one setter per field, each doing its own draw()
+   * (3-5 full-canvas redraws per view per reply); a live 3D drag streams many
+   * replies, so folding them into one draw keeps the canvas from thrashing.
+   *
+   * A field left `undefined` is kept as-is: the server omits `nmf` on mid-drag
+   * replies (it skips the costly per-frame re-fit), so the model overlay just holds
+   * until the drag settles instead of flickering off.
+   *
+   * @param {object} data
+   * @param {Point[]} [data.points]
+   * @param {boolean[] | null} [data.fixed]
+   * @param {boolean[] | null} [data.invisible]  per-point "obscured" mask, or null when not in 3D
+   * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
+   * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
+   */
+  setFrameData(data) {
+    if (data.points) {
+      // Keep the actively dragged joint pinned to the cursor: the server's live
+      // re-solve reprojects it a hair off, and letting that fight the mouse feels
+      // like resistance (mirrors the old Qt PoseView.set_points).
+      const held = this.dragging !== null ? this.pts[this.dragging] : null;
+      this.pts = data.points.slice();
+      if (this.dragging !== null && held) this.pts[this.dragging] = held;
+    }
+    if (data.fixed !== undefined) this.fixed = data.fixed;
+    if (data.invisible !== undefined) this.invisible = data.invisible;
+    if (data.latent !== undefined) this.latent = data.latent;
+    if (data.nmf !== undefined) this.nmf = data.nmf;
     this.draw();
-  }
-
-  /** @param {boolean[] | null} fixed */
-  setFixed(fixed) {
-    this.fixed = fixed;
-    this.draw();
-  }
-
-  /** @param {boolean[] | null} invisible  per-point "obscured" mask, or null when not in 3D */
-  setInvisible(invisible) {
-    this.invisible = invisible;
-    this.draw();
-  }
-
-  /** @param {Point[] | null} pts  the latent 3D reprojection to ghost, or null */
-  setLatent(pts) {
-    this.latent = pts;
-    if (this.latentVisible) this.draw();
-  }
-
-  /** @param {Point[] | null} pts  the fitted NMF model reprojection to ghost, or null */
-  setNmf(pts) {
-    this.nmf = pts;
-    if (this.nmfVisible) this.draw();
   }
 
   /** @param {number | null} point */

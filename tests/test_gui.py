@@ -309,6 +309,27 @@ def test_invisible_and_fixed_are_mutually_exclusive(result):
     assert not state.corrections.pts2d_invisible[view, frame, point]
 
 
+def test_drag_obscured_view_with_fix_un_obscures_and_pins_it(result):
+    # Dragging a previously obscured view in is the operator asserting where the
+    # point is, so a release (fix=True, what the GUI now sends for every drag) must
+    # both un-obscure it AND finalize it at the drop pixel -- not leave it drifting
+    # in the normal reprojection-following state.
+    state = EditorState.from_result(result)
+    view, point, frame = 1, 5, 0
+    state.toggle_invisible(view, point, frame)
+    assert state.corrections.pts2d_invisible[view, frame, point]
+
+    drag = state.display_pts2d_refine(frame)[view, point] + np.array([9.0, -7.0])
+    assert state.apply_3d_edit(view, point, drag, frame, fix=True) is not None
+
+    assert not state.corrections.pts2d_invisible[view, frame, point]  # un-obscured
+    assert state.corrections.pts2d_fixed[
+        view, frame, point
+    ]  # finalized as a constraint
+    # the finalized view holds exactly at the drop pixel
+    assert np.allclose(state.display_pts2d_refine(frame)[view, point], drag, atol=1e-4)
+
+
 def test_dragging_an_invisible_view_un_obscures_it(result):
     # Dragging an obscured view places it: the flag clears (back to normal) and the
     # 3D re-solves so the dragged view lands under the cursor. A release on a

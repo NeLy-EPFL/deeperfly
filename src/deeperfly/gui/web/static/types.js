@@ -67,8 +67,9 @@
  * @property {boolean[][]} fixed  [view][point]
  * @property {boolean[][]} invisible  [view][point]  obscured: dropped from triangulation
  * @property {Point[][] | null} proj  [view][point] latent 3D reprojection (display only), or null
- * @property {Point[][] | null} nmf  [view][point] fitted NMF model reprojection (display only), or null
+ * @property {Point[][] | null} [nmf]  [view][point] fitted NMF model reprojection (display only), or null. Omitted on mid-drag replies (the server skips the per-frame re-fit) -- treat "absent" as "unchanged".
  * @property {boolean} dirty
+ * @property {number | null} [seq]  the seq of the edit this reply answers, echoed so a superseded reply can be dropped; absent on plain frame fetches
  */
 
 /**
@@ -99,6 +100,7 @@
  * @property {number} frame
  * @property {boolean} [fix]
  * @property {EditMode} mode
+ * @property {number} [seq]  monotonic id stamped by App.sendEdit; echoed in the reply
  */
 
 export {};
