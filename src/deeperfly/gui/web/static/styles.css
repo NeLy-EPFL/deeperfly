@@ -113,9 +113,12 @@ body {
 .cell-label {
   padding: 2px 6px;
   text-align: center;
-  background: var(--panel);
+  background: #232323;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b9b9b9;
 }
 
 .cell canvas {
@@ -150,6 +153,88 @@ body {
   gap: 4px;
 }
 
+/* Legend: a small colour/line-style swatch inside an overlay toggle's label, and a
+   compact left/right palette key -- so what the colours and line styles mean is on
+   screen, matching the canvas (editable = solid, latent = dashed amber, NMF = dotted
+   mint). Pure CSS, no per-frame cost. */
+.swatch {
+  display: inline-block;
+  width: 15px;
+  height: 0;
+  vertical-align: middle;
+}
+
+.swatch-latent {
+  border-top: 2px dashed rgb(255, 176, 64);
+}
+
+.swatch-nmf {
+  border-top: 2px dotted rgb(80, 230, 180);
+}
+
+.palette-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #aaa;
+  font-size: 11px;
+}
+
+.palette-key i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.palette-key .k-l {
+  background: #1a8daf; /* left = blue */
+}
+
+.palette-key .k-r {
+  background: #ba1e31; /* right = red */
+  margin-left: 4px;
+}
+
+/* Source-marker legend: one small disc per source, styled to match the canvas markers
+   (ground truth = solid lime ring, prediction = thin dark ring, derived projection =
+   hollow ring). The fill/ring stands in for the per-point left/right colour, which is
+   grey here since it varies per keypoint. */
+.marker-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #aaa;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+.marker-key i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+  margin-left: 6px;
+  margin-right: 2px;
+}
+
+.marker-key .m-gt {
+  background: #888;
+  border: 2px solid #7cfc00; /* lime, solid */
+  margin-left: 0;
+}
+
+.marker-key .m-pred {
+  background: #888;
+  border: 1px solid rgba(0, 0, 0, 0.7); /* thin dark */
+}
+
+.marker-key .m-proj {
+  background: transparent; /* hollow */
+  border: 1.5px solid #888; /* palette-coloured on the canvas; grey stand-in here */
+}
+
 /* The frame slider gets a row to itself, so let it span the full width. */
 .frame-row label {
   flex: 1;
@@ -161,8 +246,8 @@ body {
   min-width: 0;
 }
 
-/* Two-choice "switch": a row of buttons, exactly one active -- a compact
-   stand-in for a 2-option dropdown (Mode, Layout). */
+/* Segmented "switch": a row of buttons with exactly one active -- a compact stand-in
+   for a small dropdown (the Layout toggle, the point-status state switch). */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -201,9 +286,11 @@ body {
 }
 
 /* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state
-   switch. The active chip is colour-coded to match the on-canvas rings: Fixed is
-   lime, Obscured is violet, Normal keeps the default blue. (Obscured is violet,
-   not magenta, so it reads clearly apart from the red right-side keypoints.) */
+   switch (Predicted / Ground truth / Occluded). It is the surface for *setting* a
+   point's state; the active chip is colour-coded (Ground truth lime, Occluded violet,
+   Predicted the default blue) so the choice reads at a glance. An occluded point draws
+   on the canvas as a plain derived point -- occluding just deletes the observation -- so
+   this widget is where its state stays legible. */
 .point-status-name {
   color: #bbb;
   font-variant-numeric: tabular-nums;
