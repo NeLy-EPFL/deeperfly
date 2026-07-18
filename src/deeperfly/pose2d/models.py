@@ -75,12 +75,26 @@ def _load_hourglass(weights: str | None, **kwargs):
     return detector.load_detector(path, **kwargs)
 
 
+def _load_lite(weights: str | None, **kwargs):
+    """Load the TorchScript single-side lite detector (see :mod:`.lite`)."""
+    from .lite import load_lite
+
+    return load_lite(weights, **kwargs)
+
+
 #: ``class`` name -> loader(weights, **kwargs) -> torch module. New detector
 #: architectures register here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
+#: ``"deepfly2d_lite"`` is the compact TorchScript replacement (1-ch, per-dataset
+#: norm) exported from deeperfly-train; it is wrapped by :class:`.lite.LiteLoadedModel`.
 MODEL_CLASSES = {
     "hourglass": _load_hourglass,
     "deepfly2d": _load_hourglass,
+    "deepfly2d_lite": _load_lite,
 }
+
+#: ``class`` name -> LoadedModel subclass (default :class:`LoadedModel`). Lets a
+#: detector own a different input contract / decode than the hourglass.
+_WRAPPERS = {"deepfly2d_lite": "LiteLoadedModel"}
 
 
 class LoadedModel:
@@ -194,4 +208,8 @@ def load_model(spec: ModelSpec) -> LoadedModel:
             f"model {spec.name!r} declares n_out_channels={spec.n_out_channels} "
             f"but its weights emit {num_classes} channels"
         )
+    if _WRAPPERS.get(spec.cls) == "LiteLoadedModel":
+        from .lite import LiteLoadedModel
+
+        return LiteLoadedModel(spec, module)
     return LoadedModel(spec, module)
