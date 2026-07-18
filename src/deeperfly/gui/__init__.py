@@ -32,6 +32,13 @@ from pathlib import Path
 
 from ..results import PoseResult, StageStore
 from .corrections import Corrections, load_corrections, save_corrections
+from .labels import (
+    Labels,
+    labels_identity,
+    load_labels,
+    migrate_from_corrections,
+    save_labels,
+)
 from .readers import FrameSource, resolve_camera_files, resolve_footage
 from .session import Session
 from .state import EditMode, EditorState
@@ -39,6 +46,11 @@ from .state import EditMode, EditorState
 __all__ = [
     "EditMode",
     "EditorState",
+    "Labels",
+    "load_labels",
+    "save_labels",
+    "labels_identity",
+    "migrate_from_corrections",
     "Corrections",
     "load_corrections",
     "save_corrections",
@@ -88,9 +100,8 @@ def build_session(
     store = StageStore(results_path)
     footage = store.read_footage()
     image_sizes = store.read_image_sizes()
-    n_points = int(result.pts2d.shape[2])
     results_dir = results_path.parent
-    corrections_path = results_dir / "corrections.h5"
+    labels_path = results_dir / "labels.h5"
 
     resolved, missing = resolve_footage(footage, results_dir, footage_dir)
     if not footage:
@@ -106,57 +117,111 @@ def build_session(
 
     source = FrameSource(resolved, image_sizes=image_sizes)
 
-    corrections = load_corrections(
-        corrections_path, result.n_views, result.n_frames, n_points
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=list(result.cameras.names),
+        n_frames=result.n_frames,
+        image_sizes=image_sizes,
+        footage=footage,
     )
-    mesh_hide, template, articulation = _ik_config(results_dir)
+    labels = _load_or_migrate_labels(labels_path, results_dir, result, identity)
+    mesh_hide, template, articulation, ann, tri = _ik_config(results_dir)
     state = EditorState.from_result(
-        result, corrections, template=template, articulation=articulation
+        result,
+        labels,
+        ann=ann,
+        tri=tri,
+        template=template,
+        articulation=articulation,
     )
     return Session.build(
         state,
         source,
         results_path=str(results_path),
-        corrections_path=corrections_path,
+        labels_path=labels_path,
+        identity=identity,
+        footage=footage,
         image_sizes=image_sizes,
         nmf_hide_parts=mesh_hide,
     )
 
 
-def _ik_config(results_dir: Path):
-    """Overlay + IK-model settings from the run config snapshot beside ``results.h5``.
+def _load_or_migrate_labels(labels_path, results_dir, result, identity):
+    """Load ``labels.h5`` if present, else migrate a legacy ``corrections.h5`` (if any).
 
-    Returns ``(mesh_hide, template, articulation)``: the ``[gui].mesh_hide`` overlay
-    parts to hide (default ``["wings"]``), and the kinematic template + head/abdomen
-    articulation the pipeline fit -- so the editor's live re-fit uses the **same**
-    model (restricted legs, custom bounds, ``fit_head``/``fit_abdomen``, and custom
-    marker placement all carry over). ``template`` / ``articulation`` are ``None`` when
-    no config snapshot is present (a bare ``results.h5``), in which case the live
-    re-fit falls back to the packaged NeuroMechFly model. When the config fits neither
-    head nor abdomen, ``articulation`` is an explicit chain-less articulation (legs
-    only), not the packaged default.
+    A one-time migration keeps existing manual corrections usable: the legacy dense
+    sidecar is converted to sparse labels in memory (its file is left untouched), and
+    the lossy drops are logged. Returns ``None`` (an empty overlay) when neither
+    sidecar exists.
     """
-    from ..config import Config
+    labels = load_labels(labels_path, identity=identity)
+    if labels is not None:
+        return labels
+    corrections_path = results_dir / "corrections.h5"
+    corrections = load_corrections(
+        corrections_path, result.n_views, result.n_frames, int(result.pts2d.shape[2])
+    )
+    if corrections is None:
+        return None
+    labels, report = migrate_from_corrections(corrections, result.pts2d)
+    log.warning(
+        "migrated %s -> sparse labels (%d GT, %d occluded; dropped %d ambiguous "
+        "occlusion(s), %d pure-3D edit(s)); saving writes %s",
+        corrections_path.name,
+        report["gt"],
+        report["occluded"],
+        report["dropped_ambiguous_occluded"],
+        report["dropped_pts3d_only"],
+        labels_path.name,
+    )
+    labels.dirty = True  # so the operator is prompted to persist the migrated labels
+    return labels
+
+
+def _ik_config(results_dir: Path):
+    """Overlay + IK-model + annotation settings from the run config beside ``results.h5``.
+
+    Returns ``(mesh_hide, template, articulation, annotation, triangulation)``: the
+    ``[gui].mesh_hide`` overlay parts to hide (default ``["wings"]``); the kinematic
+    template + head/abdomen articulation the pipeline fit -- so the editor's live
+    re-fit uses the **same** model (restricted legs, custom bounds,
+    ``fit_head``/``fit_abdomen``, and custom marker placement all carry over); and the
+    ``[annotation]`` solve policy + shared ``[triangulation]`` params so the editor's
+    live 3D matches the run. ``template`` / ``articulation`` are ``None`` when no config
+    snapshot is present (a bare ``results.h5``), in which case the live re-fit falls
+    back to the packaged NeuroMechFly model. ``annotation`` / ``triangulation`` fall
+    back to their packaged defaults.
+    """
+    from ..config import AnnotationParams, Config, TriangulationParams
     from ..inverse_kinematics.articulation import Articulation
 
     config_path = results_dir / "config.toml"
     if not config_path.exists():
-        return ["wings"], None, None
+        return ["wings"], None, None, AnnotationParams(), TriangulationParams()
     try:
         config = Config.from_toml(config_path)
     except Exception:  # a malformed snapshot should not block the editor
         log.warning(
             "could not read the run config %s; using overlay defaults", config_path
         )
-        return ["wings"], None, None
+        return ["wings"], None, None, AnnotationParams(), TriangulationParams()
 
     mesh_hide = ["wings"]
     template = articulation = None
+    annotation, triangulation = AnnotationParams(), TriangulationParams()
     try:
         mesh_hide = list(config.gui.mesh_hide)
     except Exception:
         log.warning(
             "could not read [gui].mesh_hide from %s; hiding the wings", config_path
+        )
+    try:
+        annotation = config.annotation
+        triangulation = config.triangulation
+    except Exception:
+        log.warning(
+            "could not read [annotation]/[triangulation] from %s; using defaults",
+            config_path,
         )
     try:
         template = config.ik_template()
@@ -168,7 +233,7 @@ def _ik_config(results_dir: Path):
             config_path,
         )
         template = articulation = None
-    return mesh_hide, template, articulation
+    return mesh_hide, template, articulation, annotation, triangulation
 
 
 def serve(

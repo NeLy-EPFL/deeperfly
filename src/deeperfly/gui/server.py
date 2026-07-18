@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..visualization._palette import point_colors_rgb
-from .corrections import save_corrections
+from .labels import save_labels
 from .session import Session
 
 __all__ = ["create_app"]
@@ -166,8 +166,8 @@ def create_app(
         return Response(content=data, media_type="application/octet-stream")
 
     @app.get("/api/points/{t}")
-    def points(t: int, mode: str = "view") -> dict:
-        return _points_payload(session, _clamp_frame(session, t), mode)
+    def points(t: int, mode: str = "view", verbose: bool = False) -> dict:
+        return _points_payload(session, _clamp_frame(session, t), mode, verbose=verbose)
 
     @app.get("/api/scene/{t}")
     def scene(t: int) -> dict:
@@ -185,10 +185,10 @@ def create_app(
     @app.post("/api/save")
     async def save() -> dict:
         async with lock:
-            save_corrections(
-                session.corrections_path,
-                session.state.corrections,
-                source=session.results_path,
+            save_labels(
+                session.labels_path,
+                session.state.labels,
+                identity=session.identity,
             )
         return {"dirty": session.state.dirty}
 
@@ -422,7 +422,12 @@ def _cameras_3d(session: Session) -> list[dict]:
 
 
 def _points_payload(
-    session: Session, t: int, mode: str, *, include_nmf: bool = True
+    session: Session,
+    t: int,
+    mode: str,
+    *,
+    include_nmf: bool = True,
+    verbose: bool = False,
 ) -> dict:
     """The per-view 2D overlay (with the fixed/invisible masks) for frame ``t`` in ``mode``.
 
@@ -442,8 +447,11 @@ def _points_payload(
         pts = s.display_pts2d_refine(t)
     else:
         pts = s.display_pts2d(t)
-    fixed = s.corrections.pts2d_fixed[:, t]  # (V, P)
-    invisible = s.corrections.pts2d_invisible[:, t]  # (V, P)
+    # Wire-compat masks: "fixed" now means "carries a GT pixel", "invisible" means
+    # "occluded" -- the front-end still renders them as the finalized/obscured rings
+    # until the Phase-C source-aware rendering lands.
+    fixed = s.gt_mask(t)  # (V, P)
+    invisible = s.occluded_mask(t)  # (V, P)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
     payload = {
         "frame": t,
@@ -453,11 +461,31 @@ def _points_payload(
         "invisible": invisible.tolist(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
         "dirty": bool(s.dirty),
+        "can_undo": s.can_undo,
+        "can_redo": s.can_redo,
     }
+    # The heavier per-point fields (detector confidence; raw predictions for the
+    # verbose overlay) are static within a frame, so they ride only the settle/plain
+    # reply -- not the ~60x/s mid-drag stream -- and the raw prediction only when the
+    # verbose overlay is on.
     if include_nmf:
         nmf = s.display_nmf_projected(t) if s.has_nmf else None
         payload["nmf"] = None if nmf is None else _points_to_json(np.asarray(nmf))
+        payload["conf"] = _conf_to_json(s.result.conf, t)
+    if verbose:
+        payload["pred"] = _points_to_json(np.asarray(s.result.pts2d[:, t]))
     return payload
+
+
+def _conf_to_json(conf: np.ndarray | None, t: int) -> list | None:
+    """``(V, P)`` detector confidence for frame ``t`` as nested lists (null if absent)."""
+    if conf is None:
+        return None
+    c = np.asarray(conf[:, t], dtype=float)  # (V, P)
+    return [
+        [float(c[v, p]) if np.isfinite(c[v, p]) else None for p in range(c.shape[1])]
+        for v in range(c.shape[0])
+    ]
 
 
 def _scene_payload(session: Session, t: int) -> dict:
@@ -509,11 +537,15 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     s = session.state
     t = _clamp_frame(session, int(msg.get("frame", 0)))
     mode = str(msg.get("mode", "view"))
+    verbose = bool(msg.get("verbose", False))
     typ = msg.get("type")
     # A live 3D drag (edit_3d with fix=False) streams one edit per animation frame.
     # The NMF overlay reprojection needs a per-frame IK re-fit, so recompute it only
     # on the pin/settle reply -- not ~60x/s mid-drag (the dominant source of drag lag).
     live_drag = typ == "edit_3d" and not bool(msg.get("fix", False))
+    # undo/redo can revert an edit on a *different* frame than the one being viewed;
+    # `goto` tells the client to navigate there before applying the repaint.
+    goto: int | None = None
     if typ == "edit_2d":
         s.apply_2d_edit(int(msg["view"]), int(msg["point"]), _xy(msg), t)
     elif typ == "edit_3d":
@@ -524,10 +556,21 @@ def _handle_edit(session: Session, msg: dict) -> dict:
             t,
             fix=bool(msg.get("fix", False)),
         )
-    elif typ == "toggle_fixed":
+    elif typ == "set_gt":
+        s.set_gt(int(msg["view"]), int(msg["point"]), _xy(msg), t)
+    elif typ == "clear_gt":
+        s.clear_gt(int(msg["view"]), int(msg["point"]), t)
+    elif typ in ("toggle_fixed", "confirm_point"):
         s.toggle_fixed(int(msg["view"]), int(msg["point"]), t)
-    elif typ == "toggle_invisible":
+    elif typ in ("toggle_invisible", "toggle_occluded"):
         s.toggle_invisible(int(msg["view"]), int(msg["point"]), t)
+    elif typ == "confirm":
+        targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
+        s.confirm(targets, str(msg.get("sources", "all")), t)
+    elif typ == "undo":
+        goto = s.undo()
+    elif typ == "redo":
+        goto = s.redo()
     elif typ == "reset_point":
         s.reset_point(int(msg["point"]), t)
     elif typ == "reset_point_view":
@@ -536,11 +579,16 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_frame(t)
     else:  # pragma: no cover -- an unknown type is a client bug; ignore it
         log.warning("ignoring unknown edit message type %r", typ)
-    payload = _points_payload(session, t, mode, include_nmf=not live_drag)
+    reply_frame = goto if goto is not None else t
+    payload = _points_payload(
+        session, reply_frame, mode, include_nmf=not live_drag, verbose=verbose
+    )
     # Echo the client's monotonic edit seq (when present) so the front-end can drop a
     # superseded reply -- a mid-drag re-solve that lands after release would otherwise
-    # repaint the joint to a stale position (the snap-back).
+    # repaint the joint to a stale position (the snap-back). `goto` (undo/redo target
+    # frame) is null for in-place edits.
     payload["seq"] = msg.get("seq")
+    payload["goto"] = goto
     return payload
 
 

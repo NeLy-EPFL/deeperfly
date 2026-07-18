@@ -33,7 +33,7 @@ def session(result, tmp_path):
         state,
         source,
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
 
@@ -96,7 +96,7 @@ def test_nmf_overlay_payload(result, tmp_path):
         EditorState.from_result(res),
         FrameSource({}, image_sizes=image_sizes),
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
     client = TestClient(create_app(session))
@@ -132,7 +132,7 @@ def _nmf_client(result, tmp_path):
         EditorState.from_result(res),
         FrameSource({}, image_sizes=image_sizes),
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
     return TestClient(create_app(session)), res
@@ -181,7 +181,7 @@ def test_nmf_verts_payload_hides_configured_parts(result, tmp_path):
             EditorState.from_result(res),
             FrameSource({}, image_sizes=image_sizes),
             results_path=str(tmp_path / "results.h5"),
-            corrections_path=tmp_path / "corrections.h5",
+            labels_path=tmp_path / "labels.h5",
             image_sizes=image_sizes,
             nmf_hide_parts=hide,
         )
@@ -508,6 +508,56 @@ def test_ws_reset_frame_reverts_every_point(client):
     assert not np.allclose(reply["points"][1][5], [56.0, 78.0])
 
 
+def test_ws_confirm_promotes_predictions(client, result):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "confirm",
+                "targets": [[v, 5] for v in range(result.n_views)],
+                "sources": "predictions",
+                "frame": 0,
+                "mode": "edit_3d",
+                "seq": 1,
+            }
+        )
+        reply = ws.receive_json()
+    assert reply["dirty"] is True
+    assert all(reply["fixed"][v][5] for v in range(result.n_views))  # all GT now
+
+
+def test_ws_undo_redo_carry_the_target_frame(client, result):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "edit_2d",
+                "view": 0,
+                "point": 3,
+                "x": 12.0,
+                "y": 34.0,
+                "frame": 1,
+                "mode": "edit_2d",
+                "seq": 1,
+            }
+        )
+        ws.receive_json()
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_2d", "seq": 2})
+        undo = ws.receive_json()
+        assert undo["goto"] == 1  # the edit was on frame 1
+        assert undo["fixed"][0][3] is False  # GT reverted
+        ws.send_json({"type": "redo", "frame": 0, "mode": "edit_2d", "seq": 3})
+        redo = ws.receive_json()
+        assert redo["goto"] == 1
+        assert redo["fixed"][0][3] is True  # GT re-applied
+
+
+def test_points_payload_carries_conf_and_undo_flags(client):
+    pay = client.get("/api/points/0?mode=view").json()
+    assert pay["conf"] is not None and len(pay["conf"]) > 0
+    assert pay["can_undo"] is False and pay["can_redo"] is False
+    verbose = client.get("/api/points/0?mode=view&verbose=true").json()
+    assert "pred" in verbose and verbose["pred"] is not None
+
+
 def test_save_writes_sidecar_and_clears_dirty(client, session):
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
@@ -526,7 +576,7 @@ def test_save_writes_sidecar_and_clears_dirty(client, session):
 
     resp = client.post("/api/save").json()
     assert resp["dirty"] is False
-    assert session.corrections_path.exists()
+    assert session.labels_path.exists()
     assert not session.state.dirty
 
 
