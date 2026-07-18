@@ -12,7 +12,9 @@ Two things differ from the hourglass and are handled here:
     the training set's mean/std (from the sidecar), at 256x512 -- NOT the sh8
     3-channel ``x - 0.22``;
   * forward output: a single ``(N, 19, Hh, Wh)`` heatmap tensor (not a per-stack
-    list), decoded with the shared :func:`~deeperfly.pose2d.inference.heatmap_to_points`.
+    list), decoded in the trained integer-cell convention (normalized ``col/W_out``
+    + parabolic sub-pixel refine) -- NOT the ``(col+0.5)/W_out`` cell-centre of
+    :func:`~deeperfly.pose2d.inference.heatmap_to_points` (see ``predict_points``).
 
 The channel order is identical to sh8 (front/mid/hind leg x5, antenna, abdomen0-2),
 so ``[pose2d.output_points.*]` needs no change.
@@ -124,10 +126,42 @@ class LiteLoadedModel(LoadedModel):
         return self._forward_np(inputs)
 
     def predict_points(self, inputs, *, method: str = "weighted", radius: int = 2):
-        from .inference import heatmap_to_points
+        """Normalized ``(..., C, 2)`` peaks + ``(..., C)`` conf, in THIS model's convention.
 
-        hm = self._forward_np(inputs)
-        return heatmap_to_points(hm, method=method, radius=radius)
+        The deeperfly-train targets place a keypoint at resized pixel ``x`` on the
+        heatmap grid at ``x / stride`` (integer-cell origin, no half-cell shift), and
+        the readout is a parabolic sub-pixel refine of the arg-max (HRNet/DARK-style).
+        So normalized ``= col / W_out`` -- NOT the ``(col + 0.5) / W_out`` cell-centre
+        of :func:`~deeperfly.pose2d.inference.heatmap_to_points` (which is matched to
+        DeepFly2D's floor-quantized targets). Using that here would bias every joint
+        ~half a cell (~3.75 px on this rig). ``method``/``radius`` are accepted for
+        interface parity but the refine is fixed to the trained convention.
+        """
+        import numpy as np
+
+        hm = self._forward_np(inputs)  # (..., C, H, W)
+        *lead, hh, ww = hm.shape
+        flat = hm.reshape(-1, hh, ww)  # (M, H, W)
+        m = flat.reshape(flat.shape[0], -1)
+        idx = m.argmax(1)
+        conf = m.max(1)
+        iy, ix = idx // ww, idx % ww
+        ar = np.arange(flat.shape[0])
+
+        def g(yy, xx):
+            return flat[ar, np.clip(yy, 0, hh - 1), np.clip(xx, 0, ww - 1)]
+
+        c = g(iy, ix)
+        xl, xr = g(iy, ix - 1), g(iy, ix + 1)
+        yu, yd = g(iy - 1, ix), g(iy + 1, ix)
+        denx = np.clip(xl - 2 * c + xr, None, -1e-6)
+        deny = np.clip(yu - 2 * c + yd, None, -1e-6)
+        dx = np.clip(0.5 * (xl - xr) / denx, -0.5, 0.5)
+        dy = np.clip(0.5 * (yu - yd) / deny, -0.5, 0.5)
+        x = (ix + dx) / ww  # normalized, integer-cell origin
+        y = (iy + dy) / hh
+        pts = np.stack([x, y], -1).reshape(*lead, 2)  # (..., C, 2)
+        return pts, conf.reshape(*lead)
 
     def set_precision(self, precision: str) -> None:
         precision = (precision or "float32").lower()
