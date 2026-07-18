@@ -416,3 +416,24 @@ read from the `config.toml` snapshot beside the `results.h5`.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the editor (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). The rendered videos use `[visualization].mesh_hide`. |
+
+## `[annotation]` — ground-truth annotation { #annotation }
+
+How `deeperfly gui` turns your 2D labels into a live 3D estimate. Read from the
+`config.toml` snapshot beside `results.h5`; no effect on the batch pipeline except
+that the triangulation *method* + thresholds are shared with
+[`[triangulation]`](#triangulation), so a point with no ground truth re-solves to the
+run's cached 3D. Every fork is a knob with a sensible default.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `precedence` | list[str] | `["gt", "prediction", "projection"]` | How each view's *displayed* 2D is chosen. `projection` (the 3D reprojected) is display-only and never feeds the solve. |
+| `solve_policy` | str | `"gt_wins"` | How ground truth (GT) and predictions combine in the live 3D solve: `gt_wins` (≥ `min_gt_for_exclusive` GT views ⇒ GT only; one GT view ⇒ GT hard-weighted, predictions fill; no GT ⇒ the configured `[triangulation]` method), `equal_weight` (GT-or-prediction per view through the configured method), or `weighted_blend` (one weighted DLT). No policy ever discards a GT observation. |
+| `min_gt_for_exclusive` | int | `2` | `gt_wins`: at this many GT views, solve from GT alone. |
+| `gt_weight` | float | `1000.0` | Relative weight of GT rows when GT is mixed with predictions. |
+| `prediction_weight` | str \| float | `"uniform"` | Prediction row weight in a GT-present solve: `"uniform"`, `"confidence"`, or a fixed float. Defaults to uniform to match the batch (`weigh_by_confidence=false`). |
+| `confirm_default` | str | `"all"` | Default suggestion set a bulk-confirm promotes to GT: `"all"` (predictions and reprojections), `"predictions"`, or `"projections"`. |
+| `low_conf` | float | `0.2` | Predictions below this confidence are visually de-emphasised (not hidden). |
+| `undistort_before_solve` | bool | `false` | Undistort GT/prediction pixels before the linear DLT (more accurate on distorted lenses, but a zero-GT re-solve no longer matches the batch cache, which does not undistort). |
+| `equal_weight_protect_gt` | bool | `true` | Under `equal_weight`, force GT views to stay RANSAC inliers so a prediction consensus cannot vote a human label out. |
+| `gt_wins_keep_stabilizers` | bool | `false` | Under `gt_wins`, keep predictions as low-weight depth stabilisers even once GT is exclusive (guards degenerate GT-view geometry). |
