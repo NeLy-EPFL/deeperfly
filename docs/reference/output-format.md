@@ -8,6 +8,7 @@ deeperfly_outputs/
 ├── results.h5      # the result: cameras, skeleton, per-stage 2D/3D data
 ├── config.toml     # byte-for-byte snapshot of the config this run used
 ├── run.json        # per-stage fingerprints (drives cache reuse)
+├── labels.h5       # ground-truth annotations from 'deeperfly gui' (if any)
 └── *.mp4           # one per [[visualization.videos]] entry
 ```
 
@@ -125,3 +126,28 @@ changed or newly-appearing key does. Performance-only knobs (`batch_size`,
 verbatim (not hashed) so a mismatch can be reported as a readable diff. See
 [caching and re-runs](../explanation/pipeline.md#caching-and-re-runs) for the full
 model.
+
+## `labels.h5`
+
+Ground-truth annotations authored in [`deeperfly gui`](../guides/gui.md), written
+next to `results.h5` and **never** modifying it. Only what the operator actually
+authored is stored — sparsely (COO), so the file is tiny and carries no copy of the
+predictions:
+
+```
+attrs["meta"]   json: { deeperfly_labels_format_version, created_utc, identity }
+gt/
+    index       (N, 3) int32    [view, frame, point]
+    xy          (N, 2) float64  affirmed 2D pixel (footage space)
+    provenance  (N,)   uint8     1=dragged, 2=confirmed-prediction, 3=confirmed-projection
+occluded/
+    index       (M, 3) int32    [view, frame, point]  views a human flagged unusable
+```
+
+`identity` fingerprints the recording (skeleton points, camera names, frame count,
+image sizes, footage basenames) so a sidecar from a *different* recording is refused;
+it excludes the predictions and `created_utc`, so re-running detection/triangulation
+on the same recording keeps the labels valid (ground truth is absolute, not relative
+to what the network predicted). A legacy `corrections.h5` is migrated to this schema
+on open. Export the labels as a training/eval `.npz` with
+[`deeperfly labels-export`](../guides/cli.md#deeperfly-labels-export).

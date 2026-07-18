@@ -13,7 +13,7 @@ import typer
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
 from .console import _configure_logging
-from .gui import _cmd_gui
+from .gui import _cmd_gui, _cmd_labels_export
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
 
@@ -229,11 +229,12 @@ def gui(
     """Serve the interactive web viewer/corrector for a result.
 
     Starts a local server and opens a browser editor. View every camera with its
-    2D skeleton overlay, drag keypoints to correct the 2D pose, or switch to 3D
-    mode to drag a reprojected 3D point (the other views update live).
-    Corrections are written to a corrections.h5 sidecar and never modify
-    results.h5. It runs headless and can be reached from another machine's
-    browser (default-bound to localhost; tunnel with 'ssh -L' for remote use).
+    2D skeleton overlay and drag keypoints to annotate the ground-truth 2D pose;
+    the 3D point is re-derived live from your labels and every view updates.
+    Ground-truth labels are written to a labels.h5 sidecar and never modify
+    results.h5 (an older corrections.h5 is migrated on open). It runs headless and
+    can be reached from another machine's browser (default-bound to localhost;
+    tunnel with 'ssh -L' for remote use).
     """
     _configure_logging(log_level.value)
     _cmd_gui(
@@ -244,6 +245,47 @@ def gui(
             port=port,
             no_browser=no_browser,
             keep_alive=keep_alive,
+        )
+    )
+
+
+@app.command(name="labels-export")
+def labels_export(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(the labels.h5 beside it is exported)"
+        ),
+    ],
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .npz (default: labels_gt.npz beside results.h5)",
+        ),
+    ] = None,
+    include_projection: Annotated[
+        bool,
+        typer.Option(
+            "--include-projection",
+            help="also export GT confirmed from the 3D reprojection (the model's own "
+            "guess); excluded by default so the export is human-placed pixels only",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Export saved ground-truth labels (labels.h5) as a training/eval dataset (.npz).
+
+    Writes the provenance-filtered GT pixels + occluded mask in footage pixel space
+    (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), plus
+    ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui' first.
+    """
+    _configure_logging(log_level.value)
+    _cmd_labels_export(
+        argparse.Namespace(
+            path=path, output=output, include_projection=include_projection
         )
     )
 

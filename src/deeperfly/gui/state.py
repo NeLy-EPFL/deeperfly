@@ -1,33 +1,23 @@
-"""The editor's data model: a :class:`PoseResult` plus a corrections overlay.
+"""The editor's data model: a :class:`PoseResult` plus a ground-truth labels overlay.
 
-:class:`EditorState` is deliberately free of any Qt dependency -- it is the
-testable core that the widgets drive. It exposes the *displayed* points
-(corrected-over-original) for the current frame, applies 2D and 3D edits, and
-holds the dirty/edit-mode flags.
+:class:`EditorState` is deliberately free of any web/Qt dependency -- it is the
+testable core the server drives. The editor is a *ground-truth annotation* tool: the
+operator's 2D labels are the source of truth and the 3D pose is a pure derived
+function of them (see :mod:`deeperfly.gui.solve`), so nothing 3D is stored -- it is
+recomputed from the labels + the detector's predictions and cached per frame.
 
-The 3D edit is the interesting one. There is always a single internal 3D point
-per keypoint; a drag re-estimates it and then refreshes every view's reprojection
-with the same forward model used to draw it. Imperfect calibration means no single
-3D point reprojects exactly onto all views at once, so a per-view point can be
-*fixed* (finalized): a fixed view keeps its locked pixel and acts as a constraint.
-Dropping a drag pins the dragged view there (it becomes fixed at the release
-pixel), so the placed point stays put instead of snapping to the reprojection.
+Per ``(view, frame, point)`` the operator authors at most a tri-state
+(:class:`~deeperfly.gui.labels.Labels`): a GT pixel, an "occluded" flag, or nothing.
+The *displayed* 2D for a view resolves by precedence GT -> prediction, and the 3D
+point is ``solve_point_3d(gt, predictions)`` (falling back to the run's cached 3D when
+fewer than two views are usable). A drag creates/moves the GT at the dragged view and
+re-solves the 3D live via :func:`~deeperfly.gui.solve.solve_point_3d_drag`, which lands
+the point under the cursor even with a single usable view.
 
-A per-view point can instead be *invisible* (obscured): a camera that genuinely
-cannot see the keypoint is dropped from the triangulation entirely and its dot
-just follows the reprojection (it cannot be dragged). Marking a view invisible
-re-solves the 3D point from the remaining visible views, so a bad/occluded
-observation stops dragging the estimate off. Invisible is mutually exclusive with
-fixed (a point is at most one of fixed / invisible / plain).
-
-On a drag we re-solve the 3D point by a constrained DLT
-(:func:`deeperfly.triangulation.triangulate`) over the fixed views' locked pixels
-plus the dragged view's cursor; with fewer than two such observations (the common
-"nothing fixed yet" case) it falls back to the orthogonal projection of the old 3D
-point onto the back-projection ray of the dragged pixel
-(:func:`deeperfly.geometry.backproject_ray_one` +
-:func:`deeperfly.geometry.closest_point_on_ray`), which lands the point exactly
-under the cursor. Non-fixed views then follow the new 3D point's reprojection.
+The method names ``apply_2d_edit`` / ``apply_3d_edit`` / ``toggle_fixed`` /
+``toggle_invisible`` / ``reset_*`` are kept as the wire-compatible surface the server
+dispatches to; under the new model ``toggle_fixed`` confirms/clears a GT pixel and
+``toggle_invisible`` toggles the occluded flag.
 """
 
 from __future__ import annotations
@@ -36,70 +26,96 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Float
 
-from ..geometry import closest_point_on_ray
+from ..config import AnnotationParams, TriangulationParams
 from ..results import PoseResult
-from ..triangulation import triangulate
-from .corrections import Corrections
+from .labels import Labels, Provenance
 from .nmf_live import NmfLive
+from .solve import solve_point_3d, solve_point_3d_drag
 
 __all__ = ["EditMode", "EditorState"]
 
 log = logging.getLogger("deeperfly")
+
+#: How many undo steps to keep (a backstop; one entry per operator gesture).
+UNDO_LIMIT = 200
 
 
 class EditMode(str, Enum):
     """The interaction mode of the editor."""
 
     view = "view"  # read-only inspection
-    edit_2d = "edit_2d"  # drag per-view 2D keypoints
-    edit_3d = "edit_3d"  # drag reprojected 3D keypoints
+    edit_2d = "edit_2d"  # drag per-view 2D keypoints (create GT)
+    edit_3d = "edit_3d"  # drag reprojected 3D keypoints (create GT + re-solve)
+
+
+@dataclass
+class _UndoEntry:
+    """A snapshot of one frame's labels, so an edit can be reverted.
+
+    ``point`` names the target point and ``coalesce`` marks a drag-style edit: a run
+    of coalescing edits to the *same* ``(t, point)`` collapses to a single undo step
+    (so one drag is one undo), while a discrete op (toggle / reset / confirm) always
+    starts a new step.
+    """
+
+    t: int
+    point: int | None
+    coalesce: bool
+    gt: np.ndarray
+    provenance: np.ndarray
+    occluded: np.ndarray
 
 
 @dataclass
 class EditorState:
-    """A loaded result plus its manual-corrections overlay and view state."""
+    """A loaded result plus its ground-truth labels overlay and view state."""
 
     result: PoseResult
-    corrections: Corrections
+    labels: Labels
+    ann: AnnotationParams = field(default_factory=AnnotationParams)
+    tri: TriangulationParams = field(default_factory=TriangulationParams)
     frame: int = 0
     mode: EditMode = EditMode.view
     #: Per-frame live NMF re-fit (model joints, angles, names), keyed by frame.
     nmf_live: NmfLive | None = None
     _nmf_cache: dict[int, tuple] = field(default_factory=dict)
+    #: Per-frame derived 3D pose (P, 3), recomputed from the labels; the "cache" the
+    #: whole design treats the 3D as. Dropped/updated when a frame's labels change.
+    _pts3d_cache: dict[int, np.ndarray] = field(default_factory=dict)
+    #: Undo / redo stacks of per-frame label snapshots (see :class:`_UndoEntry`).
+    _undo: list = field(default_factory=list)
+    _redo: list = field(default_factory=list)
 
     @classmethod
     def from_result(
         cls,
         result: PoseResult,
-        corrections: Corrections | None = None,
+        labels: Labels | None = None,
         *,
+        ann: AnnotationParams | None = None,
+        tri: TriangulationParams | None = None,
         template=None,
         articulation=None,
     ) -> EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
-        A fresh overlay seeds the per-view "obscured" state from the detector: a
-        NaN 2D detection means that camera did not see the keypoint, so the view
-        starts obscured (dropped from triangulation, just following the
-        reprojection) and the operator can drag it in to un-obscure it. The 3D
-        point itself is left as the pipeline solved it (already triangulated from
-        the finite views). A loaded sidecar keeps its own saved invisible mask.
+        Unlike the old corrections overlay, a fresh labels overlay seeds *nothing*:
+        a view the detector missed is ``absent`` (derived), not a stored occlusion,
+        so an untouched session carries no authored state. ``ann`` / ``tri`` are the
+        annotation solve policy and shared triangulation params (from the run config
+        beside ``results.h5``); both default to the packaged defaults.
 
         When the result carries a fitted NMF model and 3D pose, a :class:`NmfLive`
-        is built so the overlaid model re-fits to the operator's 3D corrections.
-        ``template`` / ``articulation`` (from the run config beside ``results.h5``)
-        make that re-fit use the *same* model the pipeline did; both default to the
-        packaged NeuroMechFly model.
+        is built so the overlaid model re-fits to the operator's edits. ``template`` /
+        ``articulation`` make that re-fit use the *same* model the pipeline did.
         """
-        if corrections is None:
-            corrections = Corrections.empty(
+        if labels is None:
+            labels = Labels.empty(
                 result.n_views, result.n_frames, cls._n_points(result)
             )
-            corrections.pts2d_invisible = ~np.isfinite(result.pts2d).all(axis=-1)
         nmf_live = None
         if result.nmf_pts3d is not None and result.pts3d is not None:
             try:
@@ -108,7 +124,13 @@ class EditorState:
                 log.exception(
                     "could not set up the live NMF re-fit; using the static fit"
                 )
-        return cls(result=result, corrections=corrections, nmf_live=nmf_live)
+        return cls(
+            result=result,
+            labels=labels,
+            ann=ann or AnnotationParams(),
+            tri=tri or TriangulationParams(),
+            nmf_live=nmf_live,
+        )
 
     @staticmethod
     def _n_points(result: PoseResult) -> int:
@@ -144,81 +166,146 @@ class EditorState:
 
     @property
     def dirty(self) -> bool:
-        return self.corrections.dirty
+        return self.labels.dirty
 
     def _resolve_frame(self, frame: int | None) -> int:
         return self.frame if frame is None else frame
 
+    # -- per-view label masks (for the payload) -------------------------------
+
+    def gt_mask(self, frame: int | None = None) -> np.ndarray:
+        """``(V, P)`` boolean: which per-view points carry a GT pixel at ``frame``."""
+        return self.labels.has_gt[:, self._resolve_frame(frame)]
+
+    def occluded_mask(self, frame: int | None = None) -> np.ndarray:
+        """``(V, P)`` boolean: which per-view points are occluded at ``frame``."""
+        return self.labels.occluded[:, self._resolve_frame(frame)]
+
     # -- corrected frames -----------------------------------------------------
 
     def corrected_frames(self) -> list[dict]:
-        """Every frame carrying a manual correction, with its corrected-point count.
+        """Every frame carrying a label, with its labelled-point count.
 
-        A point counts as corrected in a frame when its 2D was moved in any view, its
-        3D was re-solved, or its per-view visibility differs from the detector's own
-        (the operator obscured a detected point, or revealed a missed one) -- exactly
-        the edits the corrections sidecar persists. The fresh overlay seeds the
-        obscured state from the NaN detections, so an untouched result reports nothing
-        here. Returned sorted by frame, each ``{"frame": t, "count": n}`` with ``n``
-        the number of corrected points -- what the GUI's frame list shows so the
-        operator can jump back to frames they have touched.
+        A point counts as labelled in a frame when any view has a GT pixel or an
+        occlusion flag (an authored human decision). Returned sorted by frame, each
+        ``{"frame": t, "count": n}`` -- what the GUI's frame list shows so the
+        operator can jump back to frames they have worked on.
         """
-        c = self.corrections
-        # A per-view point is "touched" if its 2D was edited or its visibility was
-        # flipped from the detector's natural state (a NaN detection seeds obscured).
-        seed_invisible = ~np.isfinite(self.result.pts2d).all(axis=-1)  # (V, T, P)
-        touched_2d = c.pts2d_edited | (c.pts2d_invisible != seed_invisible)  # (V, T, P)
-        per_point = touched_2d.any(axis=0) | c.pts3d_edited  # (T, P)
+        decided = self.labels.has_gt | self.labels.occluded  # (V, T, P)
+        per_point = decided.any(axis=0)  # (T, P)
         counts = per_point.sum(axis=1)  # (T,)
         return [
             {"frame": int(t), "count": int(counts[t])} for t in np.nonzero(counts)[0]
         ]
 
-    # -- displayed points (corrected over original) ---------------------------
+    # -- displayed 2D (labels over predictions) -------------------------------
 
     def display_pts2d(self, frame: int | None = None) -> Float[np.ndarray, "V P 2"]:
-        """The 2D points to draw for ``frame``: corrections over the originals."""
+        """The per-view 2D to draw for ``frame``: GT over the detector prediction.
+
+        A GT view shows its pixel; a plain view shows the prediction; an occluded
+        view (or one with neither) is ``NaN`` -- the front-end draws the reprojection
+        ghost there instead.
+        """
         t = self._resolve_frame(frame)
-        base = self.result.pts2d[:, t]
-        ov = self.corrections.pts2d[:, t]
-        mask = self.corrections.pts2d_edited[:, t]
-        return np.where(mask[..., None], ov, base)
+        gt = self.labels.gt[:, t]  # (V, P, 2)
+        has = self.labels.has_gt[:, t]  # (V, P)
+        occ = self.labels.occluded[:, t]  # (V, P)
+        pred = self.result.pts2d[:, t]  # (V, P, 2)
+        return np.where(has[..., None], gt, np.where(~occ[..., None], pred, np.nan))
+
+    def display_pts2d_refine(
+        self, frame: int | None = None
+    ) -> Float[np.ndarray, "V P 2"] | None:
+        """The per-view 2D drawn in Edit 3D: the derived 3D reprojected into every
+        view, with each GT view overridden by its authored pixel, or ``None``.
+
+        GT views hold their pixel (they generally do not all agree with one 3D
+        point); every other view -- plain or occluded -- follows the reprojection.
+        """
+        proj = self.display_pts3d_projected(frame)
+        if proj is None:
+            return None
+        t = self._resolve_frame(frame)
+        gt = self.labels.gt[:, t]  # (V, P, 2)
+        has = self.labels.has_gt[:, t]  # (V, P)
+        return np.where(has[..., None], gt, proj)
+
+    # -- derived 3D (the "cache") ---------------------------------------------
+
+    def _point_obs(self, t: int, point: int):
+        """``(gt_obs (V,2), pred_obs (V,2), conf (V,)|None)`` for one point at ``t``.
+
+        ``pred_obs`` NaNs out occluded views and views that already carry GT (GT
+        overrides the prediction there), so it is exactly the prediction contribution
+        the solve should see.
+        """
+        has = self.labels.has_gt[:, t, point]  # (V,)
+        occ = self.labels.occluded[:, t, point]  # (V,)
+        gt_obs = np.where(has[:, None], self.labels.gt[:, t, point], np.nan)
+        pred = self.result.pts2d[:, t, point].astype(float)  # (V, 2)
+        pred_ok = np.isfinite(pred).all(axis=-1) & ~occ & ~has
+        pred_obs = np.where(pred_ok[:, None], pred, np.nan)
+        conf = None if self.result.conf is None else self.result.conf[:, t, point]
+        return gt_obs, pred_obs, conf
+
+    def _solve_point(self, t: int, point: int) -> np.ndarray:
+        """Derive one point's 3D from its labels + predictions (run-cache fallback)."""
+        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        x = solve_point_3d(
+            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
+        )
+        if not np.all(np.isfinite(x)) and self.result.pts3d is not None:
+            x = np.asarray(self.result.pts3d[t, point], dtype=float)
+        return np.asarray(x, dtype=float)
+
+    def _ensure_pts3d(self, t: int) -> np.ndarray:
+        """The frame's derived ``(P, 3)`` 3D, building + caching it if needed."""
+        pts = self._pts3d_cache.get(t)
+        if pts is None:
+            pts = np.stack([self._solve_point(t, p) for p in range(self.n_points)])
+            self._pts3d_cache[t] = pts
+        return pts
+
+    def _rederive_point(self, t: int, point: int) -> None:
+        """Recompute one point's 3D in the frame cache (no-op if the frame is uncached)."""
+        if t in self._pts3d_cache:
+            self._pts3d_cache[t][point] = self._solve_point(t, point)
+
+    def _set_point3d(self, t: int, point: int, xyz) -> None:
+        """Store an already-solved 3D for one point (the drag result) in the cache."""
+        self._ensure_pts3d(t)[point] = np.asarray(xyz, dtype=float)
+
+    def _invalidate_frame3d(self, t: int) -> None:
+        self._pts3d_cache.pop(t, None)
 
     def display_pts3d(
         self, frame: int | None = None
     ) -> Float[np.ndarray, "P 3"] | None:
-        """The 3D points for ``frame`` (corrections over originals), or ``None``."""
+        """The derived 3D points for ``frame``, or ``None`` when the result has no 3D."""
         if self.result.pts3d is None:
             return None
-        t = self._resolve_frame(frame)
-        base = self.result.pts3d[t]
-        ov = self.corrections.pts3d[t]
-        mask = self.corrections.pts3d_edited[t]
-        return np.where(mask[..., None], ov, base)
+        return self._ensure_pts3d(self._resolve_frame(frame))
 
     def display_pts3d_projected(
         self, frame: int | None = None
     ) -> Float[np.ndarray, "V P 2"] | None:
-        """The 3D points for ``frame`` reprojected into every view, or ``None``.
+        """The derived 3D for ``frame`` reprojected into every view, or ``None``.
 
-        Uses the same full forward model (:meth:`CameraGroup.project`) the
-        overlays are drawn with, so a 3D edit lands exactly under the cursor.
+        Uses the same full forward model (:meth:`CameraGroup.project`) the overlays
+        are drawn with, so a drag lands exactly under the cursor.
         """
         pts3d = self.display_pts3d(frame)
         if pts3d is None:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
 
+    # -- NMF overlay (unchanged, driven by the derived 3D) --------------------
+
     def display_nmf_projected(
         self, frame: int | None = None
     ) -> Float[np.ndarray, "V P 2"] | None:
-        """The fitted NMF model joints for ``frame`` reprojected into every view, or ``None``.
-
-        Uses the live re-fit (the model re-solved from the operator's current 3D
-        corrections), projected with the same forward model the other overlays use,
-        so the model follows the latent skeleton as it is edited. Falls back to the
-        pipeline's static fit when the live re-fit is unavailable.
-        """
+        """The fitted NMF model joints for ``frame`` reprojected into every view."""
         fit = self.nmf_fit(frame)
         if fit is None:
             return None
@@ -229,9 +316,9 @@ class EditorState:
     ) -> tuple[np.ndarray, np.ndarray | None, list[str] | None] | None:
         """The NMF fit for ``frame``: ``(model_pts3d, angles, angle_names)`` or ``None``.
 
-        Re-solved from the frame's (corrected) 3D pose when a :class:`NmfLive` is
-        available -- so it tracks edits -- and memoized per frame (invalidated when
-        that frame's 3D changes). Otherwise returns the pipeline's static fit.
+        Re-solved from the frame's derived 3D pose when a :class:`NmfLive` is
+        available (so it tracks edits) and memoized per frame; otherwise the
+        pipeline's static fit.
         """
         t = self._resolve_frame(frame)
         cached = self._nmf_cache.get(t)
@@ -255,13 +342,7 @@ class EditorState:
     def nmf_posed_verts(
         self, frame: int | None = None
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """The frame's posed NMF mesh ``(vertices (Nv, 3), valid_faces (Nf,))``, or ``None``.
-
-        The head/abdomen size is the IK stage's data estimate (``nmf_chain_scales``),
-        not an operator knob -- the legs always skin to the corrected keypoints. The
-        body is placed at the recording's fixed ``nmf_body_scale`` (constant size,
-        per-frame rotation + translation only), so it does not breathe across frames.
-        """
+        """The frame's posed NMF mesh ``(vertices (Nv, 3), valid_faces (Nf,))``, or ``None``."""
         fit = self.nmf_fit(frame)
         if fit is None:
             return None
@@ -281,226 +362,306 @@ class EditorState:
         """Drop the cached NMF fit for ``frame`` ``t`` after its 3D pose changed."""
         self._nmf_cache.pop(t, None)
 
-    def display_pts2d_refine(
-        self, frame: int | None = None
-    ) -> Float[np.ndarray, "V P 2"] | None:
-        """The per-view 2D drawn in Edit 3D: the 3D point reprojected into every
-        view, with each *fixed* view overridden by its locked pixel, or ``None``.
-
-        This is the "corrected 2D" result of a refined frame: non-fixed views are
-        a single 3D point's reprojection while fixed views hold the operator's
-        finalized pixels (which generally do not all agree with one 3D point).
-        """
-        proj = self.display_pts3d_projected(frame)
-        if proj is None:
-            return None
-        t = self._resolve_frame(frame)
-        fixed = self.corrections.pts2d_fixed[:, t]  # (V, P)
-        locked = self.corrections.pts2d[:, t]  # (V, P, 2)
-        return np.where(fixed[..., None], locked, proj)
-
-    # -- edits ----------------------------------------------------------------
+    # -- edits (the wire-compatible surface) ----------------------------------
 
     def apply_2d_edit(
         self, view: int, point: int, xy, frame: int | None = None
     ) -> None:
-        """Move ``point`` in ``view`` to pixel ``xy`` (independent per view)."""
-        self.corrections.set_pts2d(view, self._resolve_frame(frame), point, xy)
+        """Author a GT pixel for ``point`` in ``view`` at ``xy`` (a 2D drag)."""
+        t = self._resolve_frame(frame)
+        self._record_undo(t, point, coalesce=True)
+        self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
+        self._rederive_point(t, point)
+        self._invalidate_nmf(t)
 
     def apply_3d_edit(
         self, view: int, point: int, xy, frame: int | None = None, *, fix: bool = False
     ) -> Float[np.ndarray, "3"] | None:
-        """Re-solve ``point``'s 3D location from a drag to pixel ``xy`` in ``view``.
+        """Create/move the GT at ``view`` from a drag to ``xy`` and re-solve the 3D.
 
-        The 3D point is re-estimated by a constrained DLT over the *fixed* views'
-        locked pixels plus the dragged view's cursor; non-fixed views then follow
-        its reprojection. With fewer than two such observations (e.g. nothing is
-        fixed yet) it falls back to the orthogonal projection of the old 3D point
-        onto the back-projection ray of ``xy``, which lands the point exactly
-        under the cursor (the original Edit 3D behavior).
-
-        With ``fix=True`` (a drag *release*) the dragged view is finalized at
-        ``xy``: it is pinned there as a locked constraint so it stays exactly
-        where it was dropped instead of snapping to the reprojection. The live
-        re-solve mid-drag uses ``fix=False`` so a view is only pinned on release
-        (or if it was already fixed, in which case its lock follows the cursor).
-
-        Dragging an *obscured* view un-obscures it (back to the normal state) and
-        proceeds: the operator is placing it, so it rejoins the estimate.
-
-        Returns the new 3D point, or ``None`` if there is no 3D point to move
-        (no triangulation, or no usable constraint and the point is NaN here).
-
-        Parameters
-        ----------
-        view
-            The view index the user dragged in.
-        point
-            The skeleton point index being moved.
-        xy
-            The pixel the user dragged the point to, ``(2,)``.
-        frame
-            The frame to edit (defaults to the current frame).
-        fix
-            Whether to finalize (pin) the dragged view at ``xy`` -- set on a drag
-            release so the dropped point persists; left ``False`` for the live
-            mid-drag re-solve.
+        The dragged view becomes a GT constraint and the 3D re-solves live via
+        :func:`~deeperfly.gui.solve.solve_point_3d_drag` -- a weighted DLT with two or
+        more usable views, else a ray-slide of the prior 3D so the point lands under
+        the cursor. Every drag (``fix`` or not) authors the GT; ``fix`` is retained for
+        wire compatibility but no longer distinguishes a "pin" (GT *is* the
+        constraint). Returns the new 3D point, or ``None`` if there is nothing to move.
         """
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
-        if self.corrections.pts2d_invisible[view, t, point]:
-            # Dragging an obscured view un-obscures it: the operator is placing it,
-            # so it re-enters the normal flow (and contributes to the re-solve below).
-            self.corrections.set_invisible(view, t, point, False)
-        xy = np.asarray(xy, dtype=float)
-        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
-
-        # Observations for the constrained DLT: each fixed view at its locked
-        # pixel, plus the dragged view at the cursor (overriding if it is fixed).
-        obs = np.full((self.n_views, 2), np.nan)
-        obs[fixed] = self.corrections.pts2d[fixed, t, point]
-        obs[view] = xy
-
-        if int(np.isfinite(obs).all(axis=1).sum()) >= 2:
-            x_new = np.asarray(
-                triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
-            )
-        else:
-            pts3d = self.display_pts3d(t)
-            assert pts3d is not None
-            x_old = pts3d[point]
-            if not np.all(np.isfinite(x_old)):
-                return None
-            camera = list(self.result.cameras)[view]
-            origin, direction = camera.backproject_ray(xy)
-            x_new = np.asarray(
-                closest_point_on_ray(
-                    jnp.asarray(origin), jnp.asarray(direction), jnp.asarray(x_old)
-                ),
-                dtype=float,
-            )
-        if not np.all(np.isfinite(x_new)):
+        prior = self._ensure_pts3d(t)[point].copy()
+        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        x_new = solve_point_3d_drag(
+            self.result.cameras, gt_obs, pred_obs, conf, view, xy, prior, self.ann
+        )
+        if x_new is None:
             return None
-        self.corrections.set_pts3d(t, point, x_new)
+        self._record_undo(t, point, coalesce=True)
+        self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
+        self._set_point3d(t, point, x_new)
         self._invalidate_nmf(t)
-        if fix or bool(fixed[view]):
-            self.corrections.set_pts2d(view, t, point, xy, fixed=True)
         return x_new
 
     def toggle_fixed(
         self, view: int, point: int, frame: int | None = None
     ) -> bool | None:
-        """Toggle whether ``point`` in ``view`` is finalized (a 3D constraint).
+        """Confirm the view's displayed 2D as GT, or clear it if already GT.
 
-        Fixing snapshots the view's current displayed 2D as a locked pixel;
-        unfixing drops it back to following the reprojection. Either way the 3D
-        point is re-estimated from the (new) fixed set so the non-fixed views
-        update. Returns the new fixed state, or ``None`` if there is no 3D point
-        to refine or the point is not visible in this view.
+        This is the "finalize / un-finalize" gesture: with no GT it snapshots the
+        current reprojected pixel as a confirmed GT; with GT it drops it back to the
+        prediction. Either way the 3D re-solves. Returns the new GT state, or ``None``
+        if there is no 3D to refine or the point is not visible in this view.
         """
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
-        cur2d = self.display_pts2d_refine(t)
-        if cur2d is None:
-            return None
-        now_fixed = not bool(self.corrections.pts2d_fixed[view, t, point])
-        if now_fixed:
-            xy = cur2d[view, point]
-            if not np.all(np.isfinite(xy)):
-                return None  # cannot fix a point that is not visible in this view
-            self.corrections.set_pts2d(view, t, point, xy, fixed=True)
-        else:
-            self.corrections.clear_2d(view, t, point)
-        self._resolve_3d_from_fixed(point, t)
-        return now_fixed
-
-    def _resolve_3d_from_fixed(self, point: int, t: int) -> None:
-        """Re-triangulate ``point``'s 3D location from its fixed views alone.
-
-        A no-op below two fixed views (the 3D point keeps its current value).
-        """
-        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
-        if int(fixed.sum()) < 2:
-            return
-        obs = np.full((self.n_views, 2), np.nan)
-        obs[fixed] = self.corrections.pts2d[fixed, t, point]
-        x_new = np.asarray(
-            triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
-        )
-        if np.all(np.isfinite(x_new)):
-            self.corrections.set_pts3d(t, point, x_new)
+        if self.labels.has_gt[view, t, point]:
+            self._record_undo(t, point, coalesce=False)
+            self.labels.clear_gt(view, t, point)
+            self._rederive_point(t, point)
             self._invalidate_nmf(t)
+            return False
+        cur = self.display_pts2d_refine(t)
+        if cur is None:
+            return None
+        xy = cur[view, point]
+        if not np.all(np.isfinite(xy)):
+            return None  # cannot confirm a point that is not visible in this view
+        self._record_undo(t, point, coalesce=False)
+        self.labels.set_gt(
+            view, t, point, xy, provenance=Provenance.CONFIRMED_PREDICTION
+        )
+        self._rederive_point(t, point)
+        self._invalidate_nmf(t)
+        return True
 
     def toggle_invisible(
         self, view: int, point: int, frame: int | None = None
     ) -> bool | None:
-        """Toggle whether ``point`` in ``view`` is obscured (dropped from triangulation).
+        """Toggle whether ``point`` in ``view`` is occluded (dropped from the 3D solve).
 
-        An obscured view contributes nothing to the 3D point and simply follows its
-        reprojection (it cannot be dragged); toggling re-solves the 3D from the
-        remaining visible views so the estimate updates. Setting it clears any 2D
-        edit / fixed flag for that view (invisible is mutually exclusive with fixed).
-        Returns the new invisible state, or ``None`` if there is no 3D to refine.
+        An occluded view contributes nothing to the 3D and follows the reprojection;
+        toggling re-solves the 3D from the remaining views. Setting it drops any GT for
+        that view. Returns the new occluded state, or ``None`` if there is no 3D.
         """
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
-        now_invisible = not bool(self.corrections.pts2d_invisible[view, t, point])
-        self.corrections.set_invisible(view, t, point, now_invisible)
-        self._resolve_3d_from_visible(point, t)
-        return now_invisible
-
-    def _resolve_3d_from_visible(self, point: int, t: int) -> None:
-        """Re-triangulate ``point``'s 3D location from its non-obscured views.
-
-        With two or more fixed views the fixed pixels define the point (deferring
-        to :meth:`_resolve_3d_from_fixed`, which already ignores the obscured,
-        non-fixed views); otherwise the point is triangulated from every visible
-        view's displayed 2D (the detector point unless edited/fixed), with the
-        obscured views dropped. A no-op below two usable observations.
-        """
-        fixed = self.corrections.pts2d_fixed[:, t, point]  # (V,)
-        if int(fixed.sum()) >= 2:
-            self._resolve_3d_from_fixed(point, t)
-            return
-        invisible = self.corrections.pts2d_invisible[:, t, point]  # (V,)
-        obs = self.display_pts2d(t)[:, point].astype(float)  # (V, 2)
-        obs[invisible] = np.nan
-        if int(np.isfinite(obs).all(axis=1).sum()) < 2:
-            return
-        x_new = np.asarray(
-            triangulate(self.result.cameras, obs[:, None, :])[0], dtype=float
-        )
-        if np.all(np.isfinite(x_new)):
-            self.corrections.set_pts3d(t, point, x_new)
-            self._invalidate_nmf(t)
+        self._record_undo(t, point, coalesce=False)
+        now = not bool(self.labels.occluded[view, t, point])
+        self.labels.set_occluded(view, t, point, now)
+        self._rederive_point(t, point)
+        self._invalidate_nmf(t)
+        return now
 
     def reset_point(self, point: int, frame: int | None = None) -> None:
-        """Drop every correction (all views' 2D, the fixed flags, the 3D) of ``point``."""
+        """Reset every view of ``point`` at ``frame`` to ``unset`` (drop GT + occlusion)."""
         t = self._resolve_frame(frame)
-        for view in range(self.n_views):
-            self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
-        self.corrections.clear_3d(t, point)
+        self._record_undo(t, point, coalesce=False)
+        self.labels.clear_point(t, point)
+        self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
     def reset_point_view(self, view: int, point: int, frame: int | None = None) -> None:
-        """Drop just ``view``'s 2D correction (and fixed flag) for ``point``.
-
-        Unlike :meth:`reset_point`, the shared 3D point is left in place; if two or
-        more views remain fixed it is re-solved from them so the other views still
-        agree (a no-op below two fixed views). Use this to revert one view without
-        discarding the work in the others.
-        """
+        """Reset just ``view``'s label for ``point`` to ``unset`` (GT + occlusion)."""
         t = self._resolve_frame(frame)
-        self.corrections.clear_2d(view, t, point)  # also clears the fixed flag
-        self._resolve_3d_from_fixed(point, t)
+        self._record_undo(t, point, coalesce=False)
+        self.labels.clear_view(view, t, point)
+        self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
     def reset_frame(self, frame: int | None = None) -> None:
-        """Drop every correction in ``frame`` -- all points, all views' 2D, the
-        fixed/obscured flags, and 3D -- back to the pipeline's original pose."""
+        """Reset every label in ``frame`` to ``unset`` -- back to the pipeline pose."""
         t = self._resolve_frame(frame)
-        self.corrections.clear_frame(t)
+        self._record_undo(t, None, coalesce=False)
+        self.labels.clear_frame(t)
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+
+    # -- undo / redo + bulk confirm + explicit GT set/clear -------------------
+
+    def _snapshot(self, t: int, point: int | None, coalesce: bool) -> _UndoEntry:
+        return _UndoEntry(
+            t=t,
+            point=point,
+            coalesce=coalesce,
+            gt=self.labels.gt[:, t].copy(),
+            provenance=self.labels.gt_provenance[:, t].copy(),
+            occluded=self.labels.occluded[:, t].copy(),
+        )
+
+    def _record_undo(self, t: int, point: int | None, *, coalesce: bool) -> None:
+        """Push a pre-edit snapshot, coalescing a run of drag edits on one point."""
+        top = self._undo[-1] if self._undo else None
+        if (
+            coalesce
+            and point is not None
+            and top is not None
+            and top.coalesce
+            and top.t == t
+            and top.point == point
+        ):
+            return  # same drag gesture: keep the existing (older) pre-state
+        self._undo.append(self._snapshot(t, point, coalesce))
+        self._redo.clear()
+        if len(self._undo) > UNDO_LIMIT:
+            self._undo.pop(0)
+
+    def _apply_snapshot(self, entry: _UndoEntry) -> None:
+        t = entry.t
+        self.labels.gt[:, t] = entry.gt
+        self.labels.gt_provenance[:, t] = entry.provenance
+        self.labels.occluded[:, t] = entry.occluded
+        self.labels.dirty = True
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def undo(self) -> int | None:
+        """Revert the last edit; returns the affected frame (so the client navigates)."""
+        if not self._undo:
+            return None
+        entry = self._undo.pop()
+        self._redo.append(self._snapshot(entry.t, entry.point, entry.coalesce))
+        self._apply_snapshot(entry)
+        return entry.t
+
+    def redo(self) -> int | None:
+        """Re-apply the last undone edit; returns the affected frame."""
+        if not self._redo:
+            return None
+        entry = self._redo.pop()
+        self._undo.append(self._snapshot(entry.t, entry.point, entry.coalesce))
+        self._apply_snapshot(entry)
+        return entry.t
+
+    def set_gt(
+        self,
+        view: int,
+        point: int,
+        xy,
+        frame: int | None = None,
+        *,
+        provenance: int = Provenance.DRAGGED,
+    ) -> None:
+        """Author a GT pixel without a drag re-solve (a click-place / confirm-in-place)."""
+        t = self._resolve_frame(frame)
+        self._record_undo(t, point, coalesce=False)
+        self.labels.set_gt(view, t, point, xy, provenance=provenance)
+        self._rederive_point(t, point)
+        self._invalidate_nmf(t)
+
+    def clear_gt(self, view: int, point: int, frame: int | None = None) -> None:
+        """Drop just ``view``'s GT pixel for ``point`` (revert to the prediction)."""
+        t = self._resolve_frame(frame)
+        self._record_undo(t, point, coalesce=False)
+        self.labels.clear_gt(view, t, point)
+        self._rederive_point(t, point)
+        self._invalidate_nmf(t)
+
+    def confirm(
+        self,
+        targets,
+        sources: str = "all",
+        frame: int | None = None,
+    ) -> bool:
+        """Promote suggested positions to GT for many ``(view, point)`` targets at once.
+
+        ``sources`` selects which suggestion to snapshot: ``"predictions"`` (the
+        detector peak), ``"projections"`` (the current 3D reprojected), or ``"all"``
+        (prediction where present, else projection). Occluded or already-GT views are
+        left untouched. One undo step; the 3D re-derives once. Returns whether anything
+        changed.
+        """
+        t = self._resolve_frame(frame)
+        saved_redo = list(self._redo)
+        self._record_undo(t, None, coalesce=False)
+        want_pred = sources in ("all", "predictions")
+        want_proj = sources in ("all", "projections")
+        proj = self.display_pts3d_projected(t) if want_proj else None
+        changed = False
+        for view, point in targets:
+            if (
+                self.labels.occluded[view, t, point]
+                or self.labels.has_gt[view, t, point]
+            ):
+                continue
+            xy = prov = None
+            pred = self.result.pts2d[view, t, point]
+            if want_pred and np.all(np.isfinite(pred)):
+                xy, prov = pred, Provenance.CONFIRMED_PREDICTION
+            if (
+                xy is None
+                and proj is not None
+                and np.all(np.isfinite(proj[view, point]))
+            ):
+                xy, prov = proj[view, point], Provenance.CONFIRMED_PROJECTION
+            if xy is not None:
+                self.labels.set_gt(view, t, point, xy, provenance=prov)
+                changed = True
+        if changed:
+            self._invalidate_frame3d(t)
+            self._invalidate_nmf(t)
+        else:
+            self._undo.pop()  # nothing changed: drop the no-op undo entry
+            self._redo[:] = saved_redo  # ... and restore the redo _record_undo cleared
+        return changed
+
+    def reset_targets(self, targets, frame: int | None = None) -> None:
+        """Reset many ``(view, point)`` cells at ``frame`` to ``unset`` in one undo step.
+
+        The batched counterpart of :meth:`reset_point_view`: it drops GT *and*
+        occlusion for every target and re-derives the frame's 3D once, so a
+        multi-select "Reset" is a single undoable action. A no-op batch (empty, or
+        every target already unset -- e.g. select-all then Reset on a fresh frame) does
+        nothing at all: no undo entry, no cleared redo, nothing marked dirty (mirrors
+        :meth:`confirm`).
+        """
+        targets = list(targets)
+        if not targets:
+            return
+        t = self._resolve_frame(frame)
+        has_gt = self.labels.has_gt
+        occluded = self.labels.occluded
+        if not any(
+            has_gt[view, t, point] or occluded[view, t, point]
+            for view, point in targets
+        ):
+            return
+        self._record_undo(t, None, coalesce=False)
+        for view, point in targets:
+            self.labels.clear_view(view, t, point)
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+
+    def occlude_targets(self, targets, frame: int | None = None) -> None:
+        """Occlude many ``(view, point)`` cells at ``frame`` in one undo step.
+
+        The batched counterpart of :meth:`toggle_invisible`, but a *set* not a toggle:
+        every target is flagged occluded (dropping any GT there), and the frame's 3D
+        re-derives once. Reversal is :meth:`reset_targets` / undo. Requires 3D (an
+        occluded view only means something when there is a solve to drop it from). A
+        no-op batch (empty, or every target already occluded) does nothing: no undo
+        entry, no cleared redo, nothing marked dirty (mirrors :meth:`confirm`).
+        """
+        if self.result.pts3d is None:
+            return
+        targets = list(targets)
+        if not targets:
+            return
+        t = self._resolve_frame(frame)
+        occluded = self.labels.occluded
+        if not any(not occluded[view, t, point] for view, point in targets):
+            return
+        self._record_undo(t, None, coalesce=False)
+        for view, point in targets:
+            self.labels.set_occluded(view, t, point, True)
+        self._invalidate_frame3d(t)
         self._invalidate_nmf(t)

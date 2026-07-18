@@ -1,13 +1,38 @@
-# Correction GUI
+# Annotation GUI
 
-`deeperfly gui` opens an interactive **web** viewer/corrector for a result. It
-serves every camera view with its 2D skeleton overlay to a browser canvas and lets
-you drag keypoints to fix the pose. Corrections are written to a `corrections.h5`
+`deeperfly gui` opens an interactive **web** viewer for a result and turns it into a
+**ground-truth annotation** tool. It serves every camera view with its 2D skeleton
+overlay to a browser canvas and lets you author the ground-truth 2D pose, with the
+run's prediction as a starting point. Your labels are written to a `labels.h5`
 sidecar next to the result and **never modify `results.h5`** — re-running the
-pipeline is always safe.
+pipeline is always safe (an older `corrections.h5` is migrated to `labels.h5` on
+open).
 
 Because it is a browser app it needs no GUI toolkit, runs headless, and can be
 reached from another machine (see [Remote use](#remote-use)).
+
+## The idea: 2D is the source, 3D is derived
+
+The 2D observations are the only source of truth; the 3D pose is a *pure function* of
+them (triangulation over the cameras). The 3D that `deeperfly run` wrote is a cache —
+the editor recomputes it live from whatever 2D you settle on. So you never edit 3D
+directly: you author **2D ground truth**, and the 3D follows.
+
+Per `(view, point)` you author at most one of:
+
+- **Ground truth** — an affirmed 2D pixel. Placed by dragging, or by confirming a
+  suggestion (below). This is what gets saved and what a future training run consumes.
+- **Occluded** — *"a human cannot place this point from this view."* The view is
+  dropped from the 3D solve. This is a positive judgement, not "the pixel is hidden":
+  if you can infer the location (e.g. the intersection of two visible segments), place
+  ground truth instead.
+- **nothing** — the view follows the detector's prediction, or (where the detector
+  fired nothing) the 3D reprojection, as a *suggestion* you can accept or move.
+
+The displayed point resolves by precedence **ground truth → prediction →
+reprojection**. How ground truth and predictions combine into the live 3D is
+configurable (`[annotation]`, default "ground truth wins"); see
+[configuration](../reference/configuration.md#annotation).
 
 ## Launch
 
@@ -21,69 +46,111 @@ deeperfly gui recording/deeperfly_outputs
 `results.h5`; if those no longer exist, pass `--footage-dir` to point at it (views
 with no footage still draw their overlays on blank frames). A browser opens
 automatically; the server stops a few seconds after the last tab closes. See the
-[CLI reference](cli.md#deeperfly-gui-correct-a-result) for every flag
-(`--host`, `--port`, `--no-browser`, `--keep-alive`).
+[CLI reference](cli.md#deeperfly-gui) for every flag (`--host`, `--port`,
+`--no-browser`, `--keep-alive`).
 
 ## Layout
 
-- **Views.** Every camera is shown with its overlay. Two arrangements share the
-  same canvases: **Focus** (one big view plus thumbnails) and **Grid** (all
-  cameras equally) — toggle with the layout switch or `f` / `g`. In Focus, `[` /
-  `]` cycle which camera is enlarged.
+- **Views.** Every camera is shown with its overlay. Two arrangements share the same
+  canvases: **Grid** (all cameras equally, the default) and **Focus** (one big view
+  plus thumbnails) — toggle with the layout switch or `f` / `g`. In Focus, `[` / `]`
+  cycle which camera is enlarged.
 - **Frame strip + slider.** Scrub with the slider, the `←` / `→` keys (`Shift` for
-  ±10), or type a frame number. The slider drives the whole editor, including the
-  3D view, so everything stays on the same frame.
+  ±10), or type a frame number. The slider drives the whole editor, including the 3D
+  view, so everything stays on the same frame.
 
-## Editing the pose
+## Reading the markers
 
-The mode switch chooses **what a drag does** (keys `2` / `3`):
+There is no 2D/3D mode to choose — each keypoint is drawn once, and its **marker style
+tells you where it came from** so you know at a glance what still needs attention:
 
-- **Edit 2D** — drag a keypoint to move it **in that view only**. Each view is
-  independent; use it to fix a single bad detection.
-- **Edit 3D** — drag a *reprojected 3D* point. The 3D point is re-solved from the
-  drag and **every other view updates live** to its new reprojection. This is the
-  fast way to fix a point everywhere at once. (Only available when the result has a
-  3D pose.)
-
-To just inspect, don't drag — both modes are read-only until you grab a point.
-
-### Fixed and obscured points (Edit 3D)
-
-Calibration is never perfect, so one 3D point rarely reprojects exactly onto every
-view. Each per-view point therefore has a state, shown in the **point status**
-widget for the selected point/view and set from there or by key:
-
-| State | Key | Meaning |
+| Marker | Source | Meaning |
 | --- | --- | --- |
-| **plain** | — | The view follows the shared 3D point's reprojection. |
-| **fixed** | `l` | The view is *pinned* at its pixel and acts as a constraint: the 3D point is re-triangulated from the fixed views, so the rest agree with your finalized pixels. Dropping a drag also fixes that view at the release pixel. |
-| **obscured** | `o` | The camera genuinely cannot see the point: it is dropped from triangulation entirely and just follows the reprojection (it can't be dragged). The 3D point re-solves from the remaining visible views. |
+| Filled disc, **lime** ring | **Ground truth** | you authored it (dragged or confirmed) — trusted |
+| Filled disc, thin **dark** ring (fill fades when faint) | **Prediction** | the detector's raw 2D; the fainter the fill, the lower its confidence |
+| **Hollow** circle in the point's limb colour | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
 
-A point is at most one of fixed / obscured / plain. Fresh sessions start a view
-**obscured** wherever the detector returned no point (a `NaN`); drag it in to
-reveal it. **Pin-on-tap** (`x`) makes a tap fix/unfix a point instead of dragging
-it.
+The **`?` button** (or the `?` key) opens the **Help panel**, which carries the full
+legend — the keypoint colours (one swatch per limb, taken from your skeleton's
+`limb_palette`, so it matches whatever config you loaded), the marker vocabulary above,
+and the reference-overlay line styles — alongside the keyboard shortcuts. The displayed
+point resolves by precedence **ground truth → prediction → projection**. A view you
+**occlude** (below) has its observation deleted, so it too shows as a projection — there
+is deliberately no separate marker for it.
 
-### Resetting
+## Annotating the pose
 
-Three reverts (in the controls bar), each back to the pipeline's original pose:
+**Dragging** a keypoint **creates ground truth** at the drop pixel — one gesture,
+whatever the marker was. When the result carries a 3D pose the 3D **re-solves live** as
+you drag, so every view's projection markers follow; the dragged view is authored as
+ground truth and lands exactly under the cursor. (With a 2D-only result there is no 3D
+to re-solve — the drop is simply that view's ground-truth pixel.)
 
-- **Point in view** (`r`) — just the selected point in its view.
-- **Point in all views** (`Shift+R`) — the selected point everywhere (2D, fixed
-  flags, and the 3D point).
-- **Whole frame** — every point in the current frame, all views.
+Most predictions are already good — you don't need to drag them, just **select** the
+points you want and **act** on them. Annotation is two steps: build a selection, then
+apply one verb to all of it.
 
-## Corrected-frames list
+### Selecting points
 
-The **Corrections** button (`j`) opens a retractable panel on the right listing
-every frame you have touched, with the number of corrected keypoints in each. It
-updates live as you edit, obscure, or reset. Click a row to jump to that frame, or
-use the panel's `↑` / `↓` buttons to step through corrected frames (wrapping at the
-ends); the current frame stays highlighted as you scrub. A frame is listed when a
-keypoint's 2D was moved, its 3D was re-solved, or its visibility differs from the
-detector's own — so it mirrors exactly what the `corrections.h5` sidecar stores,
-including corrections loaded from a previous session. The button's badge shows the
-total count even while the panel is collapsed.
+A selection is a set of `(point, view)` cells; the **Selection** toolbar group shows the
+live count. Build one with:
+
+- **Click** a point — select just that one (replaces the selection).
+- **Shift+click** a point — add it to (or remove it from) the selection.
+- **Double-click** a point — select that keypoint in **every** view.
+- **Shift+drag** a box (a rubber-band marquee) — add every point inside it. A plain drag
+  still moves a point / pans the view, so hold Shift to box-select.
+- **`a`** (or `Ctrl`/`Cmd`+`A`) — select every point in every view.
+- **`v`** — select every point in the view under the cursor.
+- **`Esc`** — clear the selection.
+
+The selection persists as you step between frames (the indices are the same), so you can
+act on the same joints frame after frame.
+
+### Acting on the selection
+
+Three verbs act on whatever is selected — the **Confirm** / **Reset** / **Occlude**
+buttons, or their keys. Each is a **single undo step**, however large the selection.
+
+- **Confirm** (`Enter`) — promote each selected cell's suggestion to ground truth.
+  Confirming a *prediction* snapshots the detector's pixel; confirming a *reprojection*
+  (a view where the detector fired nothing) snapshots the 3D's reprojected pixel and is
+  tagged as such, so it can be filtered out on export.
+- **Reset** (`r`, or `Delete` / `Backspace`) — clear each selected cell's label (ground
+  truth *or* occlusion) back to unset, so it falls back to the detector's original
+  prediction (or, where the detector fired nothing, the reprojection). The
+  "start over on these points" action.
+- **Occlude** (`o`) — mark each selected cell **occluded**: its observation is deleted,
+  so it drops from the 3D solve and the other views carry the reconstruction. On the
+  canvas it then looks like any other projection (a hollow palette circle) — occluding is
+  just *"delete this view's observation"*, and a deleted observation is indistinguishable
+  from one the detector never made. Reverse it with **Reset**, **undo**, or by dragging to
+  place ground truth. Occluded views are still recorded on export as a positive
+  "unplaceable" label (useful negative training signal).
+
+Everyday flows: click a point and press `Enter` to confirm one keypoint everywhere; `a`
+then `Enter` to confirm the whole frame; double-click a mislocated joint and press `r` to
+reset it across all views; Shift+drag a box around a few stray points and press `o` to
+occlude them.
+
+When exactly one point is selected, the **point-status widget** shows that
+`(point, view)`'s state — **Predicted** / **Ground truth** / **Occluded** — and lets you
+set it directly.
+
+### Undo / redo
+
+Every edit is undoable: `Ctrl`/`Cmd`+`Z` undoes, `Ctrl`/`Cmd`+`Y` (or
+`Ctrl`/`Cmd`+`Shift`+`Z`) redoes; the ↶ / ↷ buttons do the same. A whole drag — and a
+whole batched Confirm / Reset / Occlude — is a single undo step, and undo jumps back to
+the frame the edit was on.
+
+## Labelled-frames list
+
+The **Labels** button (`j`) opens a retractable panel listing every frame carrying a
+label, with the number of labelled keypoints in each. It updates live and includes
+labels loaded from a previous session. Click a row to jump there, or use `↑` / `↓` to
+step through labelled frames (wrapping at the ends); the current frame stays
+highlighted as you scrub. The button's badge shows the total even while collapsed.
 
 ## NeuroMechFly overlays
 
@@ -92,25 +159,18 @@ When the result carries a fitted inverse-kinematics model (the run enabled
 extra overlays are available:
 
 - **NMF skeleton** (`m`) — the fitted model joints, reprojected onto each view.
-- **NMF mesh** (`Shift+M`) — the posed NeuroMechFly mesh, smooth-shaded on the
-  client GPU at the view's resolution.
-- **3D view** (`c`) — a floating panel showing the cameras, the triangulated pose,
-  and the NMF skeleton/mesh together in 3D. Drag to orbit, `Shift`/right-drag to
-  pan, scroll to zoom; it overlays the editor without blocking it, so the frame
-  slider still scrubs everything.
+- **NMF mesh** (`Shift+M`) — the posed NeuroMechFly mesh, smooth-shaded on the client
+  GPU at the view's resolution.
+- **3D view** (`c`) — a floating panel showing the cameras, the derived pose, and the
+  NMF skeleton/mesh together in 3D. Drag to orbit, `Shift`/right-drag to pan, scroll to
+  zoom; it overlays the editor without blocking it, so the frame slider still scrubs.
 
-Both overlays **re-fit to your corrections**: as you edit the 3D latent skeleton,
-the model is re-solved for that frame and the overlay follows. The legs skin to the
-corrected keypoints; the head and abdomen are fixed model geometry sized to the fly
-by a per-recording scale the IK stage estimates from the data. The live re-fit uses
-the **same model the pipeline did** — the run config's template, joint bounds,
-fitted legs, `fit_head`/`fit_abdomen`, and any
-[custom marker placement](../reference/configuration.md#inverse_kinematics) all
-carry over (read from the `config.toml` snapshot beside `results.h5`).
-
-Which body parts the mesh draws is set by
-[`[gui].mesh_hide`](../reference/configuration.md#gui) (default: hide the wings);
-the rendered videos use `[visualization].mesh_hide` instead.
+Both overlays **re-fit to your labels**: as the derived 3D moves under your edits the
+model is re-solved for that frame. The live re-fit uses the **same model the pipeline
+did** — template, joint bounds, fitted legs, `fit_head`/`fit_abdomen`, and any
+[custom marker placement](../reference/configuration.md#inverse_kinematics) all carry
+over (read from the `config.toml` snapshot beside `results.h5`). Which parts the mesh
+draws is set by [`[gui].mesh_hide`](../reference/configuration.md#gui).
 
 ## Other overlays
 
@@ -118,20 +178,31 @@ the rendered videos use `[visualization].mesh_hide` instead.
 | --- | --- | --- |
 | Skeleton | `s` | The editable 2D skeleton overlay. |
 | Labels | `n` | Each keypoint's name. |
-| Latent 3D | `p` | The triangulated 3D estimate ghosted onto each view (no fixed overrides). |
+| 3D estimate | `p` | The derived 3D ghosted onto each view. |
 | Keypoints ↗ | `k` | The reference [keypoint viewer](../explanation/keypoints.md) (new tab). |
 
-## Saving
+## Saving & exporting
 
-Edits live in memory until you save. **Save** (`Ctrl`/`Cmd`+`S`) writes the
-`corrections.h5` sidecar; **Close** stops the server (it offers to save first if
-there are unsaved edits). The sidecar records its source `results.h5`, so a later
-session re-loads your corrections.
+Edits live in memory until you save. **Save** (`Ctrl`/`Cmd`+`S`) writes the `labels.h5`
+sidecar; **Close** stops the server (it offers to save first if there are unsaved
+labels). The sidecar is stamped with the recording's fingerprint (skeleton, cameras,
+frame count, image sizes, footage) so it is refused if pointed at a different
+recording — but a re-run of the *same* recording (new detector weights, retuned
+triangulation) keeps your labels valid, since ground truth is absolute.
+
+To use the labels as training/eval data, export them to an `.npz`:
+
+```bash
+deeperfly labels-export RESULT           # writes labels_gt.npz beside results.h5
+```
+
+This writes the provenance-filtered ground-truth pixels + occluded mask in footage
+pixel space (reprojection-confirmed GT is excluded unless `--include-projection`).
 
 ## Remote use
 
-The server binds loopback by default, so the editor is private. To correct a
-result on a remote machine, tunnel the port over SSH and open the browser locally:
+The server binds loopback by default, so the editor is private. To annotate on a
+remote machine, tunnel the port over SSH and open the browser locally:
 
 ```bash
 ssh -L 8000:localhost:8000 user@host
@@ -150,13 +221,14 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | Key | Action |
 | --- | --- |
 | `←` / `→` (`Shift` ±10) | Previous / next frame |
-| `2` / `3` | Edit 2D / Edit 3D mode |
 | `f` / `g`, `[` / `]` | Focus / Grid layout; cycle the focused camera |
-| `s` / `n` / `p` | Toggle skeleton / labels / latent 3D |
+| Click / `Shift`+click / double-click | Select a point / add-remove / that keypoint in every view |
+| `Shift`+drag | Rubber-band box: add every enclosed point |
+| `a` (`Ctrl`/`Cmd`+`A`) / `v` / `Esc` | Select all / all in the current view / clear the selection |
+| `Enter` / `r` / `o` | Confirm / Reset / Occlude the selection |
+| `Ctrl`/`Cmd`+`Z` / `Ctrl`/`Cmd`+`Y` | Undo / redo |
+| `s` / `n` / `p` | Toggle skeleton / labels / 3D estimate |
 | `m` / `Shift+M` / `c` | Toggle NMF skeleton / NMF mesh / 3D view |
-| `x` | Pin-on-tap (Edit 3D) |
-| `l` / `o` | Fix / obscure the selected point (Edit 3D) |
-| `r` / `Shift+R` | Reset the selected point in its view / all views |
-| `j` | Show / hide the corrected-frames list |
-| `Ctrl`/`Cmd`+`S` | Save corrections |
+| `j` | Show / hide the labelled-frames list |
+| `Ctrl`/`Cmd`+`S` | Save labels |
 | `?` / `Esc` | Show shortcuts / close an overlay |

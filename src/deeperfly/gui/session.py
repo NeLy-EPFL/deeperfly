@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .labels import labels_identity
 from .readers import FrameSource
 from .state import EditorState
 
@@ -32,8 +33,11 @@ class Session:
         The per-camera frame decoder.
     results_path
         Path to the ``results.h5`` (recorded in the saved sidecar's metadata).
-    corrections_path
-        Where :func:`~deeperfly.gui.corrections.save_corrections` writes.
+    labels_path
+        Where :func:`~deeperfly.gui.labels.save_labels` writes the ``labels.h5`` sidecar.
+    identity
+        The recording fingerprint stamped into ``labels.h5`` (see
+        :func:`~deeperfly.gui.labels.labels_identity`), so a stale sidecar is refused.
     n_frames
         The playable frame count: the result's frames clipped to what the
         footage actually covers (so scrubbing never runs past the video).
@@ -49,8 +53,9 @@ class Session:
     state: EditorState
     source: FrameSource
     results_path: str
-    corrections_path: Path
+    labels_path: Path
     n_frames: int
+    identity: dict = field(default_factory=dict)
     image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
     nmf_hide_parts: tuple[str, ...] = ("wings",)
 
@@ -61,19 +66,36 @@ class Session:
         source: FrameSource,
         *,
         results_path: str | Path,
-        corrections_path: str | Path,
+        labels_path: str | Path,
+        identity: dict | None = None,
+        footage: dict | None = None,
         image_sizes: dict[str, tuple[int, int]] | None = None,
         nmf_hide_parts: "Sequence[str]" = ("wings",),
     ) -> Session:
-        """Assemble a session, clipping ``n_frames`` to the available footage."""
+        """Assemble a session, clipping ``n_frames`` to the available footage.
+
+        ``identity`` fingerprints the recording for the labels sidecar; when omitted
+        it is derived from the state (skeleton points, cameras, frame count) plus
+        ``image_sizes`` and ``footage`` -- enough to refuse a labels file from a
+        different recording.
+        """
         n_source = source.n_frames()
         n_frames = state.n_frames if n_source is None else min(state.n_frames, n_source)
+        if identity is None:
+            identity = labels_identity(
+                point_names=list(state.result.skeleton.point_names),
+                camera_names=list(state.camera_names),
+                n_frames=state.n_frames,
+                image_sizes=image_sizes,
+                footage=footage,
+            )
         return cls(
             state=state,
             source=source,
             results_path=str(results_path),
-            corrections_path=Path(corrections_path),
+            labels_path=Path(labels_path),
             n_frames=int(n_frames),
+            identity=identity,
             image_sizes=dict(image_sizes or {}),
             nmf_hide_parts=tuple(nmf_hide_parts),
         )

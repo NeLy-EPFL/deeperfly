@@ -33,7 +33,7 @@ def session(result, tmp_path):
         state,
         source,
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
 
@@ -56,6 +56,11 @@ def test_meta_payload(client, result):
     assert list(meta["camera_names"]) == list(result.cameras.names)
     assert len(meta["point_colors"]) == result.pts2d.shape[2]
     assert len(meta["bones"]) == len(result.skeleton.bones)
+    # The colour legend is data-driven from the skeleton: one {name, color} per limb,
+    # so the front-end never hard-codes a left/right palette.
+    limbs = meta["limbs"]
+    assert [lb["name"] for lb in limbs] == list(result.skeleton.limb_names)
+    assert all(len(lb["color"]) == 3 for lb in limbs)
     assert meta["dirty"] is False
 
 
@@ -96,7 +101,7 @@ def test_nmf_overlay_payload(result, tmp_path):
         EditorState.from_result(res),
         FrameSource({}, image_sizes=image_sizes),
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
     client = TestClient(create_app(session))
@@ -132,7 +137,7 @@ def _nmf_client(result, tmp_path):
         EditorState.from_result(res),
         FrameSource({}, image_sizes=image_sizes),
         results_path=str(tmp_path / "results.h5"),
-        corrections_path=tmp_path / "corrections.h5",
+        labels_path=tmp_path / "labels.h5",
         image_sizes=image_sizes,
     )
     return TestClient(create_app(session)), res
@@ -181,7 +186,7 @@ def test_nmf_verts_payload_hides_configured_parts(result, tmp_path):
             EditorState.from_result(res),
             FrameSource({}, image_sizes=image_sizes),
             results_path=str(tmp_path / "results.h5"),
-            corrections_path=tmp_path / "corrections.h5",
+            labels_path=tmp_path / "labels.h5",
             image_sizes=image_sizes,
             nmf_hide_parts=hide,
         )
@@ -508,6 +513,217 @@ def test_ws_reset_frame_reverts_every_point(client):
     assert not np.allclose(reply["points"][1][5], [56.0, 78.0])
 
 
+def test_ws_confirm_promotes_predictions(client, result):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "confirm",
+                "targets": [[v, 5] for v in range(result.n_views)],
+                "sources": "predictions",
+                "frame": 0,
+                "mode": "edit_3d",
+                "seq": 1,
+            }
+        )
+        reply = ws.receive_json()
+    assert reply["dirty"] is True
+    assert all(reply["fixed"][v][5] for v in range(result.n_views))  # all GT now
+
+
+def test_ws_reset_targets_reverts_selected_cells_in_one_step(client):
+    # The batched "Reset" acting on a multi-cell selection: it reverts exactly the
+    # targeted cells (leaving the rest) and is a single undoable step.
+    with client.websocket_connect("/ws") as ws:
+        for view, point in ((0, 3), (1, 3), (0, 5)):
+            ws.send_json(
+                {
+                    "type": "edit_2d",
+                    "view": view,
+                    "point": point,
+                    "x": 12.0,
+                    "y": 34.0,
+                    "frame": 0,
+                    "mode": "edit_2d",
+                }
+            )
+            ws.receive_json()
+        ws.send_json(
+            {
+                "type": "reset",
+                "targets": [[0, 3], [1, 3]],
+                "frame": 0,
+                "mode": "edit_2d",
+                "seq": 9,
+            }
+        )
+        reply = ws.receive_json()
+        assert reply["fixed"][0][3] is False  # targeted -> reverted
+        assert reply["fixed"][1][3] is False
+        assert reply["fixed"][0][5] is True  # untargeted -> untouched
+        assert reply["can_undo"] is True
+        # A single undo restores both reset cells (one step for the whole batch).
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_2d", "seq": 10})
+        undo = ws.receive_json()
+        assert undo["fixed"][0][3] is True
+        assert undo["fixed"][1][3] is True
+
+
+def test_ws_reset_targets_empty_is_a_noop(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "reset", "targets": [], "frame": 0, "mode": "edit_2d", "seq": 1}
+        )
+        reply = ws.receive_json()
+    assert reply["dirty"] is False
+    assert reply["can_undo"] is False
+
+
+def test_ws_occlude_targets_marks_cells_in_one_step(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "occlude",
+                "targets": [[0, 4], [1, 4]],
+                "frame": 0,
+                "mode": "edit_3d",
+                "seq": 1,
+            }
+        )
+        reply = ws.receive_json()
+        assert reply["invisible"][0][4] is True
+        assert reply["invisible"][1][4] is True
+        assert reply["dirty"] is True
+        assert reply["can_undo"] is True
+        # One undo clears both occlusions.
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_3d", "seq": 2})
+        undo = ws.receive_json()
+        assert undo["invisible"][0][4] is False
+        assert undo["invisible"][1][4] is False
+
+
+def test_ws_occlude_targets_drops_any_gt(client):
+    # Occluding a cell that carries GT drops the GT (they are mutually exclusive).
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "edit_2d",
+                "view": 0,
+                "point": 2,
+                "x": 10.0,
+                "y": 20.0,
+                "frame": 0,
+                "mode": "edit_2d",
+            }
+        )
+        ws.receive_json()
+        ws.send_json(
+            {
+                "type": "occlude",
+                "targets": [[0, 2]],
+                "frame": 0,
+                "mode": "edit_3d",
+                "seq": 5,
+            }
+        )
+        reply = ws.receive_json()
+    assert reply["fixed"][0][2] is False  # GT dropped
+    assert reply["invisible"][0][2] is True
+
+
+def test_ws_reset_targets_noop_stays_clean(client):
+    # A Reset over cells that carry no label (e.g. select-all then Reset on a fresh
+    # frame) changes nothing: no dirty flip, no undo entry.
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "reset",
+                "targets": [[0, 1], [1, 1]],
+                "frame": 0,
+                "mode": "edit_2d",
+            }
+        )
+        reply = ws.receive_json()
+    assert reply["dirty"] is False
+    assert reply["can_undo"] is False
+
+
+def test_ws_occlude_targets_noop_pushes_no_undo(client):
+    # Occluding an already-occluded cell is a no-op: it must not push a phantom undo
+    # step, so a single undo fully reverts the (one real) occlusion.
+    occ = {"type": "occlude", "targets": [[0, 3]], "frame": 0, "mode": "edit_3d"}
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(occ)
+        assert ws.receive_json()["invisible"][0][3] is True
+        ws.send_json(occ)
+        assert ws.receive_json()["invisible"][0][3] is True  # still occluded (no-op)
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_3d"})
+        assert ws.receive_json()["invisible"][0][3] is False  # one undo clears it
+
+
+def test_ws_confirm_noop_preserves_redo(client):
+    # A no-op Confirm (targeting an already-GT cell) must NOT clobber the redo stack.
+    with client.websocket_connect("/ws") as ws:
+        for point in (1, 2):
+            ws.send_json(
+                {
+                    "type": "edit_2d",
+                    "view": 0,
+                    "point": point,
+                    "x": 5.0,
+                    "y": 6.0,
+                    "frame": 0,
+                    "mode": "edit_2d",
+                }
+            )
+            ws.receive_json()
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_2d"})
+        assert ws.receive_json()["can_redo"] is True  # point 2's edit is redoable
+        # Confirm a cell that is already GT -> nothing changes; redo must survive.
+        ws.send_json(
+            {
+                "type": "confirm",
+                "targets": [[0, 1]],
+                "sources": "all",
+                "frame": 0,
+                "mode": "edit_2d",
+            }
+        )
+        assert ws.receive_json()["can_redo"] is True
+
+
+def test_ws_undo_redo_carry_the_target_frame(client, result):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "edit_2d",
+                "view": 0,
+                "point": 3,
+                "x": 12.0,
+                "y": 34.0,
+                "frame": 1,
+                "mode": "edit_2d",
+                "seq": 1,
+            }
+        )
+        ws.receive_json()
+        ws.send_json({"type": "undo", "frame": 0, "mode": "edit_2d", "seq": 2})
+        undo = ws.receive_json()
+        assert undo["goto"] == 1  # the edit was on frame 1
+        assert undo["fixed"][0][3] is False  # GT reverted
+        ws.send_json({"type": "redo", "frame": 0, "mode": "edit_2d", "seq": 3})
+        redo = ws.receive_json()
+        assert redo["goto"] == 1
+        assert redo["fixed"][0][3] is True  # GT re-applied
+
+
+def test_points_payload_carries_conf_and_undo_flags(client):
+    pay = client.get("/api/points/0?mode=view").json()
+    assert pay["conf"] is not None and len(pay["conf"]) > 0
+    assert pay["can_undo"] is False and pay["can_redo"] is False
+    verbose = client.get("/api/points/0?mode=view&verbose=true").json()
+    assert "pred" in verbose and verbose["pred"] is not None
+
+
 def test_save_writes_sidecar_and_clears_dirty(client, session):
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
@@ -526,7 +742,7 @@ def test_save_writes_sidecar_and_clears_dirty(client, session):
 
     resp = client.post("/api/save").json()
     assert resp["dirty"] is False
-    assert session.corrections_path.exists()
+    assert session.labels_path.exists()
     assert not session.state.dirty
 
 

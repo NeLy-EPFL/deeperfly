@@ -113,9 +113,12 @@ body {
 .cell-label {
   padding: 2px 6px;
   text-align: center;
-  background: var(--panel);
+  background: #232323;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b9b9b9;
 }
 
 .cell canvas {
@@ -150,6 +153,124 @@ body {
   gap: 4px;
 }
 
+/* A small line-style swatch inside an overlay toggle's label (the "3D estimate" and
+   "NMF skeleton" checkboxes), matching how the canvas draws each overlay (latent =
+   dashed amber, NMF = dotted mint). The full legend lives in the Help panel. */
+.swatch {
+  display: inline-block;
+  width: 15px;
+  height: 0;
+  vertical-align: middle;
+}
+
+.swatch-latent {
+  border-top: 2px dashed rgb(255, 176, 64);
+}
+
+.swatch-nmf {
+  border-top: 2px dotted rgb(80, 230, 180);
+}
+
+/* The legend, rendered into the Help panel (#help-body) by app.js from the server
+   meta. The keypoint-colour swatches come straight from the loaded skeleton's per-limb
+   palette (no hard-coded left/right), so the legend reads correctly for any config. */
+.legend {
+  margin-bottom: 20px;
+}
+
+.legend-title {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9cd1ff;
+}
+
+.legend-title:first-child {
+  margin-top: 0;
+}
+
+.legend-note {
+  margin: 0 0 8px;
+  color: #999;
+  font-size: 12px;
+}
+
+/* Keypoint colours: one swatch + limb name per limb, wrapping to fit. */
+.legend-limbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.legend-limb {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.limb-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+/* Marker / overlay rows: a marker or line swatch, then a description. */
+.legend-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 46em;
+}
+
+.legend-row .mk {
+  margin-top: 3px;
+  flex: none;
+}
+
+.legend-row .swatch {
+  margin-top: 8px;
+  flex: none;
+}
+
+/* Marker discs, styled to match the canvas markers: ground truth = solid lime ring,
+   prediction = thin dark ring, projection = hollow ring. The disc colour is a grey
+   stand-in for the per-keypoint limb colour, which varies from point to point. */
+.mk {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+}
+
+.mk.m-gt {
+  background: #888;
+  border: 2px solid #7cfc00; /* lime, solid */
+}
+
+.mk.m-pred {
+  background: #888;
+  border: 1px solid rgba(0, 0, 0, 0.7); /* thin dark */
+}
+
+.mk.m-proj {
+  background: transparent; /* hollow */
+  border: 1.5px solid #888;
+}
+
 /* The frame slider gets a row to itself, so let it span the full width. */
 .frame-row label {
   flex: 1;
@@ -161,8 +282,8 @@ body {
   min-width: 0;
 }
 
-/* Two-choice "switch": a row of buttons, exactly one active -- a compact
-   stand-in for a 2-option dropdown (Mode, Layout). */
+/* Segmented "switch": a row of buttons with exactly one active -- a compact stand-in
+   for a small dropdown (the Layout toggle, the point-status state switch). */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -194,16 +315,26 @@ body {
   width: 70px;
 }
 
-/* The three reset actions read as one group: a "Reset" label then buttons whose
-   labels complete the verb ("Reset" + "Point in view" / ... / "Whole frame"). */
-.reset-group {
+/* The action group reads as one unit: a "Selection" label, a live count of how many
+   points are picked, then the three verbs (Confirm / Reset / Occlude) that act on
+   them. Disabled buttons (empty selection) dim via the shared button styles. */
+.selection-group {
   gap: 6px;
 }
 
+.sel-count {
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 4.5em;
+}
+
 /* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state
-   switch. The active chip is colour-coded to match the on-canvas rings: Fixed is
-   lime, Obscured is violet, Normal keeps the default blue. (Obscured is violet,
-   not magenta, so it reads clearly apart from the red right-side keypoints.) */
+   switch (Predicted / Ground truth / Occluded). It is the surface for *setting* a
+   point's state; the active chip is colour-coded (Ground truth lime, Occluded violet,
+   Predicted the default blue) so the choice reads at a glance. An occluded point draws
+   on the canvas as a plain derived point -- occluding just deletes the observation -- so
+   this widget is where its state stays legible. */
 .point-status-name {
   color: #bbb;
   font-variant-numeric: tabular-nums;

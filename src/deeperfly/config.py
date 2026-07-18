@@ -45,6 +45,7 @@ __all__ = [
     "IoParams",
     "BundleAdjustmentParams",
     "InverseKinematicsParams",
+    "AnnotationParams",
     "DEFAULT_CONFIG_PATH",
 ]
 
@@ -181,6 +182,63 @@ class InverseKinematicsParams:
     regularization: float = 0.01
     bounds: dict[str, list[float]] = field(default_factory=dict)
     markers: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AnnotationParams:
+    """``[annotation]`` -- how the GUI turns 2D labels into a live 3D estimate.
+
+    The keypoint editor is a *ground-truth annotation* tool: per ``(frame, point,
+    view)`` the operator authors at most a GT 2D pixel or an "occluded" flag, and
+    the 3D point is a pure function of those labels plus the detector's predictions
+    (``triangulate(active 2D, cameras, method, hyperparams)``). These knobs govern
+    that function; the triangulation *method* + thresholds are shared with the batch
+    pipeline (``[triangulation]``), so a point with no GT re-solves to the run's
+    cached 3D exactly.
+
+    ``precedence`` orders how each view's *displayed* 2D is chosen (``gt`` over
+    ``prediction`` over ``projection``); ``projection`` is display-only and never
+    feeds the solve.
+
+    ``solve_policy`` selects how GT and predictions combine in the live 3D solve:
+
+    - ``"gt_wins"`` (default) -- once a point has ``>= min_gt_for_exclusive`` GT
+      views, solve from GT alone; with one GT view, GT is a hard constraint
+      (weighted ``gt_weight`` above the predictions that fill the other views);
+      with no GT, use the configured ``[triangulation]`` method (so it matches the
+      run). No policy ever discards a GT observation.
+    - ``"equal_weight"`` -- per view use GT if present else the prediction, feed all
+      to the configured method. ``equal_weight_protect_gt`` (default true) forces GT
+      views to stay inliers so a prediction consensus cannot vote a human label out.
+    - ``"weighted_blend"`` -- one weighted DLT, GT rows at ``gt_weight`` and
+      prediction rows at ``prediction_weight`` (no RANSAC voting).
+
+    ``prediction_weight`` is ``"uniform"`` (default, matches the batch
+    ``weigh_by_confidence=false`` and the finding that peak confidence does not
+    track correctness), ``"confidence"``, or a fixed float. ``confirm_default`` is
+    the default source set a bulk-confirm promotes to GT (``"all"`` -> predictions
+    and projections; also ``"predictions"`` / ``"projections"``). ``low_conf``
+    de-emphasises (does not hide) predictions below it. ``undistort_before_solve``
+    undistorts GT/prediction pixels before the linear DLT so a placed GT reprojects
+    onto itself -- off by default because the batch pipeline does not undistort, so
+    enabling it improves GT accuracy at the cost of a zero-GT re-solve no longer
+    matching the run's cached 3D exactly. ``gt_wins_keep_stabilizers`` keeps
+    predictions as low-weight depth stabilisers even once GT is exclusive (guards
+    degenerate GT-view geometry).
+    """
+
+    precedence: list[str] = field(
+        default_factory=lambda: ["gt", "prediction", "projection"]
+    )
+    solve_policy: str = "gt_wins"
+    min_gt_for_exclusive: int = 2
+    gt_weight: float = 1000.0
+    prediction_weight: str | float = "uniform"
+    confirm_default: str = "all"
+    low_conf: float = 0.2
+    undistort_before_solve: bool = False
+    equal_weight_protect_gt: bool = True
+    gt_wins_keep_stabilizers: bool = False
 
 
 @dataclass(frozen=True)
@@ -467,6 +525,10 @@ class Config:
     @property
     def gui(self) -> GuiParams:
         return _params(self.data, ("gui",), GuiParams)
+
+    @property
+    def annotation(self) -> AnnotationParams:
+        return _params(self.data, ("annotation",), AnnotationParams)
 
     def ik_template(self):
         """The configured kinematic template (``[inverse_kinematics].template`` + bounds).

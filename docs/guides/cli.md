@@ -1,8 +1,9 @@
 # CLI usage
 
-`deeperfly` has five commands: `init` (write a config), `run` (the pipeline),
-`gui` (correct a result), `inspect` (summarize a result), and `doctor` (report the
-install). Every command takes `--log-level` (`debug` / `info` / `warning` /
+`deeperfly` has six commands: `init` (write a config), `run` (the pipeline),
+`gui` (annotate a result), `labels-export` (export ground truth), `inspect`
+(summarize a result), and `doctor` (report the install). Every command takes
+`--log-level` (`debug` / `info` / `warning` /
 `error` / `critical`; `warning` or higher hides the per-stage logs and the progress
 bar) and `-h` / `--help`.
 
@@ -131,16 +132,18 @@ adjustment caches are reused automatically. Do **not** edit the output-dir
 snapshot *and* pass `-c` at the same time — `-c` wins and overwrites the
 snapshot, silently discarding your edit. Pick one config and stick with it.
 
-## `deeperfly gui` — correct a result
+## `deeperfly gui` — annotate a result
 
 ```bash
 deeperfly gui PATH [--footage-dir DIR] [--host HOST] [--port PORT] [--no-browser] [--keep-alive]
 ```
 
-Opens the interactive web viewer/corrector for a result: every camera view with its
-2D skeleton overlay, drag-to-fix keypoints in 2D or 3D, and the live NeuroMechFly
-overlays. Corrections go to a `corrections.h5` sidecar and never modify
-`results.h5`. See the [Correction GUI guide](gui.md) for the editor itself.
+Opens the interactive web viewer for a result and lets you author the ground-truth
+2D pose (with the run's prediction as a starting point): every camera view with its
+2D skeleton overlay, drag-to-place / confirm keypoints, occlude unusable views, and
+the live NeuroMechFly overlays. Labels go to a `labels.h5` sidecar and never modify
+`results.h5` (an older `corrections.h5` is migrated on open). See the
+[annotation GUI guide](gui.md) for the editor itself.
 
 | Argument / option | Default | Meaning |
 | --- | --- | --- |
@@ -156,6 +159,26 @@ deeperfly gui recording/deeperfly_outputs           # open the editor
 deeperfly gui results.h5 --port 0                    # any free port
 deeperfly gui results.h5 --no-browser                # headless / over a tunnel
 ```
+
+## `deeperfly labels-export` — export ground truth
+
+```bash
+deeperfly labels-export PATH [-o OUT.npz] [--include-projection]
+```
+
+Exports the labels authored in [`deeperfly gui`](gui.md) (the `labels.h5` beside the
+result) as a training/eval dataset: the provenance-filtered ground-truth pixels and
+the occluded mask, in footage pixel space.
+
+| Argument / option | Default | Meaning |
+| --- | --- | --- |
+| `PATH` | — | A `results.h5`, or a directory containing one (its `labels.h5` is exported). |
+| `-o`, `--output` | `labels_gt.npz` beside `results.h5` | Destination `.npz`. |
+| `--include-projection` | off | Also export GT confirmed from the 3D reprojection (the model's own guess); excluded by default so the export is human-placed pixels only. |
+
+The `.npz` holds `gt_xy` (V,T,P,2), `gt_mask` (V,T,P), `occluded` (V,T,P), and
+`point_names` / `camera_names`. Coordinates are footage-space; a detector-training
+pipeline maps them into model-input space by inverting each pathway's preprocessing.
 
 ## `deeperfly inspect` — summarize a result
 
