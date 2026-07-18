@@ -60,6 +60,7 @@
  * @property {string[]} point_names
  * @property {[number, number][]} bones
  * @property {[number, number, number][]} point_colors  0-255 RGB, one per point
+ * @property {{name: string, color: [number, number, number]}[]} limbs  per-limb name + 0-255 RGB swatch, derived from the skeleton palette, for the legend
  * @property {Camera3D[]} cameras_3d  per-camera world poses for the rig plot
  * @property {CameraProj[]} cameras_proj  per-camera pinhole projection for the mesh overlay
  * @property {boolean} dirty
@@ -104,12 +105,12 @@
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
- * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame"} type
+ * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "reset" | "occlude" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame"} type
  * @property {number} [view]
  * @property {number} [point]
  * @property {number} [x]
  * @property {number} [y]
- * @property {[number, number][]} [targets]  for "confirm": the (view, point) pairs to promote to GT
+ * @property {[number, number][]} [targets]  the (view, point) pairs a batched op acts on: "confirm" promotes them to GT, "reset" clears them to unset, "occlude" flags them occluded
  * @property {"all" | "predictions" | "projections"} [sources]  for "confirm": which suggestions to snapshot
  * @property {number} frame
  * @property {boolean} [fix]

@@ -20,7 +20,7 @@
 // Beyond the editable overlay the view can also draw two read-only reference skeletons
 // the app toggles -- the "latent" skeleton (the current 3D estimate reprojected) and
 // the fitted NMF model -- plus per-joint name labels. A reference is drawn as a faint
-// under-glow *beneath* the editable skeleton (so the left/right palette always reads on
+// under-glow *beneath* the editable skeleton (so the limb palette always reads on
 // top) with its *disagreement* against the placed point drawn back on top as a per-joint
 // "leash" that is silent at coincidence and grows with the residual -- so a live 3D drag
 // shows exactly where triangulation is pulling each point. With the editable skeleton
@@ -37,7 +37,10 @@
  * @property {(view: number, point: number, x: number, y: number) => void} onDragging
  * @property {(view: number, point: number, x: number, y: number, wasInvisible: boolean) => void} onDragged
  * @property {(view: number, point: number) => void} onToggleFixed
- * @property {(view: number, point: number) => void} onSelect  a joint was clicked/grabbed
+ * @property {(view: number, point: number, additive: boolean) => void} onSelect  a joint was clicked/grabbed; additive (Shift) toggles it in the selection instead of replacing
+ * @property {(view: number, points: number[], additive: boolean) => void} onSelectRegion  a Shift+drag marquee enclosed these joints in this view (always additive)
+ * @property {(point: number, additive: boolean) => void} onSelectKeypointAllViews  a joint was double-clicked: select it across every view
+ * @property {(view: number) => void} onActiveView  the pointer entered/moved over this view (drives the "select all in this view" gesture)
  * @property {(point: number | null) => void} onHover  the hovered joint changed (cross-view)
  */
 
@@ -54,16 +57,18 @@ const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
 // that one glance tells you where a point came from:
 //   ground truth (authored)  -> solid lime ring over a filled disc
 //   detector prediction      -> thin dark ring over a filled disc that fades with confidence
-//   derived (reprojected 3D) -> a hollow circle in the point's own left/right palette
+//   derived (reprojected 3D) -> a hollow circle in the point's own limb palette
 //     colour, no fill: "computed, not observed". A view the operator occluded shows the
 //     same way -- occluding just deletes the observation, leaving the point derived, so
 //     there is nothing to distinguish it from a view the detector never fired in.
 const FIXED_COLOR = "#7CFC00"; // ring on a ground-truth point (lime green)
-const SELECT_COLOR = "#3fd0ff"; // ring on the last-selected point (cyan; lime = ground truth)
+const SELECT_COLOR = "#3fd0ff"; // ring on a selected point (cyan; lime = ground truth)
+const MARQUEE_STROKE = "rgba(63,208,255,0.9)"; // Shift+drag rubber-band border (cyan, matches selection)
+const MARQUEE_FILL = "rgba(63,208,255,0.12)"; // its translucent fill
 
 // The two read-only reference overlays -- the latent 3D reprojection (amber) and the
 // fitted NMF model (mint) -- are drawn UNDERNEATH the editable skeleton, so the
-// left/right palette always owns the top layer instead of being painted over. Each is
+// limb palette always owns the top layer instead of being painted over. Each is
 // drawn as a soft under-glow skeleton; its overall shape (and where it bends away from
 // the palette) is the ambient signal. Its *disagreement* with the placed point at one
 // joint -- a "leash" from the point to where the reference lands -- is drawn on top
@@ -110,8 +115,12 @@ export class PoseView {
     this.pointNames = [];
     /** @type {number | null} */
     this.highlight = null; // hovered joint (set by the app across all views)
-    /** @type {number | null} */
-    this.selected = null; // last-selected joint, shown only in its own view
+    /** @type {Set<number>} */
+    this.selectionSet = new Set(); // this view's selected joint indices (cyan ring)
+    // Shift+drag rubber-band, in CSS px, while a marquee is in progress (else null).
+    /** @type {{ x0: number, y0: number, x1: number, y1: number } | null} */
+    this.marquee = null;
+    this.marqueeing = false; // a Shift press is arming/dragging a marquee
     this.editable = false;
     this.zoomable = false;
     this.overlayVisible = true;
@@ -171,6 +180,9 @@ export class PoseView {
     canvas.addEventListener("pointerup", (e) => this.onPointerUp(e));
     canvas.addEventListener("pointercancel", (e) => this.onPointerUp(e));
     canvas.addEventListener("pointerleave", () => this.onPointerLeave());
+    // Whichever view the pointer is over is the "active" one -- the target of the
+    // "select every point in this view" (v) gesture.
+    canvas.addEventListener("pointerenter", () => this.cb.onActiveView(this.viewIndex));
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     canvas.addEventListener("dblclick", (e) => this.onDblClick(e));
@@ -333,10 +345,9 @@ export class PoseView {
     this.draw();
   }
 
-  /** @param {number | null} point  the selected joint, or null if not selected in this view */
-  setSelected(point) {
-    if (this.selected === point) return;
-    this.selected = point;
+  /** @param {Set<number>} set  the joint indices selected in this view (may be empty) */
+  setSelection(set) {
+    this.selectionSet = set;
     this.draw();
   }
 
@@ -451,7 +462,7 @@ export class PoseView {
       ctx.globalAlpha = a;
     }
     // The two read-only reference overlays sit UNDERNEATH the editable skeleton so the
-    // left/right palette owns the top layer; their disagreement with the placed point
+    // limb palette owns the top layer; their disagreement with the placed point
     // is then drawn back on top as a leash (drawReference/drawLeashes). With the
     // skeleton hidden they have nothing to sit under, so they draw in their own bright
     // style instead, staying fully visible on their own.
@@ -468,6 +479,24 @@ export class PoseView {
       if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, false);
       if (this.latentVisible && this.latent) this.drawReference(this.latent, LATENT_RGB, false);
     }
+    // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
+    // the rest of draw()).
+    if (this.marquee) this.drawMarquee();
+  }
+
+  // The Shift+drag rubber-band: a translucent cyan rectangle in CSS px.
+  drawMarquee() {
+    const m = /** @type {{x0:number,y0:number,x1:number,y1:number}} */ (this.marquee);
+    const x = Math.min(m.x0, m.x1);
+    const y = Math.min(m.y0, m.y1);
+    const w = Math.abs(m.x1 - m.x0);
+    const h = Math.abs(m.y1 - m.y0);
+    const ctx = this.ctx;
+    ctx.fillStyle = MARQUEE_FILL;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = MARQUEE_STROKE;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
   }
 
   // The effective drawn position of joint `i`: the observed/authored pixel (ground
@@ -522,7 +551,7 @@ export class PoseView {
       const source = this.pointSource(i);
       const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
       // FILL: an observed point (ground truth or prediction) gets a filled disc in its
-      // left/right palette colour -- a prediction's fill fades with the detector's
+      // limb palette colour -- a prediction's fill fades with the detector's
       // confidence, so faint points that want a second look read as faint. A derived
       // point (reprojected 3D, incl. an occluded view) is left hollow, so an *observed*
       // point is unmistakably distinct from a *computed* one.
@@ -539,7 +568,7 @@ export class PoseView {
         ctx.globalAlpha = 1;
       }
       // RING: encodes the source. Ground truth gets a bold lime ring; a derived point a
-      // hollow ring in its own left/right palette colour (its only mark, since it has no
+      // hollow ring in its own limb palette colour (its only mark, since it has no
       // fill); a prediction a thin dark ring, or a white one under the cursor. Hover
       // still grows the disc and thickens the bones, so the point stays legible either way.
       if (source === "gt") {
@@ -558,9 +587,9 @@ export class PoseView {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
-      // The last-selected joint gets an extra outer ring (only its own view sets
-      // `selected`), distinct from every source ring so the two can coexist.
-      if (i === this.selected) {
+      // A selected joint gets an extra outer ring (this view holds its own subset of
+      // the selection), distinct from every source ring so the two can coexist.
+      if (this.selectionSet.has(i)) {
         ctx.beginPath();
         ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
         ctx.strokeStyle = SELECT_COLOR;
@@ -799,6 +828,33 @@ export class PoseView {
     return best;
   }
 
+  // Every joint whose effective (drawn) position falls inside the image-space rect --
+  // the Shift+drag marquee's hit-test. Corners come in any order; they are normalized
+  // here. Uses the same effective position as nearestPoint, so derived/reprojected
+  // joints are selectable too.
+  /**
+   * @param {number} ax
+   * @param {number} ay
+   * @param {number} bx
+   * @param {number} by
+   * @returns {number[]}
+   */
+  pointsInRect(ax, ay, bx, by) {
+    const x0 = Math.min(ax, bx);
+    const x1 = Math.max(ax, bx);
+    const y0 = Math.min(ay, by);
+    const y1 = Math.max(ay, by);
+    /** @type {number[]} */
+    const hits = [];
+    const n = Math.max(this.pts.length, this.latent ? this.latent.length : 0);
+    for (let i = 0; i < n; i++) {
+      const p = this.effectivePos(i);
+      if (!p) continue;
+      if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) hits.push(i);
+    }
+    return hits;
+  }
+
   /** @param {PointerEvent} e */
   onPointerDown(e) {
     const [mx, my] = this.cssXY(e);
@@ -807,19 +863,31 @@ export class PoseView {
     this.moved = false;
     const [ix, iy] = this.toImage(mx, my);
     const canGrab = this.editable && this.overlayVisible;
+
+    // Shift + primary button is multi-select: a drag rubber-bands, a click toggles one
+    // point. Both are resolved on release (onPointerUp), so here we just arm the marquee
+    // and swallow the event -- it must neither move a point nor pan.
+    if (e.button === 0 && e.shiftKey && canGrab) {
+      e.preventDefault();
+      this.marqueeing = true;
+      this.marquee = { x0: mx, y0: my, x1: mx, y1: my };
+      this.canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+
     const point = canGrab ? this.nearestPoint(ix, iy) : null;
 
     if (point !== null) {
       // Right-click toggles the point's fixed flag, no drag.
       if (e.button === 2) {
         e.preventDefault();
-        this.cb.onSelect(this.viewIndex, point);
+        this.cb.onSelect(this.viewIndex, point, false);
         this.cb.onToggleFixed(this.viewIndex, point);
         return;
       }
       if (e.button !== 0) return; // only the primary button drags
       e.preventDefault();
-      this.cb.onSelect(this.viewIndex, point); // selecting happens on press, not release
+      this.cb.onSelect(this.viewIndex, point, false); // selecting happens on press, not release
       // An obscured joint can still be dragged -- doing so un-obscures it (the app
       // un-flags it on release via `wasInvisible`).
       this.dragInvisible = this.invisible != null && !!this.invisible[point];
@@ -844,6 +912,14 @@ export class PoseView {
     const [mx, my] = this.cssXY(e);
     if (!this.moved && Math.hypot(mx - this.downX, my - this.downY) > DRAG_THRESHOLD_PX) {
       this.moved = true;
+    }
+
+    if (this.marqueeing && this.marquee) {
+      e.preventDefault();
+      this.marquee.x1 = mx;
+      this.marquee.y1 = my;
+      this.draw();
+      return;
     }
 
     if (this.dragging !== null) {
@@ -888,6 +964,26 @@ export class PoseView {
 
   /** @param {PointerEvent} e */
   onPointerUp(e) {
+    if (this.marqueeing) {
+      e.preventDefault();
+      this.marqueeing = false;
+      const rect = this.marquee;
+      this.marquee = null;
+      const canGrab = this.editable && this.overlayVisible;
+      if (this.moved && rect) {
+        // A genuine rubber-band: add every enclosed joint (rect corners -> image space).
+        const [ax, ay] = this.toImage(rect.x0, rect.y0);
+        const [bx, by] = this.toImage(rect.x1, rect.y1);
+        this.cb.onSelectRegion(this.viewIndex, this.pointsInRect(ax, ay, bx, by), true);
+      } else if (canGrab) {
+        // Shift+click without a drag: toggle the single hit joint in the selection.
+        const [ix, iy] = this.toImage(...this.cssXY(e));
+        const point = this.nearestPoint(ix, iy);
+        if (point !== null) this.cb.onSelect(this.viewIndex, point, true);
+      }
+      this.draw();
+      return;
+    }
     if (this.dragging !== null) {
       e.preventDefault();
       const point = this.dragging;
@@ -943,6 +1039,17 @@ export class PoseView {
 
   /** @param {MouseEvent} e */
   onDblClick(e) {
+    // Double-clicking a joint selects that keypoint across every view (a fast way to
+    // act on one point everywhere); double-clicking empty space resets the zoom.
+    if (this.editable && this.overlayVisible) {
+      const [ix, iy] = this.toImage(...this.cssXY(e));
+      const point = this.nearestPoint(ix, iy);
+      if (point !== null) {
+        e.preventDefault();
+        this.cb.onSelectKeypointAllViews(point, e.shiftKey);
+        return;
+      }
+    }
     if (!this.zoomable) return;
     e.preventDefault();
     this.resetZoom();

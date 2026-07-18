@@ -6,10 +6,12 @@
 // whose style tells its source apart: ground truth (lime ring over a filled disc),
 // detector prediction (dark ring over a disc that fades with confidence), or a point
 // derived by reprojecting the 3D (a hollow palette circle -- no observation in this
-// view). A selected joint's per-view state (predicted / ground truth / occluded) is
-// shown in a status widget and set by clicking it or the `l` / `o` keys; occluding a
-// view deletes its observation so it drops from the triangulation and then shows as a
-// derived point, and dragging it back in un-occludes it.
+// view). Annotation is two steps: build a selection of (point, view) cells, then apply
+// a verb to all of it -- Confirm (Enter), Reset (r), or Occlude (o). When exactly one
+// cell is selected, a status widget shows its per-view state (predicted / ground truth
+// / occluded) and lets you set it. Occluding a view deletes its observation so it drops
+// from the triangulation and then shows as a derived point; dragging it back in
+// un-occludes it.
 //
 // Two layouts share the same PoseView instances. "grid" shows every camera in an
 // equal grid; "focus" shows one large editable view plus a strip of live,
@@ -20,9 +22,10 @@
 // animates the thumbnails. Grid is the default; the layout switch (or f / g) toggles
 // it and the [ / ] keys cycle which camera is focused.
 //
-// Hovering a joint emphasizes the same joint in every view; clicking a joint
-// selects it (a cyan ring marks the last selection) so the two Reset buttons can
-// revert it -- in just its view, or across all views.
+// Hovering a joint emphasizes the same joint in every view; clicking one selects it
+// (a cyan ring). Shift+click adds/removes, double-click selects that keypoint in every
+// view, a Shift+drag box rubber-bands, and `a` / `v` select all / the hovered view --
+// then the Confirm / Reset / Occlude verbs act on the whole selection.
 //
 // Display extras the operator toggles: the editable skeleton itself, per-joint
 // name labels, and the read-only "3D estimate" skeleton (the triangulated estimate
@@ -133,11 +136,16 @@ class App {
   /** @type {Layout} */
   layout = "grid";
   focused = 0;
-  // The last joint the operator clicked, and the view they clicked it in -- what
-  // the two Reset buttons act on.
-  /** @type {number | null} */
-  selectedPoint = null;
-  selectedView = 0;
+  // The current selection: a set of (view, point) cells the action buttons
+  // (Confirm / Reset / Occlude) act on, keyed "view:point". `selAnchor` is the
+  // most-recently-added cell -- the single cell the status widget inspects -- and
+  // `activeView` is the camera the pointer is over (the target of the `v`
+  // "select every point in this view" gesture).
+  /** @type {Set<string>} */
+  selection = new Set();
+  /** @type {{ view: number, point: number } | null} */
+  selAnchor = null;
+  activeView = 0;
   // The latest per-view ground-truth / occluded masks (from the points payload), so the
   // status widget can report the selected joint's source. Null until the first payload.
   /** @type {boolean[][] | null} */
@@ -210,15 +218,13 @@ class App {
   /** @type {Segmented} */
   stateSwitch;
   /** @type {HTMLButtonElement} */
-  resetViewBtn = el("reset-view");
+  actConfirmBtn = el("act-confirm");
   /** @type {HTMLButtonElement} */
-  resetAllBtn = el("reset-all");
+  actResetBtn = el("act-reset");
   /** @type {HTMLButtonElement} */
-  resetFrameBtn = el("reset-frame");
-  /** @type {HTMLButtonElement} */
-  confirmPointBtn = el("confirm-point");
-  /** @type {HTMLButtonElement} */
-  confirmFrameBtn = el("confirm-frame");
+  actOccludeBtn = el("act-occlude");
+  /** @type {HTMLSpanElement} */
+  selCountEl = el("sel-count");
   /** @type {HTMLButtonElement} */
   undoBtn = el("undo");
   /** @type {HTMLButtonElement} */
@@ -363,11 +369,9 @@ class App {
     this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.meshCheck.addEventListener("change", () => this.applyMesh());
 
-    this.resetViewBtn.addEventListener("click", () => this.resetSelectedView());
-    this.resetAllBtn.addEventListener("click", () => this.resetSelectedAll());
-    this.resetFrameBtn.addEventListener("click", () => this.resetFrame());
-    this.confirmPointBtn.addEventListener("click", () => this.confirmSelectedJoint());
-    this.confirmFrameBtn.addEventListener("click", () => this.confirmFrame());
+    this.actConfirmBtn.addEventListener("click", () => this.confirmSelection());
+    this.actResetBtn.addEventListener("click", () => this.resetSelection());
+    this.actOccludeBtn.addEventListener("click", () => this.occludeSelection());
     this.undoBtn.addEventListener("click", () => this.undo());
     this.redoBtn.addEventListener("click", () => this.redo());
     this.keypointsBtn.addEventListener("click", () => this.openKeypoints());
@@ -410,7 +414,10 @@ class App {
       onDragging: (v, p, x, y) => this.onDragging(v, p, x, y),
       onDragged: (v, p, x, y, wasInvisible) => this.onDragged(v, p, x, y, wasInvisible),
       onToggleFixed: (v, p) => this.onToggleFixed(v, p),
-      onSelect: (v, p) => this.onSelect(v, p),
+      onSelect: (v, p, additive) => this.onSelect(v, p, additive),
+      onSelectRegion: (v, points, additive) => this.onSelectRegion(v, points, additive),
+      onSelectKeypointAllViews: (p, additive) => this.onSelectKeypointAllViews(p, additive),
+      onActiveView: (v) => this.onActiveView(v),
       onHover: (p) => this.onHover(p),
     };
     this.meta.camera_names.forEach((name, v) => {
@@ -670,73 +677,171 @@ class App {
     this.views.forEach((view) => view.setHighlight(point));
   }
 
+  /** @param {number} view @param {number} point @returns {string} the selection-set key */
+  selKey(view, point) {
+    return `${view}:${point}`;
+  }
+
+  /** @returns {[number, number][]} the selection as (view, point) pairs */
+  selCells() {
+    return [...this.selection].map((k) => {
+      const [v, p] = k.split(":");
+      return [Number(v), Number(p)];
+    });
+  }
+
+  // A single joint was clicked. `additive` (Shift-click) toggles just that cell in
+  // the selection; a plain click replaces the selection with it. Either way the
+  // clicked cell becomes the anchor (what the status widget inspects).
   /**
    * @param {number} view
    * @param {number} point
+   * @param {boolean} [additive]
    */
-  onSelect(view, point) {
-    this.selectedView = view;
-    this.selectedPoint = point;
+  onSelect(view, point, additive = false) {
+    const key = this.selKey(view, point);
+    if (additive) {
+      if (this.selection.has(key)) this.selection.delete(key);
+      else this.selection.add(key);
+    } else {
+      this.selection.clear();
+      this.selection.add(key);
+    }
+    this.selAnchor = this.selection.has(key) ? { view, point } : null;
+    this.activeView = view;
     this.updateSelected();
   }
 
-  // Mark the selected joint (a cyan ring in its own view only) and enable the
-  // per-point Reset buttons once there is a point to reset. (The whole-frame
-  // reset needs no selection, so it stays enabled.)
+  // A Shift+drag marquee enclosed `points` in `view` -- add them all to the selection.
+  /**
+   * @param {number} view
+   * @param {number[]} points
+   * @param {boolean} [additive]
+   */
+  onSelectRegion(view, points, additive = true) {
+    if (!additive) this.selection.clear();
+    for (const p of points) this.selection.add(this.selKey(view, p));
+    if (points.length) this.selAnchor = { view, point: points[points.length - 1] };
+    this.activeView = view;
+    this.updateSelected();
+  }
+
+  // A joint was double-clicked: select that keypoint in every view.
+  /**
+   * @param {number} point
+   * @param {boolean} [additive]
+   */
+  onSelectKeypointAllViews(point, additive = false) {
+    if (!additive) this.selection.clear();
+    for (let v = 0; v < this.meta.n_views; v++) this.selection.add(this.selKey(v, point));
+    this.selAnchor = { view: this.activeView, point };
+    this.updateSelected();
+  }
+
+  /** @param {number} view  the camera the pointer is over (drives the `v` gesture) */
+  onActiveView(view) {
+    this.activeView = view;
+  }
+
+  /** Select every point in every view. */
+  selectAll() {
+    this.selection.clear();
+    for (let v = 0; v < this.meta.n_views; v++) {
+      for (let p = 0; p < this.meta.n_points; p++) this.selection.add(this.selKey(v, p));
+    }
+    this.selAnchor = null;
+    this.updateSelected();
+  }
+
+  /** Select every point in the active view (the one the pointer is over). */
+  selectActiveView() {
+    const v = this.activeView;
+    this.selection.clear();
+    for (let p = 0; p < this.meta.n_points; p++) this.selection.add(this.selKey(v, p));
+    this.selAnchor = null;
+    this.updateSelected();
+  }
+
+  /** Clear the selection (Esc, or the next plain click replaces it anyway). */
+  clearSelection() {
+    if (this.selection.size === 0) return;
+    this.selection.clear();
+    this.selAnchor = null;
+    this.updateSelected();
+  }
+
+  // Push each view its own subset of the selection (the cyan rings), update the live
+  // count + the action buttons' enabled state, and refresh the status widget.
   updateSelected() {
+    // Invariant: a single-cell selection always has that cell as its anchor, so the
+    // status widget stays usable however the selection got down to one -- a plain
+    // click, a Shift+click that *removed* the other cell (which nulls the anchor), or
+    // a select-all/select-view on a 1-point rig.
+    if (this.selection.size === 1) {
+      const [v, p] = this.selCells()[0];
+      this.selAnchor = { view: v, point: p };
+    }
     this.views.forEach((view, v) => {
-      view.setSelected(v === this.selectedView ? this.selectedPoint : null);
+      /** @type {Set<number>} */
+      const set = new Set();
+      for (let p = 0; p < this.meta.n_points; p++) {
+        if (this.selection.has(this.selKey(v, p))) set.add(p);
+      }
+      view.setSelection(set);
     });
-    const has = this.selectedPoint !== null;
-    this.resetViewBtn.disabled = !has;
-    this.resetAllBtn.disabled = !has;
+    const n = this.selection.size;
+    const empty = n === 0;
+    this.selCountEl.textContent = n === 1 ? "1 point" : `${n} points`;
+    this.actConfirmBtn.disabled = empty;
+    this.actResetBtn.disabled = empty;
+    this.actOccludeBtn.disabled = empty || !this.meta.has_3d;
     this.updateStatusWidget();
   }
 
   // -- point status widget ----------------------------------------------------
 
-  /** @returns {"normal" | "fixed" | "invisible"} the selected joint's state in its view */
+  /** @returns {"normal" | "fixed" | "invisible"} the anchor cell's state in its view */
   selectedState() {
-    const v = this.selectedView;
-    const p = this.selectedPoint;
-    if (p === null) return "normal";
-    if (this.invisibleMask && this.invisibleMask[v][p]) return "invisible";
-    if (this.fixedMask && this.fixedMask[v][p]) return "fixed";
+    const a = this.selAnchor;
+    if (!a) return "normal";
+    if (this.invisibleMask && this.invisibleMask[a.view][a.point]) return "invisible";
+    if (this.fixedMask && this.fixedMask[a.view][a.point]) return "fixed";
     return "normal";
   }
 
-  // Show the selected joint's name, its view, and its per-view source -- only when the
-  // result has 3D (occluding a view needs a 3D solve to drop it from). The widget stays
-  // visible with its state chips disabled (and a "—" placeholder) until a joint is
-  // selected, so the control reads as present-but-unavailable, like the Reset buttons.
+  // The per-view source/state inspector. It only makes sense for a single cell, so it
+  // shows the anchor's name/view/source when exactly one cell is selected; with none
+  // or several selected it shows the count and disables the chips. Only shown at all
+  // when the result has 3D (occluding a view needs a 3D solve to drop it from).
   updateStatusWidget() {
-    const p = this.selectedPoint;
     const show = this.meta.has_3d;
     this.pointStatus.hidden = !show;
     if (!show) return;
-    const has = p !== null;
-    this.stateSwitch.setDisabled(!has);
-    if (!has) {
-      this.pointStatusName.textContent = "—";
-      this.stateSwitch.set(""); // no joint -> no active chip
+    const single = this.selection.size === 1 && this.selAnchor !== null;
+    this.stateSwitch.setDisabled(!single);
+    if (!single) {
+      const n = this.selection.size;
+      this.pointStatusName.textContent = n === 0 ? "—" : `${n} points`;
+      this.stateSwitch.set(""); // no single joint -> no active chip
       return;
     }
-    const name = this.meta.point_names[p] ?? `#${p}`;
-    const cam = this.meta.camera_names[this.selectedView] ?? `view ${this.selectedView}`;
+    const a = /** @type {{view:number, point:number}} */ (this.selAnchor);
+    const name = this.meta.point_names[a.point] ?? `#${a.point}`;
+    const cam = this.meta.camera_names[a.view] ?? `view ${a.view}`;
     this.pointStatusName.textContent = `${name} · ${cam}`;
     this.stateSwitch.set(this.selectedState());
   }
 
-  // Click a state chip to set the selected joint to that state. The states are
+  // Click a state chip to set the (single) anchor joint to that state. The states are
   // mutually exclusive, so one toggle takes it anywhere: toggling fixed/obscured
   // sets it (clearing the other), and "normal" clears whichever flag is set.
   /** @param {string} target  "normal" | "fixed" | "invisible" */
   setSelectedState(target) {
-    if (!this.meta.has_3d || this.selectedPoint === null) return;
+    if (!this.meta.has_3d || !this.selAnchor) return;
     const current = this.selectedState();
     if (target === current) return;
-    const v = this.selectedView;
-    const p = this.selectedPoint;
+    const v = this.selAnchor.view;
+    const p = this.selAnchor.point;
     if (target === "fixed") this.onToggleFixed(v, p);
     else if (target === "invisible") this.onToggleInvisible(v, p);
     else if (current === "fixed") this.onToggleFixed(v, p); // -> normal
@@ -807,57 +912,31 @@ class App {
     this.sendEdit({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
   }
 
-  // Keyboard shortcuts (l / o): act on the last-selected joint in its view.
-  toggleSelectedFixed() {
-    if (this.selectedPoint !== null) this.onToggleFixed(this.selectedView, this.selectedPoint);
-  }
+  // -- actions on the selection (confirm / reset / occlude) -------------------
 
-  toggleSelectedInvisible() {
-    if (this.selectedPoint !== null) this.onToggleInvisible(this.selectedView, this.selectedPoint);
-  }
-
-  // Revert the last-selected joint in just the view it was selected in.
-  resetSelectedView() {
-    if (this.selectedPoint === null) return;
-    this.sendEdit({
-      type: "reset_point_view",
-      view: this.selectedView,
-      point: this.selectedPoint,
-      frame: this.frame,
-      mode: this.mode,
-    });
-  }
-
-  // Revert the last-selected joint across every view (and its 3D point).
-  resetSelectedAll() {
-    if (this.selectedPoint === null) return;
-    this.sendEdit({ type: "reset_point", point: this.selectedPoint, frame: this.frame, mode: this.mode });
-  }
-
-  // Revert every joint in the current frame across all views (and their 3D
-  // points) -- a clean slate for the frame, independent of any selection.
-  resetFrame() {
-    this.sendEdit({ type: "reset_frame", frame: this.frame, mode: this.mode });
-  }
-
-  // -- confirm (promote suggestions to ground truth) --------------------------
-
-  // Confirm the selected joint's suggested position as GT in every view.
-  confirmSelectedJoint() {
-    if (this.selectedPoint === null) return;
-    const point = this.selectedPoint;
-    const targets = this.views.map((_, v) => [v, point]);
+  // Confirm the selection: snapshot each selected cell's shown position as ground
+  // truth (prediction where the detector fired, else the projection). One undo step.
+  confirmSelection() {
+    const targets = this.selCells();
+    if (!targets.length) return;
     this.sendEdit({ type: "confirm", targets, sources: "all", frame: this.frame, mode: this.mode });
   }
 
-  // Confirm every suggested point in the current frame (all views) as GT.
-  confirmFrame() {
-    /** @type {[number, number][]} */
-    const targets = [];
-    for (let v = 0; v < this.meta.n_views; v++) {
-      for (let p = 0; p < this.meta.n_points; p++) targets.push([v, p]);
-    }
-    this.sendEdit({ type: "confirm", targets, sources: "all", frame: this.frame, mode: this.mode });
+  // Reset the selection: clear each selected cell's authored label (ground truth or
+  // occlusion) back to unset, so it falls back to the detector prediction. One undo step.
+  resetSelection() {
+    const targets = this.selCells();
+    if (!targets.length) return;
+    this.sendEdit({ type: "reset", targets, frame: this.frame, mode: this.mode });
+  }
+
+  // Occlude the selection: flag each selected cell unreadable in its view (dropping it
+  // from the 3D solve). Needs 3D; reverse via Reset / undo. One undo step.
+  occludeSelection() {
+    if (!this.meta.has_3d) return;
+    const targets = this.selCells();
+    if (!targets.length) return;
+    this.sendEdit({ type: "occlude", targets, frame: this.frame, mode: this.mode });
   }
 
   // -- undo / redo ------------------------------------------------------------
@@ -1175,14 +1254,18 @@ class App {
       b.push({ key: "m", label: "m", desc: "Toggle NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
       b.push({ key: "M", label: "Shift+M", desc: "Toggle NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
     }
+    // Selection gestures (mouse: click / Shift+click / double-click / Shift+drag).
+    b.push({ key: "a", label: "a", desc: "Select all points (every view)", run: () => this.selectAll() });
+    b.push({ key: "a", mod: true, hidden: true, label: "Ctrl/⌘+A", desc: "", run: () => this.selectAll() });
+    b.push({ key: "v", label: "v", desc: "Select every point in the view under the cursor", run: () => this.selectActiveView() });
+    // Actions on the selection.
+    b.push({ key: "Enter", label: "Enter", desc: "Confirm the selection as ground truth", run: () => this.confirmSelection() });
+    b.push({ key: "r", label: "r", desc: "Reset the selection (clear labels back to the prediction)", run: () => this.resetSelection() });
+    b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
+    b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
     if (has3d) {
-      b.push({ key: "l", label: "l", desc: "Confirm / clear ground truth for the selected point (this view)", run: () => this.toggleSelectedFixed() });
-      b.push({ key: "o", label: "o", desc: "Occlude / reveal the selected point (this view)", run: () => this.toggleSelectedInvisible() });
+      b.push({ key: "o", label: "o", desc: "Occlude the selection (mark unreadable in that view)", run: () => this.occludeSelection() });
     }
-    b.push({ key: "Enter", label: "Enter", desc: "Confirm the selected point as ground truth (all views)", run: () => this.confirmSelectedJoint() });
-    b.push({ key: "a", label: "a", desc: "Confirm every suggested point in this frame", run: () => this.confirmFrame() });
-    b.push({ key: "r", label: "r", desc: "Discard the selected point's label in its view", run: () => this.resetSelectedView() });
-    b.push({ key: "R", label: "Shift+R", desc: "Discard the selected point's label in all views", run: () => this.resetSelectedAll() });
     b.push({ key: "z", mod: true, label: "Ctrl/⌘+Z", desc: "Undo", run: () => this.undo() });
     b.push({ key: "y", mod: true, label: "Ctrl/⌘+Y", desc: "Redo", run: () => this.redo() });
     b.push({ key: "z", mod: true, shift: true, hidden: true, label: "Ctrl/⌘+Shift+Z", desc: "Redo", run: () => this.redo() });
@@ -1198,8 +1281,72 @@ class App {
     const rows = this.bindings
       .filter((b) => !b.hidden)
       .map((b) => `<tr><td class="key"><kbd>${b.label}</kbd></td><td>${b.desc}</td></tr>`);
-    rows.push(`<tr><td class="key"><kbd>Esc</kbd></td><td>Close this dialog or the 3D view</td></tr>`);
-    this.helpBody.innerHTML = `<table class="shortcuts"><tbody>${rows.join("")}</tbody></table>`;
+    // Mouse gestures for building a selection (not keyboard bindings, so listed here).
+    rows.push(`<tr><td class="key"><kbd>Click</kbd></td><td>Select a point (Shift+click: add / remove)</td></tr>`);
+    rows.push(`<tr><td class="key"><kbd>Double-click</kbd></td><td>Select that keypoint in every view</td></tr>`);
+    rows.push(`<tr><td class="key"><kbd>Shift+drag</kbd></td><td>Rubber-band: add every enclosed point</td></tr>`);
+    rows.push(`<tr><td class="key"><kbd>Esc</kbd></td><td>Clear the selection, or close a dialog</td></tr>`);
+    const shortcuts = `<h3 class="legend-title">Keyboard shortcuts</h3>`
+      + `<table class="shortcuts"><tbody>${rows.join("")}</tbody></table>`;
+    this.helpBody.innerHTML = this.buildLegend() + shortcuts;
+  }
+
+  // The legend, built from the server meta so it reflects whatever config is loaded:
+  // the keypoint colours come straight from the skeleton's per-limb palette (no L/R
+  // assumption), and the marker/overlay rows mirror how poseView.js draws them.
+  buildLegend() {
+    const esc = (s) =>
+      String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+    const limbs = (this.meta.limbs || [])
+      .map((lb) => {
+        const [r, g, b] = lb.color;
+        const name = esc(lb.name).replace(/_/g, " ");
+        return `<span class="legend-limb"><i class="limb-dot" style="background:rgb(${r},${g},${b})"></i>${name}</span>`;
+      })
+      .join("");
+    const colours = `<h3 class="legend-title">Keypoint colours</h3>`
+      + `<p class="legend-note">Each keypoint takes its limb's colour from the skeleton palette (from your config).</p>`
+      + `<div class="legend-limbs">${limbs}</div>`;
+
+    // Marker vocabulary -- what a keypoint's marker tells you about where it came from.
+    const markers = [
+      [`<i class="mk m-gt"></i>`, `<b>Ground truth</b> — you authored it (dragged or confirmed); trusted.`],
+      [`<i class="mk m-pred"></i>`, `<b>Prediction</b> — the detector's raw 2D; the fill fades as confidence drops.`],
+    ];
+    if (this.meta.has_3d) {
+      markers.push([
+        `<i class="mk m-proj"></i>`,
+        `<b>Projection</b> — no observation in this view; the 3D reprojected here (a suggestion). An occluded view shows this way too.`,
+      ]);
+    }
+    const markerRows = markers
+      .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
+      .join("");
+    const markerBlock = `<h3 class="legend-title">Marker — where a point came from</h3>`
+      + `<div class="legend-rows">${markerRows}</div>`;
+
+    // Read-only reference overlays (shown only when the result carries them).
+    const refs = [];
+    if (this.meta.has_3d) {
+      refs.push([
+        `<span class="swatch swatch-latent"></span>`,
+        `<b>3D estimate</b> — the triangulated 3D reprojected into each view (dashed amber).`,
+      ]);
+    }
+    if (this.meta.has_nmf) {
+      refs.push([
+        `<span class="swatch swatch-nmf"></span>`,
+        `<b>NMF skeleton</b> — the fitted NeuroMechFly model joints (dotted mint).`,
+      ]);
+    }
+    const refBlock = refs.length
+      ? `<h3 class="legend-title">Reference overlays</h3>`
+        + `<div class="legend-rows">`
+        + refs.map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`).join("")
+        + `</div>`
+      : "";
+
+    return `<div class="legend">${colours}${markerBlock}${refBlock}</div>`;
   }
 
   openHelp() {
@@ -1248,6 +1395,9 @@ class App {
         e.preventDefault();
       } else if (this.sceneOpen) {
         this.closeScene();
+        e.preventDefault();
+      } else if (this.selection.size) {
+        this.clearSelection();
         e.preventDefault();
       }
       return;

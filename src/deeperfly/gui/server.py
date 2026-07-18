@@ -21,6 +21,7 @@ import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -38,6 +39,9 @@ from fastapi.staticfiles import StaticFiles
 from ..visualization._palette import point_colors_rgb
 from .labels import save_labels
 from .session import Session
+
+if TYPE_CHECKING:
+    from ..skeleton import Skeleton
 
 __all__ = ["create_app"]
 
@@ -222,8 +226,11 @@ def create_app(
                 try:
                     async with lock:
                         payload = _handle_edit(session, msg)
-                except (KeyError, ValueError, TypeError) as exc:
-                    # A malformed edit must not tear down the editing session.
+                except (KeyError, ValueError, TypeError, IndexError) as exc:
+                    # A malformed edit must not tear down the editing session --
+                    # including an out-of-range view/point index in a batched
+                    # confirm/reset/occlude `targets` list (an IndexError from the
+                    # underlying numpy overlay indexing).
                     log.warning("ignoring bad edit message %r: %s", msg, exc)
                     continue
                 await websocket.send_json(payload)
@@ -374,6 +381,23 @@ def _cameras_proj(session: Session) -> list[dict]:
 # -- payload builders ---------------------------------------------------------
 
 
+def _limb_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
+    """Per-limb ``{name, color}`` swatches for the client's colour legend.
+
+    Derived straight from the skeleton's limbs and palette (``colors`` is the
+    per-point RGB already computed for the overlay), so the legend reflects
+    whatever the loaded config defines -- there is no left/right assumption baked
+    into the front-end. Each limb's swatch is the colour of its first point.
+    """
+    limb_id = np.asarray(skel.limb_id)
+    out: list[dict] = []
+    for lid, name in enumerate(skel.limb_names):
+        members = np.where(limb_id == lid)[0]
+        rgb = colors[members[0]] if len(members) else np.array([136, 136, 136])
+        out.append({"name": name, "color": [int(c) for c in rgb]})
+    return out
+
+
 def _meta_payload(session: Session) -> dict:
     """The one-time metadata the front-end needs to lay out and draw the editor."""
     s = session.state
@@ -393,6 +417,7 @@ def _meta_payload(session: Session) -> dict:
         "point_names": list(skel.point_names),
         "bones": np.asarray(skel.bones, dtype=int).reshape(-1, 2).tolist(),
         "point_colors": colors.tolist(),
+        "limbs": _limb_legend(skel, colors),
         "cameras_3d": _cameras_3d(session),
         "cameras_proj": _cameras_proj(session),
         "dirty": bool(s.dirty),
@@ -567,6 +592,12 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ == "confirm":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         s.confirm(targets, str(msg.get("sources", "all")), t)
+    elif typ == "reset":
+        targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
+        s.reset_targets(targets, t)
+    elif typ == "occlude":
+        targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
+        s.occlude_targets(targets, t)
     elif typ == "undo":
         goto = s.undo()
     elif typ == "redo":

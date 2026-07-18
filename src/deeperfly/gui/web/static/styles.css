@@ -153,10 +153,9 @@ body {
   gap: 4px;
 }
 
-/* Legend: a small colour/line-style swatch inside an overlay toggle's label, and a
-   compact left/right palette key -- so what the colours and line styles mean is on
-   screen, matching the canvas (editable = solid, latent = dashed amber, NMF = dotted
-   mint). Pure CSS, no per-frame cost. */
+/* A small line-style swatch inside an overlay toggle's label (the "3D estimate" and
+   "NMF skeleton" checkboxes), matching how the canvas draws each overlay (latent =
+   dashed amber, NMF = dotted mint). The full legend lives in the Help panel. */
 .swatch {
   display: inline-block;
   width: 15px;
@@ -172,67 +171,104 @@ body {
   border-top: 2px dotted rgb(80, 230, 180);
 }
 
-.palette-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: #aaa;
-  font-size: 11px;
+/* The legend, rendered into the Help panel (#help-body) by app.js from the server
+   meta. The keypoint-colour swatches come straight from the loaded skeleton's per-limb
+   palette (no hard-coded left/right), so the legend reads correctly for any config. */
+.legend {
+  margin-bottom: 20px;
 }
 
-.palette-key i {
-  width: 9px;
-  height: 9px;
+.legend-title {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9cd1ff;
+}
+
+.legend-title:first-child {
+  margin-top: 0;
+}
+
+.legend-note {
+  margin: 0 0 8px;
+  color: #999;
+  font-size: 12px;
+}
+
+/* Keypoint colours: one swatch + limb name per limb, wrapping to fit. */
+.legend-limbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.legend-limb {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.limb-dot {
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   display: inline-block;
+  flex: none;
 }
 
-.palette-key .k-l {
-  background: #1a8daf; /* left = blue */
+/* Marker / overlay rows: a marker or line swatch, then a description. */
+.legend-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.palette-key .k-r {
-  background: #ba1e31; /* right = red */
-  margin-left: 4px;
+.legend-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 46em;
 }
 
-/* Source-marker legend: one small disc per source, styled to match the canvas markers
-   (ground truth = solid lime ring, prediction = thin dark ring, derived projection =
-   hollow ring). The fill/ring stands in for the per-point left/right colour, which is
-   grey here since it varies per keypoint. */
-.marker-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: #aaa;
-  font-size: 11px;
-  margin-left: 8px;
+.legend-row .mk {
+  margin-top: 3px;
+  flex: none;
 }
 
-.marker-key i {
-  width: 10px;
-  height: 10px;
+.legend-row .swatch {
+  margin-top: 8px;
+  flex: none;
+}
+
+/* Marker discs, styled to match the canvas markers: ground truth = solid lime ring,
+   prediction = thin dark ring, projection = hollow ring. The disc colour is a grey
+   stand-in for the per-keypoint limb colour, which varies from point to point. */
+.mk {
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   display: inline-block;
   box-sizing: border-box;
-  margin-left: 6px;
-  margin-right: 2px;
 }
 
-.marker-key .m-gt {
+.mk.m-gt {
   background: #888;
   border: 2px solid #7cfc00; /* lime, solid */
-  margin-left: 0;
 }
 
-.marker-key .m-pred {
+.mk.m-pred {
   background: #888;
   border: 1px solid rgba(0, 0, 0, 0.7); /* thin dark */
 }
 
-.marker-key .m-proj {
+.mk.m-proj {
   background: transparent; /* hollow */
-  border: 1.5px solid #888; /* palette-coloured on the canvas; grey stand-in here */
+  border: 1.5px solid #888;
 }
 
 /* The frame slider gets a row to itself, so let it span the full width. */
@@ -279,10 +315,18 @@ body {
   width: 70px;
 }
 
-/* The three reset actions read as one group: a "Reset" label then buttons whose
-   labels complete the verb ("Reset" + "Point in view" / ... / "Whole frame"). */
-.reset-group {
+/* The action group reads as one unit: a "Selection" label, a live count of how many
+   points are picked, then the three verbs (Confirm / Reset / Occlude) that act on
+   them. Disabled buttons (empty selection) dim via the shared button styles. */
+.selection-group {
   gap: 6px;
+}
+
+.sel-count {
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 4.5em;
 }
 
 /* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state

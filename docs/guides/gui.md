@@ -68,12 +68,15 @@ tells you where it came from** so you know at a glance what still needs attentio
 | --- | --- | --- |
 | Filled disc, **lime** ring | **Ground truth** | you authored it (dragged or confirmed) — trusted |
 | Filled disc, thin **dark** ring (fill fades when faint) | **Prediction** | the detector's raw 2D; the fainter the fill, the lower its confidence |
-| **Hollow** circle in the point's left/right colour | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
+| **Hollow** circle in the point's limb colour | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
 
-The legend in the toolbar (GT / Pred / Proj) mirrors these. The displayed point resolves
-by precedence **ground truth → prediction → projection**. A view you **occlude** (below)
-has its observation deleted, so it too shows as a projection — there is deliberately no
-separate marker for it.
+The **`?` button** (or the `?` key) opens the **Help panel**, which carries the full
+legend — the keypoint colours (one swatch per limb, taken from your skeleton's
+`limb_palette`, so it matches whatever config you loaded), the marker vocabulary above,
+and the reference-overlay line styles — alongside the keyboard shortcuts. The displayed
+point resolves by precedence **ground truth → prediction → projection**. A view you
+**occlude** (below) has its observation deleted, so it too shows as a projection — there
+is deliberately no separate marker for it.
 
 ## Annotating the pose
 
@@ -83,49 +86,63 @@ you drag, so every view's projection markers follow; the dragged view is authore
 ground truth and lands exactly under the cursor. (With a 2D-only result there is no 3D
 to re-solve — the drop is simply that view's ground-truth pixel.)
 
-### Confirming suggestions (fast path)
+Most predictions are already good — you don't need to drag them, just **select** the
+points you want and **act** on them. Annotation is two steps: build a selection, then
+apply one verb to all of it.
 
-Most predictions are already good — you don't need to drag them, just accept them:
+### Selecting points
 
-- **Confirm point** (`Enter`) — promote the selected joint's suggestion to ground
-  truth in **every** view.
-- **Confirm whole frame** (`a`) — promote every suggested point in the frame (all
-  views) to ground truth at once.
-- Per view: `l` confirms (or clears) ground truth for the selected point in the
-  selected view.
+A selection is a set of `(point, view)` cells; the **Selection** toolbar group shows the
+live count. Build one with:
 
-Confirming a *prediction* snapshots the detector's pixel; confirming a
-*reprojection* (a view where the detector fired nothing) snapshots the 3D's
-reprojected pixel and is tagged as such, so it can be filtered out on export.
+- **Click** a point — select just that one (replaces the selection).
+- **Shift+click** a point — add it to (or remove it from) the selection.
+- **Double-click** a point — select that keypoint in **every** view.
+- **Shift+drag** a box (a rubber-band marquee) — add every point inside it. A plain drag
+  still moves a point / pans the view, so hold Shift to box-select.
+- **`a`** (or `Ctrl`/`Cmd`+`A`) — select every point in every view.
+- **`v`** — select every point in the view under the cursor.
+- **`Esc`** — clear the selection.
 
-### Occluding a view
+The selection persists as you step between frames (the indices are the same), so you can
+act on the same joints frame after frame.
 
-When a point cannot be read from a view, mark it **occluded** (`o`, or the point-status
-widget): its observation is deleted, so it is dropped from the 3D solve and the other
-views carry the reconstruction. On the canvas it then looks like any other projection (a
-hollow palette circle) — occluding is just *"delete this view's observation"*, and a
-deleted observation is indistinguishable from one the detector never made. It is fully
-reversible — toggle it back, drag to place ground truth (which un-occludes it), or
-**undo**. Occluded views are still recorded on export as a positive "unplaceable" label
-(useful negative training signal), so the state is kept even though it has no marker of
-its own.
+### Acting on the selection
 
-The point-status widget shows the selected `(point, view)`'s state — **Predicted** /
-**Ground truth** / **Occluded** — and sets it.
+Three verbs act on whatever is selected — the **Confirm** / **Reset** / **Occlude**
+buttons, or their keys. Each is a **single undo step**, however large the selection.
+
+- **Confirm** (`Enter`) — promote each selected cell's suggestion to ground truth.
+  Confirming a *prediction* snapshots the detector's pixel; confirming a *reprojection*
+  (a view where the detector fired nothing) snapshots the 3D's reprojected pixel and is
+  tagged as such, so it can be filtered out on export.
+- **Reset** (`r`, or `Delete` / `Backspace`) — clear each selected cell's label (ground
+  truth *or* occlusion) back to unset, so it falls back to the detector's original
+  prediction (or, where the detector fired nothing, the reprojection). The
+  "start over on these points" action.
+- **Occlude** (`o`) — mark each selected cell **occluded**: its observation is deleted,
+  so it drops from the 3D solve and the other views carry the reconstruction. On the
+  canvas it then looks like any other projection (a hollow palette circle) — occluding is
+  just *"delete this view's observation"*, and a deleted observation is indistinguishable
+  from one the detector never made. Reverse it with **Reset**, **undo**, or by dragging to
+  place ground truth. Occluded views are still recorded on export as a positive
+  "unplaceable" label (useful negative training signal).
+
+Everyday flows: click a point and press `Enter` to confirm one keypoint everywhere; `a`
+then `Enter` to confirm the whole frame; double-click a mislocated joint and press `r` to
+reset it across all views; Shift+drag a box around a few stray points and press `o` to
+occlude them.
+
+When exactly one point is selected, the **point-status widget** shows that
+`(point, view)`'s state — **Predicted** / **Ground truth** / **Occluded** — and lets you
+set it directly.
 
 ### Undo / redo
 
 Every edit is undoable: `Ctrl`/`Cmd`+`Z` undoes, `Ctrl`/`Cmd`+`Y` (or
-`Ctrl`/`Cmd`+`Shift`+`Z`) redoes; the ↶ / ↷ buttons do the same. A whole drag is a
-single undo step, and undo jumps back to the frame the edit was on.
-
-### Discarding labels
-
-Three discards (the **Discard** group), each back to the pipeline's suggestion:
-
-- **Point in view** (`r`) — the selected point's label in its view.
-- **Point in all views** (`Shift+R`) — the selected point's labels everywhere.
-- **Whole frame** — every label in the current frame, all views.
+`Ctrl`/`Cmd`+`Shift`+`Z`) redoes; the ↶ / ↷ buttons do the same. A whole drag — and a
+whole batched Confirm / Reset / Occlude — is a single undo step, and undo jumps back to
+the frame the edit was on.
 
 ## Labelled-frames list
 
@@ -205,9 +222,10 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | --- | --- |
 | `←` / `→` (`Shift` ±10) | Previous / next frame |
 | `f` / `g`, `[` / `]` | Focus / Grid layout; cycle the focused camera |
-| `Enter` / `a` | Confirm the selected point (all views) / the whole frame |
-| `l` / `o` | Confirm-or-clear ground truth / occlude-or-reveal the selected point (this view) |
-| `r` / `Shift+R` | Discard the selected point's label in its view / all views |
+| Click / `Shift`+click / double-click | Select a point / add-remove / that keypoint in every view |
+| `Shift`+drag | Rubber-band box: add every enclosed point |
+| `a` (`Ctrl`/`Cmd`+`A`) / `v` / `Esc` | Select all / all in the current view / clear the selection |
+| `Enter` / `r` / `o` | Confirm / Reset / Occlude the selection |
 | `Ctrl`/`Cmd`+`Z` / `Ctrl`/`Cmd`+`Y` | Undo / redo |
 | `s` / `n` / `p` | Toggle skeleton / labels / 3D estimate |
 | `m` / `Shift+M` / `c` | Toggle NMF skeleton / NMF mesh / 3D view |

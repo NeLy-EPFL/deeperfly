@@ -23,27 +23,20 @@
             <div class="field" id="layout-wrap" title="Camera arrangement — Focus shows one big view plus thumbnails; Grid shows every camera equally (keys f / g)">Layout <div id="layout-switch" class="segmented"></div></div>
             <span class="sep"></span>
             <label title="Show the editable skeleton overlay (s)"><input id="show-skeleton" type="checkbox" checked /> Skeleton</label>
-            <span class="palette-key" title="Keypoint colour marks the body side: left is blue, right is red (lightening front → hind)"><i class="k-l"></i>L<i class="k-r"></i>R</span>
-            <span class="marker-key" title="A keypoint's marker shows where it came from — Ground truth: what you authored (drag or confirm), a lime ring over a filled disc; Predicted: the detector's raw 2D (fill fades with its confidence), a filled disc with a dark ring; Projection: derived by reprojecting the 3D (no direct observation in this view), a hollow palette circle. Occluding a view deletes its observation, so it then shows as a projection.">
-              <i class="m-gt"></i>GT<i class="m-pred"></i>Pred<i class="m-proj"></i>Proj
-            </span>
             <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> Labels</label>
             <label id="latent-wrap" title="Show the triangulated 3D estimate: a faint amber glow under the skeleton, with a leash marking where it pulls each point away from where you placed it (p)"><input id="show-latent" type="checkbox" /><span class="swatch swatch-latent"></span> 3D estimate</label>
             <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> NMF skeleton</label>
             <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> NMF mesh</label>
             <span class="sep"></span>
-            <div class="field" id="point-status" title="The selected point's state in the selected view (l: fix, o: obscure)" hidden>
+            <div class="field" id="point-status" title="The one selected point's state in its view — click a chip to change it (or press o to occlude)" hidden>
               <span id="point-status-name" class="point-status-name">—</span>
               <div id="point-status-states" class="segmented"></div>
             </div>
-            <div class="field confirm-group">Confirm
-              <button id="confirm-point" title="Confirm the selected point as ground truth in every view (Enter)">Point</button>
-              <button id="confirm-frame" title="Confirm every suggested point in this frame as ground truth (a)">Whole frame</button>
-            </div>
-            <div class="field reset-group">Discard
-              <button id="reset-view" title="Discard the selected point's label in its view (r)">Point in view</button>
-              <button id="reset-all" title="Discard the selected point's label in every view (Shift+R)">Point in all views</button>
-              <button id="reset-frame" title="Discard every label in this frame, all views">Whole frame</button>
+            <div class="field selection-group" title="Select points — click, Shift+click to add/remove, double-click a point for all views, Shift+drag a box; a = all, v = this view, Esc clears — then act on them">Selection
+              <span id="sel-count" class="sel-count">0 points</span>
+              <button id="act-confirm" title="Confirm the selection as ground truth (Enter)" disabled>Confirm</button>
+              <button id="act-reset" title="Reset the selection — clear labels back to the prediction (r)" disabled>Reset</button>
+              <button id="act-occlude" title="Occlude the selection — mark it unreadable in that view (o)" disabled>Occlude</button>
             </div>
             <span class="spacer"></span>
             <button id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>
@@ -51,7 +44,7 @@
             <button id="keypoints" title="Reference: where each keypoint sits on the fly — opens in a new tab (k)">Keypoints ↗</button>
             <button id="frames-toggle" title="Show / hide the list of frames you have labelled (j)">Labels <span id="frames-count" class="count-badge">0</span></button>
             <button id="cameras" title="Show the 3D view — cameras, 3D pose, NMF skeleton + mesh (c)">3D view</button>
-            <button id="help" title="Show keyboard shortcuts (?)">?</button>
+            <button id="help" title="Show the legend and keyboard shortcuts (?)">?</button>
             <span id="status"></span>
             <button id="save" title="Save the ground-truth labels (Ctrl/Cmd+S)">Save</button>
             <button id="close-editor" title="Stop the server and close the editor">Close</button>
@@ -103,7 +96,7 @@
     <div id="help-overlay" class="overlay" hidden>
       <div class="modal">
         <div class="modal-head">
-          <span>Keyboard shortcuts</span>
+          <span>Help</span>
           <button id="help-close" class="icon-btn" aria-label="Close" title="Close (Esc)">✕</button>
         </div>
         <div id="help-body" class="modal-body"></div>

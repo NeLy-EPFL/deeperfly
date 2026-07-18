@@ -581,6 +581,7 @@ class EditorState:
         changed.
         """
         t = self._resolve_frame(frame)
+        saved_redo = list(self._redo)
         self._record_undo(t, None, coalesce=False)
         want_pred = sources in ("all", "predictions")
         want_proj = sources in ("all", "projections")
@@ -610,4 +611,57 @@ class EditorState:
             self._invalidate_nmf(t)
         else:
             self._undo.pop()  # nothing changed: drop the no-op undo entry
+            self._redo[:] = saved_redo  # ... and restore the redo _record_undo cleared
         return changed
+
+    def reset_targets(self, targets, frame: int | None = None) -> None:
+        """Reset many ``(view, point)`` cells at ``frame`` to ``unset`` in one undo step.
+
+        The batched counterpart of :meth:`reset_point_view`: it drops GT *and*
+        occlusion for every target and re-derives the frame's 3D once, so a
+        multi-select "Reset" is a single undoable action. A no-op batch (empty, or
+        every target already unset -- e.g. select-all then Reset on a fresh frame) does
+        nothing at all: no undo entry, no cleared redo, nothing marked dirty (mirrors
+        :meth:`confirm`).
+        """
+        targets = list(targets)
+        if not targets:
+            return
+        t = self._resolve_frame(frame)
+        has_gt = self.labels.has_gt
+        occluded = self.labels.occluded
+        if not any(
+            has_gt[view, t, point] or occluded[view, t, point]
+            for view, point in targets
+        ):
+            return
+        self._record_undo(t, None, coalesce=False)
+        for view, point in targets:
+            self.labels.clear_view(view, t, point)
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+
+    def occlude_targets(self, targets, frame: int | None = None) -> None:
+        """Occlude many ``(view, point)`` cells at ``frame`` in one undo step.
+
+        The batched counterpart of :meth:`toggle_invisible`, but a *set* not a toggle:
+        every target is flagged occluded (dropping any GT there), and the frame's 3D
+        re-derives once. Reversal is :meth:`reset_targets` / undo. Requires 3D (an
+        occluded view only means something when there is a solve to drop it from). A
+        no-op batch (empty, or every target already occluded) does nothing: no undo
+        entry, no cleared redo, nothing marked dirty (mirrors :meth:`confirm`).
+        """
+        if self.result.pts3d is None:
+            return
+        targets = list(targets)
+        if not targets:
+            return
+        t = self._resolve_frame(frame)
+        occluded = self.labels.occluded
+        if not any(not occluded[view, t, point] for view, point in targets):
+            return
+        self._record_undo(t, None, coalesce=False)
+        for view, point in targets:
+            self.labels.set_occluded(view, t, point, True)
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
