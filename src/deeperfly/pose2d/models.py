@@ -75,11 +75,17 @@ def _load_hourglass(weights: str | None, **kwargs):
     return detector.load_detector(path, **kwargs)
 
 
-def _load_lite(weights: str | None, **kwargs):
-    """Load the TorchScript single-side lite detector (see :mod:`.lite`)."""
-    from .lite import load_lite
+def _lite_loader(backbone: str | None):
+    """Build a loader for one lite architecture; ``backbone`` names the cache file
+    used when ``weights`` is empty (None for the generic ``deepfly2d_lite`` alias)."""
 
-    return load_lite(weights, **kwargs)
+    def load(weights: str | None, **kwargs):
+        from .lite import load_lite
+
+        return load_lite(weights, backbone=backbone, **kwargs)
+
+    load.__name__ = f"_load_lite_{backbone or 'generic'}"
+    return load
 
 
 #: The compact TorchScript single-side detectors (deeperfly-train exports), named
@@ -95,8 +101,8 @@ LITE_CLASSES = ("hrnet_w32", "hrnet_timm", "unet_smp")
 MODEL_CLASSES = {
     "hourglass": _load_hourglass,
     "deepfly2d": _load_hourglass,
-    "deepfly2d_lite": _load_lite,
-    **{c: _load_lite for c in LITE_CLASSES},
+    "deepfly2d_lite": _lite_loader(None),
+    **{c: _lite_loader(c) for c in LITE_CLASSES},
 }
 
 #: ``class`` name -> LoadedModel subclass (default :class:`LoadedModel`). Lets a
