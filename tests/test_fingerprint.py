@@ -320,7 +320,8 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
         {"inverse_kinematics.bounds.rf_trochanterfemur-rf_tibia-pitch": [10, 160]}
     )
     legs = _cfg({"inverse_kinematics.legs": ["rf", "lf"]})
-    # a bounds override and a leg restriction both change the fingerprint
+    const = _cfg({"inverse_kinematics.constant_points": ["rf_thorax_coxa"]})
+    # a bounds override, a leg restriction and a constant-point list each change it
     assert fingerprint_diff(
         stage_fingerprint("inverse_kinematics", base, enabled, store),
         stage_fingerprint("inverse_kinematics", bounds, enabled, store),
@@ -328,6 +329,10 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
     assert fingerprint_diff(
         stage_fingerprint("inverse_kinematics", base, enabled, store),
         stage_fingerprint("inverse_kinematics", legs, enabled, store),
+    )
+    assert fingerprint_diff(
+        stage_fingerprint("inverse_kinematics", base, enabled, store),
+        stage_fingerprint("inverse_kinematics", const, enabled, store),
     )
     # an identical config is cache-valid
     assert not fingerprint_diff(

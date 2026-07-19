@@ -504,6 +504,15 @@ f_scale = 1.0              # robust-loss scale (units of the 3D pose)
 regularization = 0.01      # head/abdomen toward-previous-frame angle prior (smooths
                            # and pins redundant DOFs the sparse markers don't fix)
 
+# Points whose 3D position is physically fixed over the recording (e.g. a tethered
+# fly's thorax-coxa leg roots, which don't move). Before the fit, each listed point
+# is replaced by its temporal median across all frames, so the leg roots stop
+# jittering with per-frame detection noise (and occluded frames get filled in).
+# Empty = off. Refer to points by their [skeleton].point_names. Example:
+# constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+#                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+constant_points = []
+
 # Per-DOF joint angle limits, in DEGREES, overriding the template defaults. Keys are
 # the flygym joint angle names "<parent_body>-<child_body>-<dof>" (dofs: yaw/pitch/
 # roll), the same names written to results.h5. The abdomen hinges default to

@@ -118,6 +118,7 @@ def test_inverse_kinematics_defaults_when_absent():
         and ik.loss == "linear"
         and ik.f_scale == 1.0
         and ik.bounds == {}
+        and ik.constant_points == []
     )
 
 
@@ -139,6 +140,17 @@ def test_inverse_kinematics_reads_overrides():
 def test_inverse_kinematics_unknown_key_fails_loudly():
     with pytest.raises(ValueError, match=r"\[inverse_kinematics\] has unknown key"):
         Config.from_dict({"inverse_kinematics": {"bogus": 1}}).inverse_kinematics
+
+
+def test_inverse_kinematics_reads_constant_points():
+    ik = Config.from_dict(
+        {
+            "inverse_kinematics": {
+                "constant_points": ["lf_thorax_coxa", "rf_thorax_coxa"]
+            }
+        }
+    ).inverse_kinematics
+    assert ik.constant_points == ["lf_thorax_coxa", "rf_thorax_coxa"]
 
 
 def test_gui_mesh_hide_defaults_to_wings_and_reads_overrides():

@@ -282,6 +282,7 @@ def stage_fingerprint(
                 "max_nfev": p.max_nfev,
                 "loss": p.loss,
                 "f_scale": p.f_scale,
+                "constant_points": list(p.constant_points),
                 "skeleton": _skeleton_digest(config),
                 "pts3d_from": pts3d_source(enabled, store),
             }
