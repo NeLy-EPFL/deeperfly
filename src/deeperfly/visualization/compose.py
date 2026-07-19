@@ -582,12 +582,52 @@ def compose_frame(spec: VideoSpec, src: Sources, t: int) -> np.ndarray:
     return canvas
 
 
+#: Draw ops that are NOT thread-safe (a shared GPU/OpenGL rasterizer context), so a
+#: spec using one is composited serially even when ``workers > 1``. The OpenCV ops
+#: (imshow, skeleton_*) release the GIL and composite fine in parallel.
+_GL_OPS = frozenset({"mesh_nmf"})
+
+
+def _spec_is_thread_safe(spec: VideoSpec) -> bool:
+    return not any(p.plot in _GL_OPS for p in spec.panels)
+
+
+def _composited_in_order(spec: VideoSpec, src: Sources, n: int, workers: int):
+    """Yield ``compose_frame(spec, src, t)`` for ``t`` in ``0..n`` **in order**, with
+    up to ``workers`` frames composited concurrently.
+
+    ``compose_frame`` builds its own canvas and only reads ``src``, so frames are
+    independent; the OpenCV draw ops release the GIL, so a thread pool overlaps
+    compositing across cores (and with the consumer's encode). A bounded
+    look-ahead deque preserves output order and caps peak memory at a few frames.
+    """
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    lookahead = max(2, workers * 2)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending: deque = deque()
+        it = iter(range(n))
+        for _ in range(lookahead):  # prime the pipeline
+            t = next(it, None)
+            if t is None:
+                break
+            pending.append(pool.submit(compose_frame, spec, src, t))
+        while pending:
+            fut = pending.popleft()
+            t = next(it, None)
+            if t is not None:  # keep the pipeline full as each frame is drained
+                pending.append(pool.submit(compose_frame, spec, src, t))
+            yield fut.result()
+
+
 def stream_video(
     spec: VideoSpec,
     src: Sources,
     *,
     n_frames: int | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
+    workers: int = 1,
 ) -> Iterator[Float[np.ndarray, "H W 3"]]:
     """Composite ``spec`` frame by frame, yielding each ``(H, W, 3)`` uint8 frame.
 
@@ -606,6 +646,10 @@ def stream_video(
     progress
         Optional wrapper of the per-frame iterator (e.g. a rich progress bar);
         defaults to the identity, keeping this library UI-free.
+    workers
+        Compositing threads. ``> 1`` composites frames concurrently (still yielded
+        in order) -- a large speedup for the OpenCV panels. Ignored (forced to 1)
+        for a spec with a thread-unsafe GPU op (see :data:`_GL_OPS`).
 
     Yields
     ------
@@ -613,9 +657,11 @@ def stream_video(
         Each composited ``(H, W, 3)`` uint8 RGB frame, in order.
     """
     n = src.n_frames() if n_frames is None else n_frames
-    steps = range(n) if progress is None else progress(range(n))
-    for t in steps:
-        yield compose_frame(spec, src, t)
+    if workers > 1 and _spec_is_thread_safe(spec):
+        frames: Iterable = _composited_in_order(spec, src, n, workers)
+    else:
+        frames = (compose_frame(spec, src, t) for t in range(n))
+    yield from (frames if progress is None else progress(frames))
 
 
 def render_video(

@@ -213,6 +213,7 @@ def prefetch_windows(
     """
     import queue
     import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from .. import io, preprocessing
 
@@ -223,27 +224,36 @@ def prefetch_windows(
 
     def produce():
         emitted = False
+        # One worker per source: PyAV releases the GIL during decode, so the
+        # cameras' next blocks decode concurrently instead of one after another
+        # (with the per-stream FFmpeg threading of VideoReader, ~10x the serial
+        # decode ceiling on a multi-core host). The transform.apply is fanned out
+        # over the same pool.
+        pool = ThreadPoolExecutor(max_workers=max(1, len(sources)))
         try:
             streams = [
                 io.open_reader(s, workers=workers).stream_blocks(block_size=block)
                 for s in sources
             ]
             while True:
-                blocks = [next(s, None) for s in streams]
+                blocks = list(pool.map(lambda s: next(s, None), streams))
                 # A source ran dry (None) or yielded nothing -> end of recording.
                 if any(b is None or len(b) == 0 for b in blocks):
                     q.put(DONE)
                     return
-                live = [b for b in blocks if b is not None]
-                n = min(len(b) for b in live)  # align cameras (synced rigs match)
-                window = [t.apply(b[:n]) for t, b in zip(transforms, live)]
+                n = min(len(b) for b in blocks)  # align cameras (synced rigs match)
+                window = list(
+                    pool.map(lambda tb: tb[0].apply(tb[1][:n]), zip(transforms, blocks))
+                )
                 q.put(("win", window, n))
                 emitted = True
-                if any(len(b) < block for b in live):  # a short block is the last
+                if any(len(b) < block for b in blocks):  # a short block is the last
                     q.put(DONE)
                     return
         except Exception as exc:  # noqa: BLE001
             q.put(("err", exc) if not emitted else DONE)
+        finally:
+            pool.shutdown(wait=False)
 
     threading.Thread(target=produce, daemon=True).start()
     while True:
