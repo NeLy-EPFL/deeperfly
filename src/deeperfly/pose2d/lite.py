@@ -58,6 +58,15 @@ class LiteLoadedModel(LoadedModel):
     def __init__(self, spec: ModelSpec, module):
         super().__init__(spec, module)
         meta = getattr(module, "_deeperfly_meta", {}) or {}
+        # When the class is architecture-named (e.g. "hrnet_w32"), the weights'
+        # recorded backbone must match -- guards against pointing a class at the
+        # wrong .ts.pt. "deepfly2d_lite" is the generic alias and skips the check.
+        bb = meta.get("backbone")
+        if spec.cls != "deepfly2d_lite" and bb is not None and bb != spec.cls:
+            raise ValueError(
+                f"model {spec.name!r} declares class {spec.cls!r} but its weights are "
+                f"a {bb!r} model; use class {bb!r} (or the generic 'deepfly2d_lite')"
+            )
         self.mean = float(meta.get("mean", spec.mean))
         self.std = float(meta.get("std", 1.0))
 

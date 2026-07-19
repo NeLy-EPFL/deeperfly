@@ -89,19 +89,26 @@ def _load_lite(weights: str | None, **kwargs):
     return load_lite(weights, **kwargs)
 
 
-#: ``class`` name -> loader(weights, **kwargs) -> torch module. New detector
-#: architectures register here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
-#: ``"deepfly2d_lite"`` is the compact TorchScript replacement (1-ch, per-dataset
-#: norm) exported from deeperfly-train; it is wrapped by :class:`.lite.LiteLoadedModel`.
+#: The compact TorchScript single-side detectors (deeperfly-train exports), named
+#: by architecture. Each is the same loader/wrapper -- the ``.ts.pt`` is a
+#: self-contained traced graph -- but the class name documents which architecture,
+#: and :class:`.lite.LiteLoadedModel` checks the weights' recorded backbone matches.
+LITE_CLASSES = ("hrnet_w32", "hrnet_timm", "unet_smp")
+
+#: ``class`` name -> loader(weights, **kwargs) -> torch module. ``"deepfly2d"`` is
+#: an alias for ``"hourglass"``; the ``LITE_CLASSES`` are the compact TorchScript
+#: replacements (1-ch, per-dataset norm) exported from deeperfly-train.
+#: ``"deepfly2d_lite"`` is a generic (architecture-agnostic) alias for them.
 MODEL_CLASSES = {
     "hourglass": _load_hourglass,
     "deepfly2d": _load_hourglass,
     "deepfly2d_lite": _load_lite,
+    **{c: _load_lite for c in LITE_CLASSES},
 }
 
 #: ``class`` name -> LoadedModel subclass (default :class:`LoadedModel`). Lets a
 #: detector own a different input contract / decode than the hourglass.
-_WRAPPERS = {"deepfly2d_lite": "LiteLoadedModel"}
+_WRAPPERS = {c: "LiteLoadedModel" for c in ("deepfly2d_lite", *LITE_CLASSES)}
 
 
 class LoadedModel:
