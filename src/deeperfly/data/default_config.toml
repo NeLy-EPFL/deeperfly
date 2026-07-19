@@ -180,11 +180,12 @@ do_visualization        = true   # render the videos (see [visualization] below)
 # Video frames are decoded with PyAV (on the CPU).
 # ===========================================================================
 [pose2d]
-# Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
-# -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
-# is about as fast with a wider range (no overflow) at slightly lower precision.
-# Ignored on CPU/MPS, which stay float32.
-precision = "bfloat16"
+# Forward precision. "float32" is the reference; "float16" (default) runs under CUDA
+# autocast -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" is
+# about as fast with a wider range (no overflow) at slightly lower precision.
+# Ignored on CPU/MPS, which stay float32. This is the default for every model; a
+# model can override it with its own `precision` (see [[pose2d.models]] below).
+precision = "float16"
 # GPU forward batch: images pushed through the detector at once. The 8-stack
 # network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
 # saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
@@ -214,14 +215,18 @@ ops = [{ op = "fliplr" }]
 # (height, width) is the frame size the network was trained on -- every frame is
 # resized to it before inference and the output peaks are scaled back out of it,
 # so it cannot be inferred; `mean` is subtracted after /255; `n_out_channels` is
-# the output heatmap count (validated against the weights).
+# the output heatmap count (validated against the weights). `precision` is optional
+# and overrides [pose2d].precision for this model only (omit it to inherit) -- use it
+# when one model needs a different dtype (e.g. a traced/lite export pinned to float32
+# while others run float16).
 [[pose2d.models]]
 name = "deepfly2d"
-class = "hourglass"
+class = "hrnet_timm"  # or "hrnet_w32" / "hrnet_timm" / "unet_smp"
 weights = ""
 input_size = [256, 512]
 mean = 0.22
 n_out_channels = 19
+# precision = "float32"  # optional per-model override (default: inherit [pose2d].precision)
 
 # Pathways: each a named source -> preprocessor -> model run. A pathway just says
 # what to detect on; where its output channels land is in [pose2d.output_points]
@@ -499,6 +504,15 @@ f_scale = 1.0              # robust-loss scale (units of the 3D pose)
 regularization = 0.01      # head/abdomen toward-previous-frame angle prior (smooths
                            # and pins redundant DOFs the sparse markers don't fix)
 
+# Points whose 3D position is physically fixed over the recording (e.g. a tethered
+# fly's thorax-coxa leg roots, which don't move). Before the fit, each listed point
+# is replaced by its temporal median across all frames, so the leg roots stop
+# jittering with per-frame detection noise (and occluded frames get filled in).
+# Empty = off. Refer to points by their [skeleton].point_names. Example:
+# constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+#                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+constant_points = []
+
 # Per-DOF joint angle limits, in DEGREES, overriding the template defaults. Keys are
 # the flygym joint angle names "<parent_body>-<child_body>-<dof>" (dofs: yaw/pitch/
 # roll), the same names written to results.h5. The abdomen hinges default to
@@ -550,8 +564,9 @@ mesh_hide = ["wings"]
 # fps * speed; 0.5 = slow motion) -- globally or per video, the per-video value
 # winning. With neither, a video plays at the recording's own detected rate.
 #
-# Draw-op kwargs (point_radius, line_thickness, scale, palette, ...) merge across
-# three levels, each keyed by the `plot` op name, most specific winning:
+# Draw-op kwargs (point_radius, line_thickness, outline_thickness, scale, palette,
+# ...) merge across three levels, each keyed by the `plot` op name, most specific
+# winning:
 # `[visualization.kwargs]` (every video), a `kwargs` table on a video entry (that
 # video), and extra keys on a single panel.
 #
@@ -569,6 +584,9 @@ background = "black"
 # `[gui].mesh_hide`.)
 mesh_hide = ["wings"]
 
+# skeleton joints draw as a solid outline ring whose fill opacity is the detector
+# confidence (0..1, verbatim), so a low-confidence joint fades to just its ring
+# instead of vanishing. Set `outline_thickness = 0` for the old fill-only markers.
 [visualization.kwargs]
 imshow      = { width = 480, height = 240 }
 skeleton_2d = { line_thickness = 2, width = 480, height = 240 }

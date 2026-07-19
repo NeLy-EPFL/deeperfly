@@ -316,3 +316,37 @@ def test_pathway_without_point_sources_rejected():
             _one_pathway(name="rh_p") + _one_pathway(name="idle", source="s1"),
             _ps("rh", "rh_p", rf_thorax_coxa=0),
         )
+
+
+def _model(**over):
+    m = {
+        "name": "m",
+        "class": "hourglass",
+        "input_size": [256, 512],
+        "n_out_channels": 19,
+    }
+    m.update(over)
+    return [m]
+
+
+def test_model_precision_parsed_as_first_class_field_not_kwargs():
+    # A per-model `precision` is a real ModelSpec field, NOT swept into kwargs
+    # (kwargs is forwarded to the model loader constructor, so it would be
+    # mis-delivered instead of reaching set_precision).
+    plan = _config(
+        _one_pathway(),
+        _ps("rh", "rh_p", rf_thorax_coxa=0),
+        models=_model(precision="bfloat16"),
+    )
+    spec = plan.models["m"]
+    assert spec.precision == "bfloat16"
+    assert "precision" not in spec.kwargs
+
+
+@pytest.mark.parametrize("over", [{}, {"precision": ""}])
+def test_model_precision_absent_or_empty_inherits(over):
+    # Omitted or "" -> None, so the model inherits the [pose2d].precision default.
+    plan = _config(
+        _one_pathway(), _ps("rh", "rh_p", rf_thorax_coxa=0), models=_model(**over)
+    )
+    assert plan.models["m"].precision is None

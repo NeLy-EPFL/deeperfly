@@ -88,13 +88,17 @@ class Pose2dParams:
     """``[pose2d]`` -- the 2D detector performance knobs.
 
     ``batch_size`` is the GPU forward batch (images/forward); ``decode_buffer`` is
-    the decode queue depth in multiples of it. Both are clamped to ``>= 1``. The
-    *what to detect* (preprocessors, models, pathways, output points) is the
-    detection plan that shares the ``[pose2d]`` table (:meth:`Config.detection_plan`),
-    not these knobs.
+    the decode queue depth in multiples of it. Both are clamped to ``>= 1``, and
+    both are performance-only (never fingerprinted). ``precision`` is the forward
+    precision *default*: a per-model ``[[pose2d.models]].precision`` overrides it,
+    falling back here when a model omits it (see
+    :class:`~deeperfly.pose2d.models.ModelSpec`); it is result-affecting, so the
+    resolved per-model value is fingerprinted. The *what to detect* (preprocessors,
+    models, pathways, output points) is the detection plan that shares the
+    ``[pose2d]`` table (:meth:`Config.detection_plan`), not these knobs.
     """
 
-    precision: str = "bfloat16"
+    precision: str = "float16"
     batch_size: int = 16
     decode_buffer: int = 4
 
@@ -170,6 +174,11 @@ class InverseKinematicsParams:
     chain name (``"head"`` / ``"abdomen"``), each holding ``point -> {"body", "offset",
     "depth"?}`` (from the ``[inverse_kinematics.head]`` / ``[inverse_kinematics.abdomen]``
     config tables); see :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
+
+    ``constant_points`` names skeleton points whose 3D position is physically fixed
+    over the recording (e.g. a tethered fly's thorax-coxa leg roots). Before the fit,
+    each listed point is replaced by its temporal median across all frames, so the
+    leg roots stop jittering with per-frame detection noise. Empty = off.
     """
 
     template: str = "neuromechfly"
@@ -182,6 +191,7 @@ class InverseKinematicsParams:
     regularization: float = 0.01
     bounds: dict[str, list[float]] = field(default_factory=dict)
     markers: dict[str, dict] = field(default_factory=dict)
+    constant_points: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -503,11 +513,13 @@ class Config:
         loss = ik.pop("loss", "linear")
         f_scale = ik.pop("f_scale", 1.0)
         regularization = ik.pop("regularization", 0.01)
+        constant_points = ik.pop("constant_points", [])
         if ik:  # any leftover key is a typo -- match _params' strict validation
             raise ValueError(
                 f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; allowed: "
-                "['abdomen', 'bounds', 'f_scale', 'fit_abdomen', 'fit_head', 'head', "
-                "'legs', 'loss', 'max_nfev', 'regularization', 'template']"
+                "['abdomen', 'bounds', 'constant_points', 'f_scale', 'fit_abdomen', "
+                "'fit_head', 'head', 'legs', 'loss', 'max_nfev', 'regularization', "
+                "'template']"
             )
         return InverseKinematicsParams(
             template=template,
@@ -520,6 +532,7 @@ class Config:
             regularization=float(regularization),
             bounds=bounds,
             markers=markers,
+            constant_points=[str(n) for n in constant_points],
         )
 
     @property

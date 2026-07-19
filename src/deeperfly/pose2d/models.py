@@ -48,6 +48,12 @@ class ModelSpec:
         Scalar subtracted from the ``[0, 1]`` image after the resize.
     n_out_channels
         Number of output heatmap channels (validated against the weights).
+    precision
+        Per-model forward precision override (``float32``/``float16``/``bfloat16``),
+        or ``None`` to inherit the ``[pose2d].precision`` default. Precision is a
+        property of running a specific network -- an eager net may tolerate fp16
+        autocast while a traced/lite export is pinned to a dtype -- so it can be set
+        per model; the fallback keeps the common single-precision config a one-liner.
     kwargs
         Extra class-specific construction kwargs.
     """
@@ -58,6 +64,7 @@ class ModelSpec:
     input_size: tuple[int, int] = DEFAULT_INPUT_SIZE
     mean: float = DEFAULT_MEAN
     n_out_channels: int = DEFAULT_N_OUT_CHANNELS
+    precision: str | None = None
     kwargs: dict = field(default_factory=dict)
 
 

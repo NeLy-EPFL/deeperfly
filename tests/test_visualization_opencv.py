@@ -88,6 +88,37 @@ def test_draw_skeleton_3d_depth_orders_and_drops_behind_camera(cameras, fly):
     assert out.shape == (512, 1024, 3)
 
 
+def test_draw_point_outline_keeps_zero_confidence_joint_visible():
+    # A conf-0 joint has an empty fill but must still show its solid outline ring,
+    # so the joint stays locatable no matter how faint the fill.
+    canvas = cv.new_canvas(21, 21, "black")
+    cv._draw_point(canvas, (10, 10), radius=5, color=(0, 200, 255), alpha=0.0)
+    assert canvas.any(), "the outline ring should draw even at confidence 0"
+    assert (canvas[10, 10] == 0).all(), "the fill stays empty at confidence 0"
+    # the ring lands on the radius-5 rim, not the centre
+    assert canvas[10, 5].any() and canvas[5, 10].any()
+
+
+def test_draw_point_confidence_sets_fill_opacity():
+    def center_fill(alpha: float) -> int:
+        canvas = cv.new_canvas(21, 21, "black")
+        cv._draw_point(canvas, (10, 10), radius=5, color=(0, 200, 255), alpha=alpha)
+        return int(canvas[10, 10].sum())
+
+    # the raw confidence is used verbatim: higher confidence -> more opaque fill
+    assert 0 < center_fill(0.2) < center_fill(0.6) < center_fill(1.0)
+
+
+def test_draw_point_outline_thickness_zero_is_fill_only():
+    # opting out of the ring reverts to the old fill-only marker: a conf-0 joint
+    # then draws nothing at all.
+    canvas = cv.new_canvas(21, 21, "black")
+    cv._draw_point(
+        canvas, (10, 10), radius=5, color=(0, 200, 255), alpha=0.0, outline_thickness=0
+    )
+    assert not canvas.any()
+
+
 # -- compositor --------------------------------------------------------------
 
 

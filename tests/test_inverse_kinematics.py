@@ -190,6 +190,88 @@ def test_measured_seglens_recovered(template, fly, rng):
     np.testing.assert_allclose(align.seglens["rf"], _SEGLENS, atol=1e-6)
 
 
+# -- constant points (temporal median pin) -----------------------------------
+
+
+def test_pin_constant_points_collapses_to_temporal_median():
+    """A jittered column is replaced by its temporal nanmedian; NaN frames filled."""
+    from deeperfly.pipeline.stages import _pin_constant_points
+
+    rng = np.random.default_rng(0)
+    pts3d = rng.normal(size=(20, 4, 3))
+    truth = np.array([5.0, -2.0, 1.0])
+    pts3d[:, 1] = truth + rng.normal(scale=0.1, size=(20, 3))
+    pts3d[3, 1] = np.nan  # occluded frames
+    pts3d[7, 1] = np.nan
+    expected = np.nanmedian(pts3d[:, 1], axis=0)
+
+    out = _pin_constant_points(pts3d, [1])
+    assert np.isfinite(out[:, 1]).all()  # occluded frames get filled by the median
+    np.testing.assert_allclose(out[:, 1], expected[None].repeat(20, 0), atol=1e-12)
+    np.testing.assert_array_equal(out[:, 0], pts3d[:, 0])  # other points untouched
+    assert np.isnan(pts3d[3, 1]).all()  # input array is not mutated
+
+
+def test_pin_constant_points_all_nan_column_stays_nan():
+    """A point that is never observed stays all-NaN (its leg is skipped downstream)."""
+    from deeperfly.pipeline.stages import _pin_constant_points
+
+    pts3d = np.zeros((5, 3, 3))
+    pts3d[:, 2] = np.nan
+    out = _pin_constant_points(pts3d, [2])
+    assert np.isnan(out[:, 2]).all()
+
+
+def test_resolve_constant_points_names_and_errors(fly):
+    """Names resolve to columns; empty/None is off; an unknown name is a clear error."""
+    from deeperfly.pipeline.stages import _resolve_constant_points
+
+    assert _resolve_constant_points(None, fly) is None
+    assert _resolve_constant_points([], fly) is None
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    assert _resolve_constant_points(["lf_thorax_coxa", "rh_thorax_coxa"], fly) == [
+        index["lf_thorax_coxa"],
+        index["rh_thorax_coxa"],
+    ]
+    with pytest.raises(ValueError, match=r"constant_points references unknown"):
+        _resolve_constant_points(["not_a_point"], fly)
+
+
+def test_stage_ik_holds_constant_points_fixed(fly, rng):
+    """With ``constant_points`` set, the fitted leg root is constant over time.
+
+    Jittering a coxa (a physically-fixed joint) frame-to-frame makes the fitted leg
+    root follow that jitter by default; declaring it constant pins it to the temporal
+    median so the root stops moving.
+    """
+    from deeperfly.config import Config
+    from deeperfly.pipeline.stages import stage_inverse_kinematics
+
+    template = KinematicTemplate.load("neuromechfly")
+    pts3d, _ = _synth_pose(template, fly, rng, n_frames=6)
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    coxa = index["rf_thorax_coxa"]
+    pts3d[:, coxa] = pts3d[:, coxa] + rng.normal(scale=0.05, size=(6, 3))
+
+    common = {"fit_head": False, "fit_abdomen": False}
+    off = stage_inverse_kinematics(
+        Config.from_dict({"inverse_kinematics": common}), fly, pts3d.copy()
+    )
+    on = stage_inverse_kinematics(
+        Config.from_dict(
+            {"inverse_kinematics": {**common, "constant_points": ["rf_thorax_coxa"]}}
+        ),
+        fly,
+        pts3d.copy(),
+    )
+
+    assert np.ptp(on.model_pts3d[:, coxa], axis=0).max() < 1e-6  # pinned = constant
+    np.testing.assert_allclose(
+        on.model_pts3d[0, coxa], np.nanmedian(pts3d[:, coxa], axis=0), atol=1e-4
+    )
+    assert np.ptp(off.model_pts3d[:, coxa], axis=0).max() > 1e-3  # unpinned = jitters
+
+
 # -- head / antenna ----------------------------------------------------------
 
 

@@ -19,10 +19,12 @@ export async function fetchMeta() {
 /**
  * @param {number} frame
  * @param {EditMode} mode
+ * @param {boolean} [verbose]  also return `pred` (the raw detections) for the Detected layer
  * @returns {Promise<PointsPayload>}
  */
-export async function fetchPoints(frame, mode) {
-  const r = await fetch(`/api/points/${frame}?mode=${mode}`);
+export async function fetchPoints(frame, mode, verbose = false) {
+  const q = verbose ? `?mode=${mode}&verbose=true` : `?mode=${mode}`;
+  const r = await fetch(`/api/points/${frame}${q}`);
   if (!r.ok) throw new Error(`GET /api/points/${frame} -> ${r.status}`);
   return r.json();
 }
@@ -104,20 +106,43 @@ export async function fetchNmfVerts(frame) {
 }
 
 // A tiny request->reply WebSocket client: send an edit, get the refreshed points
-// payload back through the `onPoints` callback.
+// payload back through the `onPoints` callback. The server also pushes a role
+// handshake ({type:"role"}) telling this browser whether it may edit or is
+// read-only (only one connected browser edits at a time); that goes to `onRole`.
 export class EditSocket {
-  /** @param {(p: PointsPayload) => void} onPoints */
-  constructor(onPoints) {
+  /**
+   * @param {(p: PointsPayload) => void} onPoints
+   * @param {(r: import("./types.js").RoleMessage) => void} [onRole]  the role
+   *   handshake: whether this browser is the writer (editable) or read-only
+   */
+  constructor(onPoints, onRole) {
     this.onPoints = onPoints;
+    this.onRole = onRole;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws.onmessage = (ev) => this.onPoints(JSON.parse(ev.data));
+    this.ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      // Two message kinds share this socket: the role handshake carries a `type`
+      // field; an edit reply (a points payload) never does.
+      if (msg && msg.type === "role") {
+        this.onRole?.(msg);
+        return;
+      }
+      this.onPoints(msg);
+    };
   }
 
   /** @param {EditMessage} msg */
   send(msg) {
     if (this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /** Ask the server to hand editing to this browser (the read-only "Take over" action). */
+  claim() {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "claim" }));
     }
   }
 }

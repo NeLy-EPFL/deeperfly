@@ -298,7 +298,15 @@ def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
 
 
 def _parse_models(raw) -> dict[str, ModelSpec]:
-    fixed = {"name", "class", "weights", "input_size", "mean", "n_out_channels"}
+    fixed = {
+        "name",
+        "class",
+        "weights",
+        "input_size",
+        "mean",
+        "n_out_channels",
+        "precision",
+    }
     out: dict[str, ModelSpec] = {}
     for i, m in enumerate(_require_list(raw, "[[pose2d.models]]")):
         name = m.get("name")
@@ -326,6 +334,7 @@ def _parse_models(raw) -> dict[str, ModelSpec]:
             input_size=(int(size[0]), int(size[1])),
             mean=float(m.get("mean", ModelSpec.mean)),
             n_out_channels=int(m.get("n_out_channels", ModelSpec.n_out_channels)),
+            precision=(m.get("precision") or None),  # "" / absent -> [pose2d] default
             kwargs={k: v for k, v in m.items() if k not in fixed},
         )
     return out

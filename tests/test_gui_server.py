@@ -9,6 +9,7 @@ tests check the request/response wiring on top of them.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -88,6 +89,59 @@ def test_frame_returns_jpeg(client, result):
 
 def test_frame_unknown_camera_404(client):
     assert client.get("/api/frame/nope/0").status_code == 404
+
+
+def test_index_declares_favicon(client):
+    # The page head points the browser tab icon at the deeperfly logo. The .ico must
+    # come before the SVG: Safari renders ICO but not SVG favicons and won't fall
+    # back to a later <link>, so an SVG-first order leaves it drawing a letter tile.
+    html = client.get("/").text
+    assert 'rel="icon"' in html
+    assert "/favicon.ico" in html
+    assert "/static/logo.svg" in html
+    assert html.index("/favicon.ico") < html.index("/static/logo.svg")
+    # Safari draws favicons on a rounded chip; the apple-touch-icon fills it cleanly.
+    assert 'rel="apple-touch-icon"' in html
+    assert "/apple-touch-icon.png" in html
+
+
+def test_favicon_served_from_root(client):
+    # Safari probes /favicon.ico directly (not /static/...), so it must resolve there.
+    ico = client.get("/favicon.ico")
+    assert ico.status_code == 200
+    assert ico.headers["content-type"] in ("image/x-icon", "image/vnd.microsoft.icon")
+    assert ico.content[:4] == b"\x00\x00\x01\x00"  # ICO file header magic
+
+
+def test_apple_touch_icon_served_from_root(client):
+    # Safari probes /apple-touch-icon.png at the root for its Start Page / dock tiles.
+    r = client.get("/apple-touch-icon.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"  # PNG signature
+
+
+def test_favicon_is_full_bleed_tile(client):
+    # The .ico is a solid teal tile (the disc colour taken to the edges), not a bare
+    # circle -- so it fills Safari's rounded chip instead of leaving a light box.
+    # Every corner must be opaque; a circular icon would have transparent corners.
+    from io import BytesIO
+
+    from PIL import Image
+
+    ico = Image.open(BytesIO(client.get("/favicon.ico").content))
+    ico.size = (32, 32)
+    px = ico.convert("RGBA").load()
+    w, h = 32, 32
+    for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        assert px[x, y][3] == 255, f"corner {(x, y)} should be opaque, got {px[x, y]}"
+
+
+def test_favicon_svg_asset_is_served(client):
+    svg = client.get("/static/logo.svg")
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert svg.text.lstrip().startswith("<svg")
 
 
 def test_nmf_overlay_payload(result, tmp_path):
@@ -844,3 +898,118 @@ def test_keep_alive_survives_a_tab_close(session):
     assert thread.is_alive()
     server.should_exit = True  # tidy up the daemon server
     thread.join(timeout=5)
+
+
+# -- single-writer lock (multiple browsers on one session) --------------------
+#
+# The session is one shared EditorState, so only one connected browser -- the
+# "writer" -- may edit; later browsers are read-only until they take over or the
+# writer disconnects. These drive two real sockets at once (the in-process
+# TestClient can't hold two live websockets), so they use the _serve helper.
+
+
+def _edit_2d(view=0, point=1, x=5.0, y=6.0, frame=0):
+    return {
+        "type": "edit_2d",
+        "view": view,
+        "point": point,
+        "x": x,
+        "y": y,
+        "frame": frame,
+        "mode": "edit_2d",
+    }
+
+
+def test_lone_client_gets_no_role_handshake(session):
+    # A single browser is the writer and is told nothing on connect, so the first
+    # message it receives is still its own edit reply -- the pre-existing
+    # single-client flow every in-process test relies on.
+    server, thread, port = _serve(session)
+    ws = ws_connect(f"ws://127.0.0.1:{port}/ws")
+    try:
+        ws.send(json.dumps(_edit_2d()))
+        first = json.loads(ws.recv(timeout=5))
+        assert first.get("type") != "role"  # no handshake ahead of the reply
+        assert first["dirty"] is True
+    finally:
+        ws.close()
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_second_client_is_read_only(session):
+    # The first browser edits; a second is read-only: its edit is refused (the
+    # shared state stays clean) and it is told its role, while the writer edits fine.
+    server, thread, port = _serve(session)
+    url = f"ws://127.0.0.1:{port}/ws"
+    writer = ws_connect(url)  # first socket -> the writer (told nothing)
+    time.sleep(0.05)  # let the writer register its slot before the reader connects
+    reader = ws_connect(url)  # second socket -> read-only
+    try:
+        role = json.loads(reader.recv(timeout=5))
+        assert role["type"] == "role" and role["role"] == "reader"
+        assert role["clients"] == 2
+
+        reader.send(json.dumps(_edit_2d()))
+        refused = json.loads(reader.recv(timeout=5))
+        assert refused["type"] == "role" and refused["role"] == "reader"
+        assert not session.state.dirty  # the read-only edit mutated nothing
+
+        writer.send(json.dumps(_edit_2d()))
+        reply = json.loads(writer.recv(timeout=5))
+        assert reply.get("type") != "role"  # the writer gets the real points payload
+        assert reply["dirty"] is True
+    finally:
+        reader.close()
+        writer.close()
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_reader_can_take_over_editing(session):
+    # A read-only browser claims the writer slot: it is promoted, the previous
+    # writer is demoted, and the roles' edit permissions swap accordingly.
+    server, thread, port = _serve(session)
+    url = f"ws://127.0.0.1:{port}/ws"
+    writer = ws_connect(url)
+    time.sleep(0.05)
+    reader = ws_connect(url)
+    try:
+        assert json.loads(reader.recv(timeout=5))["role"] == "reader"
+
+        reader.send(json.dumps({"type": "claim"}))
+        promoted = json.loads(reader.recv(timeout=5))
+        assert promoted["type"] == "role" and promoted["role"] == "writer"
+        demoted = json.loads(writer.recv(timeout=5))  # old writer pushed a demotion
+        assert demoted["type"] == "role" and demoted["role"] == "reader"
+
+        reader.send(json.dumps(_edit_2d()))  # the new writer can edit
+        assert json.loads(reader.recv(timeout=5))["dirty"] is True
+        writer.send(json.dumps(_edit_2d(point=2)))  # the old writer is now refused
+        assert json.loads(writer.recv(timeout=5))["role"] == "reader"
+    finally:
+        reader.close()
+        writer.close()
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_writer_disconnect_promotes_the_next_client(session):
+    # When the editing browser leaves, a remaining read-only browser is promoted to
+    # writer (so a surviving viewer can edit), without any action on its part.
+    server, thread, port = _serve(session)
+    url = f"ws://127.0.0.1:{port}/ws"
+    writer = ws_connect(url)
+    time.sleep(0.05)
+    reader = ws_connect(url)
+    try:
+        assert json.loads(reader.recv(timeout=5))["role"] == "reader"
+        writer.close()  # the editor closes its tab
+        promoted = json.loads(reader.recv(timeout=5))
+        assert promoted["type"] == "role" and promoted["role"] == "writer"
+        reader.send(json.dumps(_edit_2d()))  # the promoted browser can now edit
+        assert json.loads(reader.recv(timeout=5))["dirty"] is True
+    finally:
+        reader.close()
+        server.should_exit = True
+        thread.join(timeout=5)

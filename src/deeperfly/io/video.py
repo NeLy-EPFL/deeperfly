@@ -38,11 +38,18 @@ class VideoReader(FrameReader):
     # -- decode (in-process FFmpeg, CPU) -------------------------------------
 
     def _decode_stream(self, *, start=0, step=1, stop=None):
-        """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode."""
+        """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode.
+
+        The video stream is decoded with ``thread_type = "AUTO"`` (FFmpeg
+        frame/slice multithreading), which is several times faster than the
+        single-threaded default on multi-core hosts.
+        """
         import av
 
         with av.open(str(self.path)) as container:
-            for i, frame in enumerate(container.decode(video=0)):
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            for i, frame in enumerate(container.decode(stream)):
                 if i < start:
                     continue
                 if stop is not None and i >= stop:
@@ -68,6 +75,7 @@ class VideoReader(FrameReader):
         picked: dict[int, np.ndarray] = {}
         with av.open(str(self.path)) as container:
             stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
             rate = stream.average_rate or stream.guessed_rate
             time_base = stream.time_base
             assert rate is not None and time_base is not None
@@ -219,6 +227,12 @@ class VideoWriter:
         stream.width = w
         stream.height = h
         stream.pix_fmt = self.pix_fmt
+        # Multithreaded encode (frame/slice), several times faster than the
+        # single-thread default on a multi-core host; the file is unaffected.
+        try:
+            stream.thread_type = "AUTO"
+        except Exception:  # noqa: BLE001 -- some codecs reject it; keep single-thread
+            pass
         self._stream = stream
         self._size = (w, h)
         log.info("writing %s via pyav: %dx%d @ %g fps", self.path.name, w, h, self.fps)

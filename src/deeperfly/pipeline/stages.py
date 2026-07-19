@@ -12,6 +12,7 @@ cache validity is judged against always agree.
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -134,12 +135,18 @@ def stage_pose2d(
     pose2d = config.pose2d
     log.info("loading %d model(s): %s", len(plan.models), ", ".join(plan.models))
     models = load_models(plan)
-    for model in models.values():
-        model.set_precision(pose2d.precision)  # float16 -> CUDA autocast (no-op on CPU)
+    # Per-model precision override falls back to the [pose2d] default; float16
+    # -> CUDA autocast (a no-op on CPU/MPS, which stay float32).
+    resolved_precision = {
+        name: (model.spec.precision or pose2d.precision)
+        for name, model in models.items()
+    }
+    for name, model in models.items():
+        model.set_precision(resolved_precision[name])
     log.info(
         "detector ready on device %s (precision: %s)",
         next(iter(models.values())).device(),
-        pose2d.precision,
+        resolved_precision,
     )
 
     k = config.pictorial.k
@@ -188,6 +195,44 @@ def _resolve_bundle_adjustment_points(
             f"[bundle_adjustment].points_to_use references unknown "
             f"skeleton point {e.args[0]!r}"
         ) from None
+
+
+def _resolve_constant_points(names: list[str] | None, skeleton) -> list[int] | None:
+    """``[inverse_kinematics].constant_points`` names -> skeleton indices.
+
+    Empty/omitted passes through as ``None`` (the feature is off). Otherwise each
+    name is resolved against ``skeleton.point_names``.
+
+    Raises
+    ------
+    ValueError
+        If a name is not one of the skeleton's points.
+    """
+    if not names:
+        return None
+    index = {name: i for i, name in enumerate(skeleton.point_names)}
+    try:
+        return [index[name] for name in names]
+    except KeyError as e:
+        raise ValueError(
+            f"[inverse_kinematics].constant_points references unknown "
+            f"skeleton point {e.args[0]!r}"
+        ) from None
+
+
+def _pin_constant_points(pts3d: np.ndarray, cols: list[int]) -> np.ndarray:
+    """Replace the ``cols`` of ``pts3d`` ``(T, P, 3)`` with their temporal median.
+
+    Points declared constant over the recording (a tethered fly's fixed joints) are
+    collapsed to their ``nanmedian`` over time, broadcast back over all frames -- so
+    the fit sees a steady position and occluded (NaN) frames are filled in. A column
+    that is never observed stays all-NaN. Returns a copy; the input is not mutated.
+    """
+    pts3d = np.array(pts3d, dtype=float)
+    with warnings.catch_warnings():  # a never-observed column -> all-NaN (expected)
+        warnings.simplefilter("ignore", RuntimeWarning)
+        pts3d[:, cols, :] = np.nanmedian(pts3d[:, cols, :], axis=0)
+    return pts3d
 
 
 def stage_bundle_adjustment(
@@ -396,6 +441,13 @@ def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
     template = config.ik_template()
     articulation = config.ik_articulation()
     p = config.inverse_kinematics
+    const_cols = _resolve_constant_points(p.constant_points, skeleton)
+    if const_cols:
+        pts3d = _pin_constant_points(pts3d, const_cols)
+        log.info(
+            "inverse kinematics: holding %d point(s) constant over time (median)",
+            len(const_cols),
+        )
     extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
         "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r)",
@@ -591,9 +643,15 @@ def source_view_frames(
 
     sources = sources or {}
     if all(sources.get(src_for[v]) for v in views):
-        return {
-            v: io.open_reader(sources[src_for[v]], workers=workers)[:] for v in views
-        }
+        # Decode the views concurrently (each with its own multithreaded reader),
+        # instead of one after another -- the overlay footage is tens of GB.
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _load(v: str):
+            return v, io.open_reader(sources[src_for[v]], workers=workers)[:]
+
+        with ThreadPoolExecutor(max_workers=max(1, min(len(views), 8))) as pool:
+            return dict(pool.map(_load, views))
     raise SystemExit(
         "image (imshow) panels need the original frames, but none are in memory and "
         "the run resolved no footage. Re-run with the recording as the input "
@@ -682,13 +740,24 @@ def render_videos(
         nmf_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
     )
     make_progress = progress or _null_progress
+    import os
+
+    cfg_workers = config.io.image_workers or 0  # may be None (auto) or 0
+    # Compositing is the render bottleneck (OpenCV, GIL-releasing); fan it out over
+    # a few threads. Cap at 8 (diminishing returns past that) and respect an
+    # explicit [io.image] workers when set.
+    render_workers = min(8, cfg_workers if cfg_workers > 0 else (os.cpu_count() or 4))
     for spec in pending:
         path = outdir / f"{spec.video_name}.mp4"
         fps = spec.resolve_fps(input_fps)
         log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
         # Composite and encode frame by frame, so a long clip is never fully held
-        # in memory (peak is one frame plus the encoder's buffers).
+        # in memory (peak is a few in-flight frames plus the encoder's buffers).
         with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
             with io.VideoWriter(path, fps=fps) as writer:
-                writer.write_frames(compose.stream_video(spec, src, progress=wrap))
+                writer.write_frames(
+                    compose.stream_video(
+                        spec, src, progress=wrap, workers=render_workers
+                    )
+                )
         log.info("wrote %s", path)
