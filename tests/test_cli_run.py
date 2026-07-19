@@ -137,7 +137,9 @@ def _stub_detect(monkeypatch, tmp_path):
         "load_models",
         lambda plan: {
             "deepfly2d": SimpleNamespace(
-                set_precision=lambda p: None, device=lambda: "cpu"
+                spec=SimpleNamespace(precision=None),  # inherit [pose2d].precision
+                set_precision=lambda p: None,
+                device=lambda: "cpu",
             )
         },
     )
@@ -972,9 +974,7 @@ def test_pose2d_param_change_recomputes_with_loud_warning(
     )
     _, calls = _stub_detect(monkeypatch, tmp_path)
     cli.main(_run_args(tmp_path, cfg))
-    _edit_snapshot(
-        tmp_path / "out", r'^precision = "bfloat16"', 'precision = "float32"'
-    )
+    _edit_snapshot(tmp_path / "out", r'^precision = "float16"', 'precision = "float32"')
     with caplog.at_level("WARNING", logger="deeperfly"):
         cli.main(_run_args(tmp_path, log_level="warning"))
     assert len(calls) == 2

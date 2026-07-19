@@ -174,7 +174,8 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
     base = _cfg()
     enabled = base.stage_flags()
     fp = stage_fingerprint("pose2d", base, enabled, store)
-    # precision is a plain [pose2d] key
+    # precision is the [pose2d] fallback: changing it flows into every inheriting
+    # model's resolved precision, so the fingerprint still changes.
     assert fingerprint_diff(
         fp,
         stage_fingerprint(
@@ -195,6 +196,20 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
         assert fingerprint_diff(
             fp, stage_fingerprint("pose2d", changed, enabled, store)
         )
+
+
+def test_pose2d_fingerprint_tracks_per_model_precision(store):
+    base = _cfg()
+    enabled = base.stage_flags()
+    fp = stage_fingerprint("pose2d", base, enabled, store)
+    # A per-model precision override changes the fingerprint, and the resolved
+    # value lives inside that model's dict -- not as a top-level key.
+    over = _cfg()
+    over.data["pose2d"]["models"][0]["precision"] = "float32"
+    fp_over = stage_fingerprint("pose2d", over, enabled, store)
+    assert fingerprint_diff(fp, fp_over)
+    assert fp_over["models"]["m"]["precision"] == "float32"
+    assert "precision" not in fp_over  # no stale top-level key
 
 
 def test_pose2d_fingerprint_candidates_iff_pictorial_enabled(store):

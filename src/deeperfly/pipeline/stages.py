@@ -134,12 +134,18 @@ def stage_pose2d(
     pose2d = config.pose2d
     log.info("loading %d model(s): %s", len(plan.models), ", ".join(plan.models))
     models = load_models(plan)
-    for model in models.values():
-        model.set_precision(pose2d.precision)  # float16 -> CUDA autocast (no-op on CPU)
+    # Per-model precision override falls back to the [pose2d] default; float16
+    # -> CUDA autocast (a no-op on CPU/MPS, which stay float32).
+    resolved_precision = {
+        name: (model.spec.precision or pose2d.precision)
+        for name, model in models.items()
+    }
+    for name, model in models.items():
+        model.set_precision(resolved_precision[name])
     log.info(
         "detector ready on device %s (precision: %s)",
         next(iter(models.values())).device(),
-        pose2d.precision,
+        resolved_precision,
     )
 
     k = config.pictorial.k

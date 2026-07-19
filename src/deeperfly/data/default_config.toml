@@ -180,10 +180,11 @@ do_visualization        = true   # render the videos (see [visualization] below)
 # Video frames are decoded with PyAV (on the CPU).
 # ===========================================================================
 [pose2d]
-# Forward precision. "float32" is the reference; "float16" runs under CUDA autocast
-# -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
-# is about as fast with a wider range (no overflow) at slightly lower precision.
-# Ignored on CPU/MPS, which stay float32.
+# Forward precision. "float32" is the reference; "float16" (default) runs under CUDA
+# autocast -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" is
+# about as fast with a wider range (no overflow) at slightly lower precision.
+# Ignored on CPU/MPS, which stay float32. This is the default for every model; a
+# model can override it with its own `precision` (see [[pose2d.models]] below).
 precision = "float16"
 # GPU forward batch: images pushed through the detector at once. The 8-stack
 # network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
@@ -214,14 +215,18 @@ ops = [{ op = "fliplr" }]
 # (height, width) is the frame size the network was trained on -- every frame is
 # resized to it before inference and the output peaks are scaled back out of it,
 # so it cannot be inferred; `mean` is subtracted after /255; `n_out_channels` is
-# the output heatmap count (validated against the weights).
+# the output heatmap count (validated against the weights). `precision` is optional
+# and overrides [pose2d].precision for this model only (omit it to inherit) -- use it
+# when one model needs a different dtype (e.g. a traced/lite export pinned to float32
+# while others run float16).
 [[pose2d.models]]
 name = "deepfly2d"
-class = "hourglass"
+class = "hrnet_timm"  # or "hrnet_w32" / "hrnet_timm" / "unet_smp"
 weights = ""
 input_size = [256, 512]
 mean = 0.22
 n_out_channels = 19
+# precision = "float32"  # optional per-model override (default: inherit [pose2d].precision)
 
 # Pathways: each a named source -> preprocessor -> model run. A pathway just says
 # what to detect on; where its output channels land is in [pose2d.output_points]

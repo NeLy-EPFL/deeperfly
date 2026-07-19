@@ -210,18 +210,21 @@ def stage_fingerprint(
         p = config.pose2d
         plan = config.detection_plan()
         fp = {
-            "precision": p.precision,
             "sources": plan.source_patterns(),
             "preprocessors": {
                 name: t.to_json() for name, t in plan.preprocessors.items()
             },
             "models": {
+                # Precision is result-affecting and now per-model: store the
+                # RESOLVED value (override or the [pose2d] fallback), so editing
+                # the global default invalidates every inheriting model's cache.
                 name: {
                     "class": s.cls,
                     "weights": s.weights,
                     "input_size": list(s.input_size),
                     "mean": s.mean,
                     "n_out_channels": s.n_out_channels,
+                    "precision": s.precision or p.precision,
                     "kwargs": s.kwargs,
                 }
                 for name, s in plan.models.items()

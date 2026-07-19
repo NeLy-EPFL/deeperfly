@@ -88,13 +88,17 @@ class Pose2dParams:
     """``[pose2d]`` -- the 2D detector performance knobs.
 
     ``batch_size`` is the GPU forward batch (images/forward); ``decode_buffer`` is
-    the decode queue depth in multiples of it. Both are clamped to ``>= 1``. The
-    *what to detect* (preprocessors, models, pathways, output points) is the
-    detection plan that shares the ``[pose2d]`` table (:meth:`Config.detection_plan`),
-    not these knobs.
+    the decode queue depth in multiples of it. Both are clamped to ``>= 1``, and
+    both are performance-only (never fingerprinted). ``precision`` is the forward
+    precision *default*: a per-model ``[[pose2d.models]].precision`` overrides it,
+    falling back here when a model omits it (see
+    :class:`~deeperfly.pose2d.models.ModelSpec`); it is result-affecting, so the
+    resolved per-model value is fingerprinted. The *what to detect* (preprocessors,
+    models, pathways, output points) is the detection plan that shares the
+    ``[pose2d]`` table (:meth:`Config.detection_plan`), not these knobs.
     """
 
-    precision: str = "bfloat16"
+    precision: str = "float16"
     batch_size: int = 16
     decode_buffer: int = 4
 
