@@ -184,7 +184,7 @@ do_visualization        = true   # render the videos (see [visualization] below)
 # -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" (default)
 # is about as fast with a wider range (no overflow) at slightly lower precision.
 # Ignored on CPU/MPS, which stay float32.
-precision = "bfloat16"
+precision = "float16"
 # GPU forward batch: images pushed through the detector at once. The 8-stack
 # network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
 # saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
