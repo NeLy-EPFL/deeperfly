@@ -146,6 +146,137 @@ body {
   flex-wrap: wrap;
 }
 
+/* The toolbar row groups its controls by function using nothing but spacing: controls
+   pack tight inside a .ctl-group (6px), and the row spaces the groups wide apart (20px).
+   "Tight within, wide between" reads as intentional clusters with no divider elements --
+   so nothing can dangle when a group is display:none'd at runtime, and a narrow window
+   wraps between whole groups rather than splitting one. */
+.toolbar-row {
+  gap: 20px;
+}
+
+.ctl-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The "Show" overlay-toggle menu: a popover anchored to its button. It opens UPWARD
+   (the control bar sits at the bottom edge of the viewport) and is absolutely positioned,
+   so opening it never nudges the toolbar. Each row keeps its keyboard shortcut as a hint;
+   the shortcut is the fast path, the menu the discoverable one. */
+.popover-wrap {
+  position: relative;
+}
+
+.popover-btn .caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.popover-btn.is-open {
+  border-color: #4a90d9;
+}
+
+.popover-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+.popover-menu[hidden] {
+  display: none;
+}
+
+/* id-scoped so these beat the shared `#controls label` inline-flex rule. */
+#show-menu label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#show-menu label:hover {
+  background: #3a3a3a;
+}
+
+#show-menu .pm-name {
+  margin-right: 12px;
+}
+
+/* A quiet group heading inside a popover menu (e.g. "Point sources" / "Reference" in
+   Show, "Arrangement" / "View" in Layout), so its rows read as a set. */
+.popover-menu .pm-section {
+  margin: 6px 8px 1px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #7f7f7f;
+  pointer-events: none;
+}
+
+/* First heading sits flush with the menu's own top padding, not double-spaced. */
+.popover-menu .pm-section:first-child {
+  margin-top: 1px;
+}
+
+/* A row inside a popover menu that hosts a control rather than a toggle (the Layout
+   menu's Grid/Focus segment), indented to line up with the checkbox rows. */
+.popover-menu .pm-row {
+  padding: 2px 8px 4px;
+}
+
+/* A full-width action button inside a popover menu (the Layout menu's "Reset view"):
+   styled as a menu row -- left-aligned, transparent until hovered -- not a chip. */
+.popover-menu .pm-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  text-align: left;
+}
+
+.popover-menu .pm-btn:hover {
+  background: #3a3a3a;
+}
+
+/* The marker swatch shown in a source row (Ground truth / Detected): the same disc the
+   canvas + legend use, sized to sit inline with the checkbox like the line swatches. */
+#show-menu .mk-inline {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.popover-menu kbd {
+  margin-left: auto;
+  padding: 1px 6px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #9cd1ff;
+}
+
 #controls label,
 #controls .field {
   display: inline-flex;
@@ -153,18 +284,14 @@ body {
   gap: 4px;
 }
 
-/* A small line-style swatch inside an overlay toggle's label (the "3D estimate" and
-   "NMF skeleton" checkboxes), matching how the canvas draws each overlay (latent =
-   dashed amber, NMF = dotted mint). The full legend lives in the Help panel. */
+/* A small line-style swatch inside a layer toggle's label (the "NMF skeleton" checkbox),
+   matching how the canvas draws that overlay (dotted mint). The GT / Detected / Projected
+   source rows use a marker disc (.mk) instead. The full legend lives in the Help panel. */
 .swatch {
   display: inline-block;
   width: 15px;
   height: 0;
   vertical-align: middle;
-}
-
-.swatch-latent {
-  border-top: 2px dashed rgb(255, 176, 64);
 }
 
 .swatch-nmf {
@@ -195,6 +322,23 @@ body {
   margin: 0 0 8px;
   color: #999;
   font-size: 12px;
+}
+
+/* The labeling-guide call-to-action at the top of the Help panel: a prominent link that
+   opens the interactive keypoint map (a heavy external page) in a new tab on demand. */
+.help-link {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 6px 12px;
+  background: #4a90d9;
+  color: #fff;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.help-link:hover {
+  background: #5a9fe0;
 }
 
 /* Keypoint colours: one swatch + limb name per limb, wrapping to fit. */
@@ -246,7 +390,7 @@ body {
 }
 
 /* Marker discs, styled to match the canvas markers: ground truth = solid lime ring,
-   prediction = thin dark ring, projection = hollow ring. The disc colour is a grey
+   detected = thin dark ring, projected = hollow ring. The disc colour is a grey
    stand-in for the per-keypoint limb colour, which varies from point to point. */
 .mk {
   width: 12px;
@@ -315,33 +459,44 @@ body {
   width: 70px;
 }
 
-/* The action group reads as one unit: a "Selection" label, a live count of how many
-   points are picked, then the three verbs (Confirm / Reset / Occlude) that act on
-   them. Disabled buttons (empty selection) dim via the shared button styles. */
-.selection-group {
-  gap: 6px;
+/* The annotation control reads as one unit -- and, as the primary control, gets the
+   toolbar's one anchor of chrome (a small raised card) so the operator's eye lands on
+   the thing they actually use. It holds a "<point> · <camera>" (or count) readout, the
+   3-way state switch (Ground truth / Detected / Projected), then a Reset. The chip row is
+   both the readout and the setter -- clicking a chip applies that state to the whole
+   selection -- and its active chip is colour-coded (Ground truth lime, Projected violet,
+   Detected the default blue) so the state reads at a glance. A projected point draws on
+   the canvas as a plain derived point (no observation in that view -- occluded or
+   undetected), so this control is where its state stays legible. */
+.annot-card {
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
-.sel-count {
-  color: #bbb;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  min-width: 4.5em;
-}
-
-/* Selected-point status widget: a "<point> · <camera>" label plus a 3-way state
-   switch (Predicted / Ground truth / Occluded). It is the surface for *setting* a
-   point's state; the active chip is colour-coded (Ground truth lime, Occluded violet,
-   Predicted the default blue) so the choice reads at a glance. An occluded point draws
-   on the canvas as a plain derived point -- occluding just deletes the observation -- so
-   this widget is where its state stays legible. */
+/* The status readout is always one of a finite, enumerable set of strings
+   ("<point> · <camera>", "<n> points", or "—"), so app.js pins this field to the widest
+   it can ever render (measured once from meta) -- a fixed-size box, so nothing after it
+   ever shifts as the operator hovers or selects. The max-width + ellipsis are a
+   never-fires safety net for a pathological config; app.js then sets a clip-only title so
+   the full name stays reachable on hover. */
 .point-status-name {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 16ch; /* fallback until app.js measures the worst case, then overwritten in px */
+  max-width: 24em;
   color: #bbb;
+  text-align: left;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-#point-status-states .seg-btn:nth-child(2).is-active {
+/* Chips are ordered Ground truth (1) · Detected (2) · Projected (3). GT lights lime and
+   Projected violet; Detected falls through to the segmented default blue. */
+#point-status-states .seg-btn:nth-child(1).is-active {
   background: #4f9e2f;
 }
 
@@ -351,12 +506,6 @@ body {
 
 #controls .spacer {
   flex: 1;
-}
-
-#controls .sep {
-  width: 1px;
-  align-self: stretch;
-  background: var(--border);
 }
 
 #status {
@@ -669,4 +818,91 @@ table.shortcuts kbd {
   border-radius: 4px;
   font-family: ui-monospace, monospace;
   font-size: 12px;
+}
+
+/* Live "adding to selection" affordance -- a floating pill plus a "copy" cursor over the
+   cameras, shown only while the add-modifier is held with the pointer over the views
+   (body.adding, toggled by app.js). Lime matches the additive rubber-band marquee. */
+.add-hint {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(124, 252, 0, 0.14);
+  border: 1px solid rgba(124, 252, 0, 0.55);
+  color: #d8ffcf;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%) translateY(-8px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.add-hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  background: rgba(124, 252, 0, 0.18);
+  border: 1px solid rgba(124, 252, 0, 0.6);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #eaffe3;
+}
+
+body.adding .add-hint {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* While adding, every camera canvas shows the "copy" cursor so the pointer itself says
+   "this click/drag adds". !important beats the inline cursor poseView sets on hover. */
+body.adding #stage canvas,
+body.adding #strip canvas {
+  cursor: copy !important;
+}
+
+/* Read-only banner: only one connected browser may edit the shared session at a time.
+   When another tab holds that writer slot, this one shows an amber advisory bar pinned
+   to the top-centre, over the editor, with a "Take over editing" action. */
+.readonly-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 6px 5px 14px;
+  border-radius: 8px;
+  background: #d9a441;
+  color: #1e1e1e;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.readonly-banner[hidden] {
+  display: none;
+}
+.readonly-banner .ro-takeover {
+  background: #1e1e1e;
+  color: #f0d08a;
+  border-color: #1e1e1e;
+  font-weight: 600;
+}
+
+/* Read-only: grey out (and disarm) the edit affordances so the toolbar honestly
+   reflects that this tab cannot mutate the pose. sendEdit is also a no-op, and the
+   server refuses the edit regardless, so these are for clarity, not enforcement. */
+body.read-only #point-status-states,
+body.read-only #act-reset,
+body.read-only #undo,
+body.read-only #redo {
+  opacity: 0.4;
+  pointer-events: none;
 }

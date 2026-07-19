@@ -6,12 +6,14 @@
 // whose style tells its source apart: ground truth (lime ring over a filled disc),
 // detector prediction (dark ring over a disc that fades with confidence), or a point
 // derived by reprojecting the 3D (a hollow palette circle -- no observation in this
-// view). Annotation is two steps: build a selection of (point, view) cells, then apply
-// a verb to all of it -- Confirm (Enter), Reset (r), or Occlude (o). When exactly one
-// cell is selected, a status widget shows its per-view state (predicted / ground truth
-// / occluded) and lets you set it. Occluding a view deletes its observation so it drops
-// from the triangulation and then shows as a derived point; dragging it back in
-// un-occludes it.
+// view). Annotation is two steps: build a selection of (point, view) cells, then set its
+// state from one combined control -- a chip picks Ground truth (Enter) or Projected (o)
+// for the whole selection at once, and Reset (r) clears the labels back to the
+// detector. That chip row doubles as the status readout: the active chip is the
+// selection's shared state (detected / ground truth / projected; none lit when the cells
+// disagree), and its name field shows the single cell's "point . camera" or, for several,
+// the count. Marking a view Projected deletes its observation so it drops from the
+// triangulation and then follows the reprojection; dragging it back in restores it.
 //
 // Two layouts share the same PoseView instances. "grid" shows every camera in an
 // equal grid; "focus" shows one large editable view plus a strip of live,
@@ -22,13 +24,16 @@
 // animates the thumbnails. Grid is the default; the layout switch (or f / g) toggles
 // it and the [ / ] keys cycle which camera is focused.
 //
-// Hovering a joint emphasizes the same joint in every view; clicking one selects it
-// (a cyan ring). Shift+click adds/removes, double-click selects that keypoint in every
-// view, a Shift+drag box rubber-bands, and `a` / `v` select all / the hovered view --
-// then the Confirm / Reset / Occlude verbs act on the whole selection.
+// Hovering a joint emphasizes the same joint in every view and peeks at its name +
+// state in the status widget; clicking one selects it (a cyan ring), and clicking the
+// background clears the selection (panning does not). Ctrl/Cmd+click adds/removes a
+// joint, double-click selects that keypoint in every view, a Shift+drag box rubber-bands
+// a fresh selection while Ctrl/Cmd+drag adds to it, and `a` / `v` select all / the
+// hovered view -- then a state chip (or Reset) applies to the whole selection at once.
 //
-// Display extras the operator toggles: the editable skeleton itself, per-joint
-// name labels, and the read-only "3D estimate" skeleton (the triangulated estimate
+// Display extras the operator toggles: the editable "Combined" skeleton itself, per-joint
+// name labels, and the individual point sources as their own read-only layers -- ground
+// truth, the raw detections, and the "projected" 3D reprojection (triangulated estimate
 // reprojected, ghosted over every view). A non-modal floating panel shows the 3D
 // view -- the camera rig, the 3D pose, and the fitted NMF skeleton + mesh (see
 // scene3d.js); it overlays the editor without blocking it (drag the title bar to move
@@ -48,8 +53,8 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
-/** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
-/** @typedef {{ root: HTMLDivElement, set: (value: string) => void, setDisabled: (disabled: boolean) => void }} Segmented */
+/** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
+/** @typedef {{ root: HTMLDivElement, set: (value: string) => void, setDisabled: (disabled: boolean) => void, setDisabledValue: (value: string, disabled: boolean) => void }} Segmented */
 
 // The published "NeuroMechFly keypoint locations" reference (the docs site). It is
 // opened in a new tab on demand, so its heavy model + WASM assets are fetched only
@@ -91,6 +96,10 @@ function segmented(options, onChange) {
     root,
     set: (value) => buttons.forEach((btn, v) => btn.classList.toggle("is-active", v === value)),
     setDisabled: (disabled) => buttons.forEach((btn) => (btn.disabled = disabled)),
+    setDisabledValue: (value, disabled) => {
+      const btn = buttons.get(value);
+      if (btn) btn.disabled = disabled;
+    },
   };
 }
 
@@ -109,6 +118,42 @@ function matches(e, b) {
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return false;
   return e.key === b.key; // shift is implied by the key itself (e.g. "?", "R")
+}
+
+// -- OS-aware modifier rendering --------------------------------------------
+// Detect macOS so shortcut labels can show the platform's own glyphs (⌘⌥⇧⌃) rather
+// than Ctrl/Alt/Shift. This is COSMETIC ONLY: `matches` collapses Ctrl and Cmd into a
+// single test (e.ctrlKey || e.metaKey), so a misdetection can mislabel a chip but can
+// never break a shortcut -- no binding branches on the platform. iPadOS reports itself
+// as "Mac" in its desktop UA, so it is disambiguated by touch points (a real Mac
+// reports none). `userAgentData.platform` (Chromium-only) returns "macOS"; the older
+// `platform`/`userAgent` return "MacIntel"/"Macintosh" -- all match /mac/i.
+const _nav = /** @type {any} */ (navigator);
+const IS_MAC =
+  /mac/i.test(_nav.userAgentData?.platform || _nav.platform || _nav.userAgent || "") &&
+  (_nav.maxTouchPoints ?? 0) === 0;
+
+// Glyphs per platform, and the left-to-right order a chord renders in. Apple's HIG order
+// is Control, Option, Shift, Command (⌃⌥⇧⌘) glued with no separators; Windows/Linux read
+// Ctrl+Alt+Shift+Key joined with "+". `mod` is the primary command key (Ctrl or ⌘).
+const MOD_GLYPH = IS_MAC
+  ? { mod: "⌘", alt: "⌥", shift: "⇧", ctrl: "⌃" }
+  : { mod: "Ctrl", alt: "Alt", shift: "Shift", ctrl: "Ctrl" };
+const MOD_ORDER = IS_MAC ? ["ctrl", "alt", "shift", "mod"] : ["mod", "ctrl", "alt", "shift"];
+
+/**
+ * Render a keyboard chord as a platform-correct label, e.g. `hint("Z", ["mod"])` gives
+ * "⌘Z" on macOS and "Ctrl+Z" elsewhere. `key` is the already-display-ready base key.
+ * @param {string} key
+ * @param {("mod"|"alt"|"shift"|"ctrl")[]} [mods]
+ * @returns {string}
+ */
+function hint(key, mods = []) {
+  const parts = MOD_ORDER.filter((m) => mods.includes(/** @type {any} */ (m))).map(
+    (m) => MOD_GLYPH[/** @type {"mod"|"alt"|"shift"|"ctrl"} */ (m)],
+  );
+  parts.push(key);
+  return IS_MAC ? parts.join("") : parts.join("+");
 }
 
 class App {
@@ -136,28 +181,49 @@ class App {
   /** @type {Layout} */
   layout = "grid";
   focused = 0;
-  // The current selection: a set of (view, point) cells the action buttons
-  // (Confirm / Reset / Occlude) act on, keyed "view:point". `selAnchor` is the
-  // most-recently-added cell -- the single cell the status widget inspects -- and
-  // `activeView` is the camera the pointer is over (the target of the `v`
-  // "select every point in this view" gesture).
+  // The current selection: a set of (view, point) cells the state control
+  // (the Detected / Ground truth / Projected chips + Reset) acts on, keyed
+  // "view:point". `selAnchor` is the most-recently-added cell -- the single cell
+  // whose name the widget shows -- and `activeView` is the camera the pointer is
+  // over (the target of the `v` "select every point in this view" gesture).
   /** @type {Set<string>} */
   selection = new Set();
   /** @type {{ view: number, point: number } | null} */
   selAnchor = null;
   activeView = 0;
-  // The latest per-view ground-truth / occluded masks (from the points payload), so the
-  // status widget can report the selected joint's source. Null until the first payload.
+  // The joint the pointer is currently over (its (view, point)), or null. While set it
+  // temporarily takes over the status widget's readout -- the name field and the lit
+  // state chip -- so hovering any joint peeks at its identity and state without
+  // disturbing the selection (the chips still act on the selection, not the hover).
+  /** @type {{ view: number, point: number } | null} */
+  hoverCell = null;
+  // The latest per-view ground-truth mask and "projected" mask (from the points payload),
+  // so the status widget can report each selected joint's source. `projectedMask` marks a
+  // cell with no observed pixel here -- the operator occluded the view, or the detector
+  // never fired -- whose drawn position follows the 3D reprojection. Null until the first
+  // payload.
   /** @type {boolean[][] | null} */
   fixedMask = null;
   /** @type {boolean[][] | null} */
-  invisibleMask = null;
+  projectedMask = null;
+  // Per-view mask of cells the detector actually fired for (a finite raw prediction).
+  // A cell with no detection can never be reset *to* the detector, so the "Detected"
+  // state chip is disabled for it. Built from the verbose payload's `pred`; static
+  // within a frame, so it survives the mid-drag edit stream (which omits `pred`).
+  /** @type {boolean[][] | null} */
+  detectedMask = null;
   // On-demand 3D view (rig + 3D pose + NMF skeleton/mesh), built lazily on first open.
   /** @type {Scene3D | null} */
   scene = null;
   sceneOpen = false;
   helpOpen = false;
   helpBuilt = false;
+  // Live "adding to selection" affordance: `addMod` tracks whether the add-modifier
+  // (Ctrl/⌘) is currently held and `overViews` whether the pointer is over the camera
+  // views. When both hold, <body> gets the `adding` class so the cursor turns "copy" and
+  // a hint pill appears -- teaching the "Ctrl/⌘ = add" convention at the moment of use.
+  addMod = false;
+  overViews = false;
   // True once a deliberate Close is under way: stops the unsaved-changes guard
   // (beforeunload) from nagging after the operator has already decided.
   closing = false;
@@ -191,13 +257,23 @@ class App {
   /** @type {HTMLDivElement} */
   layoutWrap = el("layout-wrap");
   /** @type {HTMLInputElement} */
-  skeletonCheck = el("show-skeleton");
+  combinedCheck = el("show-combined");
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
   /** @type {HTMLLabelElement} */
-  latentWrap = el("latent-wrap");
+  gtWrap = el("gt-wrap");
   /** @type {HTMLInputElement} */
-  latentCheck = el("show-latent");
+  gtCheck = el("show-gt");
+  /** @type {HTMLLabelElement} */
+  detectedWrap = el("detected-wrap");
+  /** @type {HTMLInputElement} */
+  detectedCheck = el("show-detected");
+  /** @type {HTMLLabelElement} */
+  projectedWrap = el("projected-wrap");
+  /** @type {HTMLInputElement} */
+  projectedCheck = el("show-projected");
+  /** @type {HTMLDivElement} */
+  referenceSection = el("reference-section");
   /** @type {HTMLLabelElement} */
   nmfWrap = el("nmf-wrap");
   /** @type {HTMLInputElement} */
@@ -211,26 +287,34 @@ class App {
   meshAssetLoaded = false;
   meshReq = 0;
   meshTimer = 0;
-  /** @type {HTMLDivElement} */
-  pointStatus = el("point-status");
   /** @type {HTMLSpanElement} */
   pointStatusName = el("point-status-name");
   /** @type {Segmented} */
   stateSwitch;
   /** @type {HTMLButtonElement} */
-  actConfirmBtn = el("act-confirm");
-  /** @type {HTMLButtonElement} */
   actResetBtn = el("act-reset");
-  /** @type {HTMLButtonElement} */
-  actOccludeBtn = el("act-occlude");
-  /** @type {HTMLSpanElement} */
-  selCountEl = el("sel-count");
   /** @type {HTMLButtonElement} */
   undoBtn = el("undo");
   /** @type {HTMLButtonElement} */
   redoBtn = el("redo");
+  /** @type {HTMLDivElement} */
+  showWrap = el("show-wrap");
   /** @type {HTMLButtonElement} */
-  keypointsBtn = el("keypoints");
+  showToggle = el("show-toggle");
+  /** @type {HTMLDivElement} */
+  showMenu = el("show-menu");
+  showMenuOpen = false;
+  /** @type {HTMLButtonElement} */
+  layoutToggle = el("layout-toggle");
+  /** @type {HTMLDivElement} */
+  layoutMenu = el("layout-menu");
+  layoutMenuOpen = false;
+  /** @type {HTMLDivElement} */
+  layoutArrangeSection = el("layout-arrange-section");
+  /** @type {HTMLDivElement} */
+  layoutArrangeRow = el("layout-arrange-row");
+  /** @type {HTMLButtonElement} */
+  resetViewBtn = el("reset-view");
   /** @type {HTMLButtonElement} */
   camerasBtn = el("cameras");
   /** @type {HTMLButtonElement} */
@@ -267,6 +351,14 @@ class App {
   closeSaveBtn = el("close-save");
   /** @type {HTMLDivElement} */
   stoppedOverlay = el("stopped-overlay");
+  /** @type {HTMLDivElement} */
+  readonlyBanner = el("readonly-banner");
+  /** @type {HTMLButtonElement} */
+  readonlyTakeover = el("readonly-takeover");
+  // True while another browser holds the writer slot: no edits leave this tab, the
+  // edit affordances are disabled, and the read-only banner is shown. Panning and
+  // zooming to inspect stay available. Flipped by the server's role handshake.
+  readOnly = false;
   /** @type {HTMLDivElement} */
   helpOverlay = el("help-overlay");
   /** @type {HTMLButtonElement} */
@@ -306,9 +398,13 @@ class App {
     // Grid is the default (`layout` is initialised to it); focus stays a click / f away.
     this.bindings = this.buildBindings();
     this.buildControls();
+    this.applyOsHints();
     this.buildViews();
     this.relayout();
-    this.socket = new EditSocket((p) => this.applyPoints(p, true));
+    this.socket = new EditSocket(
+      (p) => this.applyPoints(p, true),
+      (r) => this.applyRole(r),
+    );
     await this.goToFrame(0);
     this.updateSelected();
     this.updateDirty();
@@ -322,6 +418,28 @@ class App {
       }
     });
     window.addEventListener("keydown", (e) => this.onKey(e));
+
+    // Live "adding to selection" affordance. Track the add-modifier (Ctrl/⌘) from every
+    // key event's modifier state -- keyup included, so releasing the key clears it -- and
+    // reset on blur (a modifier released while the window is unfocused fires no keyup).
+    // `overViews` is driven by the views container's enter/leave (pointerenter/leave do
+    // not bubble from the child canvases, so they fire once per real boundary crossing).
+    const setAddMod = (/** @type {boolean} */ down) => {
+      if (down === this.addMod) return;
+      this.addMod = down;
+      this.updateAddingHint();
+    };
+    window.addEventListener("keydown", (e) => setAddMod(e.ctrlKey || e.metaKey));
+    window.addEventListener("keyup", (e) => setAddMod(e.ctrlKey || e.metaKey));
+    window.addEventListener("blur", () => setAddMod(false));
+    this.viewsEl.addEventListener("pointerenter", () => {
+      this.overViews = true;
+      this.updateAddingHint();
+    });
+    this.viewsEl.addEventListener("pointerleave", () => {
+      this.overViews = false;
+      this.updateAddingHint();
+    });
   }
 
   // -- construction -----------------------------------------------------------
@@ -337,8 +455,15 @@ class App {
     this.slider.addEventListener("input", () => this.goToFrame(Number(this.slider.value)));
     this.number.addEventListener("change", () => this.goToFrame(Number(this.number.value)));
 
-    // A single camera has nothing to focus, so the layout choice is hidden.
-    this.layoutWrap.style.display = this.meta.n_views > 1 ? "" : "none";
+    // A single camera has no arrangement to choose, so only the Grid/Focus segment is
+    // hidden -- the Layout menu itself stays, since it also holds "Reset view", which one
+    // (still zoomable) camera can use too.
+    const multiCam = this.meta.n_views > 1;
+    this.layoutArrangeSection.style.display = multiCam ? "" : "none";
+    this.layoutArrangeRow.style.display = multiCam ? "" : "none";
+    // The default button title advertises the Grid/Focus + step-focus keys; drop that clause
+    // for a single camera, where only "Reset view" remains.
+    if (!multiCam) this.layoutToggle.title = "View — reset zoom & pan on the camera (0)";
     this.layoutSwitch = segmented(
       [["Grid", "grid"], ["Focus", "focus"]],
       (v) => this.setLayout(/** @type {Layout} */ (v))
@@ -346,21 +471,32 @@ class App {
     this.layoutSwitch.set(this.layout);
     el("layout-switch").append(this.layoutSwitch.root);
 
-    // The selected joint's per-view source/state: click a chip to set it. "Ground
-    // truth" is an authored GT pixel; "Occluded" drops the view from the 3D solve;
-    // "Predicted" is neither (following the detector / reprojection).
+    // The selection's per-view state, as both a readout and a setter: clicking a chip
+    // applies that state to every selected cell at once. "Ground truth" is an authored
+    // GT pixel (Confirm); "Projected" drops the view from the 3D solve so the point
+    // follows the reprojection (Occlude); "Detected" is the detector's own 2D peak,
+    // reached via the Reset button (clear back to the detector / reprojection). The wire
+    // value for the third chip stays "invisible"/occlude (see the server's edit types).
     this.stateSwitch = segmented(
-      [["Predicted", "normal"], ["Ground truth", "fixed"], ["Occluded", "invisible"]],
+      [["Ground truth", "fixed"], ["Detected", "normal"], ["Projected", "projected"]],
       (v) => this.setSelectedState(v)
     );
     el("point-status-states").append(this.stateSwitch.root);
+    // Pin the name readout to its widest possible value so hovering / selecting different
+    // joints never reflows the widget (and thus never nudges the controls after it).
+    this.reserveStatusNameWidth();
 
-    this.skeletonCheck.addEventListener("change", () => this.applySkeleton());
+    this.combinedCheck.addEventListener("change", () => this.applyCombined());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
-    // The latent overlay is the reprojected 3D estimate -- meaningless without 3D.
-    this.latentWrap.style.display = this.meta.has_3d ? "" : "none";
-    this.latentCheck.addEventListener("change", () => this.applyLatent());
-    // The NMF overlay is the fitted inverse-kinematics model -- only when present.
+    // The ground-truth and detected source layers exist without 3D (they are the authored
+    // pixels and the raw detector output); only the projected source needs a 3D solve.
+    this.gtCheck.addEventListener("change", () => this.applyGt());
+    this.detectedCheck.addEventListener("change", () => this.applyDetected());
+    this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
+    this.projectedCheck.addEventListener("change", () => this.applyProjected());
+    // The NMF overlay is the fitted inverse-kinematics model -- only when present. The
+    // "Reference" section heading is hidden with it, so it never dangles over no rows.
+    this.referenceSection.style.display = this.meta.has_nmf ? "" : "none";
     this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.nmfCheck.addEventListener("change", () => this.applyNmf());
     // The NMF mesh overlay (rendered on the client GPU) -- only when a fitted model
@@ -369,12 +505,34 @@ class App {
     this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.meshCheck.addEventListener("change", () => this.applyMesh());
 
-    this.actConfirmBtn.addEventListener("click", () => this.confirmSelection());
     this.actResetBtn.addEventListener("click", () => this.resetSelection());
-    this.actOccludeBtn.addEventListener("click", () => this.occludeSelection());
     this.undoBtn.addEventListener("click", () => this.undo());
     this.redoBtn.addEventListener("click", () => this.redo());
-    this.keypointsBtn.addEventListener("click", () => this.openKeypoints());
+    // The "Show" overlay-toggle popover: the button opens/closes it; a click anywhere
+    // outside closes it (a click on a checkbox inside stays open, so several can be
+    // toggled). stopPropagation keeps the opening click from reaching that outside handler.
+    this.showToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleShowMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (this.showMenuOpen && !this.showWrap.contains(/** @type {Node} */ (e.target))) {
+        this.closeShowMenu();
+      }
+    });
+    // The "Layout" popover mirrors "Show": the button toggles it, a click outside closes
+    // it, and it holds the Grid/Focus arrangement plus "Reset view". Opening one popover
+    // closes the other (see openLayoutMenu / openShowMenu), so they never overlap.
+    this.layoutToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleLayoutMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (this.layoutMenuOpen && !this.layoutWrap.contains(/** @type {Node} */ (e.target))) {
+        this.closeLayoutMenu();
+      }
+    });
+    this.resetViewBtn.addEventListener("click", () => this.resetView());
     this.framesToggleBtn.addEventListener("click", () => this.toggleFrames());
     this.framesCollapseBtn.addEventListener("click", () => this.closeFrames());
     this.framesPrevBtn.addEventListener("click", () => this.jumpCorrected(-1));
@@ -398,6 +556,9 @@ class App {
     });
     this.saveBtn.addEventListener("click", () => this.save());
     this.closeBtn.addEventListener("click", () => this.requestClose());
+    // "Take over editing" from the read-only banner: claim the writer slot. The
+    // server replies with a role handshake that flips this tab out of read-only.
+    this.readonlyTakeover.addEventListener("click", () => this.socket.claim());
     this.closeCancelBtn.addEventListener("click", () => this.closeCloseConfirm());
     this.closeDiscardBtn.addEventListener("click", () => this.shutdown());
     this.closeSaveBtn.addEventListener("click", () => this.saveAndShutdown());
@@ -417,6 +578,7 @@ class App {
       onSelect: (v, p, additive) => this.onSelect(v, p, additive),
       onSelectRegion: (v, points, additive) => this.onSelectRegion(v, points, additive),
       onSelectKeypointAllViews: (p, additive) => this.onSelectKeypointAllViews(p, additive),
+      onBackground: () => this.clearSelection(),
       onActiveView: (v) => this.onActiveView(v),
       onHover: (p) => this.onHover(p),
     };
@@ -484,9 +646,27 @@ class App {
   updateViewRoles() {
     this.views.forEach((view, v) => {
       const large = this.layout === "grid" || v === this.focused;
-      view.setEditable(large);
+      // A read-only browser can still pan/zoom the large views to inspect, but no
+      // view is editable while another operator holds the writer slot.
+      view.setEditable(large && !this.readOnly);
       view.setZoomable(large);
     });
+  }
+
+  // Apply the server's role handshake for this browser. The first browser to
+  // connect is the writer (editable); every later one is read-only until it takes
+  // over (the banner's "Take over editing") or the writer disconnects and it is
+  // promoted. Read-only means no edits leave this tab and the edit affordances are
+  // disabled -- a banner explains why -- while panning/zooming to inspect stays.
+  /** @param {import("./types.js").RoleMessage} r */
+  applyRole(r) {
+    const readOnly = r.role !== "writer";
+    if (readOnly === this.readOnly) return;
+    this.readOnly = readOnly;
+    document.body.classList.toggle("read-only", readOnly);
+    this.readonlyBanner.hidden = !readOnly;
+    this.updateViewRoles(); // re-apply per-view editability
+    this.updateDirty(); // the Save button is disabled while read-only
   }
 
   // -- frame navigation -------------------------------------------------------
@@ -511,7 +691,11 @@ class App {
   }
 
   async refreshPoints() {
-    this.applyPoints(await fetchPoints(this.frame, this.mode));
+    // Fetch verbose so the reply carries `pred` (the raw detections) for the Detected
+    // source layer. Detections are static within a frame, so this rides the navigation
+    // fetch only -- the mid-drag edit stream stays lean (no `pred`), and each view keeps
+    // the detections it already has.
+    this.applyPoints(await fetchPoints(this.frame, this.mode, true));
   }
 
   /** Whether a drag re-solves the 3D point live (only meaningful when the result has 3D). */
@@ -538,10 +722,20 @@ class App {
     // the sending edit's seq; only the latest edit's reply (seq === editSeq) wins.
     // Plain frame fetches carry no seq and always apply.
     if (fromEdit && p.seq !== this.editSeq) return;
-    // The per-view masks drive the source-styled markers (ground truth / occluded) and
+    // The per-view masks drive the source-styled markers (ground truth / projected) and
     // the status widget; they are meaningful whether or not the result carries 3D.
     this.fixedMask = p.fixed;
-    this.invisibleMask = p.invisible;
+    // A cell with no observed pixel (null in `points`) follows the 3D reprojection -- the
+    // "projected" state. That covers both an operator-occluded view (`p.invisible`) and
+    // one the detector missed, since display_pts2d NaNs out both; the status chips read
+    // it off this so an undetected view reads as "Projected", not "Detected" (the
+    // occluded-only `p.invisible` mask still rides through to each view for the drag
+    // un-occlude, but is a strict subset here).
+    this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
+    // Which cells the detector fired for -- a finite raw prediction. Only the verbose
+    // navigation fetch carries `pred`; on the mid-drag edit stream (no `pred`) the
+    // detections are unchanged within the frame, so keep the mask we already have.
+    if (p.pred) this.detectedMask = p.pred.map((row) => row.map((pt) => pt != null));
     // `nmf` is omitted on mid-drag replies (the server skips the per-frame re-fit);
     // when absent, leave each view's model overlay as-is instead of clearing it.
     const hasNmf = "nmf" in p;
@@ -552,6 +746,9 @@ class App {
         invisible: p.invisible[v],
         conf: "conf" in p && p.conf ? p.conf[v] : undefined,
         latent: p.proj ? p.proj[v] : null,
+        // `pred` (the raw detections) rides the verbose navigation fetch only; when absent
+        // (the mid-drag stream) leave each view's detected set unchanged.
+        detected: p.pred ? p.pred[v] : undefined,
         nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
       });
     });
@@ -570,9 +767,9 @@ class App {
 
   // -- display toggles --------------------------------------------------------
 
-  applySkeleton() {
-    const visible = this.skeletonCheck.checked;
-    this.views.forEach((view) => view.setOverlayVisible(visible));
+  applyCombined() {
+    const visible = this.combinedCheck.checked;
+    this.views.forEach((view) => view.setCombinedVisible(visible));
   }
 
   applyLabels() {
@@ -580,9 +777,19 @@ class App {
     this.views.forEach((view) => view.setLabelsVisible(visible));
   }
 
-  applyLatent() {
-    const visible = this.latentCheck.checked;
-    this.views.forEach((view) => view.setLatentVisible(visible));
+  applyGt() {
+    const visible = this.gtCheck.checked;
+    this.views.forEach((view) => view.setGtVisible(visible));
+  }
+
+  applyDetected() {
+    const visible = this.detectedCheck.checked;
+    this.views.forEach((view) => view.setDetectedVisible(visible));
+  }
+
+  applyProjected() {
+    const visible = this.projectedCheck.checked;
+    this.views.forEach((view) => view.setProjectedVisible(visible));
   }
 
   applyNmf() {
@@ -670,11 +877,66 @@ class App {
     apply();
   }
 
+  // -- the "Show" overlay-toggle popover --------------------------------------
+
+  openShowMenu() {
+    this.closeLayoutMenu(); // only one popover open at a time
+    this.showMenu.hidden = false;
+    this.showMenuOpen = true;
+    this.showToggle.setAttribute("aria-expanded", "true");
+    this.showToggle.classList.add("is-open");
+  }
+
+  closeShowMenu() {
+    this.showMenu.hidden = true;
+    this.showMenuOpen = false;
+    this.showToggle.setAttribute("aria-expanded", "false");
+    this.showToggle.classList.remove("is-open");
+  }
+
+  toggleShowMenu() {
+    if (this.showMenuOpen) this.closeShowMenu();
+    else this.openShowMenu();
+  }
+
+  // -- the "Layout" popover (arrangement + view reset) ------------------------
+
+  openLayoutMenu() {
+    this.closeShowMenu(); // only one popover open at a time
+    this.layoutMenu.hidden = false;
+    this.layoutMenuOpen = true;
+    this.layoutToggle.setAttribute("aria-expanded", "true");
+    this.layoutToggle.classList.add("is-open");
+  }
+
+  closeLayoutMenu() {
+    this.layoutMenu.hidden = true;
+    this.layoutMenuOpen = false;
+    this.layoutToggle.setAttribute("aria-expanded", "false");
+    this.layoutToggle.classList.remove("is-open");
+  }
+
+  toggleLayoutMenu() {
+    if (this.layoutMenuOpen) this.closeLayoutMenu();
+    else this.openLayoutMenu();
+  }
+
+  /** Reset zoom + pan on every camera back to the letterboxed fit (the "tight fit"). */
+  resetView() {
+    this.views.forEach((view) => view.resetZoom());
+    this.closeLayoutMenu();
+  }
+
   // -- hover / selection ------------------------------------------------------
 
   /** @param {number | null} point  the hovered joint, emphasized in every view */
   onHover(point) {
     this.views.forEach((view) => view.setHighlight(point));
+    // Peek: while the pointer is over a joint, the status widget shows *that* joint's
+    // name + state (in the view under the cursor), reverting to the selection readout
+    // the moment the cursor leaves it.
+    this.hoverCell = point == null ? null : { view: this.activeView, point };
+    this.updateStatusWidget();
   }
 
   /** @param {number} view @param {number} point @returns {string} the selection-set key */
@@ -690,9 +952,9 @@ class App {
     });
   }
 
-  // A single joint was clicked. `additive` (Shift-click) toggles just that cell in
-  // the selection; a plain click replaces the selection with it. Either way the
-  // clicked cell becomes the anchor (what the status widget inspects).
+  // A single joint was clicked. `additive` (Ctrl/Cmd-click) toggles just that cell in
+  // the selection; a plain click (or Shift-click) replaces the selection with it. Either
+  // way the clicked cell becomes the anchor (what the status widget inspects).
   /**
    * @param {number} view
    * @param {number} point
@@ -712,7 +974,9 @@ class App {
     this.updateSelected();
   }
 
-  // A Shift+drag marquee enclosed `points` in `view` -- add them all to the selection.
+  // A modifier+drag marquee enclosed `points` in `view`. `additive` (Ctrl/Cmd-drag) adds
+  // them to the selection; otherwise (Shift-drag) it replaces the whole selection with
+  // them -- so an empty Shift-drag clears the selection.
   /**
    * @param {number} view
    * @param {number[]} points
@@ -722,6 +986,7 @@ class App {
     if (!additive) this.selection.clear();
     for (const p of points) this.selection.add(this.selKey(view, p));
     if (points.length) this.selAnchor = { view, point: points[points.length - 1] };
+    else if (!additive) this.selAnchor = null;
     this.activeView = view;
     this.updateSelected();
   }
@@ -770,8 +1035,8 @@ class App {
     this.updateSelected();
   }
 
-  // Push each view its own subset of the selection (the cyan rings), update the live
-  // count + the action buttons' enabled state, and refresh the status widget.
+  // Push each view its own subset of the selection (the cyan rings), enable the Reset
+  // button while anything is selected, and refresh the combined state control.
   updateSelected() {
     // Invariant: a single-cell selection always has that cell as its anchor, so the
     // status widget stays usable however the selection got down to one -- a plain
@@ -789,63 +1054,123 @@ class App {
       }
       view.setSelection(set);
     });
-    const n = this.selection.size;
-    const empty = n === 0;
-    this.selCountEl.textContent = n === 1 ? "1 point" : `${n} points`;
-    this.actConfirmBtn.disabled = empty;
-    this.actResetBtn.disabled = empty;
-    this.actOccludeBtn.disabled = empty || !this.meta.has_3d;
+    this.actResetBtn.disabled = this.selection.size === 0;
     this.updateStatusWidget();
   }
 
-  // -- point status widget ----------------------------------------------------
+  // -- point state control ----------------------------------------------------
 
-  /** @returns {"normal" | "fixed" | "invisible"} the anchor cell's state in its view */
-  selectedState() {
-    const a = this.selAnchor;
-    if (!a) return "normal";
-    if (this.invisibleMask && this.invisibleMask[a.view][a.point]) return "invisible";
-    if (this.fixedMask && this.fixedMask[a.view][a.point]) return "fixed";
+  /**
+   * @param {number} view
+   * @param {number} point
+   * @returns {"normal" | "fixed" | "projected"} the cell's per-view state
+   */
+  cellState(view, point) {
+    if (this.fixedMask && this.fixedMask[view][point]) return "fixed";
+    // No observed pixel here -- the operator occluded the view, or the detector never
+    // fired -- so the drawn position blindly follows the 3D reprojection: the "projected"
+    // state. `projectedMask` is the null-in-`points` set, which is exactly that (occluded
+    // is a strict subset, so it needs no separate check); GT is never null, so order is
+    // moot but fixed is checked first for clarity.
+    if (this.projectedMask && this.projectedMask[view][point]) return "projected";
     return "normal";
   }
 
-  // The per-view source/state inspector. It only makes sense for a single cell, so it
-  // shows the anchor's name/view/source when exactly one cell is selected; with none
-  // or several selected it shows the count and disables the chips. Only shown at all
-  // when the result has 3D (occluding a view needs a 3D solve to drop it from).
-  updateStatusWidget() {
-    const show = this.meta.has_3d;
-    this.pointStatus.hidden = !show;
-    if (!show) return;
-    const single = this.selection.size === 1 && this.selAnchor !== null;
-    this.stateSwitch.setDisabled(!single);
-    if (!single) {
-      const n = this.selection.size;
-      this.pointStatusName.textContent = n === 0 ? "—" : `${n} points`;
-      this.stateSwitch.set(""); // no single joint -> no active chip
-      return;
-    }
-    const a = /** @type {{view:number, point:number}} */ (this.selAnchor);
-    const name = this.meta.point_names[a.point] ?? `#${a.point}`;
-    const cam = this.meta.camera_names[a.view] ?? `view ${a.view}`;
-    this.pointStatusName.textContent = `${name} · ${cam}`;
-    this.stateSwitch.set(this.selectedState());
+  /**
+   * Whether the detector produced a raw prediction for this cell. A cell with no
+   * detection can never fall back *to* the detector, so its "Detected" chip is disabled.
+   * @param {number} view
+   * @param {number} point
+   */
+  cellDetected(view, point) {
+    return !!(this.detectedMask && this.detectedMask[view][point]);
   }
 
-  // Click a state chip to set the (single) anchor joint to that state. The states are
-  // mutually exclusive, so one toggle takes it anywhere: toggling fixed/obscured
-  // sets it (clearing the other), and "normal" clears whichever flag is set.
-  /** @param {string} target  "normal" | "fixed" | "invisible" */
+  /**
+   * The state shared by every selected cell, or null when they disagree (or none are
+   * selected). This is what lights a chip up as the readout.
+   * @returns {"normal" | "fixed" | "projected" | null}
+   */
+  uniformState() {
+    const cells = this.selCells();
+    if (!cells.length) return null;
+    const first = this.cellState(cells[0][0], cells[0][1]);
+    return cells.every(([v, p]) => this.cellState(v, p) === first) ? first : null;
+  }
+
+  // The combined state control -- one chip row that both reports and sets the selection's
+  // state. The name field shows the single cell's "point · camera", the count for
+  // several, or "—" for none. The active chip is the selection's shared state (nothing
+  // lit when the cells disagree). Chips are live whenever something is selected; the
+  // "Projected" chip additionally needs 3D (occluding a view only means something when
+  // there is a solve to drop it from), and the "Detected" chip needs at least one selected
+  // cell the detector actually fired for (else there is no detection to fall back to).
+  // The status readout is always one of a finite, enumerable set of strings --
+  // "<point> · <camera>", "<n> points", or "—" -- and the name lists are fixed for the
+  // session, so its worst-case pixel width is knowable up front. Measure it once (in the
+  // element's own font) and pin the field to it, so the readout is a fixed-size box:
+  // nothing after it -- the spacer, then the whole right cluster -- can ever shift as the
+  // operator hovers or selects different joints. Runs in buildControls, where the element
+  // is already in the DOM (getComputedStyle needs that) and the font never changes after.
+  reserveStatusNameWidth() {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) return; // no 2D canvas: fall back to the CSS width + max-width
+    const cs = getComputedStyle(this.pointStatusName);
+    ctx.font = cs.font || `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const width = (s) => ctx.measureText(String(s)).width;
+    const widest = (arr) => arr.reduce((m, s) => Math.max(m, width(s)), 0);
+    const pair = widest(this.meta.point_names) + width(" · ") + widest(this.meta.camera_names);
+    const count = width(`${this.meta.n_points * this.meta.n_views} points`);
+    this.pointStatusName.style.width = `${Math.ceil(Math.max(pair, count) + 3)}px`;
+  }
+
+  updateStatusWidget() {
+    const n = this.selection.size;
+    // Hovering a joint takes over the readout (name + lit chip) with that joint's own
+    // identity and state -- a transient peek. The chips' enabled/disabled state stays
+    // governed by the selection, since clicking a chip still acts on the selection.
+    const hov = this.hoverCell;
+    const cellName = (view, point) => {
+      const name = this.meta.point_names[point] ?? `#${point}`;
+      const cam = this.meta.camera_names[view] ?? `view ${view}`;
+      return `${name} · ${cam}`;
+    };
+    let txt;
+    if (hov) txt = cellName(hov.view, hov.point);
+    else if (n === 0) txt = "—";
+    else if (n === 1 && this.selAnchor) txt = cellName(this.selAnchor.view, this.selAnchor.point);
+    else txt = `${n} points`;
+    this.pointStatusName.textContent = txt;
+    // The field is pinned to the worst-case width (reserveStatusNameWidth), so for a real
+    // config it never clips: set a title only on the off chance a pathological name
+    // overflows, so it stays readable on hover -- and leave it empty otherwise so the
+    // widget's own explanatory tooltip still shows.
+    this.pointStatusName.title =
+      this.pointStatusName.scrollWidth > this.pointStatusName.clientWidth ? txt : "";
+    this.stateSwitch.setDisabled(n === 0);
+    this.stateSwitch.setDisabledValue("projected", n === 0 || !this.meta.has_3d);
+    // "Detected" resets a cell back to the detector's raw prediction -- meaningless for a
+    // cell the detector never fired for (it would just fall through to the reprojection).
+    // Disable the chip unless at least one selected cell has a detection, so an
+    // undetected joint can't be "converted to Detected".
+    const anyDetected = this.selCells().some(([v, p]) => this.cellDetected(v, p));
+    this.stateSwitch.setDisabledValue("normal", n === 0 || !anyDetected);
+    // The lit chip: the hovered joint's own state while hovering (the readout peek),
+    // else the selection's shared state (nothing lit when the cells disagree).
+    this.stateSwitch.set(hov ? this.cellState(hov.view, hov.point) : (this.uniformState() ?? ""));
+  }
+
+  // Click a state chip to apply that state to the whole selection at once. The chips are
+  // the bulk verbs in disguise: "Ground truth" confirms, "Projected" occludes (drops the
+  // view so the point follows the reprojection), and "Detected" resets back to the
+  // detector (the same as the Reset button) -- so a multi-select changes state in one
+  // undoable step.
+  /** @param {string} target  "normal" | "fixed" | "projected" */
   setSelectedState(target) {
-    if (!this.meta.has_3d || !this.selAnchor) return;
-    const current = this.selectedState();
-    if (target === current) return;
-    const v = this.selAnchor.view;
-    const p = this.selAnchor.point;
-    if (target === "fixed") this.onToggleFixed(v, p);
-    else if (target === "invisible") this.onToggleInvisible(v, p);
-    else if (current === "fixed") this.onToggleFixed(v, p); // -> normal
-    else if (current === "invisible") this.onToggleInvisible(v, p); // -> normal
+    if (this.selection.size === 0) return;
+    if (target === "fixed") this.confirmSelection();
+    else if (target === "projected") this.occludeSelection();
+    else this.resetSelection();
   }
 
   // -- edit routing -----------------------------------------------------------
@@ -855,6 +1180,7 @@ class App {
   // after release, or after a newer edit) instead of repainting a stale position.
   /** @param {import("./types.js").EditMessage} msg */
   sendEdit(msg) {
+    if (this.readOnly) return; // a read-only browser cannot mutate the shared state
     this.socket.send({ ...msg, seq: ++this.editSeq });
   }
 
@@ -950,6 +1276,7 @@ class App {
   }
 
   async save() {
+    if (this.readOnly) return; // read-only: the writer owns saving the shared state
     const r = await saveCorrections();
     this.dirty = r.dirty;
     this.updateDirty();
@@ -959,7 +1286,7 @@ class App {
 
   updateDirty() {
     document.title = `deeperfly gui — ${this.meta.results_path}${this.dirty ? " *" : ""}`;
-    this.saveBtn.disabled = !this.dirty;
+    this.saveBtn.disabled = !this.dirty || this.readOnly;
   }
 
   // -- corrected-frames list --------------------------------------------------
@@ -1234,61 +1561,151 @@ class App {
   buildBindings() {
     const has3d = this.meta.has_3d;
     const multi = this.meta.n_views > 1;
+    const lastFrame = () => Math.max(0, this.meta.n_frames - 1);
     /** @type {Binding[]} */
     const b = [
-      { key: "ArrowLeft", label: "← / →", desc: "Previous / next frame (Shift: ±10)", run: (e) => this.step(e.shiftKey ? -10 : -1) },
+      // Frame scrub. Arrows already accept Shift (the matcher only rejects Ctrl/Cmd/Alt),
+      // so the ±10 tier needs no extra plumbing -- run() reads e.shiftKey. The coarse ±100
+      // jump lives on PageUp/PageDn, NOT Alt+Arrow: Alt+Arrow is the browser's Back/Forward
+      // and the matcher can't even represent it, so it would navigate away and lose unsaved
+      // labels. Up/Down hop between labelled frames (mirroring the sidebar's ↑/↓ buttons);
+      // Home/End jump to the first/last frame. All are registered as real (non-global)
+      // bindings so `matches`->preventDefault suppresses the browser's own scroll/history
+      // default, while non-global lets the frame-number input keep native caret + stepping.
+      { key: "ArrowLeft", label: "← / →", desc: "", run: (e) => this.step(e.shiftKey ? -10 : -1) },
       { key: "ArrowRight", hidden: true, label: "→", desc: "", run: (e) => this.step(e.shiftKey ? 10 : 1) },
+      { key: "PageUp", hidden: true, label: "PgUp", desc: "", run: () => this.step(-100) },
+      { key: "PageDown", hidden: true, label: "PgDn", desc: "", run: () => this.step(100) },
+      { key: "ArrowUp", hidden: true, label: "↑", desc: "", run: () => this.jumpCorrected(-1) },
+      { key: "ArrowDown", hidden: true, label: "↓", desc: "", run: () => this.jumpCorrected(1) },
+      { key: "Home", hidden: true, label: "Home", desc: "", run: () => this.goToFrame(0) },
+      { key: "End", hidden: true, label: "End", desc: "", run: () => this.goToFrame(lastFrame()) },
     ];
     if (multi) {
-      b.push({ key: "g", label: "g", desc: "Grid layout", run: () => this.setLayout("grid") });
-      b.push({ key: "f", label: "f", desc: "Focus layout", run: () => this.setLayout("focus") });
-      b.push({ key: "[", label: "[ / ]", desc: "Focus the previous / next camera", run: () => this.cycleFocus(-1) });
+      b.push({ key: "g", group: "cam", label: "g", desc: "Grid layout", run: () => this.setLayout("grid") });
+      b.push({ key: "f", group: "cam", label: "f", desc: "Focus layout", run: () => this.setLayout("focus") });
+      b.push({ key: "[", group: "cam", label: "[ / ]", desc: "Focus the previous / next camera", run: () => this.cycleFocus(-1) });
       b.push({ key: "]", hidden: true, label: "]", desc: "", run: () => this.cycleFocus(1) });
     }
-    b.push({ key: "s", label: "s", desc: "Toggle skeleton", run: () => this.toggleCheck(this.skeletonCheck, () => this.applySkeleton()) });
-    b.push({ key: "n", label: "n", desc: "Toggle keypoint labels", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
+    // Reset zoom/pan on every camera (also on the Layout menu). Outside the multi-camera
+    // block: a single, still-zoomable camera benefits too.
+    b.push({ key: "0", group: "cam", label: "0", desc: "Reset the view — fit every camera", run: () => this.resetView() });
+    b.push({ key: "s", group: "show", label: "s", desc: "Combined skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
+    b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
     if (has3d) {
-      b.push({ key: "p", label: "p", desc: "Toggle 3D estimate overlay", run: () => this.toggleCheck(this.latentCheck, () => this.applyLatent()) });
+      b.push({ key: "p", group: "show", label: "p", desc: "Projected source (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
     }
     if (this.meta.has_nmf) {
-      b.push({ key: "m", label: "m", desc: "Toggle NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
-      b.push({ key: "M", label: "Shift+M", desc: "Toggle NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
+      b.push({ key: "m", group: "show", label: "m", desc: "NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
+      b.push({ key: "M", group: "show", label: hint("M", ["shift"]), desc: "NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
     }
-    // Selection gestures (mouse: click / Shift+click / double-click / Shift+drag).
+    // Selecting points. `a`/`v` are keyboard entries; the mouse gestures and the
+    // "Ctrl/⌘ = add" rule are rendered in the curated help (buildHelp), so these carry
+    // no group. Ctrl/⌘+A is an idempotent alias matching the universal Select-All.
     b.push({ key: "a", label: "a", desc: "Select all points (every view)", run: () => this.selectAll() });
-    b.push({ key: "a", mod: true, hidden: true, label: "Ctrl/⌘+A", desc: "", run: () => this.selectAll() });
+    b.push({ key: "a", mod: true, hidden: true, label: hint("A", ["mod"]), desc: "", run: () => this.selectAll() });
     b.push({ key: "v", label: "v", desc: "Select every point in the view under the cursor", run: () => this.selectActiveView() });
-    // Actions on the selection.
-    b.push({ key: "Enter", label: "Enter", desc: "Confirm the selection as ground truth", run: () => this.confirmSelection() });
-    b.push({ key: "r", label: "r", desc: "Reset the selection (clear labels back to the prediction)", run: () => this.resetSelection() });
+    // Acting on the selection.
+    b.push({ key: "Enter", group: "edit", label: "Enter", desc: "Confirm the selection as ground truth", run: () => this.confirmSelection() });
+    b.push({ key: "r", group: "edit", label: "r", desc: "Reset the selection to the detector", run: () => this.resetSelection() });
     b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
     if (has3d) {
-      b.push({ key: "o", label: "o", desc: "Occlude the selection (mark unreadable in that view)", run: () => this.occludeSelection() });
+      b.push({ key: "o", group: "edit", label: "o", desc: "Mark Projected — no observation here; drop it from the 3D solve", run: () => this.occludeSelection() });
     }
-    b.push({ key: "z", mod: true, label: "Ctrl/⌘+Z", desc: "Undo", run: () => this.undo() });
-    b.push({ key: "y", mod: true, label: "Ctrl/⌘+Y", desc: "Redo", run: () => this.redo() });
-    b.push({ key: "z", mod: true, shift: true, hidden: true, label: "Ctrl/⌘+Shift+Z", desc: "Redo", run: () => this.redo() });
-    b.push({ key: "c", label: "c", desc: "Show / hide the 3D view", run: () => this.toggleScene() });
-    b.push({ key: "j", label: "j", desc: "Show / hide the labelled-frames list", run: () => this.toggleFrames() });
-    b.push({ key: "k", label: "k", desc: "Open the keypoint reference (docs, new tab)", run: () => this.openKeypoints() });
-    b.push({ key: "s", mod: true, global: true, label: "Ctrl/⌘+S", desc: "Save labels", run: () => this.save() });
-    b.push({ key: "?", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
+    b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
+    // Redo answers to both ⌘Y and ⇧⌘Z; the help shows whichever the platform expects
+    // (⇧⌘Z is the macOS idiom, Ctrl+Y the Windows/Linux one) while the other stays a
+    // hidden alias that still works.
+    b.push({ key: "y", mod: true, group: "hist", hidden: IS_MAC, label: hint("Y", ["mod"]), desc: "Redo", run: () => this.redo() });
+    b.push({ key: "z", mod: true, shift: true, group: "hist", hidden: !IS_MAC, label: hint("Z", ["mod", "shift"]), desc: "Redo", run: () => this.redo() });
+    b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels", run: () => this.save() });
+    b.push({ key: "c", group: "panel", label: "c", desc: "Show / hide the 3D scene", run: () => this.toggleScene() });
+    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the labelled-frames list", run: () => this.toggleFrames() });
+    b.push({ key: "k", group: "panel", label: "k", desc: "Open the labeling guide (keypoint map, new tab)", run: () => this.openKeypoints() });
+    b.push({ key: "?", group: "panel", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
     return b;
   }
 
-  buildHelp() {
-    const rows = this.bindings
-      .filter((b) => !b.hidden)
+  /**
+   * The help rows for the visible bindings tagged with a group, rendered from each
+   * binding's own OS-correct label + description.
+   * @param {string} group
+   * @returns {string[]}
+   */
+  bindingRows(group) {
+    return this.bindings
+      .filter((b) => !b.hidden && b.group === group)
       .map((b) => `<tr><td class="key"><kbd>${b.label}</kbd></td><td>${b.desc}</td></tr>`);
-    // Mouse gestures for building a selection (not keyboard bindings, so listed here).
-    rows.push(`<tr><td class="key"><kbd>Click</kbd></td><td>Select a point (Shift+click: add / remove)</td></tr>`);
-    rows.push(`<tr><td class="key"><kbd>Double-click</kbd></td><td>Select that keypoint in every view</td></tr>`);
-    rows.push(`<tr><td class="key"><kbd>Shift+drag</kbd></td><td>Rubber-band: add every enclosed point</td></tr>`);
-    rows.push(`<tr><td class="key"><kbd>Esc</kbd></td><td>Clear the selection, or close a dialog</td></tr>`);
-    const shortcuts = `<h3 class="legend-title">Keyboard shortcuts</h3>`
+  }
+
+  buildHelp() {
+    // A curated, GROUPED view of the shortcuts. The behaviour lives in `bindings`
+    // (buildBindings); this is the human-facing map, so the frame-nav ladder and the
+    // selection model -- neither of which maps one-key-to-one-row -- read clearly. Every
+    // key is rendered through `hint()`, so the chips match the operator's own OS, and the
+    // groups are ordered by the core annotation loop: navigate → select → edit, then the
+    // set-once configuration groups, then history/file and the panels.
+    const kbd = (/** @type {string} */ label) => `<kbd>${label}</kbd>`;
+    const row = (/** @type {string[]} */ keys, /** @type {string} */ desc) =>
+      `<tr><td class="key">${keys.map(kbd).join(" ")}</td><td>${desc}</td></tr>`;
+    const section = (
+      /** @type {string} */ title,
+      /** @type {string[]} */ rows,
+      /** @type {string} */ note = "",
+    ) =>
+      `<h3 class="legend-title">${title}</h3>`
+      + (note ? `<p class="legend-note">${note}</p>` : "")
       + `<table class="shortcuts"><tbody>${rows.join("")}</tbody></table>`;
-    this.helpBody.innerHTML = this.buildLegend() + shortcuts;
+
+    const out = [];
+
+    // Navigate frames -- the full escalation ladder, spelled out (the multipliers are
+    // not guessable, so they must be visible).
+    out.push(section("Navigate frames", [
+      row(["←", "→"], "Previous / next frame"),
+      row([hint("←", ["shift"]), hint("→", ["shift"])], "Jump 10 frames"),
+      row(["PgUp", "PgDn"], "Jump 100 frames"),
+      row(["↑", "↓"], "Previous / next labelled frame"),
+      row(["Home", "End"], "First / last frame"),
+    ]));
+
+    // Select points -- one rule leads, then the base gestures once each. The add-modifier
+    // is the app's convention (Ctrl/⌘), spelled for this OS.
+    const add = MOD_GLYPH.mod;
+    out.push(section("Select points", [
+      row(["Click"], "Select a point"),
+      row([hint("Click", ["mod"])], "Add / remove a point"),
+      row(["Double-click"], "Select a point in every view"),
+      row([hint("Drag", ["shift"])], "Rubber-band a new selection"),
+      row([hint("Drag", ["mod"])], "Rubber-band, adding to the selection"),
+      row(["a"], "Select every point (all views)"),
+      row(["v"], "Select every point in the view under the cursor"),
+      row(["Esc"], "Clear the selection (or click the background)"),
+    ], `<b>Hold ${add} to add</b> to the current selection — with click, double-click, or drag. Without it, the gesture starts a fresh selection.`));
+
+    // Edit the selection -- the point-move gesture, then the confirm/reset/mark bindings,
+    // then the right-click GT toggle (only meaningful with a 3D solve to feed).
+    const editRows = [row(["Drag a point"], "Move it — authors ground truth")]
+      .concat(this.bindingRows("edit"));
+    if (this.meta.has_3d) editRows.push(row(["Right-click"], "Confirm / clear a point as ground truth"));
+    out.push(section("Edit the selection", editRows));
+
+    // Rendered whenever the "cam" group has rows: multi-camera lists Grid/Focus/step + Reset
+    // view; a single camera still lists Reset view (its only "cam" row), under a "View" title.
+    const camRows = this.bindingRows("cam");
+    if (camRows.length) out.push(section(this.meta.n_views > 1 ? "Cameras & layout" : "View", camRows));
+    out.push(section("Show overlays", this.bindingRows("show")));
+    out.push(section("History & file", this.bindingRows("hist")));
+    out.push(section("Panels & guide", this.bindingRows("panel")));
+
+    // The labeling guide (the interactive keypoint map) leads the panel as the one
+    // actionable link; the shortcut groups and then the colour/marker legend follow. The
+    // heavy external page loads only when the operator clicks through (a new tab).
+    const guide = `<h3 class="legend-title">Labeling guide</h3>`
+      + `<p class="legend-note">Where each keypoint sits on the fly — an interactive 3D map (opens in a new tab).</p>`
+      + `<p><a class="help-link" href="${KEYPOINTS_DOC_URL}" target="_blank" rel="noopener">Open the keypoint map ↗</a></p>`;
+    this.helpBody.innerHTML = guide + out.join("") + this.buildLegend();
   }
 
   // The legend, built from the server meta so it reflects whatever config is loaded:
@@ -1311,28 +1728,24 @@ class App {
     // Marker vocabulary -- what a keypoint's marker tells you about where it came from.
     const markers = [
       [`<i class="mk m-gt"></i>`, `<b>Ground truth</b> — you authored it (dragged or confirmed); trusted.`],
-      [`<i class="mk m-pred"></i>`, `<b>Prediction</b> — the detector's raw 2D; the fill fades as confidence drops.`],
+      [`<i class="mk m-pred"></i>`, `<b>Detected</b> — the detector's raw 2D; the fill fades as confidence drops.`],
     ];
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projection</b> — no observation in this view; the 3D reprojected here (a suggestion). An occluded view shows this way too.`,
+        `<b>Projected</b> — the 3D reprojected here; no observation in this view (occluded, or the detector missed). Its own layer draws the full reprojected skeleton in the limb palette, dashed.`,
       ]);
     }
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");
-    const markerBlock = `<h3 class="legend-title">Marker — where a point came from</h3>`
+    const markerBlock = `<h3 class="legend-title">Point sources — where a point came from</h3>`
+      + `<p class="legend-note">The <b>Combined</b> skeleton picks each joint by precedence (ground truth &gt; detected &gt; projected). The <b>Show</b> menu can instead display each source's full set on its own.</p>`
       + `<div class="legend-rows">${markerRows}</div>`;
 
-    // Read-only reference overlays (shown only when the result carries them).
+    // Read-only reference overlays (shown only when the result carries them). The projected
+    // source is documented in the marker block above; here we cover the NMF model overlay.
     const refs = [];
-    if (this.meta.has_3d) {
-      refs.push([
-        `<span class="swatch swatch-latent"></span>`,
-        `<b>3D estimate</b> — the triangulated 3D reprojected into each view (dashed amber).`,
-      ]);
-    }
     if (this.meta.has_nmf) {
       refs.push([
         `<span class="swatch swatch-nmf"></span>`,
@@ -1368,6 +1781,54 @@ class App {
     else this.openHelp();
   }
 
+  // Rewrite the modifier spellings baked into the static HTML (toolbar/sidebar tooltips
+  // and the ⇧M chip) so every on-screen surface uses the SAME OS-correct keys as the help
+  // panel -- no "Ctrl/Cmd" on a Mac in one place and "⌘" in another. Runs once at init,
+  // after meta is known (the tooltip text is meta-conditional).
+  applyOsHints() {
+    const add = MOD_GLYPH.mod;
+    const setTitle = (/** @type {string} */ id, /** @type {string} */ title) => {
+      const e = document.getElementById(id);
+      if (e) e.title = title;
+    };
+    setTitle("undo", `Undo (${hint("Z", ["mod"])})`);
+    setTitle("redo", `Redo (${IS_MAC ? hint("Z", ["mod", "shift"]) : hint("Y", ["mod"])})`);
+    setTitle("save", `Save the ground-truth labels (${hint("S", ["mod"])})`);
+    // The frame row advertises the whole navigation ladder.
+    const frameLabel = document.querySelector("#controls .frame-row label");
+    if (frameLabel instanceof HTMLElement) {
+      frameLabel.title =
+        `Jump to a frame — ← / → step 1 · ${hint("←", ["shift"])} steps 10 · PgUp / PgDn jump 100 · ↑ / ↓ labelled frames · Home / End first / last`;
+    }
+    // The sidebar's labelled-frame nav echoes its new keys.
+    setTitle("frames-prev", "Previous labelled frame (↑)");
+    setTitle("frames-next", "Next labelled frame (↓)");
+    // Overlay toggles: the "Show" button's summary and the NMF-mesh chip.
+    const mesh = hint("M", ["shift"]);
+    setTitle(
+      "show-toggle",
+      `Show / hide the view layers (keyboard: n Names · s Combined${this.meta.has_3d ? " · p Projected" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
+    );
+    const meshChip = document.querySelector("#mesh-wrap kbd");
+    if (meshChip) meshChip.textContent = mesh;
+    // The live "adding" pill's key glyph (⌘ on macOS, Ctrl elsewhere).
+    const addKey = document.getElementById("add-hint-key");
+    if (addKey) addKey.textContent = add;
+    setTitle("mesh-wrap", `Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (${mesh})`);
+    // The selection status card's how-to, re-spelled for this OS and this model.
+    setTitle(
+      "point-status",
+      `The selected point(s): click a chip to set the whole selection's state — Ground truth (Enter) or Projected (o) — or Reset (r) to clear the labels back to the detector. Select with click, ${add}-click to add/remove, double-click (all views), Shift-drag (new region), ${add}-drag to add; a = all, v = this view. Click the background or Esc to clear. Hover a point to peek at its name + state.`,
+    );
+  }
+
+  // Reflect the live "adding to selection" state on <body> (see the `addMod`/`overViews`
+  // fields): only when the add-modifier is held AND the pointer is over the views, so the
+  // affordance appears exactly when a click/drag would add rather than replace.
+  updateAddingHint() {
+    document.body.classList.toggle("adding", this.addMod && this.overViews);
+  }
+
   // -- keyboard dispatch ------------------------------------------------------
 
   /** @param {number} d */
@@ -1387,7 +1848,11 @@ class App {
   onKey(e) {
     // Escape always backs out of an open dialog first.
     if (e.key === "Escape") {
-      if (this.closeConfirmOpen) {
+      if (this.showMenuOpen || this.layoutMenuOpen) {
+        this.closeShowMenu();
+        this.closeLayoutMenu();
+        e.preventDefault();
+      } else if (this.closeConfirmOpen) {
         this.closeCloseConfirm();
         e.preventDefault();
       } else if (this.helpOpen) {

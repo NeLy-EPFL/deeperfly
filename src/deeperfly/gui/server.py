@@ -9,15 +9,21 @@ per-view points so the canvases repaint (the same flow the old Qt window drove
 with signals). Corrections live only in memory until ``POST /api/save`` writes
 the ``corrections.h5`` sidecar.
 
-All state mutations are serialized by a single :class:`asyncio.Lock`: one
-operator on one result is the expected case, and the edit ops are fast,
-in-process NumPy/JAX, so holding the lock briefly is harmless.
+All state mutations are serialized by a single :class:`asyncio.Lock`, and only
+one connected browser -- the "writer" -- may edit at a time. The session is one
+shared :class:`~deeperfly.gui.state.EditorState`, so two tabs editing at once
+would silently overwrite each other's corrections; instead the first ``/ws``
+socket to open holds the writer slot and every later socket is read-only. A
+read-only tab can take over (a ``{"type": "claim"}`` message) or is promoted
+automatically when the writer disconnects. The edit ops are fast, in-process
+NumPy/JAX, so holding the lock briefly is harmless.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -33,7 +39,6 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..visualization._palette import point_colors_rgb
@@ -48,6 +53,24 @@ __all__ = ["create_app"]
 log = logging.getLogger("deeperfly")
 
 _WEB_DIR = Path(__file__).parent / "web"
+
+
+def _asset_version() -> str:
+    """A short content hash of the entry assets, stamped into the URLs the page loads.
+
+    ``index.html`` references ``app.js`` / ``styles.css`` as ``...?v=<hash>``. The page
+    itself is served ``no-cache`` (revalidated every load), so a fresh load always
+    carries the current hash and the browser fetches the *matching* JS/CSS. Without
+    this, a browser that serves a heuristically-cached ``app.js`` against freshly
+    changed HTML gets a half-broken editor -- the stale JS wires to DOM ids the new
+    HTML no longer has. Computed per request (cheap) so in-place edits take effect on
+    the next reload with no server restart."""
+    h = hashlib.sha1()
+    for name in ("app.js", "styles.css"):
+        p = _WEB_DIR / "static" / name
+        if p.is_file():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:12]
 
 
 def create_app(
@@ -71,10 +94,20 @@ def create_app(
     """
     app = FastAPI(title="deeperfly gui")
     lock = asyncio.Lock()
-    # Open `/ws` sockets (one per browser tab) and the timer that, once the last
-    # one closes, stops the server after the grace period (cancelled on reconnect).
-    clients = 0
+    # Open `/ws` sockets (one per browser tab), the single "writer" allowed to edit
+    # the shared session, and the timer that -- once the last socket closes -- stops
+    # the server after the grace period (cancelled on reconnect).
+    sockets: set[WebSocket] = set()
+    writer: WebSocket | None = None
     pending_exit: asyncio.TimerHandle | None = None
+
+    def _role_msg(ws: WebSocket) -> dict:
+        """The role handshake for a browser: may it edit (writer) or is it read-only?"""
+        return {
+            "type": "role",
+            "role": "writer" if ws is writer else "reader",
+            "clients": len(sockets),
+        }
 
     # The web assets are edited in place (no build step), so without an explicit
     # policy a browser's heuristic cache can serve a stale app.js/styles.css
@@ -102,7 +135,38 @@ def create_app(
         page = _WEB_DIR / "index.html"
         if not page.is_file():  # pragma: no cover
             raise HTTPException(500, "web/index.html is missing (build the GUI)")
-        return FileResponse(page)
+        html = page.read_text(encoding="utf-8").replace("__ASSET_V__", _asset_version())
+        return Response(content=html, media_type="text/html")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        # Served from the root path (not only /static) because Safari probes
+        # /favicon.ico directly, and Safari is the browser that needs the .ico:
+        # it doesn't render the SVG favicon, so without this it falls back to a
+        # letter placeholder in the tab.
+        ico = _WEB_DIR / "static" / "favicon.ico"
+        if not ico.is_file():  # pragma: no cover -- the icon ships in the package
+            raise HTTPException(404, "favicon.ico is missing")
+        return Response(
+            content=ico.read_bytes(),
+            media_type="image/x-icon",
+            headers={"Cache-Control": "max-age=3600"},
+        )
+
+    @app.get("/apple-touch-icon.png", include_in_schema=False)
+    def apple_touch_icon() -> Response:
+        # Safari probes /apple-touch-icon.png at the root and uses it for its
+        # Start Page / dock tiles, where it draws the icon on a rounded chip. The
+        # asset is a full-bleed teal tile so it fills that chip cleanly instead of
+        # leaving a light box around a circle.
+        png = _WEB_DIR / "static" / "apple-touch-icon.png"
+        if not png.is_file():  # pragma: no cover -- the icon ships in the package
+            raise HTTPException(404, "apple-touch-icon.png is missing")
+        return Response(
+            content=png.read_bytes(),
+            media_type="image/png",
+            headers={"Cache-Control": "max-age=3600"},
+        )
 
     @app.get("/api/meta")
     def meta() -> dict:
@@ -212,17 +276,42 @@ def create_app(
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
-        nonlocal clients, pending_exit
+        nonlocal writer, pending_exit
         await websocket.accept()
-        clients += 1
+        sockets.add(websocket)
         if pending_exit is not None:
             # A reconnect (typically a page refresh) cancels a pending shutdown.
             pending_exit.cancel()
             pending_exit = None
             log.info("browser reconnected; shutdown cancelled")
+        if writer is None:
+            # The first (sole) editor. It is told nothing -- an unadorned client is
+            # editable by default -- so the single-browser flow (and its tests) is
+            # unchanged: the first message it receives is still its own edit reply.
+            writer = websocket
+        else:
+            # A second+ browser: read-only until it takes over or the writer leaves.
+            await websocket.send_json(_role_msg(websocket))
         try:
             while True:
                 msg = await websocket.receive_json()
+                if msg.get("type") == "claim":
+                    # This browser takes over editing (the read-only "Take over"
+                    # action). The slot is single-valued, so the previous writer,
+                    # if any, is demoted to read-only.
+                    old = writer
+                    writer = websocket
+                    if old is not None and old is not websocket:
+                        await old.send_json(_role_msg(old))
+                    await websocket.send_json(_role_msg(websocket))
+                    continue
+                if websocket is not writer:
+                    # A read-only browser must not mutate the shared session: refuse
+                    # the edit and re-assert its role (its UI already blocks this, so
+                    # this is the belt-and-braces server guard).
+                    log.info("ignoring edit from a read-only browser")
+                    await websocket.send_json(_role_msg(websocket))
+                    continue
                 try:
                     async with lock:
                         payload = _handle_edit(session, msg)
@@ -237,10 +326,23 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
-            clients -= 1
+            sockets.discard(websocket)
+            if websocket is writer:
+                # The editor left; hand the writer slot to another open browser so a
+                # surviving viewer can edit. Left free when no socket remains, so a
+                # lone tab's refresh reclaims it on reconnect (writer is None again).
+                writer = None
+                for cand in list(sockets):
+                    writer = cand
+                    try:
+                        await cand.send_json(_role_msg(cand))
+                    except Exception:  # pragma: no cover -- the socket is closing
+                        writer = None
+                        continue
+                    break
             # The last tab closed: stop the server, but give a refresh's reconnect
             # the grace period to cancel it first.
-            if exit_on_disconnect and clients == 0 and on_shutdown is not None:
+            if exit_on_disconnect and not sockets and on_shutdown is not None:
                 log.info("browser disconnected; stopping in %ss", disconnect_grace)
                 pending_exit = asyncio.get_running_loop().call_later(
                     disconnect_grace, on_shutdown

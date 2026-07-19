@@ -2,8 +2,9 @@
 // One camera's frame plus its draggable 2D skeleton overlay, on a <canvas>.
 //
 // A port of the old Qt PoseView, grown a few editor conveniences: the frame is
-// drawn fit-to-canvas (letterboxed) and can be zoomed (wheel, toward the cursor)
-// and panned (drag on empty space). Frames are loaded via `loadFrame`; while a
+// drawn fit-to-canvas (letterboxed) and can be zoomed (mouse wheel or trackpad
+// pinch, toward the cursor) and panned (drag on empty space, or a trackpad
+// two-finger scroll). Frames are loaded via `loadFrame`; while a
 // new one decodes the previous frame stays up *blurred* (a cheap upscaled
 // thumbnail, not a per-frame filter) so scrubbing never flashes black -- the blur
 // reads as "not the live frame yet". The skeleton is drawn in image-pixel
@@ -11,21 +12,32 @@
 // within a screen-pixel tolerance. A press on a joint selects it; an actual drag
 // (past a small threshold) moves it, emitting a throttled `onDragging` and a final
 // `onDragged` -- a click without movement just selects, so it never creates a
-// spurious edit. Right-click toggles a point's fixed flag. An occluded joint has no
+// spurious edit. A click on empty space clears the selection, while a drag on empty
+// space pans (so panning never deselects). Holding a modifier turns a click or a
+// rubber-band drag into a multi-select: Shift replaces the selection with what the
+// gesture picks, Ctrl/Cmd adds to it (Ctrl/Cmd+click toggles a single joint).
+// Right-click toggles a point's fixed flag. An occluded joint has no
 // observed pixel, so it draws as a derived (reprojected) point; dragging it is still
 // allowed and reports `wasInvisible` on `onDragged` so the app can un-occlude it.
 // Hovering a joint reports it via `onHover` so the app can emphasize the same point
 // across every view. The app stays in control of what a drag does to the 3D point.
 //
-// Beyond the editable overlay the view can also draw two read-only reference skeletons
-// the app toggles -- the "latent" skeleton (the current 3D estimate reprojected) and
-// the fitted NMF model -- plus per-joint name labels. A reference is drawn as a faint
-// under-glow *beneath* the editable skeleton (so the limb palette always reads on
-// top) with its *disagreement* against the placed point drawn back on top as a per-joint
+// Beyond the editable overlay the view can also draw the individual point *sources* as
+// their own layers -- ground truth, the raw detector prediction, and the 3D reprojection
+// ("projected") -- each toggled independently, so the operator can inspect the full set
+// of one source at a time. The editable skeleton is the "Combined" layer: one integrated
+// skeleton that picks each joint by precedence (ground truth > detected > projected). It
+// is the only interactive layer; the source layers are read-only.
+//
+// The view also draws two read-only reference skeletons the app toggles -- the "latent"
+// skeleton (the current 3D estimate reprojected, i.e. the projected source) and the
+// fitted NMF model -- plus per-joint name labels. Shown *with* the combined skeleton, a
+// reference is a faint under-glow *beneath* it (so the limb palette always reads on top)
+// with its *disagreement* against the placed point drawn back on top as a per-joint
 // "leash" that is silent at coincidence and grows with the residual -- so a live 3D drag
-// shows exactly where triangulation is pulling each point. With the editable skeleton
-// toggled off a reference instead draws in its own bright, dashed/dotted style so it
-// stays fully visible on its own.
+// shows exactly where triangulation is pulling each point. With the combined skeleton
+// toggled off a source/reference instead draws in its own bright, dashed/dotted style so
+// it stays fully visible on its own.
 //
 // This .js is the source -- no build step; VS Code type-checks it via
 // `// @ts-check` and the JSDoc types.
@@ -37,9 +49,10 @@
  * @property {(view: number, point: number, x: number, y: number) => void} onDragging
  * @property {(view: number, point: number, x: number, y: number, wasInvisible: boolean) => void} onDragged
  * @property {(view: number, point: number) => void} onToggleFixed
- * @property {(view: number, point: number, additive: boolean) => void} onSelect  a joint was clicked/grabbed; additive (Shift) toggles it in the selection instead of replacing
- * @property {(view: number, points: number[], additive: boolean) => void} onSelectRegion  a Shift+drag marquee enclosed these joints in this view (always additive)
+ * @property {(view: number, point: number, additive: boolean) => void} onSelect  a joint was clicked/grabbed; additive (Ctrl/Cmd) toggles it in the selection, else it replaces
+ * @property {(view: number, points: number[], additive: boolean) => void} onSelectRegion  a marquee enclosed these joints in this view; additive (Ctrl/Cmd-drag) adds them, else (Shift-drag) replaces the selection
  * @property {(point: number, additive: boolean) => void} onSelectKeypointAllViews  a joint was double-clicked: select it across every view
+ * @property {() => void} onBackground  the background was clicked (empty space, no drag): clear the selection
  * @property {(view: number) => void} onActiveView  the pointer entered/moved over this view (drives the "select all in this view" gesture)
  * @property {(point: number | null) => void} onHover  the hovered joint changed (cross-view)
  */
@@ -50,7 +63,10 @@ const HOVER_BONE_WIDTH = 3; // a hovered joint's connected bones thicken to this
 const HIT_TOLERANCE_PX = 14; // how close a click must be to grab a joint, screen px
 const DRAG_THRESHOLD_PX = 3; // movement (screen px) before a press becomes a drag
 const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
-const WHEEL_ZOOM_RATE = 0.0015; // wheel delta -> zoom factor sensitivity
+const WHEEL_ZOOM_RATE = 0.0015; // mouse-wheel delta -> zoom factor sensitivity
+const PINCH_ZOOM_RATE = 0.01; // trackpad pinch: a higher gain than the wheel (its per-event delta is tiny) so the pinch tracks the fingers
+const WHEEL_NOTCH_MIN = 50; // |deltaY| (px) at/above which a wheel step reads as a chunky mouse-wheel notch; a trackpad's steps are smaller / fractional / horizontal
+const WHEEL_BURST_GAP_MS = 150; // a quiet gap this long ends a wheel "burst" -- the next event re-classifies the device (mouse vs trackpad)
 const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
 
 // Each joint marker encodes its *source* -- the whole point of the unified editor is
@@ -65,6 +81,8 @@ const FIXED_COLOR = "#7CFC00"; // ring on a ground-truth point (lime green)
 const SELECT_COLOR = "#3fd0ff"; // ring on a selected point (cyan; lime = ground truth)
 const MARQUEE_STROKE = "rgba(63,208,255,0.9)"; // Shift+drag rubber-band border (cyan, matches selection)
 const MARQUEE_FILL = "rgba(63,208,255,0.12)"; // its translucent fill
+const MARQUEE_ADD_STROKE = "rgba(124,252,0,0.9)"; // Ctrl/⌘-drag = add: lime, matching the add affordance
+const MARQUEE_ADD_FILL = "rgba(124,252,0,0.14)"; // its translucent fill
 
 // The two read-only reference overlays -- the latent 3D reprojection (amber) and the
 // fitted NMF model (mint) -- are drawn UNDERNEATH the editable skeleton, so the
@@ -81,6 +99,29 @@ const NMF_RGB = "80,230,180"; // mint
 const GHOST_ALPHA = 0.4; // a reference overlay's soft under-glow (a faint halo beneath the palette)
 const LEASH_MIN_PX = 2.5; // below this editable<->reference screen gap the leash needs no connector line
 const LEASH_FULL_PX = 16; // at/above this gap the reference marker + leash reach full emphasis
+
+/**
+ * Guess whether a wheel event came from a trackpad (vs a mouse wheel), from the shape of
+ * the first event in a burst. A mouse wheel and a trackpad scroll are indistinguishable
+ * *mid-gesture* (a momentum flick's peak deltas rival a mouse notch), so the caller only
+ * trusts this at a burst's start, when a trackpad's deltas are still small. Classified by
+ * delta shape ONLY -- ctrlKey (a pinch, or Ctrl+wheel) is deliberately NOT a tell here, so a
+ * transient ctrlKey can't latch the persistent device flag (releasing Ctrl mid-burst on a
+ * Ctrl+mouse-wheel would otherwise flip to panning); onWheel handles ctrlKey as a per-event
+ * zoom short-circuit instead, and a real trackpad pinch is still caught by its small delta.
+ * Tells:
+ *   - line/page delta mode (Firefox mouse wheel) is a mouse
+ *   - a horizontal or fractional delta is a trackpad
+ *   - a small vertical pixel step is a trackpad; a large one is a mouse-wheel notch
+ * @param {WheelEvent} e
+ * @returns {boolean}
+ */
+function looksLikeTrackpad(e) {
+  if (e.deltaMode !== 0) return false;
+  if (e.deltaX !== 0) return true;
+  if (!Number.isInteger(e.deltaY)) return true;
+  return Math.abs(e.deltaY) < WHEEL_NOTCH_MIN;
+}
 
 export class PoseView {
   /**
@@ -102,7 +143,9 @@ export class PoseView {
     /** @type {Point[]} */
     this.pts = [];
     /** @type {Point[] | null} */
-    this.latent = null; // latent 3D reprojection (display only), drawn when latentVisible
+    this.latent = null; // latent 3D reprojection (display only) = the "projected" source
+    /** @type {Point[] | null} */
+    this.detected = null; // raw detector prediction per point (display only) = the "detected" source
     /** @type {Point[] | null} */
     this.nmf = null; // fitted NMF model reprojection (display only), drawn when nmfVisible
     /** @type {boolean[] | null} */
@@ -117,14 +160,20 @@ export class PoseView {
     this.highlight = null; // hovered joint (set by the app across all views)
     /** @type {Set<number>} */
     this.selectionSet = new Set(); // this view's selected joint indices (cyan ring)
-    // Shift+drag rubber-band, in CSS px, while a marquee is in progress (else null).
+    // Modifier+drag rubber-band, in CSS px, while a marquee is in progress (else null).
     /** @type {{ x0: number, y0: number, x1: number, y1: number } | null} */
     this.marquee = null;
-    this.marqueeing = false; // a Shift press is arming/dragging a marquee
+    this.marqueeing = false; // a Shift/Ctrl press is arming/dragging a marquee
+    this.marqueeAdditive = false; // Ctrl/Cmd-drag adds to the selection; Shift-drag replaces it
     this.editable = false;
     this.zoomable = false;
-    this.overlayVisible = true;
-    this.latentVisible = false;
+    // Point-source layer toggles. "Combined" is the integrated editable skeleton
+    // (precedence GT > detected > projected) and the only interactive layer; the three
+    // source layers are read-only. Combined is on by default (the plain editing view).
+    this.combinedVisible = true;
+    this.gtVisible = false;
+    this.detectedVisible = false;
+    this.projectedVisible = false;
     this.nmfVisible = false;
     this.meshVisible = false;
     this.labelsVisible = false;
@@ -163,6 +212,12 @@ export class PoseView {
     this.downY = 0;
     this.panOrigX = 0;
     this.panOrigY = 0;
+    // Wheel-gesture classification: mouse wheel and trackpad look alike mid-gesture, so the
+    // device is decided once at the START of each wheel burst (see looksLikeTrackpad) and
+    // held until a quiet gap starts a new burst -- keeping a momentum flick from flipping
+    // to "mouse" (and zooming) when its peak deltas briefly rival a wheel notch.
+    this._wheelIsTrackpad = false;
+    this._lastWheelTime = 0;
     /** @type {number | null} */
     this._hover = null; // last hover reported, to debounce onHover
 
@@ -319,6 +374,7 @@ export class PoseView {
    * @param {boolean[] | null} [data.invisible]  per-point "obscured" mask, or null when not in 3D
    * @param {(number | null)[] | null} [data.conf]  per-point detector confidence (low fades the fill)
    * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
+   * @param {Point[] | null} [data.detected]  the raw detector prediction (the "detected" source), or null
    * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
    */
   setFrameData(data) {
@@ -334,6 +390,9 @@ export class PoseView {
     if (data.invisible !== undefined) this.invisible = data.invisible;
     if (data.conf !== undefined) this.conf = data.conf;
     if (data.latent !== undefined) this.latent = data.latent;
+    // The raw detections are static within a frame, so the mid-drag stream omits them
+    // (undefined) and this view keeps the set from the last plain/navigation fetch.
+    if (data.detected !== undefined) this.detected = data.detected;
     if (data.nmf !== undefined) this.nmf = data.nmf;
     this.draw();
   }
@@ -363,17 +422,31 @@ export class PoseView {
     if (!zoomable) this.resetZoom(); // thumbnails always show the whole frame
   }
 
-  /** @param {boolean} visible  whether the editable skeleton + joints are drawn */
-  setOverlayVisible(visible) {
-    if (this.overlayVisible === visible) return;
-    this.overlayVisible = visible;
+  /** @param {boolean} visible  whether the combined editable skeleton + joints are drawn */
+  setCombinedVisible(visible) {
+    if (this.combinedVisible === visible) return;
+    this.combinedVisible = visible;
     this.draw();
   }
 
-  /** @param {boolean} visible  whether the latent 3D reprojection is ghosted on top */
-  setLatentVisible(visible) {
-    if (this.latentVisible === visible) return;
-    this.latentVisible = visible;
+  /** @param {boolean} visible  whether the ground-truth source layer is drawn */
+  setGtVisible(visible) {
+    if (this.gtVisible === visible) return;
+    this.gtVisible = visible;
+    this.draw();
+  }
+
+  /** @param {boolean} visible  whether the detected (raw prediction) source layer is drawn */
+  setDetectedVisible(visible) {
+    if (this.detectedVisible === visible) return;
+    this.detectedVisible = visible;
+    this.draw();
+  }
+
+  /** @param {boolean} visible  whether the projected (3D reprojection) source layer is drawn */
+  setProjectedVisible(visible) {
+    if (this.projectedVisible === visible) return;
+    this.projectedVisible = visible;
     this.draw();
   }
 
@@ -461,30 +534,48 @@ export class PoseView {
       ctx.drawImage(this.meshImg, this.offX, this.offY, dw, dh);
       ctx.globalAlpha = a;
     }
-    // The two read-only reference overlays sit UNDERNEATH the editable skeleton so the
-    // limb palette owns the top layer; their disagreement with the placed point
-    // is then drawn back on top as a leash (drawReference/drawLeashes). With the
-    // skeleton hidden they have nothing to sit under, so they draw in their own bright
-    // style instead, staying fully visible on their own.
-    if (this.overlayVisible) {
+    // Point-source layers + the read-only reference overlays. With the combined skeleton
+    // shown, the projected source and the NMF model sit UNDERNEATH it as faint under-glows
+    // (so the limb palette owns the top layer), and their disagreement with the placed
+    // point is drawn back on top as an on-demand leash. The ground-truth / detected source
+    // layers, when shown alongside the combined skeleton, draw as markers on top (no bones
+    // -- the combined skeleton already carries the bones). With the combined skeleton
+    // hidden, every checked source draws as its own bright standalone layer instead.
+    if (this.combinedVisible) {
       if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, true);
-      if (this.latentVisible && this.latent) this.drawReference(this.latent, LATENT_RGB, true);
+      // The projected source under the combined skeleton is the disagreement overlay: skip
+      // the ghost bones that merely retrace the skeleton's own projected points (both ends
+      // unobserved here), then leash only the observed joints on demand.
+      if (this.projectedVisible && this.latent) this.drawReference(this.latent, LATENT_RGB, true, this.observedMask());
       this.drawSkeleton();
+      // Overlaid on the combined skeleton: markers only (it already draws the bones), and no
+      // labels (it already draws them at the effective position -- drawing again would double).
+      if (this.gtVisible) this.drawSourceLayer("gt", false, false);
+      if (this.detectedVisible) this.drawSourceLayer("detected", false, false);
       // NMF marks joints undetected in this view (it is the only cue for them); the
-      // latent/projection does not -- the skeleton already draws those as inline
+      // projected source does not -- the skeleton already draws those as inline
       // projection markers, so a bare leash marker there would just double up.
       if (this.nmfVisible && this.nmf) this.drawLeashes(this.nmf, NMF_RGB, "square", true);
-      if (this.latentVisible && this.latent) this.drawLeashes(this.latent, LATENT_RGB, "ring", false);
+      if (this.projectedVisible && this.latent) this.drawLeashes(this.latent, LATENT_RGB, "ring", false);
     } else {
       if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, false);
-      if (this.latentVisible && this.latent) this.drawReference(this.latent, LATENT_RGB, false);
+      // No combined skeleton to carry them, so each standalone source draws its own bones; only
+      // the FIRST visible source draws the name labels, so stacking layers never doubles them.
+      let labeled = false;
+      if (this.gtVisible) { this.drawSourceLayer("gt", true, !labeled); labeled = true; }
+      if (this.detectedVisible) { this.drawSourceLayer("detected", true, !labeled); labeled = true; }
+      // The standalone projected layer draws in the limb palette (dashed), not amber -- the
+      // amber `latent` styling is reserved for the disagreement ghost under the combined skeleton.
+      if (this.projectedVisible && this.latent) this.drawSourceLayer("projected", true, !labeled);
     }
     // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
     // the rest of draw()).
     if (this.marquee) this.drawMarquee();
   }
 
-  // The Shift+drag rubber-band: a translucent cyan rectangle in CSS px.
+  // The modifier+drag rubber-band: a translucent rectangle in CSS px. Cyan for a fresh
+  // selection (Shift+drag), lime with a "+" badge when it adds to the selection
+  // (Ctrl/⌘-drag) -- the same colour the "adding" cursor/pill affordance uses.
   drawMarquee() {
     const m = /** @type {{x0:number,y0:number,x1:number,y1:number}} */ (this.marquee);
     const x = Math.min(m.x0, m.x1);
@@ -492,11 +583,18 @@ export class PoseView {
     const w = Math.abs(m.x1 - m.x0);
     const h = Math.abs(m.y1 - m.y0);
     const ctx = this.ctx;
-    ctx.fillStyle = MARQUEE_FILL;
+    const add = this.marqueeAdditive;
+    ctx.fillStyle = add ? MARQUEE_ADD_FILL : MARQUEE_FILL;
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = MARQUEE_STROKE;
+    ctx.strokeStyle = add ? MARQUEE_ADD_STROKE : MARQUEE_STROKE;
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, w, h);
+    if (add) {
+      ctx.fillStyle = MARQUEE_ADD_STROKE;
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.textBaseline = "top";
+      ctx.fillText("+", x + 3, y + 2);
+    }
   }
 
   // The effective drawn position of joint `i`: the observed/authored pixel (ground
@@ -519,6 +617,31 @@ export class PoseView {
   pointSource(i) {
     if (this.fixed != null && i < this.fixed.length && this.fixed[i]) return "gt";
     return this.pts[i] ? "prediction" : "projection";
+  }
+
+  // Which joints carry an observed pixel (ground truth or a detection) in this view. Used
+  // to trim the projected source's under-glow to the bones that actually disagree with the
+  // combined skeleton -- a bone whose two ends are both unobserved is drawn by the skeleton
+  // itself at the very same reprojected positions, so ghosting it too is pure redundancy.
+  /** @returns {boolean[]} */
+  observedMask() {
+    const mask = new Array(this.pts.length);
+    for (let i = 0; i < this.pts.length; i++) mask[i] = this.pts[i] != null;
+    return mask;
+  }
+
+  // The positions of a single point source: ground truth is the authored pixel (held in
+  // `pts`) wherever the GT flag is set; detected is the raw detector pixel; projected is
+  // the 3D reprojection (`latent`). Null where the source has no point in this view.
+  /** @param {"gt" | "detected" | "projected"} kind @returns {(Point | null)[]} */
+  sourcePositions(kind) {
+    if (kind === "detected") return this.detected || [];
+    if (kind === "projected") return this.latent || [];
+    const out = new Array(this.pts.length).fill(null);
+    for (let i = 0; i < this.pts.length; i++) {
+      if (this.fixed && this.fixed[i] && this.pts[i]) out[i] = this.pts[i];
+    }
+    return out;
   }
 
   // The unified editable skeleton: the colored bones (a bone touching the hovered joint
@@ -600,6 +723,81 @@ export class PoseView {
     }
   }
 
+  // One point source drawn as its own layer, at that source's own positions, in the limb
+  // palette -- the same marker vocabulary the combined skeleton uses, so a source reads the
+  // same whether it is merged in or inspected on its own:
+  //   ground truth -> a filled palette disc under a bold lime ring
+  //   detected     -> a filled palette disc (faded by the detector's confidence) under a thin dark ring
+  //   projected    -> a hollow palette ring (no fill), with DASHED palette bones (the "derived, not
+  //                   observed" cue -- the same dash the reprojection uses, but in the palette rather
+  //                   than a flat amber, so it reads limb-by-limb like every other layer)
+  // `withBones` draws the bones between two present points (on for a standalone layer; off when
+  // overlaid on the combined skeleton, which already carries the bones). `withLabels` draws the
+  // per-joint name labels -- only one layer should, so the combined skeleton owns them when it
+  // is shown, and only the first visible standalone source owns them otherwise (no doubling).
+  // These layers are read-only, so their markers do NOT hover-scale (unlike the combined
+  // skeleton) -- a fixed size avoids a stale cross-view hover leaving a lone marker enlarged.
+  /** @param {"gt" | "detected" | "projected"} kind @param {boolean} withBones @param {boolean} withLabels */
+  drawSourceLayer(kind, withBones, withLabels) {
+    const ctx = this.ctx;
+    const pos = this.sourcePositions(kind);
+    const projected = kind === "projected";
+    if (withBones) {
+      ctx.save();
+      ctx.lineWidth = BONE_WIDTH;
+      if (projected) ctx.setLineDash([5, 3]);
+      for (const [a, b] of this.bones) {
+        const pa = pos[a];
+        const pb = pos[b];
+        if (!pa || !pb) continue;
+        const [ax, ay] = this.toCanvas(pa[0], pa[1]);
+        const [bx, by] = this.toCanvas(pb[0], pb[1]);
+        ctx.strokeStyle = this.colors[a] || "#fff";
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    for (let i = 0; i < pos.length; i++) {
+      const p = pos[i];
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const r = POINT_RADIUS_PX; // read-only layer: fixed size, no hover-scale
+      // FILL: gt/detected get a filled palette disc (a detection fades with confidence);
+      // projected is left hollow, matching the combined skeleton's derived-point marker.
+      if (!projected) {
+        let fillAlpha = 1;
+        if (kind === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
+          fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
+        }
+        ctx.globalAlpha = fillAlpha;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = this.colors[i] || "#fff";
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // RING: ground truth = bold lime; projected = its own limb colour (its only mark);
+      // detected = a thin dark ring.
+      if (kind === "gt") {
+        ctx.strokeStyle = FIXED_COLOR;
+        ctx.lineWidth = 2.5;
+      } else if (projected) {
+        ctx.strokeStyle = this.colors[i] || "#fff";
+        ctx.lineWidth = 2;
+      } else {
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1;
+      }
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      if (this.labelsVisible && withLabels) this.drawLabel(i, cx, cy, r);
+    }
+  }
+
   // A reference overlay (latent or NMF) as a receding under-glow beneath the editable
   // skeleton: a soft, translucent, wider skeleton in the overlay's colour whose only
   // job is to give the reference's overall shape without competing with the palette on
@@ -610,8 +808,10 @@ export class PoseView {
    * @param {Point[]} pts  the reference points to draw
    * @param {string} rgb  the overlay's "r,g,b" colour
    * @param {boolean} ghost  true = soft under-glow; false = bright, on its own
+   * @param {boolean[]} [observed]  ghost only: draw a bone only when at least one endpoint
+   *   is observed here, so the under-glow doesn't retrace the skeleton's own projected points
    */
-  drawReference(pts, rgb, ghost) {
+  drawReference(pts, rgb, ghost, observed) {
     const ctx = this.ctx;
     ctx.save();
     if (ghost) {
@@ -626,6 +826,7 @@ export class PoseView {
         const pa = pts[a];
         const pb = pts[b];
         if (!pa || !pb) continue;
+        if (observed && !observed[a] && !observed[b]) continue;
         const [ax, ay] = this.toCanvas(pa[0], pa[1]);
         const [bx, by] = this.toCanvas(pb[0], pb[1]);
         ctx.moveTo(ax, ay);
@@ -862,14 +1063,17 @@ export class PoseView {
     this.downY = my;
     this.moved = false;
     const [ix, iy] = this.toImage(mx, my);
-    const canGrab = this.editable && this.overlayVisible;
+    const canGrab = this.editable && this.combinedVisible;
+    const addMod = e.ctrlKey || e.metaKey; // Ctrl/Cmd = add to the selection
 
-    // Shift + primary button is multi-select: a drag rubber-bands, a click toggles one
-    // point. Both are resolved on release (onPointerUp), so here we just arm the marquee
-    // and swallow the event -- it must neither move a point nor pan.
-    if (e.button === 0 && e.shiftKey && canGrab) {
+    // A modifier + primary button is multi-select, resolved on release (onPointerUp):
+    // Shift replaces the selection with what the gesture picks, Ctrl/Cmd adds to it. A
+    // drag rubber-bands a region; a click (no drag) picks the single hit point. Here we
+    // just arm the marquee and swallow the event -- it must neither move a point nor pan.
+    if (e.button === 0 && (e.shiftKey || addMod) && canGrab) {
       e.preventDefault();
       this.marqueeing = true;
+      this.marqueeAdditive = addMod;
       this.marquee = { x0: mx, y0: my, x1: mx, y1: my };
       this.canvas.setPointerCapture(e.pointerId);
       return;
@@ -878,10 +1082,12 @@ export class PoseView {
     const point = canGrab ? this.nearestPoint(ix, iy) : null;
 
     if (point !== null) {
-      // Right-click toggles the point's fixed flag, no drag.
+      // Right-click confirms/clears the point's ground truth, no drag. Don't collapse an
+      // existing multi-selection: only re-select the point when it isn't already selected
+      // here, so right-clicking one of several selected joints toggles it in place.
       if (e.button === 2) {
         e.preventDefault();
-        this.cb.onSelect(this.viewIndex, point, false);
+        if (!this.selectionSet.has(point)) this.cb.onSelect(this.viewIndex, point, false);
         this.cb.onToggleFixed(this.viewIndex, point);
         return;
       }
@@ -951,7 +1157,7 @@ export class PoseView {
     }
 
     // Idle: report hover so the app can emphasize this joint in every view.
-    if (this.editable && this.overlayVisible) {
+    if (this.editable && this.combinedVisible) {
       const [ix, iy] = this.toImage(mx, my);
       const point = this.nearestPoint(ix, iy);
       if (point !== this._hover) {
@@ -969,17 +1175,24 @@ export class PoseView {
       this.marqueeing = false;
       const rect = this.marquee;
       this.marquee = null;
-      const canGrab = this.editable && this.overlayVisible;
+      const additive = this.marqueeAdditive; // Ctrl/Cmd = add; Shift = replace
+      const canGrab = this.editable && this.combinedVisible;
       if (this.moved && rect) {
-        // A genuine rubber-band: add every enclosed joint (rect corners -> image space).
+        // A genuine rubber-band: Shift replaces the selection with the enclosed joints,
+        // Ctrl/Cmd adds them (rect corners -> image space).
         const [ax, ay] = this.toImage(rect.x0, rect.y0);
         const [bx, by] = this.toImage(rect.x1, rect.y1);
-        this.cb.onSelectRegion(this.viewIndex, this.pointsInRect(ax, ay, bx, by), true);
-      } else if (canGrab) {
-        // Shift+click without a drag: toggle the single hit joint in the selection.
+        this.cb.onSelectRegion(this.viewIndex, this.pointsInRect(ax, ay, bx, by), additive);
+      } else if (canGrab && e.type !== "pointercancel") {
+        // A modifier+click without a drag: Ctrl/Cmd toggles the single hit joint in the
+        // selection; Shift selects just it (or, on empty space, clears the selection). A
+        // pointercancel (the browser aborted the captured press -- focus loss, a competing
+        // gesture) is not a deliberate click, so it must neither toggle nor clear (mirrors
+        // the pan branch below).
         const [ix, iy] = this.toImage(...this.cssXY(e));
         const point = this.nearestPoint(ix, iy);
-        if (point !== null) this.cb.onSelect(this.viewIndex, point, true);
+        if (point !== null) this.cb.onSelect(this.viewIndex, point, additive);
+        else if (!additive) this.cb.onBackground();
       }
       this.draw();
       return;
@@ -1004,6 +1217,10 @@ export class PoseView {
       e.preventDefault();
       this.panning = false;
       this.canvas.style.cursor = this.zoomable ? "grab" : "default";
+      // A press on empty space that never moved is a click on the background: clear the
+      // selection. A real pan (moved past the threshold) leaves the selection alone, and
+      // a pointercancel (the browser took over) must not be read as a deliberate click.
+      if (!this.moved && e.type !== "pointercancel") this.cb.onBackground();
     }
   }
 
@@ -1015,19 +1232,55 @@ export class PoseView {
     }
   }
 
-  /** @param {WheelEvent} e */
+  /**
+   * Wheel input drives both zoom and pan, split by device:
+   *   - mouse wheel (or Ctrl+wheel)  -> zoom toward the cursor at WHEEL_ZOOM_RATE
+   *   - trackpad pinch (a wheel with ctrlKey the browser synthesizes) -> zoom, but at the
+   *     higher PINCH_ZOOM_RATE, since a pinch's per-event delta is tiny
+   *   - trackpad two-finger scroll, once zoomed in -> pan both axes (content-grab)
+   * The device is classified once per wheel burst (see the fields' note) so a fast scroll
+   * flick never briefly reads as a mouse wheel and zooms. Pan is gated on zoom > 1: at the
+   * fit there is nothing to pan to, so a scroll there zooms instead -- which also keeps a
+   * mouse wheel wrongly classified as a trackpad (small-delta / hi-res mice) from dead-ending
+   * with no way to zoom in.
+   * @param {WheelEvent} e
+   */
   onWheel(e) {
     if (!this.zoomable) return;
     e.preventDefault();
+    if (e.timeStamp - this._lastWheelTime > WHEEL_BURST_GAP_MS) {
+      this._wheelIsTrackpad = looksLikeTrackpad(e);
+    }
+    this._lastWheelTime = e.timeStamp;
+    // A trackpad two-finger scroll (classified trackpad, no ctrlKey) pans -- but only when
+    // zoomed in; otherwise it falls through to the zoom path below (see the doc note).
+    if (this._wheelIsTrackpad && !e.ctrlKey && this.zoom > 1) {
+      this.panByScroll(e.deltaX, e.deltaY);
+      return;
+    }
+    // Zoom toward the cursor. A trackpad pinch's tiny pixel delta gets the higher gain; a
+    // mouse wheel (or Ctrl+wheel, a big or line-mode delta) keeps the notch rate.
     const [mx, my] = this.cssXY(e);
+    const pinch = e.deltaMode === 0 && Math.abs(e.deltaY) < WHEEL_NOTCH_MIN;
+    this.zoomAtCursor(mx, my, e.deltaY, pinch ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE);
+  }
+
+  /**
+   * Zoom toward a cursor point, keeping the image pixel under it fixed. Snaps back to the
+   * letterboxed fit when the zoom would drop to <= 1x.
+   * @param {number} mx  cursor CSS x
+   * @param {number} my  cursor CSS y
+   * @param {number} deltaY  wheel delta (negative = zoom in)
+   * @param {number} rate  delta -> zoom-factor gain
+   */
+  zoomAtCursor(mx, my, deltaY, rate) {
     const z0 = this.zoom;
-    let z1 = Math.min(MAX_ZOOM, Math.max(1, z0 * Math.exp(-e.deltaY * WHEEL_ZOOM_RATE)));
+    const z1 = Math.min(MAX_ZOOM, Math.max(1, z0 * Math.exp(-deltaY * rate)));
     if (z1 === z0) return;
     if (z1 <= 1.0001) {
       this.resetZoom(); // snap cleanly back to the letterboxed fit
       return;
     }
-    // Keep the image point under the cursor fixed while the zoom changes.
     const [ix, iy] = this.toImage(mx, my);
     const newScale = this.fitScale * z1;
     this.zoom = z1;
@@ -1037,16 +1290,32 @@ export class PoseView {
     this.draw();
   }
 
+  /**
+   * Pan the view by a trackpad two-finger scroll, content-grab style: the image tracks the
+   * fingers (matching the grab-drag), 1:1 in CSS px -- pan is applied in CSS px on top of
+   * the fit, so the mapping holds at any zoom. onWheel only routes here when zoomed in (at
+   * the fit a scroll is sent to zoom instead); the guard below is a defensive backstop.
+   * @param {number} dx  scroll delta x, CSS px
+   * @param {number} dy  scroll delta y, CSS px
+   */
+  panByScroll(dx, dy) {
+    if (this.zoom <= 1) return;
+    this.panX -= dx;
+    this.panY -= dy;
+    this.applyTransform();
+    this.draw();
+  }
+
   /** @param {MouseEvent} e */
   onDblClick(e) {
     // Double-clicking a joint selects that keypoint across every view (a fast way to
     // act on one point everywhere); double-clicking empty space resets the zoom.
-    if (this.editable && this.overlayVisible) {
+    if (this.editable && this.combinedVisible) {
       const [ix, iy] = this.toImage(...this.cssXY(e));
       const point = this.nearestPoint(ix, iy);
       if (point !== null) {
         e.preventDefault();
-        this.cb.onSelectKeypointAllViews(point, e.shiftKey);
+        this.cb.onSelectKeypointAllViews(point, e.ctrlKey || e.metaKey);
         return;
       }
     }

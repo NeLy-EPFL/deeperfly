@@ -119,4 +119,14 @@
  * @property {number} [seq]  monotonic id stamped by App.sendEdit; echoed in the reply
  */
 
+/**
+ * The role handshake the server pushes over the edit socket: whether this browser
+ * may edit the shared session (writer) or is read-only (reader) because another
+ * browser already holds the writer slot. Only one connected browser edits at a time.
+ * @typedef {object} RoleMessage
+ * @property {"role"} type
+ * @property {"writer" | "reader"} role
+ * @property {number} clients  how many browsers are currently connected
+ */
+
 export {};

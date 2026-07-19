@@ -4,9 +4,32 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>deeperfly gui</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <!-- Browser-tab icon (the deeperfly logo). The .ico is declared FIRST and lives
+         at the root path deliberately: Safari renders ICO but not SVG favicons, and
+         when the first <link> is an SVG it can't use it does NOT fall back to a later
+         <link> -- it draws a letter placeholder ("L" for localhost) instead. Root
+         /favicon.ico is also the path Safari probes automatically. Chrome/Firefox
+         still prefer the scalable SVG regardless of order, so they get the crisp
+         hi-DPI version.
+         The .ico + apple-touch-icon are full-bleed teal tiles (the logo's disc
+         colour extended to the edges) rather than a bare circle: Safari draws every
+         favicon on its own rounded background chip, and a circle leaves an ugly
+         light box around it -- filling to the edges makes it a clean tile that fills
+         the chip, the way Apple's icon does. The SVG stays a circle because
+         Chrome/Firefox add no chip, so the circle reads cleanly there. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/static/styles.css?v=__ASSET_V__" />
   </head>
   <body>
+    <!-- Shown when another browser already holds the single editing (writer) slot:
+         this tab is read-only (no edits leave it, edit affordances disabled) until
+         it takes over or the writer disconnects. Panning/zooming to inspect stays. -->
+    <div id="readonly-banner" class="readonly-banner" role="status" hidden>
+      <span class="ro-msg">Read-only — another operator is editing this session.</span>
+      <button id="readonly-takeover" type="button" class="ro-takeover">Take over editing</button>
+    </div>
     <div id="app">
       <div id="main">
         <div id="views">
@@ -19,35 +42,67 @@
             <input id="frame-number" type="number" title="Current frame — type a number to jump there" />
             <span id="frame-total"></span>
           </div>
-          <div class="control-row">
-            <div class="field" id="layout-wrap" title="Camera arrangement — Focus shows one big view plus thumbnails; Grid shows every camera equally (keys f / g)">Layout <div id="layout-switch" class="segmented"></div></div>
-            <span class="sep"></span>
-            <label title="Show the editable skeleton overlay (s)"><input id="show-skeleton" type="checkbox" checked /> Skeleton</label>
-            <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> Labels</label>
-            <label id="latent-wrap" title="Show the triangulated 3D estimate: a faint amber glow under the skeleton, with a leash marking where it pulls each point away from where you placed it (p)"><input id="show-latent" type="checkbox" /><span class="swatch swatch-latent"></span> 3D estimate</label>
-            <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> NMF skeleton</label>
-            <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> NMF mesh</label>
-            <span class="sep"></span>
-            <div class="field" id="point-status" title="The one selected point's state in its view — click a chip to change it (or press o to occlude)" hidden>
+          <!-- The toolbar reads as intentional clusters purely through spacing: each
+               .ctl-group packs its controls tight (6px), while the row spaces the groups
+               wide apart (20px) -- so there are no divider elements to dangle when a group
+               is hidden at runtime (single camera hides the Grid/Focus segment; no-3D/no-NMF
+               hide overlay toggles). The single .spacer splits the left work area (view
+               toggles · annotate · history) from the right utilities (panels · session). -->
+          <div class="control-row toolbar-row">
+            <!-- Camera arrangement + view controls, collapsed behind one "Layout" button
+                 (mirrors "Show"): a popover, opening upward, holding the Grid/Focus
+                 arrangement and a "Reset view" action. The Grid/Focus segment is hidden for
+                 a single camera (no arrangement to choose), but the menu itself stays --
+                 Reset view still helps on one (zoomable) camera. The f / g / [ / ] and 0
+                 keys are the fast path; the menu is the discoverable one. -->
+            <div class="ctl-group popover-wrap" id="layout-wrap">
+              <button id="layout-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Camera arrangement + view — Grid / Focus (f / g), step focus ([ / ]), and reset zoom &amp; pan on every camera (0)">Layout <span class="caret">▾</span></button>
+              <div id="layout-menu" class="popover-menu" role="menu" hidden>
+                <div class="pm-section" id="layout-arrange-section">Arrangement</div>
+                <div class="pm-row" id="layout-arrange-row"><div id="layout-switch" class="segmented"></div></div>
+                <div class="pm-section">View</div>
+                <button type="button" id="reset-view" class="pm-btn" title="Reset zoom &amp; pan on every camera back to the tight fit (0)">Reset view <kbd>0</kbd></button>
+              </div>
+            </div>
+            <!-- The overlay toggles collapse behind one "Show" button: a popover that opens
+                 upward (the bar sits at the screen's bottom edge). Each overlay keeps its
+                 own keyboard shortcut, which is the fast path -- the menu is the
+                 discoverable one. The rows keep their ids (show-*, *-wrap) so app.js binds
+                 them unchanged and still display:none's the 3D/NMF rows when absent. -->
+            <div class="ctl-group popover-wrap" id="show-wrap">
+              <button id="show-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Show / hide the view layers (keyboard: n Names · s Combined · p Projected · m NMF skeleton · Shift+M NMF mesh)">Show <span class="caret">▾</span></button>
+              <div id="show-menu" class="popover-menu" role="menu" hidden>
+                <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> <span class="pm-name">Names</span> <kbd>n</kbd></label>
+                <div class="pm-section">Point sources</div>
+                <label title="The combined skeleton: one integrated pose, each joint picked by precedence — ground truth, else detected, else projected. The only editable layer (s)"><input id="show-combined" type="checkbox" checked /> <span class="pm-name">Combined</span> <kbd>s</kbd></label>
+                <label id="gt-wrap" title="Show the full set of ground-truth points you have authored (filled disc + lime ring)"><input id="show-gt" type="checkbox" /><span class="mk mk-inline m-gt"></span> <span class="pm-name">Ground truth</span></label>
+                <label id="detected-wrap" title="Show the full set of raw detector predictions (filled disc that fades with confidence + thin dark ring)"><input id="show-detected" type="checkbox" /><span class="mk mk-inline m-pred"></span> <span class="pm-name">Detected</span></label>
+                <label id="projected-wrap" title="Show the 3D reprojection: on its own a dashed skeleton in the limb palette (hollow rings); under the combined skeleton a faint glow + a leash to where it pulls each observed point (p)"><input id="show-projected" type="checkbox" /><span class="mk mk-inline m-proj"></span> <span class="pm-name">Projected</span> <kbd>p</kbd></label>
+                <div class="pm-section" id="reference-section">Reference</div>
+                <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> <span class="pm-name">NMF skeleton</span> <kbd>m</kbd></label>
+                <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">NMF mesh</span> <kbd>⇧M</kbd></label>
+              </div>
+            </div>
+            <div class="ctl-group annot-card" id="point-status" title="The selected point(s): click a chip to set the whole selection's state — Ground truth (Enter) or Projected (o) — or Reset (r) to clear the labels back to the detector. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear. Hover a point to peek at its name + state.">
               <span id="point-status-name" class="point-status-name">—</span>
               <div id="point-status-states" class="segmented"></div>
+              <button id="act-reset" title="Reset the selection — clear the labels back to the detector (r)" disabled>↺ Reset</button>
             </div>
-            <div class="field selection-group" title="Select points — click, Shift+click to add/remove, double-click a point for all views, Shift+drag a box; a = all, v = this view, Esc clears — then act on them">Selection
-              <span id="sel-count" class="sel-count">0 points</span>
-              <button id="act-confirm" title="Confirm the selection as ground truth (Enter)" disabled>Confirm</button>
-              <button id="act-reset" title="Reset the selection — clear labels back to the prediction (r)" disabled>Reset</button>
-              <button id="act-occlude" title="Occlude the selection — mark it unreadable in that view (o)" disabled>Occlude</button>
+            <div class="ctl-group">
+              <button id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>
+              <button id="redo" title="Redo (Ctrl/Cmd+Y)" disabled>↷</button>
             </div>
             <span class="spacer"></span>
-            <button id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>
-            <button id="redo" title="Redo (Ctrl/Cmd+Y)" disabled>↷</button>
-            <button id="keypoints" title="Reference: where each keypoint sits on the fly — opens in a new tab (k)">Keypoints ↗</button>
-            <button id="frames-toggle" title="Show / hide the list of frames you have labelled (j)">Labels <span id="frames-count" class="count-badge">0</span></button>
-            <button id="cameras" title="Show the 3D view — cameras, 3D pose, NMF skeleton + mesh (c)">3D view</button>
-            <button id="help" title="Show the legend and keyboard shortcuts (?)">?</button>
-            <span id="status"></span>
-            <button id="save" title="Save the ground-truth labels (Ctrl/Cmd+S)">Save</button>
-            <button id="close-editor" title="Stop the server and close the editor">Close</button>
+            <div class="ctl-group">
+              <button id="frames-toggle" title="Show / hide the list of frames you have labelled (j)">Labels <span id="frames-count" class="count-badge">0</span></button>
+              <button id="cameras" title="Show the 3D scene — cameras, 3D pose, NMF skeleton + mesh (c)">3D scene</button>
+              <button id="help" title="Help — the labeling guide, keypoint colours, and keyboard shortcuts (?)">Help</button>
+            </div>
+            <div class="ctl-group">
+              <span id="status"></span>
+              <button id="save" title="Save the ground-truth labels (Ctrl/Cmd+S)">Save</button>
+              <button id="close-editor" title="Stop the server and close the editor">Close</button>
+            </div>
           </div>
         </div>
       </div>
@@ -73,6 +128,12 @@
         </div>
       </aside>
     </div>
+
+    <!-- Live "adding to selection" affordance: a floating pill shown (via body.adding)
+         only while the add-modifier is held with the pointer over the views, so the
+         "Ctrl/⌘ = add" convention is taught at the moment a click/drag would add. The
+         key glyph is filled in OS-correctly by app.js (applyOsHints). -->
+    <div id="add-hint" class="add-hint" aria-hidden="true"><kbd id="add-hint-key">Ctrl</kbd> <span>Add to selection</span></div>
 
     <div id="close-overlay" class="overlay" hidden>
       <div class="modal">
@@ -108,7 +169,7 @@
          bar to move it; drag its bottom-right corner to resize. -->
     <div id="scene-overlay" class="scene-panel" hidden>
       <div id="scene-head" class="modal-head">
-        <span>3D view</span>
+        <span>3D scene</span>
         <div id="scene-toggles" class="scene-toggles">
           <label title="Show the world origin (X / Y / Z axes at 0, 0, 0)"><input id="scene-axes" type="checkbox" checked /> Origin</label>
           <label title="Show the camera rig (each camera as an RGB axis triad)"><input id="scene-cameras" type="checkbox" checked /> Cameras</label>
@@ -124,6 +185,6 @@
       <div class="modal-foot">Drag the title bar to move · drag the corner to resize · inside: orbit · Shift/right-drag to pan · scroll to zoom · double-click to reframe</div>
     </div>
 
-    <script type="module" src="/static/app.js"></script>
+    <script type="module" src="/static/app.js?v=__ASSET_V__"></script>
   </body>
 </html>
