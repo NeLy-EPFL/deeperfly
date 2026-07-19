@@ -564,8 +564,9 @@ mesh_hide = ["wings"]
 # fps * speed; 0.5 = slow motion) -- globally or per video, the per-video value
 # winning. With neither, a video plays at the recording's own detected rate.
 #
-# Draw-op kwargs (point_radius, line_thickness, scale, palette, ...) merge across
-# three levels, each keyed by the `plot` op name, most specific winning:
+# Draw-op kwargs (point_radius, line_thickness, outline_thickness, scale, palette,
+# ...) merge across three levels, each keyed by the `plot` op name, most specific
+# winning:
 # `[visualization.kwargs]` (every video), a `kwargs` table on a video entry (that
 # video), and extra keys on a single panel.
 #
@@ -583,6 +584,9 @@ background = "black"
 # `[gui].mesh_hide`.)
 mesh_hide = ["wings"]
 
+# skeleton joints draw as a solid outline ring whose fill opacity is the detector
+# confidence (0..1, verbatim), so a low-confidence joint fades to just its ring
+# instead of vanishing. Set `outline_thickness = 0` for the old fill-only markers.
 [visualization.kwargs]
 imshow      = { width = 480, height = 240 }
 skeleton_2d = { line_thickness = 2, width = 480, height = 240 }

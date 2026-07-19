@@ -193,25 +193,39 @@ def _colors_u8(skeleton: "Skeleton", palette: dict[str, str] | None) -> np.ndarr
 
 
 def _draw_point(
-    canvas: np.ndarray, center: tuple[int, int], radius: int, color: Color, alpha: float
+    canvas: np.ndarray,
+    center: tuple[int, int],
+    radius: int,
+    color: Color,
+    alpha: float,
+    outline_thickness: int = 1,
 ) -> None:
-    """Filled anti-aliased circle, alpha-blended over its bounding ROI."""
-    if alpha >= 1.0:
-        cv2.circle(canvas, center, radius, color, -1, cv2.LINE_AA)
-        return
-    if alpha <= 0.0:
-        return
+    """A joint marker: a solid outline ring with an alpha-blended fill.
+
+    The outline is always stroked at full opacity so the joint stays locatable no
+    matter how faint the fill; ``alpha`` (the raw confidence, used verbatim in
+    ``[0, 1]``) sets only the fill's opacity. With ``alpha >= 1`` the fill is
+    fully opaque; with ``alpha <= 0`` only the ring shows. ``outline_thickness <=
+    0`` drops the ring (fill only -- the pre-outline behavior).
+    """
     x, y = center
-    r = radius + 1
     height, width = canvas.shape[:2]
-    x0, y0 = max(x - r, 0), max(y - r, 0)
-    x1, y1 = min(x + r + 1, width), min(y + r + 1, height)
-    if x0 >= x1 or y0 >= y1:
-        return
-    roi = canvas[y0:y1, x0:x1]
-    overlay = roi.copy()
-    cv2.circle(overlay, (x - x0, y - y0), radius, color, -1, cv2.LINE_AA)
-    cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0.0, dst=roi)
+    a = float(min(max(alpha, 0.0), 1.0))
+    # Fill: solid when fully confident, else alpha-blended over its bounding ROI.
+    if a >= 1.0:
+        cv2.circle(canvas, center, radius, color, -1, cv2.LINE_AA)
+    elif a > 0.0:
+        r = radius + 1
+        x0, y0 = max(x - r, 0), max(y - r, 0)
+        x1, y1 = min(x + r + 1, width), min(y + r + 1, height)
+        if x0 < x1 and y0 < y1:
+            roi = canvas[y0:y1, x0:x1]
+            overlay = roi.copy()
+            cv2.circle(overlay, (x - x0, y - y0), radius, color, -1, cv2.LINE_AA)
+            cv2.addWeighted(overlay, a, roi, 1.0 - a, 0.0, dst=roi)
+    # Outline: full-opacity ring, drawn last so a faint/empty fill still reads.
+    if outline_thickness > 0:
+        cv2.circle(canvas, center, radius, color, outline_thickness, cv2.LINE_AA)
 
 
 def _draw(
@@ -229,6 +243,7 @@ def _draw(
     point_radius: int,
     line_thickness: int,
     draw_points: bool,
+    outline_thickness: int,
 ) -> np.ndarray:
     """Draw bones then joints, back-to-front when ``depth`` is given."""
     pts = np.asarray(pts, dtype=float)
@@ -265,7 +280,14 @@ def _draw(
         if not finite[n]:
             continue
         alpha = 1.0 if conf is None else float(np.clip(conf[n], 0.0, 1.0))
-        _draw_point(canvas, xy(n), point_radius, tuple(map(int, colors[n])), alpha)  # type: ignore[arg-type]
+        _draw_point(
+            canvas,
+            xy(n),
+            point_radius,
+            tuple(map(int, colors[n])),  # type: ignore[arg-type]
+            alpha,
+            outline_thickness,
+        )
     return canvas
 
 
@@ -282,10 +304,14 @@ def draw_skeleton_2d(
     point_radius: int = 3,
     line_thickness: int = 1,
     draw_points: bool = True,
+    outline_thickness: int = 1,
 ) -> np.ndarray:
     """Draw a single view's 2D joints + bones onto ``canvas`` at ``(x0, y0)``.
 
-    NaN joints (and their bones) are skipped; there is no depth ordering.
+    NaN joints (and their bones) are skipped; there is no depth ordering. Each
+    joint is a solid outline ring whose fill opacity is its ``conf`` (so a
+    low-confidence joint fades to just its ring rather than vanishing); set
+    ``outline_thickness=0`` for the old fill-only markers.
 
     Parameters
     ----------
@@ -301,13 +327,17 @@ def draw_skeleton_2d(
         A uniform factor or ``(sx, sy)`` pair multiplying the pixel coordinates
         (match an ``imshow`` of the same view).
     conf
-        Per-joint confidence ``(P,)`` modulating opacity, or ``None``.
+        Per-joint confidence ``(P,)`` setting each joint's fill opacity, or
+        ``None`` (fully opaque).
     palette
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
     draw_points
         Whether to draw joints (bones are always drawn).
+    outline_thickness
+        Joint outline-ring thickness in pixels (``0`` to draw only the
+        confidence-shaded fill).
 
     Returns
     -------
@@ -329,6 +359,7 @@ def draw_skeleton_2d(
         point_radius=point_radius,
         line_thickness=line_thickness,
         draw_points=draw_points,
+        outline_thickness=outline_thickness,
     )
 
 
@@ -346,11 +377,13 @@ def draw_skeleton_3d(
     point_radius: int = 3,
     line_thickness: int = 1,
     draw_points: bool = True,
+    outline_thickness: int = 1,
 ) -> np.ndarray:
     """Reproject a 3D skeleton into ``camera`` and draw it onto ``canvas``.
 
     Bones and joints are depth-ordered back-to-front; points behind the camera are
-    dropped.
+    dropped. Joints are solid outline rings with a ``conf``-shaded fill (set
+    ``outline_thickness=0`` for the old fill-only markers).
 
     Parameters
     ----------
@@ -368,13 +401,17 @@ def draw_skeleton_3d(
         A uniform factor or ``(sx, sy)`` pair multiplying the projected pixels
         (match an ``imshow`` of the same view).
     conf
-        Per-joint confidence ``(P,)`` modulating opacity, or ``None``.
+        Per-joint confidence ``(P,)`` setting each joint's fill opacity, or
+        ``None`` (fully opaque).
     palette
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
     draw_points
         Whether to draw joints (bones are always drawn).
+    outline_thickness
+        Joint outline-ring thickness in pixels (``0`` to draw only the
+        confidence-shaded fill).
 
     Returns
     -------
@@ -401,4 +438,5 @@ def draw_skeleton_3d(
         point_radius=point_radius,
         line_thickness=line_thickness,
         draw_points=draw_points,
+        outline_thickness=outline_thickness,
     )
