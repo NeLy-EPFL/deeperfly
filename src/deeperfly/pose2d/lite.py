@@ -31,14 +31,30 @@ _PRECISIONS = {"float32": None, "float16": "float16", "bfloat16": "bfloat16"}
 _TORCH_DTYPE = {"float16": "float16", "bfloat16": "bfloat16"}
 
 
-def load_lite(weights: str | None, **kwargs):
-    """Load the TorchScript lite detector + its sidecar meta (mean/std/channels)."""
+def load_lite(weights: str | None, backbone: str | None = None, **kwargs):
+    """Load the TorchScript lite detector + its sidecar meta (mean/std/channels).
+
+    When ``weights`` is empty, auto-provision from the deeperfly weights cache:
+    ``<cache_dir>/<backbone>.ts.pt`` (matching sh8's cached-weights convention).
+    The generic ``deepfly2d_lite`` alias has no backbone, so it requires an
+    explicit ``weights`` path.
+    """
     import torch
 
-    if weights is None or not Path(weights).exists():
+    if not weights:
+        if backbone is None:
+            raise SystemExit(
+                "class 'deepfly2d_lite' is architecture-agnostic and needs an explicit "
+                "'weights' path; use an architecture class (e.g. hrnet_timm) to "
+                "auto-provision from the cache"
+            )
+        from .download import cache_dir
+
+        weights = str(cache_dir() / f"{backbone}.ts.pt")
+    if not Path(weights).exists():
         raise SystemExit(
-            f"no lite detector checkpoint at {weights!r}; point the model's "
-            "'weights' at the exported deepfly2d_lite.ts.pt"
+            f"no lite detector checkpoint at {weights!r}; copy the exported "
+            f"{backbone or ''} deepfly2d_lite.ts.pt there, or set the model's 'weights'"
         )
     module = torch.jit.load(weights, map_location="cpu").eval()
     meta_path = Path(weights).with_suffix("").with_suffix(".meta.json")
