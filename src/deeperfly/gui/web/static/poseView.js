@@ -2,9 +2,9 @@
 // One camera's frame plus its draggable 2D skeleton overlay, on a <canvas>.
 //
 // A port of the old Qt PoseView, grown a few editor conveniences: the frame is
-// drawn fit-to-canvas (letterboxed) and can be zoomed (mouse wheel or trackpad
-// pinch, toward the cursor) and panned (drag on empty space, or a trackpad
-// two-finger scroll). Frames are loaded via `loadFrame`; while a
+// drawn fit-to-canvas (letterboxed) and can be zoomed (any wheel/scroll or trackpad
+// pinch, toward the cursor) and panned (drag on empty space). Frames are loaded via
+// `loadFrame`; while a
 // new one decodes the previous frame stays up *blurred* (a cheap upscaled
 // thumbnail, not a per-frame filter) so scrubbing never flashes black -- the blur
 // reads as "not the live frame yet". The skeleton is drawn in image-pixel
@@ -22,22 +22,29 @@
 // Hovering a joint reports it via `onHover` so the app can emphasize the same point
 // across every view. The app stays in control of what a drag does to the 3D point.
 //
-// Beyond the editable overlay the view can also draw the individual point *sources* as
-// their own layers -- ground truth, the raw detector prediction, and the 3D reprojection
-// ("projected") -- each toggled independently, so the operator can inspect the full set
-// of one source at a time. The editable skeleton is the "Combined" layer: one integrated
-// skeleton that picks each joint by precedence (ground truth > detected > projected). It
-// is the only interactive layer; the source layers are read-only.
+// The view draws the point *sources* as independently toggled layers. GROUND TRUTH is the
+// EDITABLE layer (a filled palette disc under a bold lime ring): whenever it is shown a drag
+// authors GT. DETECTED is the raw detector output (a filled disc, faded by confidence, under a
+// thin dark ring). "COMBINED" is not a visibility switch -- it is a MERGE toggle over GT +
+// Detected: on, the two draw as ONE skeleton (each joint = GT if authored, else the detector's
+// point); off, GT and Detected draw as two separate overlaid skeletons (Detected beneath, the
+// editable GT skeleton on top). The "projected" source is the REPROJECTED SKELETON -- an
+// independent overlay of the full 3D reprojection (hollow rings joined by thick, semi-transparent,
+// DASHED palette edges), its own layer in every mode (it never merges in), so the 3D's opinion of
+// every joint reads at a glance and the gap to a placed pixel is the live disagreement.
 //
-// The view also draws two read-only reference skeletons the app toggles -- the "latent"
-// skeleton (the current 3D estimate reprojected, i.e. the projected source) and the
-// fitted NMF model -- plus per-joint name labels. Shown *with* the combined skeleton, a
-// reference is a faint under-glow *beneath* it (so the limb palette always reads on top)
-// with its *disagreement* against the placed point drawn back on top as a per-joint
-// "leash" that is silent at coincidence and grows with the residual -- so a live 3D drag
-// shows exactly where triangulation is pulling each point. With the combined skeleton
-// toggled off a source/reference instead draws in its own bright, dashed/dotted style so
-// it stays fully visible on its own.
+// GT is editable whenever it is shown. A drag MOVES an existing GT point, or SPAWNS one from a
+// seed -- a detected node or a reprojected hollow point -- and the point reads as GT under the
+// cursor the instant the drag starts (before the server sets its GT flag). See nodeAt / anchorPos
+// / grabCandidates + drawSkeleton. Selection rings, name labels, and hover emphasis are drawn once
+// on top by drawJointOverlay, anchored at the joint's best visible position, so they still read on
+// a joint that has no GT yet (only a detected or projected point).
+//
+// The fitted NMF model is a read-only reference: a faint mint under-glow *beneath* the skeleton
+// (so the limb palette always reads on top) with its *disagreement* against the placed point
+// drawn back on top as a per-joint "leash" -- silent at coincidence, growing with the residual.
+// With the combined skeleton toggled off a source/reference instead draws in its own bright,
+// dashed/dotted style so it stays fully visible on its own.
 //
 // This .js is the source -- no build step; VS Code type-checks it via
 // `// @ts-check` and the JSDoc types.
@@ -65,8 +72,7 @@ const DRAG_THRESHOLD_PX = 3; // movement (screen px) before a press becomes a dr
 const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
 const WHEEL_ZOOM_RATE = 0.0015; // mouse-wheel delta -> zoom factor sensitivity
 const PINCH_ZOOM_RATE = 0.01; // trackpad pinch: a higher gain than the wheel (its per-event delta is tiny) so the pinch tracks the fingers
-const WHEEL_NOTCH_MIN = 50; // |deltaY| (px) at/above which a wheel step reads as a chunky mouse-wheel notch; a trackpad's steps are smaller / fractional / horizontal
-const WHEEL_BURST_GAP_MS = 150; // a quiet gap this long ends a wheel "burst" -- the next event re-classifies the device (mouse vs trackpad)
+const WHEEL_NOTCH_MIN = 50; // |deltaY| (px) below which a step is a tiny one (trackpad pinch or accelerated mouse notch) and gets the higher zoom gain; at/above it's a chunky wheel notch
 const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
 
 // Each joint marker encodes its *source* -- the whole point of the unified editor is
@@ -84,44 +90,30 @@ const MARQUEE_FILL = "rgba(63,208,255,0.12)"; // its translucent fill
 const MARQUEE_ADD_STROKE = "rgba(124,252,0,0.9)"; // Ctrl/⌘-drag = add: lime, matching the add affordance
 const MARQUEE_ADD_FILL = "rgba(124,252,0,0.14)"; // its translucent fill
 
-// The two read-only reference overlays -- the latent 3D reprojection (amber) and the
-// fitted NMF model (mint) -- are drawn UNDERNEATH the editable skeleton, so the
-// limb palette always owns the top layer instead of being painted over. Each is
-// drawn as a soft under-glow skeleton; its overall shape (and where it bends away from
-// the palette) is the ambient signal. Its *disagreement* with the placed point at one
-// joint -- a "leash" from the point to where the reference lands -- is drawn on top
-// only for the joint under the cursor (or being dragged), so the default view stays
-// uncluttered and the difference line appears on demand. Each overlay is identifiable
-// without relying on colour: the editable skeleton is a solid line with a filled disc,
-// the latent a dashed line with a hollow ring, the NMF a dotted line with a hollow square.
-const LATENT_RGB = "255,176,64"; // amber
+// The fitted NMF model is a read-only reference overlay (mint) drawn UNDERNEATH the editable
+// skeleton, so the limb palette always owns the top layer instead of being painted over. It is
+// drawn as a soft under-glow skeleton whose overall shape is the ambient signal, with its
+// *disagreement* with the placed point at one joint -- a "leash" from the point to where the
+// model lands -- drawn on top only for the joint under the cursor (or being dragged), so the
+// default view stays uncluttered and the difference line appears on demand. (The 3D reprojection
+// is instead its own independent overlay, the reprojected skeleton -- see drawReprojection.) On
+// its own, each overlay is identifiable without relying on colour: the editable skeleton is a
+// solid line with a filled disc, the reprojected skeleton a dashed line with hollow rings, the
+// NMF a dotted line with a hollow square.
 const NMF_RGB = "80,230,180"; // mint
-const GHOST_ALPHA = 0.4; // a reference overlay's soft under-glow (a faint halo beneath the palette)
+const GHOST_ALPHA = 0.4; // the NMF reference's soft under-glow (a faint halo beneath the palette)
 const LEASH_MIN_PX = 2.5; // below this editable<->reference screen gap the leash needs no connector line
 const LEASH_FULL_PX = 16; // at/above this gap the reference marker + leash reach full emphasis
 
-/**
- * Guess whether a wheel event came from a trackpad (vs a mouse wheel), from the shape of
- * the first event in a burst. A mouse wheel and a trackpad scroll are indistinguishable
- * *mid-gesture* (a momentum flick's peak deltas rival a mouse notch), so the caller only
- * trusts this at a burst's start, when a trackpad's deltas are still small. Classified by
- * delta shape ONLY -- ctrlKey (a pinch, or Ctrl+wheel) is deliberately NOT a tell here, so a
- * transient ctrlKey can't latch the persistent device flag (releasing Ctrl mid-burst on a
- * Ctrl+mouse-wheel would otherwise flip to panning); onWheel handles ctrlKey as a per-event
- * zoom short-circuit instead, and a real trackpad pinch is still caught by its small delta.
- * Tells:
- *   - line/page delta mode (Firefox mouse wheel) is a mouse
- *   - a horizontal or fractional delta is a trackpad
- *   - a small vertical pixel step is a trackpad; a large one is a mouse-wheel notch
- * @param {WheelEvent} e
- * @returns {boolean}
- */
-function looksLikeTrackpad(e) {
-  if (e.deltaMode !== 0) return false;
-  if (e.deltaX !== 0) return true;
-  if (!Number.isInteger(e.deltaY)) return true;
-  return Math.abs(e.deltaY) < WHEEL_NOTCH_MIN;
-}
+// The reprojected skeleton is its own independent overlay (the "projected" source, toggled on
+// its own -- on by default): the full 3D reprojection in the limb palette -- hollow rings at
+// every reprojected joint joined by THICK, semi-transparent, DASHED edges -- so where
+// triangulation places each joint reads at a glance as a distinct "derived, not observed" layer
+// that never competes with the solid editable skeleton on top. It draws the same way whether or
+// not the combined skeleton is shown. See drawReprojection.
+const PROJ_WIDTH = 5; // reprojected-skeleton bone width (screen px): thick, well above the editable 1.5
+const PROJ_ALPHA = 0.4; // ... and semi-transparent, so the solid editable palette always wins on top
+const PROJ_DASH = [7, 5]; // ... and dashed (screen px on/off), the "derived, not observed" cue
 
 export class PoseView {
   /**
@@ -167,13 +159,18 @@ export class PoseView {
     this.marqueeAdditive = false; // Ctrl/Cmd-drag adds to the selection; Shift-drag replaces it
     this.editable = false;
     this.zoomable = false;
-    // Point-source layer toggles. "Combined" is the integrated editable skeleton
-    // (precedence GT > detected > projected) and the only interactive layer; the three
-    // source layers are read-only. Combined is on by default (the plain editing view).
+    // Point-source layer toggles. Ground truth is the EDITABLE layer: whenever it is
+    // shown a drag authors GT (move a GT point, or spawn one from a detected / projected
+    // seed). "Combined" is no longer a visibility switch -- it is a MERGE toggle over GT +
+    // Detected: on, they draw as ONE skeleton (each joint = GT if authored, else the
+    // detector's point); off, as two separate overlaid skeletons. Projected stays its own
+    // dashed overlay in both modes and never merges in. All four are on by default (the
+    // plain editing view: a merged GT/detected skeleton over the projected reprojection),
+    // kept in sync with the `checked` checkboxes in index.html.
     this.combinedVisible = true;
-    this.gtVisible = false;
-    this.detectedVisible = false;
-    this.projectedVisible = false;
+    this.gtVisible = true;
+    this.detectedVisible = true;
+    this.projectedVisible = true;
     this.nmfVisible = false;
     this.meshVisible = false;
     this.labelsVisible = false;
@@ -212,12 +209,6 @@ export class PoseView {
     this.downY = 0;
     this.panOrigX = 0;
     this.panOrigY = 0;
-    // Wheel-gesture classification: mouse wheel and trackpad look alike mid-gesture, so the
-    // device is decided once at the START of each wheel burst (see looksLikeTrackpad) and
-    // held until a quiet gap starts a new burst -- keeping a momentum flick from flipping
-    // to "mouse" (and zooming) when its peak deltas briefly rival a wheel notch.
-    this._wheelIsTrackpad = false;
-    this._lastWheelTime = 0;
     /** @type {number | null} */
     this._hover = null; // last hover reported, to debounce onHover
 
@@ -415,6 +406,14 @@ export class PoseView {
     this.editable = editable;
   }
 
+  // Whether this view accepts editing gestures right now: it must be an editable (large,
+  // writer-owned) view AND the Ground truth layer must be shown -- GT is the editable layer, so
+  // a drag authors GT and hover/selection are live only while GT is visible. Turning GT off makes
+  // the view inspect-only (pan/zoom still work).
+  get canGrab() {
+    return this.editable && this.gtVisible;
+  }
+
   /** @param {boolean} zoomable  whether wheel-zoom + pan are allowed (large views only) */
   setZoomable(zoomable) {
     if (this.zoomable === zoomable) return;
@@ -422,14 +421,14 @@ export class PoseView {
     if (!zoomable) this.resetZoom(); // thumbnails always show the whole frame
   }
 
-  /** @param {boolean} visible  whether the combined editable skeleton + joints are drawn */
+  /** @param {boolean} visible  merge mode: on = GT + Detected draw as one skeleton, off = two separate skeletons */
   setCombinedVisible(visible) {
     if (this.combinedVisible === visible) return;
     this.combinedVisible = visible;
     this.draw();
   }
 
-  /** @param {boolean} visible  whether the ground-truth source layer is drawn */
+  /** @param {boolean} visible  whether the ground-truth layer is drawn (also the editable layer) */
   setGtVisible(visible) {
     if (this.gtVisible === visible) return;
     this.gtVisible = visible;
@@ -534,40 +533,33 @@ export class PoseView {
       ctx.drawImage(this.meshImg, this.offX, this.offY, dw, dh);
       ctx.globalAlpha = a;
     }
-    // Point-source layers + the read-only reference overlays. With the combined skeleton
-    // shown, the projected source and the NMF model sit UNDERNEATH it as faint under-glows
-    // (so the limb palette owns the top layer), and their disagreement with the placed
-    // point is drawn back on top as an on-demand leash. The ground-truth / detected source
-    // layers, when shown alongside the combined skeleton, draw as markers on top (no bones
-    // -- the combined skeleton already carries the bones). With the combined skeleton
-    // hidden, every checked source draws as its own bright standalone layer instead.
+    // The reprojected skeleton is an independent overlay drawn beneath everything else: the full
+    // 3D reprojection as hollow rings joined by thick, dashed, semi-transparent palette edges
+    // (see drawReprojection). It is its own layer in every mode and never merges in. It owns the
+    // name labels only when it is the sole visible layer -- i.e. neither GT nor Detected is shown
+    // (the joint overlay below claims them otherwise).
+    const anySkeleton = this.gtVisible || this.detectedVisible;
+    const reprojLabels = this.labelsVisible && !anySkeleton;
+    if (this.projectedVisible && this.latent) this.drawReprojection(this.latent, reprojLabels);
+    // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
+    // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
+    if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
+    // The GT / Detected skeleton(s). "Combined" is the merge toggle: on, GT and Detected draw as
+    // ONE skeleton (drawSkeleton picks GT else the detector's point per joint); off, Detected
+    // draws as its own read-only layer underneath and the editable GT skeleton on top (GT reads
+    // on top since it is the layer being edited). drawSkeleton(false) is a no-op when GT is off.
     if (this.combinedVisible) {
-      if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, true);
-      // The projected source under the combined skeleton is the disagreement overlay: skip
-      // the ghost bones that merely retrace the skeleton's own projected points (both ends
-      // unobserved here), then leash only the observed joints on demand.
-      if (this.projectedVisible && this.latent) this.drawReference(this.latent, LATENT_RGB, true, this.observedMask());
-      this.drawSkeleton();
-      // Overlaid on the combined skeleton: markers only (it already draws the bones), and no
-      // labels (it already draws them at the effective position -- drawing again would double).
-      if (this.gtVisible) this.drawSourceLayer("gt", false, false);
-      if (this.detectedVisible) this.drawSourceLayer("detected", false, false);
-      // NMF marks joints undetected in this view (it is the only cue for them); the
-      // projected source does not -- the skeleton already draws those as inline
-      // projection markers, so a bare leash marker there would just double up.
-      if (this.nmfVisible && this.nmf) this.drawLeashes(this.nmf, NMF_RGB, "square", true);
-      if (this.projectedVisible && this.latent) this.drawLeashes(this.latent, LATENT_RGB, "ring", false);
+      this.drawSkeleton(true);
     } else {
-      if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, false);
-      // No combined skeleton to carry them, so each standalone source draws its own bones; only
-      // the FIRST visible source draws the name labels, so stacking layers never doubles them.
-      let labeled = false;
-      if (this.gtVisible) { this.drawSourceLayer("gt", true, !labeled); labeled = true; }
-      if (this.detectedVisible) { this.drawSourceLayer("detected", true, !labeled); labeled = true; }
-      // The standalone projected layer draws in the limb palette (dashed), not amber -- the
-      // amber `latent` styling is reserved for the disagreement ghost under the combined skeleton.
-      if (this.projectedVisible && this.latent) this.drawSourceLayer("projected", true, !labeled);
+      if (this.detectedVisible) this.drawSourceLayer("detected", true, false);
+      this.drawSkeleton(false);
     }
+    // One pass on top of every skeleton for the cross-cutting per-joint marks: selection rings,
+    // name labels, and hover emphasis -- each anchored at the joint's best visible position, so a
+    // selected/hovered joint with no GT yet (only detected / projected) still reads.
+    this.drawJointOverlay();
+    // The NMF's disagreement with the placed point, drawn back on top as an on-demand leash.
+    if (this.nmfVisible && this.nmf && anySkeleton) this.drawLeashes(this.nmf, NMF_RGB, "square", true);
     // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
     // the rest of draw()).
     if (this.marquee) this.drawMarquee();
@@ -597,46 +589,72 @@ export class PoseView {
     }
   }
 
-  // The effective drawn position of joint `i`: the observed/authored pixel (ground
-  // truth or the detector prediction, held in `pts`) when there is one, else the 3D
-  // reprojection (`latent`/proj) as a fallback -- so an occluded or undetected joint
-  // still shows where triangulation places it instead of vanishing.
+  // The authored GT pixel of joint `i` (held in `pts` wherever the GT flag is set), or null.
   /** @param {number} i @returns {Point | null} */
-  effectivePos(i) {
-    const p = this.pts[i];
-    if (p) return p;
-    const proj = this.latent;
-    return proj && i < proj.length ? proj[i] : null;
+  gtPos(i) {
+    return this.fixed && i < this.fixed.length && this.fixed[i] && this.pts[i]
+      ? this.pts[i]
+      : null;
   }
 
-  // The classified source of joint `i`: an authored GT pixel, the detector's prediction
-  // (an observed pixel held in `pts`), or a point derived by reprojecting the 3D (no
-  // observed pixel -- the detector fired nothing here, or the operator occluded the view,
-  // which NaNs the observation out just the same). This is what the marker style encodes.
-  /** @param {number} i @returns {"gt" | "prediction" | "projection"} */
-  pointSource(i) {
-    if (this.fixed != null && i < this.fixed.length && this.fixed[i]) return "gt";
-    return this.pts[i] ? "prediction" : "projection";
+  // The raw detector prediction for joint `i` (the "detected" source), or null.
+  /** @param {number} i @returns {Point | null} */
+  detPos(i) {
+    return this.detected && i < this.detected.length ? this.detected[i] : null;
   }
 
-  // Which joints carry an observed pixel (ground truth or a detection) in this view. Used
-  // to trim the projected source's under-glow to the bones that actually disagree with the
-  // combined skeleton -- a bone whose two ends are both unobserved is drawn by the skeleton
-  // itself at the very same reprojected positions, so ghosting it too is pure redundancy.
-  /** @returns {boolean[]} */
-  observedMask() {
-    const mask = new Array(this.pts.length);
-    for (let i = 0; i < this.pts.length; i++) mask[i] = this.pts[i] != null;
-    return mask;
+  // One joint's node in the *editable* skeleton -- its drawn position + source, or null when
+  // it has no observed pixel to draw here (undetected / occluded; such a joint shows only in
+  // the projected overlay, which never merges in). GT wins over detected. While a joint is
+  // being dragged it is authored as ground truth, so render it as GT under the cursor
+  // immediately -- even before the server sets its GT flag and even if it had no pixel before
+  // (a spawn from a detected / projected seed). `mergeDetected` folds the detector's point in
+  // as the fallback (the "Combined" merge); with it off only GT is drawn.
+  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" } | null} */
+  nodeAt(i, mergeDetected) {
+    if (i === this.dragging && this.moved && this.pts[i]) {
+      return { pos: this.pts[i], src: "gt" };
+    }
+    if (this.gtVisible) {
+      const g = this.gtPos(i);
+      if (g) return { pos: g, src: "gt" };
+    }
+    if (mergeDetected && this.detectedVisible) {
+      const d = this.detPos(i);
+      if (d) return { pos: d, src: "detected" };
+    }
+    return null;
   }
 
-  // The positions of a single point source: ground truth is the authored pixel (held in
-  // `pts`) wherever the GT flag is set; detected is the raw detector pixel; projected is
-  // the 3D reprojection (`latent`). Null where the source has no point in this view.
-  /** @param {"gt" | "detected" | "projected"} kind @returns {(Point | null)[]} */
+  // The best drawn position of joint `i` across the *visible* layers, for anchoring the
+  // selection ring / label / hover emphasis -- so a selected or hovered joint stays marked
+  // even when it has no GT yet (only a detected or projected point). Precedence follows what
+  // the operator sees: GT, then detected, then the projected reprojection. Honours the drag
+  // override (a spawned GT tracks the cursor) so its ring/label follow immediately.
+  /** @param {number} i @returns {Point | null} */
+  anchorPos(i) {
+    if (i === this.dragging && this.moved && this.pts[i]) return this.pts[i];
+    if (this.gtVisible) {
+      const g = this.gtPos(i);
+      if (g) return g;
+    }
+    if (this.detectedVisible) {
+      const d = this.detPos(i);
+      if (d) return d;
+    }
+    if (this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) {
+      return this.latent[i];
+    }
+    return null;
+  }
+
+  // The positions of a single point source: ground truth is the authored pixel (held in `pts`)
+  // wherever the GT flag is set; detected is the raw detector pixel. Null where the source has no
+  // point in this view. (The 3D reprojection is not a source layer here -- it draws as its own
+  // overlay, the reprojected skeleton; see drawReprojection.)
+  /** @param {"gt" | "detected"} kind @returns {(Point | null)[]} */
   sourcePositions(kind) {
     if (kind === "detected") return this.detected || [];
-    if (kind === "projected") return this.latent || [];
     const out = new Array(this.pts.length).fill(null);
     for (let i = 0; i < this.pts.length; i++) {
       if (this.fixed && this.fixed[i] && this.pts[i]) out[i] = this.pts[i];
@@ -644,21 +662,27 @@ export class PoseView {
     return out;
   }
 
-  // The unified editable skeleton: the colored bones (a bone touching the hovered joint
-  // thickens, so hover reads on the whole limb, not just the dot), then each joint drawn
-  // with a marker whose fill + ring encode its source (ground truth / prediction /
-  // derived reprojection). Bones and joints both use the effective position, so a joint
-  // seen only via triangulation still connects into the skeleton.
-  drawSkeleton() {
+  // The editable skeleton: the colored bones (a bone touching the hovered joint thickens, so
+  // hover reads on the whole limb, not just the dot), then each joint drawn with a marker
+  // whose fill + ring encode its source. `mergeDetected` is the "Combined" merge: on, each
+  // joint is GT if authored else the detector's point (one merged skeleton); off, only GT is
+  // drawn (the Detected layer draws separately underneath). A joint with no node here
+  // (undetected, or GT off) is skipped -- it shows only in the projected overlay. Selection
+  // rings and name labels are drawn by drawJointOverlay on top, so they anchor consistently.
+  /** @param {boolean} mergeDetected */
+  drawSkeleton(mergeDetected) {
     const ctx = this.ctx;
     const hi = this.highlight;
-    const n = Math.max(this.pts.length, this.latent ? this.latent.length : 0);
+    const n = Math.max(this.pts.length, this.detected ? this.detected.length : 0);
+    /** @type {({ pos: Point, src: "gt" | "detected" } | null)[]} */
+    const nodes = new Array(n);
+    for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i, mergeDetected);
     for (const [a, b] of this.bones) {
-      const pa = this.effectivePos(a);
-      const pb = this.effectivePos(b);
-      if (!pa || !pb) continue;
-      const [ax, ay] = this.toCanvas(pa[0], pa[1]);
-      const [bx, by] = this.toCanvas(pb[0], pb[1]);
+      const na = nodes[a];
+      const nb = nodes[b];
+      if (!na || !nb) continue;
+      const [ax, ay] = this.toCanvas(na.pos[0], na.pos[1]);
+      const [bx, by] = this.toCanvas(nb.pos[0], nb.pos[1]);
       ctx.strokeStyle = this.colors[a] || "#fff";
       ctx.lineWidth = a === hi || b === hi ? HOVER_BONE_WIDTH : BONE_WIDTH;
       ctx.beginPath();
@@ -667,39 +691,28 @@ export class PoseView {
       ctx.stroke();
     }
     for (let i = 0; i < n; i++) {
-      const p = this.effectivePos(i);
-      if (!p) continue;
-      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const node = nodes[i];
+      if (!node) continue;
+      const [cx, cy] = this.toCanvas(node.pos[0], node.pos[1]);
       const isHover = i === this.highlight;
-      const source = this.pointSource(i);
       const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
-      // FILL: an observed point (ground truth or prediction) gets a filled disc in its
-      // limb palette colour -- a prediction's fill fades with the detector's
-      // confidence, so faint points that want a second look read as faint. A derived
-      // point (reprojected 3D, incl. an occluded view) is left hollow, so an *observed*
-      // point is unmistakably distinct from a *computed* one.
-      if (source !== "projection") {
-        let fillAlpha = 1;
-        if (source === "prediction" && this.conf && i < this.conf.length && this.conf[i] != null) {
-          fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
-        }
-        ctx.globalAlpha = fillAlpha;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.fillStyle = this.colors[i] || "#fff";
-        ctx.fill();
-        ctx.globalAlpha = 1;
+      // FILL: a filled disc in the limb palette colour -- a detected point's fill fades with
+      // the detector's confidence, so faint points that want a second look read as faint.
+      let fillAlpha = 1;
+      if (node.src === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
+        fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
       }
-      // RING: encodes the source. Ground truth gets a bold lime ring; a derived point a
-      // hollow ring in its own limb palette colour (its only mark, since it has no
-      // fill); a prediction a thin dark ring, or a white one under the cursor. Hover
-      // still grows the disc and thickens the bones, so the point stays legible either way.
-      if (source === "gt") {
+      ctx.globalAlpha = fillAlpha;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = this.colors[i] || "#fff";
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // RING: ground truth gets a bold lime ring; a detected point a thin dark ring, or a
+      // white one under the cursor. Hover still grows the disc and thickens the bones.
+      if (node.src === "gt") {
         ctx.strokeStyle = FIXED_COLOR;
         ctx.lineWidth = 2.5;
-      } else if (source === "projection") {
-        ctx.strokeStyle = this.colors[i] || "#fff";
-        ctx.lineWidth = 2;
       } else if (isHover) {
         ctx.strokeStyle = "white";
         ctx.lineWidth = 2;
@@ -710,42 +723,80 @@ export class PoseView {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
-      // A selected joint gets an extra outer ring (this view holds its own subset of
-      // the selection), distinct from every source ring so the two can coexist.
-      if (this.selectionSet.has(i)) {
+    }
+  }
+
+  // One pass on top of every skeleton for the per-joint marks that must anchor consistently
+  // however a joint is drawn: the selection ring, the name label, and hover emphasis. Each is
+  // placed at anchorPos(i) -- GT else detected else projected -- so a selected or hovered joint
+  // still reads even before it has a GT pixel (a fresh detected-only or projected-only joint).
+  // Selection + hover belong to the editable layer (gated on gtVisible); labels ride whenever a
+  // GT/Detected skeleton is shown (else the projected overlay owns them, see draw()).
+  drawJointOverlay() {
+    const anySkeleton = this.gtVisible || this.detectedVisible;
+    const wantLabels = this.labelsVisible && anySkeleton;
+    const wantSel = this.gtVisible && this.selectionSet.size > 0;
+    const hi = this.highlight;
+    const wantHover = this.gtVisible && hi != null;
+    if (!wantLabels && !wantSel && !wantHover) return;
+    const ctx = this.ctx;
+    const n = Math.max(
+      this.pts.length,
+      this.detected ? this.detected.length : 0,
+      this.latent ? this.latent.length : 0,
+    );
+    for (let i = 0; i < n; i++) {
+      const needLabel = wantLabels;
+      const needSel = wantSel && this.selectionSet.has(i);
+      const needHover = wantHover && i === hi;
+      if (!needLabel && !needSel && !needHover) continue;
+      const p = this.anchorPos(i);
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const r = POINT_RADIUS_PX * (i === hi ? HOVER_SCALE : 1);
+      // Hover emphasis for a joint with no interactive node (a detected-only / projected-only
+      // joint the editable skeleton didn't draw) -- so cross-view hover still reads on it. Joints
+      // that have a node already got their hover-scaled marker + white ring in drawSkeleton.
+      if (needHover && !this.nodeAt(i, this.combinedVisible)) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      // A selected joint gets an extra outer ring, distinct from every source ring so the two
+      // can coexist.
+      if (needSel) {
         ctx.beginPath();
         ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
         ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      if (this.labelsVisible) this.drawLabel(i, cx, cy, r);
+      if (needLabel) this.drawLabel(i, cx, cy, r);
     }
   }
 
-  // One point source drawn as its own layer, at that source's own positions, in the limb
-  // palette -- the same marker vocabulary the combined skeleton uses, so a source reads the
-  // same whether it is merged in or inspected on its own:
+  // One point source (ground truth or the raw detections) drawn as its own read-only layer, at
+  // that source's own positions, in the limb palette -- the same marker vocabulary the combined
+  // skeleton uses, so a source reads the same whether it is merged in or inspected on its own:
   //   ground truth -> a filled palette disc under a bold lime ring
   //   detected     -> a filled palette disc (faded by the detector's confidence) under a thin dark ring
-  //   projected    -> a hollow palette ring (no fill), with DASHED palette bones (the "derived, not
-  //                   observed" cue -- the same dash the reprojection uses, but in the palette rather
-  //                   than a flat amber, so it reads limb-by-limb like every other layer)
-  // `withBones` draws the bones between two present points (on for a standalone layer; off when
-  // overlaid on the combined skeleton, which already carries the bones). `withLabels` draws the
-  // per-joint name labels -- only one layer should, so the combined skeleton owns them when it
-  // is shown, and only the first visible standalone source owns them otherwise (no doubling).
-  // These layers are read-only, so their markers do NOT hover-scale (unlike the combined
-  // skeleton) -- a fixed size avoids a stale cross-view hover leaving a lone marker enlarged.
-  /** @param {"gt" | "detected" | "projected"} kind @param {boolean} withBones @param {boolean} withLabels */
+  // (The 3D reprojection is NOT a source layer -- it is the reprojected skeleton, its own overlay;
+  // see drawReprojection.) `withBones` draws the bones between two present points (on for a
+  // standalone layer; off when overlaid on the combined skeleton, which already carries the
+  // bones). `withLabels` draws the per-joint name labels -- only one layer should, so the combined
+  // skeleton owns them when it is shown, and only the first visible standalone source owns them
+  // otherwise (no doubling). These layers are read-only, so their markers do NOT hover-scale
+  // (unlike the combined skeleton) -- a fixed size avoids a stale cross-view hover leaving a lone
+  // marker enlarged.
+  /** @param {"gt" | "detected"} kind @param {boolean} withBones @param {boolean} withLabels */
   drawSourceLayer(kind, withBones, withLabels) {
     const ctx = this.ctx;
     const pos = this.sourcePositions(kind);
-    const projected = kind === "projected";
     if (withBones) {
       ctx.save();
       ctx.lineWidth = BONE_WIDTH;
-      if (projected) ctx.setLineDash([5, 3]);
       for (const [a, b] of this.bones) {
         const pa = pos[a];
         const pb = pos[b];
@@ -765,28 +816,21 @@ export class PoseView {
       if (!p) continue;
       const [cx, cy] = this.toCanvas(p[0], p[1]);
       const r = POINT_RADIUS_PX; // read-only layer: fixed size, no hover-scale
-      // FILL: gt/detected get a filled palette disc (a detection fades with confidence);
-      // projected is left hollow, matching the combined skeleton's derived-point marker.
-      if (!projected) {
-        let fillAlpha = 1;
-        if (kind === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
-          fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
-        }
-        ctx.globalAlpha = fillAlpha;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.fillStyle = this.colors[i] || "#fff";
-        ctx.fill();
-        ctx.globalAlpha = 1;
+      // FILL: a filled palette disc; a detection fades with the detector's confidence.
+      let fillAlpha = 1;
+      if (kind === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
+        fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
       }
-      // RING: ground truth = bold lime; projected = its own limb colour (its only mark);
-      // detected = a thin dark ring.
+      ctx.globalAlpha = fillAlpha;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = this.colors[i] || "#fff";
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // RING: ground truth = bold lime; detected = a thin dark ring.
       if (kind === "gt") {
         ctx.strokeStyle = FIXED_COLOR;
         ctx.lineWidth = 2.5;
-      } else if (projected) {
-        ctx.strokeStyle = this.colors[i] || "#fff";
-        ctx.lineWidth = 2;
       } else {
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
         ctx.lineWidth = 1;
@@ -798,20 +842,71 @@ export class PoseView {
     }
   }
 
-  // A reference overlay (latent or NMF) as a receding under-glow beneath the editable
+  // The reprojected 3D drawn as its own independent overlay: the full reprojected skeleton in the
+  // limb palette -- hollow rings at every reprojected joint joined by thick, semi-transparent,
+  // DASHED edges. It reads as a distinct "derived, not observed" layer beneath the solid editable
+  // skeleton (and stands alone when that is hidden); where a reprojected point sits off its placed
+  // pixel, that gap is the live disagreement. Every joint is shown at once (no hover gating), so a
+  // live 3D drag makes the whole thing track the estimate. Its hollow points double as spawn seeds
+  // -- grabbing one authors a ground-truth point there (see nearestPoint). `withLabels` draws the
+  // per-joint names, on only when this is the sole visible layer (nothing above claims them).
+  /** @param {Point[]} pts  the reprojected points for this view @param {boolean} withLabels */
+  drawReprojection(pts, withLabels) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = PROJ_ALPHA;
+    ctx.lineJoin = "round";
+    ctx.lineWidth = PROJ_WIDTH;
+    ctx.setLineDash(PROJ_DASH);
+    for (const [a, b] of this.bones) {
+      const pa = pts[a];
+      const pb = pts[b];
+      if (!pa || !pb) continue;
+      const [ax, ay] = this.toCanvas(pa[0], pa[1]);
+      const [bx, by] = this.toCanvas(pb[0], pb[1]);
+      ctx.strokeStyle = this.colors[a] || "#fff";
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    // Hollow rings, drawn solid (the dash is the edges' cue, not the nodes').
+    ctx.setLineDash([]);
+    ctx.lineWidth = 2;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      ctx.strokeStyle = this.colors[i] || "#fff";
+      ctx.beginPath();
+      ctx.arc(cx, cy, POINT_RADIUS_PX, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // Labels at full opacity (the overlay itself is translucent, but faint text is unreadable).
+    if (withLabels) {
+      ctx.globalAlpha = 1;
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        if (!p) continue;
+        const [cx, cy] = this.toCanvas(p[0], p[1]);
+        this.drawLabel(i, cx, cy, POINT_RADIUS_PX);
+      }
+    }
+    ctx.restore();
+  }
+
+  // A reference overlay (the NMF model) as a receding under-glow beneath the editable
   // skeleton: a soft, translucent, wider skeleton in the overlay's colour whose only
   // job is to give the reference's overall shape without competing with the palette on
   // top. When `ghost` is false (the editable skeleton is hidden) it instead draws in a
-  // bright, distinct line style -- dashed for the latent, dotted for the NMF -- with
-  // hollow markers, so it stays fully legible as the only thing on screen.
+  // bright, distinct line style -- dotted, with hollow square markers -- so it stays
+  // fully legible as the only thing on screen.
   /**
    * @param {Point[]} pts  the reference points to draw
    * @param {string} rgb  the overlay's "r,g,b" colour
    * @param {boolean} ghost  true = soft under-glow; false = bright, on its own
-   * @param {boolean[]} [observed]  ghost only: draw a bone only when at least one endpoint
-   *   is observed here, so the under-glow doesn't retrace the skeleton's own projected points
    */
-  drawReference(pts, rgb, ghost, observed) {
+  drawReference(pts, rgb, ghost) {
     const ctx = this.ctx;
     ctx.save();
     if (ghost) {
@@ -826,7 +921,6 @@ export class PoseView {
         const pa = pts[a];
         const pb = pts[b];
         if (!pa || !pb) continue;
-        if (observed && !observed[a] && !observed[b]) continue;
         const [ax, ay] = this.toCanvas(pa[0], pa[1]);
         const [bx, by] = this.toCanvas(pb[0], pb[1]);
         ctx.moveTo(ax, ay);
@@ -1002,10 +1096,22 @@ export class PoseView {
     return [(mx - this.offX) / this.scale, (my - this.offY) / this.scale];
   }
 
-  // The joint nearest the pointer within the grab tolerance, or null. Uses the *effective*
-  // drawn position, so a derived (reprojected) point -- a hollow circle with no observed
-  // pixel, drawn at `latent` -- is grabbable just like an observed one; dragging it authors
-  // ground truth at the drop (and un-occludes the view if it was occluded).
+  // The grabbable positions of joint `i`, for hit-testing. A drag on any of them authors ground
+  // truth for that joint: its GT pixel (grabbing it MOVES the GT), its detected point (when the
+  // Detected layer is shown -- grabbing it SPAWNS a GT there), and its reprojected point (when
+  // the projected overlay is shown -- likewise a spawn seed). So whatever the operator sees is
+  // grabbable, and every grab resolves to the same authoring gesture on the joint index.
+  /** @param {number} i @returns {(Point | null)[]} */
+  grabCandidates(i) {
+    return [
+      this.gtPos(i),
+      this.detectedVisible ? this.detPos(i) : null,
+      this.projectedVisible && this.latent && i < this.latent.length ? this.latent[i] : null,
+    ];
+  }
+
+  // The joint nearest the pointer within the grab tolerance, or null -- the nearest of any joint's
+  // grab candidates (see grabCandidates).
   /**
    * @param {number} ix
    * @param {number} iy
@@ -1016,23 +1122,27 @@ export class PoseView {
     /** @type {number | null} */
     let best = null;
     let bestD = tol;
-    const n = Math.max(this.pts.length, this.latent ? this.latent.length : 0);
+    const n = Math.max(
+      this.pts.length,
+      this.detected ? this.detected.length : 0,
+      this.latent ? this.latent.length : 0,
+    );
     for (let i = 0; i < n; i++) {
-      const p = this.effectivePos(i);
-      if (!p) continue;
-      const d = Math.hypot(p[0] - ix, p[1] - iy);
-      if (d <= bestD) {
-        best = i;
-        bestD = d;
+      for (const p of this.grabCandidates(i)) {
+        if (!p) continue;
+        const d = Math.hypot(p[0] - ix, p[1] - iy);
+        if (d <= bestD) {
+          best = i;
+          bestD = d;
+        }
       }
     }
     return best;
   }
 
-  // Every joint whose effective (drawn) position falls inside the image-space rect --
-  // the Shift+drag marquee's hit-test. Corners come in any order; they are normalized
-  // here. Uses the same effective position as nearestPoint, so derived/reprojected
-  // joints are selectable too.
+  // Every joint the image-space rect encloses -- the Shift+drag marquee's hit-test. Corners come
+  // in any order; they are normalized here. A joint counts if ANY of its grab candidates lands
+  // inside, matching nearestPoint so whatever is grabbable is also marquee-selectable.
   /**
    * @param {number} ax
    * @param {number} ay
@@ -1047,11 +1157,14 @@ export class PoseView {
     const y1 = Math.max(ay, by);
     /** @type {number[]} */
     const hits = [];
-    const n = Math.max(this.pts.length, this.latent ? this.latent.length : 0);
+    const inside = (/** @type {Point} */ p) => !!p && p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+    const n = Math.max(
+      this.pts.length,
+      this.detected ? this.detected.length : 0,
+      this.latent ? this.latent.length : 0,
+    );
     for (let i = 0; i < n; i++) {
-      const p = this.effectivePos(i);
-      if (!p) continue;
-      if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) hits.push(i);
+      if (this.grabCandidates(i).some(inside)) hits.push(i);
     }
     return hits;
   }
@@ -1063,7 +1176,7 @@ export class PoseView {
     this.downY = my;
     this.moved = false;
     const [ix, iy] = this.toImage(mx, my);
-    const canGrab = this.editable && this.combinedVisible;
+    const canGrab = this.canGrab;
     const addMod = e.ctrlKey || e.metaKey; // Ctrl/Cmd = add to the selection
 
     // A modifier + primary button is multi-select, resolved on release (onPointerUp):
@@ -1157,7 +1270,7 @@ export class PoseView {
     }
 
     // Idle: report hover so the app can emphasize this joint in every view.
-    if (this.editable && this.combinedVisible) {
+    if (this.canGrab) {
       const [ix, iy] = this.toImage(mx, my);
       const point = this.nearestPoint(ix, iy);
       if (point !== this._hover) {
@@ -1176,7 +1289,7 @@ export class PoseView {
       const rect = this.marquee;
       this.marquee = null;
       const additive = this.marqueeAdditive; // Ctrl/Cmd = add; Shift = replace
-      const canGrab = this.editable && this.combinedVisible;
+      const canGrab = this.canGrab;
       if (this.moved && rect) {
         // A genuine rubber-band: Shift replaces the selection with the enclosed joints,
         // Ctrl/Cmd adds them (rect corners -> image space).
@@ -1233,36 +1346,22 @@ export class PoseView {
   }
 
   /**
-   * Wheel input drives both zoom and pan, split by device:
-   *   - mouse wheel (or Ctrl+wheel)  -> zoom toward the cursor at WHEEL_ZOOM_RATE
-   *   - trackpad pinch (a wheel with ctrlKey the browser synthesizes) -> zoom, but at the
-   *     higher PINCH_ZOOM_RATE, since a pinch's per-event delta is tiny
-   *   - trackpad two-finger scroll, once zoomed in -> pan both axes (content-grab)
-   * The device is classified once per wheel burst (see the fields' note) so a fast scroll
-   * flick never briefly reads as a mouse wheel and zooms. Pan is gated on zoom > 1: at the
-   * fit there is nothing to pan to, so a scroll there zooms instead -- which also keeps a
-   * mouse wheel wrongly classified as a trackpad (small-delta / hi-res mice) from dead-ending
-   * with no way to zoom in.
+   * Wheel input ALWAYS zooms toward the cursor -- deliberately device-agnostic. A mouse wheel,
+   * a trackpad two-finger scroll, and a trackpad pinch (a ctrlKey wheel the browser synthesizes)
+   * all zoom. A wheel event's shape can't reliably tell a mouse from a trackpad (macOS scroll
+   * acceleration makes a mouse notch look "precise", like a trackpad), and every attempt to
+   * split them mis-routed the mouse to panning; zoom-on-scroll is what the annotator wants.
+   * Panning stays on drag (empty-space grab, see onPointerDown). A tiny per-event delta (a
+   * pinch, or an accelerated mouse notch) gets the higher gain so it still tracks; a chunky
+   * wheel/line-mode notch keeps the slower notch rate.
    * @param {WheelEvent} e
    */
   onWheel(e) {
     if (!this.zoomable) return;
     e.preventDefault();
-    if (e.timeStamp - this._lastWheelTime > WHEEL_BURST_GAP_MS) {
-      this._wheelIsTrackpad = looksLikeTrackpad(e);
-    }
-    this._lastWheelTime = e.timeStamp;
-    // A trackpad two-finger scroll (classified trackpad, no ctrlKey) pans -- but only when
-    // zoomed in; otherwise it falls through to the zoom path below (see the doc note).
-    if (this._wheelIsTrackpad && !e.ctrlKey && this.zoom > 1) {
-      this.panByScroll(e.deltaX, e.deltaY);
-      return;
-    }
-    // Zoom toward the cursor. A trackpad pinch's tiny pixel delta gets the higher gain; a
-    // mouse wheel (or Ctrl+wheel, a big or line-mode delta) keeps the notch rate.
     const [mx, my] = this.cssXY(e);
-    const pinch = e.deltaMode === 0 && Math.abs(e.deltaY) < WHEEL_NOTCH_MIN;
-    this.zoomAtCursor(mx, my, e.deltaY, pinch ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE);
+    const tiny = e.deltaMode === 0 && Math.abs(e.deltaY) < WHEEL_NOTCH_MIN;
+    this.zoomAtCursor(mx, my, e.deltaY, tiny ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE);
   }
 
   /**
@@ -1290,27 +1389,11 @@ export class PoseView {
     this.draw();
   }
 
-  /**
-   * Pan the view by a trackpad two-finger scroll, content-grab style: the image tracks the
-   * fingers (matching the grab-drag), 1:1 in CSS px -- pan is applied in CSS px on top of
-   * the fit, so the mapping holds at any zoom. onWheel only routes here when zoomed in (at
-   * the fit a scroll is sent to zoom instead); the guard below is a defensive backstop.
-   * @param {number} dx  scroll delta x, CSS px
-   * @param {number} dy  scroll delta y, CSS px
-   */
-  panByScroll(dx, dy) {
-    if (this.zoom <= 1) return;
-    this.panX -= dx;
-    this.panY -= dy;
-    this.applyTransform();
-    this.draw();
-  }
-
   /** @param {MouseEvent} e */
   onDblClick(e) {
     // Double-clicking a joint selects that keypoint across every view (a fast way to
     // act on one point everywhere); double-clicking empty space resets the zoom.
-    if (this.editable && this.combinedVisible) {
+    if (this.canGrab) {
       const [ix, iy] = this.toImage(...this.cssXY(e));
       const point = this.nearestPoint(ix, iy);
       if (point !== null) {

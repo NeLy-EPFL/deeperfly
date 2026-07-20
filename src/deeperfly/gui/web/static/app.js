@@ -31,10 +31,12 @@
 // a fresh selection while Ctrl/Cmd+drag adds to it, and `a` / `v` select all / the
 // hovered view -- then a state chip (or Reset) applies to the whole selection at once.
 //
-// Display extras the operator toggles: the editable "Combined" skeleton itself, per-joint
-// name labels, and the individual point sources as their own read-only layers -- ground
-// truth, the raw detections, and the "projected" 3D reprojection (triangulated estimate
-// reprojected, ghosted over every view). A non-modal floating panel shows the 3D
+// Display layers the operator toggles: the ground-truth layer (the editable one -- a drag moves
+// or spawns GT), the raw-detection layer, "Combined" (a merge toggle: on, GT + detected draw as
+// one skeleton; off, as two separate skeletons), per-joint name labels, and the "projected" 3D
+// reprojection as its own overlay -- the reprojected skeleton (hollow rings joined by thick,
+// dashed, semi-transparent edges; on by default), whose points double as spawn seeds for a
+// ground-truth drag. A non-modal floating panel shows the 3D
 // view -- the camera rig, the 3D pose, and the fitted NMF skeleton + mesh (see
 // scene3d.js); it overlays the editor without blocking it (drag the title bar to move
 // it, the corner to resize), so the main frame scrubber still steps the 3D pose
@@ -768,9 +770,12 @@ class App {
 
   // -- display toggles --------------------------------------------------------
 
+  // "Combined" is the merge toggle over the Ground truth + Detected layers: on, they draw as
+  // one merged skeleton (GT where authored, else the detector's point); off, as two separate
+  // overlaid skeletons. It no longer shows / hides the whole skeleton.
   applyCombined() {
-    const visible = this.combinedCheck.checked;
-    this.views.forEach((view) => view.setCombinedVisible(visible));
+    const merged = this.combinedCheck.checked;
+    this.views.forEach((view) => view.setCombinedVisible(merged));
   }
 
   applyLabels() {
@@ -1623,10 +1628,10 @@ class App {
     // Reset zoom/pan on every camera (also on the Layout menu). Outside the multi-camera
     // block: a single, still-zoomable camera benefits too.
     b.push({ key: "0", group: "cam", label: "0", desc: "Reset the view — fit every camera", run: () => this.resetView() });
-    b.push({ key: "s", group: "show", label: "s", desc: "Combined skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
+    b.push({ key: "s", group: "show", label: "s", desc: "Combined — merge ground truth + detected into one skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
     if (has3d) {
-      b.push({ key: "p", group: "show", label: "p", desc: "Projected source (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
+      b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
     }
     if (this.meta.has_nmf) {
       b.push({ key: "m", group: "show", label: "m", desc: "NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
@@ -1719,7 +1724,7 @@ class App {
 
     // Edit the selection -- the point-move gesture, then the confirm/reset/mark bindings,
     // then the right-click GT toggle (only meaningful with a 3D solve to feed).
-    const editRows = [row(["Drag a point"], "Move it — authors ground truth")]
+    const editRows = [row(["Drag a point"], "Move it — authors ground truth (grab a detected node or a reprojected point to spawn one)")]
       .concat(this.bindingRows("edit"));
     if (this.meta.has_3d) editRows.push(row(["Right-click"], "Confirm / clear a point as ground truth"));
     out.push(section("Edit the selection", editRows));
@@ -1766,14 +1771,14 @@ class App {
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projected</b> — the 3D reprojected here; no observation in this view (occluded, or the detector missed). Its own layer draws the full reprojected skeleton in the limb palette, dashed.`,
+        `<b>Projected</b> — the 3D reprojected here; no observation in this view (occluded, or the detector missed). The reprojected skeleton is its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there.`,
       ]);
     }
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");
     const markerBlock = `<h3 class="legend-title">Point sources — where a point came from</h3>`
-      + `<p class="legend-note">The <b>Combined</b> skeleton picks each joint by precedence (ground truth &gt; detected &gt; projected). The <b>Show</b> menu can instead display each source's full set on its own.</p>`
+      + `<p class="legend-note"><b>Ground truth</b> is the editable layer — drag a point to move it, or drag a detected / projected node to create one. <b>Combined</b> merges Ground truth + Detected into one skeleton (GT where authored, else the detector's point); turn it off to see them as two separate skeletons. <b>Projected</b> stays its own overlay.</p>`
       + `<div class="legend-rows">${markerRows}</div>`;
 
     // Read-only reference overlays (shown only when the result carries them). The projected
@@ -1840,7 +1845,7 @@ class App {
     const mesh = hint("M", ["shift"]);
     setTitle(
       "show-toggle",
-      `Show / hide the view layers (keyboard: n Names · s Combined${this.meta.has_3d ? " · p Projected" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
+      `Show / hide the view layers (keyboard: n Names · s Combined${this.meta.has_3d ? " · p Reprojected" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
     );
     const meshChip = document.querySelector("#mesh-wrap kbd");
     if (meshChip) meshChip.textContent = mesh;
