@@ -228,8 +228,8 @@ class App {
   // (beforeunload) from nagging after the operator has already decided.
   closing = false;
   closeConfirmOpen = false;
-  // The corrected-frames side panel: the list (sorted, with per-frame counts), whether
-  // the panel is open, the row elements keyed by frame (for the current-frame
+  // The corrected-frames side panel: the list (sorted, each with a reviewed flag),
+  // whether the panel is open, the row elements keyed by frame (for the current-frame
   // highlight), and a debounce timer coalescing post-edit refreshes.
   /** @type {CorrectedFrame[]} */
   correctedFrames = [];
@@ -667,6 +667,7 @@ class App {
     this.readonlyBanner.hidden = !readOnly;
     this.updateViewRoles(); // re-apply per-view editability
     this.updateDirty(); // the Save button is disabled while read-only
+    this.renderFrameList(); // re-render so the reviewed checkboxes track editability
   }
 
   // -- frame navigation -------------------------------------------------------
@@ -1319,19 +1320,51 @@ class App {
     this.framesCountEl.classList.toggle("is-zero", n === 0);
     this.framesEmptyEl.hidden = n > 0;
     this.frameRows.clear();
-    const rows = this.correctedFrames.map(({ frame, count }) => {
+    const rows = this.correctedFrames.map(({ frame, reviewed }) => {
       const tr = document.createElement("tr");
       const fcell = document.createElement("td");
       fcell.textContent = String(frame);
-      const ccell = document.createElement("td");
-      ccell.textContent = String(count);
-      tr.append(fcell, ccell);
+      // A "reviewed" tick box per frame -- the operator's "I've finished checking this"
+      // flag. Its own clicks must not bubble to the row (which jumps to the frame).
+      const rcell = document.createElement("td");
+      rcell.className = "reviewed-cell";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = reviewed;
+      box.disabled = this.readOnly;
+      box.title = reviewed ? "Reviewed — click to un-mark" : "Mark this frame reviewed";
+      box.addEventListener("click", (e) => e.stopPropagation());
+      box.addEventListener("change", () => this.toggleReviewed(frame, box.checked, box));
+      rcell.append(box);
+      tr.append(fcell, rcell);
       tr.addEventListener("click", () => this.goToFrame(frame));
       this.frameRows.set(frame, tr);
       return tr;
     });
     this.framesTbody.replaceChildren(...rows);
     this.updateActiveFrameRow();
+  }
+
+  // Mark a frame reviewed (or clear it) from its checkbox in the Labels list -- a
+  // per-frame "I've finished checking this" flag, independent of the point labels. It
+  // persists with the labels and keeps the frame listed even after its labels are
+  // reset. A read-only browser cannot change it, so the checkbox reverts. The frame may
+  // not be the one on screen, so we update the list from here (an edit reply for a
+  // non-current frame does not repaint) plus an optimistic local flip so the tick sticks.
+  /**
+   * @param {number} frame
+   * @param {boolean} value
+   * @param {HTMLInputElement} box
+   */
+  toggleReviewed(frame, value, box) {
+    if (this.readOnly) {
+      box.checked = !value; // read-only: undo the visual toggle, change nothing
+      return;
+    }
+    const row = this.correctedFrames.find((f) => f.frame === frame);
+    if (row) row.reviewed = value;
+    this.sendEdit({ type: "set_reviewed", frame, reviewed: value, mode: this.mode });
+    this.scheduleCorrectedRefresh();
   }
 
   // Highlight the row for the current frame (when it is a corrected one) and, while

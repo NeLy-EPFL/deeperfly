@@ -184,18 +184,22 @@ class EditorState:
     # -- corrected frames -----------------------------------------------------
 
     def corrected_frames(self) -> list[dict]:
-        """Every frame carrying a label, with its labelled-point count.
+        """Every frame the operator has touched, with whether it is marked reviewed.
 
-        A point counts as labelled in a frame when any view has a GT pixel or an
-        occlusion flag (an authored human decision). Returned sorted by frame, each
-        ``{"frame": t, "count": n}`` -- what the GUI's frame list shows so the
-        operator can jump back to frames they have worked on.
+        A frame is listed when any view carries a GT pixel or an occlusion flag for
+        some point (an authored human decision), *or* the frame has been marked
+        reviewed -- so ticking a frame reviewed keeps it in the list even if its point
+        labels are later reset. Returned sorted by frame, each
+        ``{"frame": t, "reviewed": bool}`` -- what the GUI's frame list shows so the
+        operator can jump back to frames they have worked on and tick off the ones
+        they have finished checking.
         """
         decided = self.labels.has_gt | self.labels.occluded  # (V, T, P)
-        per_point = decided.any(axis=0)  # (T, P)
-        counts = per_point.sum(axis=1)  # (T,)
+        labelled = decided.any(axis=(0, 2))  # (T,) any authored label in the frame
+        reviewed = self.labels.reviewed  # (T,)
         return [
-            {"frame": int(t), "count": int(counts[t])} for t in np.nonzero(counts)[0]
+            {"frame": int(t), "reviewed": bool(reviewed[t])}
+            for t in np.nonzero(labelled | reviewed)[0]
         ]
 
     # -- displayed 2D (labels over predictions) -------------------------------
@@ -477,6 +481,17 @@ class EditorState:
         self.labels.clear_frame(t)
         self._invalidate_frame3d(t)
         self._invalidate_nmf(t)
+
+    def set_reviewed(self, value: bool, frame: int | None = None) -> None:
+        """Mark ``frame`` reviewed (or clear it): the operator's "I've checked this" flag.
+
+        A per-frame annotation, orthogonal to the point labels -- it changes no derived
+        3D and stays out of the label undo history (undo reverts pixel edits, not review
+        bookkeeping). It only records review progress and keeps the frame in the
+        corrected-frames list even once its labels are reset.
+        """
+        t = self._resolve_frame(frame)
+        self.labels.set_reviewed(t, value)
 
     # -- undo / redo + bulk confirm + explicit GT set/clear -------------------
 

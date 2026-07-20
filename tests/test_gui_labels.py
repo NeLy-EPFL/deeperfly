@@ -77,6 +77,7 @@ def test_roundtrip_sparse(tmp_path, result):
     lab.set_gt(0, 1, 4, (5.0, 6.0), provenance=Provenance.DRAGGED)
     lab.set_gt(2, 0, 5, (7.0, 8.0), provenance=Provenance.CONFIRMED_PROJECTION)
     lab.set_occluded(3, 2, 6, True)
+    lab.set_reviewed(1, True)  # a per-frame reviewed flag round-trips too
 
     path = tmp_path / "labels.h5"
     identity = _identity(result)
@@ -89,10 +90,50 @@ def test_roundtrip_sparse(tmp_path, result):
     np.testing.assert_array_equal(loaded.occluded, lab.occluded)
     np.testing.assert_array_equal(loaded.gt_provenance, lab.gt_provenance)
     np.testing.assert_array_equal(np.nan_to_num(loaded.gt), np.nan_to_num(lab.gt))
+    np.testing.assert_array_equal(loaded.reviewed, lab.reviewed)
 
 
 def test_load_missing_returns_none(tmp_path, result):
     assert load_labels(tmp_path / "absent.h5", identity=_identity(result)) is None
+
+
+def test_load_pre_v2_file_without_reviewed_group(tmp_path, result):
+    # A pre-v2 sidecar has no `reviewed` group; loading must tolerate its absence and
+    # yield no reviewed frames (the labels themselves still load).
+    import h5py
+
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (5.0, 6.0))
+    path = tmp_path / "labels.h5"
+    identity = _identity(result)
+    save_labels(path, lab, identity=identity)
+    with h5py.File(path, "a") as f:
+        del f["reviewed"]
+
+    loaded = load_labels(path, identity=identity)
+    assert loaded is not None
+    assert not loaded.reviewed.any()
+    assert loaded.has_gt[0, 0, 1]
+
+
+def test_load_drops_out_of_range_reviewed(tmp_path, result):
+    # A stale/oversized reviewed frame index is dropped, not indexed out of bounds.
+    import h5py
+
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_reviewed(0, True)
+    path = tmp_path / "labels.h5"
+    identity = _identity(result)
+    save_labels(path, lab, identity=identity)
+    with h5py.File(path, "a") as f:
+        del f["reviewed/index"]
+        f["reviewed"].create_dataset(
+            "index", data=np.array([0, result.n_frames + 5], dtype="int32")
+        )
+
+    loaded = load_labels(path, identity=identity)
+    assert loaded is not None
+    assert loaded.reviewed[0] and int(loaded.reviewed.sum()) == 1
 
 
 def test_prediction_only_rerun_keeps_labels(tmp_path, result):

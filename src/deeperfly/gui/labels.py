@@ -12,13 +12,15 @@ a tri-state:
     gt(x, y)   -> an affirmed 2D pixel (with provenance: how it was authored)
     occluded   -> "a human cannot place this point from this view" (dropped from 3D)
 
-``gt`` and ``occluded`` are mutually exclusive. Everything else -- predictions,
-projections, the 3D point, reprojection error, review progress -- is derived, so it
-is never stored: no dense NaN arrays, no duplicate of the detector's output.
+``gt`` and ``occluded`` are mutually exclusive. Alongside that per-``(view, frame,
+point)`` tri-state, each *frame* carries one authored ``reviewed`` flag -- the
+operator ticking "I have finished checking this frame". Everything else --
+predictions, projections, the 3D point, reprojection error -- is derived, so it is
+never stored: no dense NaN arrays, no duplicate of the detector's output.
 
-On disk (schema v1) the two deltas are stored **sparsely** (COO), which is tiny
-next to ``results.h5`` and, unlike the old dense ``corrections.h5``, carries no copy
-of the prediction NaN pattern:
+On disk (schema v2) the deltas are stored **sparsely** (COO), which is tiny next to
+``results.h5`` and, unlike the old dense ``corrections.h5``, carries no copy of the
+prediction NaN pattern:
 
 .. code-block:: text
 
@@ -29,6 +31,8 @@ of the prediction NaN pattern:
         provenance  (N,)   uint8    1=dragged, 2=confirmed_prediction, 3=confirmed_projection
     occluded/
         index       (M, 3) int32   [view, frame, point]
+    reviewed/                       (added in v2; absent in a v1 file -> no frames reviewed)
+        index       (K,)   int32   frame indices the operator marked reviewed
 
 In memory the overlay is kept **dense** per ``(V, T, P)`` (mirroring the result), so
 resolving a frame's effective points on the interactive hot path stays ``O(V*P)``
@@ -67,7 +71,7 @@ __all__ = [
 
 log = logging.getLogger("deeperfly")
 
-LABELS_FORMAT_VERSION = 1
+LABELS_FORMAT_VERSION = 2
 
 
 class Provenance:
@@ -88,9 +92,11 @@ class Provenance:
 class Labels:
     """In-memory ground-truth overlay on a :class:`~deeperfly.results.PoseResult`.
 
-    All arrays are dense ``(V, T, P)``-shaped (2D pixels carry a trailing 2). A GT
-    pixel is present iff ``gt`` is finite there, which is exactly ``provenance != 0``;
-    ``occluded`` marks views the operator flagged unusable. The invariants (``gt``
+    The per-``(view, frame, point)`` arrays are dense ``(V, T, P)``-shaped (2D pixels
+    carry a trailing 2). A GT pixel is present iff ``gt`` is finite there, which is
+    exactly ``provenance != 0``; ``occluded`` marks views the operator flagged
+    unusable. ``reviewed`` is a separate per-*frame* ``(T,)`` flag (the operator's "I
+    have checked this frame"), independent of the point labels. The invariants (``gt``
     and ``occluded`` disjoint; ``provenance`` set iff ``gt`` finite) are maintained by
     the mutators and re-checked on load. ``dirty`` tracks unsaved changes.
     """
@@ -98,15 +104,17 @@ class Labels:
     gt: Float[np.ndarray, "V T P 2"]
     gt_provenance: np.ndarray  # (V, T, P) uint8, a Provenance value
     occluded: Bool[np.ndarray, "V T P"]
+    reviewed: Bool[np.ndarray, "T"]  # per-frame "operator has checked this frame"
     dirty: bool = field(default=False)
 
     @classmethod
     def empty(cls, n_views: int, n_frames: int, n_points: int) -> Labels:
-        """An overlay with no GT and nothing occluded for a ``(V, T, P)`` result."""
+        """An overlay with no GT, nothing occluded, no frame reviewed."""
         return cls(
             gt=np.full((n_views, n_frames, n_points, 2), np.nan),
             gt_provenance=np.zeros((n_views, n_frames, n_points), dtype=np.uint8),
             occluded=np.zeros((n_views, n_frames, n_points), dtype=bool),
+            reviewed=np.zeros(n_frames, dtype=bool),
         )
 
     # -- derived masks --------------------------------------------------------
@@ -167,10 +175,16 @@ class Labels:
         self.dirty = True
 
     def clear_frame(self, frame: int) -> None:
-        """Reset every label in ``frame`` to ``unset``."""
+        """Reset every label in ``frame`` to ``unset`` (the per-frame ``reviewed`` flag,
+        which is not a point label, is left untouched)."""
         self.gt[:, frame] = np.nan
         self.gt_provenance[:, frame] = Provenance.NONE
         self.occluded[:, frame] = False
+        self.dirty = True
+
+    def set_reviewed(self, frame: int, value: bool) -> None:
+        """Mark ``frame`` reviewed (or clear it) -- the operator's per-frame check flag."""
+        self.reviewed[frame] = bool(value)
         self.dirty = True
 
 
@@ -264,6 +278,7 @@ def save_labels(path: str | Path, labels: Labels, *, identity: dict) -> None:
     gt_prov = labels.gt_provenance[has_gt].astype(np.uint8)  # (N,)
     ov, of, op = np.nonzero(labels.occluded)
     occ_index = np.stack([ov, of, op], axis=1).astype(np.int32)  # (M, 3)
+    rev_index = np.nonzero(labels.reviewed)[0].astype(np.int32)  # (K,) frame indices
 
     meta = {
         "deeperfly_labels_format_version": LABELS_FORMAT_VERSION,
@@ -278,6 +293,8 @@ def save_labels(path: str | Path, labels: Labels, *, identity: dict) -> None:
         g.create_dataset("provenance", data=gt_prov, dtype="uint8")
         o = f.create_group("occluded")
         o.create_dataset("index", data=occ_index, dtype="int32")
+        r = f.create_group("reviewed")
+        r.create_dataset("index", data=rev_index, dtype="int32")
     labels.dirty = False
 
 
@@ -289,7 +306,8 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
     non-finite GT rows are dropped, duplicate ``(view, frame, point)`` keys resolve
     last-write-wins, and any ``(view, frame, point)`` present in both ``gt`` and
     ``occluded`` keeps the GT (which carries an authored pixel) and drops the
-    occlusion -- so the on-disk invariants cannot desync the in-memory overlay.
+    occlusion -- so the on-disk invariants cannot desync the in-memory overlay. The
+    ``reviewed`` group is optional (a v1 file has none -> no frames reviewed).
     """
     p = Path(path)
     if not p.exists():
@@ -301,6 +319,11 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
         gt_xy = np.asarray(f["gt/xy"][()], dtype=float).reshape(-1, 2)  # type: ignore[index]
         gt_prov = np.asarray(f["gt/provenance"][()], dtype=np.uint8).reshape(-1)  # type: ignore[index]
         occ_index = np.asarray(f["occluded/index"][()], dtype=np.int64).reshape(-1, 3)  # type: ignore[index]
+        rev_index = (  # optional group: pre-v2 files carry no review progress
+            np.asarray(f["reviewed/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
+            if "reviewed" in f
+            else np.empty(0, dtype=np.int64)
+        )
 
     _check_identity(stored_identity, identity, p)
 
@@ -344,6 +367,10 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
                 )
                 continue
             labels.occluded[v, t, pt] = True
+    # Reviewed frames: keep in-range indices (a stale/oversized index is dropped).
+    if rev_index.size:
+        keep = (rev_index >= 0) & (rev_index < n_frames)
+        labels.reviewed[rev_index[keep]] = True
     labels.dirty = False
     return labels
 

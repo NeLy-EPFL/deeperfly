@@ -94,20 +94,21 @@
  */
 
 /**
- * One frame in the corrected-frames list: the frame index and how many of its
- * keypoints carry a manual correction.
+ * One frame in the corrected-frames list: the frame index and whether the operator
+ * has ticked it as reviewed.
  * @typedef {object} CorrectedFrame
  * @property {number} frame
- * @property {number} count  number of corrected keypoints in the frame
+ * @property {boolean} reviewed  whether the operator has marked this frame reviewed
  */
 
 /**
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
- * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "reset" | "occlude" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame"} type
+ * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "reset" | "occlude" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame" | "set_reviewed"} type
  * @property {number} [view]
  * @property {number} [point]
+ * @property {boolean} [reviewed]  for "set_reviewed": the frame's new reviewed state
  * @property {number} [x]
  * @property {number} [y]
  * @property {[number, number][]} [targets]  the (view, point) pairs a batched op acts on: "confirm" promotes them to GT, "reset" clears them to unset, "occlude" flags them occluded

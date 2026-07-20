@@ -372,7 +372,7 @@ def test_nmf_live_uses_the_configured_model(result):
 
 
 def test_corrected_endpoint_lists_edited_frames(client):
-    """/api/corrected reports the frames carrying corrections, with point counts."""
+    """/api/corrected reports the frames the operator touched, each with a reviewed flag."""
     assert client.get("/api/corrected").json()["frames"] == []  # nothing edited yet
 
     with client.websocket_connect("/ws") as ws:
@@ -392,7 +392,27 @@ def test_corrected_endpoint_lists_edited_frames(client):
 
     frames = client.get("/api/corrected").json()["frames"]
     assert [f["frame"] for f in frames] == [2]
-    assert frames[0]["count"] == 2
+    assert not frames[0]["reviewed"]  # edited, but not yet reviewed
+
+
+def test_set_reviewed_edit_marks_frame(client):
+    """A set_reviewed edit ticks a frame reviewed; it then shows in /api/corrected."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "set_reviewed", "reviewed": True, "frame": 3, "mode": "edit_2d"}
+        )
+        ws.receive_json()
+
+    frames = client.get("/api/corrected").json()["frames"]
+    assert [f["frame"] for f in frames] == [3]
+    assert frames[0]["reviewed"]  # listed purely because it was marked reviewed
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "set_reviewed", "reviewed": False, "frame": 3, "mode": "edit_2d"}
+        )
+        ws.receive_json()
+    assert client.get("/api/corrected").json()["frames"] == []  # un-ticked -> dropped
 
 
 # -- edits over the websocket -------------------------------------------------

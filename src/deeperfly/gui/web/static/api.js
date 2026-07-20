@@ -40,8 +40,8 @@ export async function fetchScene(frame) {
 }
 
 /**
- * The frames carrying manual corrections, sorted, each with its corrected-point
- * count -- the editor's corrected-frames list.
+ * The frames the operator has touched, sorted, each with its reviewed flag -- the
+ * editor's frame list.
  * @returns {Promise<{ frames: import("./types.js").CorrectedFrame[] }>}
  */
 export async function fetchCorrected() {

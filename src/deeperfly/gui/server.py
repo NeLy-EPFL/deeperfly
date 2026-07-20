@@ -243,10 +243,10 @@ def create_app(
 
     @app.get("/api/corrected")
     def corrected() -> dict:
-        """The frames carrying manual corrections (sorted, with per-frame counts).
+        """The frames the operator has touched (sorted), each with its reviewed flag.
 
         Drives the editor's corrected-frames list; the front-end refreshes it after
-        edits settle, so it tracks every drag, obscure, and reset live.
+        edits settle, so it tracks every drag, obscure, reset, and reviewed tick live.
         """
         return {"frames": session.state.corrected_frames()}
 
@@ -710,6 +710,8 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_point_view(int(msg["view"]), int(msg["point"]), t)
     elif typ == "reset_frame":
         s.reset_frame(t)
+    elif typ == "set_reviewed":
+        s.set_reviewed(bool(msg["reviewed"]), t)
     else:  # pragma: no cover -- an unknown type is a client bug; ignore it
         log.warning("ignoring unknown edit message type %r", typ)
     reply_frame = goto if goto is not None else t

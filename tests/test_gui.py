@@ -125,19 +125,36 @@ def test_corrected_frames_tracks_labels_and_resets(result):
 
     listed = state.corrected_frames()
     assert [f["frame"] for f in listed] == [1, 4]  # sorted ascending
-    counts = {f["frame"]: f["count"] for f in listed}
-    assert counts[1] == 2 and counts[4] == 1
+    assert all(not f["reviewed"] for f in listed)  # nothing reviewed yet
 
     state.reset_frame(frame=1)  # reverting a frame drops it from the list
     assert [f["frame"] for f in state.corrected_frames()] == [4]
 
 
-def test_corrected_frames_counts_occluded_toggle(result):
+def test_corrected_frames_lists_occluded_toggle(result):
     state = EditorState.from_result(result)
     view, point = 1, 5
     state.toggle_invisible(view, point, frame=0)
     listed = state.corrected_frames()
-    assert [f["frame"] for f in listed] == [0] and listed[0]["count"] == 1
+    assert [f["frame"] for f in listed] == [0] and not listed[0]["reviewed"]
+
+
+def test_reviewed_flag_lists_frame_and_survives_reset(result):
+    state = EditorState.from_result(result)
+    # A frame marked reviewed is listed even with no point labels...
+    state.set_reviewed(True, frame=2)
+    listed = state.corrected_frames()
+    assert [f["frame"] for f in listed] == [2] and listed[0]["reviewed"]
+
+    # ... and stays listed (still reviewed) after its point labels are reset.
+    state.apply_2d_edit(0, 3, (1.0, 2.0), frame=2)
+    state.reset_frame(frame=2)
+    listed = state.corrected_frames()
+    assert [f["frame"] for f in listed] == [2] and listed[0]["reviewed"]
+
+    # Clearing the flag on a frame with no labels drops it from the list entirely.
+    state.set_reviewed(False, frame=2)
+    assert state.corrected_frames() == []
 
 
 # -- GT as a 3D constraint (the old "fixed" gesture) --------------------------

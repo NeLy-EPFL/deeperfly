@@ -638,6 +638,23 @@ button:disabled {
   color: #cfe3f7;
 }
 
+/* The "Reviewed" column: a centred tick box per frame (see renderFrameList). Placed
+   after the :last-child rules above so it wins the equal-specificity tie. */
+.frames-table th.reviewed-col {
+  text-align: center;
+}
+
+.frames-table td.reviewed-cell {
+  text-align: center;
+  cursor: default;
+}
+
+.frames-table td.reviewed-cell input {
+  cursor: pointer;
+  margin: 0;
+  vertical-align: middle;
+}
+
 .frames-empty {
   padding: 14px;
   color: #888;
