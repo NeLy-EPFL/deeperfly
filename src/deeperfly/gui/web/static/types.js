@@ -78,6 +78,7 @@
  * @property {Point[][] | null} [nmf]  [view][point] fitted NMF model reprojection (display only), or null. Omitted on mid-drag replies (the server skips the per-frame re-fit) -- treat "absent" as "unchanged".
  * @property {(number | null)[][]} [conf]  [view][point] detector confidence, or null. Rides the settle/plain reply only (not the mid-drag stream).
  * @property {Point[][] | null} [pred]  [view][point] the raw detector prediction (before GT override), for the verbose overlay. Present only when verbose was requested.
+ * @property {Point[][] | null} [placeholder]  [view][point] seed positions for joints ABSENT from a view (no detection / reprojection), so a GT can still be dragged into being; NaN->null elsewhere. Present only when verbose was requested.
  * @property {boolean} dirty
  * @property {boolean} [can_undo]  whether an undo step is available
  * @property {boolean} [can_redo]  whether a redo step is available

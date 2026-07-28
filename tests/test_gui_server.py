@@ -144,6 +144,34 @@ def test_favicon_svg_asset_is_served(client):
     assert svg.text.lstrip().startswith("<svg")
 
 
+def test_placeholder_seeds_ride_the_verbose_reply(client, result):
+    """The Missing-seed array is a verbose-only field, one seed per (view, point)."""
+    plain = client.get("/api/points/0?mode=view").json()
+    assert "placeholder" not in plain  # lean reply omits it
+    verbose = client.get("/api/points/0?mode=view&verbose=true").json()
+    ph = verbose["placeholder"]
+    assert ph is not None and len(ph) == result.n_views
+    assert all(len(row) == result.pts2d.shape[2] for row in ph)
+
+
+def test_placeholder_seed_for_a_rejected_point(result, tmp_path):
+    """A point NaN in every view (a triangulation reject) gets a finite draggable seed."""
+    p = 5
+    result.pts2d[:, :, p] = np.nan
+    result.pts3d[:, p] = np.nan
+    image_sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
+    session = Session.build(
+        EditorState.from_result(result, image_sizes=image_sizes),
+        FrameSource({}, image_sizes=image_sizes),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+        image_sizes=image_sizes,
+    )
+    client = TestClient(create_app(session))
+    ph = client.get("/api/points/0?mode=view&verbose=true").json()["placeholder"]
+    assert all(ph[v][p] is not None for v in range(result.n_views))  # every view seeded
+
+
 def test_nmf_overlay_payload(result, tmp_path):
     """A result with a fitted NMF model exposes it via has_nmf + the points 'nmf' field."""
     import dataclasses

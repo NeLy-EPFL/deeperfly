@@ -27,18 +27,21 @@
 // authors GT. DETECTED is the raw detector output (a filled disc, faded by confidence, under a
 // thin dark ring). "COMBINED" is not a visibility switch -- it is a MERGE toggle over GT +
 // Detected: on, the two draw as ONE skeleton (each joint = GT if authored, else the detector's
-// point); off, GT and Detected draw as two separate overlaid skeletons (Detected beneath, the
-// editable GT skeleton on top). The "projected" source is the REPROJECTED SKELETON -- an
+// point, else -- when a joint has neither and the reprojection overlay is shown -- its reprojected
+// point, so a bone never drops out just because one endpoint is only derived); off, GT and Detected
+// draw as two separate overlaid skeletons (Detected beneath, the editable GT skeleton on top). The
+// "projected" source is the REPROJECTED SKELETON -- an
 // independent overlay of the full 3D reprojection (hollow rings joined by thick, semi-transparent,
 // DASHED palette edges), its own layer in every mode (it never merges in), so the 3D's opinion of
 // every joint reads at a glance and the gap to a placed pixel is the live disagreement.
 //
 // GT is editable whenever it is shown. A drag MOVES an existing GT point, or SPAWNS one from a
-// seed -- a detected node or a reprojected hollow point -- and the point reads as GT under the
-// cursor the instant the drag starts (before the server sets its GT flag). See nodeAt / anchorPos
-// / grabCandidates + drawSkeleton. Selection rings, name labels, and hover emphasis are drawn once
-// on top by drawJointOverlay, anchored at the joint's best visible position, so they still read on
-// a joint that has no GT yet (only a detected or projected point).
+// seed -- a detected node, a reprojected hollow point, or (when the joint has none of those in
+// this view) a faint "Missing" placeholder ghost -- and the point reads as GT under the cursor the
+// instant the drag starts (before the server sets its GT flag). See nodeAt / anchorPos /
+// grabCandidates + drawSkeleton / drawPlaceholders. Selection rings, name labels, and hover
+// emphasis are drawn once on top by drawJointOverlay, anchored at the joint's best visible
+// position, so they still read on a joint that has no GT yet (only a detected / projected / seed).
 //
 // The fitted NMF model is a read-only reference: a faint mint under-glow *beneath* the skeleton
 // (so the limb palette always reads on top) with its *disagreement* against the placed point
@@ -70,7 +73,7 @@ const HOVER_BONE_WIDTH = 3; // a hovered joint's connected bones thicken to this
 const HIT_TOLERANCE_PX = 14; // how close a click must be to grab a joint, screen px
 const DRAG_THRESHOLD_PX = 3; // movement (screen px) before a press becomes a drag
 const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
-const WHEEL_ZOOM_RATE = 0.0015; // mouse-wheel delta -> zoom factor sensitivity
+const WHEEL_ZOOM_RATE = 0.007; // mouse-wheel delta -> zoom factor sensitivity (~2x per notch)
 const PINCH_ZOOM_RATE = 0.01; // trackpad pinch: a higher gain than the wheel (its per-event delta is tiny) so the pinch tracks the fingers
 const WHEEL_NOTCH_MIN = 50; // |deltaY| (px) below which a step is a tiny one (trackpad pinch or accelerated mouse notch) and gets the higher zoom gain; at/above it's a chunky wheel notch
 const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
@@ -115,6 +118,34 @@ const PROJ_WIDTH = 5; // reprojected-skeleton bone width (screen px): thick, wel
 const PROJ_ALPHA = 0.4; // ... and semi-transparent, so the solid editable palette always wins on top
 const PROJ_DASH = [7, 5]; // ... and dashed (screen px on/off), the "derived, not observed" cue
 
+// The "Missing" layer (see drawPlaceholders): a faint, draggable seed at a joint this view has
+// NOTHING else to grab (no GT / detected / reprojected point) -- a joint triangulation rejected,
+// or one the detector never fired. A small dashed hollow ring with a faint centre dot in the
+// joint's limb palette, at reduced opacity, so it reads as "not observed -- drag me to place",
+// clearly apart from the observed (filled disc), reprojected (solid hollow ring) and NMF markers.
+const PLACEHOLDER_ALPHA = 0.55; // the Missing seed's opacity: faint, but grabbable at a glance
+const PLACEHOLDER_DASH = [2, 3]; // its dashed hollow ring (screen px on/off)
+
+// The reprojection-distance warning (see drawReprojWarnings): when a joint's authored/detected
+// anchor sits farther than the (image-px) threshold from where the 3D reprojects it, flag it with
+// an amber->red ring on the anchor plus a connector to the reprojected point, so a disagreement
+// between the hand 2D label and the multi-view 3D pops for review. Amber at the threshold, ramping
+// to red at WARN_RED_MULT x it -- the eye lands on the worst joints first.
+const WARN_AMBER = "255,176,0"; // "r,g,b" at the threshold (a joint just over the line)
+const WARN_RED = "255,60,60"; // ... blended to this at/above WARN_RED_MULT x the threshold
+const WARN_RED_MULT = 2; // distance / threshold at which the cue reaches full red
+const WARN_RING_PAD = 5; // the warning ring's radius beyond the joint marker (screen px) -- clears the r+3 selection ring
+
+/**
+ * Blend two "r,g,b" strings, returning "r,g,b" at fraction t (0 = a, 1 = b).
+ * @param {string} a @param {string} b @param {number} t @returns {string}
+ */
+function mixRgb(a, b, t) {
+  const pa = a.split(",").map(Number);
+  const pb = b.split(",").map(Number);
+  return pa.map((c, i) => Math.round(c + (pb[i] - c) * t)).join(",");
+}
+
 export class PoseView {
   /**
    * @param {number} viewIndex
@@ -140,6 +171,8 @@ export class PoseView {
     this.detected = null; // raw detector prediction per point (display only) = the "detected" source
     /** @type {Point[] | null} */
     this.nmf = null; // fitted NMF model reprojection (display only), drawn when nmfVisible
+    /** @type {Point[] | null} */
+    this.placeholder = null; // seed position per joint ABSENT from this view (no GT / detected / projected), a faint draggable ghost so a GT can still be placed; null elsewhere
     /** @type {boolean[] | null} */
     this.fixed = null;
     /** @type {boolean[] | null} */
@@ -171,9 +204,24 @@ export class PoseView {
     this.gtVisible = true;
     this.detectedVisible = true;
     this.projectedVisible = true;
+    // The "Missing" layer: faint, draggable ghost seeds for joints a view has nothing
+    // to grab for (no GT / detected / reprojected point) -- e.g. a joint triangulation
+    // rejected. On by default; dragging a ghost authors GT like any other seed.
+    this.placeholderVisible = true;
     this.nmfVisible = false;
     this.meshVisible = false;
     this.labelsVisible = false;
+    // A master "hide everything" switch (the `h` peek): when set, draw() renders only the frame
+    // and skips every overlay below it, and canGrab goes false so a point can't be dragged while
+    // it is invisible. It OVERRIDES -- but never mutates -- the per-layer toggles above, so
+    // clearing it restores exactly what was shown. Off by default (all overlays drawn).
+    this.overlaysHidden = false;
+    // The reprojection-distance warning: a data-quality check independent of the layer toggles
+    // above (it reads the authored/detected anchor and the reprojection directly, whatever is
+    // shown). On by default, kept in sync with the `checked` checkbox + threshold input in
+    // index.html; the app restores an operator's persisted preference over these defaults.
+    this.warnVisible = true;
+    this.warnThreshold = 8; // image px: an anchor<->reprojection gap above this flags the joint
     /** @type {number | null} */
     this.dragging = null;
     this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
@@ -367,6 +415,7 @@ export class PoseView {
    * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
    * @param {Point[] | null} [data.detected]  the raw detector prediction (the "detected" source), or null
    * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
+   * @param {Point[] | null} [data.placeholder]  seed positions for joints absent from this view (the "Missing" ghosts), or null
    */
   setFrameData(data) {
     if (data.points) {
@@ -385,6 +434,9 @@ export class PoseView {
     // (undefined) and this view keeps the set from the last plain/navigation fetch.
     if (data.detected !== undefined) this.detected = data.detected;
     if (data.nmf !== undefined) this.nmf = data.nmf;
+    // Placeholder seeds depend on the frame's GT / occlusion / 3D state, so they ride
+    // the verbose (settle / navigation) reply -- omitted (undefined) mid-drag, keep as-is.
+    if (data.placeholder !== undefined) this.placeholder = data.placeholder;
     this.draw();
   }
 
@@ -409,9 +461,10 @@ export class PoseView {
   // Whether this view accepts editing gestures right now: it must be an editable (large,
   // writer-owned) view AND the Ground truth layer must be shown -- GT is the editable layer, so
   // a drag authors GT and hover/selection are live only while GT is visible. Turning GT off makes
-  // the view inspect-only (pan/zoom still work).
+  // the view inspect-only (pan/zoom still work). The `h` peek (overlaysHidden) also drops it: a
+  // point you cannot see must not be draggable, so a peek can't be misread as an edit surface.
   get canGrab() {
-    return this.editable && this.gtVisible;
+    return this.editable && this.gtVisible && !this.overlaysHidden;
   }
 
   /** @param {boolean} zoomable  whether wheel-zoom + pan are allowed (large views only) */
@@ -449,6 +502,27 @@ export class PoseView {
     this.draw();
   }
 
+  /** @param {boolean} visible  whether the "Missing" placeholder-seed layer is drawn (and grabbable) */
+  setPlaceholderVisible(visible) {
+    if (this.placeholderVisible === visible) return;
+    this.placeholderVisible = visible;
+    this.draw();
+  }
+
+  /** @param {boolean} visible  whether the reprojection-distance warning cue is drawn */
+  setWarnVisible(visible) {
+    if (this.warnVisible === visible) return;
+    this.warnVisible = visible;
+    this.draw();
+  }
+
+  /** @param {number} px  image-px threshold above which a joint's anchor<->reprojection gap warns */
+  setWarnThreshold(px) {
+    if (this.warnThreshold === px) return;
+    this.warnThreshold = px;
+    this.draw();
+  }
+
   /** @param {boolean} visible  whether the fitted NMF model is ghosted on top */
   setNmfVisible(visible) {
     if (this.nmfVisible === visible) return;
@@ -460,6 +534,13 @@ export class PoseView {
   setLabelsVisible(visible) {
     if (this.labelsVisible === visible) return;
     this.labelsVisible = visible;
+    this.draw();
+  }
+
+  /** @param {boolean} hidden  master peek: hide every overlay (frame only), leaving each layer's own toggle as-is */
+  setOverlaysHidden(hidden) {
+    if (this.overlaysHidden === hidden) return;
+    this.overlaysHidden = hidden;
     this.draw();
   }
 
@@ -524,6 +605,12 @@ export class PoseView {
     } else if (this.img) {
       ctx.drawImage(this.img, this.offX, this.offY, dw, dh);
     }
+    // "Hide all overlays" (the `h` peek): a momentary, non-destructive look at the raw frame.
+    // Everything below draws an overlay, so stopping here leaves just the image -- the mesh,
+    // reprojection, NMF reference, skeleton(s), per-joint marks, reprojection warnings, and the
+    // marquee all vanish. The per-layer toggles are untouched, so clearing the peek restores
+    // exactly what was shown; editing is gated too (see canGrab), so nothing can move unseen.
+    if (this.overlaysHidden) return;
     // The posed NMF mesh sits between the frame and the editable skeleton, so the
     // keypoints stay legible on top of it. The GPU renders the silhouette opaque;
     // compositing it at reduced alpha makes it a translucent overlay.
@@ -541,6 +628,9 @@ export class PoseView {
     const anySkeleton = this.gtVisible || this.detectedVisible;
     const reprojLabels = this.labelsVisible && !anySkeleton;
     if (this.projectedVisible && this.latent) this.drawReprojection(this.latent, reprojLabels);
+    // The "Missing" seeds sit above the reprojection but below the editable skeleton. They only
+    // exist where nothing else is drawn (see placeholderPos), so ordering never hides a real point.
+    if (this.placeholderVisible && this.placeholder) this.drawPlaceholders();
     // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
     if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
@@ -560,6 +650,10 @@ export class PoseView {
     this.drawJointOverlay();
     // The NMF's disagreement with the placed point, drawn back on top as an on-demand leash.
     if (this.nmfVisible && this.nmf && anySkeleton) this.drawLeashes(this.nmf, NMF_RGB, "square", true);
+    // The reprojection-distance warning, drawn topmost among the annotations so a joint whose 2D
+    // label disagrees with the multi-view 3D is impossible to miss. Needs a 3D solve (this.latent)
+    // but is independent of the Projected overlay toggle -- the reprojection data is always here.
+    if (this.warnVisible && this.latent) this.drawReprojWarnings();
     // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
     // the rest of draw()).
     if (this.marquee) this.drawMarquee();
@@ -603,14 +697,34 @@ export class PoseView {
     return this.detected && i < this.detected.length ? this.detected[i] : null;
   }
 
-  // One joint's node in the *editable* skeleton -- its drawn position + source, or null when
-  // it has no observed pixel to draw here (undetected / occluded; such a joint shows only in
-  // the projected overlay, which never merges in). GT wins over detected. While a joint is
-  // being dragged it is authored as ground truth, so render it as GT under the cursor
-  // immediately -- even before the server sets its GT flag and even if it had no pixel before
-  // (a spawn from a detected / projected seed). `mergeDetected` folds the detector's point in
-  // as the fallback (the "Combined" merge); with it off only GT is drawn.
-  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" } | null} */
+  // The "Missing" placeholder seed for joint `i` -- a faint draggable ghost for a joint the
+  // view has NOTHING to grab for (no GT, no detected, no reprojection), so a GT can still be
+  // authored where triangulation dropped the point. Null unless the Missing layer is on and the
+  // server sent a seed here. Suppressed the instant a real point exists for the joint (GT /
+  // detected / projected) so a momentarily stale seed array never shows a ghost under a real
+  // marker -- the seed only shows where the joint is genuinely absent.
+  /** @param {number} i @returns {Point | null} */
+  placeholderPos(i) {
+    if (!this.placeholderVisible) return null;
+    if (!this.placeholder || i >= this.placeholder.length || !this.placeholder[i]) return null;
+    if (this.gtPos(i)) return null;
+    if (this.detectedVisible && this.detPos(i)) return null;
+    if (this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) return null;
+    return this.placeholder[i];
+  }
+
+  // One joint's node in the *editable* skeleton -- its drawn position + source, or null when it
+  // has nothing to draw here. GT wins over detected. While a joint is being dragged it is authored
+  // as ground truth, so render it as GT under the cursor immediately -- even before the server sets
+  // its GT flag and even if it had no pixel before (a spawn from a detected / projected seed).
+  // `mergeDetected` is the "Combined" merge: it folds in, as fallbacks, first the detector's point
+  // and then -- when a joint has neither GT nor detected AND the reprojection overlay is shown --
+  // the reprojected point, so the merged skeleton stays fully connected (no bone drops out just
+  // because one endpoint is only derived). A "projected" node draws no filled disc of its own: it
+  // exists to carry the bone, and the reprojection overlay's hollow ring beneath it (guaranteed
+  // present, since this fallback needs projectedVisible) is its "derived, not observed" marker --
+  // see drawSkeleton. With mergeDetected off only GT is drawn (no detected / projected fallback).
+  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" } | null} */
   nodeAt(i, mergeDetected) {
     if (i === this.dragging && this.moved && this.pts[i]) {
       return { pos: this.pts[i], src: "gt" };
@@ -622,6 +736,9 @@ export class PoseView {
     if (mergeDetected && this.detectedVisible) {
       const d = this.detPos(i);
       if (d) return { pos: d, src: "detected" };
+    }
+    if (mergeDetected && this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) {
+      return { pos: this.latent[i], src: "projected" };
     }
     return null;
   }
@@ -645,7 +762,7 @@ export class PoseView {
     if (this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) {
       return this.latent[i];
     }
-    return null;
+    return this.placeholderPos(i); // last resort: the Missing seed, so its ring/label anchor
   }
 
   // The positions of a single point source: ground truth is the authored pixel (held in `pts`)
@@ -664,17 +781,24 @@ export class PoseView {
 
   // The editable skeleton: the colored bones (a bone touching the hovered joint thickens, so
   // hover reads on the whole limb, not just the dot), then each joint drawn with a marker
-  // whose fill + ring encode its source. `mergeDetected` is the "Combined" merge: on, each
-  // joint is GT if authored else the detector's point (one merged skeleton); off, only GT is
-  // drawn (the Detected layer draws separately underneath). A joint with no node here
-  // (undetected, or GT off) is skipped -- it shows only in the projected overlay. Selection
-  // rings and name labels are drawn by drawJointOverlay on top, so they anchor consistently.
+  // whose fill + ring encode its source. `mergeDetected` is the "Combined" merge: on, each joint
+  // is GT if authored, else the detector's point, else its reprojected point when neither exists
+  // and the projected overlay is shown (so the merged skeleton stays connected) -- a projected
+  // node carries its bone but draws no disc, deferring to the reprojection overlay's hollow ring;
+  // off, only GT is drawn (the Detected layer draws separately underneath). A joint with no node
+  // at all (undetected with the projected overlay hidden, or GT off) is skipped -- it shows only
+  // in the projected overlay. Selection rings and name labels are drawn by drawJointOverlay on
+  // top, so they anchor consistently.
   /** @param {boolean} mergeDetected */
   drawSkeleton(mergeDetected) {
     const ctx = this.ctx;
     const hi = this.highlight;
-    const n = Math.max(this.pts.length, this.detected ? this.detected.length : 0);
-    /** @type {({ pos: Point, src: "gt" | "detected" } | null)[]} */
+    const n = Math.max(
+      this.pts.length,
+      this.detected ? this.detected.length : 0,
+      mergeDetected && this.latent ? this.latent.length : 0,
+    );
+    /** @type {({ pos: Point, src: "gt" | "detected" | "projected" } | null)[]} */
     const nodes = new Array(n);
     for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i, mergeDetected);
     for (const [a, b] of this.bones) {
@@ -693,6 +817,11 @@ export class PoseView {
     for (let i = 0; i < n; i++) {
       const node = nodes[i];
       if (!node) continue;
+      // A projected-fallback node exists only to keep the merged skeleton's bones connected -- it
+      // is NOT an observed point, so it draws no filled disc; the reprojection overlay's hollow
+      // ring beneath it (always present when this node exists) is its "derived, not observed"
+      // marker, and drawJointOverlay carries its selection / hover / label.
+      if (node.src === "projected") continue;
       const [cx, cy] = this.toCanvas(node.pos[0], node.pos[1]);
       const isHover = i === this.highlight;
       const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
@@ -754,10 +883,12 @@ export class PoseView {
       if (!p) continue;
       const [cx, cy] = this.toCanvas(p[0], p[1]);
       const r = POINT_RADIUS_PX * (i === hi ? HOVER_SCALE : 1);
-      // Hover emphasis for a joint with no interactive node (a detected-only / projected-only
-      // joint the editable skeleton didn't draw) -- so cross-view hover still reads on it. Joints
-      // that have a node already got their hover-scaled marker + white ring in drawSkeleton.
-      if (needHover && !this.nodeAt(i, this.combinedVisible)) {
+      // Hover emphasis for a joint the editable skeleton drew no disc for -- one with no node, or
+      // a projected-fallback node (which carries a bone but no marker) -- so cross-view hover still
+      // reads on it. Joints drawn with a gt/detected disc already got their hover-scaled marker +
+      // white ring in drawSkeleton.
+      const node = this.nodeAt(i, this.combinedVisible);
+      if (needHover && (!node || node.src === "projected")) {
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.strokeStyle = "white";
@@ -775,6 +906,62 @@ export class PoseView {
       }
       if (needLabel) this.drawLabel(i, cx, cy, r);
     }
+  }
+
+  // The reprojection-distance warning pass: for each joint whose anchor -- the authored GT pixel,
+  // else the detector's raw prediction (NOT the projected fallback) -- sits farther than
+  // warnThreshold IMAGE px from its 3D reprojection, draw a connector from the anchor to the
+  // reprojected point and a ring on the anchor, coloured amber at the threshold and ramping to red
+  // at WARN_RED_MULT x it. The gap is measured on the raw image-space coords (BEFORE toCanvas), so
+  // the threshold is resolution-meaningful and stable under zoom/pan. Occluded joints (the operator
+  // deliberately dropped the observation, so a mismatch is expected) and the actively-dragged joint
+  // (its anchor is pinned to the cursor, not the solve) are skipped. Purely visual: hit-testing is
+  // data-driven and never consults what is drawn, so this cannot disturb hover / selection / drag.
+  drawReprojWarnings() {
+    const thr = this.warnThreshold;
+    const latent = this.latent;
+    if (!(thr > 0) || !latent) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineCap = "round";
+    const n = Math.min(this.pts.length, latent.length);
+    for (let i = 0; i < n; i++) {
+      if (i === this.dragging) continue; // don't fight the cursor mid-drag
+      if (this.invisible && this.invisible[i]) continue; // occluded: observation intentionally dropped
+      const proj = latent[i];
+      if (!proj) continue;
+      const anchor = this.gtPos(i) || this.detPos(i); // GT, else predicted; else nothing to check
+      if (!anchor) continue;
+      const d = Math.hypot(anchor[0] - proj[0], anchor[1] - proj[1]); // IMAGE px
+      if (d <= thr) continue;
+      const t = Math.max(0, Math.min(1, (d / thr - 1) / (WARN_RED_MULT - 1))); // 0 at thr, 1 at WARN_RED_MULT x thr
+      const rgb = mixRgb(WARN_AMBER, WARN_RED, t);
+      const [ax, ay] = this.toCanvas(anchor[0], anchor[1]);
+      const [px, py] = this.toCanvas(proj[0], proj[1]);
+      const r = POINT_RADIUS_PX * (i === this.highlight ? HOVER_SCALE : 1) + WARN_RING_PAD;
+      // A dark casing under a coloured top, so the cue reads on any frame (mirrors strokeLeash).
+      /** @type {[string, number][]} */
+      const passes = [["rgba(0,0,0,0.55)", 4], [`rgba(${rgb},${0.85 + 0.15 * t})`, 2]];
+      for (const [style, width] of passes) {
+        ctx.strokeStyle = style;
+        ctx.lineWidth = width;
+        ctx.beginPath(); // the connector: anchor -> where the 3D reprojects it
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(px, py);
+        ctx.stroke();
+        ctx.beginPath(); // the warning ring on the anchor
+        ctx.arc(ax, ay, r, 0, Math.PI * 2);
+        ctx.stroke();
+        // Mark the reprojection end too when the Projected overlay is off (which would otherwise
+        // draw its own hollow ring there) -- so the connector never points at empty space.
+        if (!this.projectedVisible) {
+          ctx.beginPath();
+          ctx.arc(px, py, POINT_RADIUS_PX, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
   }
 
   // One point source (ground truth or the raw detections) drawn as its own read-only layer, at
@@ -891,6 +1078,41 @@ export class PoseView {
         const [cx, cy] = this.toCanvas(p[0], p[1]);
         this.drawLabel(i, cx, cy, POINT_RADIUS_PX);
       }
+    }
+    ctx.restore();
+  }
+
+  // The "Missing" layer: a faint, draggable seed at every joint this view has nothing else to grab
+  // (no GT / detected / reprojected point) -- e.g. a joint triangulation rejected, or one the
+  // detector never fired. Each is drawn as a small dashed hollow ring with a faint centre dot in
+  // the joint's limb palette at reduced opacity, so it reads as "not observed -- drag me to place"
+  // rather than an observed point. Its position is the server's sensible seed (the raw detection,
+  // else a nearby frame's pixel, else a neighbour / view centroid). Grabbing one authors a
+  // ground-truth point there (see grabCandidates); placeholderPos suppresses it the instant a real
+  // point exists. The actively-dragged joint is skipped -- it draws as GT under the cursor. The
+  // selection ring, hover emphasis and name label ride the shared drawJointOverlay pass (its
+  // anchor falls through to placeholderPos), so a selected / hovered missing joint still reads.
+  drawPlaceholders() {
+    const ctx = this.ctx;
+    ctx.save();
+    for (let i = 0; i < this.placeholder.length; i++) {
+      if (i === this.dragging && this.moved) continue; // the active drag owns this joint (GT under the cursor)
+      const p = this.placeholderPos(i);
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const color = this.colors[i] || "#fff";
+      ctx.globalAlpha = PLACEHOLDER_ALPHA;
+      ctx.fillStyle = color;
+      ctx.beginPath(); // a faint centre dot marks the grab point
+      ctx.arc(cx, cy, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = color; // a dashed hollow ring: "not observed"
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(PLACEHOLDER_DASH);
+      ctx.beginPath();
+      ctx.arc(cx, cy, POINT_RADIUS_PX, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.restore();
   }
@@ -1107,6 +1329,9 @@ export class PoseView {
       this.gtPos(i),
       this.detectedVisible ? this.detPos(i) : null,
       this.projectedVisible && this.latent && i < this.latent.length ? this.latent[i] : null,
+      // The Missing placeholder is the lowest-priority seed: it only exists where the three
+      // above are absent (see placeholderPos), so it never competes with a real point.
+      this.placeholderPos(i),
     ];
   }
 

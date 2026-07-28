@@ -213,8 +213,37 @@ body {
   background: #3a3a3a;
 }
 
+/* The master "Hide all overlays" row leads the menu and governs every per-layer toggle below
+   it, so a hairline rule sets it apart as a switch over the whole list. */
+#show-menu label.pm-master {
+  margin-bottom: 4px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
+}
+
 #show-menu .pm-name {
   margin-right: 12px;
+}
+
+/* The threshold sub-row under the "Reproj. warning" toggle: indented to sit under the toggle's
+   label text, quieter than a toggle row, with a compact numeric field. */
+#show-menu .pm-subrow {
+  padding-left: 25px; /* clears the checkbox + inline marker so it lines up under the name */
+  gap: 5px;
+  color: #bdbdbd;
+  font-size: 12px;
+  cursor: text;
+}
+
+#show-menu .pm-subrow input[type="number"] {
+  width: 48px;
+  padding: 2px 4px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  text-align: right;
 }
 
 /* A quiet group heading inside a popover menu (e.g. "Point sources" / "Reference" in
@@ -413,6 +442,17 @@ body {
 .mk.m-proj {
   background: transparent; /* hollow */
   border: 1.5px solid #888;
+}
+
+.mk.m-warn {
+  background: transparent; /* hollow amber ring, matching the canvas warning cue */
+  border: 2px solid rgb(255, 176, 0);
+}
+
+.mk.m-placeholder {
+  background: transparent; /* faint dashed hollow ring: the "Missing" seed ghost */
+  border: 1.5px dashed #888;
+  opacity: 0.7;
 }
 
 /* The frame slider gets a row to itself, so let it span the full width. */

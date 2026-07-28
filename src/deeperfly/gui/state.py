@@ -88,6 +88,14 @@ class EditorState:
     #: Undo / redo stacks of per-frame label snapshots (see :class:`_UndoEntry`).
     _undo: list = field(default_factory=list)
     _redo: list = field(default_factory=list)
+    #: Pristine detector detections ``(V, T, P, 2)`` -- the raw peak *before*
+    #: triangulation cleaning, kept even where triangulation dropped the point. The
+    #: top-priority seed for a placeholder (see :meth:`placeholder_pts2d`). ``None``
+    #: when the pristine ``pose2d`` group is unavailable.
+    raw_pts2d: np.ndarray | None = None
+    #: Per-view image size as ``(V, 2)`` ``[width, height]``, for a placeholder's
+    #: last-resort centre. ``None`` when unavailable.
+    image_sizes_wh: np.ndarray | None = None
 
     @classmethod
     def from_result(
@@ -99,6 +107,8 @@ class EditorState:
         tri: TriangulationParams | None = None,
         template=None,
         articulation=None,
+        raw_pts2d: np.ndarray | None = None,
+        image_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
@@ -111,6 +121,11 @@ class EditorState:
         When the result carries a fitted NMF model and 3D pose, a :class:`NmfLive`
         is built so the overlaid model re-fits to the operator's edits. ``template`` /
         ``articulation`` make that re-fit use the *same* model the pipeline did.
+
+        ``raw_pts2d`` is the pristine ``pose2d`` detections (``result.pts2d`` is the
+        triangulation-*cleaned* array, so a rejected point is NaN there); it seeds the
+        placeholder for an otherwise-absent joint. ``image_sizes`` (camera name ->
+        ``(height, width)``) supplies the placeholder's last-resort image centre.
         """
         if labels is None:
             labels = Labels.empty(
@@ -124,12 +139,23 @@ class EditorState:
                 log.exception(
                     "could not set up the live NMF re-fit; using the static fit"
                 )
+        image_sizes_wh = None
+        if image_sizes:
+            image_sizes_wh = np.array(
+                [
+                    (image_sizes.get(name, (0, 0))[1], image_sizes.get(name, (0, 0))[0])
+                    for name in result.cameras.names
+                ],
+                dtype=float,
+            )
         return cls(
             result=result,
             labels=labels,
             ann=ann or AnnotationParams(),
             tri=tri or TriangulationParams(),
             nmf_live=nmf_live,
+            raw_pts2d=None if raw_pts2d is None else np.asarray(raw_pts2d, dtype=float),
+            image_sizes_wh=image_sizes_wh,
         )
 
     @staticmethod
@@ -234,6 +260,99 @@ class EditorState:
         gt = self.labels.gt[:, t]  # (V, P, 2)
         has = self.labels.has_gt[:, t]  # (V, P)
         return np.where(has[..., None], gt, proj)
+
+    # -- placeholder seeds for absent joints ----------------------------------
+
+    def placeholder_pts2d(
+        self, frame: int | None = None, *, window: int = 30
+    ) -> Float[np.ndarray, "V P 2"]:
+        """Seed positions for joints ABSENT from a view, so a GT can still be placed.
+
+        A point rejected by triangulation (or one the detector never fired) has no GT,
+        no displayed detection, and no reprojection in a view -- so the canvas draws
+        nothing there and the operator has nothing to grab, hence no way to author a
+        GT. For exactly those cells this returns a *sensible* draggable seed; every
+        other cell -- already grabbable, or deliberately occluded -- is ``NaN`` (no
+        placeholder). A seed falls back, in order, to:
+
+        1. the raw detector pixel (kept even when triangulation dropped it),
+        2. the nearest frame (within ``window``) whose raw/cleaned pixel in this view
+           is finite -- a keypoint moves little frame to frame,
+        3. the mean of the joint's connected skeleton neighbours shown in this view,
+        4. the centroid of the view's shown points,
+        5. the image centre.
+
+        The operator drags the seed to author GT, so the position only needs to be a
+        reasonable starting point near where the point belongs.
+        """
+        t = self._resolve_frame(frame)
+        n_views, n_points = self.n_views, self.n_points
+        disp = self.display_pts2d(t)  # (V, P, 2): GT over cleaned pred, NaN if absent
+        occ = self.labels.occluded[:, t]  # (V, P)
+        proj = self.display_pts3d_projected(t) if self.has_3d else None
+        disp_ok = np.isfinite(disp).all(axis=-1)  # (V, P)
+        proj_ok = (
+            np.isfinite(proj).all(axis=-1)
+            if proj is not None
+            else np.zeros((n_views, n_points), dtype=bool)
+        )
+        # A cell needs a placeholder iff nothing is grabbable there and it is not
+        # occluded (occluding a point is the operator asserting it cannot be placed).
+        need = ~disp_ok & ~proj_ok & ~occ  # (V, P)
+        out = np.full((n_views, n_points, 2), np.nan)
+        if not need.any():
+            return out
+
+        # A per-cell "shown" position (GT/detected, else the reprojection) for the
+        # neighbour/centroid fallbacks -- what the operator actually sees drawn there.
+        shown = np.where(disp_ok[..., None], disp, np.nan)
+        if proj is not None:
+            fill = np.isfinite(shown).all(axis=-1)
+            shown = np.where(fill[..., None], shown, proj)
+        shown_ok = np.isfinite(shown).all(axis=-1)  # (V, P)
+
+        bones = np.asarray(self.result.skeleton.bones, dtype=int).reshape(-1, 2)
+        lo, hi = max(0, t - window), min(self.n_frames - 1, t + window)
+        for v in range(n_views):
+            for p in np.nonzero(need[v])[0]:
+                out[v, p] = self._seed_position(
+                    v, int(p), t, bones, shown, shown_ok, lo, hi
+                )
+        return out
+
+    def _seed_position(self, v, p, t, bones, shown, shown_ok, lo, hi) -> np.ndarray:
+        """One placeholder seed via the fallback chain (see :meth:`placeholder_pts2d`)."""
+        raw = self.raw_pts2d
+        # 1. the raw detector pixel at this frame.
+        if raw is not None and np.all(np.isfinite(raw[v, t, p])):
+            return np.asarray(raw[v, t, p], dtype=float)
+        # 2. the nearest frame (raw, then cleaned) with a finite pixel in this view.
+        for dt in range(1, max(t - lo, hi - t) + 1):
+            for tt in (t - dt, t + dt):
+                if not lo <= tt <= hi:
+                    continue
+                if raw is not None and np.all(np.isfinite(raw[v, tt, p])):
+                    return np.asarray(raw[v, tt, p], dtype=float)
+                cleaned = self.result.pts2d[v, tt, p]
+                if np.all(np.isfinite(cleaned)):
+                    return np.asarray(cleaned, dtype=float)
+        # 3. the mean of connected skeleton neighbours shown in this view.
+        if bones.size:
+            nbrs = np.unique(
+                np.concatenate([bones[bones[:, 0] == p, 1], bones[bones[:, 1] == p, 0]])
+            )
+            npos = [
+                shown[v, q] for q in nbrs if 0 <= q < shown.shape[1] and shown_ok[v, q]
+            ]
+            if npos:
+                return np.mean(np.stack(npos), axis=0)
+        # 4. the centroid of the view's shown points.
+        if shown_ok[v].any():
+            return shown[v][shown_ok[v]].mean(axis=0)
+        # 5. the image centre (else the origin, if even that is unknown).
+        if self.image_sizes_wh is not None:
+            return self.image_sizes_wh[v] / 2.0
+        return np.zeros(2)
 
     # -- derived 3D (the "cache") ---------------------------------------------
 
@@ -388,7 +507,8 @@ class EditorState:
         more usable views, else a ray-slide of the prior 3D so the point lands under
         the cursor. Every drag (``fix`` or not) authors the GT; ``fix`` is retained for
         wire compatibility but no longer distinguishes a "pin" (GT *is* the
-        constraint). Returns the new 3D point, or ``None`` if there is nothing to move.
+        constraint). Returns the new 3D point, or ``None`` when no 3D could be derived
+        (the GT pixel is still authored -- see below).
         """
         if self.result.pts3d is None:
             return None
@@ -398,11 +518,19 @@ class EditorState:
         x_new = solve_point_3d_drag(
             self.result.cameras, gt_obs, pred_obs, conf, view, xy, prior, self.ann
         )
-        if x_new is None:
-            return None
+        # The 2D drop is ground truth whether or not a 3D can be derived from it yet.
+        # A first view placed on an otherwise-absent point (a triangulation reject, or
+        # one the detector never fired: no prior 3D and a single usable view) has no
+        # solvable 3D, but the authored pixel must still stick so a second view can be
+        # added and the point triangulated. So author the GT unconditionally; update
+        # the 3D cache when the solve produced one, else re-derive (it may stay NaN
+        # until a second view lands).
         self._record_undo(t, point, coalesce=True)
         self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
-        self._set_point3d(t, point, x_new)
+        if x_new is not None:
+            self._set_point3d(t, point, x_new)
+        else:
+            self._rederive_point(t, point)
         self._invalidate_nmf(t)
         return x_new
 

@@ -591,16 +591,21 @@ def _points_payload(
         "can_undo": s.can_undo,
         "can_redo": s.can_redo,
     }
-    # The heavier per-point fields (detector confidence; raw predictions for the
-    # verbose overlay) are static within a frame, so they ride only the settle/plain
-    # reply -- not the ~60x/s mid-drag stream -- and the raw prediction only when the
-    # verbose overlay is on.
+    # The heavier per-point fields (detector confidence; raw predictions and the
+    # missing-joint placeholder seeds for the verbose overlay) are static enough within
+    # a frame to ride only the settle/plain reply -- not the ~60x/s mid-drag stream --
+    # and the raw prediction / placeholder only when the verbose overlay is on.
     if include_nmf:
         nmf = s.display_nmf_projected(t) if s.has_nmf else None
         payload["nmf"] = None if nmf is None else _points_to_json(np.asarray(nmf))
         payload["conf"] = _conf_to_json(s.result.conf, t)
     if verbose:
         payload["pred"] = _points_to_json(np.asarray(s.result.pts2d[:, t]))
+        # Draggable seeds for joints absent from a view (no detection / reprojection),
+        # so a GT can still be placed where triangulation dropped the point. Depends on
+        # the frame's GT / occlusion / 3D state, so -- unlike `pred` -- it refreshes on
+        # every settle/discrete edit (which request verbose), not just on navigation.
+        payload["placeholder"] = _points_to_json(np.asarray(s.placeholder_pts2d(t)))
     return payload
 
 

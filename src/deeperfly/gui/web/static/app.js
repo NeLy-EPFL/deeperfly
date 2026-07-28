@@ -63,6 +63,13 @@ import { Scene3D } from "./scene3d.js";
 // when the operator asks for it -- never on editor load.
 const KEYPOINTS_DOC_URL = "https://nely-epfl.github.io/deeperfly/keypoints/viewer.html";
 
+// localStorage keys for the reprojection-distance warning -- the one display preference that
+// persists across sessions (an operator's tolerance for label-vs-reprojection disagreement).
+const WARN_ON_KEY = "deeperfly.warn.enabled";
+const WARN_PX_KEY = "deeperfly.warn.threshold";
+const WARN_PX_MIN = 1;
+const WARN_PX_MAX = 200;
+
 /**
  * @template {HTMLElement} T
  * @param {string} id
@@ -259,6 +266,8 @@ class App {
   /** @type {HTMLDivElement} */
   layoutWrap = el("layout-wrap");
   /** @type {HTMLInputElement} */
+  hideAllCheck = el("show-hide-all");
+  /** @type {HTMLInputElement} */
   combinedCheck = el("show-combined");
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
@@ -274,6 +283,20 @@ class App {
   projectedWrap = el("projected-wrap");
   /** @type {HTMLInputElement} */
   projectedCheck = el("show-projected");
+  /** @type {HTMLLabelElement} */
+  placeholderWrap = el("placeholder-wrap");
+  /** @type {HTMLInputElement} */
+  placeholderCheck = el("show-placeholder");
+  /** @type {HTMLDivElement} */
+  warnSection = el("warn-section");
+  /** @type {HTMLLabelElement} */
+  warnWrap = el("warn-wrap");
+  /** @type {HTMLInputElement} */
+  warnCheck = el("show-warn");
+  /** @type {HTMLLabelElement} */
+  warnThresholdWrap = el("warn-threshold-wrap");
+  /** @type {HTMLInputElement} */
+  warnThresholdInput = el("warn-threshold");
   /** @type {HTMLDivElement} */
   referenceSection = el("reference-section");
   /** @type {HTMLLabelElement} */
@@ -402,6 +425,10 @@ class App {
     this.buildControls();
     this.applyOsHints();
     this.buildViews();
+    // Sync the (persisted) reprojection-warning state into the freshly-built views. With no saved
+    // override this matches their constructor defaults, so the setters early-return -- no extra draw.
+    this.applyWarn();
+    this.applyWarnThreshold();
     this.relayout();
     this.socket = new EditSocket(
       (p) => this.applyPoints(p, true),
@@ -488,6 +515,7 @@ class App {
     // joints never reflows the widget (and thus never nudges the controls after it).
     this.reserveStatusNameWidth();
 
+    this.hideAllCheck.addEventListener("change", () => this.applyHideAll());
     this.combinedCheck.addEventListener("change", () => this.applyCombined());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The ground-truth and detected source layers exist without 3D (they are the authored
@@ -496,6 +524,30 @@ class App {
     this.detectedCheck.addEventListener("change", () => this.applyDetected());
     this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
     this.projectedCheck.addEventListener("change", () => this.applyProjected());
+    // The "Missing" placeholder seeds let a joint with no detection / reprojection still be
+    // dragged into a GT label (the authored 2D needs no prior 3D), so the layer is available with
+    // or without a 3D solve.
+    this.placeholderCheck.addEventListener("change", () => this.applyPlaceholder());
+    // The reprojection-distance warning flags joints whose GT/detected pixel is far from the 3D
+    // reprojection -- only meaningful with a 3D solve, so it shares the projected row's has_3d gate.
+    const warnAvailable = this.meta.has_3d;
+    this.warnSection.style.display = warnAvailable ? "" : "none";
+    this.warnWrap.style.display = warnAvailable ? "" : "none";
+    this.warnThresholdWrap.style.display = warnAvailable ? "" : "none";
+    // Restore the persisted preference (the one persisted display setting) over the HTML defaults
+    // (on, 8 px), so an operator's tolerance survives a reload. The initial fan-out into the views
+    // happens after buildViews() in init().
+    const savedOn = localStorage.getItem(WARN_ON_KEY);
+    if (savedOn !== null) this.warnCheck.checked = savedOn === "1";
+    const savedPx = Number(localStorage.getItem(WARN_PX_KEY));
+    if (Number.isFinite(savedPx) && savedPx > 0) this.warnThresholdInput.value = String(savedPx);
+    this.warnCheck.addEventListener("change", () => this.applyWarn());
+    this.warnThresholdInput.addEventListener("input", () => this.applyWarnThreshold());
+    // On commit (blur / Enter) snap the shown value back to the clamped one we actually applied.
+    this.warnThresholdInput.addEventListener("change", () => {
+      this.warnThresholdInput.value = String(this.clampWarnPx());
+      this.applyWarnThreshold();
+    });
     // The NMF overlay is the fitted inverse-kinematics model -- only when present. The
     // "Reference" section heading is hidden with it, so it never dangles over no rows.
     this.referenceSection.style.display = this.meta.has_nmf ? "" : "none";
@@ -752,6 +804,8 @@ class App {
         // `pred` (the raw detections) rides the verbose navigation fetch only; when absent
         // (the mid-drag stream) leave each view's detected set unchanged.
         detected: p.pred ? p.pred[v] : undefined,
+        // The Missing seeds ride the same verbose reply (`placeholder`); absent mid-drag -> keep.
+        placeholder: p.placeholder ? p.placeholder[v] : undefined,
         nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
       });
     });
@@ -769,6 +823,15 @@ class App {
   }
 
   // -- display toggles --------------------------------------------------------
+
+  // The master "hide all overlays" peek (the `h` shortcut): hide every overlay in every view for
+  // a clean look at the raw frames, or restore them. Non-destructive -- it overrides the per-layer
+  // toggles without changing them, so clearing it brings back exactly what was shown. It also
+  // gates editing (canGrab) so a point can't be dragged while hidden.
+  applyHideAll() {
+    const hidden = this.hideAllCheck.checked;
+    this.views.forEach((view) => view.setOverlaysHidden(hidden));
+  }
 
   // "Combined" is the merge toggle over the Ground truth + Detected layers: on, they draw as
   // one merged skeleton (GT where authored, else the detector's point); off, as two separate
@@ -796,6 +859,31 @@ class App {
   applyProjected() {
     const visible = this.projectedCheck.checked;
     this.views.forEach((view) => view.setProjectedVisible(visible));
+  }
+
+  applyPlaceholder() {
+    const visible = this.placeholderCheck.checked;
+    this.views.forEach((view) => view.setPlaceholderVisible(visible));
+  }
+
+  applyWarn() {
+    const on = this.warnCheck.checked;
+    localStorage.setItem(WARN_ON_KEY, on ? "1" : "0");
+    this.views.forEach((view) => view.setWarnVisible(on));
+  }
+
+  // The threshold input clamped to a sane pixel range; falls back to the last-applied value when
+  // the field is momentarily empty / non-numeric (mid-edit), so a partial keystroke never resets it.
+  clampWarnPx() {
+    const px = Number(this.warnThresholdInput.value);
+    if (!Number.isFinite(px) || px <= 0) return this.views[0]?.warnThreshold ?? 8;
+    return Math.min(WARN_PX_MAX, Math.max(WARN_PX_MIN, Math.round(px)));
+  }
+
+  applyWarnThreshold() {
+    const px = this.clampWarnPx();
+    localStorage.setItem(WARN_PX_KEY, String(px));
+    this.views.forEach((view) => view.setWarnThreshold(px));
   }
 
   applyNmf() {
@@ -1187,7 +1275,13 @@ class App {
   /** @param {import("./types.js").EditMessage} msg */
   sendEdit(msg) {
     if (this.readOnly) return; // a read-only browser cannot mutate the shared state
-    this.socket.send({ ...msg, seq: ++this.editSeq });
+    // Ask for the verbose reply (which carries the refreshed `pred` + `placeholder` seeds, both
+    // affected by the edit) on every settle / discrete edit, so the Missing ghosts appear/vanish
+    // as points are placed and cleared. The one exception is the mid-drag live stream (edit_3d
+    // with fix:false, ~60x/s) -- it stays lean, and the seeds refresh on the settle reply.
+    const liveDrag = msg.type === "edit_3d" && msg.fix === false;
+    const verbose = msg.verbose ?? !liveDrag;
+    this.socket.send({ ...msg, verbose, seq: ++this.editSeq });
   }
 
   /**
@@ -1628,10 +1722,16 @@ class App {
     // Reset zoom/pan on every camera (also on the Layout menu). Outside the multi-camera
     // block: a single, still-zoomable camera benefits too.
     b.push({ key: "0", group: "cam", label: "0", desc: "Reset the view — fit every camera", run: () => this.resetView() });
+    // Master peek: hide every overlay at once for an unobstructed look at the raw frames, then
+    // press again to restore them exactly as they were. Leads the "show" group -- it governs
+    // all the per-layer toggles below it.
+    b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
     b.push({ key: "s", group: "show", label: "s", desc: "Combined — merge ground truth + detected into one skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
+    b.push({ key: "i", group: "show", label: "i", desc: "Missing-point seeds — draggable ghosts where a joint has no detection / reprojection", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
     if (has3d) {
       b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
+      b.push({ key: "w", group: "show", label: "w", desc: "Reprojection-distance warning", run: () => this.toggleCheck(this.warnCheck, () => this.applyWarn()) });
     }
     if (this.meta.has_nmf) {
       b.push({ key: "m", group: "show", label: "m", desc: "NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
@@ -1643,13 +1743,18 @@ class App {
     b.push({ key: "a", label: "a", desc: "Select all points (every view)", run: () => this.selectAll() });
     b.push({ key: "a", mod: true, hidden: true, label: hint("A", ["mod"]), desc: "", run: () => this.selectAll() });
     b.push({ key: "v", label: "v", desc: "Select every point in the view under the cursor", run: () => this.selectActiveView() });
-    // Acting on the selection.
-    b.push({ key: "Enter", group: "edit", label: "Enter", desc: "Confirm the selection as ground truth", run: () => this.confirmSelection() });
-    b.push({ key: "r", group: "edit", label: "r", desc: "Reset the selection to the detector", run: () => this.resetSelection() });
+    // Acting on the selection: 1 / 2 / 3 set the whole selection's state, left-to-right in the
+    // same order as the status-card chips (Ground truth · Detected · Projected). Enter / r / o
+    // stay as hidden aliases so the older muscle memory -- and the Reset button's r -- keep working.
+    b.push({ key: "1", group: "edit", label: "1", desc: "Ground truth — confirm the selection", run: () => this.confirmSelection() });
+    b.push({ key: "Enter", group: "edit", hidden: true, label: "Enter", desc: "", run: () => this.confirmSelection() });
+    b.push({ key: "2", group: "edit", label: "2", desc: "Detected — reset the selection to the detector", run: () => this.resetSelection() });
+    b.push({ key: "r", group: "edit", hidden: true, label: "r", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
     if (has3d) {
-      b.push({ key: "o", group: "edit", label: "o", desc: "Mark Projected — no observation here; drop it from the 3D solve", run: () => this.occludeSelection() });
+      b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no observation here; drop it from the 3D solve", run: () => this.occludeSelection() });
+      b.push({ key: "o", group: "edit", hidden: true, label: "o", desc: "", run: () => this.occludeSelection() });
     }
     b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
     // Redo answers to both ⌘Y and ⇧⌘Z; the help shows whichever the platform expects
@@ -1845,7 +1950,7 @@ class App {
     const mesh = hint("M", ["shift"]);
     setTitle(
       "show-toggle",
-      `Show / hide the view layers (keyboard: n Names · s Combined${this.meta.has_3d ? " · p Reprojected" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
+      `Show / hide the view layers (keyboard: h Hide all · s Combined · n Names${this.meta.has_3d ? " · p Reprojected · w Reproj. warning" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
     );
     const meshChip = document.querySelector("#mesh-wrap kbd");
     if (meshChip) meshChip.textContent = mesh;
@@ -1856,7 +1961,7 @@ class App {
     // The selection status card's how-to, re-spelled for this OS and this model.
     setTitle(
       "point-status",
-      `The selected point(s): click a chip to set the whole selection's state — Ground truth (Enter) or Projected (o) — or Reset (r) to clear the labels back to the detector. Select with click, ${add}-click to add/remove, double-click (all views), Shift-drag (new region), ${add}-drag to add; a = all, v = this view. Click the background or Esc to clear. Hover a point to peek at its name + state.`,
+      `The selected point(s): click a chip to set the whole selection's state — Ground truth (1), Detected (2), or Projected (3) — or the Reset button (r) to clear the labels back to the detector. Select with click, ${add}-click to add/remove, double-click (all views), Shift-drag (new region), ${add}-drag to add; a = all, v = this view. Click the background or Esc to clear. Hover a point to peek at its name + state.`,
     );
   }
 

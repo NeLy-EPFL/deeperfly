@@ -43,6 +43,78 @@ def test_occluded_view_displays_nan(result):
     assert not np.all(np.isfinite(disp[0, 5]))  # occluded -> NaN (front-end ghosts it)
 
 
+# -- placeholder seeds for joints absent from a view --------------------------
+
+
+def _reject_point(result, point):
+    """NaN one point across every view + its 3D -- a point triangulation dropped."""
+    result.pts2d[:, :, point] = np.nan
+    result.pts3d[:, point] = np.nan
+    result.reproj_error[:, :, point] = np.nan
+    return result
+
+
+def test_placeholder_seeds_only_absent_joints(result):
+    # A rejected point (NaN in every view, no 3D) gets a finite draggable seed in
+    # every view; nothing that is actually shown gets a seed on top of it.
+    p = 5
+    state = EditorState.from_result(_reject_point(result, p))
+    ph = state.placeholder_pts2d(0)
+    assert np.isfinite(ph[:, p]).all()
+    disp = state.display_pts2d(0)
+    shown = np.isfinite(disp).all(axis=-1)  # (V, P)
+    seeded = np.isfinite(ph).all(axis=-1)  # (V, P)
+    assert not (shown & seeded).any()  # a seed only where the joint is absent
+    assert np.isnan(ph[:, 0]).all()  # a fully-observed point gets no seed
+
+
+def test_placeholder_prefers_raw_detection(result):
+    # The top-priority seed is the raw detector pixel triangulation dropped.
+    p = 5
+    raw = result.pts2d.copy()  # a finite detection everywhere, before we reject it
+    state = EditorState.from_result(_reject_point(result, p), raw_pts2d=raw)
+    ph = state.placeholder_pts2d(0)
+    assert np.allclose(ph[:, p], raw[:, 0, p])
+
+
+def test_placeholder_skips_occluded_view(result):
+    # Occluding a view is the operator asserting the point cannot be placed there, so
+    # that view gets no seed while the others still do.
+    p = 5
+    state = EditorState.from_result(_reject_point(result, p))
+    state.toggle_invisible(0, p, frame=0)
+    ph = state.placeholder_pts2d(0)
+    assert np.isnan(ph[0, p]).all()
+    assert np.isfinite(ph[1, p]).all()
+
+
+def test_placeholder_falls_back_to_image_centre(result):
+    # With no raw detection and no neighbour/temporal signal (a single-frame result
+    # whose whole skeleton is gone), the seed is the view's image centre.
+    result.pts2d[:] = np.nan
+    result.pts3d[:] = np.nan
+    result.reproj_error[:] = np.nan
+    sizes = {name: (480, 640) for name in result.cameras.names}
+    state = EditorState.from_result(result, image_sizes=sizes)
+    ph = state.placeholder_pts2d(0)
+    assert np.allclose(ph[:, 0], [640 / 2, 480 / 2])
+
+
+def test_3d_edit_authors_gt_even_when_3d_unsolvable(result):
+    # A first view dropped on an otherwise-absent point authors GT even though a single
+    # usable view + NaN prior yields no 3D; a second view then triangulates it.
+    p = 5
+    state = EditorState.from_result(_reject_point(result, p))
+    assert np.isnan(state.display_pts3d(0)[p]).any()  # rejected -> NaN 3D
+    x1 = state.apply_3d_edit(view=0, point=p, xy=(100.0, 120.0), frame=0)
+    assert x1 is None  # nothing to triangulate from one view
+    assert state.labels.has_gt[0, 0, p]  # ... but the GT pixel still stuck
+    assert np.isnan(state.display_pts3d(0)[p]).any()  # 3D still unresolved
+    x2 = state.apply_3d_edit(view=1, point=p, xy=(140.0, 90.0), frame=0)
+    assert x2 is not None and np.isfinite(x2).all()  # two views -> a finite 3D
+    assert np.isfinite(state.display_pts3d(0)[p]).all()
+
+
 # -- derived 3D ---------------------------------------------------------------
 
 
