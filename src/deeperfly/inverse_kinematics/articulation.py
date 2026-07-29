@@ -15,9 +15,14 @@ module loads that geometry -- baked once from the NeuroMechFly MJCF into
 
 A recording is registered to the model by one similarity transform
 (:func:`body_similarity`) fit from the six thorax-coxa keypoints (which are
-body-fixed); the chain angles are then solved in the model frame
-(:func:`deeperfly.inverse_kinematics.core.solve_chain`). The same chains pose the
-head/abdomen of the overlay mesh, so the angles and the mesh stay consistent.
+body-fixed). The same chains both enter the solved body plan
+(:mod:`deeperfly.inverse_kinematics.bodyplan`) and pose the head/abdomen of the overlay
+mesh, so the angles and the mesh stay consistent.
+
+This module is pure model *geometry*: it loads the baked asset and measures a chain's
+size, and holds no kinematics of its own. The chain forward kinematics lives in
+:mod:`deeperfly.inverse_kinematics.forward` (:func:`~deeperfly.inverse_kinematics.forward.chain_affine`
+is re-exported here, where its callers have always looked for it).
 """
 
 from __future__ import annotations
@@ -29,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from .forward import chain_affine
 
 __all__ = [
     "Chain",
@@ -315,31 +322,6 @@ def estimate_chain_scale(
     if meas_len.size == 0:
         return 1.0
     return float(np.clip(np.median(meas_len) / model_len, clamp[0], clamp[1]))
-
-
-def chain_affine(
-    chain: Chain, depth: int, theta: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """The model-frame affine ``(A, b)`` carrying a depth-``d`` point: ``A p + b``.
-
-    Mirrors :func:`deeperfly.inverse_kinematics.kinematics.make_chain_fk` in numpy
-    (used to pose the head/abdomen mesh nodes). ``theta`` is the chain's joint angles.
-    """
-    a_cum = np.eye(3)
-    b_cum = np.zeros(3)
-    for i in range(int(depth)):
-        r = _axis_rmat(chain.axes[i], float(theta[i]))
-        c = chain.anchors[i]
-        b_cum = a_cum @ (c - r @ c) + b_cum
-        a_cum = a_cum @ r
-    return a_cum, b_cum
-
-
-def _axis_rmat(axis: np.ndarray, angle: float) -> np.ndarray:
-    """Rotation by ``angle`` about the unit ``axis`` (Rodrigues, sin/cos form)."""
-    ax, ay, az = axis
-    k = np.array([[0.0, -az, ay], [az, 0.0, -ax], [-ay, ax, 0.0]])
-    return np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
 
 
 def _umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:

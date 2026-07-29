@@ -265,9 +265,20 @@ class NmfMesh:
         Missing angles (no IK chain fit, or NaN) give the articulation identity, so
         the node rides the rigid body at its neutral pose. ``scales`` (head, abdomen)
         additionally grows each chain's mesh about its base anchor -- folded into the
-        affine as ``A' = f A`` and ``b' = f b + (1 - f) base``.
+        affine as ``A' = f A`` and ``b' = f b + (1 - f) base``. The solved body plan
+        bakes that same growth into its chain offsets, so the fitted angles and the
+        nodes drawn from them describe one pose (see
+        :mod:`deeperfly.inverse_kinematics.bodyplan`).
+
+        Deliberately driven by the *unfiltered* packaged articulation and the angle
+        *names*, not by the recording's body plan: chain index 0 is always the head and
+        1 the abdomen here (that is what ``nmf_mesh.npz`` bakes into its node slots),
+        and this way the overlay articulates for a result file written by any version --
+        including one whose run fit only the abdomen, and one produced before body plans
+        existed.
         """
-        from .articulation import chain_affine, load_articulation
+        from .articulation import load_articulation
+        from .forward import chain_affine
 
         wanted = {
             (int(c), int(d)) for c, d in zip(self.slot_chain, self.slot_depth) if c >= 0

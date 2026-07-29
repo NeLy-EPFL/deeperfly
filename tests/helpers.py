@@ -7,6 +7,8 @@ Importable as a top-level module thanks to ``pythonpath = ["tests"]`` in
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from deeperfly.config import Config
@@ -91,3 +93,83 @@ def fly_masked(pts2d: np.ndarray) -> np.ndarray:
     mask = Config.default().detection_plan().visibility_mask()  # (7, 38)
     m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
     return np.where(m[..., None], pts2d, np.nan)
+
+
+#: The recorded pre-QuickIK solver output, and the two input poses it was measured
+#: on (see ``test_ik_baseline.py``). Also the source of a real, fully-triangulated pose
+#: for tests that want one -- ``examples/data/**/results.h5`` is git-ignored, so it is
+#: not available to the suite.
+IK_BASELINE_PATH = Path(__file__).parent / "data" / "ik_baseline_scipy.npz"
+
+
+# -- inverse kinematics: synthetic poses --------------------------------------
+#
+# Shared by the solver-free geometry tests and the QuickIK solver tests, so both
+# exercise the same construction. Deliberately numpy-only (no QuickIK, no JAX): a
+# pose built here is exactly reachable by the model, which is what makes it usable as
+# ground truth for a solve.
+
+#: Front-leg segment lengths (NeuroMechFly units), shared by all six synthetic legs.
+IK_SEGLENS = np.array([0.0, 0.40, 0.69, 0.54, 0.63])
+
+#: Plausible coxa positions for the six legs, in a body-aligned world frame.
+IK_COXAE = {
+    "lf": [1.0, 0.5, 0.0],
+    "rf": [1.0, -0.5, 0.0],
+    "lm": [0.0, 0.6, 0.0],
+    "rm": [0.0, -0.6, 0.0],
+    "lh": [-1.0, 0.5, 0.0],
+    "rh": [-1.0, -0.5, 0.0],
+}
+
+
+def bent_angles(chain, rng, frac=(0.3, 0.7)) -> np.ndarray:
+    """Random joint angles within ``frac`` of each DOF's range (a non-singular pose)."""
+    lo, hi = chain.bounds
+    return lo + (hi - lo) * rng.uniform(frac[0], frac[1], size=len(lo))
+
+
+def synth_leg_pose(template, skeleton, rng, r_body=None, n_frames=3):
+    """A synthetic 3D pose: each leg placed by forward kinematics from known angles.
+
+    Returns ``(pts3d (T, P, 3), truth {leg_name: angles})``. Only leg points are
+    filled; every other skeleton point stays NaN.
+    """
+    from deeperfly.inverse_kinematics.forward import leg_fk
+
+    r_body = np.eye(3) if r_body is None else np.asarray(r_body, dtype=float)
+    index = {n: i for i, n in enumerate(skeleton.point_names)}
+    pts3d = np.full((n_frames, skeleton.n_points, 3), np.nan)
+    truth = {}
+    for leg in template.legs:
+        angles = bent_angles(leg, rng)
+        truth[leg.name] = angles
+        local = leg_fk(angles, leg.axes, IK_SEGLENS, leg.dof_counts)
+        world = local @ r_body.T + np.array(IK_COXAE[leg.name])
+        for j, name in enumerate(leg.point_names):
+            pts3d[:, index[name]] = world[j]
+    return pts3d, truth
+
+
+def place_chain_markers(chain, theta, sim, pts, index, size=1.0):
+    """Fill ``pts`` with a chain's markers, FK'd by ``theta`` then placed by ``sim``.
+
+    ``size`` grows the neutral markers about the chain base before the forward
+    kinematics -- the same transform the body plan bakes in and the overlay mesh
+    applies -- so a recording can be synthesized for a head/abdomen that differs in
+    size from the model geometry.
+    """
+    from deeperfly.inverse_kinematics.forward import chain_affine
+
+    rot, scale, trans = sim
+    base = np.asarray(chain.anchors[0], dtype=float)
+    for k, (name, depth) in enumerate(zip(chain.marker_names, chain.marker_depth)):
+        a, b = chain_affine(chain, depth, theta)
+        neutral = base + size * (chain.marker_neutral[k] - base)
+        pts[:, index[name]] = scale * (rot @ (a @ neutral + b)) + trans
+
+
+def rot_z(angle: float) -> np.ndarray:
+    """Rotation about the world z axis."""
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
