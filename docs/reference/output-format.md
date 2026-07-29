@@ -46,7 +46,8 @@ inverse_kinematics/
     angles                  (T, D)        fitted joint angles (radians)
     angle_names             (D,)          the angle names, in column order
     points3d                (T, P, 3)     fitted model joints (world; skeleton order)
-    attrs["meta"]           json {template, alignment, chain_scales, body_scale} of the fit
+    body_plan               scalar str    the QuickIK body plan that was solved (JSON)
+    attrs["meta"]           json {template, solver, alignment, chain_scales, body_scale}
 ```
 
 `angle_names` are the flygym joint names `<parent_body>-<child_body>-<dof>`: e.g.
@@ -54,14 +55,25 @@ inverse_kinematics/
 `rf_trochanterfemur-rf_tibia-pitch` / `rf_tibia-rf_tarsus1-pitch` for a leg,
 `c_thorax-c_head-{yaw,pitch,roll}` for the head, and the `c_thorax-c_abdomen12-pitch`
 … `c_abdomen5-c_abdomen6-pitch` chain for the abdomen (the head/abdomen columns are
-present only when `fit_head` / `fit_abdomen` are on). `points3d` carries the model's prediction for every fitted
+present only when `fit_head` / `fit_abdomen` are on). A limb with too few observed
+keypoints in a frame — fewer than two — is `NaN` for that frame rather than filled with
+the solver's neutral-biased guess, so "not fitted" stays distinguishable from "fitted
+straight". `points3d` carries the model's prediction for every fitted
 keypoint in skeleton order (leg joints, antenna tips, abdomen markers; other points
-`NaN`), so it reprojects with the skeleton's own bones. The meta's `chain_scales`
+`NaN`), so it reprojects with the skeleton's own bones.
+
+`body_plan` is the kinematic tree the fit was solved on, with this recording's
+**measured** segment lengths baked into it — both a record of what was fitted and what
+the editor's live re-fit re-solves on, so it cannot drift from the stored result. It is a
+dataset rather than a meta key because it runs to tens of kilobytes, close enough to the
+64 KB an HDF5 attribute allows to be worth keeping out.
+
+The meta's `chain_scales`
 (`{"head": …, "abdomen": …}`) are the head/abdomen size relative to the model that
 the stage estimates from each chain's contour length (its markers' reach along the
-chain), applied to the fit and the mesh overlay. `body_scale` is the overlay's
-single body size for the recording (registered once from the median thorax-coxa
-spread); the mesh overlay holds the body, head, and abdomen at this fixed size and
+chain), applied to the fit and the mesh overlay alike. `body_scale` is the recording's
+body size relative to the model, from the single coxa registration that also places the
+body plan; the mesh overlay holds the body, head, and abdomen at this fixed size and
 varies only rotation + translation per frame, so the body does not breathe.
 
 A `cameras/` group stores `names`, `rvecs`, `tvecs`, `intrs` (`[fx, fy, cx, cy]`),

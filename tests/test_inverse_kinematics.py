@@ -1,34 +1,36 @@
-"""Tests for the inverse-kinematics stage: FK/IK math, alignment, template, solve."""
+"""Tests for the inverse-kinematics model: template, alignment, articulation, mesh.
+
+Everything here is solver-free -- the model *geometry* and the measurements deeperfly
+takes from a recording, none of which needs the optional QuickIK extra. The solve
+itself lives in ``test_inverse_kinematics_quickik.py``, and the body plan and forward
+kinematics in ``test_ik_forward_bodyplan.py``.
+
+The split is not cosmetic: the mesh overlay, the reprojected NMF skeleton and the GUI's
+static-fit path all run on a plain install, so the code they need must be tested
+without the extra installed.
+"""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from deeperfly.inverse_kinematics import solve_inverse_kinematics
-from deeperfly.inverse_kinematics.align import (
-    Alignment,
-    body_alignment,
-    to_local,
-    to_world,
+from helpers import (
+    IK_SEGLENS as _SEGLENS,
 )
-from deeperfly.inverse_kinematics.core import solve_leg
-from deeperfly.inverse_kinematics.kinematics import make_leg_fk
+from helpers import (
+    bent_angles as _bent_angles,
+)
+from helpers import (
+    place_chain_markers as _place_chain_markers,
+)
+from helpers import (
+    rot_z as _rot_z,
+)
+from helpers import synth_leg_pose as _synth_pose
+
+from deeperfly.inverse_kinematics.align import body_alignment, to_local, to_world
 from deeperfly.inverse_kinematics.template import KinematicTemplate
 from deeperfly.skeleton import Skeleton
-
-# Front-leg segment lengths (NMF units); shared by all legs in the synthetic pose.
-_SEGLENS = np.array([0.0, 0.40, 0.69, 0.54, 0.63])
-
-# Plausible coxa positions for the six legs in a body-aligned world frame.
-_COXAE = {
-    "lf": [1.0, 0.5, 0.0],
-    "rf": [1.0, -0.5, 0.0],
-    "lm": [0.0, 0.6, 0.0],
-    "rm": [0.0, -0.6, 0.0],
-    "lh": [-1.0, 0.5, 0.0],
-    "rh": [-1.0, -0.5, 0.0],
-}
 
 
 @pytest.fixture
@@ -41,139 +43,15 @@ def fly() -> Skeleton:
     return Skeleton.fly()
 
 
-def _bent_angles(chain, rng, frac=(0.3, 0.7)):
-    """Random joint angles within ``frac`` of each DOF's bounds (a non-singular pose)."""
-    lo, hi = chain.bounds
-    return lo + (hi - lo) * rng.uniform(frac[0], frac[1], size=len(lo))
-
-
-def _synth_pose(template, fly, rng, r_body=None, n_frames=3):
-    """A synthetic 3D pose: each leg placed by FK from random angles in a known frame.
-
-    Returns ``(pts3d (T, P, 3), truth_angles {leg: (D,)})``.
-    """
-    r_body = np.eye(3) if r_body is None else r_body
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    pts3d = np.full((n_frames, fly.n_points, 3), np.nan)
-    truth = {}
-    for leg in template.legs:
-        ang = _bent_angles(leg, rng)
-        truth[leg.name] = ang
-        local = np.asarray(make_leg_fk(leg.dof_counts)(ang, leg.axes, _SEGLENS))
-        world = to_world(local, np.array(_COXAE[leg.name]), r_body)
-        for j, name in enumerate(leg.point_names):
-            pts3d[:, index[name]] = world[j]
-    return pts3d, truth
-
-
-# -- forward / inverse kinematics --------------------------------------------
-
-
-def test_fk_rest_pose_points_straight_down(template):
-    """With every angle zero the chain is a straight leg along -z (the rest pose)."""
-    leg = template.legs[0]
-    fk = make_leg_fk(leg.dof_counts)
-    joints = np.asarray(fk(np.zeros(sum(leg.dof_counts)), leg.axes, _SEGLENS))
-    # x and y stay at the origin; z descends by the cumulative segment length.
-    np.testing.assert_allclose(joints[:, :2], 0.0, atol=1e-12)
-    np.testing.assert_allclose(joints[:, 2], -np.cumsum(_SEGLENS), atol=1e-12)
-
-
-def test_fk_jacobian_is_finite_at_zero(template):
-    """The FK Jacobian is finite even at angle 0 (the fixed-axis Rodrigues form)."""
-    import jax
-
-    leg = template.legs[0]
-    fk = make_leg_fk(leg.dof_counts)
-    jac = jax.jacrev(fk, argnums=0)(np.zeros(sum(leg.dof_counts)), leg.axes, _SEGLENS)
-    assert np.isfinite(np.asarray(jac)).all()
-
-
-def test_solve_leg_recovers_positions_and_angles(template, fly, rng):
-    """A per-leg solve reproduces the measured joint positions (and angles) exactly."""
-    leg = next(leg for leg in template.legs if leg.name == "rf")
-    true = _bent_angles(leg, rng)
-    local = np.asarray(make_leg_fk(leg.dof_counts)(true, leg.axes, _SEGLENS))
-    origin = np.array([12.0, -3.0, 5.0])
-    world = to_world(local, origin, np.eye(3))
-
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    pts3d = np.full((2, fly.n_points, 3), np.nan)
-    for j, name in enumerate(leg.point_names):
-        pts3d[:, index[name]] = world[j]
-    align = Alignment(np.eye(3), {"rf": origin}, {"rf": _SEGLENS}, None)
-
-    angles, model = solve_leg(pts3d, index, leg, align, max_nfev=200)
-    np.testing.assert_allclose(model[0], world, atol=1e-6)
-    np.testing.assert_allclose(angles[0], true, atol=1e-5)
-
-
-def test_fitted_angles_stay_within_bounds(template, fly, rng):
-    pts3d, _ = _synth_pose(template, fly, rng)
-    res = solve_inverse_kinematics(pts3d, fly, template, max_nfev=200)
-    col = 0
-    for leg in template.legs:
-        lo, hi = leg.bounds
-        d = len(lo)
-        ang = res.angles[:, col : col + d]
-        finite = np.isfinite(ang)
-        assert (ang[finite] >= (lo - 1e-6)[None].repeat(ang.shape[0], 0)[finite]).all()
-        assert (ang[finite] <= (hi + 1e-6)[None].repeat(ang.shape[0], 0)[finite]).all()
-        col += d
-
-
-def test_missing_distal_joints_tolerated(template, fly, rng):
-    """Dropping the claw/tarsus still fits the leg from the remaining joints."""
-    pts3d, _ = _synth_pose(template, fly, rng)
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    pts3d[:, index["rf_claw"]] = np.nan  # occluded distal joint
-    res = solve_inverse_kinematics(pts3d, fly, template, max_nfev=200)
-    # the observed rf joints are still reproduced by the fitted model (dropping the
-    # claw frees the TiTa DOF, so the proximal joints fit to a looser tolerance)
-    for name in ("rf_thorax_coxa", "rf_femur_tibia", "rf_tibia_tarsus"):
-        p = index[name]
-        assert np.isfinite(res.model_pts3d[0, p]).all()
-        np.testing.assert_allclose(res.model_pts3d[0, p], pts3d[0, p], atol=5e-3)
-
-
-def test_full_solve_shapes_and_overlay_fit(template, fly, rng):
-    pts3d, _ = _synth_pose(template, fly, rng, n_frames=4)
-    res = solve_inverse_kinematics(pts3d, fly, template, max_nfev=200)
-    # angle columns = leg DOFs (+ antenna angles appended by the head solve)
-    assert res.angles.shape == (4, len(res.angle_names))
-    assert res.angle_names[: len(template.dof_names)] == template.dof_names
-    assert res.model_pts3d.shape == (4, fly.n_points, 3)
-    # every observed leg joint is reproduced (the overlay lands on the keypoints)
-    mask = np.isfinite(pts3d) & np.isfinite(res.model_pts3d)
-    mask = mask.all(axis=-1)
-    err = np.linalg.norm(
-        np.where(mask[..., None], res.model_pts3d - pts3d, 0.0), axis=-1
-    )
-    assert np.max(err[mask]) < 1e-4
-
-
 # -- alignment ---------------------------------------------------------------
 
 
-def test_alignment_frame_is_orthonormal_and_invariant(template, fly, rng):
-    """A rotated body still fits exactly; the recovered body frame is orthonormal."""
-    angle = 0.5
-    r = np.array(
-        [
-            [np.cos(angle), -np.sin(angle), 0],
-            [np.sin(angle), np.cos(angle), 0],
-            [0, 0, 1.0],
-        ]
-    )
-    pts3d, _ = _synth_pose(template, fly, rng, r_body=r)
-    align = body_alignment(pts3d, fly, template)
-    rb = align.r_body
+def test_alignment_frame_is_orthonormal(template, fly, rng):
+    """The body frame recovered from the coxae is a proper rotation, however posed."""
+    pts3d, _ = _synth_pose(template, fly, rng, r_body=_rot_z(0.5))
+    rb = body_alignment(pts3d, fly, template).r_body
     np.testing.assert_allclose(rb.T @ rb, np.eye(3), atol=1e-6)
     np.testing.assert_allclose(np.linalg.det(rb), 1.0, atol=1e-6)
-    # the solve still reproduces the (rotated) measured joints
-    res = solve_inverse_kinematics(pts3d, fly, template, max_nfev=200)
-    p = {n: i for i, n in enumerate(fly.point_names)}["rf_claw"]
-    np.testing.assert_allclose(res.model_pts3d[0, p], pts3d[0, p], atol=1e-3)
 
 
 def test_to_local_to_world_round_trip(rng):
@@ -185,6 +63,7 @@ def test_to_local_to_world_round_trip(rng):
 
 
 def test_measured_seglens_recovered(template, fly, rng):
+    """Bone lengths are measured back off the data -- what the body plan is built from."""
     pts3d, _ = _synth_pose(template, fly, rng)
     align = body_alignment(pts3d, fly, template)
     np.testing.assert_allclose(align.seglens["rf"], _SEGLENS, atol=1e-6)
@@ -237,54 +116,25 @@ def test_resolve_constant_points_names_and_errors(fly):
         _resolve_constant_points(["not_a_point"], fly)
 
 
-def test_stage_ik_holds_constant_points_fixed(fly, rng):
-    """With ``constant_points`` set, the fitted leg root is constant over time.
-
-    Jittering a coxa (a physically-fixed joint) frame-to-frame makes the fitted leg
-    root follow that jitter by default; declaring it constant pins it to the temporal
-    median so the root stops moving.
-    """
-    from deeperfly.config import Config
-    from deeperfly.pipeline.stages import stage_inverse_kinematics
-
-    template = KinematicTemplate.load("neuromechfly")
-    pts3d, _ = _synth_pose(template, fly, rng, n_frames=6)
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    coxa = index["rf_thorax_coxa"]
-    pts3d[:, coxa] = pts3d[:, coxa] + rng.normal(scale=0.05, size=(6, 3))
-
-    common = {"fit_head": False, "fit_abdomen": False}
-    off = stage_inverse_kinematics(
-        Config.from_dict({"inverse_kinematics": common}), fly, pts3d.copy()
-    )
-    on = stage_inverse_kinematics(
-        Config.from_dict(
-            {"inverse_kinematics": {**common, "constant_points": ["rf_thorax_coxa"]}}
-        ),
-        fly,
-        pts3d.copy(),
-    )
-
-    assert np.ptp(on.model_pts3d[:, coxa], axis=0).max() < 1e-6  # pinned = constant
-    np.testing.assert_allclose(
-        on.model_pts3d[0, coxa], np.nanmedian(pts3d[:, coxa], axis=0), atol=1e-4
-    )
-    assert np.ptp(off.model_pts3d[:, coxa], axis=0).max() > 1e-3  # unpinned = jitters
+# -- confidence weights ------------------------------------------------------
 
 
-# -- head / antenna ----------------------------------------------------------
+def test_confidence_weights_average_over_views():
+    """A 3D point's solve weight is the mean confidence of the 2D views behind it."""
+    from deeperfly.pipeline.stages import _confidence_weights
+
+    assert _confidence_weights(None) is None
+    conf = np.array([[[0.2, 1.0]], [[0.8, np.nan]]])  # (V=2, T=1, P=2)
+    got = _confidence_weights(conf)
+    np.testing.assert_allclose(got, [[0.5, 1.0]])  # NaN views are ignored, not zeros
 
 
-def test_head_antenna_angles_present_and_absent(template, fly, rng):
-    pts3d, _ = _synth_pose(template, fly, rng)
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    # place antennae forward + up of the head origin
-    for name in ("l_antenna", "r_antenna"):
-        pts3d[:, index[name]] = [2.0, 0.0, 0.5]
-    res = solve_inverse_kinematics(pts3d, fly, template, max_nfev=120)
-    assert any(n.endswith("pedicel-pitch") for n in res.angle_names)
-    pitch = res.angle_names.index("c_head-l_pedicel-pitch")
-    assert np.isfinite(res.angles[:, pitch]).all()
+def test_confidence_weights_all_nan_point_is_nan():
+    """A point unseen in every view yields NaN, which the solve reads as unobserved."""
+    from deeperfly.pipeline.stages import _confidence_weights
+
+    got = _confidence_weights(np.full((2, 1, 1), np.nan))
+    assert np.isnan(got).all()
 
 
 # -- template ----------------------------------------------------------------
@@ -435,76 +285,6 @@ def test_nmf_mesh_hidden_face_mask_hides_parts():
 # -- head / abdomen articulation chains ---------------------------------------
 
 
-def _place_chain_markers(chain, theta, sim, pts, index, size=1.0):
-    """Fill ``pts`` with a chain's markers, FK'd by ``theta`` then placed by ``sim``.
-
-    ``size`` grows the neutral markers about the chain base before the FK, the same
-    way ``solve_chain(scale=...)`` and the overlay mesh do, so a recording can be
-    synthesized for a head/abdomen larger or smaller than the model geometry.
-    """
-    from deeperfly.inverse_kinematics.articulation import chain_affine
-
-    rot, scale, trans = sim
-    base = np.asarray(chain.anchors[0], dtype=float)
-    for k, (name, depth) in enumerate(zip(chain.marker_names, chain.marker_depth)):
-        a, b = chain_affine(chain, depth, theta)
-        neutral = base + size * (chain.marker_neutral[k] - base)
-        model = a @ neutral + b
-        pts[:, index[name]] = scale * (rot @ model) + trans
-
-
-def test_chain_fk_matches_numpy_affine():
-    """The JAX chain FK agrees with the numpy ``chain_affine`` used to pose the mesh."""
-    from deeperfly.inverse_kinematics.articulation import (
-        chain_affine,
-        load_articulation,
-    )
-    from deeperfly.inverse_kinematics.kinematics import make_chain_fk
-
-    rng = np.random.default_rng(1)
-    for chain in load_articulation().chains:
-        fk = make_chain_fk(chain.anchors, chain.axes, chain.marker_depth)
-        theta = _bent_angles(chain, rng)
-        jax_markers = np.asarray(fk(theta, chain.marker_neutral))
-        for k, depth in enumerate(chain.marker_depth):
-            a, b = chain_affine(chain, depth, theta)
-            np.testing.assert_allclose(
-                jax_markers[k], a @ chain.marker_neutral[k] + b, atol=1e-6
-            )
-
-
-@pytest.mark.parametrize(
-    "name,size",
-    [("head", 1.0), ("abdomen", 1.0), ("head", 1.6), ("abdomen", 0.7)],
-)
-def test_solve_chain_recovers_known_angles(name, size):
-    """A bounded-LS chain solve recovers the angles that generated the markers.
-
-    Also exercises a head/abdomen ``size`` other than the model's: the markers are
-    placed for a chain grown/shrunk by ``size`` and the solve is told that size, so
-    it must still recover the generating angles and reach the markers.
-    """
-    from deeperfly.inverse_kinematics.articulation import load_articulation
-    from deeperfly.inverse_kinematics.core import solve_chain
-
-    fly = Skeleton.fly()
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    chain = load_articulation().chain(name)
-    rng = np.random.default_rng(0)
-    sim = (_rot_z(0.4), 1.6, np.array([2.0, -1.0, 3.0]))
-    truth = _bent_angles(chain, rng)
-    pts = np.full((3, fly.n_points, 3), np.nan)
-    _place_chain_markers(chain, truth, sim, pts, index, size=size)
-
-    angles, world = solve_chain(
-        pts, index, chain, sim, max_nfev=300, regularization=0.0, scale=size
-    )
-    np.testing.assert_allclose(angles[0], truth, atol=1e-3)
-    # the fitted markers reproject onto the (noise-free) measurements
-    for k, mname in enumerate(chain.marker_names):
-        np.testing.assert_allclose(world[0, k], pts[0, index[mname]], atol=1e-5)
-
-
 def test_abdomen_bounds_are_downward_only():
     """The baked abdomen chain only bends ventrally (downward), <=30 deg per joint.
 
@@ -573,11 +353,6 @@ def test_articulation_marker_override_rejects_bad_body():
         )
 
 
-def _rot_z(a):
-    c, s = np.cos(a), np.sin(a)
-    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-
-
 @pytest.mark.parametrize("name,size", [("head", 1.7), ("abdomen", 0.7)])
 def test_estimate_chain_scale_recovers_contour_length(name, size):
     """The size estimate recovers a chain grown/shrunk by ``size`` from its contour.
@@ -620,37 +395,6 @@ def test_estimate_chain_scale_defaults_to_one_when_unobserved():
     chain = load_articulation().chain("abdomen")
     local = np.full((4, len(chain.marker_names), 3), np.nan)
     assert estimate_chain_scale(local, chain) == 1.0
-
-
-def test_solve_inverse_kinematics_includes_head_and_abdomen(fly):
-    """With an articulation, the solve adds head/abdomen DOFs and fills their markers."""
-    from deeperfly.inverse_kinematics.articulation import load_articulation
-
-    template = KinematicTemplate.load("neuromechfly")
-    art = load_articulation()
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    sim = (_rot_z(0.2), 1.5, np.array([1.0, 2.0, -1.0]))
-    rng = np.random.default_rng(3)
-
-    pts = np.full((2, fly.n_points, 3), np.nan)
-    # place the coxae (registers the body) and the head/abdomen markers
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
-
-    kpn = load_nmf_mesh().kp_neutral
-    for cname in art.coxa_points:
-        pts[:, index[cname]] = sim[1] * (sim[0] @ kpn[index[cname]]) + sim[2]
-    truth = {c.name: _bent_angles(c, rng, frac=(0.4, 0.6)) for c in art.chains}
-    for c in art.chains:
-        _place_chain_markers(c, truth[c.name], sim, pts, index)
-
-    res = solve_inverse_kinematics(
-        pts, fly, template, articulation=art, regularization=0.0
-    )
-    assert "c_thorax-c_head-yaw" in res.angle_names
-    assert "c_abdomen12-c_abdomen3-pitch" in res.angle_names
-    # the antenna + abdomen markers are filled in the reprojected model points
-    for name in ("l_antenna", "r_antenna", "l_abdomen0", "r_abdomen2"):
-        assert np.isfinite(res.model_pts3d[0, index[name]]).all()
 
 
 def test_nmf_mesh_articulates_head_and_abdomen_from_angles():

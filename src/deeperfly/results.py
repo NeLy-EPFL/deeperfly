@@ -92,6 +92,11 @@ class PoseResult:
     nmf_angle_names: list[str] | None = None
     nmf_chain_scales: dict[str, float] = field(default_factory=dict)
     nmf_body_scale: float = 1.0
+    #: The body plan the fit was solved on, as JSON, when the file recorded one. Lets
+    #: the editor's live re-fit run on exactly the pipeline's geometry instead of
+    #: re-deriving it. ``None`` for a file written before plans were stored -- every
+    #: consumer must cope, since the stored fit and its overlays do not need it.
+    nmf_body_plan: str | None = None
     meta: dict = field(default_factory=dict)
 
     @property
@@ -199,9 +204,12 @@ class PoseResult:
                 if reproj is None and f"{stage}/reproj_error" in f:
                     reproj = f[f"{stage}/reproj_error"][()]  # type: ignore[index]
             conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
-            nmf = nmf_angles = nmf_angle_names = None
+            nmf = nmf_angles = nmf_angle_names = nmf_body_plan = None
             nmf_chain_scales: dict[str, float] = {}
             nmf_body_scale = 1.0
+            if "inverse_kinematics/body_plan" in f:
+                raw = f["inverse_kinematics/body_plan"][()]  # type: ignore[index]
+                nmf_body_plan = raw.decode() if isinstance(raw, bytes) else str(raw)
             if "inverse_kinematics/points3d" in f:
                 nmf = f["inverse_kinematics/points3d"][()]  # type: ignore[index]
             if "inverse_kinematics/angles" in f:
@@ -232,6 +240,7 @@ class PoseResult:
             nmf_angle_names=nmf_angle_names,
             nmf_chain_scales=nmf_chain_scales,
             nmf_body_scale=nmf_body_scale,
+            nmf_body_plan=nmf_body_plan,
             meta=meta,
         )
 
@@ -384,6 +393,7 @@ class StageStore:
         angles,
         angle_names,
         model_pts3d,
+        body_plan: str | None = None,
         meta: dict | None = None,
     ) -> None:
         """Replace the ``inverse_kinematics`` group (joint angles + fitted model joints).
@@ -397,9 +407,15 @@ class StageStore:
         model_pts3d
             The fitted model joints ``(T, P, 3)`` in world coordinates (skeleton
             point order), for reprojection / the overlay.
+        body_plan
+            The solved body plan, as JSON. Stored as its own **dataset** rather than in
+            ``meta``: it runs to tens of kilobytes, which is uncomfortably close to the
+            64 KB an HDF5 attribute allows, and ``meta`` is encoded with a ``default=``
+            fallback that would silently stringify a stray numpy value instead of
+            raising.
         meta
-            Free-form metadata stored on the group's ``attrs`` (e.g. the template
-            name and the alignment), JSON-encoded.
+            Small free-form metadata stored on the group's ``attrs`` (the template name,
+            the registration, the estimated scales), JSON-encoded.
         """
         with h5py.File(self.path, "a") as f:
             if "inverse_kinematics" in f:
@@ -412,6 +428,8 @@ class StageStore:
                 dtype=_STR,
             )
             g.create_dataset("points3d", data=np.asarray(model_pts3d, dtype=float))
+            if body_plan is not None:
+                g.create_dataset("body_plan", data=str(body_plan), dtype=_STR)
             if meta:
                 g.attrs["meta"] = json.dumps(meta, default=str)
 
@@ -432,6 +450,26 @@ class StageStore:
                 names,
                 g["points3d"][()],  # type: ignore[index]
             )
+
+    def read_ik_meta(self) -> dict:
+        """The IK stage's metadata, ``{}`` when absent.
+
+        Separate from :meth:`read_ik` (which returns only the arrays) because the
+        estimated ``chain_scales`` / ``body_scale`` live here and the mesh overlay needs
+        them: rendering from the arrays alone silently drew the model at size 1.0. The
+        stored ``body_plan`` is folded in under that key.
+        """
+        with self._open() as f:
+            if f is None or "inverse_kinematics" not in f:
+                return {}
+            g = f["inverse_kinematics"]
+            meta = json.loads(g.attrs["meta"]) if "meta" in g.attrs else {}  # type: ignore[arg-type]
+            if "body_plan" in g:
+                plan = g["body_plan"][()]  # type: ignore[index]
+                meta["body_plan"] = (
+                    plan.decode() if isinstance(plan, bytes) else str(plan)
+                )
+            return meta
 
     def truncate_from(self, stage: str) -> None:
         """Delete ``stage``'s group and every later stage's group.

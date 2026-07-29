@@ -2,7 +2,7 @@
 
 `deeperfly run` is one linear sequence of stages — `pose2d` →
 `bundle_adjustment` → `pictorial_structures` (off by default) → `triangulation`
-→ `visualization`. Each stage is toggled by a `do_<stage>` boolean in
+→ `inverse_kinematics` (off by default) → `visualization`. Each stage is toggled by a `do_<stage>` boolean in
 `[pipeline]`, configured by its own top-level `[<stage>]` table, and (except
 `visualization`) writes its own group in `results.h5`. This page walks through what
 each stage consumes and produces; the cross-cutting array layouts and terms it
@@ -190,7 +190,32 @@ Lifts the per-view 2D observations into one 3D point per joint per frame by
 multi-view geometry. The `method` (`ransac` / `greedy` / `dlt`) chooses how
 outliers are handled — see below.
 
-### 5. `visualization` — render videos
+### 5. `inverse_kinematics` — 3D → joint angles (opt-in)
+
+- **Consumes:** the 3D pose (`pts3d`) and the skeleton; optionally `conf`.
+- **Produces:** joint angles `(T, D)` with their names, the fitted model's joint
+  positions `(T, P, 3)` in world coordinates, and the body plan that was solved.
+- **Cached in:** `inverse_kinematics/`.
+- **Needs:** the optional [`ik` extra](../reference/configuration.md#inverse_kinematics).
+
+Off by default. A 3D point cloud says *where* each keypoint is but not what the animal
+*did*: this stage recovers the articulated pose behind it — the joint angles whose
+forward kinematics reach the reconstructed keypoints.
+
+deeperfly builds a NeuroMechFly body plan for the recording, with each leg's segment
+lengths **measured from that recording** (so the fitted model has this fly's
+proportions and lands on its keypoints rather than near them), plus the head and the
+abdomen's sagittal pitch chain from geometry baked out of the NeuroMechFly MJCF.
+[QuickIK](https://nely-epfl.github.io/quickik/) then fits the whole body at once —
+every leg, the head and the abdomen against all the tracked keypoints in one solve,
+rather than each limb on its own — with a toward-neutral prior pinning the DOFs the
+keypoints leave undetermined and each frame warm-started from the last.
+
+Because the fitted *joint positions* are written alongside the angles, the model
+reprojects onto the raw views with the skeleton's own bones: that is what the
+`skeleton_nmf` and `mesh_nmf` panels and the GUI's NMF overlays draw.
+
+### 6. `visualization` — render videos
 
 - **Consumes:** the assembled result (best 2D + 3D from the enabled stages, the
   rig, the skeleton) and the footage for `imshow` panels.

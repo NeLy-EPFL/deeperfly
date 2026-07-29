@@ -166,11 +166,18 @@ extra overlays are available:
   zoom; it overlays the editor without blocking it, so the frame slider still scrubs.
 
 Both overlays **re-fit to your labels**: as the derived 3D moves under your edits the
-model is re-solved for that frame. The live re-fit uses the **same model the pipeline
-did** — template, joint bounds, fitted legs, `fit_head`/`fit_abdomen`, and any
-[custom marker placement](../reference/configuration.md#inverse_kinematics) all carry
-over (read from the `config.toml` snapshot beside `results.h5`). Which parts the mesh
-draws is set by [`[gui].mesh_hide`](../reference/configuration.md#gui).
+model is re-solved for that frame. The live re-fit runs on the **body plan the pipeline
+solved**, read back from `results.h5` — this recording's measured segment lengths and its
+registration to the model, so the live overlay and the rendered one describe the same
+animal. (Older result files carry no plan; one is rebuilt from the `config.toml` snapshot
+beside `results.h5` instead.) Which parts the mesh draws is set by
+[`[gui].mesh_hide`](../reference/configuration.md#gui).
+
+Re-fitting a frame depends only on that frame and its labels, so scrubbing away and back,
+or undoing and redoing, always returns the same pose. It also needs the optional
+[`ik` extra](../reference/configuration.md#inverse_kinematics), since it is the same
+solver the pipeline uses: without it the overlays still draw the stored fit, they just
+stop following your edits (the editor says so once, on startup).
 
 ## Other overlays
 

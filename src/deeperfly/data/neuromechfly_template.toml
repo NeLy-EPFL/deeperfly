@@ -1,8 +1,12 @@
-# NeuroMechFly inverse-kinematics template.
+# NeuroMechFly inverse-kinematics leg template.
 #
-# Describes the articulated leg/head model the `inverse_kinematics` stage fits to
-# the 3D pose. Derived from NeLy-EPFL/sequential-inverse-kinematics (`body_config`),
-# reimplemented here so deeperfly carries no ikpy/flygym dependency.
+# The leg half of the model the `inverse_kinematics` stage fits to the 3D pose: this
+# file plus the recording's measured segment lengths become the leg chains of the body
+# plan QuickIK solves (see deeperfly/inverse_kinematics/bodyplan.py). The head and
+# abdomen are not here -- their joints are not keypoints, so they come from the baked
+# `data/nmf_articulation.json` instead. Derived from
+# NeLy-EPFL/sequential-inverse-kinematics (`body_config`), transcribed so deeperfly
+# carries no ikpy/flygym dependency.
 #
 # Leg-local frame: x = anterior, y = left, z = dorsal (up). The rest leg points
 # straight down (-z); with every joint angle zero the chain reproduces that pose.
@@ -92,10 +96,3 @@ CTr_pitch = [-180, 0]
 CTr_roll = [0, 150]
 FTi_pitch = [0, 170]
 TiTa_pitch = [-150, 0]
-
-# -- head / antenna ----------------------------------------------------------
-# The antenna tips are fit by the vector method (their direction from a derived
-# head origin), not a serial chain. A no-op when these points are not tracked.
-
-[head]
-antennae = ["l_antenna", "r_antenna"]

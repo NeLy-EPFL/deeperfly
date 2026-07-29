@@ -359,6 +359,7 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
 
 def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
     """Enabling inverse_kinematics on a cached 3D pose writes the IK group end-to-end."""
+    pytest.importorskip("quickik", reason="the IK stage needs the deeperfly[ik] extra")
     from deeperfly.results import StageStore
 
     outdir = tmp_path / "out"
@@ -376,7 +377,7 @@ def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
         "do_triangulation = true\ndo_inverse_kinematics = true\n"
         "do_visualization = false\n"
-        "[inverse_kinematics]\nmax_nfev = 60\n"
+        "[inverse_kinematics]\nn_iterations = 30\n"
     )
     cli.main(
         [

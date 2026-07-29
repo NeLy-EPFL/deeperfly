@@ -26,6 +26,30 @@ jobs:
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest --cov=deeperfly --cov-report=term-missing
 
+  test-ik:
+    # The inverse-kinematics solver (QuickIK) is an optional extra: it publishes no
+    # wheels, so installing it compiles a Rust extension. The matrix above therefore
+    # runs *without* it -- which is the right default, but it means every test that
+    # solves is skipped there. This job is where the solver is actually exercised.
+    # One Python version only: PyO3 builds per interpreter, so each would recompile.
+    name: test (ik extra)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync dependencies (with the ik extra)
+        run: uv sync --group test --extra ik --python 3.12
+      - name: The extra really is importable
+        # Guard the point of this job: the solver tests all `importorskip`, so a failed
+        # build would leave the suite green with every one of them skipped.
+        run: uv run --python 3.12 python -c "import quickik"
+      - name: Run tests
+        run: uv run --python 3.12 pytest
+
   lint:
     runs-on: ubuntu-latest
     steps:

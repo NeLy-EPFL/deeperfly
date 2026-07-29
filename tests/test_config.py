@@ -8,6 +8,9 @@ round-trip, and the migration errors for the renamed/removed sections.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from deeperfly import Config
@@ -15,12 +18,26 @@ from deeperfly.config import (
     DEFAULT_CONFIG_PATH,
     STAGE_DEFAULTS,
     BundleAdjustmentParams,
+    InverseKinematicsParams,
     IoParams,
     PictorialParams,
     Pose2dParams,
     TriangulationParams,
 )
 from deeperfly.visualization.compose import VideoSpec
+
+
+def _ik_section(text: str) -> str:
+    """The ``[inverse_kinematics]`` region of a config TOML, comments included.
+
+    Runs from its leading comment block to the next top-level section that is not one
+    of its own sub-tables.
+    """
+    start = text.index("# Inverse kinematics:")
+    rest = re.search(r"(?m)^\[(?!inverse_kinematics)", text[start:])
+    assert rest is not None, "no section follows [inverse_kinematics]"
+    return text[start : start + rest.start()]
+
 
 # -- defaults: one source of truth -------------------------------------------
 
@@ -32,6 +49,7 @@ def test_empty_config_uses_python_defaults():
     assert c.triangulation == TriangulationParams()
     assert c.pictorial == PictorialParams()
     assert c.io == IoParams()
+    assert c.inverse_kinematics == InverseKinematicsParams()
     assert c.stage_flags() == STAGE_DEFAULTS
 
 
@@ -46,7 +64,24 @@ def test_template_matches_python_defaults():
     assert c.triangulation == TriangulationParams()
     assert c.pictorial == PictorialParams()
     assert c.io == IoParams()
+    assert c.inverse_kinematics == InverseKinematicsParams()
     assert c.stage_flags() == STAGE_DEFAULTS
+
+
+def test_examples_config_inverse_kinematics_matches_the_packaged_template():
+    """``examples/config.toml``'s IK section must be the packaged one, verbatim.
+
+    The example config is a hand-maintained copy with no guard of its own, so it drifts
+    silently -- and a stale ``[inverse_kinematics]`` there is not a cosmetic problem:
+    the GUI reads the config snapshot beside ``results.h5`` to rebuild the model, and a
+    key the validator no longer accepts makes it fall back to the packaged default model
+    with only a logged warning.
+    """
+    packaged = _ik_section(DEFAULT_CONFIG_PATH.read_text())
+    example = _ik_section(
+        (Path(__file__).parents[1] / "examples/config.toml").read_text()
+    )
+    assert example == packaged
 
 
 def test_overrides_win_over_defaults():
@@ -114,9 +149,20 @@ def test_inverse_kinematics_defaults_when_absent():
     assert (
         ik.template == "neuromechfly"
         and ik.legs is None
-        and ik.max_nfev == 100
-        and ik.loss == "linear"
-        and ik.f_scale == 1.0
+        and ik.fit_head is True
+        and ik.fit_abdomen is True
+        and ik.n_iterations == 60
+        and ik.neutral_weight == 1e-3
+        # Heavily damped on purpose: light damping overshoots into the joint limits,
+        # where QuickIK's clamp-based box handling then deadlocks.
+        and ik.damping == 0.1
+        and ik.position_tolerance == 1e-3
+        and ik.angle_tolerance == 1e-3
+        and ik.fixed_body is True  # a tethered fly: the body doesn't move
+        and ik.weigh_by_confidence is False
+        and ik.parallel is False  # sequential: seam-free and reproducible
+        and ik.segment_len == 200
+        and ik.overlap_len == 10
         and ik.bounds == {}
         and ik.constant_points == []
     )
@@ -128,18 +174,67 @@ def test_inverse_kinematics_reads_overrides():
             "inverse_kinematics": {
                 "template": "neuromechfly",
                 "legs": ["rf", "lf"],
-                "max_nfev": 50,
+                "n_iterations": 50,
+                "fixed_body": False,
                 "bounds": {"rf_trochanterfemur-rf_tibia-pitch": [10, 160]},
             }
         }
     ).inverse_kinematics
-    assert ik.legs == ["rf", "lf"] and ik.max_nfev == 50
+    assert ik.legs == ["rf", "lf"] and ik.n_iterations == 50
+    assert ik.fixed_body is False
     assert ik.bounds == {"rf_trochanterfemur-rf_tibia-pitch": [10.0, 160.0]}
 
 
 def test_inverse_kinematics_unknown_key_fails_loudly():
     with pytest.raises(ValueError, match=r"\[inverse_kinematics\] has unknown key"):
         Config.from_dict({"inverse_kinematics": {"bogus": 1}}).inverse_kinematics
+
+
+@pytest.mark.parametrize("removed", ["max_nfev", "loss", "f_scale", "regularization"])
+def test_inverse_kinematics_rejects_the_removed_scipy_knobs(removed):
+    """The pre-QuickIK ``least_squares`` knobs are gone, and say so rather than pass.
+
+    They tuned a solver that no longer exists, so silently ignoring them would leave a
+    user believing they were still tuning the fit.
+    """
+    with pytest.raises(ValueError, match=rf"unknown key\(s\) \['{removed}'\]"):
+        Config.from_dict({"inverse_kinematics": {removed: 1}}).inverse_kinematics
+
+
+def test_solve_inverse_kinematics_signature_defaults_match_the_config():
+    """The library entry point's defaults are the configured ones, not a second copy.
+
+    ``solve_inverse_kinematics`` takes each solver knob as a keyword, so its signature
+    is a place a default can quietly diverge from ``[inverse_kinematics]`` -- and it did:
+    a direct library call solved with a different damping than the pipeline, which showed
+    up as a wrong abdomen fit only in the tests that call it directly.
+    """
+    import inspect
+
+    from deeperfly.inverse_kinematics import solve_inverse_kinematics
+
+    defaults = InverseKinematicsParams()
+    params = inspect.signature(solve_inverse_kinematics).parameters
+    for name in (
+        "n_iterations",
+        "neutral_weight",
+        "damping",
+        "position_tolerance",
+        "angle_tolerance",
+        "fixed_body",
+        "parallel",
+        "segment_len",
+        "overlap_len",
+    ):
+        assert params[name].default == getattr(defaults, name), name
+
+
+def test_inverse_kinematics_allowed_keys_are_derived_from_the_dataclass():
+    """The strict-validation message lists the keys actually parsed, not a stale literal."""
+    from deeperfly.config import IK_KEYS
+
+    parsed = {f.name for f in InverseKinematicsParams.__dataclass_fields__.values()}
+    assert IK_KEYS == (parsed - {"markers"}) | {"head", "abdomen"}
 
 
 def test_inverse_kinematics_reads_constant_points():

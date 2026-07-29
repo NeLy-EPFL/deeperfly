@@ -311,16 +311,26 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
             "[pipeline].do_triangulation (or do_pictorial_structures)"
         )
         return False
+    conf = None
+    if ctx.config.inverse_kinematics.weigh_by_confidence:
+        pose2d = ctx.store.read_pose2d()
+        conf = None if pose2d is None else pose2d[1]
     result = stages.stage_inverse_kinematics(
-        ctx.config, ctx.store.read_skeleton(), pts3d
+        ctx.config, ctx.store.read_skeleton(), pts3d, conf
     )
     ctx.store.truncate_from("inverse_kinematics")
     ctx.store.write_ik(
         angles=result.angles,
         angle_names=result.angle_names,
         model_pts3d=result.model_pts3d,
+        # The solved plan goes in its own dataset, not the meta: it is far too big for
+        # an HDF5 attribute's 64 KB budget to be comfortable, and `write_ik` renders
+        # the meta with a `default=str` fallback that would quietly stringify any
+        # numpy left in it.
+        body_plan=None if result.body_plan is None else result.body_plan.to_json(),
         meta={
             "template": ctx.config.inverse_kinematics.template,
+            "solver": "quickik",
             "alignment": result.alignment.to_json(),
             "chain_scales": result.chain_scales,
             "body_scale": result.body_scale,

@@ -341,6 +341,57 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
     )
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"inverse_kinematics.n_iterations": 5},
+        {"inverse_kinematics.neutral_weight": 0.5},
+        {"inverse_kinematics.damping": 1e-4},
+        {"inverse_kinematics.position_tolerance": 1e-5},
+        {"inverse_kinematics.angle_tolerance": 1e-5},
+        {"inverse_kinematics.fixed_body": False},
+        {"inverse_kinematics.weigh_by_confidence": True},
+        {"inverse_kinematics.parallel": True},
+        {"inverse_kinematics.segment_len": 64},
+        {"inverse_kinematics.overlap_len": 3},
+    ],
+)
+def test_inverse_kinematics_fingerprint_tracks_every_solver_knob(
+    store, cameras, override
+):
+    """Each QuickIK knob changes the fit, so each must invalidate the cached angles.
+
+    ``parallel``/``segment_len``/``overlap_len`` read like performance knobs (which this
+    module deliberately excludes) but are not: a segmented solve restarts every segment
+    from the neutral pose, so the angles it produces genuinely differ.
+    """
+    base = _cfg()
+    enabled = base.stage_flags()
+    assert fingerprint_diff(
+        stage_fingerprint("inverse_kinematics", base, enabled, store),
+        stage_fingerprint("inverse_kinematics", _cfg(override), enabled, store),
+    )
+
+
+def test_inverse_kinematics_fingerprint_names_its_solver(store, cameras):
+    """A record written by the previous solver must not pass as valid QuickIK output.
+
+    Comparison is subset semantics -- a key that *drops out* of the expected fingerprint
+    does not invalidate the cache -- so dropping the old scipy knobs was not enough on
+    its own. The ``solver`` key is what makes an upgraded install recompute instead of
+    silently serving scipy-era angles to a QuickIK-driven GUI.
+    """
+    base = _cfg()
+    enabled = base.stage_flags()
+    fresh = stage_fingerprint("inverse_kinematics", base, enabled, store)
+    assert fresh["solver"] == "quickik"
+    legacy = {k: v for k, v in fresh.items() if k not in {"solver", "solver_revision"}}
+    legacy |= {"max_nfev": 100, "loss": "linear", "f_scale": 1.0}
+    assert fingerprint_diff(fresh, legacy)
+    # ... and a hand-bumped revision invalidates too, for a change no config key shows.
+    assert fingerprint_diff(fresh, {**fresh, "solver_revision": 0})
+
+
 # -- stage_valid -------------------------------------------------------------------
 
 

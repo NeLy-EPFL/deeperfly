@@ -1,8 +1,13 @@
-"""The kinematic template: the NeuroMechFly-style leg/head model the IK fits.
+"""The kinematic template: the NeuroMechFly-style leg model the IK fits.
 
 A :class:`KinematicTemplate` describes *what* to fit, independent of any recording:
 the per-leg serial chains (ordered joints, each with its revolute DOF axes and
-angle bounds), which skeleton point marks each joint, and the head/antenna spec.
+angle bounds) and which skeleton point marks each joint. It is one of the three
+sources :mod:`deeperfly.inverse_kinematics.bodyplan` assembles into the body plan
+QuickIK solves; the head and abdomen come from the baked
+:mod:`deeperfly.inverse_kinematics.articulation` instead, since their joints are not
+keypoints.
+
 Segment *lengths* are deliberately not part of the template -- they are measured
 from the data during alignment (:mod:`deeperfly.inverse_kinematics.align`) so the
 fitted model reprojects tightly onto the real fly.
@@ -26,7 +31,6 @@ __all__ = [
     "Dof",
     "Joint",
     "LegChain",
-    "HeadSpec",
     "KinematicTemplate",
     "DEFAULT_TEMPLATE_PATH",
     "TEMPLATES",
@@ -112,19 +116,11 @@ class LegChain:
 
 
 @dataclass(frozen=True)
-class HeadSpec:
-    """The head/antenna model: the antenna-tip skeleton points fit by the vector method."""
-
-    antennae: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class KinematicTemplate:
-    """A loaded, validated kinematic template (the legs + head spec)."""
+    """A loaded, validated kinematic template (the leg chains)."""
 
     name: str
     legs: tuple[LegChain, ...]
-    head: HeadSpec | None
 
     # -- construction --------------------------------------------------------
 
@@ -189,13 +185,7 @@ class KinematicTemplate:
         chains = tuple(
             _build_leg(leg, spec["joints"], bounds_by_side, overrides) for leg in chosen
         )
-        head_spec = spec.get("head")
-        head = (
-            HeadSpec(antennae=tuple(head_spec.get("antennae", [])))
-            if head_spec
-            else None
-        )
-        return cls(name=spec.get("name", "template"), legs=chains, head=head)
+        return cls(name=spec.get("name", "template"), legs=chains)
 
     # -- views ---------------------------------------------------------------
 
@@ -206,15 +196,12 @@ class KinematicTemplate:
 
     @property
     def model_point_names(self) -> list[str]:
-        """The skeleton points the model predicts (every leg joint, in order)."""
+        """The skeleton points the legs predict (every leg joint, in chain order)."""
         out: list[str] = []
         for leg in self.legs:
             for name in leg.point_names:
                 if name not in out:
                     out.append(name)
-        for name in self.head.antennae if self.head else ():
-            if name not in out:
-                out.append(name)
         return out
 
 

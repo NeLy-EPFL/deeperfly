@@ -64,6 +64,23 @@ dependencies = [
     "moderngl>=5.10",
 ]
 
+[project.optional-dependencies]
+# The `inverse_kinematics` stage's solver: QuickIK, a Rust whole-body IK library with
+# PyO3 bindings (https://nely-epfl.github.io/quickik/). Optional because it publishes
+# no wheels -- installing it builds the Rust extension with maturin, so it needs a Rust
+# toolchain, which nothing else in deeperfly does. The stage is opt-in and off by
+# default, and a result file that already holds a fit renders its overlays (videos and
+# GUI alike) without this extra, so a plain install stays Rust-free.
+#
+# The git source lives in [tool.uv.sources] rather than as a PEP 508 direct reference
+# here: a direct URL would be baked into the published metadata, and PyPI rejects
+# distributions carrying one. Users installing from PyPI need the explicit
+#   pip install "quickik @ git+https://github.com/NeLy-EPFL/quickik#subdirectory=python"
+ik = ["quickik"]
+
+[tool.uv.sources]
+quickik = { git = "https://github.com/NeLy-EPFL/quickik", subdirectory = "python", rev = "f5b88ddd9fd24d5e56697ac918972c84a47e1312" }
+
 [project.urls]
 Homepage = "https://github.com/NeLy-EPFL/deeperfly"
 Documentation = "https://nely-epfl.github.io/deeperfly/"

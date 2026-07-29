@@ -413,7 +413,9 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
     return pts2d, pts3d, reproj
 
 
-def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
+def stage_inverse_kinematics(
+    config: Config, skeleton: Skeleton | None, pts3d, conf=None
+):
     """Fit the NeuroMechFly model's joint angles to the triangulated 3D pose.
 
     Parameters
@@ -425,11 +427,14 @@ def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
     pts3d
         The 3D pose ``(T, P, 3)`` (triangulation, else pictorial -- see
         :func:`select_pts3d`).
+    conf
+        The per-view 2D confidences ``(V, T, P)``, used only when
+        ``[inverse_kinematics].weigh_by_confidence`` is on.
 
     Returns
     -------
     deeperfly.inverse_kinematics.IKResult
-        The joint angles, fitted model joints (world), and the alignment.
+        The joint angles, fitted model joints (world), the measurements and the plan.
     """
     from ..inverse_kinematics import solve_inverse_kinematics
 
@@ -450,29 +455,45 @@ def stage_inverse_kinematics(config: Config, skeleton: Skeleton | None, pts3d):
         )
     extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
-        "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r)",
+        "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r, %s body)",
         len(template.legs),
         f" + {'/'.join(extra)}" if extra else "",
         pts3d.shape[0],
         template.name,
+        "fixed" if p.fixed_body else "free",
     )
-    result = solve_inverse_kinematics(
+    return solve_inverse_kinematics(
         pts3d,
         skeleton,
         template,
         articulation=articulation,
-        max_nfev=p.max_nfev,
-        loss=p.loss,
-        f_scale=p.f_scale,
-        regularization=p.regularization,
+        weights=_confidence_weights(conf) if p.weigh_by_confidence else None,
+        n_iterations=p.n_iterations,
+        neutral_weight=p.neutral_weight,
+        damping=p.damping,
+        position_tolerance=p.position_tolerance,
+        angle_tolerance=p.angle_tolerance,
+        fixed_body=p.fixed_body,
+        parallel=p.parallel,
+        segment_len=p.segment_len,
+        overlap_len=p.overlap_len,
     )
-    finite = np.isfinite(result.angles).all(axis=0).sum()
-    log.info(
-        "inverse kinematics: %d/%d joint-angle tracks fully solved",
-        int(finite),
-        result.angles.shape[1],
-    )
-    return result
+
+
+def _confidence_weights(conf) -> np.ndarray | None:
+    """``(T, P)`` per-keypoint solve weights from the ``(V, T, P)`` 2D confidences.
+
+    A 3D point is only as trustworthy as the 2D detections behind it, so the weight is
+    the mean confidence over the views. ``None`` when no confidences were stored, which
+    weighs every observed point equally.
+    """
+    if conf is None:
+        return None
+    with (
+        warnings.catch_warnings()
+    ):  # a point unseen in every view -> all-NaN (expected)
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean(np.asarray(conf, dtype=float), axis=0)
 
 
 # -- stage-input selectors -----------------------------------------------------
@@ -564,11 +585,24 @@ def assemble_result(
             better2d, pts3d, reproj = _pts
             if better2d is not None:
                 pts2d = better2d
-    nmf_pts3d = nmf_angles = nmf_angle_names = None
+    nmf_pts3d = nmf_angles = nmf_angle_names = nmf_body_plan = None
+    nmf_chain_scales: dict[str, float] = {}
+    nmf_body_scale = 1.0
     if fingerprint.nmf_source(enabled, store) is not None:
         ik = store.read_ik()
         if ik is not None:
             nmf_angles, nmf_angle_names, nmf_pts3d = ik  # angles, names, model joints
+            # The estimated sizes live in the stage's metadata, not its arrays. Reading
+            # only the arrays (as this did) rendered the mesh overlay in the run's own
+            # videos at model size and a per-frame body scale, while the GUI on the very
+            # same file used the fitted ones.
+            ik_meta = store.read_ik_meta()
+            nmf_chain_scales = {
+                str(k): float(v) for k, v in (ik_meta.get("chain_scales") or {}).items()
+            }
+            if ik_meta.get("body_scale") is not None:
+                nmf_body_scale = float(ik_meta["body_scale"])
+            nmf_body_plan = ik_meta.get("body_plan")
     return PoseResult(
         cameras=select_cameras(config, enabled, store),
         skeleton=store.read_skeleton(),  # type: ignore[arg-type]
@@ -579,6 +613,9 @@ def assemble_result(
         nmf_pts3d=nmf_pts3d,
         nmf_angles=nmf_angles,
         nmf_angle_names=nmf_angle_names,
+        nmf_chain_scales=nmf_chain_scales,
+        nmf_body_scale=nmf_body_scale,
+        nmf_body_plan=nmf_body_plan,
     )
 
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -162,12 +162,46 @@ class BundleAdjustmentParams:
 class InverseKinematicsParams:
     """``[inverse_kinematics]`` -- fit a NeuroMechFly model's joint angles to the 3D pose.
 
+    The solve is QuickIK's (an optional extra, ``deeperfly[ik]``): deeperfly builds a
+    body plan for the recording (:mod:`deeperfly.inverse_kinematics.bodyplan`) and
+    QuickIK fits the whole body -- every leg plus the head and abdomen -- against all
+    the tracked keypoints at once.
+
     ``template`` names a packaged kinematic template (``"neuromechfly"``) or a path
     to a template TOML; ``legs`` restricts which legs are fit (``None`` = all);
     ``bounds`` holds per-DOF degree overrides keyed by the flygym joint angle name
     ``"<parent>-<child>-<dof>"`` (e.g. ``{"rf_trochanterfemur-rf_tibia-pitch": [10,
-    160]}``); ``max_nfev`` / ``loss`` / ``f_scale`` are forwarded to the per-frame
-    :func:`scipy.optimize.least_squares` solve.
+    160]}``).
+
+    ``n_iterations``, ``neutral_weight``, ``damping``, ``position_tolerance`` and
+    ``angle_tolerance`` are QuickIK's solver knobs (its ``SolverConfig``):
+    Gauss-Newton steps per frame, the weight of the pull toward each DOF's neutral
+    value (which is what pins DOFs the keypoints do not determine), the
+    Levenberg-Marquardt damping, and the early-stop thresholds. The plan is solved in
+    *model* units, so the two tolerances mean the same thing on any rig.
+
+    ``damping`` defaults far above QuickIK's own suggested ~1e-6, and deliberately: the
+    abdomen is five near-collinear hinges, so its Jacobian is ill-conditioned and a
+    lightly-damped Gauss-Newton step overshoots into the joint limits. QuickIK enforces
+    limits by clamping the step rather than projecting the gradient, so once an angle
+    clamps it stays there and the solve deadlocks at a feasible but wrong pose --
+    measurably: at 1e-2 an exactly-straight synthetic abdomen converges to a full curl.
+    Damping is the remedy for the conditioning. It cannot go much higher either --
+    the head, three DOFs about one pivot, is well conditioned and simply
+    under-converges when over-damped -- so 0.1 is where every chain fits.
+
+    ``fixed_body`` fixes the body in the model frame, which suits a tethered fly: the
+    leg roots then sit at their measured medians and only the joint angles move. Set it
+    false for a freely-moving preparation to give QuickIK a 6-DOF root to fit per frame.
+
+    ``weigh_by_confidence`` feeds the detector's per-keypoint confidence to the solver
+    as observation weights instead of weighting every observed point equally.
+
+    ``parallel`` solves long recordings in overlapping segments on worker threads
+    (``segment_len`` frames each, sharing ``overlap_len``). Off by default: each segment
+    restarts from the neutral pose and only warm-starts within itself, so the angle
+    traces can step at a segment seam -- a poor trade for a joint-angle time series
+    unless the recording is long enough to need it.
 
     ``markers`` redefines the head/abdomen chain markers -- *where* each tracked
     keypoint sits relative to the model, the labeling-scheme choice. It is keyed by
@@ -176,22 +210,40 @@ class InverseKinematicsParams:
     config tables); see :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
 
     ``constant_points`` names skeleton points whose 3D position is physically fixed
-    over the recording (e.g. a tethered fly's thorax-coxa leg roots). Before the fit,
-    each listed point is replaced by its temporal median across all frames, so the
-    leg roots stop jittering with per-frame detection noise. Empty = off.
+    over the recording. Before the fit, each listed point is replaced by its temporal
+    median across all frames, so it stops jittering with per-frame detection noise (and
+    occluded frames get filled in). Empty = off. Note that under ``fixed_body`` the leg
+    roots are already held at their measured medians *by construction*, so this mainly
+    matters when the body is free.
     """
 
     template: str = "neuromechfly"
     legs: list[str] | None = None
     fit_head: bool = True
     fit_abdomen: bool = True
-    max_nfev: int = 100
-    loss: str = "linear"
-    f_scale: float = 1.0
-    regularization: float = 0.01
+    n_iterations: int = 60
+    neutral_weight: float = 1e-3
+    damping: float = 0.1
+    position_tolerance: float = 1e-3
+    angle_tolerance: float = 1e-3
+    fixed_body: bool = True
+    weigh_by_confidence: bool = False
+    parallel: bool = False
+    segment_len: int = 200
+    overlap_len: int = 10
     bounds: dict[str, list[float]] = field(default_factory=dict)
     markers: dict[str, dict] = field(default_factory=dict)
     constant_points: list[str] = field(default_factory=list)
+
+
+#: Every key ``[inverse_kinematics]`` accepts. Derived from
+#: :class:`InverseKinematicsParams` plus the two marker sub-tables (which are read into
+#: its ``markers`` field), so the strict-validation error message cannot drift from the
+#: keys actually parsed.
+IK_KEYS: frozenset[str] = frozenset(
+    {f.name for f in fields(InverseKinematicsParams) if f.name != "markers"}
+    | {"head", "abdomen"}
+)
 
 
 @dataclass(frozen=True)
@@ -505,31 +557,44 @@ class Config:
             for chain in ("head", "abdomen")
             if chain in ik
         }
-        template = str(ik.pop("template", "neuromechfly"))
+        defaults = InverseKinematicsParams()
+        template = str(ik.pop("template", defaults.template))
         legs = ik.pop("legs", None)
-        fit_head = ik.pop("fit_head", True)
-        fit_abdomen = ik.pop("fit_abdomen", True)
-        max_nfev = ik.pop("max_nfev", 100)
-        loss = ik.pop("loss", "linear")
-        f_scale = ik.pop("f_scale", 1.0)
-        regularization = ik.pop("regularization", 0.01)
+        fit_head = ik.pop("fit_head", defaults.fit_head)
+        fit_abdomen = ik.pop("fit_abdomen", defaults.fit_abdomen)
+        n_iterations = ik.pop("n_iterations", defaults.n_iterations)
+        neutral_weight = ik.pop("neutral_weight", defaults.neutral_weight)
+        damping = ik.pop("damping", defaults.damping)
+        position_tolerance = ik.pop("position_tolerance", defaults.position_tolerance)
+        angle_tolerance = ik.pop("angle_tolerance", defaults.angle_tolerance)
+        fixed_body = ik.pop("fixed_body", defaults.fixed_body)
+        weigh_by_confidence = ik.pop(
+            "weigh_by_confidence", defaults.weigh_by_confidence
+        )
+        parallel = ik.pop("parallel", defaults.parallel)
+        segment_len = ik.pop("segment_len", defaults.segment_len)
+        overlap_len = ik.pop("overlap_len", defaults.overlap_len)
         constant_points = ik.pop("constant_points", [])
         if ik:  # any leftover key is a typo -- match _params' strict validation
             raise ValueError(
-                f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; allowed: "
-                "['abdomen', 'bounds', 'constant_points', 'f_scale', 'fit_abdomen', "
-                "'fit_head', 'head', 'legs', 'loss', 'max_nfev', 'regularization', "
-                "'template']"
+                f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; "
+                f"allowed: {sorted(IK_KEYS)}"
             )
         return InverseKinematicsParams(
             template=template,
             legs=None if legs is None else [str(leg) for leg in legs],
             fit_head=bool(fit_head),
             fit_abdomen=bool(fit_abdomen),
-            max_nfev=int(max_nfev),
-            loss=str(loss),
-            f_scale=float(f_scale),
-            regularization=float(regularization),
+            n_iterations=int(n_iterations),
+            neutral_weight=float(neutral_weight),
+            damping=float(damping),
+            position_tolerance=float(position_tolerance),
+            angle_tolerance=float(angle_tolerance),
+            fixed_body=bool(fixed_body),
+            weigh_by_confidence=bool(weigh_by_confidence),
+            parallel=bool(parallel),
+            segment_len=int(segment_len),
+            overlap_len=int(overlap_len),
             bounds=bounds,
             markers=markers,
             constant_points=[str(n) for n in constant_points],

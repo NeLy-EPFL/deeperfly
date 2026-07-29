@@ -471,22 +471,64 @@ min_inliers = 2             # min agreeing views to accept a point (ransac)
 
 # Inverse kinematics: fit a NeuroMechFly-style articulated model's joint angles to
 # the triangulated 3D pose (off by default; set do_inverse_kinematics = true). The
-# model is aligned to the data and solved with bounded least squares -- the six legs
-# (measured segment lengths), plus the head (yaw/pitch/roll from the antenna tips)
-# and the abdomen (a sagittal pitch chain from the abdomen markers). The angles AND
-# the fitted model joints (which reproject onto the raw images -- see the
-# `skeleton_nmf` / `mesh_nmf` panels and the GUI's NMF overlays) are written to
-# results.h5.
+# solver is QuickIK (https://nely-epfl.github.io/quickik/), an optional extra --
+# install it with `deeperfly[ik]`. deeperfly builds a body plan for the recording
+# (the six legs with segment lengths MEASURED from the data, plus the head and the
+# abdomen's sagittal pitch chain) and QuickIK fits the whole body against every
+# tracked keypoint at once. The angles AND the fitted model joints (which reproject
+# onto the raw images -- see the `skeleton_nmf` / `mesh_nmf` panels and the GUI's NMF
+# overlays) are written to results.h5.
 [inverse_kinematics]
 template = "neuromechfly"   # a packaged template name, or a path to a template TOML
 # legs = ["lf", "lm", "lh", "rf", "rm", "rh"]  # which legs to fit (default: all)
-fit_head = true            # fit head yaw/pitch/roll from the antenna tips
+fit_head = true            # fit the head chain (yaw/pitch/roll) from the antenna tips
 fit_abdomen = true         # fit the abdomen pitch chain from the abdomen markers
-max_nfev = 100             # per-frame scipy.optimize.least_squares iteration cap
-loss = "linear"            # least_squares loss ("linear" / "huber" / "cauchy" / ...)
-f_scale = 1.0              # robust-loss scale (units of the 3D pose)
-regularization = 0.01      # head/abdomen toward-previous-frame angle prior (smooths
-                           # and pins redundant DOFs the sparse markers don't fix)
+
+# QuickIK solver knobs (its SolverConfig). The body plan is solved in MODEL units, so
+# the two tolerances mean the same thing whatever scale the camera rig is gauged at.
+n_iterations = 60          # Gauss-Newton steps per frame
+neutral_weight = 0.001     # pull toward each DOF's neutral value; this is what pins
+                           # the DOFs the keypoints don't determine (raise it if a
+                           # sparsely-observed limb wanders, at the cost of some bias)
+damping = 0.1              # Levenberg-Marquardt damping. Far above QuickIK's own
+                           # suggested ~1e-6, deliberately: the abdomen's five
+                           # near-collinear hinges are ill-conditioned, so a lightly
+                           # damped step overshoots into the joint limits -- and since
+                           # limits are enforced by clamping the step rather than
+                           # projecting the gradient, a clamped angle stays clamped and
+                           # the solve deadlocks at a feasible but wrong pose (at 0.01
+                           # an exactly-straight synthetic abdomen curls right up).
+                           # It can't go much higher either: the head is well
+                           # conditioned and just under-converges when over-damped.
+position_tolerance = 0.001  # early stop: largest root-position step (model units)
+angle_tolerance = 0.001     # early stop: largest joint-angle step (radians)
+
+# Fix the body in the model frame: right for a TETHERED fly, whose body doesn't move.
+# The leg roots then sit at their measured medians and only the joint angles vary. Set
+# false for a freely-moving preparation, to give QuickIK a 6-DOF root to fit per frame.
+fixed_body = true
+
+# Weigh each observation by the detector's confidence instead of treating every
+# observed keypoint equally.
+weigh_by_confidence = false
+
+# Solve long recordings in overlapping segments across worker threads. Off by default:
+# every segment restarts from the neutral pose and only warm-starts within itself, so
+# the angle traces can step at a seam -- a poor trade for a joint-angle time series
+# unless the recording is long enough to need the speed.
+parallel = false
+segment_len = 200          # frames per segment (includes the overlap)
+overlap_len = 10           # frames shared with the next segment
+
+# Points whose 3D position is physically fixed over the recording. Before the fit,
+# each listed point is replaced by its temporal median across all frames, so it stops
+# jittering with per-frame detection noise (and occluded frames get filled in).
+# Empty = off. Refer to points by their [skeleton].point_names. Note that under
+# `fixed_body` the leg roots are already held at their measured medians by
+# construction, so this mainly matters when the body is free. Example:
+# constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+#                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+constant_points = []
 
 # Per-DOF joint angle limits, in DEGREES, overriding the template defaults. Keys are
 # the flygym joint angle names "<parent_body>-<child_body>-<dof>" (dofs: yaw/pitch/

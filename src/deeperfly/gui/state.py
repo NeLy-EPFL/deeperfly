@@ -133,8 +133,18 @@ class EditorState:
             )
         nmf_live = None
         if result.nmf_pts3d is not None and result.pts3d is not None:
+            from ..inverse_kinematics._quickik import INSTALL_HINT, MissingQuickIK
+
             try:
                 nmf_live = NmfLive(result, template=template, articulation=articulation)
+            except MissingQuickIK:
+                # Expected on a plain install, and harmless: the stored fit still draws
+                # the overlay, it just no longer follows edits. One line, not a traceback.
+                log.warning(
+                    "the NMF overlay will not follow your edits: the live re-fit needs "
+                    "the optional QuickIK solver (%s)",
+                    INSTALL_HINT,
+                )
             except Exception:  # a refit-setup failure just disables the live overlay
                 log.exception(
                     "could not set up the live NMF re-fit; using the static fit"
@@ -451,7 +461,9 @@ class EditorState:
         if self.nmf_live is not None:
             pts3d = self.display_pts3d(t)
             if pts3d is not None:
-                model, angles = self.nmf_live.refit(pts3d)
+                # The frame index only picks the seed, and it is what keeps the re-fit a
+                # pure function of (frame, labels) -- see NmfLive's module docstring.
+                model, angles = self.nmf_live.refit(pts3d, t)
                 out = (model, angles, self.nmf_live.angle_names)
         elif self.result.nmf_pts3d is not None:
             angles = (

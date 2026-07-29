@@ -42,6 +42,18 @@ log = logging.getLogger("deeperfly")
 #: ``run.json`` schema version; an unknown version is reset (recompute all).
 RECORD_VERSION = 1
 
+#: The inverse-kinematics solver, recorded in that stage's fingerprint. Because
+#: comparison is subset semantics, a *dropped* key cannot invalidate a cache -- so
+#: swapping solvers has to announce itself with a key of its own.
+IK_SOLVER = "quickik"
+
+#: Bumped by hand when the way deeperfly drives the solver changes the fitted angles
+#: without any config key changing (a body-plan structure change, a different neutral
+#: pose, a different observation weighting). Deliberately *not* the solver's package
+#: version: that would force a full recompute on any dependency bump, and it cannot be
+#: read at all on an install without the optional extra.
+IK_SOLVER_REVISION = 1
+
 
 # -- the run record (<outdir>/run.json) ---------------------------------------
 
@@ -276,12 +288,26 @@ def stage_fingerprint(
         p = config.inverse_kinematics
         return _norm(
             {
+                # A *new* key invalidates a cached stage, a dropped one does not (see
+                # this module's docstring), so the solver identity has to be recorded
+                # explicitly: without it, an output directory written by the previous
+                # scipy solver would silently pass as valid QuickIK output.
+                "solver": IK_SOLVER,
+                "solver_revision": IK_SOLVER_REVISION,
                 "template": _ik_template_digest(config),
                 "articulation": _ik_articulation_digest(config),
-                "regularization": p.regularization,
-                "max_nfev": p.max_nfev,
-                "loss": p.loss,
-                "f_scale": p.f_scale,
+                "n_iterations": p.n_iterations,
+                "neutral_weight": p.neutral_weight,
+                "damping": p.damping,
+                "position_tolerance": p.position_tolerance,
+                "angle_tolerance": p.angle_tolerance,
+                "fixed_body": p.fixed_body,
+                "weigh_by_confidence": p.weigh_by_confidence,
+                # Segmentation changes the answer (each segment restarts from neutral),
+                # so it belongs here even though it reads like a performance knob.
+                "parallel": p.parallel,
+                "segment_len": p.segment_len,
+                "overlap_len": p.overlap_len,
                 "constant_points": list(p.constant_points),
                 "skeleton": _skeleton_digest(config),
                 "pts3d_from": pts3d_source(enabled, store),

@@ -386,6 +386,9 @@ def test_nmf_live_uses_the_configured_model(result):
     """
     import dataclasses
 
+    pytest.importorskip(
+        "quickik", reason="the live re-fit needs the deeperfly[ik] extra"
+    )
     from deeperfly.inverse_kinematics.template import KinematicTemplate
 
     res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
@@ -397,6 +400,65 @@ def test_nmf_live_uses_the_configured_model(result):
     ]
     # leg DOF names are "<parent>-<child>-<dof>"; the child body carries the leg code.
     assert {n.split("-")[1].split("_")[0] for n in leg_angles} == {"rf", "lf"}
+
+
+def test_nmf_live_refit_is_a_pure_function_of_frame_and_labels(result):
+    """The same frame, same labels, always the same angles -- however you got there.
+
+    QuickIK's solver state is mutated in place and the editor solves arbitrary frames in
+    arbitrary order as the operator scrubs, edits and undoes. A single long-lived state
+    would make the answer depend on that history: the overlay would shift on undo/redo and
+    nothing would be reproducible. So the seed depends only on the frame.
+    """
+    import dataclasses
+
+    pytest.importorskip(
+        "quickik", reason="the live re-fit needs the deeperfly[ik] extra"
+    )
+
+    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    state = EditorState.from_result(res)
+    assert state.nmf_live is not None
+    live = state.nmf_live
+    pts_a = np.asarray(res.pts3d)[0]
+    pts_b = np.asarray(res.pts3d)[min(1, res.pts3d.shape[0] - 1)]
+
+    first, angles_first = live.refit(pts_a, 0)
+    live.refit(pts_b, 1)  # visit another frame in between
+    again, angles_again = live.refit(pts_a, 0)
+    np.testing.assert_array_equal(angles_first, angles_again)
+    np.testing.assert_array_equal(first, again)
+
+
+def test_nmf_live_masks_a_limb_it_cannot_fit(result):
+    """A limb with too few observed keypoints comes back NaN, as in the batch fit.
+
+    Otherwise the editor would draw a limb at whatever pose the neutral prior implied,
+    with nothing to say it was never observed.
+    """
+    import dataclasses
+
+    pytest.importorskip(
+        "quickik", reason="the live re-fit needs the deeperfly[ik] extra"
+    )
+
+    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    state = EditorState.from_result(res)
+    live = state.nmf_live
+    assert live is not None
+    index = {n: i for i, n in enumerate(res.skeleton.point_names)}
+    pts = np.asarray(res.pts3d)[0].copy()
+    for name in ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"):
+        pts[index[name]] = np.nan
+    model, angles = live.refit(pts, 0)
+    rh = [
+        i
+        for i, n in enumerate(live.angle_names)
+        if "-rh_" in n or "rh_" in n.split("-")[0]
+    ]
+    assert rh, "the plan should carry right-hind leg DOFs"
+    assert np.isnan(angles[rh]).all()
+    assert np.isnan(model[index["rh_claw"]]).all()
 
 
 def test_corrected_endpoint_lists_edited_frames(client):

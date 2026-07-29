@@ -266,26 +266,81 @@ How the per-view 2D points become one 3D point.
 ## `[inverse_kinematics]` — joint angles { #inverse_kinematics }
 
 Runs only when `do_inverse_kinematics = true`. Fits a NeuroMechFly-style
-articulated model to the triangulated 3D pose: the six legs (aligned to a body
-frame derived from the data, with segment lengths measured from the data), plus the
-**head** (yaw/pitch/roll recovered from the two antenna tips) and the **abdomen** (a
-five-segment sagittal pitch chain recovered from the abdomen markers). The head and
-abdomen use fixed model geometry baked from the NeuroMechFly MJCF and are registered
-by a similarity transform from the six thorax-coxa keypoints. Everything is solved
-per frame with bounded least squares. Writes the joint angles **and** the fitted
+articulated model to the triangulated 3D pose: the six legs (with segment lengths
+**measured from the data**, so the fitted model matches this fly's proportions), plus
+the **head** (yaw/pitch/roll, reaching the two antenna tips) and the **abdomen** (a
+five-segment sagittal pitch chain reaching the abdomen markers). The head and abdomen
+use fixed model geometry baked from the NeuroMechFly MJCF, sized to this fly by a
+per-recording scale estimated from the data. Writes the joint angles **and** the fitted
 model joints (which reproject onto the raw images — see the `skeleton_nmf` / `mesh_nmf`
 panels and the GUI's NMF overlays) to `results.h5`.
+
+!!! note "Needs the `ik` extra"
+
+    The solver is [QuickIK](https://nely-epfl.github.io/quickik/), a Rust whole-body IK
+    library. It is an **optional** dependency because it has no published wheels and so
+    needs a Rust toolchain to install — everything else in deeperfly does not. Install it
+    with `uv sync --extra ik`, or directly:
+
+    ```
+    pip install "quickik @ git+https://github.com/NeLy-EPFL/quickik#subdirectory=python"
+    ```
+
+    Without it, `do_inverse_kinematics = true` fails with an explanatory error. A result
+    file that *already* holds a fit needs nothing extra: its overlays, videos and the
+    GUI's static fit all work on a plain install.
+
+deeperfly assembles a body plan for the recording and QuickIK fits the whole body at
+once against every tracked keypoint, rather than solving each limb on its own. The plan
+is solved in **model units**, so the two tolerances below mean the same thing whatever
+scale the camera rig happens to be gauged at.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `template` | str | `"neuromechfly"` | A packaged template name, or a path to a template TOML. |
 | `legs` | list[str] | all | Which legs to fit (e.g. `["rf", "lf"]`). |
-| `fit_head` | bool | `true` | Fit head yaw/pitch/roll from the antenna tips. |
+| `fit_head` | bool | `true` | Fit the head chain (yaw/pitch/roll) from the antenna tips. |
 | `fit_abdomen` | bool | `true` | Fit the abdomen pitch chain from the abdomen markers. |
-| `max_nfev` | int | `100` | Per-frame `scipy.optimize.least_squares` iteration cap. |
-| `loss` | str | `"linear"` | Least-squares loss (`"linear"`, `"huber"`, `"cauchy"`, …). |
-| `f_scale` | float | `1.0` | Robust-loss scale (units of the 3D pose). |
-| `regularization` | float | `0.01` | Head/abdomen toward-previous-frame angle prior (smooths the trajectory and pins redundant DOFs the sparse markers leave free). |
+| `n_iterations` | int | `60` | Gauss-Newton steps per frame. |
+| `neutral_weight` | float | `0.001` | Weight of the pull toward each DOF's neutral value. This is what pins DOFs the keypoints do not determine (the abdomen's interior hinges, a leg's redundant thorax-coxa rotation); raise it if a sparsely-observed limb wanders, at the cost of some bias. |
+| `damping` | float | `0.1` | Levenberg-Marquardt damping — see the note below; far above QuickIK's own suggested ~`1e-6`, on purpose. |
+| `position_tolerance` | float | `0.001` | Early stop: largest root-position step, in model units. Inert under `fixed_body` (the root does not move). |
+| `angle_tolerance` | float | `0.001` | Early stop: largest joint-angle step, in radians. |
+| `fixed_body` | bool | `true` | Fix the body in the model frame — right for a **tethered** fly, whose body does not move: the leg roots sit at their measured medians and only the joint angles vary. Set `false` for a freely-moving preparation, to give QuickIK a 6-DOF root to fit per frame. |
+| `weigh_by_confidence` | bool | `false` | Weigh each observation by the detector's confidence instead of treating every observed keypoint equally. |
+| `parallel` | bool | `false` | Solve in overlapping segments across worker threads. Off by default: each segment restarts from the neutral pose and only warm-starts within itself, so the angle traces can step at a seam — a poor trade for a joint-angle time series unless the recording is long enough to need the speed. |
+| `segment_len` | int | `200` | Frames per segment (includes the overlap); `parallel` only. |
+| `overlap_len` | int | `10` | Frames shared with the next segment; `parallel` only. |
+
+`constant_points` names skeleton points whose 3D position is physically fixed over the
+recording; each is replaced by its temporal median before the fit, so it stops jittering
+with per-frame detection noise (and occluded frames get filled in). Under `fixed_body`
+the leg roots are already held at their measured medians **by construction**, so this
+mainly matters when the body is free.
+
+!!! warning "Joint limits, and why `damping` is large"
+
+    QuickIK enforces joint limits by **clamping** each Gauss-Newton step, not by
+    projecting the gradient the way a bounded trust-region method does. Two consequences
+    worth knowing:
+
+    - A lightly-damped step on an ill-conditioned chain overshoots into a limit, and a
+      clamped angle then stays clamped while the remaining DOFs never take up the slack —
+      the solve stalls at a feasible but wrong pose. The abdomen (five near-collinear
+      hinges) is exactly that case: at `damping = 0.01` an exactly-*straight* synthetic
+      abdomen converges to a full ventral curl. Hence the large default — which also
+      cannot go much higher, since the well-conditioned head chain simply
+      under-converges when over-damped.
+    - Where a limit genuinely binds, it caps the achievable fit more than it used to. The
+      stage logs a warning naming any DOF that sits at a limit in most frames, because
+      that is a signal your `bounds` are what's limiting the fit — the packaged template
+      gives the middle and hind legs the **front** leg's ranges as a placeholder, and on
+      real recordings the hind legs do press against them.
+
+    Measured on the example recording, the fitted model lands a mean 0.049 world units
+    from the triangulated keypoints, against 0.037 for the pre-QuickIK solver. The gap
+    is concentrated in the bound-limited hind legs: widening the pressed limits closes
+    it and then some (0.032, i.e. better than the old solver).
 
 A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits in
 **degrees**. Keys are the flygym joint angle names `"<parent_body>-<child_body>-<dof>"`
