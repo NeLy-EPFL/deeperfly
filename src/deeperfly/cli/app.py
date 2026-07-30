@@ -16,6 +16,7 @@ from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_export
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
+from .suggest import _cmd_labels_suggest
 
 # -- typer app ---------------------------------------------------------------
 #
@@ -286,6 +287,154 @@ def labels_export(
     _cmd_labels_export(
         argparse.Namespace(
             path=path, output=output, include_projection=include_projection
+        )
+    )
+
+
+@app.command(name="labels-suggest")
+def labels_suggest(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    count: Annotated[
+        int, typer.Option("-n", "--count", help="how many frames to suggest")
+    ] = 20,
+    min_gap_s: Annotated[
+        float,
+        typer.Option(
+            "--min-gap-s",
+            help="HARD minimum spacing between suggestions, in seconds; also keeps "
+            "them away from the frames already labeled. At 100 fps adjacent frames "
+            "are near-duplicates, so without this a top-N is one hard moment "
+            "sampled N times",
+        ),
+    ] = 2.0,
+    fps: Annotated[
+        float | None,
+        typer.Option(
+            "--fps",
+            help="capture rate for --min-gap-s (default: the fps recorded in "
+            "results.h5, else 100 with a warning)",
+        ),
+    ] = None,
+    reserve_diversity: Annotated[
+        float,
+        typer.Option(
+            "--reserve-diversity",
+            help="fraction of -n taken on a uniform temporal grid instead of by "
+            "score, so the round still sees typical poses and not only the tail",
+        ),
+    ] = 0.25,
+    threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            help="px; the RANSAC inlier gate and the 'this cell disagrees' gate in "
+            "the reported reasons (a ranking knob, not an accuracy claim)",
+        ),
+    ] = 15.0,
+    cap: Annotated[
+        float,
+        typer.Option(
+            "--cap",
+            help="px; per-cell residual saturation, so one blown view cannot turn "
+            "the ranking into a single-outlier lottery",
+        ),
+    ] = 60.0,
+    top_k: Annotated[
+        int,
+        typer.Option(
+            "--top-k",
+            help="how many of the worst joints are averaged into a frame's score "
+            "(a frame is worth a pass when several joints are wrong)",
+        ),
+    ] = 8,
+    min_views: Annotated[
+        int,
+        typer.Option(
+            "--min-views",
+            help="observing views a joint needs to be scorable; below 3 a joint "
+            "reprojects onto its own two views by construction, which reads as "
+            "agreement it has not earned",
+        ),
+    ] = 3,
+    points: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--points",
+            help="glob(s) over the skeleton point names to score (repeatable; "
+            "default all), e.g. --points '*tibia*'",
+        ),
+    ] = None,
+    cameras: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--cameras",
+            help="glob(s) over the camera names to score (repeatable; default all). "
+            "Triangulation always uses every view",
+        ),
+    ] = None,
+    exclude_labeled: Annotated[
+        bool,
+        typer.Option(
+            "--exclude-labeled/--no-exclude-labeled",
+            help="skip frames that already carry human work, read from the "
+            "labels.h5 sidecar (and keep suggestions --min-gap-s away from them)",
+        ),
+    ] = True,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .json (default: labels_suggest.json beside results.h5)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="print the ranking and write nothing"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Rank the frames worth labeling next (active learning) -> labels_suggest.json.
+
+    Scores each frame by the multi-view disagreement of the detector's own 2D: every
+    joint is RANSAC-triangulated from the pristine pose2d detections and each view's
+    detection is compared to the reprojection. Views cannot conspire, so a large
+    residual means the model is probably wrong -- which is where a human label buys
+    the most. Detector confidence is deliberately not used: it is confidently wrong
+    exactly where it is wrong.
+
+    The ranking is never the raw top-N. A hard --min-gap-s keeps the picks (and the
+    frames already labeled) apart, since at 100 fps neighbouring frames are the
+    same pose; --reserve-diversity spends part of the list on a uniform temporal
+    grid; and every pick is reported with the joints and views that drove it, so
+    the list is usable straight from this output.
+
+    Writes a JSON sidecar beside results.h5 for 'deeperfly gui' to navigate;
+    results.h5 and labels.h5 are only ever read.
+    """
+    _configure_logging(log_level.value)
+    _cmd_labels_suggest(
+        argparse.Namespace(
+            path=path,
+            count=count,
+            min_gap_s=min_gap_s,
+            fps=fps,
+            reserve_diversity=reserve_diversity,
+            threshold=threshold,
+            cap=cap,
+            top_k=top_k,
+            min_views=min_views,
+            points=points,
+            cameras=cameras,
+            exclude_labeled=exclude_labeled,
+            output=output,
+            dry_run=dry_run,
         )
     )
 

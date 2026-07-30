@@ -103,6 +103,68 @@
  */
 
 /**
+ * One driver joint behind a suggested frame's score: the joint whose views disagree, how
+ * badly, and in which view -- the "why am I being sent here" detail.
+ * @typedef {object} SuggestionDriver
+ * @property {number} [point]
+ * @property {string} [point_name]
+ * @property {number} [disagreement]  the joint's mean-over-views normalized residual
+ * @property {string} [worst_camera]
+ * @property {number} [worst_px]  the largest single-view reprojection residual, in pixels
+ * @property {number} [views_over_threshold]
+ * @property {string} [relation]  "far" / "near": geometrically, is the joint beyond the body centroid from that camera
+ */
+
+/**
+ * Why a frame was suggested. `summary` is the one-line human reading the panel shows;
+ * the rest is the detail behind it (absent for a diversity pick, which reports its grid
+ * slot instead -- it is in the queue precisely because it is a *typical* pose).
+ * @typedef {object} SuggestionReason
+ * @property {string} [summary]
+ * @property {number} [n_joints_over_threshold]
+ * @property {SuggestionDriver[]} [drivers]
+ * @property {[number, number]} [grid_slot]  [slot, n_slots] for a diversity pick
+ */
+
+/**
+ * One frame in the suggestion queue: where it ranks, when it is, how badly its views
+ * disagree, why it was picked, and whether the operator has since labeled it.
+ * @typedef {object} Suggestion
+ * @property {number | null} rank  1-based position in the queue
+ * @property {number} frame
+ * @property {number | null} t_s  time into the recording, in seconds
+ * @property {number | null} score  multi-view disagreement; ranks within THIS recording only
+ * @property {number | null} percentile  the score's percentile among this recording's frames
+ * @property {"most-wrong" | "diversity" | string} kind  why it is in the list at all: the worst-scoring frames, or the uniform-temporal-grid reserve that keeps typical poses in the round
+ * @property {SuggestionReason} reason
+ * @property {boolean} labeled  the frame now carries ground truth (or is marked reviewed) -- i.e. done
+ * @property {boolean} reviewed
+ */
+
+/**
+ * The suggestion queue with its provenance and staleness, from `/api/suggestions`.
+ *
+ * `stale.level` escalates: "none", "progress" (the operator is working through it --
+ * expected), "predictions" (results.h5 changed since it was computed, so it describes
+ * predictions that no longer exist), "hard" (a different recording entirely -- the panel
+ * shows no rows). `notes` are caveats about the queue itself (an under-delivered count,
+ * a reseeded result, uncalibrated cameras) that would otherwise only reach the CLI log.
+ * @typedef {object} SuggestionsPayload
+ * @property {boolean} present  false when no sidecar has been computed yet
+ * @property {string | null} [path]  the sidecar's path
+ * @property {string} [command]  the exact command that (re)computes the queue
+ * @property {string | null} [computed_utc]
+ * @property {Record<string, any>} [params]  the ranking parameters (count, min_gap_s, threshold_px, ...)
+ * @property {Record<string, any>} [source]  provenance: which array was scored, whether the result was reseeded, which cameras
+ * @property {Record<string, any>} [coverage]
+ * @property {Record<string, any>} [shortfall]
+ * @property {{level: "none" | "progress" | "predictions" | "hard", reasons: string[]}} [stale]
+ * @property {string[]} [notes]
+ * @property {number} [n_done]  how many queue frames are already labeled
+ * @property {Suggestion[]} [frames]  in rank order
+ */
+
+/**
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage

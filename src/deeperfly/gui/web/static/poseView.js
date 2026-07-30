@@ -24,13 +24,14 @@
 //
 // The view draws the point *sources* as independently toggled layers. GROUND TRUTH is the
 // EDITABLE layer (a filled palette disc under a bold lime ring): whenever it is shown a drag
-// authors GT. DETECTED is the raw detector output (a filled disc, faded by confidence, under a
-// thin dark ring). "COMBINED" is not a visibility switch -- it is a MERGE toggle over GT +
-// Detected: on, the two draw as ONE skeleton (each joint = GT if authored, else the detector's
-// point, else -- when a joint has neither and the reprojection overlay is shown -- its reprojected
-// point, so a bone never drops out just because one endpoint is only derived); off, GT and Detected
-// draw as two separate overlaid skeletons (Detected beneath, the editable GT skeleton on top). The
-// "projected" source is the REPROJECTED SKELETON -- an
+// authors GT. DETECTED is the detector's output (a filled disc, faded by confidence, under a
+// thin dark ring) wherever it is still usable -- a view the operator flagged occluded
+// ("Projected") has rejected its detection, so none is drawn there and the joint's position falls
+// through to its reprojection. "COMBINED" is not a visibility switch -- it is a MERGE toggle over
+// GT + Detected: on, the two draw as ONE skeleton (each joint = GT if authored, else the detector's
+// usable point, else its reprojected point, so a bone never drops out just because one endpoint is
+// only derived); off, GT and Detected draw as two separate overlaid skeletons (Detected beneath,
+// the editable GT skeleton on top). The "projected" source is the REPROJECTED SKELETON -- an
 // independent overlay of the full 3D reprojection (hollow rings joined by thick, semi-transparent,
 // DASHED palette edges), its own layer in every mode (it never merges in), so the 3D's opinion of
 // every joint reads at a glance and the gap to a placed pixel is the live disagreement.
@@ -691,10 +692,37 @@ export class PoseView {
       : null;
   }
 
-  // The raw detector prediction for joint `i` (the "detected" source), or null.
+  // The detector's USABLE prediction for joint `i` (the "detected" source), or null. A view the
+  // operator flagged occluded ("Projected") is an assertion that its pixel is not readable here:
+  // it is dropped from the 3D solve, so it is not a position source either. The joint then falls
+  // through to its reprojection -- the best estimate left for this view -- everywhere a position
+  // is resolved (nodeAt, anchorPos, grabCandidates, sourcePositions). Without this, occluding a
+  // view left its rejected pixel drawn as the joint's position, contradicting the state it reports.
   /** @param {number} i @returns {Point | null} */
   detPos(i) {
+    if (this.invisible && this.invisible[i]) return null;
     return this.detected && i < this.detected.length ? this.detected[i] : null;
+  }
+
+  // The reprojection of the derived 3D for joint `i` in this view, or null when there is none (a
+  // 2D-only result, or a joint with no solvable 3D). The joint's *derived* position -- what it
+  // falls back to when the view carries no usable observation.
+  /** @param {number} i @returns {Point | null} */
+  latentPos(i) {
+    return this.latent && i < this.latent.length ? this.latent[i] : null;
+  }
+
+  // The reprojected position of joint `i` when it is actually DRAWN as the joint's position -- so
+  // the anchor and the hit-test only ever land on something the operator can see. That is either
+  // because the reprojection overlay is shown (its hollow ring is right there), or because the view
+  // has no usable observation (occluded) and the merged skeleton is therefore drawing the joint at
+  // its reprojection -- which it does whether or not that overlay is on (see nodeAt/drawSkeleton).
+  /** @param {number} i @returns {Point | null} */
+  shownLatentPos(i) {
+    const p = this.latentPos(i);
+    if (!p) return null;
+    if (this.projectedVisible) return p;
+    return this.combinedVisible && this.invisible && this.invisible[i] ? p : null;
   }
 
   // The "Missing" placeholder seed for joint `i` -- a faint draggable ghost for a joint the
@@ -709,7 +737,7 @@ export class PoseView {
     if (!this.placeholder || i >= this.placeholder.length || !this.placeholder[i]) return null;
     if (this.gtPos(i)) return null;
     if (this.detectedVisible && this.detPos(i)) return null;
-    if (this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) return null;
+    if (this.projectedVisible && this.latentPos(i)) return null;
     return this.placeholder[i];
   }
 
@@ -717,13 +745,15 @@ export class PoseView {
   // has nothing to draw here. GT wins over detected. While a joint is being dragged it is authored
   // as ground truth, so render it as GT under the cursor immediately -- even before the server sets
   // its GT flag and even if it had no pixel before (a spawn from a detected / projected seed).
-  // `mergeDetected` is the "Combined" merge: it folds in, as fallbacks, first the detector's point
-  // and then -- when a joint has neither GT nor detected AND the reprojection overlay is shown --
-  // the reprojected point, so the merged skeleton stays fully connected (no bone drops out just
-  // because one endpoint is only derived). A "projected" node draws no filled disc of its own: it
-  // exists to carry the bone, and the reprojection overlay's hollow ring beneath it (guaranteed
-  // present, since this fallback needs projectedVisible) is its "derived, not observed" marker --
-  // see drawSkeleton. With mergeDetected off only GT is drawn (no detected / projected fallback).
+  // `mergeDetected` is the "Combined" merge: it folds in, as fallbacks, first the detector's usable
+  // point (an occluded view has none -- see detPos) and then the reprojected point, so the merged
+  // skeleton stays fully connected (no bone drops out just because one endpoint is only derived).
+  // The reprojection stands in either when its overlay is shown, or -- whatever that toggle says --
+  // when the view has no usable observation at all: an occluded ("Projected") cell HAS no position
+  // but the derived one, so that is where the joint is drawn. A "projected" node normally draws no
+  // filled disc (the overlay's hollow ring beneath it is its "derived, not observed" marker); with
+  // the overlay hidden it draws that ring itself -- see drawSkeleton. With mergeDetected off only
+  // GT is drawn (no detected / projected fallback).
   /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" } | null} */
   nodeAt(i, mergeDetected) {
     if (i === this.dragging && this.moved && this.pts[i]) {
@@ -737,8 +767,10 @@ export class PoseView {
       const d = this.detPos(i);
       if (d) return { pos: d, src: "detected" };
     }
-    if (mergeDetected && this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) {
-      return { pos: this.latent[i], src: "projected" };
+    if (mergeDetected) {
+      const occluded = !!(this.invisible && this.invisible[i]);
+      const p = this.latentPos(i);
+      if (p && (this.projectedVisible || occluded)) return { pos: p, src: "projected" };
     }
     return null;
   }
@@ -746,7 +778,8 @@ export class PoseView {
   // The best drawn position of joint `i` across the *visible* layers, for anchoring the
   // selection ring / label / hover emphasis -- so a selected or hovered joint stays marked
   // even when it has no GT yet (only a detected or projected point). Precedence follows what
-  // the operator sees: GT, then detected, then the projected reprojection. Honours the drag
+  // the operator sees: GT, then the detector's usable point (none in an occluded view), then the
+  // reprojection wherever that is what the joint is drawn at (see shownLatentPos). Honours the drag
   // override (a spawned GT tracks the cursor) so its ring/label follow immediately.
   /** @param {number} i @returns {Point | null} */
   anchorPos(i) {
@@ -759,19 +792,25 @@ export class PoseView {
       const d = this.detPos(i);
       if (d) return d;
     }
-    if (this.projectedVisible && this.latent && i < this.latent.length && this.latent[i]) {
-      return this.latent[i];
-    }
+    const p = this.shownLatentPos(i);
+    if (p) return p;
     return this.placeholderPos(i); // last resort: the Missing seed, so its ring/label anchor
   }
 
   // The positions of a single point source: ground truth is the authored pixel (held in `pts`)
-  // wherever the GT flag is set; detected is the raw detector pixel. Null where the source has no
-  // point in this view. (The 3D reprojection is not a source layer here -- it draws as its own
-  // overlay, the reprojected skeleton; see drawReprojection.)
+  // wherever the GT flag is set; detected is the detector's usable pixel -- a view flagged occluded
+  // ("Projected") shows none, since the operator has rejected that pixel and the joint's position
+  // there is its reprojection (see detPos). Null where the source has no point in this view. (The
+  // 3D reprojection is not a source layer here -- it draws as its own overlay, the reprojected
+  // skeleton; see drawReprojection.)
   /** @param {"gt" | "detected"} kind @returns {(Point | null)[]} */
   sourcePositions(kind) {
-    if (kind === "detected") return this.detected || [];
+    if (kind === "detected") {
+      const n = this.detected ? this.detected.length : 0;
+      const det = new Array(n).fill(null);
+      for (let i = 0; i < n; i++) det[i] = this.detPos(i);
+      return det;
+    }
     const out = new Array(this.pts.length).fill(null);
     for (let i = 0; i < this.pts.length; i++) {
       if (this.fixed && this.fixed[i] && this.pts[i]) out[i] = this.pts[i];
@@ -817,11 +856,26 @@ export class PoseView {
     for (let i = 0; i < n; i++) {
       const node = nodes[i];
       if (!node) continue;
-      // A projected-fallback node exists only to keep the merged skeleton's bones connected -- it
-      // is NOT an observed point, so it draws no filled disc; the reprojection overlay's hollow
-      // ring beneath it (always present when this node exists) is its "derived, not observed"
-      // marker, and drawJointOverlay carries its selection / hover / label.
-      if (node.src === "projected") continue;
+      // A projected node is NOT an observed point, so it draws no filled disc: usually the
+      // reprojection overlay's hollow ring sits right beneath it as its "derived, not observed"
+      // marker, and drawJointOverlay carries its selection / hover / label. With that overlay
+      // hidden the node is still here (an occluded view's position IS its reprojection), so it
+      // draws the hollow ring itself -- same vocabulary, so the joint never becomes a bone that
+      // ends in empty space.
+      if (node.src === "projected") {
+        if (!this.projectedVisible) {
+          const [px, py] = this.toCanvas(node.pos[0], node.pos[1]);
+          ctx.save();
+          ctx.globalAlpha = PROJ_ALPHA;
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = this.colors[i] || "#fff";
+          ctx.beginPath();
+          ctx.arc(px, py, POINT_RADIUS_PX * (i === this.highlight ? HOVER_SCALE : 1), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        continue;
+      }
       const [cx, cy] = this.toCanvas(node.pos[0], node.pos[1]);
       const isHover = i === this.highlight;
       const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
@@ -1320,15 +1374,16 @@ export class PoseView {
 
   // The grabbable positions of joint `i`, for hit-testing. A drag on any of them authors ground
   // truth for that joint: its GT pixel (grabbing it MOVES the GT), its detected point (when the
-  // Detected layer is shown -- grabbing it SPAWNS a GT there), and its reprojected point (when
-  // the projected overlay is shown -- likewise a spawn seed). So whatever the operator sees is
-  // grabbable, and every grab resolves to the same authoring gesture on the joint index.
+  // Detected layer is shown and the view has not been flagged occluded -- grabbing it SPAWNS a GT
+  // there), and its reprojected point wherever that is drawn as the joint's position (likewise a
+  // spawn seed; see shownLatentPos). So whatever the operator sees is grabbable, and every grab
+  // resolves to the same authoring gesture on the joint index.
   /** @param {number} i @returns {(Point | null)[]} */
   grabCandidates(i) {
     return [
       this.gtPos(i),
       this.detectedVisible ? this.detPos(i) : null,
-      this.projectedVisible && this.latent && i < this.latent.length ? this.latent[i] : null,
+      this.shownLatentPos(i),
       // The Missing placeholder is the lowest-priority seed: it only exists where the three
       // above are absent (see placeholderPos), so it never competes with a real point.
       this.placeholderPos(i),

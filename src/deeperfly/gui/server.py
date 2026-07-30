@@ -41,6 +41,7 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 
+from ..acquisition import read_suggestions, suggestions_staleness
 from ..visualization._palette import point_colors_rgb
 from .labels import save_labels
 from .session import Session
@@ -249,6 +250,17 @@ def create_app(
         edits settle, so it tracks every drag, obscure, reset, and reviewed tick live.
         """
         return {"frames": session.state.corrected_frames()}
+
+    @app.get("/api/suggestions")
+    def suggestions() -> dict:
+        """The ranked "label these next" queue, joined with the live editing state.
+
+        Serves the ``labels_suggest.json`` sidecar (see :func:`_suggestions_payload`)
+        -- never recomputes it: the ranking triangulates the whole recording, which
+        costs seconds, so it is a CLI artefact and this route is a reader. Always
+        ``200``: no sidecar is a normal state (``present: false``), not an error.
+        """
+        return _suggestions_payload(session)
 
     @app.post("/api/save")
     async def save() -> dict:
@@ -654,6 +666,219 @@ def _points3d_to_json(pts: np.ndarray) -> list:
         [float(pts[p, 0]), float(pts[p, 1]), float(pts[p, 2])] if finite[p] else None
         for p in range(pts.shape[0])
     ]
+
+
+# -- frame suggestions --------------------------------------------------------
+#
+# `deeperfly labels-suggest` ranks which frames a human should correct next -- by the
+# MULTI-VIEW DISAGREEMENT of the detector's own 2D, not by its confidence -- and writes
+# the ranked queue to a JSON sidecar beside `results.h5`. The GUI only ever READS that
+# file: the ranking triangulates every frame of the recording (seconds), which is fine
+# for a CLI and hopeless per HTTP request, so there is no "compute" path here.
+#
+# The queue is therefore a snapshot, and the panel's honesty about that is this module's
+# job, not the front-end's. Every payload carries (a) how stale the sidecar is and (b)
+# which of its frames the operator has since labeled, taken from the SAME
+# `corrected_frames()` the Labels list uses, so the two lists can never disagree.
+# `_suggestions_notes` lifts the facts most likely to mislead (an under-delivered count, a
+# reseeded result, uncalibrated cameras) out of the CLI log and onto the screen.
+#
+# `deeperfly.acquisition` owns the sidecar format, so both parsing (`read_suggestions`)
+# and the staleness tiers (`suggestions_staleness`) are ITS functions, imported here
+# rather than reimplemented -- a second interpretation of the format is exactly how a
+# panel ends up quietly disagreeing with the file it is displaying. Nothing here writes:
+# `results.h5` and `labels.h5` are not opened at all, and the sidecar is opened read-only.
+
+
+def _suggestions_payload(session: Session) -> dict:
+    """The suggestion queue for ``session``, joined with its live editing state.
+
+    ``present`` is ``False`` when there is no usable sidecar; ``command`` is then the
+    exact command that would produce one (with the resolved directory), so the panel
+    can tell the operator what to run rather than just look empty. Entries pointing
+    outside the playable frame range are dropped -- a row that cannot be navigated to
+    is worse than a missing row -- and counted in the notes.
+    """
+    path = session.suggestions_path
+    command = f"deeperfly labels-suggest {Path(session.results_path).parent}"
+    data = _read_suggestions(path)
+    if data is None:
+        return {
+            "present": False,
+            "path": None if path is None else str(path),
+            "command": command,
+        }
+    # Live editing state wins over anything the sidecar recorded: `labeled` must mean
+    # "has GT now", so a frame flips to done the moment the operator labels it.
+    live = {
+        int(f["frame"]): bool(f["reviewed"]) for f in session.state.corrected_frames()
+    }
+    entries = [e for e in (data.get("frames") or []) if isinstance(e, dict)]
+    if all(isinstance(e.get("rank"), int) for e in entries):
+        entries.sort(key=lambda e: e["rank"])
+    frames: list[dict] = []
+    n_out_of_range = 0
+    for entry in entries:
+        try:
+            t = int(entry["frame"])
+        except (KeyError, TypeError, ValueError):
+            continue  # a malformed row is dropped, not fatal
+        if not 0 <= t < session.n_frames:
+            n_out_of_range += 1
+            continue
+        frames.append(_suggestion_entry(entry, t, live))
+    n_done = sum(1 for f in frames if f["labeled"])
+    return {
+        "present": True,
+        "path": None if path is None else str(path),
+        "command": command,
+        "computed_utc": data.get("created_utc"),
+        "params": data.get("params") or {},
+        "source": data.get("source") or {},
+        "coverage": data.get("coverage") or {},
+        "shortfall": data.get("shortfall") or {},
+        # Staleness is judged against the rows actually served, not the raw file, so a
+        # malformed row can never reach the helper (whose per-row access assumes a dict).
+        "stale": _suggestions_stale(session, {**data, "frames": frames}, n_done=n_done),
+        "notes": _suggestions_notes(data, n_out_of_range=n_out_of_range),
+        "n_done": n_done,
+        "frames": frames,
+    }
+
+
+def _suggestion_entry(entry: dict, t: int, live: dict[int, bool]) -> dict:
+    """One queue row: the sidecar's ranking fields plus its live labeled/reviewed state.
+
+    The three quantities the panel formats are coerced to a number or ``None`` here
+    rather than passed through: the sidecar is a hand-editable JSON file, and a string
+    where a float belongs would otherwise reach the front-end's ``toFixed`` and throw
+    mid-render, taking the whole list down over one bad field.
+
+    ``reason`` is passed through verbatim -- it is the "why was I sent here" the
+    operator reads (the driving joints, the worst view, and a one-line summary), and the
+    front-end only renders its ``summary``, so a richer future reason needs no change
+    here.
+    """
+    return {
+        "rank": entry.get("rank"),
+        "frame": t,
+        "t_s": _number(entry.get("t_s")),
+        "score": _number(entry.get("score")),
+        "percentile": _number(entry.get("percentile")),
+        "kind": entry.get("kind") or "most-wrong",
+        "reason": entry.get("reason") or {},
+        "labeled": t in live,
+        "reviewed": bool(live.get(t, False)),
+    }
+
+
+def _number(value) -> float | None:
+    """``value`` as a finite float, or ``None`` -- so a bad field cannot reach the client.
+
+    NaN/inf are ``None`` too: they are not valid JSON numbers, and a bare ``NaN`` token
+    in the response body would fail the browser's own ``JSON.parse``.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _read_suggestions(path: Path | None) -> dict | None:
+    """The parsed sidecar at ``path``, or ``None`` when there is nothing to show.
+
+    Thin wrapper over :func:`deeperfly.acquisition.read_suggestions`, which already
+    returns ``None`` for a file that is absent, unreadable, not a JSON object, or
+    stamped with a format version it does not know. The extra guard here is only that
+    an unexpected exception from the reader must not take the editor down with it: "no
+    suggestions" is a state the panel renders gracefully, whereas a 500 in the sidebar
+    would look like a broken editor.
+    """
+    if path is None:
+        return None
+    try:
+        return read_suggestions(path)
+    except (
+        Exception
+    ) as exc:  # pragma: no cover -- the reader is contracted not to raise
+        log.warning("ignoring unreadable suggestions sidecar %s: %s", path, exc)
+        return None
+
+
+def _suggestions_stale(session: Session, data: dict, *, n_done: int) -> dict:
+    """How out of date the queue is, as ``{"level", "reasons"}``.
+
+    The two tiers that need to *inspect files* are delegated to
+    :func:`deeperfly.acquisition.suggestions_staleness`, so they are decided in one place:
+    the recording fingerprint (``hard`` -- the queue's frame indices mean something else
+    entirely, and the panel then renders no rows at all) and ``results.h5``'s
+    stat-then-md5 fingerprint (``predictions`` -- the ranking describes predictions that
+    no longer exist).
+
+    ``progress`` -- some queued frames now carry human work -- is decided here from
+    ``n_done`` and carries no reason string, deliberately: the panel recomputes that count
+    live from the frames it has just edited (a row flips the moment its first point is
+    dragged, with no refetch), so a sentence composed here would be a second, staler copy
+    of one the operator is already reading. It is the *expected* state of a queue being
+    worked through, which is why it never suppresses the rows.
+    """
+    stale = suggestions_staleness(
+        data,
+        identity=session.identity or None,
+        results_path=session.results_path,
+    )
+    level = stale["level"]
+    if level == "none" and n_done:
+        level = "progress"
+    return {"level": level, "reasons": list(stale["reasons"])}
+
+
+def _suggestions_notes(data: dict, *, n_out_of_range: int) -> list[str]:
+    """Caveats about the queue worth putting on screen, not only in the CLI log.
+
+    Each line exists because reading the list without it invites a wrong conclusion: a
+    short queue looks like the top-N when the spacing constraint actually ran out of
+    slots; a reseeded result's *stored* reprojection error is ~0 on the contralateral
+    cells by construction, so the note records that the pristine detector array was
+    scored instead; cameras that never went through bundle adjustment (or a recording
+    whose median disagreement already exceeds the threshold) mean the ranking may be
+    tracking calibration error rather than the detector's mistakes.
+    """
+    notes: list[str] = []
+    shortfall = data.get("shortfall") or {}
+    requested, selected = shortfall.get("requested"), shortfall.get("selected")
+    if requested and selected is not None and selected < requested:
+        why = shortfall.get("reason")
+        notes.append(
+            f"{selected} of {requested} requested" + (f" — {why}" if why else "")
+        )
+    source = data.get("source") or {}
+    if source.get("reseeded"):
+        notes.append(
+            "contralateral 2D reseeded from the 3D, so the queue scored "
+            f"{source.get('scored_array') or 'pose2d/points'} — the stored reprojection "
+            "error is ~0 there and would have ranked nothing"
+        )
+    cameras_from = source.get("cameras_from")
+    if cameras_from and cameras_from != "bundle_adjustment":
+        notes.append(
+            f"scored against the {cameras_from} cameras (no bundle adjustment) — a high "
+            "score may be calibration error, not a detector mistake"
+        )
+    median = (data.get("coverage") or {}).get("global_residual_median_px")
+    threshold = (data.get("params") or {}).get("threshold_px")
+    if median is not None and threshold and median > threshold:
+        notes.append(
+            f"the recording's median disagreement ({median:.1f} px) already exceeds the "
+            f"{threshold:g} px threshold — the ranking may be tracking calibration error"
+        )
+    if n_out_of_range:
+        notes.append(
+            f"{n_out_of_range} suggested frame(s) fall outside this recording and were "
+            "dropped"
+        )
+    return notes
 
 
 # -- edit dispatch ------------------------------------------------------------

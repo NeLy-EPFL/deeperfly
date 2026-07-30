@@ -45,7 +45,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, frameUrl, saveCorrections, shutdownServer } from "./api.js";
+import { EditSocket, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, saveCorrections, shutdownServer } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -53,6 +53,9 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").Meta} Meta */
 /** @typedef {import("./types.js").PointsPayload} PointsPayload */
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
+/** @typedef {import("./types.js").Suggestion} Suggestion */
+/** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
+/** @typedef {"labeled" | "suggest"} SidebarTab */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -77,6 +80,19 @@ const WARN_PX_MAX = 200;
  */
 function el(id) {
   return /** @type {T} */ (document.getElementById(id));
+}
+
+/**
+ * A table cell with a class and text -- the sidebar lists build a lot of these.
+ * @param {string} className
+ * @param {string} text
+ * @returns {HTMLTableCellElement}
+ */
+function cell(className, text) {
+  const td = document.createElement("td");
+  td.className = className;
+  td.textContent = text;
+  return td;
 }
 
 /**
@@ -246,6 +262,19 @@ class App {
   /** @type {Map<number, HTMLTableRowElement>} */
   frameRows = new Map();
   correctedTimer = 0;
+  // The side panel's two tabs. "labeled" is the frames-with-GT list above; "suggest" is
+  // the ranked queue from `deeperfly labels-suggest` (a static sidecar, so it is fetched
+  // on load / on save / on tab activation, never per edit). `suggestions` is null until
+  // the first fetch resolves and stays null when no queue has been computed -- the tab
+  // then explains how to make one instead of looking broken. Which frames are DONE is
+  // not read from the sidecar but joined live from `correctedFrames` at render time, so a
+  // row flips the moment its frame is labeled, with no refetch.
+  /** @type {SidebarTab} */
+  sidebarTab = "labeled";
+  /** @type {SuggestionsPayload | null} */
+  suggestions = null;
+  /** @type {Map<number, HTMLTableRowElement[]>} */
+  suggestRows = new Map();
   /** @type {Binding[]} */
   bindings = [];
 
@@ -316,6 +345,8 @@ class App {
   pointStatusName = el("point-status-name");
   /** @type {Segmented} */
   stateSwitch;
+  /** @type {Segmented} */
+  sidebarTabs;
   /** @type {HTMLButtonElement} */
   actResetBtn = el("act-reset");
   /** @type {HTMLButtonElement} */
@@ -366,6 +397,20 @@ class App {
   framesTbody = /** @type {HTMLTableElement} */ (el("frames-table")).tBodies[0];
   /** @type {HTMLDivElement} */
   framesEmptyEl = el("frames-empty");
+  /** @type {HTMLDivElement} */
+  sidebarTabsEl = el("sidebar-tabs");
+  /** @type {HTMLSpanElement} */
+  suggestCountEl = el("suggest-count");
+  /** @type {HTMLDivElement} */
+  labeledPane = el("labeled-pane");
+  /** @type {HTMLDivElement} */
+  suggestPane = el("suggest-pane");
+  /** @type {HTMLDivElement} */
+  suggestStatusEl = el("suggest-status");
+  /** @type {HTMLTableSectionElement} */
+  suggestTbody = /** @type {HTMLTableElement} */ (el("suggest-table")).tBodies[0];
+  /** @type {HTMLDivElement} */
+  suggestEmptyEl = el("suggest-empty");
   /** @type {HTMLDivElement} */
   closeOverlay = el("close-overlay");
   /** @type {HTMLButtonElement} */
@@ -438,6 +483,7 @@ class App {
     this.updateSelected();
     this.updateDirty();
     await this.refreshCorrected(); // populate the list (any corrections loaded from disk)
+    this.refreshSuggestions(); // the ranked queue, if one has been computed (not awaited)
     // Closing instantly when there is nothing to lose, prompting otherwise: the
     // browser shows its generic "leave site?" dialog only while edits are unsaved.
     window.addEventListener("beforeunload", (e) => {
@@ -511,6 +557,17 @@ class App {
       (v) => this.setSelectedState(v)
     );
     el("point-status-states").append(this.stateSwitch.root);
+
+    // The side panel's tab strip, in place of a plain title: two lists that differ in
+    // both columns and ordering (labeled frames in time order; suggested frames in rank
+    // order), so they are separate tabs rather than one filtered list. Reuses the
+    // established `.segmented` component, so the strip needs no new visual language.
+    this.sidebarTabs = segmented(
+      [["Labeled", "labeled"], ["Suggested", "suggest"]],
+      (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
+    );
+    this.sidebarTabsEl.append(this.sidebarTabs.root);
+    this.setSidebarTab(this.sidebarTab);
     // Pin the name readout to its widest possible value so hovering / selecting different
     // joints never reflows the widget (and thus never nudges the controls after it).
     this.reserveStatusNameWidth();
@@ -1382,6 +1439,9 @@ class App {
     this.updateDirty();
     this.statusEl.textContent = "saved";
     setTimeout(() => (this.statusEl.textContent = ""), 3000);
+    // A save is when the sidecar's own view of "already labeled" could have moved, so
+    // it is the one edit-side moment worth re-reading the queue's staleness for.
+    this.refreshSuggestions();
   }
 
   updateDirty() {
@@ -1403,6 +1463,10 @@ class App {
     }
     this.correctedFrames = frames;
     this.renderFrameList();
+    // The queue's "done" marks are joined from this very list, so re-render it here
+    // rather than refetching: a suggested frame flips to done the instant its first
+    // point is dragged, on the refresh the edit already triggers.
+    this.renderSuggestList();
   }
 
   // Coalesce rapid refreshes (a live 3D drag fires a stream of edits) into one fetch.
@@ -1469,11 +1533,18 @@ class App {
   // Highlight the row for the current frame (when it is a corrected one) and, while
   // the panel is open, scroll it into view -- so scrubbing keeps the list in sync.
   updateActiveFrameRow() {
-    this.frameRows.forEach((tr, frame) => {
-      const active = frame === this.frame;
-      tr.classList.toggle("is-current", active);
-      if (active && this.framesOpen) tr.scrollIntoView({ block: "nearest" });
+    this.frameRows.forEach((tr, frame) => tr.classList.toggle("is-current", frame === this.frame));
+    this.suggestRows.forEach((trs, frame) => {
+      for (const tr of trs) tr.classList.toggle("is-current", frame === this.frame);
     });
+    if (!this.framesOpen) return;
+    // Only the VISIBLE tab is scrolled: scrolling a hidden pane is at best wasted and at
+    // worst a surprise jump the moment that tab is shown.
+    const active =
+      this.sidebarTab === "suggest"
+        ? this.suggestRows.get(this.frame)?.[0]
+        : this.frameRows.get(this.frame);
+    active?.scrollIntoView({ block: "nearest" });
   }
 
   openFrames() {
@@ -1492,10 +1563,16 @@ class App {
     else this.openFrames();
   }
 
-  // Step to the previous / next corrected frame (wrapping at the ends), so the
-  // operator can walk their corrections without hunting on the scrubber.
-  /** @param {number} dir  -1 for the previous corrected frame, +1 for the next */
+  // Step to the previous / next frame of the ACTIVE tab's list (wrapping at the ends),
+  // so the operator can walk it without hunting on the scrubber. On the Labeled tab
+  // that is the corrected frames in time order; on Suggested it is the queue in rank
+  // order (see jumpSuggested) -- the ↑/↓ buttons and keys mean "step my list" either way.
+  /** @param {number} dir  -1 for the previous entry, +1 for the next */
   jumpCorrected(dir) {
+    if (this.sidebarTab === "suggest") {
+      this.jumpSuggested(dir);
+      return;
+    }
     const frames = this.correctedFrames.map((f) => f.frame);
     if (frames.length === 0) return;
     let target;
@@ -1506,6 +1583,212 @@ class App {
       target = earlier.length ? earlier[earlier.length - 1] : frames[frames.length - 1];
     }
     this.goToFrame(target);
+  }
+
+  // -- suggested-frames list --------------------------------------------------
+  //
+  // The ranked queue written by `deeperfly labels-suggest`: which frames are most worth a
+  // human's next pass, ordered by how much the cameras disagree about the detector's own
+  // 2D (NOT by its confidence -- the model is confidently wrong exactly where it is
+  // wrong). The queue is a file on disk, not a live computation, so this list is read
+  // once per load / save / tab activation. Everything the operator needs to trust or
+  // distrust it -- how stale it is, whether the count fell short of what was asked, and
+  // whether the result's contralateral 2D was reseeded (which would make the *stored*
+  // reprojection error rank nothing) -- is composed by the server and shown in the status
+  // strip, so the panel can never present a superseded queue as current.
+
+  // Fetch the queue and repaint the tab. A missing sidecar is the normal starting state
+  // and resolves to `present: false`; a transient failure leaves whatever was there.
+  async refreshSuggestions() {
+    let payload;
+    try {
+      payload = await fetchSuggestions();
+    } catch (_) {
+      return;
+    }
+    this.suggestions = payload;
+    this.renderSuggestList();
+  }
+
+  // The queue rows to render: none until the fetch resolves, none for a queue computed
+  // against a different recording (`stale.level === "hard"` -- nothing in it can be
+  // trusted, so a plausible-looking list would be worse than an empty one).
+  /** @returns {Suggestion[]} */
+  suggestEntries() {
+    const s = this.suggestions;
+    if (!s || !s.present || s.stale?.level === "hard") return [];
+    return s.frames ?? [];
+  }
+
+  // Rebuild the queue table, its badge, its status strip and its empty state. Which rows
+  // are DONE is joined live from `correctedFrames` (the same source the Labeled tab
+  // uses, so the two can never disagree) rather than trusted from the sidecar, which was
+  // written before this session's edits.
+  renderSuggestList() {
+    const entries = this.suggestEntries();
+    /** @type {Map<number, boolean>} frame -> reviewed, for every frame with a decision */
+    const live = new Map(this.correctedFrames.map((f) => [f.frame, f.reviewed]));
+    const done = entries.filter((s) => live.has(s.frame) || s.labeled).length;
+    this.renderSuggestStatus(entries.length, done);
+    this.suggestRows.clear();
+    /** @type {HTMLTableRowElement[]} */
+    const rows = [];
+    for (const s of entries) {
+      const labeled = live.has(s.frame) || s.labeled;
+      const reviewed = live.get(s.frame) ?? s.reviewed;
+      rows.push(...this.suggestRowsFor(s, labeled, reviewed));
+    }
+    this.suggestTbody.replaceChildren(...rows);
+    this.updateActiveFrameRow();
+  }
+
+  // One queue entry as two table rows: the numbers (rank, frame, time, score) and, under
+  // them, the WHY -- the kind chip plus the server's one-line reason. Both rows carry the
+  // same classes and the same click target, so the pair reads and behaves as one row.
+  /**
+   * @param {Suggestion} s
+   * @param {boolean} labeled  the frame now carries ground truth (or is marked reviewed)
+   * @param {boolean} reviewed
+   * @returns {HTMLTableRowElement[]}
+   */
+  suggestRowsFor(s, labeled, reviewed) {
+    const num = document.createElement("tr");
+    num.append(
+      cell("rank-cell", s.rank == null ? "" : String(s.rank)),
+      cell("frame-cell", String(s.frame)),
+      cell("t-cell", s.t_s == null ? "—" : s.t_s.toFixed(2)),
+      cell("score-cell", s.score == null ? "—" : s.score.toFixed(3)),
+    );
+    const why = document.createElement("tr");
+    const wcell = cell("why-cell", "");
+    wcell.colSpan = 4;
+    const chip = document.createElement("span");
+    chip.className = `kind-chip is-${s.kind === "diversity" ? "diversity" : "most-wrong"}`;
+    chip.textContent = s.kind === "diversity" ? "diversity" : "most wrong";
+    chip.title =
+      s.kind === "diversity"
+        ? "Picked on a uniform time grid rather than by score, so the round still sees typical poses and not only the hard tail — a low score here is deliberate."
+        : "Picked by score: the views disagree most about the detector's 2D here.";
+    wcell.append(chip);
+    if (labeled) {
+      const state = document.createElement("span");
+      state.className = "kind-chip is-done";
+      state.textContent = reviewed ? "reviewed ✓" : "labeled";
+      state.title = reviewed
+        ? "You have labeled this frame and ticked it reviewed."
+        : "This frame now carries ground truth — done for this round.";
+      wcell.append(state);
+    }
+    const text = document.createElement("span");
+    text.className = "suggest-why";
+    text.textContent = s.reason?.summary ?? "";
+    wcell.append(text);
+    why.append(wcell);
+
+    const pct = s.percentile == null ? "" : ` — ${s.percentile.toFixed(1)}th percentile of this recording`;
+    const title = `Frame ${s.frame}${s.t_s == null ? "" : ` at ${s.t_s.toFixed(2)} s`}${pct}. Scores rank within this recording only.`;
+    for (const tr of [num, why]) {
+      tr.classList.add("suggest-row");
+      tr.classList.toggle("is-labeled", labeled);
+      tr.classList.toggle("is-reviewed", reviewed);
+      tr.title = title;
+      tr.addEventListener("click", () => this.goToFrame(s.frame));
+    }
+    this.suggestRows.set(s.frame, [num, why]);
+    return [num, why];
+  }
+
+  // The badge, the empty state and the status strip above the queue. The strip is where
+  // the queue admits its own limits: staleness first (styled by how much it matters),
+  // then the caveats the server composed. Without them a short or superseded queue reads
+  // exactly like a fresh top-N.
+  /** @param {number} total @param {number} done */
+  renderSuggestStatus(total, done) {
+    const s = this.suggestions;
+    const stale = s?.stale;
+    const hard = stale?.level === "hard";
+    this.suggestCountEl.hidden = !s?.present;
+    this.suggestCountEl.textContent = `${done} / ${total}`;
+    this.suggestCountEl.classList.toggle("is-zero", total === 0);
+    this.suggestCountEl.title = s?.present
+      ? `${done} of ${total} suggested frames labeled`
+      : "";
+
+    const lines = [];
+    for (const r of stale?.reasons ?? []) lines.push({ text: r, cls: stale?.level ?? "none" });
+    // Progress is composed here, not by the server: `done` is counted live from the
+    // frames just edited, so this line stays true without refetching the sidecar (the
+    // server's own `progress` tier deliberately carries no reason string for that reason).
+    if (!hard && done > 0) {
+      lines.push({
+        text: `${done} of ${total} suggested frames labeled — recompute for a fresh queue`,
+        cls: "progress",
+      });
+    }
+    if (!hard) for (const n of s?.notes ?? []) lines.push({ text: n, cls: "note" });
+    this.suggestStatusEl.hidden = lines.length === 0;
+    this.suggestStatusEl.replaceChildren(
+      ...lines.map(({ text, cls }) => {
+        const div = document.createElement("div");
+        div.className = `status-line is-${cls}`;
+        div.textContent = text;
+        return div;
+      }),
+    );
+
+    // The empty state doubles as the instruction: the exact command, with the resolved
+    // directory, so producing a queue needs no doc lookup.
+    const cmd = s?.command ?? "deeperfly labels-suggest <results dir>";
+    this.suggestEmptyEl.hidden = total > 0;
+    this.suggestEmptyEl.textContent = !s
+      ? "Loading…"
+      : hard
+        ? `This queue was computed for a different recording. Recompute it:\n${cmd}`
+        : s.present
+          ? // Present but with nothing to show. The reason is not always "no frame
+            // scored high enough" -- entries can also have been dropped as outside the
+            // recording -- so the wording states the fact and leaves the why to the
+            // notes above, which carry it.
+            "The queue has no frames to show."
+          : `No suggestions yet. Rank the frames most worth labeling next:\n${cmd}`;
+  }
+
+  // Switch the side panel's tab: swap the panes, re-point the ↑/↓ nav, and (on the
+  // Suggested tab) re-read the sidecar, which may have been recomputed while the editor
+  // was open. Rendering is idempotent, so activating a tab is always safe.
+  /** @param {SidebarTab} tab */
+  setSidebarTab(tab) {
+    this.sidebarTab = tab;
+    this.sidebarTabs.set(tab);
+    this.labeledPane.hidden = tab !== "labeled";
+    this.suggestPane.hidden = tab !== "suggest";
+    this.sidebarEl.classList.toggle("tab-suggest", tab === "suggest");
+    this.updateSidebarNavTitles();
+    if (tab === "suggest") this.refreshSuggestions();
+    this.updateActiveFrameRow();
+  }
+
+  // The ↑/↓ buttons' tooltips name whichever list they currently step.
+  updateSidebarNavTitles() {
+    const what = this.sidebarTab === "suggest" ? "suggested frame to label" : "labeled frame";
+    this.framesPrevBtn.title = `Previous ${what} (↑)`;
+    this.framesNextBtn.title = `Next ${what} (↓)`;
+  }
+
+  // Walk the queue in RANK order (not time order), skipping frames already done, so one
+  // keystroke moves to the next frame actually worth a pass. Wraps at both ends; falls
+  // back to the full list once every entry is done, so the keys never go dead.
+  /** @param {number} dir  -1 for the previous entry in the queue, +1 for the next */
+  jumpSuggested(dir) {
+    const entries = this.suggestEntries();
+    if (entries.length === 0) return;
+    const live = new Set(this.correctedFrames.map((f) => f.frame));
+    const pending = entries.filter((s) => !live.has(s.frame) && !s.labeled);
+    const walk = pending.length ? pending : entries;
+    const at = walk.findIndex((s) => s.frame === this.frame);
+    // Not on a queue frame: enter the queue at its top (or bottom, stepping backwards).
+    const next = at < 0 ? (dir > 0 ? 0 : walk.length - 1) : (at + dir + walk.length) % walk.length;
+    this.goToFrame(walk[next].frame);
   }
 
   // -- close / shutdown -------------------------------------------------------
@@ -1700,7 +1983,8 @@ class App {
       // so the ±10 tier needs no extra plumbing -- run() reads e.shiftKey. The coarse ±100
       // jump lives on PageUp/PageDn, NOT Alt+Arrow: Alt+Arrow is the browser's Back/Forward
       // and the matcher can't even represent it, so it would navigate away and lose unsaved
-      // labels. Up/Down hop between labelled frames (mirroring the sidebar's ↑/↓ buttons);
+      // labels. Up/Down hop through the side panel's active list -- labeled frames, or the
+      // suggestion queue in rank order (mirroring the sidebar's ↑/↓ buttons);
       // Home/End jump to the first/last frame. All are registered as real (non-global)
       // bindings so `matches`->preventDefault suppresses the browser's own scroll/history
       // default, while non-global lets the frame-number input keep native caret + stepping.
@@ -1753,7 +2037,7 @@ class App {
     b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
     if (has3d) {
-      b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no observation here; drop it from the 3D solve", run: () => this.occludeSelection() });
+      b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no usable observation here; drop the view from the 3D solve and follow the reprojection", run: () => this.occludeSelection() });
       b.push({ key: "o", group: "edit", hidden: true, label: "o", desc: "", run: () => this.occludeSelection() });
     }
     b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
@@ -1764,7 +2048,7 @@ class App {
     b.push({ key: "z", mod: true, shift: true, group: "hist", hidden: !IS_MAC, label: hint("Z", ["mod", "shift"]), desc: "Redo", run: () => this.redo() });
     b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels", run: () => this.save() });
     b.push({ key: "c", group: "panel", label: "c", desc: "Show / hide the 3D scene", run: () => this.toggleScene() });
-    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the labelled-frames list", run: () => this.toggleFrames() });
+    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — labeled frames + the suggested queue", run: () => this.toggleFrames() });
     b.push({ key: "k", group: "panel", label: "k", desc: "Open the labeling guide (keypoint map, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "?", group: "panel", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
     return b;
@@ -1876,14 +2160,14 @@ class App {
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projected</b> — the 3D reprojected here; no observation in this view (occluded, or the detector missed). The reprojected skeleton is its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there.`,
+        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there.`,
       ]);
     }
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");
     const markerBlock = `<h3 class="legend-title">Point sources — where a point came from</h3>`
-      + `<p class="legend-note"><b>Ground truth</b> is the editable layer — drag a point to move it, or drag a detected / projected node to create one. <b>Combined</b> merges Ground truth + Detected into one skeleton (GT where authored, else the detector's point); turn it off to see them as two separate skeletons. <b>Projected</b> stays its own overlay.</p>`
+      + `<p class="legend-note"><b>Ground truth</b> is the editable layer — drag a point to move it, or drag a detected / projected node to create one. <b>Combined</b> merges Ground truth + Detected into one skeleton (GT where authored, else the detector's point, else the reprojection — a view marked Projected shows no detection, since you rejected it); turn it off to see them as two separate skeletons. <b>Projected</b> stays its own overlay.</p>`
       + `<div class="legend-rows">${markerRows}</div>`;
 
     // Read-only reference overlays (shown only when the result carries them). The projected
@@ -1941,11 +2225,10 @@ class App {
     const frameLabel = document.querySelector("#controls .frame-row label");
     if (frameLabel instanceof HTMLElement) {
       frameLabel.title =
-        `Jump to a frame — ← / → step 1 · ${hint("←", ["shift"])} steps 10 · PgUp / PgDn jump 100 · ↑ / ↓ labelled frames · Home / End first / last`;
+        `Jump to a frame — ← / → step 1 · ${hint("←", ["shift"])} steps 10 · PgUp / PgDn jump 100 · ↑ / ↓ step the side panel's list · Home / End first / last`;
     }
-    // The sidebar's labelled-frame nav echoes its new keys.
-    setTitle("frames-prev", "Previous labelled frame (↑)");
-    setTitle("frames-next", "Next labelled frame (↓)");
+    // The sidebar's frame nav echoes its keys, naming whichever tab's list it steps.
+    this.updateSidebarNavTitles();
     // Overlay toggles: the "Show" button's summary and the NMF-mesh chip.
     const mesh = hint("M", ["shift"]);
     setTitle(

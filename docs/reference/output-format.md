@@ -9,6 +9,7 @@ deeperfly_outputs/
 ├── config.toml     # byte-for-byte snapshot of the config this run used
 ├── run.json        # per-stage fingerprints (drives cache reuse)
 ├── labels.h5       # ground-truth annotations from 'deeperfly gui' (if any)
+├── labels_suggest.json  # frames to label next, from 'deeperfly labels-suggest'
 └── *.mp4           # one per [[visualization.videos]] entry
 ```
 
@@ -163,3 +164,37 @@ on the same recording keeps the labels valid (ground truth is absolute, not rela
 to what the network predicted). A legacy `corrections.h5` is migrated to this schema
 on open. Export the labels as a training/eval `.npz` with
 [`deeperfly labels-export`](../guides/cli.md#deeperfly-labels-export).
+
+## `labels_suggest.json`
+
+The active-learning queue written by
+[`deeperfly labels-suggest`](../guides/cli.md#deeperfly-labels-suggest): which frames
+a human should correct next, ranked by the multi-view disagreement of the detector's
+own 2D. JSON rather than HDF5 because it is a handful of nested, human-facing records
+(kilobytes) that should be readable with `less` — and because a JSON sidecar can
+never be mistaken for a pipeline stage group in `results.h5`. Written atomically
+(`tmp` + `os.replace`); `results.h5` and `labels.h5` are only ever read.
+
+```
+deeperfly_suggestions_format_version   1  (an unknown version reads as *absent*)
+created_utc, deeperfly_version
+params      every knob, plus min_gap_frames and a one-line statement of the score
+source      what was scored: results md5 + size + mtime_ns, cameras_from
+            (bundle_adjustment | pose2d), scored_array (always "pose2d/points"),
+            n_views / n_frames / n_points, the recording `identity`, and -- when the
+            directory came from `dfpose.predict` -- `reseed`, including what the
+            stored reproj_error *would* have said on the substituted cells
+labels      the labels.h5 md5 and its labeled / reviewed frame sets
+coverage    scorable cell + joint fractions, median observing views, the global
+            residual level and the score percentiles
+shortfall   requested vs selected, most_wrong vs diversity, and why it came short
+excluded    the frames skipped as already-labeled, and how many were unscorable
+frames[]    rank, frame, t_s, score, percentile, kind (most-wrong | diversity) and
+            a `reason`: the driving joints with their worst camera, pixel error,
+            how many views disagree, and a geometric near/far side flag
+```
+
+Every input's fingerprint travels with the queue, so a reader (the GUI) can tell a
+stale queue from a fresh one without recomputing anything: a differing `identity`
+means a different recording, a differing `results_md5` means superseded predictions,
+and a grown labeled-frame set is just normal progress.

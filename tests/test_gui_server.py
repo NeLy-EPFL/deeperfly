@@ -9,10 +9,12 @@ tests check the request/response wiring on top of them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -21,7 +23,7 @@ from fastapi.testclient import TestClient
 from helpers import HEIGHT, WIDTH
 from websockets.sync.client import connect as ws_connect
 
-from deeperfly.gui import EditorState, FrameSource, Session
+from deeperfly.gui import EditorState, FrameSource, Session, server
 from deeperfly.gui.server import create_app
 
 
@@ -505,6 +507,370 @@ def test_set_reviewed_edit_marks_frame(client):
     assert client.get("/api/corrected").json()["frames"] == []  # un-ticked -> dropped
 
 
+# -- suggested frames (the labels-suggest queue) -------------------------------
+#
+# `/api/suggestions` is a READER of the `labels_suggest.json` sidecar: the ranking
+# triangulates the whole recording, so it is a CLI artefact and the route only serves it,
+# joined with the live labeled/reviewed state. These tests pin the three things a wrong
+# panel would hide: that the queue is never presented as fresher than it is, that a frame
+# flips to done from live state rather than from the file, and that every degenerate
+# sidecar (absent, corrupt, future-format, out-of-range) degrades to an empty panel
+# instead of an error or a plausible-looking lie.
+
+
+def _suggestions_doc(frames, **extra) -> dict:
+    """A minimal v1 sidecar: only the fields the route actually reads."""
+    doc = {
+        "deeperfly_suggestions_format_version": 1,
+        "created_utc": "2026-07-29T08:40:11+00:00",
+        "params": {"count": 20, "min_gap_s": 2.0, "threshold_px": 15.0},
+        "source": {
+            "scored_array": "pose2d/points",
+            "cameras_from": "bundle_adjustment",
+        },
+        "coverage": {"global_residual_median_px": 6.35},
+        "frames": frames,
+    }
+    doc.update(extra)
+    return doc
+
+
+def _write_suggestions(session, frames, **extra) -> None:
+    session.suggestions_path.write_text(
+        json.dumps(_suggestions_doc(frames, **extra)), encoding="utf-8"
+    )
+
+
+def _pick(frame, rank=1, **extra) -> dict:
+    entry = {
+        "rank": rank,
+        "frame": frame,
+        "t_s": frame / 100.0,
+        "score": 0.6,
+        "percentile": 99.0,
+        "kind": "most-wrong",
+        "reason": {"summary": f"4 views disagree at frame {frame}"},
+    }
+    entry.update(extra)
+    return entry
+
+
+def test_suggestions_absent_reports_how_to_make_one(client, session):
+    """No sidecar is a normal state: `present: false` plus the exact command to run."""
+    assert not session.suggestions_path.exists()
+    payload = client.get("/api/suggestions").json()
+    assert payload["present"] is False
+    # The command names the resolved results directory, so the panel needs no doc lookup.
+    assert payload["command"].startswith("deeperfly labels-suggest ")
+    assert str(session.suggestions_path.parent) in payload["command"]
+
+
+def test_suggestions_payload_carries_the_ranking_and_its_reason(client, session):
+    """The queue is served in rank order with the per-pick "why" intact."""
+    _write_suggestions(
+        session,
+        [
+            _pick(3, rank=2, kind="diversity", reason={"summary": "grid slot 2/5"}),
+            _pick(1, rank=1),
+        ],
+        shortfall={"requested": 20, "selected": 2, "reason": "spacing ran out of room"},
+    )
+    payload = client.get("/api/suggestions").json()
+    assert payload["present"] is True
+    assert [f["rank"] for f in payload["frames"]] == [
+        1,
+        2,
+    ]  # sorted by rank, not by file
+    assert [f["frame"] for f in payload["frames"]] == [1, 3]
+    assert payload["frames"][1]["kind"] == "diversity"
+    assert payload["frames"][0]["reason"]["summary"].startswith("4 views disagree")
+    # Provenance rides along so the panel can say what was scored.
+    assert payload["source"]["scored_array"] == "pose2d/points"
+    assert payload["stale"]["level"] == "none"
+    assert payload["n_done"] == 0
+    assert all(not f["labeled"] for f in payload["frames"])
+    # An under-delivered count is stated, not swallowed: 2 of 20 is the whole point.
+    assert any("2 of 20 requested" in n for n in payload["notes"])
+
+
+def test_suggestions_mark_labeled_frames_done(client, session):
+    """A suggested frame the operator has since labeled comes back `labeled` + progress.
+
+    The flag is taken from the same live state the Labels list uses, never from the
+    sidecar -- which was written before this session's edits.
+    """
+    _write_suggestions(session, [_pick(2, rank=1), _pick(5, rank=2)])
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "edit_2d",
+                "view": 0,
+                "point": 3,
+                "x": 12.0,
+                "y": 34.0,
+                "frame": 2,
+                "mode": "edit_2d",
+            }
+        )
+        ws.receive_json()
+
+    payload = client.get("/api/suggestions").json()
+    by_frame = {f["frame"]: f for f in payload["frames"]}
+    assert by_frame[2]["labeled"] is True and by_frame[2]["reviewed"] is False
+    assert by_frame[5]["labeled"] is False
+    assert payload["n_done"] == 1
+    # Working through the queue is progress, not a problem -- and it is reported as such.
+    # The tier carries no reason string on purpose: the panel counts "k of n done" live
+    # from the edits it has just made, so a sentence composed here would go stale.
+    assert payload["stale"]["level"] == "progress"
+    assert payload["stale"]["reasons"] == []
+
+
+def test_suggestions_carry_the_reviewed_tick(client, session):
+    """Ticking a frame reviewed shows on its queue entry (same source as the other list)."""
+    _write_suggestions(session, [_pick(3, rank=1)])
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "set_reviewed", "reviewed": True, "frame": 3, "mode": "edit_2d"}
+        )
+        ws.receive_json()
+    entry = client.get("/api/suggestions").json()["frames"][0]
+    assert entry["labeled"] is True and entry["reviewed"] is True
+
+
+def test_suggestions_for_another_recording_are_hard_stale(client, session):
+    """A queue fingerprinting a different recording is refused, not silently navigated."""
+    other = dict(session.identity)
+    other["point_names"] = ["nose", "tail"]  # a different keypoint set entirely
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", "identity": other},
+    )
+    payload = client.get("/api/suggestions").json()
+    assert payload["present"] is True
+    assert payload["stale"]["level"] == "hard"
+    assert "different recording" in payload["stale"]["reasons"][0]
+
+
+def test_suggestions_matching_identity_is_not_stale(client, session):
+    """The identity check must not fire on the recording the queue was computed for."""
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", "identity": session.identity},
+    )
+    assert client.get("/api/suggestions").json()["stale"]["level"] == "none"
+
+
+def _fingerprint(path: Path) -> dict:
+    """The results.h5 fingerprint a real sidecar records: stat first, then the hash."""
+    stat = path.stat()
+    return {
+        "results_md5": hashlib.md5(path.read_bytes()).hexdigest(),
+        "results_size": stat.st_size,
+        "results_mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def test_suggestions_detect_superseded_predictions(client, session):
+    """A results.h5 rewritten since the queue was computed is flagged, by md5."""
+    results = Path(session.results_path)
+    results.write_bytes(b"the predictions the queue was computed from")
+    stale_fingerprint = _fingerprint(results)
+    results.write_bytes(b"re-run predictions, different content entirely")
+
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", **stale_fingerprint},
+    )
+    payload = client.get("/api/suggestions").json()
+    assert payload["stale"]["level"] == "predictions"
+    assert any("superseded" in r for r in payload["stale"]["reasons"])
+    # The frames are real, so they still render -- the warning rides above them.
+    assert [f["frame"] for f in payload["frames"]] == [1]
+
+    # The same file, correctly fingerprinted, is not stale.
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", **_fingerprint(results)},
+    )
+    assert client.get("/api/suggestions").json()["stale"]["level"] == "none"
+
+
+def test_suggestions_without_a_fingerprint_do_not_cry_wolf(client, session):
+    """Not knowing whether results.h5 changed is not the same as knowing it did."""
+    Path(session.results_path).write_bytes(b"pretend results")
+    _write_suggestions(session, [_pick(1, rank=1)])  # no results_md5 recorded
+    assert client.get("/api/suggestions").json()["stale"]["level"] == "none"
+
+
+def test_suggestions_drop_frames_outside_the_recording(client, session):
+    """A row that cannot be navigated to is dropped -- and the drop is reported."""
+    beyond = session.n_frames + 500
+    _write_suggestions(
+        session, [_pick(1, rank=1), _pick(beyond, rank=2), _pick(-3, rank=3)]
+    )
+    payload = client.get("/api/suggestions").json()
+    assert [f["frame"] for f in payload["frames"]] == [1]
+    assert any("outside this recording" in n for n in payload["notes"])
+
+
+def test_suggestions_note_a_reseeded_result(client, session):
+    """A reseeded result says so: its STORED reprojection error would have ranked nothing."""
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", "reseeded": True},
+    )
+    notes = client.get("/api/suggestions").json()["notes"]
+    assert any("reseeded" in n and "pose2d/points" in n for n in notes)
+
+
+def test_suggestions_note_uncalibrated_cameras(client, session):
+    """Scoring against the config rig may rank calibration error, so the panel warns."""
+    _write_suggestions(
+        session,
+        [_pick(1, rank=1)],
+        source={"scored_array": "pose2d/points", "cameras_from": "pose2d"},
+        coverage={"global_residual_median_px": 40.0},
+    )
+    notes = client.get("/api/suggestions").json()["notes"]
+    assert any("bundle adjustment" in n for n in notes)
+    # A recording whose median disagreement already exceeds the threshold is the
+    # signature of ranking calibration rather than the detector's mistakes.
+    assert any("median disagreement" in n for n in notes)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{not json at all",
+        json.dumps({"deeperfly_suggestions_format_version": 99, "frames": []}),
+        json.dumps([1, 2, 3]),
+    ],
+    ids=["corrupt", "future-format", "not-an-object"],
+)
+def test_unusable_suggestions_sidecar_degrades_to_absent(client, session, text):
+    """Anything unreadable or unrecognised reads as "no queue", never as an error."""
+    session.suggestions_path.write_text(text, encoding="utf-8")
+    payload = client.get("/api/suggestions").json()
+    assert payload["present"] is False
+    assert payload["command"].startswith("deeperfly labels-suggest ")
+
+
+def test_malformed_suggestion_rows_are_skipped(client, session):
+    """One bad row must not cost the whole queue."""
+    _write_suggestions(session, [{"rank": 1}, "nonsense", _pick(4, rank=2)])
+    payload = client.get("/api/suggestions").json()
+    assert [f["frame"] for f in payload["frames"]] == [4]
+
+
+def test_unformattable_numbers_become_null(client, session):
+    """A bad numeric field reads as null, not as a string the front-end would choke on.
+
+    The panel formats score / time / percentile with `toFixed`, which throws on a
+    string -- so one hand-edited field would otherwise take the whole list down.
+    """
+    _write_suggestions(
+        session, [_pick(1, rank=1, score="high", t_s=None, percentile="p99")]
+    )
+    entry = client.get("/api/suggestions").json()["frames"][0]
+    assert entry["score"] is None and entry["t_s"] is None
+    assert entry["percentile"] is None
+
+
+def test_suggestions_never_write_anything(client, session):
+    """The route is a reader: it must not touch the sidecar, the labels, or results.h5.
+
+    `labels.h5` holds thousands of hand-placed points and each recording's `results.h5`
+    holds the only copy of its calibration, so "reads only" is a property worth pinning.
+    """
+    results = Path(session.results_path)
+    results.write_bytes(b"pretend results")
+    session.labels_path.write_bytes(b"pretend labels")
+    _write_suggestions(session, [_pick(1, rank=1)])
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in (results, session.labels_path, session.suggestions_path)
+    }
+    assert client.get("/api/suggestions").json()["present"] is True
+    for path, (content, mtime) in before.items():
+        assert path.read_bytes() == content
+        assert path.stat().st_mtime_ns == mtime
+
+
+def test_suggestions_go_through_the_acquisition_reader(client, session, monkeypatch):
+    """The sidecar format is owned by `deeperfly.acquisition`, so ITS reader parses it.
+
+    Pinning the delegation matters because the alternative is tempting and wrong: a
+    second JSON parse in the GUI would be a second interpretation of the format, free to
+    drift from the writer's (over the version gate especially) while still looking fine.
+    """
+    calls = []
+
+    def read_suggestions(path):
+        calls.append(Path(path))
+        return _suggestions_doc([_pick(4, rank=1)])
+
+    monkeypatch.setattr(server, "read_suggestions", read_suggestions)
+    _write_suggestions(session, [_pick(1, rank=1)])  # different content than the stub
+    payload = client.get("/api/suggestions").json()
+    assert calls == [session.suggestions_path]
+    assert [f["frame"] for f in payload["frames"]] == [4]
+
+
+def test_suggestions_survive_a_broken_reader(client, session, monkeypatch):
+    """A reader that raises leaves an empty panel, not a broken editor."""
+
+    def read_suggestions(path):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(server, "read_suggestions", read_suggestions)
+    _write_suggestions(session, [_pick(1, rank=1)])
+    assert client.get("/api/suggestions").json()["present"] is False
+
+
+def test_session_defaults_the_suggestions_path_beside_the_labels(session):
+    """The sidecar lives next to labels.h5 under the shared `labels_*` naming."""
+    assert (
+        session.suggestions_path == session.labels_path.parent / "labels_suggest.json"
+    )
+
+
+# -- the front-end wiring for the panel ---------------------------------------
+#
+# The Python tests cannot run the browser, but they can pin the contract between the
+# three hand-edited assets: an id the HTML no longer has (or never had) makes `el(...)`
+# return null and the whole editor dies on load -- the exact failure the ?v= asset stamp
+# exists to prevent. Cheap insurance for a purely additive DOM change.
+
+
+def test_suggest_panel_ids_agree_across_the_assets(client):
+    html = client.get("/").text
+    js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+    for element_id in (
+        "sidebar-tabs",
+        "suggest-count",
+        "labeled-pane",
+        "suggest-pane",
+        "suggest-status",
+        "suggest-table",
+        "suggest-empty",
+    ):
+        assert f'id="{element_id}"' in html, f"{element_id} missing from index.html"
+        assert f'el("{element_id}")' in js, f"{element_id} not bound in app.js"
+    # The two lists share the table styling; the queue adds its own row states + chips.
+    for cls in ("suggest-table", "kind-chip", "sidebar-status", "suggest-why"):
+        assert f".{cls}" in css, f"{cls} unstyled"
+    # The queue is fetched from the route these tests cover, and the panel is a reader.
+    assert "fetchSuggestions" in js
+    assert "/api/suggestions" in client.get("/static/api.js").text
+
+
 # -- edits over the websocket -------------------------------------------------
 
 
@@ -554,6 +920,25 @@ def test_ws_toggle_invisible_flips_mask_and_sets_dirty(client, result):
     # the marked view drops out of the estimate; the other views stay finite
     other = (view + 1) % result.n_views
     assert reply["invisible"][other][point] is False
+
+
+def test_ws_occluded_cell_has_no_observation_but_keeps_its_reprojection(client, result):
+    """An occluded ("Projected") cell must be null in ``points`` yet finite in ``proj``.
+
+    That pair is the contract the editor's display precedence rests on: the view has no
+    usable observation (so the rejected detection is not drawn there and does not feed
+    the solve), and the reprojection of the re-solved 3D is what the joint falls back
+    to as its position in that view.
+    """
+    view, point = 1, 5
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "occlude", "targets": [[view, point]], "frame": 0})
+        reply = ws.receive_json()
+    assert reply["invisible"][view][point] is True
+    assert reply["points"][view][point] is None  # no observation left in this view
+    assert reply["proj"][view][point] is not None  # ... but a reprojection to draw
+    other = (view + 1) % result.n_views
+    assert reply["points"][other][point] is not None  # other views keep theirs
 
 
 def test_ws_edit_2d_is_local_to_its_view(client):

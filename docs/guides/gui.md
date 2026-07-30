@@ -144,13 +144,42 @@ Every edit is undoable: `Ctrl`/`Cmd`+`Z` undoes, `Ctrl`/`Cmd`+`Y` (or
 whole batched Confirm / Reset / Occlude — is a single undo step, and undo jumps back to
 the frame the edit was on.
 
-## Labelled-frames list
+## Frame lists
 
-The **Labels** button (`j`) opens a retractable panel listing every frame carrying a
-label, with the number of labelled keypoints in each. It updates live and includes
-labels loaded from a previous session. Click a row to jump there, or use `↑` / `↓` to
-step through labelled frames (wrapping at the ends); the current frame stays
-highlighted as you scrub. The button's badge shows the total even while collapsed.
+The **Labels** button (`j`) opens a retractable side panel holding two lists as tabs.
+Click a row in either to jump to that frame; `↑` / `↓` step through the **active** tab's
+list (wrapping at the ends), and the current frame stays highlighted as you scrub.
+
+### Labeled
+
+Every frame carrying a label, in time order, with a per-frame **Reviewed** tick box —
+your "I have finished checking this" flag, which persists with the labels and keeps the
+frame listed even if its point labels are later reset. The list updates live and includes
+labels loaded from a previous session; the button's blue badge shows the total even while
+collapsed.
+
+### Suggested
+
+The ranked queue of frames worth correcting **next**, written by
+[`deeperfly labels-suggest`](cli.md#deeperfly-labels-suggest). The panel only *reads* that
+sidecar — ranking triangulates the whole recording, so it is a command you run, not a
+button — and the tab is empty (showing the exact command to run) until you have.
+
+Each entry gives its rank, frame, time, disagreement score, and **why** it was picked: a
+`most wrong` chip for a frame the cameras disagree about most, or `diversity` for one
+drawn from a uniform time grid so the round still sees typical poses. A frame you have
+since labeled is struck through and chipped `labeled` the moment you drag its first
+point, so `↓` walks you through what is left. The amber badge reads *done / total*.
+
+Scores rank **within one recording only** — the absolute level tracks how many keypoints
+the detector fired, not how bad the recording is — so never compare them across files.
+
+The strip above the list carries the queue's own caveats, and they are worth reading: how
+many frames it actually delivered against what was requested (the minimum spacing between
+picks routinely runs out of room), whether it is stale, and whether the scores may be
+tracking calibration error rather than the detector's mistakes. If the queue was computed
+for a different recording, or from predictions that have since been replaced, the panel
+says so instead of quietly navigating a list that no longer applies.
 
 ## NeuroMechFly overlays
 

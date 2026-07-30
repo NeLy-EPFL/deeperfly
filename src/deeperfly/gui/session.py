@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..acquisition import SUGGESTIONS_FILENAME
 from .labels import labels_identity
 from .readers import FrameSource
 from .state import EditorState
@@ -35,6 +36,11 @@ class Session:
         Path to the ``results.h5`` (recorded in the saved sidecar's metadata).
     labels_path
         Where :func:`~deeperfly.gui.labels.save_labels` writes the ``labels.h5`` sidecar.
+    suggestions_path
+        Where ``deeperfly labels-suggest`` writes its ranked-frame sidecar
+        (``labels_suggest.json``). Defaults to the file of that name beside
+        ``labels_path``. The GUI only ever *reads* it, and its absence is normal --
+        the Suggested tab then just says how to produce it.
     identity
         The recording fingerprint stamped into ``labels.h5`` (see
         :func:`~deeperfly.gui.labels.labels_identity`), so a stale sidecar is refused.
@@ -58,6 +64,15 @@ class Session:
     identity: dict = field(default_factory=dict)
     image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
     nmf_hide_parts: tuple[str, ...] = ("wings",)
+    # Filled in by __post_init__ when not given, so every Session -- however it was
+    # constructed -- has a concrete path to look for the suggestions sidecar at.
+    suggestions_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.suggestions_path is None:
+            self.suggestions_path = Path(self.labels_path).parent / SUGGESTIONS_FILENAME
+        else:
+            self.suggestions_path = Path(self.suggestions_path)
 
     @classmethod
     def build(
@@ -67,6 +82,7 @@ class Session:
         *,
         results_path: str | Path,
         labels_path: str | Path,
+        suggestions_path: str | Path | None = None,
         identity: dict | None = None,
         footage: dict | None = None,
         image_sizes: dict[str, tuple[int, int]] | None = None,
@@ -94,6 +110,9 @@ class Session:
             source=source,
             results_path=str(results_path),
             labels_path=Path(labels_path),
+            suggestions_path=None
+            if suggestions_path is None
+            else Path(suggestions_path),
             n_frames=int(n_frames),
             identity=identity,
             image_sizes=dict(image_sizes or {}),

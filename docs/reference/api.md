@@ -56,6 +56,10 @@ coordinate conventions these functions share, see
 
 ::: deeperfly.triangulation
 
+## Acquisition (active learning)
+
+::: deeperfly.acquisition
+
 ## Pictorial structures
 
 ::: deeperfly.pictorial

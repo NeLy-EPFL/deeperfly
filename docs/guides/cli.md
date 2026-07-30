@@ -1,8 +1,9 @@
 # CLI usage
 
-`deeperfly` has six commands: `init` (write a config), `run` (the pipeline),
-`gui` (annotate a result), `labels-export` (export ground truth), `inspect`
-(summarize a result), and `doctor` (report the install). Every command takes
+`deeperfly` has seven commands: `init` (write a config), `run` (the pipeline),
+`gui` (annotate a result), `labels-suggest` (rank the frames worth labeling
+next), `labels-export` (export ground truth), `inspect` (summarize a result),
+and `doctor` (report the install). Every command takes
 `--log-level` (`debug` / `info` / `warning` /
 `error` / `critical`; `warning` or higher hides the per-stage logs and the progress
 bar) and `-h` / `--help`.
@@ -159,6 +160,61 @@ deeperfly gui recording/deeperfly_outputs           # open the editor
 deeperfly gui results.h5 --port 0                    # any free port
 deeperfly gui results.h5 --no-browser                # headless / over a tunnel
 ```
+
+## `deeperfly labels-suggest` — rank the frames worth labeling next
+
+```bash
+deeperfly labels-suggest PATH [-n N] [--min-gap-s S] [--reserve-diversity F] [-o OUT.json]
+```
+
+Active learning: ranks a recording's frames by the **multi-view disagreement** of
+the detector's own 2D and writes the ranked list to `labels_suggest.json` beside
+`results.h5`, for [`deeperfly gui`](gui.md) to navigate. Every joint is
+RANSAC-triangulated from the pristine `pose2d/points` and each view's detection is
+compared to the reprojection; views cannot conspire, so a large residual means the
+model is probably wrong. Detector *confidence* is deliberately **not** used — it is
+confidently wrong exactly where it is wrong.
+
+The list is never the raw top-N: at 100 fps neighbouring frames are the same pose,
+so `--min-gap-s` is a *hard* constraint (seeded with the frames already labeled, so
+a suggestion can never land beside existing work), and `--reserve-diversity` spends
+part of the list on a uniform temporal grid so the round still sees typical poses.
+`results.h5` and `labels.h5` are only ever **read**.
+
+| Argument / option | Default | Meaning |
+| --- | --- | --- |
+| `PATH` | — | A `results.h5`, or a directory containing one. |
+| `-n`, `--count` | `20` | How many frames to suggest. |
+| `--min-gap-s` | `2.0` | Hard minimum spacing between suggestions (and from already-labeled frames), in seconds. |
+| `--fps` | from `results.h5`, else `100` | Capture rate `--min-gap-s` is converted with. |
+| `--reserve-diversity` | `0.25` | Fraction of `-n` taken on a uniform temporal grid instead of by score. |
+| `--threshold` | `15.0` | px; the RANSAC inlier gate and the "this cell disagrees" gate. A *ranking* knob, not an accuracy claim. |
+| `--cap` | `60.0` | px; per-cell saturation, so one blown view cannot make the ranking a single-outlier lottery. |
+| `--top-k` | `8` | How many of the worst joints are averaged into a frame's score. |
+| `--min-views` | `3` | Observing views a joint needs to be scorable (a 2-view joint reprojects onto both by construction). |
+| `--points` | all | Glob(s) over skeleton point names to score (repeatable). |
+| `--cameras` | all | Glob(s) over camera names to score (repeatable); triangulation still uses every view. |
+| `--exclude-labeled` / `--no-exclude-labeled` | on | Skip frames that already carry human work, read from `labels.h5`. |
+| `-o`, `--output` | `labels_suggest.json` beside `results.h5` | Destination `.json`. |
+| `--dry-run` | off | Print the ranking, write nothing. |
+
+```bash
+deeperfly labels-suggest recording/deeperfly_outputs              # 20 frames, >= 2 s apart
+deeperfly labels-suggest results.h5 -n 10 --min-gap-s 1 --dry-run # just look
+deeperfly labels-suggest rec/ --points '*claw' --cameras 'l*'     # score a subset
+```
+
+The printed report is the whole feature without the GUI: each pick comes with its
+score, its within-recording percentile, whether it is `most-wrong` or `diversity`,
+and the joints/views that drove it. Two facts it always surfaces — because both
+mislead silently otherwise — are whether the directory's *displayed* triangulation
+layer was reseeded (its stored residual is 0 by construction and is never scored),
+and any shortfall against `-n` caused by the spacing constraint. Scores rank
+**within one recording only**; the absolute level tracks how many cells the detector
+fired, so never compare them across files.
+
+See [`labels_suggest.json`](../reference/output-format.md#labels_suggestjson) for the
+sidecar schema.
 
 ## `deeperfly labels-export` — export ground truth
 

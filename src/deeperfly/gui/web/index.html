@@ -75,9 +75,9 @@
                 <label class="pm-master" title="Hide every overlay at once for an unobstructed look at the raw frames — press again to restore them exactly as they were. A quick, non-destructive peek: each layer's own toggle is left untouched (h)."><input id="show-hide-all" type="checkbox" /> <span class="pm-name">Hide all overlays</span> <kbd>h</kbd></label>
                 <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> <span class="pm-name">Names</span> <kbd>n</kbd></label>
                 <div class="pm-section">Point sources</div>
-                <label title="Merge Ground truth + Detected into one skeleton — each joint shows your authored GT pixel, else the detector's point. Off: draw them as two separate skeletons. Projected stays its own overlay either way (s)"><input id="show-combined" type="checkbox" checked /> <span class="pm-name">Combined</span> <kbd>s</kbd></label>
+                <label title="Merge Ground truth + Detected into one skeleton — each joint shows your authored GT pixel, else the detector's point, else its reprojection (a view you marked Projected keeps no detection, so it follows the reprojection). Off: draw them as two separate skeletons. Projected stays its own overlay either way (s)"><input id="show-combined" type="checkbox" checked /> <span class="pm-name">Combined</span> <kbd>s</kbd></label>
                 <label id="gt-wrap" title="Show — and edit — ground truth (filled disc + lime ring). Drag a point to move it, or drag a Detected / Projected node to create one. This is the editable layer."><input id="show-gt" type="checkbox" checked /><span class="mk mk-inline m-gt"></span> <span class="pm-name">Ground truth</span></label>
-                <label id="detected-wrap" title="Show the raw detector predictions (filled disc that fades with confidence + thin dark ring)"><input id="show-detected" type="checkbox" checked /><span class="mk mk-inline m-pred"></span> <span class="pm-name">Detected</span></label>
+                <label id="detected-wrap" title="Show the detector's predictions (filled disc that fades with confidence + thin dark ring). A view you marked Projected shows none — you rejected that pixel, so the joint follows its reprojection there"><input id="show-detected" type="checkbox" checked /><span class="mk mk-inline m-pred"></span> <span class="pm-name">Detected</span></label>
                 <label id="projected-wrap" title="Show the reprojected skeleton — the 3D reprojection as its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges, marking where the 3D places each joint. Drag a reprojected point to spawn a ground-truth point there. On by default (p)"><input id="show-projected" type="checkbox" checked /><span class="mk mk-inline m-proj"></span> <span class="pm-name">Projected</span> <kbd>p</kbd></label>
                 <label id="placeholder-wrap" title="Show Missing-point seeds — a faint dashed ghost for every joint this view has nothing to grab (no detection and no reprojection), e.g. one triangulation rejected. Positioned at a sensible guess (the raw detector pixel if any, else a nearby frame / neighbour). Drag a ghost to place its ground-truth point. On by default (i)"><input id="show-placeholder" type="checkbox" checked /><span class="mk mk-inline m-placeholder"></span> <span class="pm-name">Missing</span> <kbd>i</kbd></label>
                 <div class="pm-section" id="warn-section">Checks</div>
@@ -99,7 +99,10 @@
             </div>
             <span class="spacer"></span>
             <div class="ctl-group">
-              <button id="frames-toggle" title="Show / hide the list of frames you have labelled (j)">Labels <span id="frames-count" class="count-badge">0</span></button>
+              <!-- One button for the whole side panel, carrying a badge per tab: the
+                   number of frames labeled, and (only once a suggestion queue exists)
+                   how many of its frames are done. -->
+              <button id="frames-toggle" title="Show / hide the side panel — the frames you have labeled, and the suggested queue of frames to label next (j)">Labels <span id="frames-count" class="count-badge">0</span><span id="suggest-count" class="count-badge is-suggest" hidden>0</span></button>
               <button id="cameras" title="Show the 3D scene — cameras, 3D pose, NMF skeleton + mesh (c)">3D scene</button>
               <button id="help" title="Help — the labeling guide, keypoint colours, and keyboard shortcuts (?)">Help</button>
             </div>
@@ -112,24 +115,46 @@
         </div>
       </div>
 
-      <!-- A retractable side panel listing every frame that carries a ground-truth
-           label. Click a row to jump to that frame; the prev/next buttons step
-           through labelled frames. Toggled by the "Labels" button (j). -->
+      <!-- A retractable side panel holding the two frame lists, as tabs (the editor has
+           one aside and the camera grid is the scarce resource, so a second panel would
+           cost width permanently). "Labeled" lists every frame that carries a
+           ground-truth label, in time order. "Suggested" is the ranked queue written by
+           `deeperfly labels-suggest` -- which frames to correct NEXT, worst multi-view
+           disagreement first -- in rank order, with its own columns; two different sets
+           in two different orders, which is why they are tabs and not one filtered list.
+           Click a row in either to jump to that frame; the ↑/↓ buttons (and keys) step
+           through the ACTIVE tab's list. Toggled by the "Labels" button (j). -->
       <aside id="sidebar" hidden>
         <div class="sidebar-head">
-          <span class="sidebar-title">Labels</span>
+          <div id="sidebar-tabs" class="sidebar-title"></div>
           <span class="sidebar-nav">
             <button id="frames-prev" class="icon-btn" title="Jump to the previous corrected frame">↑</button>
             <button id="frames-next" class="icon-btn" title="Jump to the next corrected frame">↓</button>
           </span>
-          <button id="frames-collapse" class="icon-btn" aria-label="Hide" title="Hide the list (j)">✕</button>
+          <button id="frames-collapse" class="icon-btn" aria-label="Hide" title="Hide the panel (j)">✕</button>
         </div>
-        <div class="sidebar-body">
+        <div class="sidebar-body" id="labeled-pane">
           <table id="frames-table" class="frames-table">
             <thead><tr><th>Frame</th><th class="reviewed-col" title="Tick once you have finished reviewing a frame">Reviewed</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="frames-empty" class="frames-empty">No labels yet — frames you annotate will be listed here.</div>
+        </div>
+        <!-- The suggestion queue. The status strip carries the two facts most likely to
+             mislead a reader of the list -- how stale the queue is, and any caveat about
+             how it was scored -- so they are on screen, not only in the CLI log. -->
+        <div class="sidebar-body" id="suggest-pane" hidden>
+          <div id="suggest-status" class="sidebar-status" hidden></div>
+          <table id="suggest-table" class="frames-table suggest-table">
+            <thead><tr>
+              <th class="rank-col" title="Rank in the queue — 1 is the frame most worth your time">#</th>
+              <th>Frame</th>
+              <th class="t-col" title="Time into the recording, in seconds">t (s)</th>
+              <th class="score-col" title="Multi-view disagreement of the detector's own 2D: how far each view's prediction sits from the reprojection of the triangulated joint, averaged over the worst joints. Ranks WITHIN this recording only — the absolute level tracks how many cells the detector fired, so it is not comparable between recordings.">Score</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="suggest-empty" class="frames-empty"></div>
         </div>
       </aside>
     </div>

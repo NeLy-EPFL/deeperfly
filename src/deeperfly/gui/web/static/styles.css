@@ -594,7 +594,29 @@ button:disabled {
   color: #aaa;
 }
 
-/* The retractable corrected-frames side panel (right edge, full height). */
+/* The `display: inline-block` above is an author rule, so it beats the browser's
+   `[hidden] { display: none }` -- without this the suggestion badge would stay on screen
+   (reading "0 / 0") for every result that has no queue. */
+.count-badge[hidden] {
+  display: none;
+}
+
+/* The second badge on the panel button: "<done> / <total>" of the suggestion queue.
+   Amber, so it reads as a distinct quantity from the (blue) labeled count next to it,
+   and hidden entirely until a queue exists. */
+.count-badge.is-suggest {
+  background: #b7791f;
+}
+
+.count-badge.is-suggest.is-zero {
+  background: #444;
+  color: #aaa;
+}
+
+/* The retractable frame-list side panel (right edge, full height), holding the Labeled
+   and Suggested tabs. The Suggested tab widens it: its rows carry a rank, a time and a
+   score plus a one-line reason, and squeezing that into the labeled list's width would
+   turn every reason into an ellipsis. The camera grid reflows to whatever is left. */
 #sidebar {
   flex: 0 0 clamp(180px, 16vw, 260px);
   display: flex;
@@ -602,6 +624,10 @@ button:disabled {
   min-height: 0;
   background: var(--panel);
   border-left: 1px solid var(--border);
+}
+
+#sidebar.tab-suggest {
+  flex-basis: clamp(240px, 22vw, 340px);
 }
 
 #sidebar[hidden] {
@@ -618,8 +644,15 @@ button:disabled {
   font-weight: 600;
 }
 
+/* The panel's heading slot. It holds the Labeled / Suggested tab strip rather than a
+   title -- two lists in two different orders, so a tab strip and not a filter. */
 .sidebar-title {
   flex: 1;
+}
+
+.sidebar-title .segmented .seg-btn {
+  padding: 2px 8px;
+  font-weight: 500;
 }
 
 .sidebar-nav {
@@ -699,6 +732,129 @@ button:disabled {
   padding: 14px;
   color: #888;
   font-size: 12px;
+  /* The Suggested tab's empty state ends with the command that fills it, on its own
+     line, so the newline in the message must survive. */
+  white-space: pre-line;
+}
+
+/* -- the Suggested tab: the ranked "label these next" queue -------------------
+   Each entry is TWO <tr>s sharing one click target: the numbers (rank · frame · time ·
+   score), then the "why" -- the kind chip and the server's one-line reason. Two rows
+   rather than six columns because the reason is the point of the panel: an operator who
+   cannot see WHY a frame was picked is just being sent to an index. */
+.suggest-table td {
+  border-bottom: none;
+}
+
+/* The border belongs to the entry, not the row: it closes under the reason line so the
+   two <tr>s read as one block. */
+.suggest-table tr:nth-child(even) td {
+  border-bottom: 1px solid #2f2f2f;
+}
+
+/* The cell selectors are written `td.<class>` on purpose: the shared .frames-table rules
+   right-align and grey `td:last-child` (the labeled list's Reviewed column), which would
+   otherwise catch the score column and, worse, the full-width reason row. */
+.suggest-table th.rank-col,
+.suggest-table td.rank-cell {
+  width: 2.5em;
+  color: #888;
+}
+
+.suggest-table th.t-col,
+.suggest-table td.t-cell,
+.suggest-table th.score-col,
+.suggest-table td.score-cell {
+  text-align: right;
+}
+
+.suggest-table td.score-cell {
+  color: #e0b060; /* the ranking quantity, tinted like its badge */
+}
+
+.suggest-table td.frame-cell {
+  font-weight: 600;
+}
+
+.suggest-table td.why-cell {
+  padding-top: 0;
+  padding-bottom: 5px;
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.suggest-why {
+  color: #999;
+  font-size: 11px;
+}
+
+/* Row states. `is-labeled` (the frame has since acquired ground truth) is the progress
+   marker: struck through and dimmed, so walking the queue shows what is left at a glance
+   without the entry disappearing -- its rank is still the reason it was worth doing. */
+.suggest-table tr.is-labeled td.frame-cell {
+  text-decoration: line-through;
+}
+
+.suggest-table tr.is-labeled td {
+  color: #6e6e6e;
+}
+
+.suggest-table tr.is-current td {
+  background: #34506e;
+}
+
+/* Why the frame is in the list: scored worst ("most wrong") or drawn from the uniform
+   temporal grid ("diversity") so the round still sees typical poses. A third chip marks
+   an entry the operator has already dealt with. */
+.kind-chip {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 15px;
+  vertical-align: 1px;
+  white-space: nowrap;
+  color: #fff;
+}
+
+.kind-chip.is-most-wrong {
+  background: #a04a4a;
+}
+
+.kind-chip.is-diversity {
+  background: #4a6a8a;
+}
+
+.kind-chip.is-done {
+  background: #3f6b2a;
+}
+
+/* The strip above the queue, where it declares its own limits: how stale it is, and the
+   caveats that would otherwise live only in the CLI log (an under-delivered count, a
+   reseeded result, cameras that never went through bundle adjustment). */
+.sidebar-status {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #262626;
+  font-size: 11px;
+}
+
+.sidebar-status .status-line + .status-line {
+  margin-top: 3px;
+}
+
+.sidebar-status .is-note,
+.sidebar-status .is-progress {
+  color: #999;
+}
+
+/* A queue computed from predictions that no longer exist, or for another recording
+   entirely: the two states where believing the list wastes a whole session. */
+.sidebar-status .is-predictions,
+.sidebar-status .is-hard {
+  color: #e0a030;
 }
 
 /* On-demand modal overlays (keyboard help, camera-rig plot). */

@@ -30,6 +30,7 @@ import webbrowser
 from collections.abc import Iterator
 from pathlib import Path
 
+from ..acquisition import SUGGESTIONS_FILENAME
 from ..results import PoseResult, StageStore
 from .corrections import Corrections, load_corrections, save_corrections
 from .labels import (
@@ -102,6 +103,9 @@ def build_session(
     image_sizes = store.read_image_sizes()
     results_dir = results_path.parent
     labels_path = results_dir / "labels.h5"
+    # The frame-suggestion queue `deeperfly labels-suggest` writes here, if it has been
+    # run. Read-only for the GUI, and optional: absent just means an empty Suggested tab.
+    suggestions_path = results_dir / SUGGESTIONS_FILENAME
 
     resolved, missing = resolve_footage(footage, results_dir, footage_dir)
     if not footage:
@@ -145,6 +149,7 @@ def build_session(
         source,
         results_path=str(results_path),
         labels_path=labels_path,
+        suggestions_path=suggestions_path,
         identity=identity,
         footage=footage,
         image_sizes=image_sizes,

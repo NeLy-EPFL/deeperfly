@@ -50,6 +50,19 @@ export async function fetchCorrected() {
   return r.json();
 }
 
+/**
+ * The ranked "label these frames next" queue: the `labels_suggest.json` sidecar written
+ * by `deeperfly labels-suggest`, joined server-side with the live labeled/reviewed
+ * state. Always resolves -- `present: false` means no queue has been computed yet, which
+ * is a normal state the panel renders as an invitation to run the command.
+ * @returns {Promise<import("./types.js").SuggestionsPayload>}
+ */
+export async function fetchSuggestions() {
+  const r = await fetch("/api/suggestions");
+  if (!r.ok) throw new Error(`GET /api/suggestions -> ${r.status}`);
+  return r.json();
+}
+
 /** @returns {Promise<{ dirty: boolean }>} */
 export async function saveCorrections() {
   const r = await fetch("/api/save", { method: "POST" });
