@@ -18,6 +18,7 @@ import numpy as np
 
 from deeperfly.gui import EditorState, resolve_footage
 from deeperfly.gui.labels import Provenance
+from deeperfly.results import PoseResult
 
 # -- displayed 2D: GT over prediction -----------------------------------------
 
@@ -184,7 +185,7 @@ def test_reset_frame_clears_only_that_frame(result):
     assert state.labels.has_gt[0, 1, 4]  # the other frame is left alone
 
 
-# -- corrected (labelled) frames ----------------------------------------------
+# -- corrected (labeled) frames ----------------------------------------------
 
 
 def test_corrected_frames_tracks_labels_and_resets(result):
@@ -449,6 +450,48 @@ def test_confirm_projections_uses_reprojection(result):
             state.labels.gt_provenance[v, f, point] == Provenance.CONFIRMED_PROJECTION
         )
         assert np.allclose(state.labels.gt[v, f, point], proj[v], atol=1e-6)
+
+
+def test_confirm_tags_a_reseeded_pixel_as_projection_not_prediction(result):
+    """A displayed pixel that is NOT the detector's own must not be called a prediction.
+
+    ``dfpose.predict`` prepares a contralateral-labeling directory by writing the
+    reprojected 3D *over* the detector's pixels in the derived stage the editor displays
+    (measured on scape_Fly4_006: 43% of finite cells, median 14.9 px away). Bulk-confirming
+    those used to stamp CONFIRMED_PREDICTION -- the one provenance ``labels-export`` keeps
+    unconditionally -- so reprojected geometry entered training as detector evidence.
+    """
+    raw = np.array(result.pts2d, dtype=float)
+    reseeded = raw.copy()
+    reseeded[2, 0, 7] += 30.0  # this cell now holds geometry, not a detection
+    detector_untouched = raw[3, 0, 7].copy()
+    state = EditorState.from_result(
+        PoseResult(
+            cameras=result.cameras,
+            skeleton=result.skeleton,
+            pts2d=reseeded,
+            conf=result.conf,
+            pts3d=result.pts3d,
+            reproj_error=result.reproj_error,
+        ),
+        raw_pts2d=raw,
+    )
+    assert state.confirm([(2, 7), (3, 7)], "predictions", 0) is True
+    # the overwritten cell: the displayed pixel is stored, but tagged for what it is
+    assert np.allclose(state.labels.gt[2, 0, 7], reseeded[2, 0, 7])
+    assert state.labels.gt_provenance[2, 0, 7] == Provenance.CONFIRMED_PROJECTION
+    # the untouched cell is a genuine detection and stays a prediction
+    assert np.allclose(state.labels.gt[3, 0, 7], detector_untouched)
+    assert state.labels.gt_provenance[3, 0, 7] == Provenance.CONFIRMED_PREDICTION
+
+
+def test_confirm_tags_projection_where_the_detector_never_fired(result):
+    """No raw detection at a cell means the displayed pixel came from somewhere else."""
+    raw = np.array(result.pts2d, dtype=float)
+    raw[1, 0, 9] = np.nan  # the detector missed this cell; the derived stage filled it
+    state = EditorState.from_result(result, raw_pts2d=raw)
+    assert state.confirm([(1, 9)], "predictions", 0) is True
+    assert state.labels.gt_provenance[1, 0, 9] == Provenance.CONFIRMED_PROJECTION
 
 
 def test_clear_gt_reverts_to_prediction(result):

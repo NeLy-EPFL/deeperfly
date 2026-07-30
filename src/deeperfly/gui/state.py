@@ -231,11 +231,11 @@ class EditorState:
         they have finished checking.
         """
         decided = self.labels.has_gt | self.labels.occluded  # (V, T, P)
-        labelled = decided.any(axis=(0, 2))  # (T,) any authored label in the frame
+        labeled = decided.any(axis=(0, 2))  # (T,) any authored label in the frame
         reviewed = self.labels.reviewed  # (T,)
         return [
             {"frame": int(t), "reviewed": bool(reviewed[t])}
-            for t in np.nonzero(labelled | reviewed)[0]
+            for t in np.nonzero(labeled | reviewed)[0]
         ]
 
     # -- displayed 2D (labels over predictions) -------------------------------
@@ -721,6 +721,30 @@ class EditorState:
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
+    #: Displayed-vs-``pose2d`` distance below which a pixel is the detector's own output. The
+    #: two populations are cleanly separated -- on scape_Fly4_006 no finite cell differs by
+    #: between 1e-9 and 1e-3 px, and 454,293 of the 457,481 that differ do so by over 1 px --
+    #: so this only has to survive a float round-trip, not discriminate a close call.
+    _RAW_IDENTITY_PX = 1e-6
+
+    def _is_raw_detection(self, view: int, t: int, point: int, xy) -> bool:
+        """Is the displayed pixel at this cell what the detector actually produced?
+
+        ``False`` means a later stage wrote over it -- in practice the reprojected 3D seeded
+        into a contralateral cell. When there is no ``pose2d`` array to compare against the
+        answer is ``True``: such a file has no separate detector stage that could have been
+        overwritten, so its displayed pixels are the detections.
+        """
+        raw = self.raw_pts2d
+        if raw is None:
+            return True
+        r = raw[view, t, point]
+        if not np.all(np.isfinite(r)):
+            return False  # the detector did not fire here, so this pixel came from elsewhere
+        return bool(
+            np.linalg.norm(np.asarray(xy, dtype=float) - r) <= self._RAW_IDENTITY_PX
+        )
+
     def confirm(
         self,
         targets,
@@ -730,8 +754,10 @@ class EditorState:
         """Promote suggested positions to GT for many ``(view, point)`` targets at once.
 
         ``sources`` selects which suggestion to snapshot: ``"predictions"`` (the
-        detector peak), ``"projections"`` (the current 3D reprojected), or ``"all"``
-        (prediction where present, else projection). Occluded or already-GT views are
+        displayed per-view pixel), ``"projections"`` (the current 3D reprojected), or
+        ``"all"`` (prediction where present, else projection). A snapshotted pixel is
+        tagged by where it actually came from, not by which source asked for it -- see
+        :meth:`_is_raw_detection`. Occluded or already-GT views are
         left untouched. One undo step; the 3D re-derives once. Returns whether anything
         changed.
         """
@@ -751,7 +777,28 @@ class EditorState:
             xy = prov = None
             pred = self.result.pts2d[view, t, point]
             if want_pred and np.all(np.isfinite(pred)):
-                xy, prov = pred, Provenance.CONFIRMED_PREDICTION
+                # The COORDINATE is the displayed one: bulk confirm means "I looked at these
+                # dots and they are right", so storing anything other than the dot the operator
+                # saw would record a position they never approved.
+                #
+                # The PROVENANCE, though, must not claim more than it knows. ``result.pts2d`` is
+                # the most-derived stage, and in a directory prepared for contralateral
+                # labeling the reprojected 3D has been written *over* the detector's pixels --
+                # measured on scape_Fly4_006: 457,481 of 1,068,256 finite cells (43%) differ
+                # from ``pose2d/points``, median 14.9 px, p90 161 px. Calling those
+                # CONFIRMED_PREDICTION would be false, and it matters because that is the one
+                # provenance ``labels-export`` keeps unconditionally, so geometry would enter
+                # training labeled as detector evidence.
+                #
+                # So the tag follows the pixel's actual origin: unchanged from ``raw_pts2d`` ->
+                # the detector really did say this; overwritten -> it is reprojected geometry,
+                # tagged CONFIRMED_PROJECTION like any other reprojection.
+                prov = (
+                    Provenance.CONFIRMED_PREDICTION
+                    if self._is_raw_detection(view, t, point, pred)
+                    else Provenance.CONFIRMED_PROJECTION
+                )
+                xy = pred
             if (
                 xy is None
                 and proj is not None
