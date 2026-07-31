@@ -754,7 +754,7 @@ export class PoseView {
   // filled disc (the overlay's hollow ring beneath it is its "derived, not observed" marker); with
   // the overlay hidden it draws that ring itself -- see drawSkeleton. With mergeDetected off only
   // GT is drawn (no detected / projected fallback).
-  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" } | null} */
+  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" } | null} */
   nodeAt(i, mergeDetected) {
     if (i === this.dragging && this.moved && this.pts[i]) {
       return { pos: this.pts[i], src: "gt" };
@@ -771,6 +771,13 @@ export class PoseView {
       const occluded = !!(this.invisible && this.invisible[i]);
       const p = this.latentPos(i);
       if (p && (this.projectedVisible || occluded)) return { pos: p, src: "projected" };
+      // Last resort: the Missing seed. Without this a joint whose only position is a placeholder
+      // returned null here, drawSkeleton's `if (!na || !nb) continue` dropped every bone touching
+      // it, and the operator was left hunting a lone unconnected dot among 38 -- reported from the
+      // GUI as "the point is actually there but it just isn't connected to anything and so really
+      // difficult to spot". The seed IS the joint's drawn position, so the skeleton should reach it.
+      const ph = this.placeholderPos(i);
+      if (ph) return { pos: ph, src: "placeholder" };
     }
     return null;
   }
@@ -837,7 +844,7 @@ export class PoseView {
       this.detected ? this.detected.length : 0,
       mergeDetected && this.latent ? this.latent.length : 0,
     );
-    /** @type {({ pos: Point, src: "gt" | "detected" | "projected" } | null)[]} */
+    /** @type {({ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" } | null)[]} */
     const nodes = new Array(n);
     for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i, mergeDetected);
     for (const [a, b] of this.bones) {
@@ -862,6 +869,7 @@ export class PoseView {
       // hidden the node is still here (an occluded view's position IS its reprojection), so it
       // draws the hollow ring itself -- same vocabulary, so the joint never becomes a bone that
       // ends in empty space.
+      if (node.src === "placeholder") continue; // bones only; drawPlaceholders draws its marker
       if (node.src === "projected") {
         if (!this.projectedVisible) {
           const [px, py] = this.toCanvas(node.pos[0], node.pos[1]);

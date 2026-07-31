@@ -581,9 +581,9 @@ class App {
     this.detectedCheck.addEventListener("change", () => this.applyDetected());
     this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
     this.projectedCheck.addEventListener("change", () => this.applyProjected());
-    // The "Missing" placeholder seeds let a joint with no detection / reprojection still be
-    // dragged into a GT label (the authored 2D needs no prior 3D), so the layer is available with
-    // or without a 3D solve.
+    // The "Missing" placeholder seeds are the guarantee that no joint is ever unreachable: a cell
+    // with nothing else drawn still gets a faint ghost to drag into a GT label (the authored 2D
+    // needs no prior 3D), so the layer is available with or without a 3D solve.
     this.placeholderCheck.addEventListener("change", () => this.applyPlaceholder());
     // The reprojection-distance warning flags joints whose GT/detected pixel is far from the 3D
     // reprojection -- only meaningful with a 3D solve, so it shares the projected row's has_3d gate.
@@ -2012,7 +2012,7 @@ class App {
     b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
     b.push({ key: "s", group: "show", label: "s", desc: "Combined — merge ground truth + detected into one skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
-    b.push({ key: "i", group: "show", label: "i", desc: "Missing-point seeds — draggable ghosts where a joint has no detection / reprojection", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
+    b.push({ key: "i", group: "show", label: "i", desc: "Missing-point seeds — draggable ghosts wherever a joint has nothing else to grab", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
     if (has3d) {
       b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
       b.push({ key: "w", group: "show", label: "w", desc: "Reprojection-distance warning", run: () => this.toggleCheck(this.warnCheck, () => this.applyWarn()) });
@@ -2160,9 +2160,21 @@ class App {
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there.`,
+        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there. Reject a joint in so many views that fewer than two are left and there is no 3D to follow, so nothing is drawn — the joint then falls back to its faint <b>Missing</b> seed (<kbd>i</kbd>) in every view, still draggable, so you can always get back to it.`,
       ]);
     }
+    // The "Missing" seed is the guarantee that no joint is ever unreachable, so it is always
+    // in the vocabulary -- with or without a 3D solve (only its causes differ).
+    const missingWhy = this.meta.has_3d
+      ? `You see it where the point has no observation of its own and no reprojection to fall back on — triangulation dropped it, or you set it Projected in too many views — and wherever a joint's only position was a reprojection you have hidden.`
+      : `You see it wherever the detector fired nothing for that joint in that view.`;
+    const missingWhere = this.meta.has_3d
+      ? `the reprojection if there is one, else the raw detector pixel, a nearby frame, a neighboring joint, or the image center`
+      : `the raw detector pixel, a nearby frame, a neighboring joint, or the image center`;
+    markers.push([
+      `<i class="mk m-placeholder"></i>`,
+      `<b>Missing</b> — a faint dashed ghost drawn wherever a view has nothing else to grab, so no joint is ever unreachable (<kbd>i</kbd>). ${missingWhy} Its spot is only a guess (${missingWhere}), so drag it to where the joint really is: that authors ground truth there like any other drag.`,
+    ]);
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");

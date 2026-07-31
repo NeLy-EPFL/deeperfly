@@ -15,6 +15,7 @@ So a "2D edit" creates a GT pixel, ``toggle_fixed`` confirms/clears a GT, and
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from deeperfly.gui import EditorState, resolve_footage
 from deeperfly.gui.labels import Provenance
@@ -78,15 +79,118 @@ def test_placeholder_prefers_raw_detection(result):
     assert np.allclose(ph[:, p], raw[:, 0, p])
 
 
-def test_placeholder_skips_occluded_view(result):
-    # Occluding a view is the operator asserting the point cannot be placed there, so
-    # that view gets no seed while the others still do.
+def test_placeholder_seeds_a_projected_view_at_its_reprojection(result):
+    # A Projected (occluded) view has no position of its OWN, so it is seeded even when a
+    # reprojection exists -- and the seed sits exactly on that reprojection. The front-end
+    # hides the seed underneath the visible ring (poseView.js ``placeholderPos``); it is
+    # there for when the operator hides the reprojected overlay (`p`), which would
+    # otherwise take the cell's only handle with it.
+    p = 5
+    state = EditorState.from_result(result)  # 3D intact: the reprojection exists
+    state.toggle_invisible(0, p, frame=0)
+    proj = state.display_pts3d_projected(0)
+    assert np.isfinite(proj[0, p]).all()  # a ghost is drawn there
+    ph = state.placeholder_pts2d(0)
+    assert np.allclose(ph[0, p], proj[0, p])  # seeded, right where the ring is
+    assert np.isnan(ph[1, p]).all()  # an unoccluded view keeps its own detection
+
+
+def test_placeholder_seeds_a_projected_view_with_no_reprojection_to_follow(result):
+    # The real strand, reproduced: a joint the run's triangulation rejected (finite
+    # detections, NaN 3D -- so `_solve_point` has no cache to fall back on either) that
+    # the operator then set Projected in EVERY view. The solve is now below two usable
+    # views, so there is no 3D and hence no reprojection to follow: the detection is
+    # suppressed and the ghost never appears. Every view must still get a draggable seed,
+    # or the joint is unreachable -- not drawn means not hit-testable, so it could not even
+    # be selected to be Reset. Regression: rh_tibia_tarsus vanished from a real labeled
+    # frame exactly this way (all 6 views Projected, RANSAC had dropped its 3D).
+    p = 5
+    result.pts3d[:, p] = np.nan  # triangulation rejected it; the detections survive
+    result.reproj_error[:, :, p] = np.nan
+    state = EditorState.from_result(result)
+    for v in range(state.n_views):
+        state.toggle_invisible(v, p, frame=0)
+    assert np.isnan(state.display_pts3d(0)[p]).any()  # nothing left to project
+    assert np.isnan(state.display_pts2d(0)[:, p]).all()  # ... and nothing displayed
+    ph = state.placeholder_pts2d(0)
+    assert np.isfinite(ph[:, p]).all()  # every view stays correctable
+
+
+def test_placeholder_seeds_a_projected_view_of_a_rejected_point(result):
+    # The same strand via the other route: a point triangulation dropped (no detection,
+    # no 3D) that the operator then set Projected in one view. That view has nothing to
+    # follow either, so it is seeded like the rest.
     p = 5
     state = EditorState.from_result(_reject_point(result, p))
     state.toggle_invisible(0, p, frame=0)
     ph = state.placeholder_pts2d(0)
-    assert np.isnan(ph[0, p]).all()
+    assert np.isfinite(ph[0, p]).all()
     assert np.isfinite(ph[1, p]).all()
+
+
+def _grabbable(state, frame, *, projected_visible=True):
+    """``(V, P)`` bool: does the canvas draw SOMETHING grabbable for each cell?
+
+    Mirrors the front-end's position precedence (poseView.js): the cell's own position
+    -- GT, else the view's usable detection, which an occluded view has none of
+    (``detPos``) -- else the reprojection while that overlay is shown
+    (``shownLatentPos``), else the Missing seed (``placeholderPos``). Not drawn means not
+    hit-testable and not marquee-selectable (``grabCandidates``), i.e. unreachable.
+    """
+
+    def on_image(a):
+        """Finite is not enough: a position outside the canvas is drawn nowhere.
+
+        This clause was missing, and that is precisely how a real frame lost a point --
+        IN10B014_260320_Fly2_009 frame 40 reprojected `rh_claw` to x=-5.5 in view `rf`, which is
+        finite, passed every grabbability test here, and was invisible in the GUI.
+        """
+        ok = np.isfinite(a).all(axis=-1)
+        if state.image_sizes_wh is None:
+            return ok
+        w = state.image_sizes_wh[:, 0][:, None]
+        h = state.image_sizes_wh[:, 1][:, None]
+        x, y = a[..., 0], a[..., 1]
+        with np.errstate(invalid="ignore"):
+            return ok & (x >= 0) & (x < w) & (y >= 0) & (y < h)
+
+    own = on_image(state.display_pts2d(frame))  # GT over detection
+    seed = on_image(state.placeholder_pts2d(frame))
+    proj = state.display_pts3d_projected(frame) if state.has_3d else None
+    ring = (
+        on_image(proj) if proj is not None and projected_visible else np.zeros_like(own)
+    )
+    return own | ring | seed
+
+
+def test_every_joint_stays_grabbable_after_bulk_projected(result):
+    # THE invariant the seed layer exists for: `a` then `3` -- select every point in every
+    # view, set them all Projected -- must leave every cell with something to grab. Every
+    # view is now dropped from every point's solve, so a point the run cached no 3D for has
+    # no ghost either (the solve is below two usable views and the run-cache fallback is
+    # empty), and the seed is its only handle. Checked with the reprojected overlay both on
+    # and OFF: hiding it must not strip the last handle off an occluded cell either.
+    # Regression: lm_claw vanished from a real labeled frame exactly this way.
+    result.pts3d[:, 5] = np.nan  # one point whose run triangulation dropped the 3D
+    result.reproj_error[:, :, 5] = np.nan
+    state = EditorState.from_result(result)
+    targets = [(v, p) for v in range(state.n_views) for p in range(state.n_points)]
+    state.occlude_targets(targets, 0)
+
+    assert np.isnan(state.display_pts2d(0)).all()  # no cell has a position of its own
+    assert np.isnan(state.display_pts3d(0)[5]).any()  # ... and point 5 has no 3D left
+    for projected_visible in (True, False):
+        assert _grabbable(state, 0, projected_visible=projected_visible).all()
+
+
+def test_every_joint_stays_grabbable_in_the_untouched_frame(result):
+    # The same invariant on a frame nobody has edited, with the reprojected overlay hidden
+    # -- a detector miss must not be reachable only via an overlay the operator can turn
+    # off. Point 5 is missing from view 0's detections but keeps its 3D.
+    result.pts2d[0, :, 5] = np.nan
+    state = EditorState.from_result(result)
+    for projected_visible in (True, False):
+        assert _grabbable(state, 0, projected_visible=projected_visible).all()
 
 
 def test_placeholder_falls_back_to_image_centre(result):
@@ -559,3 +663,43 @@ def test_quiet_child_output_swallows_then_restores(tmp_path):
         os.close(saved)
 
     assert sink.read_text() == "kept\n"
+
+
+def test_confirm_always_leaves_a_grabbable_on_image_point(result):
+    """Every confirmed cell must have a point the operator can SEE and DRAG.
+
+    The workflow is "select all, confirm, drag each point where it belongs", so a confirmed cell
+    with no on-image position is useless. Two ways it failed, both reported from the GUI:
+
+    * finite but OFF-IMAGE. Measured on IN10B014_260320_Fly2_009 frame 40, the derived 3D
+      reprojects `rh_claw` to x=-5.5 in view `rf` and `lm_claw` to y=512.1 in view `rm` on a
+      960x512 image. GT was created off-canvas: invisible, un-draggable.
+    * no position at all, where `confirm` never consulted the placeholder chain that exists
+      precisely for that.
+    """
+    sizes = {name: (480, 640) for name in result.cameras.names}  # (h, w)
+    state = EditorState.from_result(result, image_sizes=sizes)
+    n_pts = result.pts2d.shape[2]
+    # push two cells off-image, one past each axis, and blank a third entirely
+    state.result.pts3d = None  # no 3D -> no reprojection anywhere
+    state.result.pts2d[0, 0, 5] = [-40.0, 100.0]
+    state.result.pts2d[1, 0, 6] = [100.0, 999.0]
+    state.result.pts2d[2, 0, 7] = [np.nan, np.nan]
+    targets = [(v, p) for v in range(state.n_views) for p in range(n_pts)]
+    state.confirm(targets, "all", 0)
+    for v in range(state.n_views):
+        for p in range(n_pts):
+            assert state.labels.has_gt[v, 0, p], (
+                f"view {v} point {p} got no point to drag"
+            )
+            x, y = state.labels.gt[v, 0, p]
+            assert np.isfinite([x, y]).all(), f"view {v} point {p} is NaN"
+            assert 0 <= x < 640 and 0 <= y < 480, (
+                f"view {v} point {p} off-image at {(x, y)}"
+            )
+    # the clamp moves the MINIMUM needed: the in-bounds axis is preserved
+    assert state.labels.gt[0, 0, 5][1] == pytest.approx(100.0)
+    assert state.labels.gt[1, 0, 6][0] == pytest.approx(100.0)
+    # a clamped or placeholder point is a seed to drag, not evidence, so export must drop it
+    assert state.labels.gt_provenance[0, 0, 5] == Provenance.CONFIRMED_PROJECTION
+    assert state.labels.gt_provenance[2, 0, 7] == Provenance.CONFIRMED_PROJECTION

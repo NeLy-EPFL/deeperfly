@@ -94,7 +94,7 @@ class EditorState:
     #: when the pristine ``pose2d`` group is unavailable.
     raw_pts2d: np.ndarray | None = None
     #: Per-view image size as ``(V, 2)`` ``[width, height]``, for a placeholder's
-    #: last-resort centre. ``None`` when unavailable.
+    #: last-resort center. ``None`` when unavailable.
     image_sizes_wh: np.ndarray | None = None
 
     @classmethod
@@ -125,7 +125,7 @@ class EditorState:
         ``raw_pts2d`` is the pristine ``pose2d`` detections (``result.pts2d`` is the
         triangulation-*cleaned* array, so a rejected point is NaN there); it seeds the
         placeholder for an otherwise-absent joint. ``image_sizes`` (camera name ->
-        ``(height, width)``) supplies the placeholder's last-resort image centre.
+        ``(height, width)``) supplies the placeholder's last-resort image center.
         """
         if labels is None:
             labels = Labels.empty(
@@ -276,45 +276,63 @@ class EditorState:
     def placeholder_pts2d(
         self, frame: int | None = None, *, window: int = 30
     ) -> Float[np.ndarray, "V P 2"]:
-        """Seed positions for joints ABSENT from a view, so a GT can still be placed.
+        """Seed positions for cells with no observation of their own, so a GT can
+        always be placed -- the layer that guarantees every joint stays draggable.
 
-        A point rejected by triangulation (or one the detector never fired) has no GT,
-        no displayed detection, and no reprojection in a view -- so the canvas draws
-        nothing there and the operator has nothing to grab, hence no way to author a
-        GT. For exactly those cells this returns a *sensible* draggable seed; every
-        other cell -- already grabbable, or deliberately occluded -- is ``NaN`` (no
-        placeholder). A seed falls back, in order, to:
+        A cell with no GT and no usable detection (the operator marked it Projected, or
+        the detector never fired, or triangulation dropped the point) has no position of
+        its *own*. It may still be drawn at its reprojection -- but only while the
+        reprojection exists AND the operator is showing that overlay. Whenever it is not,
+        the canvas draws nothing there: the operator has nothing to grab, hence no way to
+        author a GT, and the joint is *unreachable* -- the front-end hit-tests and
+        marquee-selects only what is drawn (poseView.js ``grabCandidates``), so the cell
+        cannot even be selected to be Reset.
 
-        1. the raw detector pixel (kept even when triangulation dropped it),
-        2. the nearest frame (within ``window``) whose raw/cleaned pixel in this view
+        So this returns a seed for EVERY such cell, whether or not a reprojection exists.
+        Deciding when to actually draw one needs the per-layer visibility only the
+        front-end knows, so that suppression lives there (poseView.js ``placeholderPos``
+        hides a seed under a visible GT / detection / reprojection); this side's job is to
+        supply the complete last-resort map it draws from. Withholding a seed here because
+        a reprojection happens to exist is what let a joint vanish: hide the reprojected
+        overlay (``p``) and the only handle went with it.
+
+        A cell that has a position of its own -- GT, or a usable detection -- is ``NaN``
+        (no seed): it is grabbable on its own layer.
+
+        A seed falls back, in order, to:
+
+        1. the reprojection of the derived 3D, when there is one -- the joint's actual
+           derived position in this view, so the handle sits where the ghost was,
+        2. the raw detector pixel (kept even when triangulation dropped it),
+        3. the nearest frame (within ``window``) whose raw/cleaned pixel in this view
            is finite -- a keypoint moves little frame to frame,
-        3. the mean of the joint's connected skeleton neighbours shown in this view,
-        4. the centroid of the view's shown points,
-        5. the image centre.
+        4. the mean of the joint's connected skeleton neighbors shown in this view,
+        5. the centroid of the view's shown points,
+        6. the image center.
 
-        The operator drags the seed to author GT, so the position only needs to be a
-        reasonable starting point near where the point belongs.
+        The last two rungs mean a seed is *always* finite, even for a joint nothing in
+        the frame can place. The operator drags the seed to author GT, so the position
+        only needs to be a reasonable starting point near where the point belongs.
         """
         t = self._resolve_frame(frame)
         n_views, n_points = self.n_views, self.n_points
         disp = self.display_pts2d(t)  # (V, P, 2): GT over cleaned pred, NaN if absent
-        occ = self.labels.occluded[:, t]  # (V, P)
         proj = self.display_pts3d_projected(t) if self.has_3d else None
         disp_ok = np.isfinite(disp).all(axis=-1)  # (V, P)
-        proj_ok = (
-            np.isfinite(proj).all(axis=-1)
-            if proj is not None
-            else np.zeros((n_views, n_points), dtype=bool)
-        )
-        # A cell needs a placeholder iff nothing is grabbable there and it is not
-        # occluded (occluding a point is the operator asserting it cannot be placed).
-        need = ~disp_ok & ~proj_ok & ~occ  # (V, P)
+        # Every cell without a position of its own gets a seed. Note the whole-frame
+        # bulk-Projected case this has to survive: set every view of a joint Projected and
+        # the solve has nothing left to fit (below two usable views
+        # :func:`~deeperfly.gui.solve.solve_point_3d` returns NaN) and the run-cache
+        # fallback may be NaN too, so there is no reprojection to follow either -- the
+        # detection is suppressed, the ghost never appears, and without a seed the joint
+        # is gone from every canvas with no way back.
+        need = ~disp_ok  # (V, P)
         out = np.full((n_views, n_points, 2), np.nan)
         if not need.any():
             return out
 
-        # A per-cell "shown" position (GT/detected, else the reprojection) for the
-        # neighbour/centroid fallbacks -- what the operator actually sees drawn there.
+        # A per-cell "shown" position (GT/detected, else the reprojection) -- rung 1 for
+        # the cells that need a seed, and what the neighbor/centroid rungs average over.
         shown = np.where(disp_ok[..., None], disp, np.nan)
         if proj is not None:
             fill = np.isfinite(shown).all(axis=-1)
@@ -333,10 +351,15 @@ class EditorState:
     def _seed_position(self, v, p, t, bones, shown, shown_ok, lo, hi) -> np.ndarray:
         """One placeholder seed via the fallback chain (see :meth:`placeholder_pts2d`)."""
         raw = self.raw_pts2d
-        # 1. the raw detector pixel at this frame.
+        # 1. the reprojection of the derived 3D, when this cell has one -- the joint's
+        #    own derived position here, so a seed uncovered by hiding the reprojected
+        #    overlay lands exactly where its ring was, not on a rejected pixel.
+        if shown_ok[v, p]:
+            return np.asarray(shown[v, p], dtype=float)
+        # 2. the raw detector pixel at this frame.
         if raw is not None and np.all(np.isfinite(raw[v, t, p])):
             return np.asarray(raw[v, t, p], dtype=float)
-        # 2. the nearest frame (raw, then cleaned) with a finite pixel in this view.
+        # 3. the nearest frame (raw, then cleaned) with a finite pixel in this view.
         for dt in range(1, max(t - lo, hi - t) + 1):
             for tt in (t - dt, t + dt):
                 if not lo <= tt <= hi:
@@ -346,7 +369,7 @@ class EditorState:
                 cleaned = self.result.pts2d[v, tt, p]
                 if np.all(np.isfinite(cleaned)):
                     return np.asarray(cleaned, dtype=float)
-        # 3. the mean of connected skeleton neighbours shown in this view.
+        # 4. the mean of connected skeleton neighbors shown in this view.
         if bones.size:
             nbrs = np.unique(
                 np.concatenate([bones[bones[:, 0] == p, 1], bones[bones[:, 1] == p, 0]])
@@ -356,10 +379,10 @@ class EditorState:
             ]
             if npos:
                 return np.mean(np.stack(npos), axis=0)
-        # 4. the centroid of the view's shown points.
+        # 5. the centroid of the view's shown points.
         if shown_ok[v].any():
             return shown[v][shown_ok[v]].mean(axis=0)
-        # 5. the image centre (else the origin, if even that is unknown).
+        # 6. the image center (else the origin, if even that is unknown).
         if self.image_sizes_wh is not None:
             return self.image_sizes_wh[v] / 2.0
         return np.zeros(2)
@@ -721,6 +744,52 @@ class EditorState:
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
+    #: How far inside the image a confirmed point is placed when its true position falls outside.
+    #: Not 0: a point exactly on the border is awkward to grab, and the operator's whole workflow
+    #: is to grab it and drag it somewhere better.
+    _CLAMP_INSET_PX = 4.0
+
+    def _grabbable(self, view: int, point: int, t: int, xy) -> np.ndarray | None:
+        """A position for this cell that the operator can actually SEE and DRAG, or ``None``.
+
+        The operator's workflow is "select all, confirm projections, then drag each point where it
+        belongs", so a confirmed cell that has no on-image position is useless -- there is nothing
+        to grab. Two ways that happened, both reported from the GUI and both fixed here:
+
+        * **The position is finite but off-image.** Measured on
+          ``IN10B014_260320_Fly2_009`` frame 40: the derived 3D reprojects ``rh_claw`` to
+          ``x = -5.5`` in view ``rf`` and ``lm_claw`` to ``y = 512.1`` in view ``rm`` (a 960x512
+          image). GT was created at those coordinates, off-canvas, invisible and un-draggable.
+          Such a position is CLAMPED into the image instead of stored as-is.
+        * **There is no position at all** (a joint with no solvable 3D and no detection). The
+          placeholder chain already exists for exactly this -- raw detector pixel, then the nearest
+          frame, then the mean of connected skeleton neighbours, then the image centre (see
+          :meth:`placeholder_pts2d`) -- but ``confirm`` never consulted it.
+
+        A clamped or placeholder position is deliberately NOT presented as evidence: the caller
+        tags it ``CONFIRMED_PROJECTION``, which ``export_gt`` drops, so an untouched one cannot
+        reach training. It exists to be dragged.
+        """
+        q = None if xy is None else np.asarray(xy, dtype=float)
+        if q is None or not np.all(np.isfinite(q)):
+            ph = self.placeholder_pts2d(t)
+            cand = ph[view, point]
+            q = np.asarray(cand, dtype=float) if np.all(np.isfinite(cand)) else None
+        if q is None or not np.all(np.isfinite(q)):
+            return None
+        if self.image_sizes_wh is None:
+            return q
+        w, h = (float(v) for v in self.image_sizes_wh[view])
+        if w <= 0 or h <= 0:
+            return q
+        inset = self._CLAMP_INSET_PX
+        return np.array(
+            [
+                float(np.clip(q[0], inset, max(inset, w - 1.0 - inset))),
+                float(np.clip(q[1], inset, max(inset, h - 1.0 - inset))),
+            ]
+        )
+
     #: Displayed-vs-``pose2d`` distance below which a pixel is the detector's own output. The
     #: two populations are cleanly separated -- on scape_Fly4_006 no finite cell differs by
     #: between 1e-9 and 1e-3 px, and 454,293 of the 457,481 that differ do so by over 1 px --
@@ -805,8 +874,16 @@ class EditorState:
                 and np.all(np.isfinite(proj[view, point]))
             ):
                 xy, prov = proj[view, point], Provenance.CONFIRMED_PROJECTION
-            if xy is not None:
-                self.labels.set_gt(view, t, point, xy, provenance=prov)
+            # Every targeted cell must end up with a point the operator can SEE and DRAG.
+            grab = self._grabbable(view, point, t, xy)
+            if grab is not None:
+                if xy is None or not np.allclose(
+                    grab, np.asarray(xy, dtype=float), atol=1e-9
+                ):
+                    # clamped into frame, or filled from the placeholder chain -- either way it is
+                    # a seed to drag, not evidence, so it takes the export-dropped provenance
+                    prov = Provenance.CONFIRMED_PROJECTION
+                self.labels.set_gt(view, t, point, grab, provenance=prov)
                 changed = True
         if changed:
             self._invalidate_frame3d(t)
