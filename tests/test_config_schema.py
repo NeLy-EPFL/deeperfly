@@ -308,3 +308,122 @@ def test_the_schema_endpoint_serves_every_section(result, tmp_path):
     missing = client.get("/api/schema", params={"section": "cameras"})
     assert missing.status_code == 404
     assert "describable sections" in missing.json()["detail"]
+
+
+# -- the project's profile is where the GUI writes -------------------------------
+
+
+def test_setting_a_profile_key_composes_through(tmp_path):
+    import tomllib
+
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    project.set_profile_key("triangulation", "method", "dlt")
+    config = Config.from_dict(tomllib.loads(project.compose_config()))
+    assert config.triangulation.method == "dlt"
+
+
+def test_clearing_a_profile_key_removes_it_entirely(tmp_path):
+    """ "Reset to default" must stop mentioning the key, not restate the default."""
+    import tomllib
+
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    project.set_profile_key("triangulation", "method", "dlt")
+    project.set_profile_key("triangulation", "min_inliers", 3)
+    project.set_profile_key("triangulation", "method", None)
+
+    stored = tomllib.loads(project.profile_path().read_text())
+    assert "method" not in stored["triangulation"]
+    assert stored["triangulation"]["min_inliers"] == 3
+
+
+def test_emptying_a_section_removes_the_table(tmp_path):
+    import tomllib
+
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    project.set_profile_key("gui", "mesh_hide", ["wings"])
+    project.set_profile_key("gui", "mesh_hide", None)
+    assert tomllib.loads(project.profile_path().read_text()) == {}
+
+
+def test_a_profile_write_is_validated(tmp_path):
+    """The GUI must not be able to store a key a run would reject."""
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    with pytest.raises(ValueError, match="unknown key"):
+        project.set_profile_key("triangulation", "methd", "dlt")
+
+
+def test_the_config_api_reports_values_and_what_was_set(tmp_path, result):
+    from fastapi.testclient import TestClient
+
+    from deeperfly.gui.readers import FrameSource
+    from deeperfly.gui.server import create_app
+    from deeperfly.gui.session import Session
+    from deeperfly.gui.state import EditorState
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    project.set_profile_key("triangulation", "method", "dlt")
+    session = Session.build(
+        EditorState.from_result(result),
+        FrameSource({}),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+        project_root=project.root,
+        recording_slug="flyA",
+    )
+    api = TestClient(create_app(session))
+
+    payload = api.get("/api/config").json()
+    assert payload["enabled"] is True
+    tri = payload["sections"]["triangulation"]
+    assert tri["method"]["value"] == "dlt"
+    assert tri["method"]["overridden"] is True
+    assert tri["min_inliers"]["is_default"] is True
+    # The generated pipeline flags are reported too -- the most-changed thing in the config.
+    assert "do_pose2d" in payload["sections"]["pipeline"]
+
+    posted = api.post(
+        "/api/config",
+        json={"section": "triangulation", "key": "min_inliers", "value": 3},
+    )
+    assert posted.status_code == 200
+    assert (
+        api.get("/api/config").json()["sections"]["triangulation"]["min_inliers"][
+            "value"
+        ]
+        == 3
+    )
+
+    bad = api.post(
+        "/api/config", json={"section": "triangulation", "key": "methd", "value": "x"}
+    )
+    assert bad.status_code == 400
+
+
+def test_the_config_api_says_why_it_is_disabled_without_a_project(tmp_path, result):
+    from fastapi.testclient import TestClient
+
+    from deeperfly.gui.readers import FrameSource
+    from deeperfly.gui.server import create_app
+    from deeperfly.gui.session import Session
+    from deeperfly.gui.state import EditorState
+
+    session = Session.build(
+        EditorState.from_result(result),
+        FrameSource({}),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+    )
+    api = TestClient(create_app(session))
+    assert api.get("/api/config").json()["enabled"] is False
+    assert (
+        api.post("/api/config", json={"section": "gui", "key": "x"}).status_code == 409
+    )

@@ -203,3 +203,37 @@ export async function cancelJob(id) {
   if (!res.ok) throw new Error(`DELETE /api/jobs/${id} -> ${res.status}`);
   return res.json();
 }
+
+// -- project settings ----------------------------------------------------------
+//
+// The schema is DERIVED from the config dataclasses, so the forms built on it cannot drift
+// from the code: a new option appears with nothing to keep in sync, and its help text is
+// the prose already written for it.
+
+/** @returns {Promise<any>} every describable section's fields, defaults and documentation */
+export async function configSchema() {
+  const res = await fetch("/api/schema");
+  if (!res.ok) throw new Error(`GET /api/schema -> ${res.status}`);
+  return res.json();
+}
+
+/** @returns {Promise<any>} current values, and which of them were actually set */
+export async function configValues() {
+  const res = await fetch("/api/config");
+  if (!res.ok) throw new Error(`GET /api/config -> ${res.status}`);
+  return res.json();
+}
+
+/** Set one key in the project's profile; `value: null` clears the override. */
+export async function setConfig(section, key, value) {
+  const res = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ section, key, value }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `POST /api/config -> ${res.status}`);
+  }
+  return res.json();
+}

@@ -1342,3 +1342,60 @@ body.read-only #redo {
 /* While a landmark is armed, a click PLACES it -- so the cursor says so everywhere, not
    only over the panel that armed it. */
 body.arming-landmark canvas { cursor: crosshair !important; }
+
+/* Project settings, generated from the config schema. Text-forward and dense: the useful
+   content is the documentation the dataclasses already carry, not chrome around it. */
+.settings-list { padding: 4px 8px 12px; }
+.settings-section { margin-top: 10px; }
+.settings-section > h4 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: #cfd8e0;
+}
+.settings-section > .sec-doc {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: #8a97a4;
+  line-height: 1.4;
+}
+.setting-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-key { font-size: 12px; font-weight: 600; }
+.setting-key.overridden::after {
+  content: "set";
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #6cc07a;
+  vertical-align: middle;
+}
+.setting-row input[type="text"],
+.setting-row input[type="number"],
+.setting-row select {
+  font: inherit;
+  font-size: 12px;
+  width: 11ch;
+  padding: 2px 5px;
+  border-radius: 5px;
+}
+.setting-doc {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #8a97a4;
+  line-height: 1.4;
+  margin: 0 0 2px;
+}
+.setting-reset {
+  font-size: 10px;
+  padding: 0 5px;
+  cursor: pointer;
+  opacity: 0.8;
+}

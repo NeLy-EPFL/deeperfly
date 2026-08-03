@@ -183,6 +183,15 @@
           <div id="marks-list" class="marks-list"></div>
           <div id="marks-empty" class="frames-empty"></div>
         </div>
+        <!-- Project settings. Every field, its default, its type and its documentation
+             are DERIVED from the *Params dataclasses (GET /api/schema), so this panel cannot
+             drift from the code and a new option appears here with nothing to update. Writes
+             go to the project's profile, which holds only what differs from the defaults --
+             so "reset" genuinely removes the key. -->
+        <div class="sidebar-body" id="settings-pane" hidden>
+          <div id="settings-list" class="settings-list"></div>
+          <div id="settings-empty" class="frames-empty"></div>
+        </div>
         <div class="sidebar-body" id="jobs-pane" hidden>
           <div id="jobs-actions" class="jobs-actions"></div>
           <div id="jobs-list" class="jobs-list"></div>

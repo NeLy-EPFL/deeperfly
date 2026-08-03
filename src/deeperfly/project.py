@@ -852,6 +852,83 @@ class Project:
             text.rstrip() + "\n" for _, text in fragments
         )
 
+    def profile_values(self, profile: str | None = None) -> dict:
+        """The profile's raw overrides, as a nested mapping (``{}`` when it has none)."""
+        path = self.profile_path(profile)
+        return tomllib.loads(path.read_text()) if path.exists() else {}
+
+    def set_profile_key(
+        self, section: str, key: str, value, *, profile: str | None = None
+    ) -> Path:
+        """Set (or clear) one key in the project's profile, and rewrite it.
+
+        A **rewrite** rather than an append, unlike ``deeperfly config set``: a profile holds
+        only knob tables -- scalars, flat arrays and nested tables -- every one of which the
+        writer in :mod:`deeperfly._toml` handles exactly. There are no arrays-of-tables and
+        no inline tables in a profile, which is precisely why rewriting it is safe here and
+        is not safe for a full config.
+
+        ``value is None`` removes the key, so the GUI's "reset to default" is the same call
+        -- and the resulting file genuinely no longer mentions it, rather than restating the
+        default as though someone had chosen it.
+
+        Parameters
+        ----------
+        section, key
+            The config table and key, e.g. ``("triangulation", "method")``.
+        value
+            The new value, or ``None`` to remove the override.
+        profile
+            Profile filename; defaults to the project's.
+
+        Returns
+        -------
+        Path
+            The profile written.
+
+        Raises
+        ------
+        ValueError
+            If the result would not load through ``Config``'s own strict validator -- the
+            same one a run uses, so the GUI cannot store a key a run would reject.
+        """
+        from .config import Config
+        from .config_schema import SECTIONS
+
+        data = self.profile_values(profile)
+        table = dict(data.get(section) or {})
+        if value is None:
+            table.pop(key, None)
+        else:
+            table[key] = value
+        if table:
+            data[section] = table
+        else:
+            data.pop(section, None)
+
+        # Validate before writing, through the accessor for this section rather than a
+        # bespoke check, so a rejected key reads identically however it arrived.
+        if section in SECTIONS:
+            probe = Config.from_dict({section: data.get(section, {})})
+            accessor = {"pictorial_structures": "pictorial"}.get(section, section)
+            getattr(probe, accessor)
+
+        lines = [
+            "# Algorithm settings for this project -- ONLY the keys that differ from the",
+            "# packaged defaults. Managed by 'deeperfly config' and the editor's Settings",
+            '# panel; an empty file means "use the defaults for everything".',
+        ]
+        for name in sorted(data):
+            body = data[name]
+            if not isinstance(body, dict) or not body:
+                continue
+            lines.append("")
+            lines += _toml.table_lines([name], body)
+        out = self.profile_path(profile)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(lines) + "\n")
+        return out
+
     def write_rig(self, base=None) -> Path:
         """Extract the rig tables out of a config into the project's ``rig.toml``.
 

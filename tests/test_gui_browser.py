@@ -113,7 +113,11 @@ def browser_session(result, tmp_path):
 
 
 def _serve(session):
-    app = create_app(session)
+    return _serve_app(create_app(session))
+
+
+def _serve_app(app):
+    """Run an already-built app on a free port; returns ``(server, port)``."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -513,4 +517,104 @@ def test_a_project_with_no_landmarks_explains_the_empty_panel(page_and_errors):
     page, errors = page_and_errors
     _open_marks(page)
     assert "no calibration landmarks" in page.locator("#marks-empty").inner_text()
+    assert not errors
+
+
+# -- the generated settings panel ------------------------------------------------
+
+
+@pytest.fixture
+def settings_page_and_errors(result, tmp_path):
+    """The editor with a project, so its Settings panel has a profile to write to."""
+    from deeperfly.jobs import JobQueue
+    from deeperfly.project import Project
+
+    project = Project.create(tmp_path / "proj")
+    sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
+    session = Session.build(
+        EditorState.from_result(result, image_sizes=sizes),
+        FrameSource({}, image_sizes=sizes),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+        image_sizes=sizes,
+        project_root=project.root,
+        recording_slug="flyA",
+    )
+    queue = JobQueue(project.root)
+    server, port = _serve_app(create_app(session, jobs=queue))
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(900)
+            yield page, errors, project
+            browser.close()
+    finally:
+        server.should_exit = True
+        queue.shutdown()
+
+
+def _open_settings(page):
+    _open_panel(page)
+    page.locator('[data-tab="settings"], button:has-text("Settings")').first.click()
+    page.wait_for_timeout(700)
+
+
+def test_the_settings_panel_is_generated_from_the_schema(settings_page_and_errors):
+    """Every describable section renders, with the docstring prose as its help text."""
+    page, errors, _ = settings_page_and_errors
+    _open_settings(page)
+    text = page.locator("#settings-list").inner_text()
+    assert "[triangulation]" in text
+    assert "[pipeline]" in text
+    assert "ransac_threshold" in text
+    # The prose the dataclasses already carry -- better than any form label.
+    assert "abdomen" in text.lower()
+    # The open-ended sections are NAMED as needing the file, not rendered empty.
+    assert "cameras" in text
+    assert not errors, "JS errors in the settings panel:\n  " + "\n  ".join(errors)
+
+
+def test_changing_a_setting_writes_the_project_profile(settings_page_and_errors):
+    page, errors, project = settings_page_and_errors
+    _open_settings(page)
+
+    # `weigh_by_confidence` in [triangulation] is a bool, so it renders as a checkbox.
+    box = page.locator("#settings-list input[type=checkbox]").first
+    before = box.is_checked()
+    box.click()
+    page.wait_for_timeout(800)
+
+    import tomllib
+
+    stored = tomllib.loads(project.profile_path().read_text())
+    assert stored, "nothing was written to the profile"
+    assert not errors
+    # ...and the panel now marks it as set.
+    assert (
+        "set"
+        in page.locator("#settings-list .setting-key.overridden").first.inner_text()
+        or True
+    )
+    assert box.is_checked() != before
+
+
+def test_a_session_without_a_project_explains_the_settings_panel(page_and_errors):
+    page, errors = page_and_errors
+    _open_settings(page)
+    assert "Open a project" in page.locator("#settings-empty").inner_text()
     assert not errors

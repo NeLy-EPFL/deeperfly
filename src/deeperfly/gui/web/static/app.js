@@ -45,7 +45,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, cancelJob, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, saveCorrections, shutdownServer, submitJob } from "./api.js";
+import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, saveCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -55,7 +55,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"labeled" | "suggest" | "marks" | "jobs"} SidebarTab */
+/** @typedef {"labeled" | "suggest" | "marks" | "jobs" | "settings"} SidebarTab */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -420,6 +420,14 @@ class App {
   /** @type {HTMLDivElement} */
   marksEmpty = el("marks-empty");
   /** @type {HTMLDivElement} */
+  settingsPane = el("settings-pane");
+  /** @type {HTMLDivElement} */
+  settingsList = el("settings-list");
+  /** @type {HTMLDivElement} */
+  settingsEmpty = el("settings-empty");
+  // Cached so switching tabs does not refetch the schema (it is static for the session).
+  configSchemaCache = null;
+  /** @type {HTMLDivElement} */
   jobsActions = el("jobs-actions");
   /** @type {HTMLDivElement} */
   jobsList = el("jobs-list");
@@ -595,7 +603,7 @@ class App {
     // order), so they are separate tabs rather than one filtered list. Reuses the
     // established `.segmented` component, so the strip needs no new visual language.
     this.sidebarTabs = segmented(
-      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Jobs", "jobs"]],
+      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Jobs", "jobs"], ["Settings", "settings"]],
       (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
     );
     this.sidebarTabsEl.append(this.sidebarTabs.root);
@@ -1793,6 +1801,168 @@ class App {
 
   // Fetch the queue and repaint the tab. A missing sidecar is the normal starting state
   // and resolves to `present: false`; a transient failure leaves whatever was there.
+  // -- project settings ------------------------------------------------------
+  //
+  // Generated from GET /api/schema, which is itself DERIVED from the *Params dataclasses.
+  // So this panel cannot drift from the code -- a new option appears with nothing to keep
+  // in sync -- and each field's help text is the prose already written for it, which is
+  // better than anything a form label would say. The four open-ended sections (cameras,
+  // skeleton, sources, the detection plan) are NAMED as needing the file rather than
+  // rendered as empty forms.
+
+  async refreshSettings() {
+    let schema = this.configSchemaCache;
+    let values;
+    try {
+      if (!schema) {
+        schema = await configSchema();
+        this.configSchemaCache = schema;
+      }
+      values = await configValues();
+    } catch (err) {
+      this.settingsList.replaceChildren();
+      this.settingsEmpty.hidden = false;
+      this.settingsEmpty.textContent = `Could not read the settings: ${err}`;
+      return;
+    }
+    if (!values.enabled) {
+      this.settingsList.replaceChildren();
+      this.settingsEmpty.hidden = false;
+      this.settingsEmpty.textContent =
+        "Open a project to change its settings from the editor — a bare results.h5 has no " +
+        "profile to write them to.";
+      return;
+    }
+    this.settingsEmpty.hidden = true;
+    this.renderSettings(schema, values);
+  }
+
+  /** @param {any} schema @param {any} values */
+  renderSettings(schema, values) {
+    this.settingsList.replaceChildren();
+    for (const section of schema.sections || []) {
+      const current = values.sections[section.name];
+      if (!current || current.error) continue;
+      const box = document.createElement("div");
+      box.className = "settings-section";
+      const title = document.createElement("h4");
+      title.textContent = `[${section.name}]`;
+      box.append(title);
+      if (section.doc) {
+        const doc = document.createElement("p");
+        doc.className = "sec-doc";
+        doc.textContent = section.doc;
+        box.append(doc);
+      }
+      for (const field of section.fields) {
+        const state = current[field.name];
+        if (!state) continue;
+        box.append(this.settingRow(section.name, field, state));
+      }
+      this.settingsList.append(box);
+    }
+    if ((schema.undescribable || []).length) {
+      const note = document.createElement("p");
+      note.className = "setting-doc";
+      note.style.marginTop = "12px";
+      note.textContent =
+        "Not editable here (open-ended, and they live in the config file): " +
+        schema.undescribable.join(", ") + ".";
+      this.settingsList.append(note);
+    }
+  }
+
+  /** @param {string} section @param {any} field @param {any} state */
+  settingRow(section, field, state) {
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    const label = document.createElement("span");
+    label.className = "setting-key" + (state.overridden ? " overridden" : "");
+    label.textContent = field.name;
+    label.title = `${field.type} · default ${JSON.stringify(field.default)}`;
+    row.append(label);
+
+    const controls = document.createElement("span");
+    controls.append(this.settingInput(section, field, state));
+    if (state.overridden) {
+      const reset = document.createElement("button");
+      reset.className = "setting-reset";
+      reset.textContent = "↺";
+      reset.title = "Clear this override — the profile stops mentioning the key entirely";
+      reset.addEventListener("click", () => this.applySetting(section, field.name, null));
+      controls.append(reset);
+    }
+    row.append(controls);
+
+    if (field.doc) {
+      const doc = document.createElement("p");
+      doc.className = "setting-doc";
+      doc.textContent = field.doc;
+      row.append(doc);
+    }
+    return row;
+  }
+
+  /** @param {string} section @param {any} field @param {any} state */
+  settingInput(section, field, state) {
+    const type = String(field.type || "");
+    const commit = (value) => this.applySetting(section, field.name, value);
+
+    // A list or dict field cannot be edited from a form without inventing a schema for its
+    // shape (bounds, marker placements, shared-parameter groups). Showing it read-only is
+    // honest, and the profile file is right there.
+    if (type.startsWith("list") || type.startsWith("dict")) {
+      const shown = document.createElement("input");
+      shown.type = "text";
+      shown.value = JSON.stringify(state.value);
+      shown.disabled = true;
+      shown.title = "Edit this one in the profile file — a form cannot express its shape";
+      return shown;
+    }
+    if (type === "bool") {
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = Boolean(state.value);
+      box.addEventListener("change", () => commit(box.checked));
+      return box;
+    }
+    if (field.choices && field.choices.length) {
+      const select = document.createElement("select");
+      for (const choice of field.choices) {
+        const option = document.createElement("option");
+        option.value = String(choice);
+        option.textContent = String(choice);
+        option.selected = String(choice) === String(state.value);
+        select.append(option);
+      }
+      select.addEventListener("change", () => commit(select.value));
+      return select;
+    }
+    const numeric = type === "int" || type === "float";
+    const input = document.createElement("input");
+    input.type = numeric ? "number" : "text";
+    if (type === "float") input.step = "any";
+    input.value = state.value === null ? "" : String(state.value);
+    // On commit (blur / Enter), not per keystroke: every write validates server-side and
+    // rewrites the profile, so firing on input would mean a file write per character.
+    input.addEventListener("change", () => {
+      const raw = input.value.trim();
+      if (raw === "") return commit(null); // emptied = reset to default
+      commit(numeric ? Number(raw) : raw);
+    });
+    return input;
+  }
+
+  /** @param {string} section @param {string} key @param {any} value */
+  async applySetting(section, key, value) {
+    try {
+      await setConfig(section, key, value);
+    } catch (err) {
+      window.alert(`Could not set ${section}.${key}: ${err}`);
+    }
+    this.refreshSettings();
+  }
+
   // -- calibration landmarks -------------------------------------------------
   //
   // Non-skeleton points that make a from-scratch rig solvable. The gesture is deliberately
@@ -2195,6 +2365,7 @@ class App {
     this.suggestPane.hidden = tab !== "suggest";
     this.jobsPane.hidden = tab !== "jobs";
     this.marksPane.hidden = tab !== "marks";
+    this.settingsPane.hidden = tab !== "settings";
     this.sidebarEl.classList.toggle("tab-suggest", tab === "suggest");
     this.updateSidebarNavTitles();
     if (tab === "suggest") this.refreshSuggestions();
@@ -2203,6 +2374,7 @@ class App {
     if (tab === "jobs") this.startJobsPolling();
     else this.stopJobsPolling();
     if (tab === "marks") this.renderLandmarks();
+    if (tab === "settings") this.refreshSettings();
     // Leaving the tab disarms. A click that silently placed a landmark because a panel
     // was open three minutes ago would be a nasty surprise.
     else this.armLandmark(-1);

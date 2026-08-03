@@ -347,6 +347,89 @@ def create_app(
         """
         return _suggestions_payload(session)
 
+    # -- config ---------------------------------------------------------------
+    #
+    # The values come from the project's composed config; a write goes to its PROFILE, which
+    # holds only what differs from the packaged defaults. So the editor and the CLI change
+    # the same file the same way, and "reset to default" genuinely removes the key rather
+    # than restating the default as though someone had chosen it.
+
+    def _project():
+        if session.project_root is None:
+            raise HTTPException(
+                409,
+                "this session was opened on a bare results.h5; open a project to change "
+                "its settings from the editor",
+            )
+        from ..project import Project
+
+        return Project.load(session.project_root)
+
+    @app.get("/api/config")
+    def get_config() -> dict:
+        """Every describable section's current values, with which ones were actually set."""
+        from ..config_schema import effective, sections, stage_flags_spec
+
+        if session.project_root is None:
+            return {"enabled": False, "reason": "no project", "sections": {}}
+        project = _project()
+        import tomllib
+
+        from ..config import Config
+
+        try:
+            config = Config.from_dict(tomllib.loads(project.compose_config()))
+        except Exception as exc:
+            raise HTTPException(500, f"the project's config does not compose: {exc}")
+        overrides = project.profile_values()
+        out: dict = {}
+        for name in sections():
+            try:
+                values = effective(config, name)
+            except (
+                Exception
+            ) as exc:  # a malformed section must not blank the whole panel
+                out[name] = {"error": str(exc)}
+                continue
+            out[name] = {
+                field: {
+                    "value": _jsonable(value),
+                    "is_default": is_default,
+                    "overridden": field in (overrides.get(name) or {}),
+                }
+                for field, (value, is_default) in values.items()
+            }
+        flags = config.stage_flags()
+        out["pipeline"] = {
+            f.name: {
+                "value": flags.get(f.name.removeprefix("do_"), f.default),
+                "is_default": f.name not in (overrides.get("pipeline") or {}),
+                "overridden": f.name in (overrides.get("pipeline") or {}),
+            }
+            for f in stage_flags_spec().fields
+        }
+        return {
+            "enabled": True,
+            "profile": project.profile_path().name,
+            "sections": out,
+        }
+
+    @app.post("/api/config")
+    def set_config(payload: dict) -> dict:
+        """Set one ``{"section", "key", "value"}`` in the project's profile.
+
+        ``value: null`` clears the override. Validated through ``Config``'s own strict
+        loader, so the editor cannot store a key a run would reject.
+        """
+        project = _project()
+        section, key = str(payload.get("section", "")), str(payload.get("key", ""))
+        try:
+            path = project.set_profile_key(section, key, payload.get("value"))
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        log.info("set %s.%s in %s", section, key, path.name)
+        return {"ok": True, "profile": str(path)}
+
     # -- jobs ----------------------------------------------------------------
     #
     # Polled by the panel rather than pushed over `/ws`. The socket carries the *editing*
@@ -824,6 +907,17 @@ def _points_payload(
         # every settle/discrete edit (which request verbose), not just on navigation.
         payload["placeholder"] = _points_to_json(np.asarray(s.placeholder_pts2d(t)))
     return payload
+
+
+def _jsonable(value):
+    """A config value as JSON. NumPy scalars and tuples appear via the dataclass defaults."""
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _landmarks_meta(session: Session) -> list[dict]:
