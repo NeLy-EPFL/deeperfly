@@ -593,7 +593,9 @@ def test_label_stats_reads_the_schema_labels_actually_writes(cameras, fly, tmp_p
     rec = _make_recording(tmp_path / "flyA")
     outputs = _make_outputs(rec, cameras, fly, gt_cells=2, reviewed=1)
     with h5py.File(outputs / "labels.h5", "r") as f:
-        assert f["gt/index"].shape[1] == 3
+        # v6: [view, frame, instance, point]. label_stats reads HDF5 directly, so a
+        # width change would silently zero every count rather than raise.
+        assert f["gt/index"].shape[1] == 4
         assert "occluded/index" in f
         assert "reviewed/index" in f
         assert "absent/index" in f

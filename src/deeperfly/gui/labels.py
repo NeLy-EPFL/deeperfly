@@ -119,11 +119,13 @@ from jaxtyping import Bool, Float
 
 __all__ = [
     "Labels",
+    "LandmarkLabels",
     "absent_to_spans",
     "spans_to_absent",
     "Provenance",
     "save_labels",
     "load_labels",
+    "load_landmark_labels",
     "labels_identity",
     "migrate_from_corrections",
     "export_gt",
@@ -134,7 +136,25 @@ __all__ = [
 
 log = logging.getLogger("deeperfly")
 
-LABELS_FORMAT_VERSION = 5
+#: utf-8 variable-length strings (the landmark names are the first strings this file
+#: stores; the rest of the schema is numeric).
+_STR = h5py.string_dtype("utf-8")
+
+LABELS_FORMAT_VERSION = 6
+
+#: The COO index width from v6 on: ``[view, frame, instance, point]``. Earlier versions
+#: wrote ``[view, frame, point]``.
+#:
+#: The instance column is reserved *now*, while there is exactly one animal, because this
+#: is the one dataset in the project that cannot be regenerated -- and widening a stored
+#: index later would mean a second migration of it. Writing it costs one column; deferring
+#: it costs the migration twice. See ``docs/project-system-plan.md`` §10.1.
+#:
+#: This build is single-animal: every row is written with ``instance = 0``, and a row
+#: carrying a different instance is **refused on load** rather than collapsed into animal
+#: zero. A silent collapse would merge two animals' keypoints into one skeleton, which
+#: looks like a labeling mistake rather than a format mismatch.
+_INDEX_WIDTH_V6 = 4
 
 
 class Provenance:
@@ -383,6 +403,177 @@ class Labels:
         self.dirty = True
 
 
+@dataclass
+class LandmarkLabels:
+    """Observed calibration landmarks for one recording (a ``landmarks/`` group).
+
+    Deliberately a *separate* overlay from :class:`Labels`, sharing only the file. A
+    landmark is not a skeleton point: it must never reach the detector's output mapping,
+    the IK body plan, the bone-length priors, the training export or the rendered videos,
+    and it must not perturb the fingerprinted ``point_names`` that every existing sidecar
+    is validated against. Two namespaces enforce both by construction; one namespace with
+    a flag would need a filter at every call site and would invalidate every label already
+    authored. See :mod:`deeperfly.landmarks` for why they exist at all.
+
+    Attributes
+    ----------
+    names
+        The landmark names in ``L``-axis order (from the project's ``landmarks.toml``).
+    static
+        ``(L,)`` whether each is one fixed 3D point over time. Stored alongside the
+        observations so a solve reading the file alone knows how to treat each column.
+    xy
+        ``(V, T, L, 2)`` observed pixel, NaN where unobserved.
+    provenance
+        ``(V, T, L)`` a :class:`Provenance` code (a landmark is always operator-placed, so
+        in practice ``DRAGGED``).
+    """
+
+    names: tuple[str, ...]
+    static: Bool[np.ndarray, "L"]
+    xy: Float[np.ndarray, "V T L 2"]
+    provenance: np.ndarray
+    dirty: bool = field(default=False)
+
+    @classmethod
+    def empty(cls, n_views: int, n_frames: int, names, static=None) -> LandmarkLabels:
+        names = tuple(str(n) for n in names)
+        n = len(names)
+        return cls(
+            names=names,
+            static=np.ones(n, dtype=bool)
+            if static is None
+            else np.asarray(static, dtype=bool).reshape(n),
+            xy=np.full((n_views, n_frames, n, 2), np.nan),
+            provenance=np.zeros((n_views, n_frames, n), dtype=np.uint8),
+        )
+
+    @property
+    def observed(self) -> Bool[np.ndarray, "V T L"]:
+        """``(V, T, L)`` where a pixel is stored."""
+        return np.isfinite(self.xy).all(axis=-1)
+
+    @property
+    def any_labels(self) -> bool:
+        return bool(self.observed.any())
+
+    def index(self, name: str) -> int:
+        """The ``L``-axis index of ``name``.
+
+        Raises
+        ------
+        KeyError
+            If this recording's landmark set has no such name.
+        """
+        try:
+            return self.names.index(str(name))
+        except ValueError:
+            raise KeyError(
+                f"no landmark named {name!r} (have {list(self.names)})"
+            ) from None
+
+    def set(self, view: int, frame: int, landmark: int, xy) -> None:
+        """Place (or move) a landmark observation."""
+        self.xy[view, frame, landmark] = np.asarray(xy, dtype=float)
+        self.provenance[view, frame, landmark] = Provenance.DRAGGED
+        self.dirty = True
+
+    def clear(self, view: int, frame: int, landmark: int) -> None:
+        """Drop one landmark observation."""
+        self.xy[view, frame, landmark] = np.nan
+        self.provenance[view, frame, landmark] = Provenance.NONE
+        self.dirty = True
+
+    def counts(self) -> dict[str, int]:
+        """``name -> how many (view, frame) cells observe it`` (for the readiness report)."""
+        obs = self.observed
+        return {name: int(obs[:, :, i].sum()) for i, name in enumerate(self.names)}
+
+
+def _write_landmarks(f, landmarks: LandmarkLabels | None) -> None:
+    """Write the ``landmarks/`` group, or nothing when there is nothing to write.
+
+    Skipped entirely for an empty set, so a recording that never used landmarks produces a
+    file byte-identical to one from before they existed.
+    """
+    if landmarks is None or not landmarks.names:
+        return
+    obs = landmarks.observed
+    v, t, lm = np.nonzero(obs)
+    g = f.create_group("landmarks")
+    g.create_dataset(
+        "names", data=np.array(list(landmarks.names), dtype=object), dtype=_STR
+    )
+    g.create_dataset("static", data=np.asarray(landmarks.static, dtype=bool))
+    g.create_dataset(
+        "index", data=np.stack([v, t, lm], axis=1).astype(np.int32), dtype="int32"
+    )
+    g.create_dataset("xy", data=landmarks.xy[obs].astype(np.float64), dtype="float64")
+    g.create_dataset(
+        "provenance", data=landmarks.provenance[obs].astype(np.uint8), dtype="uint8"
+    )
+
+
+def load_landmark_labels(
+    path: str | Path, *, n_views: int, n_frames: int
+) -> LandmarkLabels | None:
+    """Read the ``landmarks/`` group of a ``labels.h5``, or ``None`` if it has none.
+
+    Read separately from :func:`load_labels` rather than folded into it: the landmark set
+    is defined by the *project*, not by the recording's skeleton, so a consumer that does
+    not care about calibration should not have to know they exist. Out-of-range rows are
+    dropped (a hand-edited or stale file must not raise here).
+
+    Parameters
+    ----------
+    path
+        The ``labels.h5``.
+    n_views, n_frames
+        The recording's dimensions, to size the dense arrays and range-check the rows.
+
+    Returns
+    -------
+    LandmarkLabels or None
+        The overlay, or ``None`` when the file is absent or carries no landmarks.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    with h5py.File(p, "r") as f:
+        if "landmarks" not in f:
+            return None
+        g = f["landmarks"]
+        names = tuple(
+            n.decode() if isinstance(n, bytes) else str(n) for n in g["names"][()]
+        )
+        static = np.asarray(g["static"][()], dtype=bool).reshape(len(names))
+        index = np.asarray(g["index"][()], dtype=np.int64).reshape(-1, 3)
+        xy = np.asarray(g["xy"][()], dtype=float).reshape(-1, 2)
+        prov = np.asarray(g["provenance"][()], dtype=np.uint8).reshape(-1)
+
+    out = LandmarkLabels.empty(n_views, n_frames, names, static)
+    if index.size:
+        v, t, lm = index[:, 0], index[:, 1], index[:, 2]
+        keep = (
+            (v >= 0)
+            & (v < n_views)
+            & (t >= 0)
+            & (t < n_frames)
+            & (lm >= 0)
+            & (lm < len(names))
+            & np.isfinite(xy).all(axis=1)
+        )
+        if int((~keep).sum()):
+            log.warning(
+                "%s: dropped %d out-of-range/NaN landmark row(s)", p, int((~keep).sum())
+            )
+        for (vi, ti, li), pt, pr in zip(index[keep], xy[keep], prov[keep]):
+            out.xy[vi, ti, li] = pt
+            out.provenance[vi, ti, li] = pr
+    out.dirty = False
+    return out
+
+
 # -- identity fingerprint -----------------------------------------------------
 
 
@@ -461,10 +652,14 @@ def _check_identity(stored: dict, current: dict, path: Path) -> None:
 def _coo_gt(
     labels: Labels, mask: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(index (N,3), xy (N,2), provenance (N,))`` for the GT cells ``mask`` selects."""
+    """``(index (N,4), xy (N,2), provenance (N,))`` for the GT cells ``mask`` selects.
+
+    The index is ``[view, frame, instance, point]``; ``instance`` is 0 throughout in this
+    single-animal build (see :data:`_INDEX_WIDTH_V6`).
+    """
     v, t, p = np.nonzero(mask)  # nonzero preserves axis order: view, frame, point
     return (
-        np.stack([v, t, p], axis=1).astype(np.int32),
+        np.stack([v, t, np.zeros_like(v), p], axis=1).astype(np.int32),
         labels.gt[mask].astype(np.float64),
         labels.gt_provenance[mask].astype(np.uint8),
     )
@@ -509,13 +704,53 @@ def spans_to_absent(spans: np.ndarray, n_frames: int, n_points: int) -> np.ndarr
 
 
 def _coo_cells(mask: np.ndarray) -> np.ndarray:
-    """``(M, 3)`` ``[view, frame, point]`` for the cells ``mask`` selects."""
+    """``(M, 4)`` ``[view, frame, instance, point]`` for the cells ``mask`` selects."""
     v, t, p = np.nonzero(mask)
-    return np.stack([v, t, p], axis=1).astype(np.int32)
+    return np.stack([v, t, np.zeros_like(v), p], axis=1).astype(np.int32)
+
+
+def _read_cells(raw, path, what: str) -> np.ndarray:
+    """A stored COO cell index, normalized to ``(N, 3)`` ``[view, frame, point]``.
+
+    Accepts both widths: v6+ stores ``[view, frame, instance, point]``, v5 and earlier
+    stored ``[view, frame, point]``. Rows for a non-zero instance are **dropped with a
+    warning** -- this build has one animal per recording, and quietly folding a second
+    animal's keypoints into the first would read as a labeling error rather than a version
+    mismatch.
+    """
+    arr = np.asarray(raw, dtype=np.int64)
+    if arr.size == 0:
+        return np.empty((0, 3), dtype=np.int64)
+    arr = arr.reshape(-1, arr.shape[-1])
+    if arr.shape[1] == 3:
+        return arr
+    if arr.shape[1] != _INDEX_WIDTH_V6:
+        raise ValueError(
+            f"{path}: {what} index has {arr.shape[1]} columns; expected 3 "
+            f"([view, frame, point]) or {_INDEX_WIDTH_V6} "
+            "([view, frame, instance, point])"
+        )
+    keep = arr[:, 2] == 0
+    n_dropped = int((~keep).sum())
+    if n_dropped:
+        log.warning(
+            "%s: dropped %d %s row(s) belonging to instance != 0 -- this build tracks "
+            "one animal per recording, and merging a second animal's points into the "
+            "first would be worse than losing them",
+            path,
+            n_dropped,
+            what,
+        )
+    return arr[keep][:, [0, 1, 3]]
 
 
 def save_labels(
-    path: str | Path, labels: Labels, *, identity: dict, subject_id: str | None = None
+    path: str | Path,
+    labels: Labels,
+    *,
+    identity: dict,
+    subject_id: str | None = None,
+    landmarks: "LandmarkLabels | None" = None,
 ) -> None:
     """Write ``labels`` to a sparse ``labels.h5`` sidecar (overwriting ``path``).
 
@@ -529,6 +764,12 @@ def save_labels(
     un-declaring the point restores them on the next load.
 
     ``subject_id`` overrides ``labels.subject_id`` when given.
+
+    ``landmarks``, when given, writes the ``landmarks/`` group alongside -- the calibration
+    observations, which share the file but not the point namespace (see
+    :class:`LandmarkLabels`). Omitting it leaves any existing group *out* of the rewritten
+    file, so a caller that loaded landmarks must pass them back; this is a whole-file
+    rewrite, as the module docstring notes.
     """
     vetoed = labels._absent_bcast  # (1, 1, P) -> broadcasts over the cell arrays
     raw_gt = labels.gt_authored  # (V, T, P)
@@ -571,7 +812,10 @@ def save_labels(
         vg.create_dataset("provenance", data=vgt_prov, dtype="uint8")
         vo = a.create_group("void_occluded")
         vo.create_dataset("index", data=_coo_cells(void_occ_mask), dtype="int32")
+        _write_landmarks(f, landmarks)
     labels.dirty = False
+    if landmarks is not None:
+        landmarks.dirty = False
 
 
 def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
@@ -600,10 +844,10 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
         meta = json.loads(f.attrs["meta"])  # type: ignore[arg-type]
         stored_identity = meta.get("identity", {})
         stored_version = int(meta.get("deeperfly_labels_format_version", 1))
-        gt_index = np.asarray(f["gt/index"][()], dtype=np.int64).reshape(-1, 3)  # type: ignore[index]
+        gt_index = _read_cells(f["gt/index"][()], p, "gt")  # type: ignore[index]
         gt_xy = np.asarray(f["gt/xy"][()], dtype=float).reshape(-1, 2)  # type: ignore[index]
         gt_prov = np.asarray(f["gt/provenance"][()], dtype=np.uint8).reshape(-1)  # type: ignore[index]
-        occ_index = np.asarray(f["occluded/index"][()], dtype=np.int64).reshape(-1, 3)  # type: ignore[index]
+        occ_index = _read_cells(f["occluded/index"][()], p, "occluded")  # type: ignore[index]
         rev_index = (  # optional group: pre-v2 files carry no review progress
             np.asarray(f["reviewed/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
             if "reviewed" in f
@@ -624,9 +868,9 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
                     f["absent/spans"][()], dtype=np.int64
                 ).reshape(-1, 3)
             if "absent/void_gt" in f:
-                vgt_index = np.asarray(  # type: ignore[index]
-                    f["absent/void_gt/index"][()], dtype=np.int64
-                ).reshape(-1, 3)
+                vgt_index = _read_cells(  # type: ignore[index]
+                    f["absent/void_gt/index"][()], p, "quarantined gt"
+                )
                 vgt_xy = np.asarray(  # type: ignore[index]
                     f["absent/void_gt/xy"][()], dtype=float
                 ).reshape(-1, 2)
@@ -634,9 +878,9 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
                     f["absent/void_gt/provenance"][()], dtype=np.uint8
                 ).reshape(-1)
             if "absent/void_occluded" in f:
-                vocc_index = np.asarray(  # type: ignore[index]
-                    f["absent/void_occluded/index"][()], dtype=np.int64
-                ).reshape(-1, 3)
+                vocc_index = _read_cells(  # type: ignore[index]
+                    f["absent/void_occluded/index"][()], p, "quarantined occlusion"
+                )
 
     if stored_version > LABELS_FORMAT_VERSION:
         raise ValueError(

@@ -401,19 +401,22 @@ def test_absent_roundtrip_quarantines_vetoed_rows(tmp_path, result):
 
     # The file itself is self-consistent: a naive reader of gt/index and
     # occluded/index sees only live rows, so it cannot train on a phantom leg.
+    # v6 indices are [view, frame, instance, point], so the point is the LAST column.
     with h5py.File(path, "r") as f:
-        live_gt = np.asarray(f["gt/index"][()]).reshape(-1, 3)
-        live_occ = np.asarray(f["occluded/index"][()]).reshape(-1, 3)
-        assert 4 not in live_gt[:, 2].tolist()
-        assert 4 not in live_occ[:, 2].tolist()
-        assert 7 in live_gt[:, 2].tolist()  # the bystander survives
+        live_gt = np.asarray(f["gt/index"][()]).reshape(-1, 4)
+        live_occ = np.asarray(f["occluded/index"][()]).reshape(-1, 4)
+        assert 4 not in live_gt[:, -1].tolist()
+        assert 4 not in live_occ[:, -1].tolist()
+        assert 7 in live_gt[:, -1].tolist()  # the bystander survives
         assert np.asarray(f["absent/index"][()]).tolist() == [4]
-        assert np.asarray(f["absent/void_gt/index"][()]).reshape(-1, 3)[
-            :, 2
+        assert np.asarray(f["absent/void_gt/index"][()]).reshape(-1, 4)[
+            :, -1
         ].tolist() == [4]
-        assert np.asarray(f["absent/void_occluded/index"][()]).reshape(-1, 3)[
-            :, 2
+        assert np.asarray(f["absent/void_occluded/index"][()]).reshape(-1, 4)[
+            :, -1
         ].tolist() == [4]
+        # Single-animal build: every row is instance 0 (the column is reserved, not used).
+        assert set(live_gt[:, 2].tolist()) <= {0}
 
     # Nothing is lost: the quarantined rows come back, still vetoed.
     loaded = load_labels(path, identity=identity)

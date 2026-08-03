@@ -272,6 +272,21 @@ def discover_footage(root: Path, config=None) -> dict[str, list[Path]]:
 # -- label statistics ----------------------------------------------------------
 
 
+def _coo_rows(raw):
+    """A stored COO index as ``(N, width)``, whatever width it was written with.
+
+    ``labels.h5`` widened its cell indices at v6 (an instance column was reserved), so a
+    reader that hard-codes three columns raises on a current file. Only the frame column
+    is read downstream, and it is column 1 in both layouts.
+    """
+    import numpy as np
+
+    arr = np.asarray(raw)
+    if arr.size == 0:
+        return np.empty((0, 3), dtype=np.int64)
+    return arr.reshape(-1, arr.shape[-1])
+
+
 def label_stats(labels_path: Path) -> dict:
     """Counts from a ``labels.h5``, read straight out of HDF5.
 
@@ -327,9 +342,13 @@ def label_stats(labels_path: Path) -> dict:
         from .gui.labels import Provenance
 
         with h5py.File(path, "r") as f:
-            gt_index = np.asarray(f["gt/index"][()]).reshape(-1, 3)
+            # Width-tolerant: v6+ stores [view, frame, instance, point], earlier versions
+            # [view, frame, point]. Only column 1 (frame) is read, and it is column 1 in
+            # both -- but the reshape must not assume a width, or a v6 file would raise
+            # here and a whole project listing would report zeros.
+            gt_index = _coo_rows(f["gt/index"][()])
             prov = np.asarray(f["gt/provenance"][()]).reshape(-1)
-            occ = np.asarray(f["occluded/index"][()]).reshape(-1, 3)
+            occ = _coo_rows(f["occluded/index"][()])
             reviewed = (
                 np.asarray(f["reviewed/index"][()]).reshape(-1)
                 if "reviewed" in f
