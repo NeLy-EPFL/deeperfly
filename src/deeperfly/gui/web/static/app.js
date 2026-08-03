@@ -241,6 +241,10 @@ class App {
   // within a frame, so it survives the mid-drag edit stream (which omits `pred`).
   /** @type {boolean[][] | null} */
   detectedMask = null;
+  //: The operator's "exclude this detection from triangulation" mask, per (view, point).
+  //: Narrower than `projectedMask`, which is every cell with no position of its own --
+  //: the facts readout has to say "excluded" only where the operator actually said so.
+  excludedMask = null;
   // On-demand 3D view (rig + 3D pose + NMF skeleton/mesh), built lazily on first open.
   /** @type {Scene3D | null} */
   scene = null;
@@ -347,6 +351,10 @@ class App {
   meshTimer = 0;
   /** @type {HTMLSpanElement} */
   pointStatusName = el("point-status-name");
+  pointStatusFacts = el("point-status-facts");
+  createBtn = el("act-create");
+  deleteGtBtn = el("act-delete-gt");
+  excludeBtn = el("act-exclude");
   absentBtn = el("act-absent");
   absentBadge = el("absent-badge");
   /** @type {HTMLButtonElement} */
@@ -354,7 +362,6 @@ class App {
   /** @type {import("./types.js").Chirality | null} */
   chirality = null;
   /** @type {Segmented} */
-  stateSwitch;
   /** @type {Segmented} */
   sidebarTabs;
   /** @type {HTMLButtonElement} */
@@ -587,17 +594,13 @@ class App {
     this.layoutSwitch.set(this.layout);
     el("layout-switch").append(this.layoutSwitch.root);
 
-    // The selection's per-view state, as both a readout and a setter: clicking a chip
-    // applies that state to every selected cell at once. "Ground truth" is an authored
-    // GT pixel (Confirm); "Projected" drops the view from the 3D solve so the point
-    // follows the reprojection (Occlude); "Detected" is the detector's own 2D peak,
-    // reached via the Reset button (clear back to the detector / reprojection). The wire
-    // value for the third chip stays "invisible"/occlude (see the server's edit types).
-    this.stateSwitch = segmented(
-      [["Ground truth", "fixed"], ["Detected", "normal"], ["Projected", "projected"]],
-      (v) => this.setSelectedState(v)
-    );
-    el("point-status-states").append(this.stateSwitch.root);
+    // No state control here, deliberately. A cell does not HAVE a state you assign; it has
+    // an authored pixel or it does not, and its detection is excluded from triangulation or
+    // it is not. `#point-status-facts` reports those facts and the buttons beside it are the
+    // verbs -- create GT from what is shown, delete GT, toggle the exclusion.
+    this.createBtn.addEventListener("click", () => this.createSelectionGt());
+    this.deleteGtBtn.addEventListener("click", () => this.deleteSelectionGt());
+    this.excludeBtn.addEventListener("click", () => this.toggleSelectionExclude());
     this.absentBtn.addEventListener("click", (e) =>
       this.toggleAbsentSelection(e.shiftKey ? "recording" : "frame"),
     );
@@ -871,6 +874,16 @@ class App {
     this.applyPoints(await fetchPoints(this.frame, this.mode, true));
   }
 
+  /** A one-line, self-dismissing status notice. Non-blocking on purpose: these are
+   * refusals and confirmations, not decisions, and a modal would interrupt a labeling pass
+   * for something the operator can simply read.
+   * @param {string} msg */
+  flash(msg) {
+    this.statusEl.textContent = msg;
+    clearTimeout(this._noticeTimer);
+    this._noticeTimer = setTimeout(() => (this.statusEl.textContent = ""), 4000);
+  }
+
   /** Whether a drag re-solves the 3D point live (only meaningful when the result has 3D). */
   get resolves3d() {
     return this.meta.has_3d;
@@ -898,11 +911,7 @@ class App {
     // A one-line, self-dismissing notice: the server refused an edit, or confirmed a
     // recording-wide declaration. Non-blocking on purpose -- this gesture happens once per
     // recording, so a modal would be worse than the thing it guards against.
-    if (p.notice) {
-      this.statusEl.textContent = p.notice;
-      clearTimeout(this._noticeTimer);
-      this._noticeTimer = setTimeout(() => (this.statusEl.textContent = ""), 4000);
-    }
+    if (p.notice) this.flash(p.notice);
     // The per-view masks drive the source-styled markers (ground truth / projected) and
     // the status widget; they are meaningful whether or not the result carries 3D.
     this.fixedMask = p.fixed;
@@ -913,6 +922,7 @@ class App {
     // occluded-only `p.invisible` mask still rides through to each view for the drag
     // un-occlude, but is a strict subset here).
     this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
+    if (p.invisible) this.excludedMask = p.invisible;
     // Absence rides every reply (it gates drawing), so assign unconditionally rather than
     // keeping a previous value the way `pred` / `placeholder` do.
     if (p.absent) {
@@ -1298,25 +1308,6 @@ class App {
 
   // -- point state control ----------------------------------------------------
 
-  /**
-   * @param {number} view
-   * @param {number} point
-   * @returns {"normal" | "fixed" | "projected" | "absent"} the cell's per-view state
-   */
-  cellState(view, point) {
-    // Absence is checked FIRST and short-circuits. An absent cell is null in `points`, so it
-    // would otherwise fall through to "projected" and the readout would report the machine's
-    // reprojected guess back to the operator as if it were their own label.
-    if (this.absentMask && this.absentMask[view][point]) return "absent";
-    if (this.fixedMask && this.fixedMask[view][point]) return "fixed";
-    // No observed pixel here -- the operator occluded the view, or the detector never
-    // fired -- so the drawn position blindly follows the 3D reprojection: the "projected"
-    // state. `projectedMask` is the null-in-`points` set, which is exactly that (occluded
-    // is a strict subset, so it needs no separate check); GT is never null, so order is
-    // moot but fixed is checked first for clarity.
-    if (this.projectedMask && this.projectedMask[view][point]) return "projected";
-    return "normal";
-  }
 
   /**
    * Whether the detector produced a raw prediction for this cell. A cell with no
@@ -1328,17 +1319,6 @@ class App {
     return !!(this.detectedMask && this.detectedMask[view][point]);
   }
 
-  /**
-   * The state shared by every selected cell, or null when they disagree (or none are
-   * selected). This is what lights a chip up as the readout.
-   * @returns {"normal" | "fixed" | "projected" | "absent" | null}
-   */
-  uniformState() {
-    const cells = this.selCells();
-    if (!cells.length) return null;
-    const first = this.cellState(cells[0][0], cells[0][1]);
-    return cells.every(([v, p]) => this.cellState(v, p) === first) ? first : null;
-  }
 
   // The combined state control -- one chip row that both reports and sets the selection's
   // state. The name field shows the single cell's "point · camera", the count for
@@ -1398,32 +1378,79 @@ class App {
     this.absentBtn.disabled = n === 0 || this.readOnly;
     this.absentBtn.setAttribute("aria-pressed", String(allAbsent));
     this.absentBtn.classList.toggle("is-absent", allAbsent);
-    // The three source chips answer "where did this marker come from", which has no meaning for
-    // a joint that is not on the animal -- so they are all disabled while it is declared absent.
-    this.stateSwitch.setDisabled(n === 0 || allAbsent);
-    this.stateSwitch.setDisabledValue("projected", n === 0 || allAbsent);
-    // "Detected" resets a cell back to the detector's raw prediction -- meaningless for a
-    // cell the detector never fired for (it would just fall through to the reprojection).
-    // Disable the chip unless at least one selected cell has a detection, so an
-    // undetected joint can't be "converted to Detected".
-    const anyDetected = this.selCells().some(([v, p]) => this.cellDetected(v, p));
-    this.stateSwitch.setDisabledValue("normal", n === 0 || allAbsent || !anyDetected);
-    // The lit chip: the hovered joint's own state while hovering (the readout peek),
-    // else the selection's shared state (nothing lit when the cells disagree).
-    this.stateSwitch.set(hov ? this.cellState(hov.view, hov.point) : (this.uniformState() ?? ""));
+    // The facts line: what IS true of this cell, not a state to assign. Reports the hovered
+    // joint while hovering (the peek), else the selection's shared description, else how
+    // many cells disagree.
+    const describe = (view, point) => {
+      if (this.absentMask && this.absentMask[view][point]) return "not on this animal";
+      if (this.fixedMask && this.fixedMask[view][point]) return "ground truth";
+      const excluded = this.excludedMask && this.excludedMask[view][point];
+      if (excluded) return "detection excluded — follows the 3D";
+      if (this.cellDetected(view, point)) return "detected";
+      return "unplaced — drag to place";
+    };
+    let facts = "";
+    if (hov) facts = describe(hov.view, hov.point);
+    else if (n === 1 && this.selAnchor) facts = describe(this.selAnchor.view, this.selAnchor.point);
+    else if (n > 1) {
+      const all = this.selCells().map(([v, p]) => describe(v, p));
+      facts = all.every((d) => d === all[0]) ? all[0] : "mixed";
+    }
+    this.pointStatusFacts.textContent = facts;
+    // Verb availability. Create needs a visible proposal layer; Exclude is meaningless on a
+    // cell whose GT already overrides its detection, and on a joint that is not there.
+    const anyWithoutGt = this.selCells().some(([v, p]) => !(this.fixedMask && this.fixedMask[v][p]));
+    const anyWithGt = this.selCells().some(([v, p]) => this.fixedMask && this.fixedMask[v][p]);
+    this.createBtn.disabled =
+      n === 0 || this.readOnly || allAbsent || this.visibleSources() === null || !anyWithoutGt;
+    this.deleteGtBtn.disabled = n === 0 || this.readOnly || !anyWithGt;
+    this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent || !anyWithoutGt;
   }
 
-  // Click a state chip to apply that state to the whole selection at once. The chips are
-  // the bulk verbs in disguise: "Ground truth" confirms, "Projected" occludes (drops the
-  // view so the point follows the reprojection), and "Detected" resets back to the
-  // detector (the same as the Reset button) -- so a multi-select changes state in one
-  // undoable step.
-  /** @param {string} target  "normal" | "fixed" | "projected" */
-  setSelectedState(target) {
-    if (this.selection.size === 0) return;
-    if (target === "fixed") this.confirmSelection();
-    else if (target === "projected") this.occludeSelection();
-    else this.resetSelection();
+  // Which proposal layers Enter is allowed to take a pixel from: the ones the operator can
+  // actually SEE. "Create GT from what's shown" has to mean shown -- taking a pixel from a
+  // layer that was deliberately hidden would author a position nobody looked at. This is
+  // also what makes the label-off-the-projection workflow exact: hide Detected and every
+  // dot on screen is a reprojection, so Enter turns the projected skeleton into GT.
+  /** @returns {"all" | "predictions" | "projections" | null} */
+  visibleSources() {
+    const det = this.detectedCheck.checked;
+    const proj = this.projectedCheck.checked;
+    if (det && proj) return "all";
+    if (det) return "predictions";
+    if (proj) return "projections";
+    return null; // nothing on screen to affirm
+  }
+
+  // Create GT for the selection at the position already drawn there. The bulk half of a
+  // drag: it authors the dot the operator is looking at so the joint becomes theirs, ready
+  // to nudge. Cells with nothing visible are skipped server-side rather than invented.
+  createSelectionGt() {
+    const targets = this.selCells();
+    if (!targets.length) return;
+    const sources = this.visibleSources();
+    if (sources === null) {
+      this.flash("nothing to create ground truth from — both proposal layers are hidden");
+      return;
+    }
+    this.sendEdit({ type: "confirm", targets, sources, frame: this.frame, mode: this.mode });
+  }
+
+  // Delete the selection's GT pixels, leaving any exclusion alone. Distinct from Reset,
+  // which retracts both -- see EditorState.clear_gt_targets.
+  deleteSelectionGt() {
+    const targets = this.selCells();
+    if (!targets.length) return;
+    this.sendEdit({ type: "clear_gt_targets", targets, frame: this.frame, mode: this.mode });
+  }
+
+  // Toggle "exclude this detection from triangulation" over the selection. Server-side this
+  // skips cells that carry GT: storing an exclusion clears the pixel under it, so a bulk
+  // toggle over a partly-labeled selection would delete the operator's own work.
+  toggleSelectionExclude() {
+    const targets = this.selCells();
+    if (!targets.length) return;
+    this.sendEdit({ type: "toggle_exclude", targets, frame: this.frame, mode: this.mode });
   }
 
   // -- edit routing -----------------------------------------------------------
@@ -1497,15 +1524,13 @@ class App {
     this.sendEdit({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
   }
 
-  // -- actions on the selection (confirm / reset / occlude) -------------------
+  // -- the verbs on the selection ---------------------------------------------
+  //
+  // Not states. A cell carries a pixel the operator created or it does not, and its
+  // detection is excluded from triangulation or it is not; these are the retractions and
+  // assertions that move between those facts. `createSelectionGt` / `deleteSelectionGt` /
+  // `toggleSelectionExclude` live above, beside the readout that reports the facts.
 
-  // Confirm the selection: snapshot each selected cell's shown position as ground
-  // truth (prediction where the detector fired, else the projection). One undo step.
-  confirmSelection() {
-    const targets = this.selCells();
-    if (!targets.length) return;
-    this.sendEdit({ type: "confirm", targets, sources: "all", frame: this.frame, mode: this.mode });
-  }
 
   // Reset the selection: clear each selected cell's authored label (ground truth or
   // occlusion) back to unset, so it falls back to the detector prediction. One undo step.
@@ -1515,15 +1540,6 @@ class App {
     this.sendEdit({ type: "reset", targets, frame: this.frame, mode: this.mode });
   }
 
-  // Occlude the selection: flag each selected cell unreadable in its view (dropping it
-  // from the 3D solve). Reverse via Reset / undo. One undo step. Deliberately NOT gated on
-  // 3D: occlusion is an authored label, and on a 2D-only pass gating it would leave the
-  // operator reaching for the far stronger "not on this animal" instead.
-  occludeSelection() {
-    const targets = this.selCells();
-    if (!targets.length) return;
-    this.sendEdit({ type: "occlude", targets, frame: this.frame, mode: this.mode });
-  }
 
   // Toggle "not on this animal" for the selected joint(s) -- an amputated leg, an ablated
   // antenna. View-independent, so the (view, point) selection collapses to a point SET:
@@ -2709,14 +2725,13 @@ class App {
     // Acting on the selection: 1 / 2 / 3 set the whole selection's state, left-to-right in the
     // same order as the status-card chips (Ground truth · Detected · Projected). Enter / r / o
     // stay as hidden aliases so the older muscle memory -- and the Reset button's r -- keep working.
-    b.push({ key: "1", group: "edit", label: "1", desc: "Ground truth — confirm the selection", run: () => this.confirmSelection() });
-    b.push({ key: "Enter", group: "edit", hidden: true, label: "Enter", desc: "", run: () => this.confirmSelection() });
-    b.push({ key: "2", group: "edit", label: "2", desc: "Detected — reset the selection to the detector", run: () => this.resetSelection() });
-    b.push({ key: "r", group: "edit", hidden: true, label: "r", desc: "", run: () => this.resetSelection() });
-    b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
-    b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
-    b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no usable observation here; drop the view from the 3D solve and follow the reprojection", run: () => this.occludeSelection() });
-    b.push({ key: "o", group: "edit", hidden: true, label: "o", desc: "", run: () => this.occludeSelection() });
+    // Verbs, not states. A cell is not "set to Ground truth"; a GT pixel is created at the
+    // position already drawn, deleted, or a detection is excluded from triangulation.
+    b.push({ key: "Enter", group: "edit", label: "⏎", desc: "Create ground truth for the selection, at the position shown", run: () => this.createSelectionGt() });
+    b.push({ key: "Backspace", group: "edit", label: "⌫", desc: "Delete the selection's ground truth (the detection / reprojection shows through again)", run: () => this.deleteSelectionGt() });
+    b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.deleteSelectionGt() });
+    b.push({ key: "e", group: "edit", label: "e", desc: "Exclude the selection's detections from triangulation (toggle) — the point follows the reprojection there", run: () => this.toggleSelectionExclude() });
+    b.push({ key: "r", group: "edit", label: "r", desc: "Reset the selection — retract both the ground truth and the exclusion", run: () => this.resetSelection() });
     b.push({ key: "x", group: "edit", label: "x", desc: "Absent — this keypoint is not on this animal (amputated / ablated). This frame, every view; press again to un-mark", run: () => this.toggleAbsentSelection("frame") });
     // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes
     // shift as implied by the key itself (see `matches`), the same way Shift+M works.

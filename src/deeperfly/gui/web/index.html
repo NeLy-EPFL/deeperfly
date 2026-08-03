@@ -97,14 +97,17 @@
                 <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">NMF mesh</span> <kbd>⇧M</kbd></label>
               </div>
             </div>
-            <div class="ctl-group annot-card" id="point-status" title="The selected point(s): click a chip to set the whole selection's state — Ground truth (1), Detected (2), or Projected (3) — or the Reset button (r) to clear the labels back to the detector. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear. Hover a point to peek at its name + state.">
-              <span id="point-status-name" class="point-status-name">—</span>
-              <div id="point-status-states" class="segmented"></div>
-              <button id="act-reset" title="Reset the selection — clear the labels back to the detector (r)" disabled>↺ Reset</button>
-              <!-- Absent is deliberately NOT a fourth chip in the segmented control: the three
-                   chips all answer "where did this marker come from", while Absent answers "does
-                   this joint exist at all". Same control would teach the wrong ontology. -->
-              <button id="act-absent" class="act-absent" aria-pressed="false" title="Absent — this keypoint is not on this animal (an amputated leg, an ablated antenna). Applies to EVERY frame and EVERY view at once, because it is one fact about the animal, not an observation. Different from Projected (&quot;it exists but I cannot place it from this view&quot;) and from Unplaced (&quot;nobody has placed it yet&quot;). An absent joint draws as a dim grey ✕ with no bones, contributes nothing to the 3D solve, and is excluded from the training export. Press again or Ctrl+Z to un-mark; nothing labeled underneath is lost (x)" disabled>✕ Absent</button>
+            <div class="ctl-group annot-card" id="point-status" title="The selected point(s). A cell is not SET to a state -- it either carries a ground-truth pixel you created or it does not, and its detection is either excluded from triangulation or it is not. The line here reports which; the buttons are the verbs. Enter creates ground truth at the position already shown (from whichever proposal layers are visible), Backspace deletes it, e excludes the detection from triangulation, r retracts both. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear.">
+              <span id="point-status-name" class="point-status-name">&mdash;</span>
+              <span id="point-status-facts" class="point-status-facts"></span>
+              <button id="act-create" title="Create ground truth for the selection at the position already drawn there -- the detection where it fired, else the reprojection, following whichever proposal layers are visible. The bulk half of a drag: it makes the joint yours, ready to nudge (Enter)" disabled>&#9166; GT</button>
+              <button id="act-delete-gt" title="Delete the selection's ground-truth pixels. The detection (or the reprojection) shows through again. Leaves any exclusion alone -- use Reset to retract both (Backspace)" disabled>&#9003; GT</button>
+              <button id="act-exclude" title="Exclude the selection's detections from triangulation, or un-exclude them (toggle). The joint then follows the 3D reprojection in that view. Skips cells that already carry ground truth: the GT overrides the detection there anyway, and storing an exclusion would delete the pixel underneath it (e)" disabled>&#8856; Exclude</button>
+              <button id="act-reset" title="Reset the selection -- retract both the ground truth and the exclusion, back to the detector (r)" disabled>&#8634; Reset</button>
+              <!-- Absent is deliberately not one of the verbs above: those all concern one
+                   view's observation of a joint, while Absent says the joint is not on the
+                   animal at all -- view-independent, and usually recording-wide. -->
+              <button id="act-absent" class="act-absent" aria-pressed="false" title="Absent -- this keypoint is not on this animal (an amputated leg, an ablated antenna). Applies to EVERY frame and EVERY view at once, because it is one fact about the animal, not an observation. Different from an excluded detection (&quot;it exists but I cannot place it from this view&quot;) and from Unplaced (&quot;nobody has placed it yet&quot;). An absent joint draws as a dim grey X with no bones, contributes nothing to the 3D solve, and is excluded from the training export. Press again or Ctrl+Z to un-mark; nothing labeled underneath is lost (x)" disabled>&#10007; Absent</button>
             </div>
             <div class="ctl-group">
               <button id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>

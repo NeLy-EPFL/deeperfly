@@ -199,13 +199,13 @@
  * An edit sent over the WebSocket; the server dispatches on `type` and replies
  * with a refreshed {@link PointsPayload}.
  * @typedef {object} EditMessage
- * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "reset" | "occlude" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame" | "set_reviewed" | "set_absent"} type
+ * @property {"edit_2d" | "edit_3d" | "set_gt" | "clear_gt" | "toggle_fixed" | "toggle_invisible" | "toggle_occluded" | "confirm" | "reset" | "occlude" | "clear_gt_targets" | "toggle_exclude" | "undo" | "redo" | "reset_point" | "reset_point_view" | "reset_frame" | "set_reviewed" | "set_absent"} type
  * @property {number} [view]
  * @property {number} [point]
  * @property {boolean} [reviewed]  for "set_reviewed": the frame's new reviewed state
  * @property {number} [x]
  * @property {number} [y]
- * @property {[number, number][]} [targets]  the (view, point) pairs a batched op acts on: "confirm" promotes them to GT, "reset" clears them to unset, "occlude" flags them occluded, "set_absent" collapses them to a point SET (absence is recording-wide, so the view half is discarded)
+ * @property {[number, number][]} [targets]  the (view, point) pairs a batched op acts on: "confirm" creates GT at the position already shown, "clear_gt_targets" deletes just the GT pixel, "toggle_exclude" toggles "exclude this detection from triangulation" (skipping cells that carry GT), "reset" retracts both, "occlude" is the set-only form "toggle_exclude" is built on, "set_absent" collapses them to a point SET (absence is recording-wide, so the view half is discarded)
  * @property {boolean} [absent]  for "set_absent": the value to set. Sent explicitly rather than toggled per point, so a mixed selection resolves one way instead of splitting.
  * @property {"all" | "predictions" | "projections"} [sources]  for "confirm": which suggestions to snapshot
  * @property {number} frame

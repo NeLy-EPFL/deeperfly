@@ -559,14 +559,17 @@ body {
   text-overflow: ellipsis;
 }
 
-/* Chips are ordered Ground truth (1) · Detected (2) · Projected (3). GT lights lime and
-   Projected violet; Detected falls through to the segmented default blue. */
-#point-status-states .seg-btn:nth-child(1).is-active {
-  background: #4f9e2f;
-}
-
-#point-status-states .seg-btn:nth-child(3).is-active {
-  background: #7a44d4;
+/* The facts line beside the name: what IS true of the cell, never a control. Deliberately
+   quiet -- it is read on demand, and it sits in a toolbar that already carries the verbs. */
+.point-status-facts {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 18ch;
+  color: #8a8a8a;
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #controls .spacer {
@@ -1189,7 +1192,9 @@ body.adding #strip canvas {
 /* Read-only: grey out (and disarm) the edit affordances so the toolbar honestly
    reflects that this tab cannot mutate the pose. sendEdit is also a no-op, and the
    server refuses the edit regardless, so these are for clarity, not enforcement. */
-body.read-only #point-status-states,
+body.read-only #act-create,
+body.read-only #act-delete-gt,
+body.read-only #act-exclude,
 body.read-only #act-reset,
 body.read-only #undo,
 body.read-only #redo {

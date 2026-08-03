@@ -243,6 +243,67 @@ def test_d_marks_the_current_frame_reviewed_with_no_panel_open(page_and_errors):
     assert not errors, "JS errors pressing d:\n  " + "\n  ".join(errors)
 
 
+def test_l_toggles_the_camera_layout(page_and_errors):
+    """One key flips Grid <-> Focus, in place of the old `g` / `f` pair.
+
+    Two things have to hold and neither is visible to a python-level test: the class on
+    ``#views`` (the CSS that swaps stage for stage+strip reads it), and the Layout menu's
+    Grid/Focus segment, which is set from ``setLayout`` and would silently drift out of
+    sync if the keystroke bypassed it.
+    """
+    page, errors = page_and_errors
+    views = page.locator("#views")
+    active = page.locator("#layout-switch .seg-btn.is-active")
+    assert "layout-grid" in (views.get_attribute("class") or ""), "grid is the default"
+    page.keyboard.press("l")
+    page.wait_for_timeout(300)
+    assert "layout-focus" in (views.get_attribute("class") or ""), "l did not focus"
+    assert active.inner_text() == "Focus", "the Layout segment did not follow the key"
+    page.keyboard.press("l")
+    page.wait_for_timeout(300)
+    assert "layout-grid" in (views.get_attribute("class") or ""), "l did not go back"
+    assert active.inner_text() == "Grid"
+    assert not errors, "JS errors pressing l:\n  " + "\n  ".join(errors)
+
+
+def test_the_verb_keys_create_exclude_and_delete_ground_truth(page_and_errors):
+    """Enter / e / Backspace on a selection, end to end through the socket.
+
+    The point of this test is the half a python test cannot reach: these verbs run in a
+    keydown handler, build a socket message and then repaint from the reply, so a wrong
+    field name or a missing element throws in the browser and the python-level state tests
+    stay green regardless. It also pins the readout, which is the whole reason the state
+    chips went away -- the panel must report what IS true rather than offer a state to set.
+    """
+    page, errors = page_and_errors
+    facts = page.locator("#point-status-facts")
+    page.keyboard.press("a")  # select every point in every view
+    page.wait_for_timeout(300)
+    assert not page.locator("#act-create").is_disabled(), "Create GT unavailable"
+
+    page.keyboard.press("Enter")  # create GT at the drawn positions
+    page.wait_for_timeout(600)
+    assert facts.inner_text() == "ground truth", f"readout says {facts.inner_text()!r}"
+    assert not page.locator("#act-delete-gt").is_disabled()
+    # GT already overrides the detection, so there is nothing left to exclude
+    assert page.locator("#act-exclude").is_disabled(), (
+        "Exclude offered over labeled cells"
+    )
+
+    page.keyboard.press("Backspace")  # delete it again
+    page.wait_for_timeout(600)
+    assert facts.inner_text() != "ground truth", "Backspace did not delete the GT"
+    assert not page.locator("#act-exclude").is_disabled()
+
+    page.keyboard.press("e")  # exclude the detections from triangulation
+    page.wait_for_timeout(600)
+    assert "excluded" in facts.inner_text(), f"readout says {facts.inner_text()!r}"
+    page.keyboard.press("e")  # ... and it is a toggle
+    page.wait_for_timeout(600)
+    assert "excluded" not in facts.inner_text(), "e did not toggle back"
+    assert not errors, "JS errors driving the verbs:\n  " + "\n  ".join(errors)
+
+
 # -- the uncalibrated editor ----------------------------------------------------
 #
 # A from-scratch project opens with no rig, no detections and no 3D. Every other test in

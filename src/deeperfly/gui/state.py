@@ -1308,6 +1308,62 @@ class EditorState:
         self._rederive_points(t, {point for _, point in targets})
         self._invalidate_nmf(t)
 
+    def clear_gt_targets(self, targets, frame: int | None = None) -> None:
+        """Delete the GT pixel at many ``(view, point)`` cells, leaving all else alone.
+
+        The batched inverse of a drag, and deliberately **not** the same verb as
+        :meth:`reset_targets`, which also drops the exclusion. "I retract the pixel I
+        placed" and "I retract my claim that this view is unusable" are different
+        retractions; one key doing both silently would undo work the operator did not name.
+        Cells with no GT are skipped, so a no-op batch records no undo step.
+        """
+        targets = list(targets)
+        if not targets:
+            return
+        t = self._resolve_frame(frame)
+        has = self.labels.has_gt
+        if not any(has[view, t, point] for view, point in targets):
+            return
+        self._record_undo(t, None, coalesce=False)
+        for view, point in targets:
+            self.labels.clear_gt(view, t, point)
+        self._rederive_points(t, {point for _, point in targets})
+        self._invalidate_nmf(t)
+
+    def toggle_exclude_targets(self, targets, frame: int | None = None) -> bool | None:
+        """Toggle "exclude this detection from triangulation" over many cells.
+
+        A *toggle*, so one key both marks and un-marks: if every eligible target is already
+        excluded the batch clears, otherwise it excludes. Returns the new state, or ``None``
+        when nothing was eligible.
+
+        Cells that carry **GT are skipped**, and that is a safety property rather than a
+        technicality. Storing an exclusion clears the pixel underneath it
+        (:meth:`Labels.set_occluded` -- the cell tri-state is exclusive), so a bulk
+        exclusion over a selection that happens to include labeled cells would delete the
+        operator's own work on a keystroke. It is also meaningless: GT already overrides the
+        detection in its own view, so there is nothing left there to exclude. To exclude a
+        view you have labeled, delete the GT first (:meth:`clear_gt_targets`) -- two
+        retractions, named separately.
+        """
+        targets = list(targets)
+        if not targets:
+            return None
+        t = self._resolve_frame(frame)
+        absent = self.labels.absent_at(t)
+        has = self.labels.has_gt
+        eligible = [(v, p) for v, p in targets if not absent[p] and not has[v, t, p]]
+        if not eligible:
+            return None
+        occluded = self.labels.occluded
+        now = not all(bool(occluded[v, t, p]) for v, p in eligible)
+        self._record_undo(t, None, coalesce=False)
+        for view, point in eligible:
+            self.labels.set_occluded(view, t, point, now)
+        self._rederive_points(t, {point for _, point in eligible})
+        self._invalidate_nmf(t)
+        return now
+
     def occlude_targets(self, targets, frame: int | None = None) -> None:
         """Occlude many ``(view, point)`` cells at ``frame`` in one undo step.
 

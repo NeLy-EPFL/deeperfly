@@ -571,6 +571,72 @@ def test_reset_is_undoable(result):
     assert state.labels.has_gt[0, 0, 4]
 
 
+# -- the verbs: create GT, delete GT, exclude a detection ----------------------
+#
+# A cell has no "state" to assign. It carries a pixel the operator created or it does not,
+# and its detection is excluded from triangulation or it is not. These are those verbs.
+
+
+def test_clear_gt_targets_deletes_only_the_pixel(result):
+    """Delete GT and Reset are different retractions and must stay different keys."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.toggle_invisible(1, p, frame=f)  # an exclusion the operator authored
+    state.apply_2d_edit(0, p, (10.0, 20.0), f)  # ... and a pixel they placed
+
+    state.clear_gt_targets([(0, p)], f)
+    assert not state.labels.has_gt[0, f, p]  # the pixel is gone ...
+    assert state.labels.occluded[1, f, p]  # ... and the exclusion is untouched
+
+    state.reset_targets([(1, p)], f)
+    assert not state.labels.occluded[1, f, p]  # Reset is what retracts that
+
+
+def test_clear_gt_targets_on_cells_with_no_gt_is_a_no_op(result):
+    state = EditorState.from_result(result)
+    state.clear_gt_targets([(0, 5), (1, 5)], 0)
+    assert not state.can_undo  # no undo step for a batch that changed nothing
+
+
+def test_toggle_exclude_targets_round_trips(result):
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    assert (
+        state.toggle_exclude_targets([(v, p) for v in range(state.n_views)], f) is True
+    )
+    assert state.labels.occluded[:, f, p].all()
+    assert (
+        state.toggle_exclude_targets([(v, p) for v in range(state.n_views)], f) is False
+    )
+    assert not state.labels.occluded[:, f, p].any()
+
+
+def test_toggle_exclude_never_deletes_a_gt_pixel(result):
+    """Storing an exclusion clears the pixel under it, so the verb must skip labeled cells.
+
+    Without this, one keystroke over a partly-labeled selection would silently destroy the
+    operator's own work -- and it would be pointless, because GT already overrides the
+    detection in its own view. Excluding a view you have labeled takes two named
+    retractions: delete the GT, then exclude.
+    """
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.apply_2d_edit(2, p, (30.0, 40.0), f)
+    state.toggle_exclude_targets([(v, p) for v in range(state.n_views)], f)
+
+    assert state.labels.has_gt[2, f, p]  # the labeled cell survived untouched
+    np.testing.assert_allclose(state.labels.gt[2, f, p], [30.0, 40.0])
+    assert state.labels.occluded[0, f, p] and state.labels.occluded[1, f, p]
+    assert not state.labels.occluded[2, f, p]
+
+
+def test_toggle_exclude_refuses_when_nothing_is_eligible(result):
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.apply_2d_edit(0, p, (1.0, 2.0), f)
+    assert state.toggle_exclude_targets([(0, p)], f) is None  # only a labeled cell
+
+
 # -- what triangulation uses ---------------------------------------------------
 #
 # GT if GT exists (it overrides the detection in its own view), else the detections that

@@ -1282,6 +1282,18 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ == "occlude":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         s.occlude_targets(targets, t)
+    elif typ == "clear_gt_targets":
+        # Delete the operator's pixels and nothing else -- distinct from "reset", which
+        # also lifts an exclusion (see EditorState.clear_gt_targets).
+        targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
+        s.clear_gt_targets(targets, t)
+    elif typ == "toggle_exclude":
+        targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
+        if s.toggle_exclude_targets(targets, t) is None:
+            notice = (
+                "nothing to exclude -- a labeled view already overrides its detection; "
+                "delete the ground truth first"
+            )
     elif typ == "undo":
         goto = s.undo()
     elif typ == "redo":
