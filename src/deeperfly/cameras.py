@@ -66,13 +66,14 @@ _UNSUPPORTED_EXTRINSICS_KEYS = (
     "eye",
 )
 
-# Per-camera keys owned by other stages (footage glob, frame preprocessing), not
-# the rig geometry -- dropped before a spec reaches :meth:`Camera.from_spec`.
-_NON_RIG_KEYS = ("input", "preprocess")
+# Per-camera keys owned by other stages (footage glob, frame preprocessing, the
+# mirror-view pairing training reads), not the rig geometry -- dropped before a
+# spec reaches :meth:`Camera.from_spec`.
+_NON_RIG_KEYS = ("input", "preprocess", "mirror")
 
 
 def _rig_keys(spec: dict) -> dict:
-    """A camera spec with the non-rig keys (``input`` / ``preprocess``) removed."""
+    """A camera spec with the non-rig keys removed (see :data:`_NON_RIG_KEYS`)."""
     return {k: v for k, v in spec.items() if k not in _NON_RIG_KEYS}
 
 

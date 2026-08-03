@@ -173,20 +173,37 @@ distance = 107.463
 elevation_deg = 0.0
 roll_deg = 0.0
 
+# `mirror` names the view that sees this view's MIRROR IMAGE. The animal is bilaterally
+# symmetric, so a horizontally-flipped right-side view is a valid left-side view -- which is
+# what makes flip augmentation legal at all, and it is why the flipped sample has to be
+# relabeled with the mirrored camera: a metric that splits ipsilateral from contralateral
+# error reads the camera id, so without this it calls every swapped channel by the wrong
+# side. The relation must be symmetric, and a camera on the midline (the front view, whose
+# mirror is still a front view) names itself. Written out rather than computed from the
+# azimuths: it happens to be `-azimuth` for this rig, and that is a coincidence of a
+# symmetric layout, not something a differently-arranged rig would inherit. Omit `mirror`
+# and flip augmentation simply has no view to remap to.
 [cameras.rh]
 azimuth_deg = -120
+mirror = "lh"
 [cameras.rm]
 azimuth_deg = -90
+mirror = "lm"
 [cameras.rf]
 azimuth_deg = -45
+mirror = "lf"
 [cameras.f]
 azimuth_deg = 0
+mirror = "f"
 [cameras.lf]
 azimuth_deg = 45
+mirror = "rf"
 [cameras.lm]
 azimuth_deg = 90
+mirror = "rm"
 [cameras.lh]
 azimuth_deg = 120
+mirror = "rh"
 
 
 # ===========================================================================

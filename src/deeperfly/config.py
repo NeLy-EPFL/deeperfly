@@ -710,6 +710,52 @@ class Config:
 
         return parse_frame_transforms(self)
 
+    def mirror_views(self) -> dict[str, str]:
+        """``view -> the view that sees this view's mirror image`` (``[cameras.<n>].mirror``).
+
+        Only the views that declare it; empty when none do. Consumed by flip augmentation
+        (:mod:`deeperfly.training.mirror`): a mirrored training sample must be told which
+        camera it now *looks like*, or any metric that splits by camera side -- ipsilateral
+        versus contralateral error, the one that matters most on this rig -- silently calls
+        every swapped channel by the wrong side.
+
+        The mapping must be an **involution**: if ``rf`` mirrors to ``lf`` then ``lf`` must
+        mirror to ``rf``, and a camera on the midline (the front view, whose mirror is still
+        a front view) declares itself. Validated here, because a half-declared pairing is
+        the kind of thing that reads as correct and behaves as a silent side swap on one
+        camera only.
+
+        Declared rather than derived from the extrinsics on purpose. Which camera is the
+        mirror of which is a fact about how the rig was built, and it stays true before
+        there is any calibration to compute it from.
+
+        Raises
+        ------
+        ValueError
+            If a ``mirror`` names an unknown view, or if the relation is not symmetric.
+        """
+        _, cams = self.camera_table()
+        out = {
+            name: str(spec["mirror"])
+            for name, spec in cams.items()
+            if spec.get("mirror")
+        }
+        for name, other in out.items():
+            if other not in cams:
+                raise ValueError(
+                    f"[cameras.{name}].mirror names unknown view {other!r}; "
+                    f"views: {sorted(cams)}"
+                )
+            back = out.get(other)
+            if back != name:
+                got = "nothing" if back is None else repr(back)
+                raise ValueError(
+                    f"[cameras.{name}].mirror = {other!r} but [cameras.{other}].mirror "
+                    f"is {got}; the mirror relation must be symmetric (a midline camera "
+                    f"mirrors to itself)"
+                )
+        return out
+
     def detection_plan(self) -> "DetectionPlan":
         """The 2D detection plan (``[[sources]]`` + ``[[pose2d.preprocessors]]``/``[[pose2d.models]]``/``[[pose2d.pathways]]``).
 
