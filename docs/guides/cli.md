@@ -272,6 +272,81 @@ the sidecar and restored if it is lifted. The editor has the same gesture — se
 joint and press `x`. **Close any running `deeperfly gui` on these directories first**:
 saving is a whole-file rewrite, so an open session would overwrite what this writes.
 
+## `deeperfly project` — group related recordings
+
+A project gathers related recordings under one skeleton and one place to see what is
+labeled. It **indexes** rather than re-homes: each recording's `results.h5` and
+`labels.h5` stay where they already are and are adopted by **symlink**, so the file the
+editor writes is the very file a training set reads. Creating a project copies nothing
+and can lose nothing.
+
+```bash
+deeperfly project new  DIR [--skeleton fly38|blank|PATH] [--name NAME]
+deeperfly project add  PROJECT RECORDING... [--copy] [--subject ID] [-c CONFIG]
+deeperfly project ls     [PROJECT]
+deeperfly project status [PROJECT]
+deeperfly project rm     RECORDING [PROJECT] [--delete]
+```
+
+`PROJECT` may be omitted on `ls` / `status` / `rm`: the nearest enclosing project is
+used, the way `git` finds its repository.
+
+### `new`
+
+Writes a `project.toml` (the index) and a `skeleton.toml` (what is tracked). Nothing
+else — a camera rig is either pointed at with a
+[calibration](#deeperfly-calibration-reuse-a-solved-camera-rig) or solved later from
+labels.
+
+`--skeleton fly38` seeds the packaged 38-point *Drosophila* skeleton; `blank` gives you
+an empty one to define yourself; a path copies the `[skeleton]` table out of any config.
+
+### `add`
+
+`RECORDING` is whichever path you have: a recording directory, its
+`deeperfly_outputs/`, or a `results.h5`. A recording with **no outputs at all** — just
+videos — is adopted too; that is the from-scratch starting point.
+
+Recordings are identified by **content**, not path, so adopting the same one twice is a
+no-op and a backup copy is recognized as the same recording. Because a recording is one
+entry, a *second* label set for it (an earlier round, another annotator's directory) is
+not counted — and `add` says so loudly rather than reporting zero labels.
+
+`--copy` copies the outputs instead of linking them. The copy is a **snapshot**: labels
+authored in the original will not appear in the project, and vice versa.
+
+### `status`
+
+```console
+$ deeperfly project status
+project:  new-rig-38kp  (.)
+skeleton: fly38  (38 points)
+calib:    none (uncalibrated -- no 3D until a rig is solved)
+┏━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┓
+┃ slug        ┃ frames ┃ labeled ┃ reviewed ┃ trainable ┃ dropped ┃ occl ┃ state ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━┩
+│ oldrig_demo │     64 │      10 │       10 │     1,759 │       — │   12 │ link  │
+│ scape_Fly3  │  4,009 │      23 │       23 │     4,461 │       — │   28 │ link  │
+└─────────────┴────────┴─────────┴──────────┴───────────┴─────────┴──────┴───────┘
+```
+
+**`trainable`, not "GT points".** It is what `deeperfly labels-export` would actually
+yield: rows a human placed or confirmed, with `confirmed_projection` (a bulk-accepted
+triangulation guess — the model's own output) and `placeholder_seed` (a drag handle the
+editor invented at the image edge) excluded, exactly as the export excludes them.
+Anything dropped is counted separately and named, because a progress number that
+disagrees with the export is worse than no progress number.
+
+Counts are the **live** rows: a keypoint declared absent has its labels quarantined, and
+those are not reported as ground truth.
+
+### `rm`
+
+Drops the entry. The adopted files are left untouched — a symlinked project must not be
+able to delete the originals. `--delete` also removes the project's own directory for the
+recording (for a linked one, just the link), and **refuses** when the outputs are a real
+directory, since that would be the only copy of the labels.
+
 ## `deeperfly calibration` — reuse a solved camera rig
 
 A run with bundle adjustment enabled writes its refined rig to

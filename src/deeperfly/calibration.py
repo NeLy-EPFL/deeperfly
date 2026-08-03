@@ -48,7 +48,6 @@ can emit the comments that make the file self-explanatory to whoever opens it ne
 from __future__ import annotations
 
 import logging
-import re
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -56,6 +55,9 @@ from pathlib import Path
 
 import numpy as np
 
+from ._toml import key as _key
+from ._toml import table_lines as _table_lines
+from ._toml import value as _value
 from .cameras import Camera, CameraGroup
 
 __all__ = [
@@ -537,67 +539,6 @@ def resolve_path(path: str | Path) -> Path:
     if not p.exists():
         raise FileNotFoundError(f"no calibration at {p}")
     return p
-
-
-# -- a small, focused TOML writer ----------------------------------------------
-#
-# tomllib reads but does not write, and the alternative is a new core dependency for one
-# fixed, shallow schema. Floats go through repr(), which is the shortest representation
-# that round-trips exactly -- so save -> load -> save is byte-stable and a stored rig is
-# not quietly rounded on every rewrite.
-
-_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def _key(name) -> str:
-    """A TOML key: bare when it can be, quoted otherwise."""
-    text = str(name)
-    return text if _BARE_KEY.match(text) else _quote(text)
-
-
-def _quote(text: str) -> str:
-    """A TOML basic string with the escapes the spec requires."""
-    out = str(text).replace("\\", "\\\\").replace('"', '\\"')
-    out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    return f'"{out}"'
-
-
-def _scalar(value) -> str:
-    """One TOML scalar. ``bool`` is checked before ``int`` -- it is a subclass of it."""
-    if isinstance(value, (bool, np.bool_)):
-        return "true" if value else "false"
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)):
-        # repr() round-trips exactly and already emits TOML's own `nan` / `inf` spellings.
-        return repr(float(value))
-    return _quote(value)
-
-
-def _value(value) -> str:
-    """One TOML value: a scalar, or a flat array of them."""
-    if isinstance(value, np.ndarray):
-        value = value.tolist()
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_scalar(v) for v in value) + "]"
-    return _scalar(value)
-
-
-def _table_lines(path: list[str], mapping: dict) -> list[str]:
-    """A ``[a.b]`` table and its sub-tables, scalars first so no key outlives its header.
-
-    TOML binds a bare ``key = value`` to the most recent ``[table]`` header, so emitting a
-    sub-table before a sibling scalar would silently reparent that scalar. Sorting the
-    scalars ahead of the sub-tables is what makes the output round-trip.
-    """
-    scalars = {k: v for k, v in mapping.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in mapping.items() if isinstance(v, dict)}
-    lines = ["[" + ".".join(_key(p) for p in path) + "]"]
-    lines += [f"{_key(k)} = {_value(v)}" for k, v in scalars.items()]
-    for name, sub in tables.items():
-        lines.append("")
-        lines += _table_lines([*path, str(name)], sub)
-    return lines
 
 
 # -- validation helpers --------------------------------------------------------

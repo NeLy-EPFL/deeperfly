@@ -15,6 +15,13 @@ from ..pipeline import _OVERWRITE_ALL
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
+from .project import (
+    _cmd_project_add,
+    _cmd_project_ls,
+    _cmd_project_new,
+    _cmd_project_rm,
+    _cmd_project_status,
+)
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
 from .suggest import _cmd_labels_suggest
@@ -512,6 +519,185 @@ def labels_suggest(
             output=output,
             dry_run=dry_run,
         )
+    )
+
+
+# -- project (a command group) -----------------------------------------------
+
+project_app = typer.Typer(
+    no_args_is_help=True,
+    help="Group related recordings into a project: one skeleton, shared camera rigs, "
+    "and one place to see what is labeled. A project INDEXES recordings -- their "
+    "results.h5 / labels.h5 stay where they are and are adopted by symlink, so no "
+    "label is ever copied or moved to create one.",
+)
+app.add_typer(project_app, name="project")
+
+#: The optional project path shared by every verb that opens one. Omitted, the nearest
+#: enclosing project is used (like git), so the root need not be retyped.
+ProjectArg = Annotated[
+    str | None,
+    typer.Argument(
+        help="the project directory (default: the nearest one enclosing the cwd)"
+    ),
+]
+
+
+@project_app.command("new")
+def project_new(
+    root: Annotated[str, typer.Argument(help="directory to create the project in")],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="project name (default: the directory's name)"),
+    ] = None,
+    skeleton: Annotated[
+        str,
+        typer.Option(
+            "--skeleton",
+            help="'fly38' (the packaged 38-point Drosophila skeleton), 'blank' (define "
+            "your own), or a path to a TOML file with a [skeleton] table",
+        ),
+    ] = "fly38",
+    description: Annotated[
+        str | None, typer.Option("--description", help="free-text description")
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Create a project: a skeleton, a place for rigs, and an empty recording index.
+
+    Writes a project.toml (the index) and a skeleton.toml (what is tracked). Nothing
+    else -- recordings are adopted afterwards with 'deeperfly project add', and a camera
+    rig is either solved later or pointed at with a calibration file.
+
+    Start from 'blank' for a new animal or rig: you then label with no calibration at
+    all and solve the rig from those labels once there are enough correspondences.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_new(
+        argparse.Namespace(
+            root=root, name=name, skeleton=skeleton, description=description
+        )
+    )
+
+
+@project_app.command("add")
+def project_add(
+    project: Annotated[str, typer.Argument(help="the project directory to adopt into")],
+    sources: Annotated[
+        list[str],
+        typer.Argument(
+            metavar="RECORDING...",
+            help="one or more recordings: a recording directory, its "
+            "deeperfly_outputs/, or a results.h5",
+        ),
+    ],
+    copy: Annotated[
+        bool,
+        typer.Option(
+            "--copy",
+            help="copy each recording's outputs into the project instead of linking "
+            "them. The copy is a SNAPSHOT: labels authored in the original will not "
+            "appear in the project, and vice versa",
+        ),
+    ] = False,
+    slug: Annotated[
+        str | None,
+        typer.Option(
+            "--slug",
+            help="name for the recording inside the project (single source only; "
+            "default: the recording directory's name)",
+        ),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option(
+            "--subject",
+            help="animal identifier, so one specimen's several clips group together "
+            "(read from results.h5 when it records one)",
+        ),
+    ] = None,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c",
+            "--config",
+            help="config supplying the per-camera footage globs. Without it, each "
+            "video file in the recording directory becomes a camera named after the "
+            "file (which is what a from-scratch recording wants)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Adopt recordings into a project, by reference.
+
+    Each recording's deeperfly_outputs/ is SYMLINKED into the project, so the labels.h5
+    the editor writes is the very file a training set reads -- adopting copies nothing
+    and can lose nothing. A recording with no outputs yet (just videos) is adopted too;
+    that is the from-scratch starting point.
+
+    Recordings are identified by content, not path, so adopting the same one twice is a
+    no-op and a backup copy is recognized as the same recording.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_add(
+        argparse.Namespace(
+            project=project,
+            sources=sources,
+            copy=copy,
+            slug=slug,
+            subject=subject,
+            config=config,
+        )
+    )
+
+
+@project_app.command("ls")
+def project_ls(
+    project: ProjectArg = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """List a project's recordings."""
+    _configure_logging(log_level.value)
+    _cmd_project_ls(argparse.Namespace(project=project))
+
+
+@project_app.command("status")
+def project_status(
+    project: ProjectArg = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Report labeling progress across a project.
+
+    Per recording: frames, frames carrying labels, frames marked reviewed, ground-truth
+    points, occlusion marks, and whether its outputs are present. The counts are the
+    LIVE rows of each labels.h5 -- a keypoint declared absent is not counted as ground
+    truth, matching what an export and a training set will see.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_status(argparse.Namespace(project=project))
+
+
+@project_app.command("rm")
+def project_rm(
+    recording: Annotated[
+        str, typer.Argument(help="a recording's slug, id, or unambiguous id prefix")
+    ],
+    project: ProjectArg = None,
+    delete: Annotated[
+        bool,
+        typer.Option(
+            "--delete",
+            help="also remove the project's own directory for the recording. For a "
+            "linked recording that removes only the link; it refuses when the outputs "
+            "are a real directory, since that would be the only copy of the labels",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Drop a recording from the project index (its files are left alone)."""
+    _configure_logging(log_level.value)
+    _cmd_project_rm(
+        argparse.Namespace(project=project, recording=recording, delete=delete)
     )
 
 
