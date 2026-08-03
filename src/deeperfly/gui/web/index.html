@@ -30,6 +30,15 @@
       <span class="ro-msg">Read-only — another operator is editing this session.</span>
       <button id="readonly-takeover" type="button" class="ro-takeover">Take over editing</button>
     </div>
+    <!-- Shown when the recording has no solved camera rig (meta.has_cameras false).
+         Every view is then an independent 2D canvas: there is no 3D to derive, no
+         reprojection to ghost, and a label in one view cannot inform another. Said out
+         loud rather than left as a set of missing overlays, and deliberately NOT papered
+         over with an approximate 3D — an operator cannot check a guess they were never
+         shown the basis for. -->
+    <div id="uncal-banner" class="uncal-banner" role="status" hidden>
+      <span class="uncal-msg">Uncalibrated — no camera rig yet, so each view is labelled on its own (no 3D, no reprojection).</span>
+    </div>
     <div id="app">
       <div id="main">
         <div id="views">

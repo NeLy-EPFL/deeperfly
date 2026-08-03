@@ -68,7 +68,14 @@ def _cmd_gui(args: argparse.Namespace) -> None:
         If no result is found, or the web stack fails to import (an incomplete
         install -- FastAPI + uvicorn are core dependencies).
     """
-    results_path = _find_results(Path(args.path))
+    # A project directory resolves inside `serve` (it may hold several recordings, and a
+    # recording with no results.h5 opens uncalibrated); anything else is resolved here so
+    # a bad path fails before the server starts.
+    from ..project import PROJECT_FILENAME
+
+    target = Path(args.path)
+    is_project = (target / PROJECT_FILENAME).exists()
+    results_path = target if is_project else _find_results(target)
     if args.host not in _LOOPBACK:
         log.warning(
             "binding %s exposes the editor on the network without authentication; "
@@ -83,6 +90,7 @@ def _cmd_gui(args: argparse.Namespace) -> None:
         serve(
             results_path,
             footage_dir=args.footage_dir,
+            recording=getattr(args, "recording", None),
             host=args.host,
             port=args.port,
             open_browser=not args.no_browser,

@@ -60,6 +60,8 @@ __all__ = [
     "resolve_camera_files",
     "Session",
     "build_session",
+    "build_uncalibrated_session",
+    "open_target",
     "serve",
 ]
 
@@ -70,6 +72,157 @@ _GUI_IMPORT_HINT = (
     "these are core dependencies, so the install looks incomplete -- try "
     "reinstalling deeperfly (`pip install --force-reinstall deeperfly`)"
 )
+
+
+def build_uncalibrated_session(
+    project, entry, *, footage_dir: str | Path | None = None
+) -> Session:
+    """An editing session for a project recording that has never been run.
+
+    The from-scratch case: footage exists, no detector has run, no rig has been solved.
+    The session carries an all-NaN :meth:`~deeperfly.results.PoseResult.uncalibrated`
+    result, so the editor's derived-3D machinery stays inert and every view is an
+    independent 2D canvas -- which is what the operator is there to fill in.
+
+    Frame count comes from the footage itself (there is no ``results.h5`` to ask), and
+    the view names come from the recording's ``recording.toml`` footage table, so the
+    canvases are labelled with the operator's own camera names rather than ``view0``.
+
+    Parameters
+    ----------
+    project
+        The :class:`~deeperfly.project.Project`.
+    entry
+        The :class:`~deeperfly.project.RecordingEntry` to open.
+    footage_dir
+        Optional directory to search when the recorded footage paths no longer resolve.
+
+    Returns
+    -------
+    Session
+        The session, ready to serve.
+
+    Raises
+    ------
+    SystemExit
+        If the recording's footage cannot be resolved at all -- with nothing to show and
+        no predictions to fall back on, an editor would be a set of blank rectangles.
+    """
+    footage = _recording_footage(project, entry)
+    if not footage:
+        raise SystemExit(
+            f"recording {entry.slug!r} has no resolvable footage, and no results.h5 to "
+            "fall back on -- there would be nothing to label. Check the paths in "
+            f"{project.recording_dir(entry) / 'recording.toml'}, or re-add the recording"
+        )
+    # Reuse the same resolver the calibrated path uses, in its `{"abs": [...]}` shape,
+    # so the absolute-then-by-name fallback (and --footage-dir) behaves identically.
+    resolved_or_none = {
+        name: resolve_camera_files(
+            {"abs": [str(p) for p in paths]},
+            project.recording_dir(entry),
+            footage_dir,
+        )
+        for name, paths in footage.items()
+    }
+    resolved = {name: files for name, files in resolved_or_none.items() if files}
+    if not resolved:
+        raise SystemExit(
+            f"none of {entry.slug!r}'s footage files could be found (looked beside "
+            f"{project.recording_dir(entry)}"
+            + (f" and in {footage_dir}" if footage_dir else "")
+            + ") -- pass --footage-dir"
+        )
+
+    source = FrameSource(resolved)
+    n_frames = source.n_frames()
+    if not n_frames:
+        raise SystemExit(f"could not read a frame count from {entry.slug!r}'s footage")
+    view_names = list(resolved)
+    image_sizes = _probe_image_sizes(source, view_names)
+    result = PoseResult.uncalibrated(
+        project.skeleton(),
+        n_views=len(view_names),
+        n_frames=int(n_frames),
+        view_names=view_names,
+    )
+    labels_path = project.outputs_dir(entry) / "labels.h5"
+    labels_path.parent.mkdir(parents=True, exist_ok=True)
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=view_names,
+        n_frames=int(n_frames),
+        image_sizes=image_sizes,
+        footage={
+            name: {"abs": [str(p) for p in files]} for name, files in resolved.items()
+        },
+    )
+    labels = load_labels(labels_path, identity=identity)
+    state = EditorState.from_result(result, labels, image_sizes=image_sizes)
+    log.info(
+        "uncalibrated session: %d view(s), %d frame(s), no rig -- every view is an "
+        "independent 2D canvas until a calibration is solved",
+        len(view_names),
+        n_frames,
+    )
+    # The index cached `n_frames = None` (adoption had no results.h5 to ask). Opening the
+    # footage is the first time anyone knows, so record it -- otherwise `project status`
+    # reports "?" for the whole from-scratch phase.
+    if entry.n_frames != int(n_frames):
+        try:
+            project.update_recording(entry.id, n_frames=int(n_frames))
+        except Exception:  # a read-only project must not block editing
+            log.debug("could not backfill the frame count into the project index")
+    return Session.build(
+        state,
+        source,
+        results_path=str(project.results_path(entry)),
+        labels_path=labels_path,
+        identity=identity,
+        image_sizes=image_sizes,
+    )
+
+
+def _recording_footage(project, entry) -> dict[str, list[Path]]:
+    """``camera -> footage paths`` for a project recording, from its ``recording.toml``.
+
+    Falls back to re-discovering the videos beside the recorded origin, so a recording
+    adopted before the footage table existed still opens.
+    """
+    import tomllib
+
+    path = project.recording_dir(entry) / "recording.toml"
+    if path.exists():
+        table = tomllib.loads(path.read_text()).get("recording", {})
+        footage = table.get("footage") or {}
+        out = {
+            name: [Path(p) for p in (spec.get("abs") or spec.get("names") or [])]
+            for name, spec in footage.items()
+            if isinstance(spec, dict)
+        }
+        if any(out.values()):
+            return out
+    origin = (entry.origin or {}).get("from")
+    if origin and Path(origin).is_dir():
+        from ..project import discover_footage
+
+        return discover_footage(Path(origin))
+    return {}
+
+
+def _probe_image_sizes(source: "FrameSource", names: list[str]) -> dict:
+    """``camera -> (height, width)`` by decoding one frame per view.
+
+    An uncalibrated recording has no ``results.h5`` to have recorded these, and the
+    labels identity pins the pixel space its GT lives in -- so they have to be measured,
+    once, at open time.
+    """
+    sizes: dict[str, tuple[int, int]] = {}
+    for name in names:
+        frame = source.frame(name, 0)
+        if frame is not None:
+            sizes[name] = (int(frame.shape[0]), int(frame.shape[1]))
+    return sizes
 
 
 def build_session(
@@ -247,25 +400,120 @@ def _ik_config(results_dir: Path):
     return mesh_hide, template, articulation, annotation, triangulation
 
 
+def open_target(
+    path: str | Path, *, recording: str | None = None, footage_dir=None
+) -> Session:
+    """Build a session for whatever the operator pointed at.
+
+    Three things resolve here, so the CLI does not have to know the difference:
+
+    - a **project** directory -- opens one of its recordings (``recording`` names which;
+      a project with exactly one needs no name);
+    - a ``results.h5`` or a directory holding one -- the pre-existing behavior, unchanged;
+    - a project recording that has **never been run** -- an uncalibrated session
+      (:func:`build_uncalibrated_session`), which is the from-scratch path.
+
+    Parameters
+    ----------
+    path
+        A project directory, a ``results.h5``, or a directory containing one.
+    recording
+        Which recording to open when ``path`` is a project (slug, id, or id prefix).
+    footage_dir
+        Optional directory to search for footage.
+
+    Returns
+    -------
+    Session
+        The assembled session.
+
+    Raises
+    ------
+    SystemExit
+        If a project holds several recordings and none was named, or the named one does
+        not exist.
+    """
+    from ..project import PROJECT_FILENAME, Project
+
+    target = Path(path)
+    if not (target / PROJECT_FILENAME).exists():
+        if recording:
+            log.warning("--recording is only meaningful for a project; ignoring it")
+        return build_session(_results_in(target), footage_dir)
+
+    project = Project.load(target)
+    if not project.recordings:
+        raise SystemExit(
+            f"project {project.name!r} has no recordings yet -- "
+            f"'deeperfly project add {target} <recording>'"
+        )
+    if recording is None:
+        if len(project.recordings) > 1:
+            listing = "\n".join(f"  {e.slug:<40} {e.id}" for e in project.recordings)
+            raise SystemExit(
+                f"project {project.name!r} holds {len(project.recordings)} recordings; "
+                f"name one with --recording:\n{listing}"
+            )
+        entry = project.recordings[0]
+    else:
+        try:
+            entry = project.recording(recording)
+        except KeyError as exc:
+            raise SystemExit(str(exc).strip("'")) from None
+
+    results = project.results_path(entry)
+    if results.exists():
+        return build_session(results, footage_dir)
+    log.info(
+        "%s has no results.h5 -- opening it uncalibrated (2D labeling only)", entry.slug
+    )
+    return build_uncalibrated_session(project, entry, footage_dir=footage_dir)
+
+
+def _results_in(target: Path) -> Path:
+    """A ``results.h5`` from a file or a directory holding one.
+
+    Raises
+    ------
+    SystemExit
+        With the paths that were tried, since "not found" is otherwise unactionable.
+    """
+    if target.is_file():
+        return target
+    for candidate in (
+        target / "results.h5",
+        target / "deeperfly_outputs" / "results.h5",
+    ):
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        f"no results.h5 at {target} (looked at ./results.h5 and "
+        "./deeperfly_outputs/results.h5), and it is not a project directory either"
+    )
+
+
 def serve(
     results_path: str | Path,
     footage_dir: str | Path | None = None,
     *,
+    recording: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
     open_browser: bool = True,
     exit_on_close: bool = True,
 ) -> None:
-    """Open the viewer/corrector on a ``results.h5`` and run the web server.
+    """Open the viewer/corrector on a result *or a project* and run the web server.
 
-    Builds the session (:func:`build_session`), starts the FastAPI app under
+    Builds the session (:func:`open_target`), starts the FastAPI app under
     uvicorn, and (unless ``open_browser`` is false) opens a browser at the URL
     once the server is accepting connections. Blocks until the server stops.
 
     Parameters
     ----------
     results_path
-        Path to a ``results.h5`` file.
+        A ``results.h5``, a directory containing one, or a **project** directory.
+    recording
+        Which recording to open when ``results_path`` is a project.
     footage_dir
         Optional directory to search for the footage if the recorded paths no
         longer resolve.
@@ -289,7 +537,7 @@ def serve(
         If the web stack (FastAPI + uvicorn) cannot be imported -- these are
         core dependencies, so this signals an incomplete install.
     """
-    session = build_session(results_path, footage_dir)
+    session = open_target(results_path, recording=recording, footage_dir=footage_dir)
     try:
         import uvicorn
 

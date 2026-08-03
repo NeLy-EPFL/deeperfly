@@ -237,3 +237,95 @@ def test_d_marks_the_current_frame_reviewed_with_no_panel_open(page_and_errors):
     # ...and that it reached the queue row too is the integration the flag needed.
     assert page.locator("#suggest-pane .reviewed-tick.is-on").count() == 1
     assert not errors, "JS errors pressing d:\n  " + "\n  ".join(errors)
+
+
+# -- the uncalibrated editor ----------------------------------------------------
+#
+# A from-scratch project opens with no rig, no detections and no 3D. Every other test in
+# this file renders a calibrated session, so a render path that assumes `cameras_proj` is
+# non-empty -- or that a projection exists -- would pass the whole suite and throw the
+# first time an operator opened a fresh project. This is the only check that catches it.
+
+
+@pytest.fixture
+def uncalibrated_session(tmp_path):
+    """A session with no camera rig: PoseResult.uncalibrated, no predictions, no 3D."""
+    from deeperfly.results import PoseResult
+    from deeperfly.skeleton import Skeleton
+
+    views = ["camera_RH", "camera_F", "camera_LH"]
+    sizes = {name: (HEIGHT, WIDTH) for name in views}
+    result = PoseResult.uncalibrated(
+        Skeleton.fly(), n_views=len(views), n_frames=4, view_names=views
+    )
+    return Session.build(
+        EditorState.from_result(result, image_sizes=sizes),
+        FrameSource({}, image_sizes=sizes),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+        image_sizes=sizes,
+    )
+
+
+@pytest.fixture
+def uncal_page_and_errors(uncalibrated_session):
+    """The uncalibrated editor loaded in a real browser, plus its JS error list."""
+    server, port = _serve(uncalibrated_session)
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(1000)
+            yield page, errors
+            browser.close()
+    finally:
+        server.should_exit = True
+
+
+def test_the_uncalibrated_editor_loads_without_javascript_errors(uncal_page_and_errors):
+    page, errors = uncal_page_and_errors
+    assert not errors, "JS errors on load (uncalibrated):\n  " + "\n  ".join(errors)
+
+
+def test_the_uncalibrated_editor_says_it_is_uncalibrated(uncal_page_and_errors):
+    """The missing overlays must be explained, not merely absent."""
+    page, errors = uncal_page_and_errors
+    banner = page.locator("#uncal-banner")
+    assert banner.count() == 1
+    assert banner.is_visible(), "the uncalibrated banner is hidden"
+    assert "Uncalibrated" in banner.inner_text()
+    assert not errors
+
+
+def test_the_calibrated_editor_shows_no_uncalibrated_banner(page_and_errors):
+    page, errors = page_and_errors
+    assert not page.locator("#uncal-banner").is_visible()
+    assert not errors
+
+
+def test_the_uncalibrated_editor_hides_the_reprojection_layer(uncal_page_and_errors):
+    """With no rig there is no reprojection, so its toggle must not be offered."""
+    page, errors = uncal_page_and_errors
+    _open_panel(page)
+    page.locator("#show-toggle").click()
+    page.wait_for_timeout(300)
+    assert not page.locator("#projected-wrap").is_visible()
+    assert not page.locator("#warn-wrap").is_visible()
+    # The 2D authoring layers stay: they are what this mode is for.
+    assert page.locator("#gt-wrap").is_visible()
+    assert page.locator("#placeholder-wrap").is_visible()
+    assert not errors

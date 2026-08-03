@@ -53,6 +53,22 @@ log = logging.getLogger("deeperfly")
 UNDO_LIMIT = 200
 
 
+def _resolve_view_names(result: PoseResult) -> list[str]:
+    """The view names for a result: the rig's, else the recorded ones, else ``viewN``.
+
+    An uncalibrated result has no rig to name its views, so
+    :meth:`~deeperfly.results.PoseResult.uncalibrated` records them in ``meta``; a
+    hand-built result may carry neither, and positional names are still better than a
+    crash, because the names are display-only.
+    """
+    if result.cameras is not None:
+        return list(result.cameras.names)
+    recorded = (result.meta or {}).get("view_names")
+    if recorded:
+        return [str(n) for n in recorded]
+    return [f"view{i}" for i in range(result.n_views)]
+
+
 class EditMode(str, Enum):
     """The interaction mode of the editor."""
 
@@ -125,6 +141,16 @@ class EditorState:
     #: Per-view image size as ``(V, 2)`` ``[width, height]``, for a placeholder's
     #: last-resort center. ``None`` when unavailable.
     image_sizes_wh: np.ndarray | None = None
+    #: The view names, in ``V``-axis order. Held here rather than read off the rig
+    #: because an **uncalibrated** recording has named views and no geometry at all: the
+    #: names are what the operator labels against, and they must not depend on a
+    #: calibration existing. Filled from the rig (else the result's recorded view names,
+    #: else ``view0 ... viewN``) by ``__post_init__``.
+    view_names: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.view_names:
+            self.view_names = _resolve_view_names(self.result)
 
     @classmethod
     def from_result(
@@ -178,12 +204,13 @@ class EditorState:
                 log.exception(
                     "could not set up the live NMF re-fit; using the static fit"
                 )
+        view_names = _resolve_view_names(result)
         image_sizes_wh = None
         if image_sizes:
             image_sizes_wh = np.array(
                 [
                     (image_sizes.get(name, (0, 0))[1], image_sizes.get(name, (0, 0))[0])
-                    for name in result.cameras.names
+                    for name in view_names
                 ],
                 dtype=float,
             )
@@ -195,6 +222,7 @@ class EditorState:
             nmf_live=nmf_live,
             raw_pts2d=None if raw_pts2d is None else np.asarray(raw_pts2d, dtype=float),
             image_sizes_wh=image_sizes_wh,
+            view_names=view_names,
         )
 
     @staticmethod
@@ -226,8 +254,20 @@ class EditorState:
         return self.result.nmf_pts3d is not None
 
     @property
+    def has_cameras(self) -> bool:
+        """Whether a calibrated rig is available (false = every view is independent).
+
+        With no rig there is no 3D to derive, no reprojection to show, and no way for a
+        label in one view to inform another -- so the editor is a set of independent 2D
+        canvases. That is the honest state of a project before its rig is solved, and it
+        is deliberately *not* papered over with an approximate overlay: an operator
+        cannot check a guess they were never shown the basis for.
+        """
+        return self.result.has_cameras
+
+    @property
     def camera_names(self) -> list[str]:
-        return self.result.cameras.names
+        return list(self.view_names)
 
     @property
     def dirty(self) -> bool:
@@ -483,6 +523,11 @@ class EditorState:
         """
         if bool(self.labels.absent_at(t)[point]):
             return np.full(3, np.nan)
+        if self.result.cameras is None:
+            # Uncalibrated: there is no rig to triangulate through. This is the one 3D
+            # path not already gated by `pts3d is None` upstream, because `_ensure_pts3d`
+            # can be reached from a placeholder seed computation.
+            return np.full(3, np.nan)
         gt_obs, pred_obs, conf = self._point_obs(t, point)
         x = solve_point_3d(
             self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
@@ -528,7 +573,7 @@ class EditorState:
         are drawn with, so a drag lands exactly under the cursor.
         """
         pts3d = self.display_pts3d(frame)
-        if pts3d is None:
+        if pts3d is None or self.result.cameras is None:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
 
@@ -539,7 +584,7 @@ class EditorState:
     ) -> Float[np.ndarray, "V P 2"] | None:
         """The fitted NMF model joints for ``frame`` reprojected into every view."""
         fit = self.nmf_fit(frame)
-        if fit is None:
+        if fit is None or self.result.cameras is None:
             return None
         return np.asarray(self.result.cameras.project(fit[0]))
 

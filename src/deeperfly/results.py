@@ -107,9 +107,17 @@ def _read_animal(f) -> "tuple[np.ndarray | None, str | None]":
 
 @dataclass
 class PoseResult:
-    """A complete multi-view pose-estimation result for one recording."""
+    """A complete multi-view pose-estimation result for one recording.
 
-    cameras: CameraGroup
+    ``cameras`` is ``None`` only for an **uncalibrated** result -- a recording whose rig
+    has never been solved, held open in the editor so its 2D can be labeled (see
+    :meth:`uncalibrated`). Nothing the pipeline writes or :meth:`load` reads is ever
+    camera-less: a stored file always carries a rig. Every geometric consumer is already
+    gated on ``pts3d is not None``, which an uncalibrated result also leaves ``None``, so
+    the two states travel together -- but check :attr:`has_cameras` rather than assuming.
+    """
+
+    cameras: CameraGroup | None
     skeleton: Skeleton
     pts2d: Float[np.ndarray, "V T P 2"]
     conf: Float[np.ndarray, "V T P"] | None = None
@@ -161,6 +169,58 @@ class PoseResult:
     def n_frames(self) -> int:
         return self.pts2d.shape[1]
 
+    @property
+    def has_cameras(self) -> bool:
+        """Whether this result carries a camera rig (false = uncalibrated)."""
+        return self.cameras is not None
+
+    @classmethod
+    def uncalibrated(
+        cls,
+        skeleton: Skeleton,
+        *,
+        n_views: int,
+        n_frames: int,
+        view_names: list[str] | None = None,
+    ) -> PoseResult:
+        """An empty result for a recording with no rig and no detections.
+
+        This is the from-scratch starting point: footage exists, nothing has been
+        detected, no camera has been calibrated, and the operator is about to label 2D by
+        hand. Every observation is ``NaN`` and there is no 3D, so the editor's derived-3D
+        machinery stays inert and each view is an independent 2D canvas.
+
+        Deliberately **not** persisted: it is a scaffold for an editing session, and
+        writing it would create a ``results.h5`` claiming a pipeline ran. The labels the
+        operator authors go to ``labels.h5``, which is the durable artifact.
+
+        Parameters
+        ----------
+        skeleton
+            The project's skeleton (fixes the point axis).
+        n_views, n_frames
+            The rig's view count and the footage's frame count.
+        view_names
+            Camera names, for display. Defaults to ``view0 ... viewN``.
+
+        Returns
+        -------
+        PoseResult
+            An all-NaN, camera-less result.
+        """
+        n_points = len(skeleton.point_names)
+        return cls(
+            cameras=None,
+            skeleton=skeleton,
+            pts2d=np.full((int(n_views), int(n_frames), n_points, 2), np.nan),
+            meta={
+                "uncalibrated": True,
+                "view_names": list(view_names)
+                if view_names
+                else [f"view{i}" for i in range(int(n_views))],
+            },
+        )
+
     # -- serialization -------------------------------------------------------
 
     def save(self, path: str | Path) -> None:
@@ -186,6 +246,12 @@ class PoseResult:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             **self.meta,
         }
+        if self.cameras is None:
+            raise ValueError(
+                "this is an uncalibrated result (no camera rig) and cannot be saved: it "
+                "is an editing scaffold, and a results.h5 without cameras would claim a "
+                "pipeline ran. The operator's labels persist in labels.h5 instead"
+            )
         with h5py.File(path, "w") as f:
             f.attrs["meta"] = json.dumps(meta)
             _write_skeleton(f.create_group("skeleton"), self.skeleton)

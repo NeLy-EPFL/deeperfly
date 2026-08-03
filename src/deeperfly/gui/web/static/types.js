@@ -56,6 +56,9 @@
  * @property {number} n_points
  * @property {boolean} has_3d
  * @property {boolean} has_nmf  whether a fitted NMF model overlay is available
+ * @property {boolean} [has_cameras]  whether a camera rig is solved for this recording.
+ *   False => uncalibrated: every view is an independent 2D canvas (no 3D, no
+ *   reprojection, no cross-view help). Absent on an older server, which means calibrated.
  * @property {string[]} camera_names
  * @property {Record<string, [number, number]>} image_sizes  camera -> [height, width]
  * @property {string[]} point_names

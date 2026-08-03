@@ -196,10 +196,19 @@ def gui(
     path: Annotated[
         str,
         typer.Argument(
-            help="a results.h5 file, or a directory containing one "
-            "(e.g. <recording>/deeperfly_outputs)"
+            help="a project directory, a results.h5 file, or a directory containing "
+            "one (e.g. <recording>/deeperfly_outputs)"
         ),
     ],
+    recording: Annotated[
+        str | None,
+        typer.Option(
+            "--recording",
+            help="which recording to open when PATH is a project (slug, id, or id "
+            "prefix). A project holding exactly one recording needs no --recording; "
+            "otherwise they are listed",
+        ),
+    ] = None,
     footage_dir: Annotated[
         str | None,
         typer.Option(
@@ -249,6 +258,7 @@ def gui(
     _cmd_gui(
         argparse.Namespace(
             path=path,
+            recording=recording,
             footage_dir=footage_dir,
             host=host,
             port=port,

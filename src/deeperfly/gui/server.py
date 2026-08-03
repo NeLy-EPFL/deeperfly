@@ -536,6 +536,8 @@ def _cameras_proj(session: Session) -> list[dict]:
     the intrinsics describe -- enough to build the exact projection
     :meth:`CameraGroup.project` uses (validated to sub-pixel agreement).
     """
+    if session.state.result.cameras is None:
+        return []  # uncalibrated: nothing to project through
     out = []
     for name, cam in zip(session.state.camera_names, session.state.result.cameras):
         h, w = session.image_sizes.get(name) or _intr_size(cam)
@@ -590,6 +592,11 @@ def _meta_payload(session: Session, cache_v: str | None = None) -> dict:
         "n_points": s.n_points,
         "has_3d": s.has_3d,
         "has_nmf": s.has_nmf,
+        # False = no rig has been solved for this recording, so every view is an
+        # independent 2D canvas: no reprojection, no derived 3D, no cross-view help. The
+        # front-end shows this as a banner rather than leaving the missing overlays
+        # unexplained.
+        "has_cameras": s.has_cameras,
         "camera_names": list(s.camera_names),
         "image_sizes": {
             name: [int(h), int(w)] for name, (h, w) in session.image_sizes.items()
@@ -611,6 +618,8 @@ def _cameras_3d(session: Session) -> list[dict]:
     world-frame axes of the camera (the rows of the rotation matrix are +x
     image-right, +y image-down, +z optical, so ``up`` is the negated middle row).
     """
+    if session.state.result.cameras is None:
+        return []  # uncalibrated: there is no rig to plot
     cams = []
     for name, cam in zip(session.state.camera_names, session.state.result.cameras):
         rmat = np.asarray(cam.rmat)

@@ -847,6 +847,34 @@ class Project:
             existing.slug,
         )
 
+    def update_recording(self, key: str, **fields) -> RecordingEntry:
+        """Replace fields on one indexed recording and persist the manifest.
+
+        The index caches ``n_frames`` / ``fps`` so a listing needs no file opens -- which
+        means they can be *unknown* for a recording adopted before it was ever run. The
+        editor learns the real frame count when it opens the footage, and backfilling it
+        here is what stops ``project status`` reporting ``?`` forever.
+
+        Parameters
+        ----------
+        key
+            Slug, id, or unambiguous id prefix.
+        **fields
+            :class:`RecordingEntry` fields to replace.
+
+        Returns
+        -------
+        RecordingEntry
+            The updated entry.
+        """
+        from dataclasses import replace
+
+        entry = self.recording(key)
+        updated = replace(entry, **fields)
+        self.recordings = [updated if e.id == entry.id else e for e in self.recordings]
+        self.save()
+        return updated
+
     def remove_recording(self, key: str, *, delete: bool = False) -> RecordingEntry:
         """Drop a recording from the index.
 

@@ -431,6 +431,8 @@ class App {
   readonlyBanner = el("readonly-banner");
   /** @type {HTMLButtonElement} */
   readonlyTakeover = el("readonly-takeover");
+  /** @type {HTMLDivElement} */
+  uncalBanner = el("uncal-banner");
   // True while another browser holds the writer slot: no edits leave this tab, the
   // edit affordances are disabled, and the read-only banner is shown. Panning and
   // zooming to inspect stay available. Flipped by the server's role handshake.
@@ -588,6 +590,11 @@ class App {
     // pixels and the raw detector output); only the projected source needs a 3D solve.
     this.gtCheck.addEventListener("change", () => this.applyGt());
     this.detectedCheck.addEventListener("change", () => this.applyDetected());
+    // No solved rig -> say so, once, at the top. `has_cameras` is distinct from
+    // `has_3d`: a calibrated recording whose triangulation stage has not run also has no
+    // 3D, and that is a "run the pipeline" state, not an "uncalibrated project" one.
+    // Older servers omit the field, so absence means "calibrated" (the prior behavior).
+    this.uncalBanner.hidden = this.meta.has_cameras !== false;
     this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
     this.projectedCheck.addEventListener("change", () => this.applyProjected());
     // The "Unplaced" placeholder seeds are the guarantee that no joint is ever unreachable: a cell

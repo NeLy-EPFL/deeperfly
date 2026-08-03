@@ -1225,3 +1225,33 @@ body.read-only #redo {
 .absent-badge[hidden] {
   display: none;
 }
+
+/* Uncalibrated notice — the recording has no solved camera rig, so every view is an
+   independent 2D canvas. Mirrors .readonly-banner's placement but reads as information
+   rather than a warning: labelling uncalibrated is a normal, expected phase of a
+   from-scratch project, not a fault to be fixed before working. */
+.uncal-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 14px;
+  border-radius: 8px;
+  background: #2b6c86;
+  color: #f2f7f9;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.uncal-banner[hidden] {
+  display: none;
+}
+/* Both banners can be up at once (a read-only tab on an uncalibrated recording); the
+   read-only one is the more urgent, so it keeps the top slot. */
+.readonly-banner:not([hidden]) ~ #app .uncal-banner,
+.readonly-banner:not([hidden]) + .uncal-banner {
+  top: 52px;
+}
