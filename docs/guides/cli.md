@@ -510,3 +510,52 @@ Scale: `--scale-from A,B=1.8` pins it with a known distance between two landmark
 reuses the bundle adjuster's existing bone-length prior). Without one the rig is valid *up
 to scale* — angles are meaningful, lengths and velocities are not, and the calibration
 records `units = "arbitrary"` so nothing downstream can forget.
+
+## `deeperfly labels-merge` — reconcile a second label set
+
+For ground truth that ended up in two places: an earlier round, another annotator's
+directory, the same recording under a different tree. A project indexes a recording **once**
+(by content), so the other copy's labels are otherwise invisible — `project add` warns about
+exactly this, and this is the fix.
+
+```bash
+deeperfly labels-merge RECORDING SOURCE [PROJECT] [--on-conflict POLICY] [--apply]
+```
+
+**Dry run by default.** `--apply` always snapshots the destination `labels.h5` first, so
+trying it is safe.
+
+### Points and cameras are matched by name, never by index
+
+Two same-sized skeletons in a different order are the one case where an index-based copy
+corrupts every label while leaving each cell looking perfectly plausible. That path is not
+implemented, so it cannot be reached by accident; a reorder is reported and remapped.
+
+A same-named camera whose **footage size** differs is **refused outright** — ground truth is
+stored in footage pixels, so merging across resolutions would reinterpret every coordinate.
+
+### Conflicts are settled by provenance first
+
+| situation | outcome |
+| --- | --- |
+| only the source has a value | taken |
+| only the destination has one | kept |
+| identical | kept, counted |
+| a human **drag** vs a bulk-confirmed **reprojection** | **the drag wins**, whatever the policy |
+| both the same provenance, different pixels | `--on-conflict` (default `manual`) |
+| an occlusion vs a pixel | the pixel wins — an occlusion is the weaker statement |
+| absence declarations | **unioned** (declaring is non-destructive by construction) |
+| `reviewed` flags | OR'd |
+
+The provenance rule is not a preference: a `confirmed_projection` is the *model's own output*
+promoted to ground truth, so a human's pixel beating it is the difference between evidence
+and a guess. `--on-conflict manual` leaves genuinely ambiguous cells as the destination had
+them and writes them to `exports/merge_conflicts_<recording>.json` for review.
+
+### Note on linked recordings
+
+A recording adopted with `--link` (the default) has its `deeperfly_outputs/` symlinked to the
+original, so `--apply` writes **into that original**. That is the point of adopting by
+reference — the file the editor writes is the file a training set reads — but it means a
+merge is not confined to the project directory. Use `--copy` at adoption time if you want it
+to be.

@@ -16,6 +16,7 @@ from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
+from .merge import _cmd_labels_merge
 from .project import (
     _cmd_project_add,
     _cmd_project_ls,
@@ -916,6 +917,64 @@ def calibrate(
             name=name,
             accept=accept,
             dry_run=dry_run,
+        )
+    )
+
+
+@app.command(name="labels-merge")
+def labels_merge(
+    recording: Annotated[
+        str, typer.Argument(help="the project recording to merge INTO (slug or id)")
+    ],
+    source: Annotated[
+        str,
+        typer.Argument(
+            metavar="SOURCE",
+            help="the labels.h5 to merge FROM, or a directory containing one",
+        ),
+    ],
+    project: ProjectArg = None,
+    on_conflict: Annotated[
+        str,
+        typer.Option(
+            "--on-conflict",
+            help="how to settle a cell both sides authored differently AND with the same "
+            "provenance: 'manual' (default -- leave it and queue it for review), 'ours', "
+            "'theirs', or 'newest'. Provenance decides first regardless: a human's drag "
+            "always beats a bulk-confirmed reprojection, which is the model's own guess",
+        ),
+    ] = "manual",
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="actually write. Without it this is a dry run that changes nothing. "
+            "Applying always snapshots the destination labels.h5 first",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Merge a second label set into a project recording's labels.
+
+    For ground truth that ended up in two places -- an earlier round, another annotator's
+    directory, the same recording under a different tree. A project indexes a recording
+    once (by content), so the other copy's labels are otherwise invisible.
+
+    Points and cameras are matched BY NAME, never by index: two same-sized skeletons in
+    different orders are the one case where an index-based copy would silently corrupt
+    every label while leaving each cell looking plausible. A same-named camera whose
+    footage size differs is refused outright -- ground truth is stored in footage pixels.
+
+    Dry run by default.
+    """
+    _configure_logging(log_level.value)
+    _cmd_labels_merge(
+        argparse.Namespace(
+            project=project,
+            recording=recording,
+            source=source,
+            on_conflict=on_conflict,
+            apply=apply,
         )
     )
 
