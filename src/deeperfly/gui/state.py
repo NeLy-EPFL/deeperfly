@@ -52,6 +52,11 @@ log = logging.getLogger("deeperfly")
 #: How many undo steps to keep (a backstop; one entry per operator gesture).
 UNDO_LIMIT = 200
 
+#: Views a point needs before its 3D can be triangulated at all -- and so also the
+#: threshold that decides whether an "exclude from triangulation" is honored or stands
+#: down (see :meth:`EditorState._point_obs`).
+_MIN_VIEWS_FOR_3D = 2
+
 
 def _resolve_view_names(result: PoseResult) -> list[str]:
     """The view names for a result: the rig's, else the recorded ones, else ``viewN``.
@@ -163,10 +168,12 @@ class EditorState:
     #: merge (see :meth:`_record_undo`). Closed by the drag's settle, by any discrete op,
     #: and by undo/redo.
     _drag_open: tuple[int, int] | None = None
-    #: Pristine detector detections ``(V, T, P, 2)`` -- the raw peak *before*
-    #: triangulation cleaning, kept even where triangulation dropped the point. The
-    #: top-priority seed for a placeholder (see :meth:`placeholder_pts2d`). ``None``
-    #: when the pristine ``pose2d`` group is unavailable.
+    #: The detector's own output ``(V, T, P, 2)`` -- the raw peak, straight from the 2D
+    #: network, before triangulation cleaning. This is **the detected layer** (see
+    #: :attr:`detections`): a cell is NaN here only when no pathway predicts that keypoint
+    #: in that view (an ipsilateral-only model, say), never because a later stage rejected
+    #: it. ``None`` when the pristine ``pose2d`` group is unavailable, and then
+    #: :attr:`detections` falls back to ``result.pts2d``.
     raw_pts2d: np.ndarray | None = None
     #: Per-view image size as ``(V, 2)`` ``[width, height]``, for a placeholder's
     #: last-resort center. ``None`` when unavailable.
@@ -373,6 +380,23 @@ class EditorState:
             for t in np.nonzero(labeled | reviewed)[0]
         ]
 
+    @property
+    def detections(self) -> Float[np.ndarray, "V T P 2"]:
+        """The detected layer: what the 2D network said, per ``(view, frame, point)``.
+
+        Deliberately :attr:`raw_pts2d` and not ``result.pts2d``. The latter is the
+        triangulation-*cleaned* array -- NaN wherever the pipeline rejected a peak, and in
+        a directory prepared for contralateral labeling it has reprojected geometry written
+        *over* the detector's pixels (measured on scape_Fly4_006: 43% of finite cells
+        differ from ``pose2d/points``, median 14.9 px). Reading it as "the detection" loses
+        the network's opinion exactly where it is most needed and makes a drawn detection
+        ambiguous about what it even is.
+
+        Falls back to ``result.pts2d`` only when there is no ``pose2d`` group to read --
+        such a file has no separate detector stage, so its points *are* the detections.
+        """
+        return self.raw_pts2d if self.raw_pts2d is not None else self.result.pts2d
+
     # -- displayed 2D (labels over predictions) -------------------------------
 
     def display_pts2d(self, frame: int | None = None) -> Float[np.ndarray, "V P 2"]:
@@ -389,7 +413,7 @@ class EditorState:
         has = self.labels.has_gt[:, t]  # (V, P)
         occ = self.labels.occluded_effective[:, t]  # (V, P)
         absent = self.labels.absent_at(t)[None, :]  # (1, P) -> broadcasts over views
-        pred = self.result.pts2d[:, t]  # (V, P, 2)
+        pred = self.detections[:, t]  # (V, P, 2)
         shown = np.where(has[..., None], gt, np.where(~occ[..., None], pred, np.nan))
         return np.where(absent[..., None], np.nan, shown)
 
@@ -491,23 +515,23 @@ class EditorState:
 
     def _seed_position(self, v, p, t, bones, shown, shown_ok, lo, hi) -> np.ndarray:
         """One placeholder seed via the fallback chain (see :meth:`placeholder_pts2d`)."""
-        raw = self.raw_pts2d
+        raw = self.detections
         # 1. the reprojection of the derived 3D, when this cell has one -- the joint's
         #    own derived position here, so a seed uncovered by hiding the reprojected
         #    overlay lands exactly where its ring was, not on a rejected pixel.
         if shown_ok[v, p]:
             return np.asarray(shown[v, p], dtype=float)
         # 2. the raw detector pixel at this frame.
-        if raw is not None and np.all(np.isfinite(raw[v, t, p])):
+        if np.all(np.isfinite(raw[v, t, p])):
             return np.asarray(raw[v, t, p], dtype=float)
         # 3. the nearest frame (raw, then cleaned) with a finite pixel in this view.
         for dt in range(1, max(t - lo, hi - t) + 1):
             for tt in (t - dt, t + dt):
                 if not lo <= tt <= hi:
                     continue
-                if raw is not None and np.all(np.isfinite(raw[v, tt, p])):
+                if np.all(np.isfinite(raw[v, tt, p])):
                     return np.asarray(raw[v, tt, p], dtype=float)
-                cleaned = self.result.pts2d[v, tt, p]
+                cleaned = self.detections[v, tt, p]
                 if np.all(np.isfinite(cleaned)):
                     return np.asarray(cleaned, dtype=float)
         # 4. the mean of connected skeleton neighbors shown in this view.
@@ -533,19 +557,37 @@ class EditorState:
     def _point_obs(self, t: int, point: int):
         """``(gt_obs (V,2), pred_obs (V,2), conf (V,)|None)`` for one point at ``t``.
 
-        ``pred_obs`` NaNs out occluded views and views that already carry GT (GT
-        overrides the prediction there), so it is exactly the prediction contribution
-        the solve should see. A point declared absent contributes nothing from any view:
-        ``gt_obs`` is already vetoed via ``has_gt``, and the detector's peaks -- which
-        exist on an amputated limb because an argmax decode always emits one -- are
-        dropped here rather than triangulated into a phantom joint.
+        GT overrides the detection in its own view, so ``pred_obs`` NaNs out every view
+        that carries GT. It also NaNs out views the operator excluded from triangulation --
+        but **only while enough evidence survives to solve with**.
+
+        That last clause is the "exclude" verb's actual contract, and it is deliberate.
+        Excluding one bad view is a real constraint and is honored. Excluding *everything*
+        is how the operator clears the canvas to label against the projected skeleton
+        instead, and it must not leave the point unsolvable: the projection they are about
+        to drag from is exactly what the excluded detections produce. So an exclusion that
+        would drop the point below two usable views is ignored, and the detections keep
+        working until GT replaces them -- the first GT takes over its own view, and at two
+        GT views the solve no longer needs a detection at all, so every exclusion becomes
+        moot on its own.
+
+        A point declared absent contributes nothing from any view: ``gt_obs`` is already
+        vetoed via ``has_gt``, and the detector's peaks -- which exist on an amputated limb
+        because an argmax decode always emits one -- are dropped rather than triangulated
+        into a phantom joint. Absence is a claim about the *animal*, so unlike an exclusion
+        (a claim about a view) it is never softened.
         """
         absent = bool(self.labels.absent_at(t)[point])
         has = self.labels.has_gt[:, t, point]  # (V,)
         occ = self.labels.occluded_effective[:, t, point]  # (V,)
         gt_obs = np.where(has[:, None], self.labels.gt[:, t, point], np.nan)
-        pred = self.result.pts2d[:, t, point].astype(float)  # (V, 2)
-        pred_ok = np.isfinite(pred).all(axis=-1) & ~occ & ~has
+        pred = self.detections[:, t, point].astype(float)  # (V, 2)
+        finite = np.isfinite(pred).all(axis=-1)
+        pred_ok = finite & ~occ & ~has
+        if int(has.sum()) + int(pred_ok.sum()) < _MIN_VIEWS_FOR_3D:
+            pred_ok = (
+                finite & ~has
+            )  # too little left to solve: the exclusions stand down
         if absent:
             pred_ok = np.zeros_like(pred_ok)
         pred_obs = np.where(pred_ok[:, None], pred, np.nan)
@@ -1219,7 +1261,7 @@ class EditorState:
             ):
                 continue
             xy = None
-            pred = self.result.pts2d[view, t, point]
+            pred = self.detections[view, t, point]
             if want_pred and np.all(np.isfinite(pred)):
                 xy = pred
             if xy is None and proj is not None:

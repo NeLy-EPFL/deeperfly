@@ -258,10 +258,6 @@ class AnnotationParams:
     pipeline (``[triangulation]``), so a point with no GT re-solves to the run's
     cached 3D exactly.
 
-    ``precedence`` orders how each view's *displayed* 2D is chosen (``gt`` over
-    ``prediction`` over ``projection``); ``projection`` is display-only and never
-    feeds the solve.
-
     ``solve_policy`` selects how GT and predictions combine in the live 3D solve:
 
     - ``"gt_wins"`` (default) -- once a point has ``>= min_gt_for_exclusive`` GT
@@ -277,10 +273,7 @@ class AnnotationParams:
 
     ``prediction_weight`` is ``"uniform"`` (default, matches the batch
     ``weigh_by_confidence=false`` and the finding that peak confidence does not
-    track correctness), ``"confidence"``, or a fixed float. ``confirm_default`` is
-    the default source set a bulk-confirm promotes to GT (``"all"`` -> predictions
-    and projections; also ``"predictions"`` / ``"projections"``). ``low_conf``
-    de-emphasises (does not hide) predictions below it. ``undistort_before_solve``
+    track correctness), ``"confidence"``, or a fixed float. ``undistort_before_solve``
     undistorts GT/prediction pixels before the linear DLT so a placed GT reprojects
     onto itself -- off by default because the batch pipeline does not undistort, so
     enabling it improves GT accuracy at the cost of a zero-GT re-solve no longer
@@ -289,15 +282,10 @@ class AnnotationParams:
     degenerate GT-view geometry).
     """
 
-    precedence: list[str] = field(
-        default_factory=lambda: ["gt", "prediction", "projection"]
-    )
     solve_policy: str = "gt_wins"
     min_gt_for_exclusive: int = 2
     gt_weight: float = 1000.0
     prediction_weight: str | float = "uniform"
-    confirm_default: str = "all"
-    low_conf: float = 0.2
     undistort_before_solve: bool = False
     equal_weight_protect_gt: bool = True
     gt_wins_keep_stabilizers: bool = False

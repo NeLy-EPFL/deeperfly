@@ -67,13 +67,19 @@ def test_placeholder_seeds_only_absent_joints(result):
     assert np.isnan(ph[:, 0]).all()  # a fully-observed point gets no seed
 
 
-def test_placeholder_prefers_raw_detection(result):
-    # The top-priority seed is the raw detector pixel triangulation dropped.
+def test_a_triangulation_rejected_peak_is_still_a_detection(result):
+    """The detected layer is the network's output, so a rejected peak still shows.
+
+    ``result.pts2d`` is NaN wherever the pipeline rejected a peak; the detected layer reads
+    ``raw_pts2d`` instead, so the operator keeps seeing what the network actually said --
+    which is the best thing to drag a GT from. The cell therefore needs no placeholder
+    seed at all: it has a position of its own.
+    """
     p = 5
     raw = result.pts2d.copy()  # a finite detection everywhere, before we reject it
     state = EditorState.from_result(_reject_point(result, p), raw_pts2d=raw)
-    ph = state.placeholder_pts2d(0)
-    assert np.allclose(ph[:, p], raw[:, 0, p])
+    np.testing.assert_allclose(state.display_pts2d(0)[:, p], raw[:, 0, p])
+    assert np.isnan(state.placeholder_pts2d(0)[:, p]).all()  # nothing to seed
 
 
 def test_placeholder_seeds_a_projected_view_at_its_reprojection(result):
@@ -102,7 +108,11 @@ def test_placeholder_seeds_a_projected_view_with_no_reprojection_to_follow(resul
     # be selected to be Reset. Regression: rh_tibia_tarsus vanished from a real labeled
     # frame exactly this way (all 6 views Projected, RANSAC had dropped its 3D).
     p = 5
-    result.pts3d[:, p] = np.nan  # triangulation rejected it; the detections survive
+    # No detections anywhere and no cached 3D: nothing can place this joint. (Excluding
+    # every view would NOT do it -- an exclusion that would leave the point unsolvable
+    # stands down, see test_excluding_every_view_keeps_the_projection_alive.)
+    result.pts2d[:, :, p] = np.nan
+    result.pts3d[:, p] = np.nan
     result.reproj_error[:, :, p] = np.nan
     state = EditorState.from_result(result)
     for v in range(state.n_views):
@@ -168,7 +178,8 @@ def test_every_joint_stays_grabbable_after_bulk_projected(result):
     # empty), and the seed is its only handle. Checked with the reprojected overlay both on
     # and OFF: hiding it must not strip the last handle off an occluded cell either.
     # Regression: lm_claw vanished from a real labeled frame exactly this way.
-    result.pts3d[:, 5] = np.nan  # one point whose run triangulation dropped the 3D
+    result.pts2d[:, :, 5] = np.nan  # a joint nothing can place: no detection, no 3D
+    result.pts3d[:, 5] = np.nan
     result.reproj_error[:, :, 5] = np.nan
     state = EditorState.from_result(result)
     targets = [(v, p) for v in range(state.n_views) for p in range(state.n_points)]
@@ -558,6 +569,79 @@ def test_reset_is_undoable(result):
     assert not state.labels.has_gt[0, 0, 4]
     state.undo()  # undo the reset -> the GT returns
     assert state.labels.has_gt[0, 0, 4]
+
+
+# -- what triangulation uses ---------------------------------------------------
+#
+# GT if GT exists (it overrides the detection in its own view), else the detections that
+# were not excluded. An exclusion is a claim about a view, and it is honored right up to
+# the point where honoring it would leave the joint unsolvable -- see `_point_obs`.
+
+
+def test_excluding_one_view_is_honored(result):
+    """Six views still triangulate, so the excluded one really is dropped from the solve."""
+    f, p, bad = 0, 5, 2
+    state = EditorState.from_result(result)
+    state.toggle_invisible(bad, p, frame=f)
+
+    _, pred_obs, _ = state._point_obs(f, p)
+    assert not np.isfinite(pred_obs[bad]).all(), "the excluded view still fed the solve"
+    usable = np.isfinite(pred_obs).all(axis=-1)
+    assert int(usable.sum()) == state.n_views - 1  # and only that one was dropped
+
+
+def test_excluding_every_view_keeps_the_projection_alive(result):
+    """`a`+exclude is how the operator clears the canvas to label off the projection.
+
+    It must not take the projection with it: the skeleton they are about to drag GT from is
+    precisely what those detections triangulate to. So the exclusions stand down while
+    there is not enough GT to solve without them.
+    """
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    before = state.display_pts3d(f)[p].copy()
+    state.occlude_targets(
+        [(v, q) for v in range(state.n_views) for q in range(state.n_points)], f
+    )
+
+    assert np.isnan(state.display_pts2d(f)).all()  # no detection markers drawn ...
+    np.testing.assert_allclose(
+        state.display_pts3d(f)[p], before
+    )  # ... projection intact
+
+
+def test_gt_takes_over_from_the_detections_one_view_at_a_time(result):
+    """First GT replaces its own view's detection; at two GT the detections drop out."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.occlude_targets([(v, p) for v in range(state.n_views)], f)  # all excluded
+
+    # one GT: it overrides view 0, and the other views' detections still carry the solve
+    xy0 = state.display_pts2d_refine(f)[0, p] + np.array([7.0, -5.0])
+    state.apply_3d_edit(0, p, xy0, f, fix=True)
+    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    assert np.isfinite(gt_obs[0]).all()  # GT here
+    assert not np.isfinite(pred_obs[0]).all()  # so no detection from this view
+    assert np.isfinite(pred_obs[1:]).all(axis=-1).any()  # the rest still feed the solve
+
+    # two GT: enough to triangulate on its own, so no detection is used at all
+    xy1 = state.display_pts2d_refine(f)[3, p] + np.array([-6.0, 4.0])
+    state.apply_3d_edit(3, p, xy1, f, fix=True)
+    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    assert int(np.isfinite(gt_obs).all(axis=-1).sum()) == 2
+    assert not np.isfinite(pred_obs).all(axis=-1).any(), (
+        "exclusions became moot, not the GT"
+    )
+
+
+def test_absence_is_never_softened(result):
+    """An exclusion is a claim about a view; absence is a claim about the animal."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.set_absent([p], True, f)
+    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    assert not np.isfinite(pred_obs).any()  # no fallback, unlike an exclusion
+    assert np.isnan(state.display_pts3d(f)[p]).all()
 
 
 # -- an edit never moves a point it did not target ----------------------------
