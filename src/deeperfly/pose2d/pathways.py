@@ -24,6 +24,11 @@ predicted in a pathway's (possibly mirrored/cropped/resized) model frame is
 mapped back into its view's frame by inverting the pathway's preprocessing -- see
 :func:`normalized_peaks_to_original_pixels`, which inverts any
 :class:`~deeperfly.preprocessing.FrameTransform`.
+
+Those mirrored pathways are also where the plan's left/right identities are decided,
+which is why :func:`check_mirror_consistency` runs at load: with the skeleton's
+symmetry pairs declared, a mapping that sends a mirrored channel to the wrong side
+is a config error here rather than a silently side-swapped reconstruction later.
 """
 
 from __future__ import annotations
@@ -241,6 +246,7 @@ class DetectionPlan:
             point_index=point_index,
             output_points=pose2d.get("output_points"),
         )
+        check_mirror_consistency(pathways, models, skeleton, view_names)
         return cls(
             view_names=view_names,
             n_points=skeleton.n_points,
@@ -248,6 +254,93 @@ class DetectionPlan:
             preprocessors=preprocessors,
             models=models,
             pathways=pathways,
+        )
+
+
+# -- the mirror check ---------------------------------------------------------
+
+
+def check_mirror_consistency(
+    pathways: list[Pathway],
+    models: dict[str, ModelSpec],
+    skeleton,
+    view_names: list[str],
+) -> None:
+    """Validate that a **mirrored** pathway lands on the **mirrored** points.
+
+    A detector channel means one anatomical landmark under one chirality convention. The
+    rig exploits that: the side cameras all feed the same side-agnostic model, and the
+    left-side views reach its convention through a ``fliplr`` preprocessor. Which side a
+    channel then represents is decided *only* by ``[pose2d.output_points]`` -- so the
+    left/right swap this package relies on is 132 hand-written config rows with nothing
+    checking them. A single typo (``rf_femur_tibia`` where ``lf_femur_tibia`` belongs)
+    silently swaps a side: the detector still fires, triangulation still converges, and
+    the reconstruction looks like a fly with its legs crossed.
+
+    Given the skeleton's symmetry pairs the invariant is decidable, so it is checked. For
+    each ``(model, channel)``, every point an **un-mirrored** pathway maps it to must be the
+    **symmetry partner** of every point a **mirrored** pathway maps it to.
+
+    Phrased over all combinations rather than over a single point per side on purpose. One
+    channel feeding several points is unusual but legal here -- ``[pose2d.output_points]``
+    keys on ``(view, point)``, so it constrains where a point's data comes *from*, not how
+    many points a channel may feed -- and rejecting that outright would fail configs that
+    work today. Comparing every combination costs nothing and is in fact *stricter* where
+    it matters: the realistic typo (a row moved from the un-mirrored pathway to the
+    mirrored one) leaves a channel mapping to the same point at both parities, and a point
+    is never its own partner, so it is caught.
+
+    Skipped entirely when the skeleton declares no ``symmetries`` -- the pairs are the
+    premise, and inferring them here would let a rename turn a passing config into a
+    failing one. Skipped per channel when only one parity maps it (nothing to compare):
+    a one-sided rig's pathways are all un-mirrored, and that is legal.
+
+    Raises
+    ------
+    ValueError
+        Naming the model, channel, pathways and points involved, and the partner that was
+        expected -- because "which of these 132 rows is wrong" is the only question the
+        operator has at that moment.
+    """
+    if not getattr(skeleton, "n_symmetries", 0):
+        return
+    names = tuple(skeleton.point_names)
+    # (model, channel, mirrored) -> point -> the pathways/views that said so.
+    cells: dict[tuple[str, int, bool], dict[int, list[str]]] = {}
+    for pw in pathways:
+        mirrored = pw.transform.reverses_handedness
+        for i, v, p in np.asarray(pw.mapping).reshape(-1, 3):
+            key = (pw.model, int(i), mirrored)
+            where = f"{pw.name!r} -> view {view_names[int(v)]!r}"
+            cells.setdefault(key, {}).setdefault(int(p), []).append(where)
+
+    problems: list[str] = []
+    for model, channel in sorted({(m, c) for m, c, _ in cells}):
+        plain = cells.get((model, channel, False)) or {}
+        mirror = cells.get((model, channel, True)) or {}
+        for p_plain in sorted(plain):
+            expected = skeleton.partner(p_plain)
+            for p_mirror in sorted(mirror):
+                if expected == p_mirror:
+                    continue
+                want = (
+                    f"{names[p_plain]!r} has no symmetry partner, so no mirrored pathway "
+                    "may map this channel at all"
+                    if expected is None
+                    else f"the mirrored pathway must land on {names[expected]!r}"
+                )
+                problems.append(
+                    f"model {model!r} channel {channel}: un-mirrored -> "
+                    f"{names[p_plain]!r} ({', '.join(plain[p_plain])}) but mirrored -> "
+                    f"{names[p_mirror]!r} ({', '.join(mirror[p_mirror])}). Mirroring the "
+                    f"frame mirrors the animal, so {want} -- as declared in "
+                    "[skeleton].symmetries."
+                )
+
+    if problems:
+        raise ValueError(
+            "[pose2d.output_points] disagrees with [skeleton].symmetries about "
+            "left/right:\n  - " + "\n  - ".join(problems)
         )
 
 

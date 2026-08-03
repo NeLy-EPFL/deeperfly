@@ -461,3 +461,68 @@ def test_to_json_is_canonical():
         {"op": "rot90", "k": 1},
         {"op": "resize", "scale": 0.5, "interpolation": "bilinear"},
     ]
+
+
+# -- handedness ---------------------------------------------------------------
+
+
+def test_reverses_handedness_is_a_parity_not_a_presence():
+    """Two reflections compose into a rotation, so "is there a flip" is the wrong question.
+
+    This is what the pathway mirror check reads, so getting it wrong would either miss a
+    side swap or invent one.
+    """
+    assert not FrameTransform(()).reverses_handedness
+    assert FrameTransform((Fliplr(),)).reverses_handedness
+    assert FrameTransform((Flipud(),)).reverses_handedness
+    # fliplr + flipud == a half-turn: handedness preserved.
+    assert not FrameTransform((Fliplr(), Flipud())).reverses_handedness
+    assert FrameTransform((Fliplr(), Flipud(), Fliplr())).reverses_handedness
+    # Rotations, crops and resizes never reflect.
+    for op in (
+        Rot90(k=1),
+        Rot90(k=3),
+        Crop(x=1, y=2, width=4, height=8),
+        Resize(scale=2),
+    ):
+        assert not FrameTransform((op,)).reverses_handedness
+        assert FrameTransform((Fliplr(), op)).reverses_handedness
+
+
+def test_every_op_is_classified_as_reflecting_or_not():
+    """A new op must be considered, not silently inherit "does not reflect".
+
+    ``reverses_handedness`` recognizes reflections by isinstance, so an added op defaults to
+    orientation-preserving -- which is right for a rotation and wrong (silently) for a
+    transpose. This pins the op registry against the classification, so adding an op to
+    ``_OP_NAMES`` without deciding forces this test to be updated.
+    """
+    from deeperfly.preprocessing import _OP_NAMES
+
+    reflecting = {"fliplr", "flipud"}
+    preserving = {"rot90", "crop", "resize"}
+    assert set(_OP_NAMES) == reflecting | preserving, (
+        "a frame op was added: decide whether it reverses handedness and teach "
+        "FrameTransform.reverses_handedness about it"
+    )
+
+
+def test_the_sign_of_the_affine_determinant_agrees_with_reverses_handedness():
+    """An independent check: a reflection is exactly a negative-determinant linear part.
+
+    Two implementations of "does this mirror?" that must agree -- the isinstance parity that
+    needs no frame size, and the composed affine that is the ground truth.
+    """
+    size = (64, 128)
+    for ops in [
+        (),
+        (Fliplr(),),
+        (Flipud(),),
+        (Fliplr(), Flipud()),
+        (Rot90(k=1),),
+        (Fliplr(), Rot90(k=1)),
+        (Resize(scale=2), Fliplr()),
+    ]:
+        t = FrameTransform(ops)
+        det = np.linalg.det(t.affine(size)[:2, :2])
+        assert t.reverses_handedness == (det < 0), ops

@@ -350,3 +350,127 @@ def test_model_precision_absent_or_empty_inherits(over):
         _one_pathway(), _ps("rh", "rh_p", rf_thorax_coxa=0), models=_model(**over)
     )
     assert plan.models["m"].precision is None
+
+
+# -- the mirror check ---------------------------------------------------------
+#
+# A mirrored pathway must land on the MIRRORED points. Nothing enforced that before the
+# skeleton declared its symmetry pairs, so a one-word typo in one of the packaged config's
+# 132 output_points rows swapped a body side silently: the detector still fires, the
+# triangulation still converges, and the reconstruction is a fly with its legs crossed.
+
+
+def _mirror_config(left_point, *, symmetries=None, mirror_left=True):
+    """A two-view rig: one plain pathway onto ``r_a``, one mirrored onto ``left_point``."""
+    skel = {"point_names": ["l_a", "r_a", "l_b", "r_b"]}
+    if symmetries is not None:
+        skel["symmetries"] = symmetries
+    return Config.from_dict(
+        {
+            "skeleton": skel,
+            "cameras": {
+                "defaults": {"distance": 1.0},
+                "left": {"azimuth_deg": 90},
+                "right": {"azimuth_deg": -90},
+            },
+            "sources": [{"name": "vid", "filename": "vid*.mp4"}],
+            "pose2d": {
+                "preprocessors": [{"name": "flip", "ops": [{"op": "fliplr"}]}],
+                "models": [{"name": "m", "class": "hourglass", "n_out_channels": 2}],
+                "pathways": [
+                    {"name": "plain", "source": "vid", "model": "m"},
+                    {
+                        "name": "mir",
+                        "source": "vid",
+                        **({"preprocessor": "flip"} if mirror_left else {}),
+                        "model": "m",
+                    },
+                ],
+                "output_points": {
+                    "right": {"r_a": {"pathway": "plain", "out_channel": 0}},
+                    "left": {left_point: {"pathway": "mir", "out_channel": 0}},
+                },
+            },
+        }
+    )
+
+
+PAIRS = [["l_a", "r_a"], ["l_b", "r_b"]]
+
+
+def test_the_packaged_plan_satisfies_the_mirror_invariant():
+    """Every mirrored channel of the shipped config lands on the symmetric partner."""
+    plan = Config.default().detection_plan()
+    mirrored = {pw.name for pw in plan.pathways if pw.transform.reverses_handedness}
+    # The check is only meaningful if the config actually has both parities.
+    assert mirrored and len(mirrored) < len(plan.pathways)
+
+
+def test_a_mirrored_pathway_on_the_partner_is_accepted():
+    plan = _mirror_config("l_a", symmetries=PAIRS).detection_plan()
+    assert len(plan.pathways) == 2
+
+
+@pytest.mark.parametrize("wrong", ["l_b", "r_b", "r_a"])
+def test_a_mirrored_pathway_on_the_wrong_point_is_refused(wrong):
+    """``r_a`` is the important case: it is what moving a row to the flipped pathway does.
+
+    A point is never its own symmetry partner, so a channel that maps to the same point at
+    both parities is caught even though nothing about that mapping is locally malformed.
+    """
+    with pytest.raises(ValueError, match="left/right"):
+        _mirror_config(wrong, symmetries=PAIRS).detection_plan()
+
+
+def test_the_check_is_skipped_when_the_skeleton_declares_no_pairs():
+    """The pairs are the premise. Without them there is nothing to check against, and
+    guessing them here would let renaming a point turn a passing config into a failing one.
+    """
+    plan = _mirror_config("l_b", symmetries=None).detection_plan()
+    assert len(plan.pathways) == 2
+
+
+def test_two_un_mirrored_pathways_are_never_compared():
+    """A one-sided rig maps every channel at one parity only, which is legal.
+
+    Also pins that one channel feeding several points stays legal -- ``output_points`` keys
+    on ``(view, point)``, so it constrains a point's source, not a channel's fan-out.
+    """
+    plan = _mirror_config("l_b", symmetries=PAIRS, mirror_left=False).detection_plan()
+    assert len(plan.pathways) == 2
+
+
+def test_an_even_number_of_reflections_is_not_a_mirror():
+    """``fliplr`` + ``flipud`` is a half-turn: it preserves handedness, so no swap is due."""
+    cfg = Config.from_dict(
+        {
+            "skeleton": {"point_names": ["l_a", "r_a"], "symmetries": [["l_a", "r_a"]]},
+            "cameras": {"defaults": {"distance": 1.0}, "a": {"azimuth_deg": 0}},
+            "sources": [{"name": "vid", "filename": "v"}],
+            "pose2d": {
+                "preprocessors": [
+                    {"name": "half_turn", "ops": [{"op": "fliplr"}, {"op": "flipud"}]}
+                ],
+                "models": [{"name": "m", "class": "hourglass", "n_out_channels": 1}],
+                "pathways": [
+                    {"name": "plain", "source": "vid", "model": "m"},
+                    {
+                        "name": "turned",
+                        "source": "vid",
+                        "preprocessor": "half_turn",
+                        "model": "m",
+                    },
+                ],
+                "output_points": {
+                    "a": {"r_a": {"pathway": "plain", "out_channel": 0}},
+                },
+            },
+        }
+    )
+    # Both pathways are un-mirrored, so `turned` may target the SAME point as `plain`.
+    cfg.data["pose2d"]["output_points"]["a"]["l_a"] = {
+        "pathway": "turned",
+        "out_channel": 0,
+    }
+    plan = cfg.detection_plan()
+    assert not any(pw.transform.reverses_handedness for pw in plan.pathways)

@@ -363,6 +363,26 @@ class FrameTransform:
     def is_identity(self) -> bool:
         return not self.ops
 
+    @property
+    def reverses_handedness(self) -> bool:
+        """Whether the chain **mirrors** the frame, i.e. contains an odd reflection count.
+
+        Only :class:`Fliplr` and :class:`Flipud` reflect; :class:`Rot90`, :class:`Crop` and
+        :class:`Resize` are orientation-preserving, and two reflections compose into a
+        rotation (``fliplr`` + ``flipud`` is a half-turn, which reverses nothing). So the
+        answer is the *parity* of the reflection count, not "is there a flip".
+
+        This is what makes a pathway's left/right routing checkable: a mirrored pathway
+        sees a mirror-image animal, so it must land on the *symmetric partner* of the point
+        the un-mirrored convention assigns to that channel -- see
+        :func:`deeperfly.pose2d.pathways.check_mirror_consistency`.
+
+        A future reflecting op must be added to the isinstance check below, and
+        ``tests/test_preprocessing.py`` pins that against the op registry so it cannot be
+        forgotten.
+        """
+        return sum(isinstance(op, (Fliplr, Flipud)) for op in self.ops) % 2 == 1
+
     def apply(self, frames):
         """Apply the op sequence to a frame batch, on the ``(H, W)`` axes (-3, -2).
 
