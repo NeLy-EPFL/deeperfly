@@ -236,7 +236,13 @@ def _pin_constant_points(pts3d: np.ndarray, cols: list[int]) -> np.ndarray:
 
 
 def stage_bundle_adjustment(
-    config: Config, cameras: CameraGroup, pts2d, conf, skeleton, absent=None
+    config: Config,
+    cameras: CameraGroup,
+    pts2d,
+    conf,
+    skeleton,
+    absent=None,
+    report=None,
 ) -> CameraGroup:
     """Refine ``cameras`` with bundle adjustment (the fly itself is the target).
 
@@ -255,6 +261,13 @@ def stage_bundle_adjustment(
         The pristine ``pose2d`` detections and confidences.
     skeleton
         The skeleton (the bone-length prior).
+    report
+        Optional dict the stage fills in with what it measured but does not return:
+        ``quality`` (see :func:`deeperfly.calibration.quality_from_errors`) and
+        ``n_frames``. The caller writes the calibration artifact
+        (:class:`deeperfly.calibration.Calibration`), which needs the residuals this
+        stage already computes for its log line -- passing them out is cheaper than
+        triangulating the whole recording a second time to recover them.
 
     Returns
     -------
@@ -303,6 +316,11 @@ def stage_bundle_adjustment(
         np.nanmedian(err),
         np.nanmax(err),
     )
+    if report is not None:
+        from ..calibration import quality_from_errors
+
+        report["quality"] = quality_from_errors(err, refined.names)
+        report["n_frames"] = int(t)
     return refined
 
 

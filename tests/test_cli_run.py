@@ -175,7 +175,9 @@ def _stub_compute_stages(monkeypatch):
     ba_calls: list = []
     tri_calls: list = []
 
-    def stub_ba(config, cameras, pts2d, conf, skeleton, absent=None):
+    # **_ so the stub tolerates optional kwargs the real stage grows (e.g. `report`);
+    # a stub that breaks on one is testing the signature, not the behavior.
+    def stub_ba(config, cameras, pts2d, conf, skeleton, absent=None, **_):
         ba_calls.append(cameras)
         return cameras
 
@@ -1068,7 +1070,7 @@ def test_bundle_adjustment_always_starts_from_config_rig(tmp_path, monkeypatch):
     _stub_detect(monkeypatch, tmp_path)
     seen: list = []
 
-    def spy_ba(config, cameras, pts2d, conf, skeleton, absent=None):
+    def spy_ba(config, cameras, pts2d, conf, skeleton, absent=None, **_):
         seen.append(cameras)
         # return a recognizably different rig (the "refined" output)
         from deeperfly.cameras import CameraGroup
@@ -1477,3 +1479,99 @@ def test_source_image_sizes_returns_raw_dims(monkeypatch):
     sizes = recordings.source_image_sizes(cfg, input="x")
     assert sizes["cam0"] == (4, 6)  # raw (H, W)
     assert sizes["cam1"] == (4, 6)
+
+
+# -- the calibration artifact a run leaves behind ------------------------------
+
+
+def test_bundle_adjustment_writes_a_reusable_calibration(tmp_path, monkeypatch):
+    """A run's refined rig must also land as a file a *second* recording can use.
+
+    ``results.h5`` already holds these cameras, but only as arrays inside one
+    recording -- nothing can point another run at them without opening HDF5.
+
+    Bundle adjustment itself is stubbed (the stubbed detector's 2D is degenerate, so
+    the real solve cannot run here); what is under test is that whatever rig the stage
+    returns is mirrored to disk, in the order and with the provenance a reuser needs.
+    """
+    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
+
+    cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+
+    path = tmp_path / "out" / CALIBRATION_FILENAME
+    assert path.exists()
+    cal = Calibration.load(path)
+
+    assert cal.camera_names == FLY_CAMERAS
+    assert cal.provenance["method"] == "labels_ba"
+    # The scale came from the config orbit, and deeperfly was never told its unit.
+    assert (cal.units, cal.scale_source) == ("config", "orbit_prior")
+    # The rig it records is the one the stage returned and results.h5 cached.
+    stored = PoseResult.load(tmp_path / "out" / "results.h5").cameras
+    np.testing.assert_allclose(cal.cameras.tvecs, stored.tvecs)
+    np.testing.assert_allclose(cal.cameras.rvecs, stored.rvecs)
+    # Recorded against the footage frame the intrinsics describe, so a later run on
+    # rescaled footage is refused rather than silently misprojected.
+    assert set(cal.image_sizes) == set(FLY_CAMERAS)
+
+
+def test_a_run_can_be_driven_by_the_calibration_a_previous_run_wrote(
+    tmp_path, monkeypatch
+):
+    """The point of the artifact: recording B reuses recording A's solved rig.
+
+    A's calibration is deliberately *moved* off the orbit before B reads it, so B
+    matching A proves B used the file rather than re-deriving the same orbit.
+    """
+    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
+    from deeperfly.cameras import CameraGroup
+    from deeperfly.results import StageStore
+
+    cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+
+    cal = Calibration.load(tmp_path / "out" / CALIBRATION_FILENAME)
+    moved = CameraGroup.from_arrays(
+        cal.cameras.names,
+        cal.cameras.rvecs,
+        cal.cameras.tvecs + 3.5,
+        cal.cameras.intrs,
+        cal.cameras.dists,
+    )
+    (tmp_path / "b").mkdir()
+    moved.to_calibration(name="solved", image_sizes=cal.image_sizes).save(
+        tmp_path / "b" / CALIBRATION_FILENAME
+    )
+    # Uncomment the line the packaged config already documents, rather than adding a
+    # second [cameras] table (which TOML forbids).
+    text, n = re.subn(
+        rf'(?m)^# (calibration = "{CALIBRATION_FILENAME}")$',
+        r"\1",
+        DEFAULT_CONFIG_PATH.read_text(),
+        count=1,
+    )
+    assert n == 1, "the packaged config no longer documents [cameras].calibration"
+    cfg_b = tmp_path / "b" / "config.toml"
+    cfg_b.write_text(text)
+
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg_b),
+            "-o",
+            str(tmp_path / "out_b"),
+            "--log-level",
+            "error",
+        ]
+    )
+    # pose2d stores the rig it detected with: for run B that is the calibration.
+    rig_b = StageStore(tmp_path / "out_b" / "results.h5").read_cameras("pose2d")
+    np.testing.assert_allclose(rig_b.tvecs, cal.cameras.tvecs + 3.5)
+    assert rig_b.names == FLY_CAMERAS

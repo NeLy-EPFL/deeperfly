@@ -7,6 +7,7 @@ default, or `-o`):
 deeperfly_outputs/
 ├── results.h5      # the result: cameras, skeleton, per-stage 2D/3D data
 ├── config.toml     # byte-for-byte snapshot of the config this run used
+├── calibration.toml     # the bundle-adjusted rig, portable to other recordings
 ├── run.json        # per-stage fingerprints (drives cache reuse)
 ├── labels.h5       # ground-truth annotations from 'deeperfly gui' (if any)
 ├── labels_suggest.json  # frames to label next, from 'deeperfly labels-suggest'
@@ -112,6 +113,68 @@ The exact config text that drove the run, copied byte-for-byte for
 reproducibility. On a later run, `-c` wins when given (and refreshes this
 snapshot); without `-c`, this snapshot is reused — so you can edit it in place and
 re-run with just `-o`.
+
+## `calibration.toml`
+
+The rig the `bundle_adjustment` stage solved, written as a standalone file (schema
+**version 1**). `results.h5` already holds these cameras — but only as arrays
+inside *one* recording, where nothing can point a second recording at them, diff
+them against a later solve, or read their residuals without opening HDF5.
+
+```toml
+[calibration]
+format_version = 1
+name        = "IN07B001_260417_Fly4_004"
+created_utc = "2026-08-03T11:22:00+00:00"
+units        = "config"       # "arbitrary" | "mm" | "config"
+scale_source = "orbit_prior"  # "none" | "orbit_prior" | "bone_prior" | "known_distance" | "board"
+
+[calibration.provenance]      # how this rig was produced
+method     = "labels_ba"
+intrinsics = "config"
+frames     = 100
+source     = ".../deeperfly_outputs/results.h5"
+
+[calibration.quality]         # how well it fits — read this before trusting it
+rms_reproj_px    = 1.84
+median_reproj_px = 1.33
+p90_reproj_px    = 3.16
+max_reproj_px    = 7.80
+n_observations   = 12040
+
+[calibration.quality.per_camera_rms_px]
+rh = 1.62
+# ...
+
+[calibration.cameras.rh]      # world -> camera is R(rvec) @ X + tvec
+rvec       = [0.0, 0.0, 0.0]
+tvec       = [0.0, 0.0, 107.463]
+intr       = [22388.125, 22388.125, 479.5, 255.5]   # [fx, fy, cx, cy]
+dist       = []
+image_size = [512, 960]       # [height, width] the intrinsics describe
+```
+
+Three things make it safe to reuse, and each exists because of a specific way a
+shared rig goes wrong:
+
+- **`image_size`** — intrinsics are *pixel* quantities, so a rig applied to
+  rescaled or cropped footage would silently misproject every point. Loading a
+  calibration whose frame size disagrees with the footage in hand is refused.
+- **`provenance`** — `method = "orbit_prior"` means the rig was never solved, only
+  written down. A file that did not say so would be indistinguishable from one
+  that was bundle-adjusted.
+- **`quality`** — a rig without its residuals is a number you cannot refuse. The
+  block is *empty* rather than zero when nothing was observed, because zeros read
+  as a perfect fit.
+
+**`units` is deliberately not assumed.** Bundle adjustment started from a config
+orbit inherits that orbit's scale, but deeperfly was never told what `distance`
+measures — so the unit is recorded as `"config"` rather than guessed to be `"mm"`.
+A rig solved from correspondences alone with nothing to fix the scale is
+`"arbitrary"`: fine for angles, meaningless for velocities.
+
+Point a config at one with [`[cameras].calibration`](configuration.md#cameras);
+extract one from any existing result with `deeperfly calibration export`.
 
 ## `run.json`
 

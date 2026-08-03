@@ -107,6 +107,19 @@ r_abdomen = "#e6b3a8"
 # pathway's source, and its intrinsics describe that source's raw frame.
 # `[cameras.defaults]` is merged into every view; per-view keys override it.
 # ===========================================================================
+[cameras]
+# Optional. Point at a *solved* rig -- a `calibration.toml` written by a previous
+# run's bundle adjustment (`deeperfly calibration export` extracts one from any
+# results.h5), or by a calibration board. When set it WINS over the orbit specs
+# below, which are then read only for their order; the run logs which won.
+#
+# This is how a rig travels between recordings: an orbit is a human's description
+# of the rig they built, a calibration is a solver's measurement of it, and raw
+# extrinsics (rvec/tvec) cannot be written in a [cameras.<name>] table at all.
+# A relative path resolves next to THIS config file.
+#
+# calibration = "calibration.toml"
+
 [cameras.defaults]
 focal_length_px = [22388.125, 22388.125]    # scalar also allowed when fx == fy
 

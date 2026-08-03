@@ -21,6 +21,7 @@ via :meth:`CameraGroup.from_arrays`, not a config spec.)
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
     from .preprocessing import FrameTransform
 
 __all__ = ["Camera", "CameraGroup", "resolve_extrinsics"]
+
+log = logging.getLogger("deeperfly")
 
 # World "up" that fixes the camera roll in the look-at orientation.
 _WORLD_UP = np.array([0.0, 0.0, 1.0])
@@ -171,8 +174,11 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
     unsupported = [k for k in _UNSUPPORTED_EXTRINSICS_KEYS if k in spec]
     if unsupported:
         raise ValueError(
-            f"unsupported extrinsics keys {unsupported}: cameras are specified as "
-            f"an orbit via {list(_ORBIT_KEYS)}"
+            f"unsupported extrinsics keys {unsupported}: a [cameras.<name>] table "
+            f"describes an orbit ({list(_ORBIT_KEYS)}). To use raw, solved extrinsics "
+            "-- from bundle adjustment or a calibration board -- point the config at a "
+            'calibration file instead ([cameras] calibration = "calibration.toml"), or '
+            "load one with CameraGroup.from_calibration"
         )
     if "distance" not in spec:
         raise ValueError(
@@ -435,9 +441,30 @@ class CameraGroup:
         ------
         ValueError
             If the config defines no cameras.
+
+        Notes
+        -----
+        ``[cameras].calibration`` wins over the orbit specs when present: an orbit is a
+        human's description of the rig they built, a calibration is a solver's
+        measurement of it, and the measurement is the better rig. The ``[cameras.<name>]`` tables
+        are then read only for their **order** (the ``V`` axis of every points array is
+        positional), and the geometry keys in them are ignored -- logged once, naming
+        which source won, so a config that carries both cannot mislead silently.
         """
         defaults, specs = config.camera_table()
         image_sizes = image_sizes or {}
+        calibration = config.calibration_path()
+        if calibration is not None:
+            log.info(
+                "cameras: using the calibration %s (the [cameras.<name>] orbit specs "
+                "are read only for their order)",
+                calibration,
+            )
+            return cls.from_calibration(
+                calibration,
+                names=list(specs) or None,
+                image_sizes=image_sizes or None,
+            )
         cameras = {
             name: Camera.from_spec(
                 _rig_keys({**defaults, **spec}),
@@ -449,6 +476,95 @@ class CameraGroup:
         if not cameras:
             raise ValueError("config defines no cameras")
         return cls(cameras)
+
+    @classmethod
+    def from_calibration(
+        cls,
+        path,
+        *,
+        names: list[str] | None = None,
+        image_sizes: dict[str, tuple[int, int]] | None = None,
+    ) -> CameraGroup:
+        """Build a group from a solved calibration file.
+
+        The third construction path, alongside the orbit config
+        (:meth:`from_config`) and raw arrays (:meth:`from_arrays`). It exists because
+        :func:`resolve_extrinsics` deliberately refuses ``rvec``/``tvec`` in a camera
+        spec -- a half-specified orbit must not silently carry raw extrinsics -- which
+        left a *solved* rig with nowhere to live. See :mod:`deeperfly.calibration`.
+
+        Parameters
+        ----------
+        path
+            A ``calibration.toml``, or a directory holding one.
+        names
+            Optional camera names this rig must cover, in order. When given, the
+            calibration is checked against them and the group is returned in *this*
+            order -- the ``V`` axis of every points array is positional, so a
+            calibration written in a different order must be reordered, not
+            reinterpreted.
+        image_sizes
+            Optional ``camera_name -> (height, width)`` of the footage in hand,
+            checked against the frame the intrinsics describe.
+
+        Returns
+        -------
+        CameraGroup
+            The calibrated rig.
+
+        Raises
+        ------
+        ValueError
+            If the calibration does not cover ``names``, or describes differently
+            sized footage than ``image_sizes``.
+        """
+        from .calibration import Calibration
+
+        cal = Calibration.load(path)
+        cal.check_image_sizes(image_sizes)
+        if names is None:
+            return cal.cameras
+        cal.check_camera_names(names)
+        return cls({name: cal.cameras[name] for name in names})
+
+    def to_calibration(
+        self,
+        *,
+        name: str = "calibration",
+        image_sizes: dict[str, tuple[int, int]] | None = None,
+        units: str = "arbitrary",
+        scale_source: str = "none",
+        provenance: dict | None = None,
+        quality: dict | None = None,
+    ):
+        """Wrap this rig as a saveable :class:`~deeperfly.calibration.Calibration`.
+
+        Parameters
+        ----------
+        name
+            Human-facing label for the calibration.
+        image_sizes
+            ``camera_name -> (height, width)`` of the raw footage the intrinsics
+            describe (recorded so a later consumer can be refused).
+        units, scale_source, provenance, quality
+            See :class:`~deeperfly.calibration.Calibration`.
+
+        Returns
+        -------
+        deeperfly.calibration.Calibration
+            The artifact; call ``.save(path)`` to write it.
+        """
+        from .calibration import Calibration
+
+        return Calibration.from_camera_group(
+            self,
+            name=name,
+            image_sizes=image_sizes,
+            units=units,
+            scale_source=scale_source,
+            provenance=provenance,
+            quality=quality,
+        )
 
     @classmethod
     def from_arrays(

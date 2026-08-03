@@ -12,6 +12,7 @@ import typer
 
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
+from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
@@ -512,6 +513,70 @@ def labels_suggest(
             dry_run=dry_run,
         )
     )
+
+
+# -- calibration (a command group) -------------------------------------------
+#
+# The first sub-command group in this CLI: the older `labels-*` commands are flat and
+# hyphenated. A group is used here because calibrations are about to grow verbs
+# (`ls`, `use`) alongside the project layer, and `deeperfly calibration show` reads
+# better than a fourth hyphenated prefix. The flat commands keep working unchanged.
+
+calibration_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and extract solved camera rigs (calibration.toml).",
+)
+app.add_typer(calibration_app, name="calibration")
+
+
+@calibration_app.command("show")
+def calibration_show(
+    path: Annotated[
+        str,
+        typer.Argument(help="a calibration.toml, or a directory containing one"),
+    ],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Print a calibration's cameras, provenance and reprojection residuals.
+
+    The residuals are the part worth reading. A rig that reprojects at 15 px is not a
+    rig you want triangulating a fly, and nothing downstream will tell you so.
+    """
+    _configure_logging(log_level.value)
+    _cmd_calibration_show(argparse.Namespace(path=path))
+
+
+@calibration_app.command("export")
+def calibration_export(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .toml (default: calibration.toml beside results.h5)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Extract a portable calibration.toml from a result's stored camera rig.
+
+    The bundle-adjusted rig in a results.h5 can only be used by the recording that
+    produced it. Exporting turns it into a file a *second* recording can be pointed at
+    ([cameras] calibration = "..." in its config), diffed against a later solve, or
+    shared with a collaborator.
+
+    The bundle-adjusted rig is preferred; a result with no bundle adjustment exports
+    the un-refined config rig it detected with, with a warning and honest provenance.
+    """
+    _configure_logging(log_level.value)
+    _cmd_calibration_export(argparse.Namespace(path=path, output=output))
 
 
 def _normalize_overwrite_argv(argv: list[str]) -> list[str]:

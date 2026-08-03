@@ -105,8 +105,34 @@ origin. World up is `+z`.
 | `roll_deg` | float | `0.0` | Rotation about the optical axis. |
 
 Explicit `rvec` / `tvec` / `rotation_matrix` / `position` keys are **not**
-accepted in the config (they are rejected with a pointer to the orbit keys); use
-the orbit parameters. The internal `CameraGroup` still uses `rvec` / `tvec`.
+accepted in a `[cameras.<name>]` table — an orbit is a *description* of a rig
+someone built, and half-specifying it with raw extrinsics is rejected rather than
+guessed at. To use raw, solved extrinsics, point at a calibration file instead
+(below). The internal `CameraGroup` still uses `rvec` / `tvec`.
+
+**A solved rig:** `[cameras].calibration`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `calibration` | str | *unset* | Path to a `calibration.toml`. Relative paths resolve **next to this config file**. |
+
+When set it **wins** over every orbit spec, and the `[cameras.<name>]` tables are
+read only for their *order* (the view axis of every points array is positional).
+The run logs which of the two it used.
+
+This is how a rig travels between recordings. Every run with bundle adjustment
+enabled writes its refined rig to `<outdir>/calibration.toml`, and
+`deeperfly calibration export` extracts one from any existing `results.h5` — so a
+rig solved once on recording A can drive recording B:
+
+```toml
+[cameras]
+calibration = "calibration.toml"
+```
+
+A calibration records the footage frame its intrinsics describe, so pointing a run
+with differently-sized footage at it **fails** rather than silently misprojecting.
+See [Output format](output-format.md#calibrationtoml).
 
 ```toml
 [cameras.defaults]

@@ -272,6 +272,63 @@ the sidecar and restored if it is lifted. The editor has the same gesture — se
 joint and press `x`. **Close any running `deeperfly gui` on these directories first**:
 saving is a whole-file rewrite, so an open session would overwrite what this writes.
 
+## `deeperfly calibration` — reuse a solved camera rig
+
+A run with bundle adjustment enabled writes its refined rig to
+`<outdir>/calibration.toml` — a portable file, unlike the copy inside `results.h5`.
+Point another recording's config at it and that recording skips solving its own:
+
+```toml
+[cameras]
+calibration = "/path/to/calibration.toml"
+```
+
+### `show`
+
+```bash
+deeperfly calibration show CALIBRATION
+```
+
+Prints the cameras, how the rig was produced, and its reprojection residuals.
+`CALIBRATION` is a `calibration.toml` or a directory holding one.
+
+**Read the residuals before reusing a rig.** Nothing downstream will warn you that
+a rig reprojecting at 15 px is triangulating your fly.
+
+```console
+$ deeperfly calibration show recording/deeperfly_outputs
+calibration: IN07B001_260417_Fly4_004
+  created:      2026-08-03T11:22:00+00:00
+  cameras:      7  (rh, rm, rf, f, lf, lm, lh)
+  units:        config  (scale from orbit_prior, in whatever unit the config's [cameras] distance was written in)
+  method:       labels_ba
+  reprojection:
+    rms         1.842 px
+    median      1.331 px
+    p90         3.155 px
+    rh          1.618 px rms
+    ...
+```
+
+### `export`
+
+```bash
+deeperfly calibration export RESULT [-o OUT.toml]
+```
+
+Extracts a `calibration.toml` from a result's stored rig — the migration path for
+every recording processed before calibrations existed. `RESULT` is a `results.h5`
+or a directory containing one; the default output is `calibration.toml` beside it.
+
+The bundle-adjusted rig is preferred. A result with **no** bundle adjustment
+exports the un-refined config rig it detected with, warning you and recording
+`method = "orbit_prior"` — an unsolved rig is still worth having, but the file must
+not claim it was measured.
+
+Residuals are re-measured against the exported rig rather than copied from the
+stored `reproj_error`, which can describe a different rig or a substituted 2D
+layer — which is how a bad rig ships with someone else's good numbers attached.
+
 ## `deeperfly inspect` — summarize a result
 
 ```bash

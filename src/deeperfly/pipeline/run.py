@@ -241,6 +241,7 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
     _pose2d = ctx.store.read_pose2d()
     assert _pose2d is not None
     pts2d, conf = _pose2d
+    report: dict = {}
     refined = stages.stage_bundle_adjustment(
         ctx.config,
         # Always the un-refined config rig, never a prior BA output, so an edited
@@ -250,10 +251,65 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
         conf,
         ctx.store.read_skeleton(),
         absent=ctx.store.read_animal()[0],
+        report=report,
     )
     ctx.store.truncate_from("bundle_adjustment")
     ctx.store.write_cameras("bundle_adjustment", refined)
+    _write_calibration(ctx, refined, report)
     return True
+
+
+def _write_calibration(ctx: _RunContext, refined, report: dict) -> None:
+    """Mirror the refined rig into ``<outdir>/calibration.toml``.
+
+    ``results.h5`` already holds these cameras, but only as arrays inside one
+    recording's file: nothing can point a *second* recording at them, diff them against
+    a later solve, or read their residuals without opening HDF5. The calibration file is
+    the same rig in the form that travels (see :mod:`deeperfly.calibration`).
+
+    Best-effort: a rig that cannot be written must not fail a run whose real output
+    (``results.h5``) is already committed.
+    """
+    from ..calibration import CALIBRATION_FILENAME, Calibration
+
+    ba = ctx.config.bundle_adjustment
+    try:
+        Calibration.from_camera_group(
+            refined,
+            name=ctx.outdir.parent.name or ctx.outdir.name,
+            image_sizes=ctx.store.read_image_sizes(),
+            # The config orbit set the scale and the solver has no reason to move along
+            # that gauge freedom -- but deeperfly was never told what the orbit's
+            # `distance` measures, so the unit stays honestly unnamed.
+            units="config",
+            scale_source="orbit_prior",
+            provenance={
+                "method": "labels_ba",
+                "intrinsics": "config",
+                "frames": report.get("n_frames"),
+                "source": str(ctx.store.path),
+                "solver": {
+                    "weigh_by_confidence": bool(ba.weigh_by_confidence),
+                    "max_frames": ba.max_frames,
+                    "frame_sampling": ba.frame_sampling,
+                    **{k: v for k, v in ba.least_squares.items() if _is_scalar(v)},
+                },
+            },
+            quality=report.get("quality") or {},
+        ).save(ctx.outdir / CALIBRATION_FILENAME)
+    except Exception:  # pragma: no cover -- a read-only outdir must not fail the run
+        log.exception("could not write %s", ctx.outdir / CALIBRATION_FILENAME)
+
+
+def _is_scalar(value) -> bool:
+    """Whether a ``[bundle_adjustment]`` leftover key is a plain TOML scalar.
+
+    The leftovers go straight to ``scipy.optimize.least_squares``, so they may hold
+    things the calibration's provenance block has no way to write (a tuple of bounds, a
+    callable). Those are dropped rather than stringified -- a provenance record that
+    lies about the solver settings is worse than one that omits them.
+    """
+    return isinstance(value, (str, int, float, bool)) and not isinstance(value, bytes)
 
 
 def _run_pictorial_structures(ctx: _RunContext) -> bool:

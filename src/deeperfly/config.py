@@ -731,11 +731,37 @@ class Config:
         -------
         defaults, cameras : dict
             The ``[cameras.defaults]`` spec and the real per-camera specs (keyed
-            by name, with ``defaults`` excluded).
+            by name, with ``defaults`` and the scalar ``calibration`` key excluded).
         """
         cams = dict(self.data.get("cameras", {}))
         defaults = cams.pop("defaults", {})
-        return defaults, cams
+        cams.pop("calibration", None)  # a path, not a camera -- see calibration_path
+        # A non-table value under [cameras] is a key, not a view; keeping one would
+        # reach Camera.from_spec as a spec and fail with a confusing message.
+        return defaults, {k: v for k, v in cams.items() if isinstance(v, dict)}
+
+    def calibration_path(self) -> Path | None:
+        """The solved rig this config points at (``[cameras].calibration``), if any.
+
+        A relative path resolves against the **config file's own directory**, so a
+        config and the calibration beside it travel together (and an output-dir
+        snapshot keeps finding the rig snapshotted next to it). A config built from a
+        dict has no directory, so a relative path resolves against the process's
+        working directory.
+
+        Returns
+        -------
+        Path or None
+            The calibration file/directory, or ``None`` when the config specifies the
+            rig as an orbit (the default).
+        """
+        raw = self.data.get("cameras", {}).get("calibration")
+        if raw is None:
+            return None
+        path = Path(str(raw))
+        if path.is_absolute() or self.source is None:
+            return path
+        return self.source.parent / path
 
     def source_patterns(self) -> dict[str, str | list[str]]:
         """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).
