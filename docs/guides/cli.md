@@ -559,3 +559,44 @@ original, so `--apply` writes **into that original**. That is the point of adopt
 reference — the file the editor writes is the file a training set reads — but it means a
 merge is not confined to the project directory. Use `--copy` at adoption time if you want it
 to be.
+
+## `deeperfly config` — find and set one key without reading the file
+
+The packaged config is 706 lines across 50 tables. Changing one triangulation knob should
+not mean scrolling past 132 detector channel mappings, and should not mean guessing what the
+knob does.
+
+```bash
+deeperfly config show [SECTION] [-c CONFIG] [-v]
+deeperfly config set SECTION.KEY VALUE -c CONFIG
+```
+
+```console
+$ deeperfly config show triangulation
+                    [triangulation]
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━┳━━━━━━━┓
+┃ key                 ┃ value  ┃     ┃ type  ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━╇━━━━━━━┩
+│ method              │ ransac │ set │ str   │
+│ reproj_threshold    │ 40.0   │     │ float │
+└─────────────────────┴────────┴─────┴───────┘
+```
+
+The **`set` marker** is the part a config file cannot give you: a 706-line file where 690
+lines are defaults reads as 706 decisions. `-v` adds what each key *means*.
+
+**Everything here is derived from the code**, not from a parallel description — the keys,
+types, defaults and documentation all come from the `*Params` dataclasses that already define
+them, so a new option appears here with nothing else to update, and its help text is the
+prose already written for it (`inverse_kinematics.damping` explains the abdomen's five
+near-collinear hinges, which is better than any form label). The same data is served at
+`GET /api/schema` for the editor.
+
+`set` **appends** rather than rewriting, so comments survive, and validates the result
+through the same strict loader a run uses — it cannot write a key a run would reject. It
+refuses when the target table already exists, because appending a bare key after an existing
+header silently reparents it.
+
+Four things are **not** described: `[cameras]`, `[skeleton]`, `[[sources]]` and the
+`[pose2d]` detection plan. They are structural or open-ended, and a half-schema for them
+would be a fiction — they belong in the file, or (for the skeleton and rig) in the project.

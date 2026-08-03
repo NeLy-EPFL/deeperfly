@@ -207,6 +207,41 @@ def create_app(
     def meta() -> dict:
         return _meta_payload(session, cache_v)
 
+    @app.get("/api/schema")
+    def schema(section: str | None = None) -> dict:
+        """The settable config keys, their defaults and their documentation.
+
+        Derived from the ``*Params`` dataclasses (:mod:`deeperfly.config_schema`), never
+        from a parallel description -- so a new field appears in the GUI's forms on the
+        next reload with no second place to update, and its help text is the prose already
+        written for it.
+
+        Sections that have no schema (the detection plan, cameras, the skeleton, video
+        specs) are open-ended and are reported as such rather than shown as empty forms.
+        """
+        from ..config_schema import describe, sections, stage_flags_spec
+
+        if section is not None:
+            try:
+                return describe(section).as_dict()
+            except KeyError as exc:
+                raise HTTPException(404, str(exc).strip("'")) from None
+        return {
+            "sections": [stage_flags_spec().as_dict()]
+            + [describe(name).as_dict() for name in sections()],
+            # Named so a form builder can say "this one needs the file" instead of
+            # rendering nothing and looking broken.
+            "undescribable": [
+                "cameras",
+                "skeleton",
+                "sources",
+                "pose2d.models",
+                "pose2d.pathways",
+                "pose2d.output_points",
+                "visualization.videos",
+            ],
+        }
+
     def _image_cache_control(v: str | None) -> str:
         """Long-lived only for URLs stamped with *this* session's token.
 

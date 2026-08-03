@@ -14,6 +14,7 @@ from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
 from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
+from .config import _cmd_config_set, _cmd_config_show
 from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
 from .merge import _cmd_labels_merge
@@ -711,6 +712,69 @@ def project_rm(
     _cmd_project_rm(
         argparse.Namespace(project=project, recording=recording, delete=delete)
     )
+
+
+# -- config (a command group) ------------------------------------------------
+
+config_app = typer.Typer(
+    no_args_is_help=True,
+    help="Discover and set config keys without reading the whole file. Every key, its "
+    "default and its documentation are derived from the code, so they cannot drift from "
+    "it.",
+)
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("show")
+def config_show(
+    section: Annotated[
+        str | None,
+        typer.Argument(
+            help="one section (e.g. triangulation, pipeline, annotation); omit for all"
+        ),
+    ] = None,
+    config: Annotated[
+        str | None,
+        typer.Option("-c", "--config", help="config TOML (default: the packaged one)"),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="also print what each key means"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Print a config section's keys, values, defaults and documentation.
+
+    Keys you actually set are marked; everything else is a default. That distinction is
+    what a config file cannot show you -- a 706-line file where 690 lines are defaults
+    reads as 706 decisions.
+
+    The detection plan, cameras, skeleton and video specs are open-ended and are not
+    described here; they live in the file (or, for the skeleton and rig, in the project).
+    """
+    _configure_logging(log_level.value)
+    _cmd_config_show(
+        argparse.Namespace(section=section, config=config, verbose=verbose)
+    )
+
+
+@config_app.command("set")
+def config_set(
+    key: Annotated[str, typer.Argument(help="SECTION.KEY, e.g. triangulation.method")],
+    value: Annotated[str, typer.Argument(help="the new value")],
+    config: Annotated[
+        str,
+        typer.Option("-c", "--config", help="the config TOML to edit (required)"),
+    ],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Set one config key, validated the same way a run would validate it.
+
+    Appends rather than rewriting, so comments survive. The result is loaded through the
+    same strict validator a run uses, so this cannot write a key a run would reject.
+    """
+    _configure_logging(log_level.value)
+    _cmd_config_set(argparse.Namespace(key=key, value=value, config=config))
 
 
 # -- calibration (a command group) -------------------------------------------
