@@ -37,6 +37,7 @@ from .labels import (
     Labels,
     labels_identity,
     load_labels,
+    load_landmark_labels,
     migrate_from_corrections,
     save_labels,
 )
@@ -158,7 +159,10 @@ def build_uncalibrated_session(
         },
     )
     labels = load_labels(labels_path, identity=identity)
-    state = EditorState.from_result(result, labels, image_sizes=image_sizes)
+    landmarks = _load_landmarks(project, labels_path, len(view_names), int(n_frames))
+    state = EditorState.from_result(
+        result, labels, image_sizes=image_sizes, landmarks=landmarks
+    )
     log.info(
         "uncalibrated session: %d view(s), %d frame(s), no rig -- every view is an "
         "independent 2D canvas until a calibration is solved",
@@ -183,6 +187,47 @@ def build_uncalibrated_session(
         project_root=project.root,
         recording_slug=entry.slug,
     )
+
+
+def _load_landmarks(project, labels_path: Path, n_views: int, n_frames: int):
+    """The recording's landmark overlay, sized to the project's declared landmark set.
+
+    Three cases, and the third is the one that matters: the project declares none (nothing
+    to author, so ``None``); the sidecar already holds observations (loaded); or the project
+    declares landmarks the sidecar predates (an **empty overlay of the right shape**, so a
+    newly-declared landmark is immediately placeable rather than requiring the file to be
+    recreated).
+    """
+    from ..landmarks import LandmarkSet
+    from .labels import LandmarkLabels
+
+    declared = LandmarkSet.load(project.root)
+    if not len(declared):
+        return None
+    stored = load_landmark_labels(labels_path, n_views=n_views, n_frames=n_frames)
+    if stored is not None and list(stored.names) == declared.names:
+        return stored
+    fresh = LandmarkLabels.empty(
+        n_views, n_frames, declared.names, declared.static_mask
+    )
+    if stored is not None:
+        # The declared set changed since this sidecar was written. Carry across by NAME --
+        # never by index, for the same reason merging does: a reordered set would otherwise
+        # silently move every observation to a different landmark.
+        for i, name in enumerate(stored.names):
+            if name in declared.names:
+                fresh.xy[:, :, declared.index(name)] = stored.xy[:, :, i]
+                fresh.provenance[:, :, declared.index(name)] = stored.provenance[
+                    :, :, i
+                ]
+        fresh.dirty = False
+        log.info(
+            "the project's landmark set changed since %s was written; carried %d "
+            "landmark(s) across by name",
+            labels_path.name,
+            sum(1 for n in stored.names if n in declared.names),
+        )
+    return fresh
 
 
 def _recording_footage(project, entry) -> dict[str, list[Path]]:
@@ -467,9 +512,16 @@ def open_target(
     if results.exists():
         session = build_session(results, footage_dir)
         # build_session works from a results.h5 alone (its bare-recording contract), so the
-        # project context is attached here rather than threaded through it.
+        # project context -- and the project-scoped landmark set -- are attached here rather
+        # than threaded through it.
         session.project_root = project.root
         session.recording_slug = entry.slug
+        session.state.landmarks = _load_landmarks(
+            project,
+            session.labels_path,
+            session.state.n_views,
+            session.state.n_frames,
+        )
         return session
     log.info(
         "%s has no results.h5 -- opening it uncalibrated (2D labeling only)", entry.slug

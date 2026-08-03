@@ -55,7 +55,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"labeled" | "suggest" | "jobs"} SidebarTab */
+/** @typedef {"labeled" | "suggest" | "marks" | "jobs"} SidebarTab */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -414,6 +414,12 @@ class App {
   /** @type {HTMLDivElement} */
   jobsPane = el("jobs-pane");
   /** @type {HTMLDivElement} */
+  marksPane = el("marks-pane");
+  /** @type {HTMLDivElement} */
+  marksList = el("marks-list");
+  /** @type {HTMLDivElement} */
+  marksEmpty = el("marks-empty");
+  /** @type {HTMLDivElement} */
   jobsActions = el("jobs-actions");
   /** @type {HTMLDivElement} */
   jobsList = el("jobs-list");
@@ -423,6 +429,9 @@ class App {
   // carries the single-writer EDITING stream, and a read-only tab must still see the
   // queue. A 2 s poll of a few JSON rows is cheaper than the alternative.
   jobsTimer = null;
+  // Index of the armed calibration landmark (-1 = none). Armed from the Landmarks tab;
+  // while armed, a click on any view PLACES it rather than selecting a joint.
+  armedLandmark = -1;
   /** @type {HTMLDivElement} */
   suggestStatusEl = el("suggest-status");
   /** @type {HTMLTableSectionElement} */
@@ -586,7 +595,7 @@ class App {
     // order), so they are separate tabs rather than one filtered list. Reuses the
     // established `.segmented` component, so the strip needs no new visual language.
     this.sidebarTabs = segmented(
-      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Jobs", "jobs"]],
+      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Jobs", "jobs"]],
       (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
     );
     this.sidebarTabsEl.append(this.sidebarTabs.root);
@@ -720,6 +729,7 @@ class App {
       onBackground: () => this.clearSelection(),
       onActiveView: (v) => this.onActiveView(v),
       onHover: (p) => this.onHover(p),
+      onPlaceLandmark: (v, i, x, y) => this.onPlaceLandmark(v, i, x, y),
     };
     this.meta.camera_names.forEach((name, v) => {
       const cell = document.createElement("div");
@@ -739,6 +749,7 @@ class App {
       const view = new PoseView(v, canvas, cb);
       view.setSkeleton(this.meta.bones, this.meta.point_colors);
       view.setPointNames(this.meta.point_names);
+      view.setLandmarkNames((this.meta.landmarks || []).map((l) => l.name));
       const size = this.meta.image_sizes[name];
       if (size) view.setImageSize(size[0], size[1]);
       this.views.push(view);
@@ -908,6 +919,9 @@ class App {
         placeholder: p.placeholder ? p.placeholder[v] : undefined,
         absent: p.absent ? p.absent[v] : undefined,
         nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
+        // Landmarks ride every reply: a handful of points per view, so there is no
+        // reason to make them a verbose-only field that could go stale mid-drag.
+        landmarks: p.landmarks ? p.landmarks[v] : undefined,
       });
     });
     // The NMF mesh follows the (re-fit) latent skeleton: refresh it after an edit
@@ -1779,6 +1793,86 @@ class App {
 
   // Fetch the queue and repaint the tab. A missing sidecar is the normal starting state
   // and resolves to `present: false`; a transient failure leaves whatever was there.
+  // -- calibration landmarks -------------------------------------------------
+  //
+  // Non-skeleton points that make a from-scratch rig solvable. The gesture is deliberately
+  // NOT a drag: a landmark has no detection to grab and no reprojection to nudge, so there
+  // is nothing on the canvas to start a drag from until one exists. Arming a landmark makes
+  // the next click place it, which is the only interaction that works from an empty frame.
+
+  renderLandmarks() {
+    const marks = this.meta.landmarks || [];
+    this.marksList.replaceChildren();
+    if (!marks.length) {
+      this.marksEmpty.hidden = false;
+      this.marksEmpty.textContent =
+        "This project declares no calibration landmarks. Add them to landmarks.toml — " +
+        "a static point (a coverslip scratch, the tether tip) is worth far more to the " +
+        "rig solve than more keypoint frames.";
+      return;
+    }
+    this.marksEmpty.hidden = true;
+    marks.forEach((mark, i) => {
+      const row = document.createElement("div");
+      row.className = "mark-row" + (i === this.armedLandmark ? " armed" : "");
+      row.title = i === this.armedLandmark
+        ? "Armed — click in any view to place it here. Click this row again to disarm."
+        : "Click to arm, then click in each view where you can see this landmark.";
+      const dot = document.createElement("span");
+      dot.className = "mark-diamond";
+      const name = document.createElement("span");
+      name.className = "mark-name";
+      name.textContent = mark.name;
+      const kind = document.createElement("span");
+      kind.className = "mark-kind";
+      kind.textContent = mark.static ? "static" : "per-frame";
+      const count = document.createElement("span");
+      count.className = "mark-count";
+      count.textContent = `${mark.observations}`;
+      count.title = "Observations placed so far, across every view and frame";
+      row.append(dot, name, kind, count);
+      row.addEventListener("click", () =>
+        this.armLandmark(i === this.armedLandmark ? -1 : i),
+      );
+      this.marksList.append(row);
+    });
+    const hint = document.createElement("div");
+    hint.className = "marks-hint";
+    hint.textContent =
+      "Arm a landmark, then click the SAME feature in as many views as can see it. " +
+      "A static landmark keeps one 3D position for the whole recording, so re-placing it " +
+      "in more frames sharpens it — but always on the same feature.";
+    this.marksList.append(hint);
+  }
+
+  /** @param {number} index  landmark to arm, or -1 to disarm */
+  armLandmark(index) {
+    if (this.armedLandmark === index) return;
+    this.armedLandmark = index;
+    this.views.forEach((view) => view.setArmedLandmark(index));
+    document.body.classList.toggle("arming-landmark", index >= 0);
+    if (this.sidebarTab === "marks") this.renderLandmarks();
+  }
+
+  /** @param {number} view @param {number} landmark @param {number} x @param {number} y */
+  onPlaceLandmark(view, landmark, x, y) {
+    if (this.readOnly) return;
+    this.sendEdit({
+      type: "set_landmark",
+      view,
+      landmark,
+      x,
+      y,
+      frame: this.frame,
+      mode: this.mode,
+    });
+    // The count in the panel comes from meta, which is fetched once -- so bump it locally
+    // rather than refetching the whole payload for one number.
+    const mark = (this.meta.landmarks || [])[landmark];
+    if (mark) mark.observations += 1;
+    if (this.sidebarTab === "marks") this.renderLandmarks();
+  }
+
   // -- pipeline jobs ---------------------------------------------------------
   //
   // Each row IS a CLI command, printed verbatim. That is deliberate: the GUI teaches the
@@ -2100,6 +2194,7 @@ class App {
     this.labeledPane.hidden = tab !== "labeled";
     this.suggestPane.hidden = tab !== "suggest";
     this.jobsPane.hidden = tab !== "jobs";
+    this.marksPane.hidden = tab !== "marks";
     this.sidebarEl.classList.toggle("tab-suggest", tab === "suggest");
     this.updateSidebarNavTitles();
     if (tab === "suggest") this.refreshSuggestions();
@@ -2107,6 +2202,10 @@ class App {
     // looking at is pure waste, and a long detection run would make it thousands of them.
     if (tab === "jobs") this.startJobsPolling();
     else this.stopJobsPolling();
+    if (tab === "marks") this.renderLandmarks();
+    // Leaving the tab disarms. A click that silently placed a landmark because a panel
+    // was open three minutes ago would be a nasty surprise.
+    else this.armLandmark(-1);
     this.updateActiveFrameRow();
   }
 

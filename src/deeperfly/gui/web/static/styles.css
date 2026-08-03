@@ -1309,3 +1309,36 @@ body.read-only #redo {
   overflow: hidden;
 }
 .job-cancel { font-size: 11px; padding: 1px 7px; margin-left: 6px; cursor: pointer; }
+
+/* Calibration landmarks panel. The armed row is unmistakable because arming changes what a
+   click DOES -- an ambiguous armed state would place landmarks by accident. */
+.marks-list { padding: 4px 8px 10px; }
+.mark-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.mark-row:hover { background: rgba(255, 255, 255, 0.05); }
+.mark-row.armed {
+  background: rgba(232, 163, 61, 0.18);
+  outline: 1px solid #e8a33d;
+}
+.mark-diamond {
+  width: 9px;
+  height: 9px;
+  background: #e8a33d;
+  transform: rotate(45deg);
+  flex: none;
+}
+.mark-name { font-weight: 600; }
+.mark-kind { color: #8a97a4; font-size: 11px; }
+.mark-count { margin-left: auto; color: #8a97a4; font-variant-numeric: tabular-nums; }
+.marks-hint { padding: 8px; color: #8a97a4; font-size: 11px; line-height: 1.45; }
+
+/* While a landmark is armed, a click PLACES it -- so the cursor says so everywhere, not
+   only over the panel that armed it. */
+body.arming-landmark canvas { cursor: crosshair !important; }

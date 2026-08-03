@@ -41,7 +41,7 @@ from jaxtyping import Float
 
 from ..config import AnnotationParams, TriangulationParams
 from ..results import PoseResult
-from .labels import Labels, Provenance
+from .labels import Labels, LandmarkLabels, Provenance
 from .nmf_live import NmfLive
 from .solve import solve_point_3d, solve_point_3d_drag
 
@@ -141,6 +141,12 @@ class EditorState:
     #: Per-view image size as ``(V, 2)`` ``[width, height]``, for a placeholder's
     #: last-resort center. ``None`` when unavailable.
     image_sizes_wh: np.ndarray | None = None
+    #: Calibration landmarks for this recording, when the project defines any (see
+    #: :mod:`deeperfly.landmarks`). A *separate* overlay from :attr:`labels` and
+    #: deliberately so: a landmark is not a skeleton point, must never reach the detector,
+    #: the IK plan or the training export, and must not perturb the fingerprinted
+    #: ``point_names``. ``None`` when the project declares none.
+    landmarks: "LandmarkLabels | None" = None
     #: The view names, in ``V``-axis order. Held here rather than read off the rig
     #: because an **uncalibrated** recording has named views and no geometry at all: the
     #: names are what the operator labels against, and they must not depend on a
@@ -164,6 +170,7 @@ class EditorState:
         articulation=None,
         raw_pts2d: np.ndarray | None = None,
         image_sizes: dict[str, tuple[int, int]] | None = None,
+        landmarks: "LandmarkLabels | None" = None,
     ) -> EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
@@ -223,6 +230,7 @@ class EditorState:
             raw_pts2d=None if raw_pts2d is None else np.asarray(raw_pts2d, dtype=float),
             image_sizes_wh=image_sizes_wh,
             view_names=view_names,
+            landmarks=landmarks,
         )
 
     @staticmethod
@@ -271,7 +279,11 @@ class EditorState:
 
     @property
     def dirty(self) -> bool:
-        return self.labels.dirty
+        # Landmarks count: they are authored in the same session and saved by the same
+        # button, so a session dirty only in landmarks must still prompt before closing.
+        return self.labels.dirty or bool(
+            self.landmarks is not None and self.landmarks.dirty
+        )
 
     def _resolve_frame(self, frame: int | None) -> int:
         return self.frame if frame is None else frame
@@ -799,6 +811,50 @@ class EditorState:
         self.labels.clear_frame(t)
         self._invalidate_frame3d(t)
         self._invalidate_nmf(t)
+
+    # -- calibration landmarks ------------------------------------------------
+    #
+    # A landmark is authored the same way a keypoint is -- click a pixel in a view -- but it
+    # lives in its own namespace and drives only the rig solve. Kept out of the undo stack
+    # deliberately: the undo entries snapshot one frame's *skeleton* labels, and widening
+    # them to carry a second overlay would make every keypoint undo heavier for a gesture
+    # that has its own explicit clear.
+
+    @property
+    def has_landmarks(self) -> bool:
+        """Whether this project defines calibration landmarks."""
+        return self.landmarks is not None and bool(self.landmarks.names)
+
+    def landmark_names(self) -> list[str]:
+        return [] if self.landmarks is None else list(self.landmarks.names)
+
+    def display_landmarks(self, frame: int | None = None):
+        """``(V, L, 2)`` observed landmark pixels for ``frame``, NaN where unobserved."""
+        if self.landmarks is None:
+            return None
+        return self.landmarks.xy[:, self._resolve_frame(frame)]
+
+    def set_landmark(
+        self, view: int, landmark: int, xy, frame: int | None = None
+    ) -> bool:
+        """Place (or move) one landmark observation. Returns whether anything changed."""
+        if self.landmarks is None:
+            return False
+        self.landmarks.set(view, self._resolve_frame(frame), landmark, xy)
+        return True
+
+    def clear_landmark(
+        self, view: int, landmark: int, frame: int | None = None
+    ) -> bool:
+        """Drop one landmark observation. Returns whether anything changed."""
+        if self.landmarks is None:
+            return False
+        self.landmarks.clear(view, self._resolve_frame(frame), landmark)
+        return True
+
+    def landmark_counts(self) -> dict[str, int]:
+        """``name -> observed (view, frame) cells`` -- the readiness signal for the solve."""
+        return {} if self.landmarks is None else self.landmarks.counts()
 
     def set_reviewed(self, value: bool, frame: int | None = None) -> None:
         """Mark ``frame`` reviewed (or clear it): the operator's "I've checked this" flag.

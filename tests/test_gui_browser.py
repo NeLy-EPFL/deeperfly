@@ -414,3 +414,103 @@ def test_a_session_without_a_project_explains_the_empty_jobs_panel(page_and_erro
     assert "open a project" in page.locator("#jobs-empty").inner_text()
     assert page.locator("#jobs-actions button").count() == 0
     assert not errors
+
+
+# -- calibration landmarks ------------------------------------------------------
+
+
+@pytest.fixture
+def landmark_page_and_errors(result, tmp_path):
+    """The editor with landmarks declared, loaded in a real browser."""
+    from deeperfly.gui.labels import LandmarkLabels
+
+    sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
+    marks = LandmarkLabels.empty(
+        result.n_views, result.n_frames, ["tether_tip", "coverslip_ne"]
+    )
+    session = Session.build(
+        EditorState.from_result(result, landmarks=marks, image_sizes=sizes),
+        FrameSource({}, image_sizes=sizes),
+        results_path=str(tmp_path / "results.h5"),
+        labels_path=tmp_path / "labels.h5",
+        image_sizes=sizes,
+    )
+    server, port = _serve(session)
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(900)
+            yield page, errors, session
+            browser.close()
+    finally:
+        server.should_exit = True
+
+
+def _open_marks(page):
+    _open_panel(page)
+    page.locator('[data-tab="marks"], button:has-text("Landmarks")').first.click()
+    page.wait_for_timeout(500)
+
+
+def test_the_landmarks_panel_lists_the_declared_landmarks(landmark_page_and_errors):
+    page, errors, _ = landmark_page_and_errors
+    _open_marks(page)
+    rows = page.locator(".mark-row")
+    assert rows.count() == 2
+    assert "tether_tip" in rows.first.inner_text()
+    assert "static" in rows.first.inner_text()
+    assert not errors
+
+
+def test_arming_a_landmark_then_clicking_a_view_places_it(landmark_page_and_errors):
+    """The whole gesture: a landmark has nothing on the canvas to drag until it exists,
+    so arming + clicking is the only interaction that works from an empty frame."""
+    page, errors, session = landmark_page_and_errors
+    _open_marks(page)
+    page.locator(".mark-row").first.click()  # arm
+    page.wait_for_timeout(200)
+    assert "armed" in (page.locator(".mark-row").first.get_attribute("class") or "")
+
+    canvas = page.locator("#stage canvas").first
+    canvas.click(position={"x": 40, "y": 30})
+    page.wait_for_timeout(700)
+
+    observed = session.state.landmarks.observed
+    assert observed[:, :, 0].sum() == 1, "the click did not place the armed landmark"
+    assert not errors, "JS errors placing a landmark:\n  " + "\n  ".join(errors)
+
+
+def test_leaving_the_landmarks_tab_disarms(landmark_page_and_errors):
+    """A click that placed a landmark because a panel was open earlier is a nasty surprise."""
+    page, errors, session = landmark_page_and_errors
+    _open_marks(page)
+    page.locator(".mark-row").first.click()
+    page.locator('[data-tab="labeled"], button:has-text("Labeled")').first.click()
+    page.wait_for_timeout(300)
+
+    page.locator("#stage canvas").first.click(position={"x": 55, "y": 45})
+    page.wait_for_timeout(500)
+    assert session.state.landmarks.observed.sum() == 0
+    assert not errors
+
+
+def test_a_project_with_no_landmarks_explains_the_empty_panel(page_and_errors):
+    page, errors = page_and_errors
+    _open_marks(page)
+    assert "no calibration landmarks" in page.locator("#marks-empty").inner_text()
+    assert not errors

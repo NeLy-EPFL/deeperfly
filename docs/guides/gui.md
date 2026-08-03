@@ -310,3 +310,55 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | `j` | Show / hide the labelled-frames list |
 | `Ctrl`/`Cmd`+`S` | Save labels |
 | `?` / `Esc` | Show shortcuts / close an overlay |
+
+## Calibration landmarks
+
+A from-scratch project has no camera rig, and the rig is solved from labels — but *which*
+labels decides whether it converges:
+
+> A skeleton keypoint at frame *t* is a **different 3D point** from the same keypoint at
+> *t+1*, because the animal moved. So *N* labeled frames of *P* keypoints add `3·N·P`
+> unknowns, all inside a 3 mm blob near the middle of the field. A **static** landmark — a
+> scratch on the coverslip, the tip of the tether, a dust speck on the glass — is **one** 3D
+> point observed in `V·N` images, spread through the scene *volume*. That is what conditions
+> the solve.
+
+Declare them in the project's `landmarks.toml`, then place them in the **Landmarks** tab:
+
+1. Click a landmark row to **arm** it (the row highlights and the cursor becomes a crosshair
+   over every view).
+2. Click the same feature in as many views as can see it. Each click places one observation.
+3. Click the row again — or leave the tab — to disarm.
+
+Landmarks draw as **amber diamonds**, deliberately a different *shape* from keypoints rather
+than just a different colour: a landmark is a different kind of thing, and shape survives
+colour blindness and a busy frame.
+
+The gesture is a click, not a drag, for a structural reason: a landmark has no detection to
+grab and no reprojection to nudge, so until one exists there is nothing on the canvas to
+start a drag from.
+
+A **static** landmark keeps one 3D position for the whole recording, so re-placing it in more
+frames sharpens it — but always on *the same feature*. `deeperfly calibrate` reports each
+static landmark's pixel **scatter**, and a large value means it was not actually static, or
+was placed on a different speck in a different frame. Both corrupt the solve.
+
+Landmarks live in their own namespace in `labels.h5` and never touch the skeleton: they cannot
+reach the detector, the IK body plan, the bone-length priors or the training export.
+
+## Running the pipeline from the editor
+
+Open a **project** (`deeperfly gui myproject/`) and the **Jobs** tab can run pipeline
+commands: suggest frames, export labels, check or solve the calibration.
+
+Each row *is* the CLI command, printed verbatim and click-to-copy — so a GUI action that fails
+is reproducible in a terminal, and there is no behaviour only the GUI can reach. Jobs run one
+at a time in their own process (two stages writing one `results.h5` would corrupt it, and a
+CUDA OOM must not take your unsaved labels with it).
+
+There is no progress percentage, on purpose: these commands emit human log lines, and a number
+synthesized from those would be a fiction with a spinner attached. The last log line is shown
+instead, which is the honest signal.
+
+A session opened on a bare `results.h5` has no queue and says so — jobs need a project to run
+in.

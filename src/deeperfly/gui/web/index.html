@@ -175,6 +175,14 @@
              did. There is no percentage: these commands emit human log lines, and a
              number synthesized from those would be a fiction with a spinner attached, so
              the last log line is what is shown instead. -->
+        <!-- Calibration landmarks. Non-skeleton points that make a from-scratch rig
+             solvable: a STATIC one (a coverslip scratch, the tether tip) is three unknowns
+             however many frames observe it, while a keypoint is three unknowns PER FRAME
+             because the animal moved. Arm one, then click it into place in each view. -->
+        <div class="sidebar-body" id="marks-pane" hidden>
+          <div id="marks-list" class="marks-list"></div>
+          <div id="marks-empty" class="frames-empty"></div>
+        </div>
         <div class="sidebar-body" id="jobs-pane" hidden>
           <div id="jobs-actions" class="jobs-actions"></div>
           <div id="jobs-list" class="jobs-list"></div>
