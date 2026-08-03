@@ -1179,89 +1179,78 @@ the discrepancy load-bearing.
 
 ---
 
-## 15. Implementation status — 2026-08-03
+## 15. Implementation status — 2026-08-03 (final)
 
-Branch `feature/project-system`, off `dev`. **1,102 tests green** (from 904 at the start),
-ruff clean, verified across several random orderings. Nine commits.
+Branch `feature/project-system`, off `dev`. **1,207 tests green** (from 904), ruff clean, 19
+of them driving a real headless chromium. Sixteen commits.
 
-### Shipped
+### Every phase
 
 | Phase | State | What landed |
 |---|---|---|
-| **0 — Calibration artifact** | **done** | `calibration.py` (schema v1, guards, `quality_from_errors`, a focused TOML writer); `CameraGroup.from_calibration`/`to_calibration`; `[cameras].calibration` wins over the orbit; every BA run leaves `calibration.toml`; `deeperfly calibration show/export` |
-| **1a — Project layer** | **done** | `project.py` (manifest, content-derived ids, adoption by symlink, resolution, `label_stats`); `deeperfly project new/add/ls/status/rm`; `~/fly-pose-data` adopted as the acceptance test |
-| **1b — Rig extraction + profiles** | **moved to 4** | It is config composition; doing it twice would leave two notions of "the effective config" |
-| **2 — Uncalibrated editing** | **done** | `PoseResult.cameras` optional + `PoseResult.uncalibrated`; `EditorState.has_cameras`/`view_names`; `deeperfly gui <project> [--recording]`; the uncalibrated banner; **4 browser tests** loading it in real chromium |
-| **3 — Calibration from labels** | **done** | `landmarks.py`; `labels.h5` **v6** (landmarks group + reserved instance column); `calibration_solve.py` (assemble → gate → SfM init → BA → report); `deeperfly calibrate` + the readiness meter |
-| **4 — GUI-first config** | **part** | `config_schema.py` (derived from the dataclasses), `deeperfly config show/set`, `GET /api/schema`. **The generated forms and the skeleton editor are not built.** |
-| **5 — Jobs** | **not started** | — |
-| **6 — Merge** | **part** | `merge.py` + `deeperfly labels-merge`: name-based skeleton/camera reconciliation, provenance-aware conflicts, dry-run default, pre-merge snapshot, conflict queue. **`.dfpkg` packaging is not built.** |
-| **7 — Multi-animal** | **schema done** | The instance column is reserved in every `labels.h5` COO index (F4). Detection/tracking is a separate document. |
+| **0** Calibration artifact | **done** | `calibration.toml` (v1) + guards + quality; `CameraGroup.from_calibration`/`to_calibration`; `[cameras].calibration`; every BA run emits one; `deeperfly calibration show/export` |
+| **1a** Project layer | **done** | `project.py`; content-derived ids; adoption by symlink; `deeperfly project new/add/ls/status/rm`; `~/fly-pose-data` adopted as the acceptance test |
+| **1b** Rig + profiles | **done** | `rig.toml`, `profiles/`, `deeperfly project rig` / `project config` — composition by concatenating disjoint fragments |
+| **2** Uncalibrated editing | **done** | `PoseResult.uncalibrated`; `has_cameras`; `deeperfly gui <project> [--recording]`; the banner; browser tests |
+| **3** Calibration from labels | **done** | `landmarks.py`; `labels.h5` **v6**; `calibration_solve.py`; `deeperfly calibrate` + readiness meter; **in-GUI landmark placement** |
+| **4** GUI-first config | **done** | `config_schema.py`; `deeperfly config show/set`; `GET /api/schema` + `/api/config`; a **generated Settings panel**; **skeleton migrations** + `deeperfly project skeleton` |
+| **5a** Jobs | **done** | `jobs.py` (subprocess queue, allow-listed kinds); `/api/jobs`; a Jobs panel; `python -m deeperfly` |
+| **5b** Trainer | **part** | `deeperfly.training.heatmaps` — the numeric contract, tested. **The dataset, model zoo and train loop are not written.** See below. |
+| **6** Merge + packaging | **done** | `merge.py` + `deeperfly labels-merge`; `package.py` + `project export/import` (`.dfpkg`) |
+| **7** Multi-animal | **schema** | The instance column is reserved in every `labels.h5` COO index (F4). Detection/tracking is a separate document. |
 
-Phase 6's merge was **pulled ahead of 4 and 5** on the strength of §14.1: ~20,000 hand
-labels were unreachable, and reconciliation — not labeling — was the blocker.
+### Verified against reality
 
-### Verified, not just written
+- **A known rig recovered cold**, no prior: camera centres to **0.01%** (landmarks), **0.02%**
+  (keypoints), **0.00%** (both) of the rig radius. End-to-end from real videos: **0.004%**.
+- **`labels.h5` v6 reads all 21 real label files losslessly**, quarantine round trip included.
+- **`label_stats` matches the dfpose manifest exactly** where they overlap.
+- **Merge on the real corpus**: 1,687 stranded labels + 1,505 occlusions, 0 conflicts.
+- **`.dfpkg` of a real project**: 8.3 MB with 84 embedded frames.
+- **A destructive skeleton change on real labels**: 84 at-risk labels named, nothing written.
+- **Uncalibrated editor, landmark placement, jobs and settings all drive in real chromium
+  with zero JS errors.**
 
-- **The rig is recovered from a cold start.** Synthetic scene → known 7-camera rig → labels
-  handed back with no prior: camera centres to **0.01%** (landmarks), **0.02%** (keypoints),
-  **0.00%** (both) of the rig radius. End to end from real video files: **0.004%**.
-- **v6 reads every real label file losslessly** — all 21 in `~/fly-pose-data`, including the
-  quarantine merge-back (1,576 live + 23 quarantined = 1,599).
-- **`label_stats` agrees exactly with the dfpose manifest** wherever they overlap.
-- **Merge on the real corpus**: 38 points and 7 cameras matched by name, 1,687 stranded
-  labels + 1,505 occlusions merged, 0 conflicts.
-- **The uncalibrated editor loads in real chromium with zero JS errors.**
-
-### Four bugs the validation caught
+### Five bugs the validation caught
 
 Each would have shipped as plausible-looking wrong output rather than a crash:
 
-1. **The Rodrigues singularity.** `∂R/∂rvec` carries `sin θ/θ`, which autodiff evaluates as
-   0/0 at exactly zero — a *free* camera at identity gives a NaN Jacobian column and kills
-   the first trust-region step. No orbit camera has an identity rotation, which is why this
-   never surfaced; a cold-start SfM reference view sits exactly there.
-2. **A numpy aliasing bug** in the frame rebase: `t0 = tvecs[0]` is a view, and the loop
-   zeroes row 0 first, so every later camera was rebased against an already-zeroed `t0`. A
-   perfect rig came out at 112,915 px rms.
-3. **Scale normalization applied to orbit priors.** It exists because `recoverPose` returns a
-   unit baseline — but a prior's scale is *meaningful* (it is what `units = "config"`
-   records), so rescaling it 209× would have made that file lie.
-4. **`extract_section` swallowed the next section's comment banner**, so every project's
+1. **The Rodrigues singularity.** `∂R/∂rvec` carries `sin θ/θ` → 0/0 at exactly zero, so a
+   *free* camera at identity gives a NaN Jacobian column. No orbit camera has an identity
+   rotation, which is why 24 k lines of working BA never hit it; a cold-start SfM reference
+   view sits exactly there.
+2. **A numpy aliasing bug** in the frame rebase — `t0 = tvecs[0]` is a *view*, and the loop
+   zeroed row 0 first. A perfect rig came out at 112,915 px rms.
+3. **Scale normalization applied to orbit priors**, which would have written a calibration
+   claiming a rig 209× too large while `units = "config"` asserted it was the config's scale.
+4. **`extract_section` swallowing the next section's comment banner**, so every project's
    `skeleton.toml` would have shipped with a paragraph about camera rigs.
+5. **`label_stats` counting untrainable rows as ground truth** — `export_gt` drops
+   `confirmed_projection` and `placeholder_seed`, so the progress number disagreed with the
+   export it was supposed to predict.
 
-### Design changes made against the plan, and why
+### What remains: Phase 5b, and why it was not a copy
 
-- **A static landmark's `V·T` observations are averaged to `V` per-view means**, because
-  `bundle_adjust` takes one observation per `(view, track)`. The per-view **scatter** is kept
-  as a diagnostic the plan did not have: a landmark whose pixel wanders is not static, or was
-  labeled on a different speck, and nothing else would say so.
-- **`x_scale="jac"`** is required on this rig: `∂(reprojection)/∂t` scales as `fx/Z`, and at
-  ~22,000 px focal the translation columns dwarf the rotation ones.
-- **The recording fingerprint drops `n_frames`** from the footage basis (a decode per camera
-  per adoption, for less discrimination than seven byte sizes already give).
-- **`label_stats` reports `gt_trainable` beside `gt_points`**, because `export_gt` drops
-  `confirmed_projection` and `placeholder_seed` — a progress number that disagrees with the
-  export is worse than none. A test pins the two against each other.
-- **A from-scratch recording gets its `deeperfly_outputs/` at adoption**, since the first
-  thing that happens to it is a `labels.h5` being written there.
+The plan's F3c said "absorb the trainer". The **numeric contract** is absorbed and tested.
+The dataset, model zoo and train loop are not, and a wholesale copy of `~/dfpose` would have
+been the wrong move for three measured reasons:
 
-### What remains, in the order it should be done
+1. **6,700 of its 11,332 lines are in scope, and its `footage.py` is lab policy, not library
+   code** — a hardcoded `(camera, (H, W)) -> crop` table for three specific rig geometries,
+   carrying measurement notes about named recordings, that *refuses* an unlisted pair on
+   purpose. deeperfly already has the general form: per-camera `preprocess` in `rig.toml`.
+2. **It is 37 commits of actively-iterating "Round 0" work** whose `data/labels/` snapshots
+   are git-tracked and described in its own README as "the precious bit". Copying discards
+   that history and freezes a moving target.
+3. **A trainer that has never completed a real training run is a liability, not an asset.**
+   The parts already landed are testable without a GPU; a loop is not.
 
-1. **Phase 5 — jobs.** `deeperfly.jobs` + a subprocess worker + WebSocket progress. This is
-   what makes `calibrate`, `run` and `labels-export` reachable from the GUI, so ask 2 is only
-   half-delivered without it. ~1.5 weeks.
-2. **Phase 4 — the generated forms + skeleton editor.** `/api/schema` is in place, so the
-   forms are a front-end job; the skeleton editor needs §9's typed migrations, which are
-   designed but not written. ~2 weeks.
-3. **Phase 1b/4 — `rig.toml` + profile layering.** ~0.5 weeks.
-4. **Phase 6b — `.dfpkg`.** Only needed to move a project between machines; merge already
-   works within one filesystem. ~1 week.
-5. **Phase 5b — the trainer** (fork F3c). Migrating `~/dfpose`'s train/eval/dataset core into
-   `deeperfly.training` behind a `deeperfly[train]` extra. ~3 weeks, and the largest single
-   remaining piece.
+The remaining work, in order: a `TrainingSet` that turns a *project's* labels into
+model-space samples through the rig's own `FrameTransform` (~400 lines, GPU-free to test);
+the model zoo behind a `deeperfly[train]` extra; the loop; and `deeperfly train` as a `jobs`
+kind — `JOB_KINDS` already reserves it and reports "trainer not installed" until then.
 
-**In-GUI landmark placement is also outstanding.** `calibrate` reads landmarks from
-`labels.h5`, and the storage, solve and CLI all work — but there is no gesture in the editor
-to *place* one yet, so today they have to be written programmatically. That belongs with
-Phase 4's editor work and is the shortest path to making ask 3 usable by hand.
+Two smaller items are also open: the **skeleton *editor* UI** (its migrations, the risky
+half, are done and tested — what is missing is a canvas to draw bones on), and **`[[sources]]`
+/ detection-plan editing**, which stays in the config file by design (§7 tier 3).
+
