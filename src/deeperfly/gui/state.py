@@ -589,6 +589,40 @@ class EditorState:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
 
+    # -- chirality QC ---------------------------------------------------------
+
+    def chirality(self, frame: int | None = None):
+        """Left/right swap check for ``frame``, on the **derived 3D** pose.
+
+        Returns a :class:`deeperfly.chirality.Chirality`. 3D rather than per-view 2D
+        deliberately: measured over 500 independently-posed flies the 3D test emits 0.002
+        false flags per pose and recovers 98-99% of planted swaps exactly, while the same
+        test on a side view emits 4-11 false flags per pose from real posture asymmetry
+        that no threshold separates from a swap (see :mod:`deeperfly.chirality`). Since
+        this rig's derived 3D is what every hand label ultimately moves, judging it also
+        answers the operator's actual question.
+
+        An uncalibrated session (no 3D) gets an undecided verdict with a reason, never a
+        confident "all clear" -- the two must not look alike.
+
+        Pairs come from the skeleton, falling back to name inference for a ``results.h5``
+        written before ``[skeleton].symmetries`` existed, so an old file still gets checked.
+        """
+        from .. import chirality as chi
+
+        pts3d = self.display_pts3d(frame)
+        if pts3d is None:
+            return chi.Chirality(
+                reason="this session has no 3D, so left/right cannot be judged"
+            )
+        skel = self.result.skeleton
+        pairs = (
+            skel.symmetries_or_inferred()
+            if hasattr(skel, "symmetries_or_inferred")
+            else np.empty((0, 2), np.int64)
+        )
+        return chi.check(pts3d, pairs)
+
     # -- NMF overlay (unchanged, driven by the derived 3D) --------------------
 
     def display_nmf_projected(

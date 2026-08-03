@@ -62,10 +62,10 @@
                  (mirrors "Show"): a popover, opening upward, holding the Grid/Focus
                  arrangement and a "Reset view" action. The Grid/Focus segment is hidden for
                  a single camera (no arrangement to choose), but the menu itself stays --
-                 Reset view still helps on one (zoomable) camera. The f / g / [ / ] and 0
+                 Reset view still helps on one (zoomable) camera. The l / [ / ] and 0
                  keys are the fast path; the menu is the discoverable one. -->
             <div class="ctl-group popover-wrap" id="layout-wrap">
-              <button id="layout-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Camera arrangement + view — Grid / Focus (f / g), step focus ([ / ]), and reset zoom &amp; pan on every camera (0)">Layout <span class="caret">▾</span></button>
+              <button id="layout-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Camera arrangement + view — toggle Grid / Focus (l), step focus ([ / ]), and reset zoom &amp; pan on every camera (0)">Layout <span class="caret">▾</span></button>
               <div id="layout-menu" class="popover-menu" role="menu" hidden>
                 <div class="pm-section" id="layout-arrange-section">Arrangement</div>
                 <div class="pm-row" id="layout-arrange-row"><div id="layout-switch" class="segmented"></div></div>
@@ -121,6 +121,10 @@
             </div>
             <div class="ctl-group">
               <span id="absent-badge" class="absent-badge" hidden></span>
+              <!-- Left/right swap warning. Hidden unless the frame's derived 3D says a
+                   symmetry pair is on the wrong side; clicking it selects the worst pair
+                   so the operator lands on the joint instead of hunting for it. -->
+              <button id="chirality-badge" class="absent-badge is-warning" hidden></button>
               <span id="status" role="status" aria-live="polite"></span>
               <button id="save" title="Save the ground-truth labels (Ctrl/Cmd+S)">Save</button>
               <button id="close-editor" title="Stop the server and close the editor">Close</button>

@@ -899,6 +899,7 @@ def _points_payload(
         nmf = s.display_nmf_projected(t) if s.has_nmf else None
         payload["nmf"] = None if nmf is None else _points_to_json(np.asarray(nmf))
         payload["conf"] = _conf_to_json(s.result.conf, t)
+        payload["chirality"] = _chirality_to_json(s, t)
     if verbose:
         payload["pred"] = _points_to_json(np.asarray(s.result.pts2d[:, t]))
         # Draggable seeds for joints unobserved in a view (no detection / reprojection),
@@ -950,6 +951,34 @@ def _conf_to_json(conf: np.ndarray | None, t: int) -> list | None:
         [float(c[v, p]) if np.isfinite(c[v, p]) else None for p in range(c.shape[1])]
         for v in range(c.shape[0])
     ]
+
+
+def _chirality_to_json(session_state, t: int) -> dict:
+    """The frame's left/right swap verdict, for the editor's warning strip.
+
+    Rides the settle/plain reply alongside ``conf`` rather than the ~60x/s mid-drag stream:
+    it needs the frame's derived 3D, and a warning that flickers during a drag is worse
+    than one that appears when the drag lands.
+
+    ``points`` carries index pairs *and* names, because the front-end draws the ring from
+    the indices and the operator reads the names.
+    """
+    v = session_state.chirality(t)
+    return {
+        "decided": bool(v.decided),
+        "reason": v.reason,
+        "swapped": [
+            {
+                "points": list(c.points),
+                "names": [session_state.point_name(p) for p in c.points],
+                "margin": round(float(c.margin), 4),
+                "relative_margin": round(float(c.relative_margin), 3),
+            }
+            for c in v.swapped
+        ],
+        "n_pairs": int(v.n_pairs),
+        "separation_frac": round(float(v.separation_frac), 4),
+    }
 
 
 def _scene_payload(session: Session, t: int) -> dict:

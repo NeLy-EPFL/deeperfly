@@ -1226,6 +1226,23 @@ body.read-only #redo {
   display: none;
 }
 
+/* The left/right-swap warning wears the badge shape but an alarm colour, and is a button
+   because it is actionable: it selects the pair it is complaining about. Amber rather than
+   red -- a swap candidate is a strong suspicion from geometry, not a proven error, and the
+   operator is the one who decides. */
+.absent-badge.is-warning {
+  border-color: #d9a13b;
+  color: #f0c674;
+  background: rgba(217, 161, 59, 0.16);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.absent-badge.is-warning:hover {
+  background: rgba(217, 161, 59, 0.28);
+}
+
 /* Uncalibrated notice — the recording has no solved camera rig, so every view is an
    independent 2D canvas. Mirrors .readonly-banner's placement but reads as information
    rather than a warning: labelling uncalibrated is a normal, expected phase of a

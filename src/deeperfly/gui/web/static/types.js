@@ -82,6 +82,7 @@
  * @property {Point[][] | null} proj  [view][point] the 3D reprojection, or null. Ghosted by the "3D estimate" overlay, and the canvas's fallback position + "projection" source for a joint with no observed pixel (occluded / undetected in that view).
  * @property {Point[][] | null} [nmf]  [view][point] fitted NMF model reprojection (display only), or null. Omitted on mid-drag replies (the server skips the per-frame re-fit) -- treat "absent" as "unchanged".
  * @property {(number | null)[][]} [conf]  [view][point] detector confidence, or null. Rides the settle/plain reply only (not the mid-drag stream).
+ * @property {Chirality} [chirality]  the frame's left/right swap verdict, judged on the derived 3D. Rides the settle/plain reply only (it needs the frame's 3D). Absent -> unchanged.
  * @property {Point[][] | null} [pred]  [view][point] the raw detector prediction (before GT override), for the verbose overlay. Present only when verbose was requested.
  * @property {Point[][] | null} [placeholder]  [view][point] seed positions for joints ABSENT from a view (no detection / reprojection), so a GT can still be dragged into being; NaN->null elsewhere. Present only when verbose was requested.
  * @property {boolean} dirty
@@ -89,6 +90,31 @@
  * @property {boolean} [can_redo]  whether a redo step is available
  * @property {number | null} [seq]  the seq of the edit this reply answers, echoed so a superseded reply can be dropped; absent on plain frame fetches
  * @property {number | null} [goto]  for undo/redo: the frame the reverted edit was on, so the client navigates there; null for in-place edits
+ */
+
+/**
+ * One symmetry pair the chirality check believes is left/right swapped.
+ *
+ * @typedef {object} SwapCandidate
+ * @property {[number, number]} points  the pair's point indices
+ * @property {[string, string]} names  the same pair's names, for the operator to read
+ * @property {number} margin  how far onto the wrong side it sits, in world units
+ * @property {number} relative_margin  `margin` over the frame's typical pair separation — the number to rank by
+ */
+
+/**
+ * The frame's left/right verdict, from `deeperfly.chirality` over the derived 3D pose.
+ *
+ * `decided: false` means the check could not run (no 3D, too few co-visible pairs, a
+ * collapsed left-right axis) — NOT that the frame is clean. `reason` says which, and the
+ * UI stays silent rather than implying an all-clear it did not establish.
+ *
+ * @typedef {object} Chirality
+ * @property {boolean} decided
+ * @property {string} reason  why it was not judged, or "" when it was
+ * @property {SwapCandidate[]} swapped  worst `relative_margin` first; empty when clean or undecided
+ * @property {number} n_pairs  how many pairs actually voted
+ * @property {number} separation_frac  how well this sample resolves the left-right axis (see MIN_SEPARATION_FRAC)
  */
 
 /**

@@ -1664,3 +1664,61 @@ def test_save_mirrors_absence_into_results_h5(client, session, result, tmp_path)
 
     absent, _ = StageStore(results_path).read_animal()
     assert absent is not None and absent[4] and not absent[5]
+
+
+# -- chirality (left/right swap) ----------------------------------------------
+
+
+def test_points_payload_carries_the_chirality_verdict(client):
+    """The warning rides the settle/plain reply, alongside `conf` and for the same reason:
+    it needs the frame's derived 3D, and a warning that flickers through a drag is worse
+    than one that appears when the drag lands.
+    """
+    payload = client.get("/api/points/0?mode=view").json()
+    v = payload["chirality"]
+    assert set(v) == {"decided", "reason", "swapped", "n_pairs", "separation_frac"}
+    assert isinstance(v["decided"], bool)
+    # An undecided verdict must never carry candidates -- the UI would read them as findings.
+    if not v["decided"]:
+        assert v["swapped"] == []
+        assert v["reason"]
+
+
+def test_a_planted_swap_reaches_the_payload_with_names(session, client, fly):
+    """End to end: swap a pair in the derived 3D and the editor is told which pair, by name.
+
+    The names ride along with the indices because the front-end draws from the indices and
+    the operator reads the names.
+    """
+    state = session.state
+    pts3d = state.display_pts3d(0)
+    assert pts3d is not None
+    i, j = (int(x) for x in np.asarray(fly.symmetries)[4])
+    # Write a clearly-mirrored pose so the check has a well-conditioned axis to fit, then
+    # swap one pair inside it.
+    half = np.linspace(-1, 1, fly.n_points // 2)
+    posed = np.zeros((fly.n_points, 3))
+    posed[: fly.n_points // 2] = np.stack(
+        [half, np.full_like(half, 1.0), half * 0.3], 1
+    )
+    posed[fly.n_points // 2 :] = posed[: fly.n_points // 2] * [1, -1, 1]
+    posed[[i, j]] = posed[[j, i]]
+    state._pts3d_cache[0] = posed
+
+    v = client.get("/api/points/0?mode=view").json()["chirality"]
+    assert v["decided"], v["reason"]
+    flagged = {tuple(s["points"]) for s in v["swapped"]}
+    assert (i, j) in flagged
+    names = [s["names"] for s in v["swapped"] if tuple(s["points"]) == (i, j)][0]
+    assert names == [fly.point_names[i], fly.point_names[j]]
+
+
+def test_the_mid_drag_reply_omits_the_verdict_rather_than_clearing_it(session):
+    """`include_nmf=False` is the lean drag stream; the key must be *absent*, not null,
+    so the front-end can tell "unchanged" from "now clean"."""
+    from deeperfly.gui.server import _points_payload
+
+    lean = _points_payload(session, 0, "edit_3d", include_nmf=False)
+    assert "chirality" not in lean
+    full = _points_payload(session, 0, "edit_3d", include_nmf=True)
+    assert "chirality" in full
