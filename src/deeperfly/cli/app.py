@@ -27,6 +27,7 @@ from .project import (
     _cmd_project_new,
     _cmd_project_rig,
     _cmd_project_rm,
+    _cmd_project_skeleton,
     _cmd_project_status,
 )
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
@@ -893,6 +894,38 @@ def project_import(
     """
     _configure_logging(log_level.value)
     _cmd_project_import(argparse.Namespace(package=package, dest=dest, apply=apply))
+
+
+@project_app.command("skeleton")
+def project_skeleton(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="a TOML file with a [skeleton] table (a config, or a skeleton.toml)"
+        ),
+    ],
+    project: ProjectArg = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="actually migrate (otherwise this only reports)"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Change the project's skeleton, migrating every label onto the new point order.
+
+    A skeleton edit can invalidate every label in the project -- and quietly, because two
+    same-sized skeletons in different orders load each other's files happily and mean
+    something different by every index. So labels move BY NAME, never by index; the change
+    is reported and counted before anything is written; and a deleted point's labels are
+    QUARANTINED rather than destroyed, so re-adding the point brings them back.
+
+    Reports and writes nothing without --apply. Applying snapshots the project to a .dfpkg
+    first.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_skeleton(
+        argparse.Namespace(project=project, source=source, apply=apply)
+    )
 
 
 # -- calibration (a command group) -------------------------------------------

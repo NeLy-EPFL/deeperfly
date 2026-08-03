@@ -397,3 +397,69 @@ def _cmd_project_import(args: argparse.Namespace) -> None:
         "recordings locally, before the editor can show frames",
         highlight=False,
     )
+
+
+def _cmd_project_skeleton(args: argparse.Namespace) -> None:
+    """Change a project's skeleton as a migration (``deeperfly project skeleton``).
+
+    A skeleton edit can invalidate every label in the project, and quietly: two same-sized
+    skeletons in different orders load each other's files happily and mean something
+    different by every index. So this always reports first, moves labels **by name**, and
+    refuses a destructive change without ``--apply``.
+    """
+    from ..config import Config
+    from ..skeleton_migrate import apply_migration, plan_migration
+
+    project = _open(args.project)
+    try:
+        new = Config.from_toml(args.source).skeleton()
+    except Exception as exc:
+        raise SystemExit(
+            f"could not read a skeleton from {args.source}: {exc}"
+        ) from None
+
+    plan = plan_migration(project, new)
+    _info_line("project:  ", f"{project.name}  ({project.root})")
+    _info_line("points:   ", f"{len(plan.old_names)} -> {len(plan.new_names)}")
+    if not plan.changes:
+        console.print("no change -- the skeletons are identical")
+        return
+
+    table = Table(title="skeleton changes")
+    table.add_column("", width=2)
+    table.add_column("change", style="bold")
+    table.add_column("detail")
+    for change in plan.changes:
+        table.add_row(
+            "[red]![/red]" if change.destructive else " ", change.kind, change.detail
+        )
+    console.print(table)
+    _info_line("labels moved:      ", f"{plan.moved:,} (remapped by name)")
+    _info_line("labels quarantined:", f"{plan.quarantined:,}")
+    for err in plan.errors:
+        console.print(f"[red]blocked:[/red] {err}", highlight=False)
+
+    if plan.quarantined:
+        console.print(
+            f"[yellow]{plan.quarantined:,} label(s) belong to point(s) the new skeleton "
+            "does not have.[/yellow] They are QUARANTINED, not deleted -- re-adding the "
+            "point restores them -- but nothing downstream will see them meanwhile.",
+            highlight=False,
+        )
+    if not args.apply:
+        console.print(
+            "dry run -- nothing written. Re-run with --apply to migrate "
+            "(a pre-migration .dfpkg snapshot is written first)",
+            highlight=False,
+        )
+        return
+    try:
+        result = apply_migration(project, new, plan)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    console.print(
+        f"[green]migrated[/green] {len(result['migrated'])} label file(s): "
+        f"{result['moved']:,} moved, {result['quarantined']:,} quarantined"
+    )
+    if result["snapshot"]:
+        console.print(f"snapshot: {result['snapshot']}", highlight=False)
