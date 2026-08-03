@@ -202,12 +202,7 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
     table.add_column(
         "reviewed", justify="right", footer=f"{totals['reviewed_frames']:,}"
     )
-    # "trainable" rather than "GT pts": it is what an export would actually yield, with
-    # bulk-confirmed reprojections and invented drag handles excluded, exactly as
-    # export_gt excludes them. A progress number that disagrees with the export is worse
-    # than no progress number.
-    table.add_column("trainable", justify="right", footer=f"{totals['gt_trainable']:,}")
-    table.add_column("dropped", justify="right", footer=f"{totals['gt_untrainable']:,}")
+    table.add_column("GT pts", justify="right", footer=f"{totals['gt_points']:,}")
     table.add_column("occl", justify="right", footer=f"{totals['occluded']:,}")
     table.add_column("absent", justify="right")
     table.add_column("state")
@@ -218,10 +213,7 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
             "?" if entry.n_frames is None else f"{entry.n_frames:,}",
             f"{row['labeled_frames']:,}",
             f"{row['reviewed_frames']:,}",
-            f"{row['gt_trainable']:,}",
-            f"{row['gt_points'] - row['gt_trainable']:,}"
-            if row["gt_points"] != row["gt_trainable"]
-            else "—",
+            f"{row['gt_points']:,}",
             f"{row['occluded']:,}",
             f"{row['absent_points']}" if row["absent_points"] else "—",
             _outputs_note(row),
@@ -231,21 +223,6 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
         f"{totals['with_labels']} of {totals['recordings']} recording(s) carry labels",
         highlight=False,
     )
-    if totals["gt_untrainable"]:
-        # Name the provenance mix, since "dropped" alone does not say why.
-        mix = {}
-        for row in rows:
-            for name, count in row["provenance"].items():
-                if name in ("confirmed_projection", "placeholder_seed"):
-                    mix[name] = mix.get(name, 0) + count
-        console.print(
-            f"[yellow]{totals['gt_untrainable']:,} stored point(s) are not trainable[/yellow] "
-            "(" + ", ".join(f"{n}={c:,}" for n, c in sorted(mix.items())) + ") -- "
-            "'deeperfly labels-export' drops them by default: a bulk-confirmed "
-            "reprojection is the model's own guess, and a placeholder seed is a drag "
-            "handle the editor invented at the image edge.",
-            highlight=False,
-        )
 
 
 def _cmd_project_rm(args: argparse.Namespace) -> None:

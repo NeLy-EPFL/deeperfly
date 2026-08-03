@@ -130,9 +130,7 @@ def _cmd_labels_export(args: argparse.Namespace) -> None:
             f"no labels.h5 next to {results_path} -- annotate with 'deeperfly gui' "
             "and Save first"
         )
-    gt_xy, gt_mask, occluded = export_gt(
-        labels, include_projection=args.include_projection
-    )
+    gt_xy, gt_mask, occluded = export_gt(labels)
     absent = export_absent(labels)
     out = Path(args.output) if args.output else results_path.parent / "labels_gt.npz"
     np.savez(

@@ -41,7 +41,7 @@ from jaxtyping import Float
 
 from ..config import AnnotationParams, TriangulationParams
 from ..results import PoseResult
-from .labels import Labels, LandmarkLabels, Provenance
+from .labels import Labels, LandmarkLabels
 from .nmf_live import NmfLive
 from .solve import solve_point_3d, solve_point_3d_drag
 
@@ -81,18 +81,26 @@ class EditMode(str, Enum):
 class _UndoEntry:
     """A snapshot of one frame's labels, so an edit can be reverted.
 
-    ``point`` names the target point and ``coalesce`` marks a drag-style edit: a run
-    of coalescing edits to the *same* ``(t, point)`` collapses to a single undo step
-    (so one drag is one undo), while a discrete op (toggle / reset / confirm) always
-    starts a new step.
+    ``point`` names the target point and ``coalesce`` marks a drag-style edit: the edits
+    of one drag *gesture* collapse to a single undo step (so one drag is one undo -- see
+    :attr:`EditorState._drag_open`, which decides where a gesture ends), while a discrete
+    op (toggle / reset / confirm) always starts a new step.
+
+    ``pts3d`` snapshots the frame's derived 3D alongside the labels, and it is not
+    redundant: a drag below two usable views stores a *ray-slide of the prior 3D*
+    (:func:`~deeperfly.gui.solve.solve_point_3d_drag`), which no re-derivation from
+    the labels can reproduce -- one 2D pixel leaves depth unconstrained. Restoring
+    the labels and re-deriving would silently snap every such point in the frame back
+    to the run's cached ``pts3d``, hundreds of pixels away, even though the undo never
+    touched its labels. ``None`` when the frame was not cached at snapshot time.
     """
 
     t: int
     point: int | None
     coalesce: bool
     gt: np.ndarray
-    provenance: np.ndarray
     occluded: np.ndarray
+    pts3d: np.ndarray | None = None  # (P, 3), or None if the frame was uncached
 
 
 @dataclass
@@ -104,13 +112,20 @@ class _AbsentEntry:
     underneath. ``prev`` is the ``(T, len(points))`` slice the gesture overwrote -- a few
     kilobytes even for a whole-recording declaration, against the megabytes a snapshot of
     the ``(V, T, P)`` overlay would cost.
+
+    ``pts3d`` is the derived 3D for exactly ``points``, per cached frame -- the same
+    non-reproducible ray-slide payload :class:`_UndoEntry` carries, restricted to the
+    rows an absence declaration can move (``frame -> (len(points), 3)``). A whole-recording
+    declaration reaches every frame, so every cached one is snapshotted; at 24 bytes per
+    (frame, point) that stays kilobytes even for a long recording.
     """
 
     points: list[int]
     prev: np.ndarray  # (T, len(points)) bool
-    #: Never coalesces with a neighboring entry (an absence declaration is always its own
-    #: gesture), and carries no frame -- which is what stops ``_record_undo``'s coalescing
-    #: test at the first term, before it reaches the frame-scoped fields this has none of.
+    pts3d: dict[int, np.ndarray] = field(default_factory=dict)
+    #: Never coalesces with a neighboring entry: an absence declaration is always its own
+    #: gesture, and it carries no frame at all (it can span the recording), so none of the
+    #: frame-scoped bookkeeping applies to it.
     coalesce: bool = False
 
 
@@ -128,11 +143,26 @@ class EditorState:
     nmf_live: NmfLive | None = None
     _nmf_cache: dict[int, tuple] = field(default_factory=dict)
     #: Per-frame derived 3D pose (P, 3), recomputed from the labels; the "cache" the
-    #: whole design treats the 3D as. Dropped/updated when a frame's labels change.
+    #: whole design treats the 3D as. Updated per *point* when a point's labels change.
+    #:
+    #: Almost a pure function of the labels, and the exception matters: a drag on a point
+    #: with fewer than two usable views stores a ray-slide of the prior 3D (see
+    #: :meth:`_settle_point3d`), which the labels cannot reproduce, because a single
+    #: pixel leaves depth unconstrained. So a row here can be the operator's only record
+    #: of a hand-placed depth, and anything that drops it loses authored work: invalidate
+    #: per point (:meth:`_rederive_points`), snapshot it into the history
+    #: (:class:`_UndoEntry`), and clear a whole frame only when every label in it really
+    #: did go (:meth:`reset_frame`).
     _pts3d_cache: dict[int, np.ndarray] = field(default_factory=dict)
     #: Undo / redo stacks of per-frame label snapshots (see :class:`_UndoEntry`).
     _undo: list = field(default_factory=list)
     _redo: list = field(default_factory=list)
+    #: The ``(frame, point)`` of the drag gesture the operator currently has open, or
+    #: ``None`` between gestures. This -- not the top of the undo stack -- is what a
+    #: streamed drag coalesces on, so one gesture is one undo step and two gestures never
+    #: merge (see :meth:`_record_undo`). Closed by the drag's settle, by any discrete op,
+    #: and by undo/redo.
+    _drag_open: tuple[int, int] | None = None
     #: Pristine detector detections ``(V, T, P, 2)`` -- the raw peak *before*
     #: triangulation cleaning, kept even where triangulation dropped the point. The
     #: top-priority seed for a placeholder (see :meth:`placeholder_pts2d`). ``None``
@@ -561,6 +591,22 @@ class EditorState:
         if t in self._pts3d_cache:
             self._pts3d_cache[t][point] = self._solve_point(t, point)
 
+    def _rederive_points(self, t: int, points) -> None:
+        """Recompute just ``points`` in the frame cache -- the batched op's invalidation.
+
+        A batched edit (bulk confirm / reset / occlude / an absence declaration) must
+        re-derive the points it *touched*, never the whole frame: dropping the frame
+        would also discard the ray-slid 3D of every hand-placed point with fewer than
+        two usable views, which is unrecoverable from the labels and would snap those
+        points back to the run's cached ``pts3d``. Only :meth:`reset_frame`, which really
+        does clear every label in the frame, invalidates wholesale.
+        """
+        if t not in self._pts3d_cache:
+            return
+        arr = self._pts3d_cache[t]
+        for p in points:
+            arr[p] = self._solve_point(t, p)
+
     def _set_point3d(self, t: int, point: int, xyz) -> None:
         """Store an already-solved 3D for one point (the drag result) in the cache."""
         self._ensure_pts3d(t)[point] = np.asarray(xyz, dtype=float)
@@ -720,9 +766,13 @@ class EditorState:
         if self.absent_refusal(point, t):
             return
         self._record_undo(t, point, coalesce=True)
-        self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
+        self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
+        # One message per gesture on this path: with no 3D to re-solve the client sends
+        # nothing mid-drag and commits on release (app.js ``onDragged``), so the gesture
+        # is over. A future streaming 2D client would mark its settle the way edit_3d does.
+        self._end_gesture()
 
     def apply_3d_edit(
         self, view: int, point: int, xy, frame: int | None = None, *, fix: bool = False
@@ -732,10 +782,11 @@ class EditorState:
         The dragged view becomes a GT constraint and the 3D re-solves live via
         :func:`~deeperfly.gui.solve.solve_point_3d_drag` -- a weighted DLT with two or
         more usable views, else a ray-slide of the prior 3D so the point lands under
-        the cursor. Every drag (``fix`` or not) authors the GT; ``fix`` is retained for
-        wire compatibility but no longer distinguishes a "pin" (GT *is* the
-        constraint). Returns the new 3D point, or ``None`` when no 3D could be derived
-        (the GT pixel is still authored -- see below).
+        the cursor. Every drag (``fix`` or not) authors the GT; ``fix`` no longer
+        distinguishes a "pin" (GT *is* the constraint) but does mark the *settle*, where
+        the point converges to the configured solve policy (:meth:`_settle_point3d`).
+        Returns the new 3D point, or ``None`` when no 3D could be derived (the GT pixel
+        is still authored -- see below).
         """
         if self.result.pts3d is None:
             return None
@@ -755,13 +806,40 @@ class EditorState:
         # the 3D cache when the solve produced one, else re-derive (it may stay NaN
         # until a second view lands).
         self._record_undo(t, point, coalesce=True)
-        self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
+        self.labels.set_gt(view, t, point, xy)
         if x_new is not None:
+            if fix:
+                x_new = self._settle_point3d(t, point, x_new)
             self._set_point3d(t, point, x_new)
         else:
             self._rederive_point(t, point)
         self._invalidate_nmf(t)
+        if fix:
+            self._end_gesture()  # the settle: the operator released the point
         return x_new
+
+    def _settle_point3d(self, t: int, point: int, dragged: np.ndarray) -> np.ndarray:
+        """The drag-*release* 3D: the configured solve, when the labels determine it.
+
+        The mid-drag stream runs the cheap :func:`~deeperfly.gui.solve.solve_point_3d_drag`
+        so a ~60 Hz interaction never pays for a consensus fit. On the settle the point
+        converges to the same ``solve_policy`` a plain re-derivation would use, which is
+        what keeps the cached 3D a *function of the labels* rather than of how the point
+        got there. That divergence is what used to make an unrelated undo appear to move a
+        point: the cache said one thing, re-deriving said another.
+
+        It cannot always converge, and must not pretend to: with fewer than two usable
+        views the pure solve is ``NaN`` -- one pixel leaves depth free -- and the drag's
+        ray-slide is the only position that honors where the operator dropped the point,
+        so it stands (and the undo entries snapshot it, see :class:`_UndoEntry`).
+        """
+        if self.result.cameras is None:
+            return dragged
+        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        settled = solve_point_3d(
+            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
+        )
+        return settled if np.all(np.isfinite(settled)) else dragged
 
     def toggle_fixed(
         self, view: int, point: int, frame: int | None = None
@@ -791,9 +869,7 @@ class EditorState:
         if not np.all(np.isfinite(xy)):
             return None  # cannot confirm a point that is not visible in this view
         self._record_undo(t, point, coalesce=False)
-        self.labels.set_gt(
-            view, t, point, xy, provenance=Provenance.CONFIRMED_PREDICTION
-        )
+        self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
         return True
@@ -930,31 +1006,45 @@ class EditorState:
         if not changed:
             return []
         self._undo.append(
-            _AbsentEntry(points=list(changed), prev=absent[:, changed].copy())
+            _AbsentEntry(
+                points=list(changed),
+                prev=absent[:, changed].copy(),
+                pts3d=self._snapshot_absent_pts3d(changed),
+            )
         )
         self._redo.clear()
+        self._end_gesture()  # its own gesture, and it ends any open drag
         if len(self._undo) > UNDO_LIMIT:
             self._undo.pop(0)
         self.labels.set_absent(changed, value, frames=None if whole_recording else [t])
+        # Absence only vetoes the declared points, so re-derive exactly those -- clearing
+        # the cache would also discard other points' hand-placed (ray-slid) 3D.
         if whole_recording:
-            self._pts3d_cache.clear()
+            for tt in list(self._pts3d_cache):
+                self._rederive_points(tt, changed)
             self._nmf_cache.clear()
         else:
-            self._invalidate_frame3d(t)
+            self._rederive_points(t, changed)
             self._invalidate_nmf(t)
         return changed
 
     # -- undo / redo + bulk confirm + explicit GT set/clear -------------------
 
     def _snapshot(self, t: int, point: int | None, coalesce: bool) -> _UndoEntry:
+        cached = self._pts3d_cache.get(t)
         return _UndoEntry(
             t=t,
             point=point,
             coalesce=coalesce,
             gt=self.labels.gt[:, t].copy(),
-            provenance=self.labels.gt_provenance[:, t].copy(),
             occluded=self.labels.occluded[:, t].copy(),
+            pts3d=None if cached is None else cached.copy(),
         )
+
+    def _snapshot_absent_pts3d(self, points: list[int]) -> dict[int, np.ndarray]:
+        """The derived 3D rows for ``points`` in every cached frame (see :class:`_AbsentEntry`)."""
+        idx = np.asarray(points, dtype=int)
+        return {t: arr[idx].copy() for t, arr in self._pts3d_cache.items()}
 
     def _snapshot_of(self, entry):
         """The current-state counterpart of ``entry``, for the opposite history stack."""
@@ -962,43 +1052,70 @@ class EditorState:
             return _AbsentEntry(
                 points=list(entry.points),
                 prev=self.labels.absent[:, entry.points].copy(),
+                pts3d=self._snapshot_absent_pts3d(entry.points),
             )
         return self._snapshot(entry.t, entry.point, entry.coalesce)
 
     def _record_undo(self, t: int, point: int | None, *, coalesce: bool) -> None:
-        """Push a pre-edit snapshot, coalescing a run of drag edits on one point."""
-        top = self._undo[-1] if self._undo else None
-        if (
-            coalesce
-            and point is not None
-            and top is not None
-            and top.coalesce
-            and top.t == t
-            and top.point == point
-        ):
-            return  # same drag gesture: keep the existing (older) pre-state
+        """Push a pre-edit snapshot, coalescing the edits of one *drag gesture*.
+
+        Coalescing is keyed on :attr:`_drag_open` -- the gesture the operator currently
+        has open -- and deliberately not on "the top of the undo stack has this same
+        ``(t, point)``", which is a different question with two wrong answers. It merges
+        two *separate* gestures on one point (place a joint in ``f``, come back later,
+        nudge it again: one ctrl-z would clear both, in every view either touched), and it
+        lets a gesture *resume* across an undo: drag A, drag B, ctrl-z (which pops B's
+        entry, leaving A's on top), drag A again -> the same-point test matches A's old
+        entry and the new drag silently joins a gesture the operator finished long ago.
+        """
+        if coalesce and point is not None and self._drag_open == (t, point):
+            # Still inside one gesture: keep the existing (older) pre-state. The redo
+            # branch still dies -- the operator is authoring, and a surviving redo entry
+            # is a whole-frame snapshot that would clobber this very drag.
+            self._redo.clear()
+            return
         self._undo.append(self._snapshot(t, point, coalesce))
         self._redo.clear()
+        self._drag_open = (t, point) if (coalesce and point is not None) else None
         if len(self._undo) > UNDO_LIMIT:
             self._undo.pop(0)
 
+    def _end_gesture(self) -> None:
+        """Close the open drag gesture, so the next edit starts a new undo step."""
+        self._drag_open = None
+
     def _apply_snapshot(self, entry) -> None:
+        """Restore ``entry``'s labels *and* its derived 3D.
+
+        Restoring the 3D rather than dropping the cache is the whole point: the cache is
+        not a pure function of the labels (see :class:`_UndoEntry`), so re-deriving it
+        would move points whose labels this entry never touched.
+        """
         if isinstance(entry, _AbsentEntry):
-            # An absence gesture may have spanned the whole recording, so drop the entire
-            # derived cache rather than trying to work out which frames moved. The entry
-            # carries no pixel payload: the veto never destroyed any, so restoring the
-            # bits restores everything underneath.
+            # The entry carries no pixel payload: the veto never destroyed any, so
+            # restoring the bits restores everything underneath.
             self.labels.absent[:, entry.points] = entry.prev
             self.labels.dirty = True
-            self._pts3d_cache.clear()
-            self._nmf_cache.clear()
+            idx = np.asarray(entry.points, dtype=int)
+            for t, arr in self._pts3d_cache.items():
+                prev = entry.pts3d.get(t)
+                if prev is None:
+                    # Cached only *after* the declaration, so its rows were derived under
+                    # the veto and have no pre-state to restore: re-derive them.
+                    for p in entry.points:
+                        arr[p] = self._solve_point(t, p)
+                else:
+                    arr[idx] = prev
+            self._nmf_cache.clear()  # a pure function of the 3D, so refitting is safe
             return
         t = entry.t
         self.labels.gt[:, t] = entry.gt
-        self.labels.gt_provenance[:, t] = entry.provenance
         self.labels.occluded[:, t] = entry.occluded
         self.labels.dirty = True
-        self._invalidate_frame3d(t)
+        if entry.pts3d is None:
+            self._invalidate_frame3d(t)  # uncached then, so there is nothing to restore
+        else:
+            self._pts3d_cache[t] = entry.pts3d.copy()
         self._invalidate_nmf(t)
 
     @property
@@ -1013,6 +1130,7 @@ class EditorState:
         """Revert the last edit; returns the affected frame (so the client navigates)."""
         if not self._undo:
             return None
+        self._end_gesture()  # a history op ends any gesture: the next drag is its own step
         entry = self._undo.pop()
         self._redo.append(self._snapshot_of(entry))
         self._apply_snapshot(entry)
@@ -1022,24 +1140,17 @@ class EditorState:
         """Re-apply the last undone edit; returns the affected frame."""
         if not self._redo:
             return None
+        self._end_gesture()
         entry = self._redo.pop()
         self._undo.append(self._snapshot_of(entry))
         self._apply_snapshot(entry)
         return None if isinstance(entry, _AbsentEntry) else entry.t
 
-    def set_gt(
-        self,
-        view: int,
-        point: int,
-        xy,
-        frame: int | None = None,
-        *,
-        provenance: int = Provenance.DRAGGED,
-    ) -> None:
-        """Author a GT pixel without a drag re-solve (a click-place / confirm-in-place)."""
+    def set_gt(self, view: int, point: int, xy, frame: int | None = None) -> None:
+        """Create a GT pixel without a drag re-solve (a click-place)."""
         t = self._resolve_frame(frame)
         self._record_undo(t, point, coalesce=False)
-        self.labels.set_gt(view, t, point, xy, provenance=provenance)
+        self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
@@ -1051,77 +1162,18 @@ class EditorState:
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
 
-    #: How far inside the image a confirmed point is placed when its true position falls outside.
-    #: Not 0: a point exactly on the border is awkward to grab, and the operator's whole workflow
-    #: is to grab it and drag it somewhere better.
-    _CLAMP_INSET_PX = 4.0
+    def _on_image(self, view: int, xy) -> bool:
+        """Is ``xy`` inside ``view``'s image (so the operator can see and drag it)?
 
-    def _grabbable(self, view: int, point: int, t: int, xy) -> np.ndarray | None:
-        """A position for this cell that the operator can actually SEE and DRAG, or ``None``.
-
-        The operator's workflow is "select all, confirm projections, then drag each point where it
-        belongs", so a confirmed cell that has no on-image position is useless -- there is nothing
-        to grab. Two ways that happened, both reported from the GUI and both fixed here:
-
-        * **The position is finite but off-image.** Measured on
-          ``IN10B014_260320_Fly2_009`` frame 40: the derived 3D reprojects ``rh_claw`` to
-          ``x = -5.5`` in view ``rf`` and ``lm_claw`` to ``y = 512.1`` in view ``rm`` (a 960x512
-          image). GT was created at those coordinates, off-canvas, invisible and un-draggable.
-          Such a position is CLAMPED into the image instead of stored as-is.
-        * **There is no position at all** (a joint with no solvable 3D and no detection). The
-          placeholder chain already exists for exactly this -- raw detector pixel, then the nearest
-          frame, then the mean of connected skeleton neighbours, then the image centre (see
-          :meth:`placeholder_pts2d`) -- but ``confirm`` never consulted it.
-
-        A clamped or placeholder position is deliberately NOT presented as evidence: the caller
-        tags it ``PLACEHOLDER_SEED``, which ``export_gt`` drops unconditionally -- even under
-        ``include_projection=True``, because unlike a real reprojected pixel this coordinate was
-        invented by the editor, and invented at the image edge. An untouched one cannot reach
-        training. It exists to be dragged, and dragging it restamps it ``DRAGGED``.
+        ``True`` when the image size is unknown -- refusing to author a pixel because the
+        editor cannot check it would be worse than authoring one.
         """
-        q = None if xy is None else np.asarray(xy, dtype=float)
-        if q is None or not np.all(np.isfinite(q)):
-            ph = self.placeholder_pts2d(t)
-            cand = ph[view, point]
-            q = np.asarray(cand, dtype=float) if np.all(np.isfinite(cand)) else None
-        if q is None or not np.all(np.isfinite(q)):
-            return None
         if self.image_sizes_wh is None:
-            return q
+            return True
         w, h = (float(v) for v in self.image_sizes_wh[view])
         if w <= 0 or h <= 0:
-            return q
-        inset = self._CLAMP_INSET_PX
-        return np.array(
-            [
-                float(np.clip(q[0], inset, max(inset, w - 1.0 - inset))),
-                float(np.clip(q[1], inset, max(inset, h - 1.0 - inset))),
-            ]
-        )
-
-    #: Displayed-vs-``pose2d`` distance below which a pixel is the detector's own output. The
-    #: two populations are cleanly separated -- on scape_Fly4_006 no finite cell differs by
-    #: between 1e-9 and 1e-3 px, and 454,293 of the 457,481 that differ do so by over 1 px --
-    #: so this only has to survive a float round-trip, not discriminate a close call.
-    _RAW_IDENTITY_PX = 1e-6
-
-    def _is_raw_detection(self, view: int, t: int, point: int, xy) -> bool:
-        """Is the displayed pixel at this cell what the detector actually produced?
-
-        ``False`` means a later stage wrote over it -- in practice the reprojected 3D seeded
-        into a contralateral cell. When there is no ``pose2d`` array to compare against the
-        answer is ``True``: such a file has no separate detector stage that could have been
-        overwritten, so its displayed pixels are the detections.
-        """
-        raw = self.raw_pts2d
-        if raw is None:
             return True
-        r = raw[view, t, point]
-        if not np.all(np.isfinite(r)):
-            return False  # the detector did not fire here, so this pixel came from elsewhere
-        return bool(
-            np.linalg.norm(np.asarray(xy, dtype=float) - r) <= self._RAW_IDENTITY_PX
-        )
+        return bool(0.0 <= float(xy[0]) <= w - 1.0 and 0.0 <= float(xy[1]) <= h - 1.0)
 
     def confirm(
         self,
@@ -1129,14 +1181,25 @@ class EditorState:
         sources: str = "all",
         frame: int | None = None,
     ) -> bool:
-        """Promote suggested positions to GT for many ``(view, point)`` targets at once.
+        """Create GT at the *displayed* position for many ``(view, point)`` targets at once.
 
-        ``sources`` selects which suggestion to snapshot: ``"predictions"`` (the
-        displayed per-view pixel), ``"projections"`` (the current 3D reprojected), or
-        ``"all"`` (prediction where present, else projection). A snapshotted pixel is
-        tagged by where it actually came from, not by which source asked for it -- see
-        :meth:`_is_raw_detection`. Occluded views, already-GT views and points declared
-        absent are left untouched. One undo step; the 3D re-derives once. Returns whether
+        The bulk form of a drag's first half: it plants a GT pixel where the operator can
+        already see a dot, so the joint is authored and can then be nudged. ``sources``
+        picks which proposal layers are eligible -- ``"predictions"`` (the detection),
+        ``"projections"`` (the reprojected 3D), or ``"all"`` (detection where it fired,
+        else the reprojection).
+
+        The stored coordinate is the displayed one, because bulk-creating GT means "these
+        dots are right", and storing anything other than the dot the operator saw would
+        record a position they never approved.
+
+        A cell with **nothing on screen** is skipped, not invented. An off-image
+        reprojection, or a joint with no 3D and no detection, has no dot to approve; its
+        Unplaced seed (:meth:`placeholder_pts2d`) is already a draggable handle, so the
+        editor does not need to store a fabricated pixel to give the operator something to
+        grab. Occluded views, already-GT views and absent points are skipped too -- for an
+        absent point a select-all would otherwise author GT on a phantom limb in every
+        frame visited. One undo step; the touched points re-derive once. Returns whether
         anything changed.
         """
         t = self._resolve_frame(frame)
@@ -1146,66 +1209,30 @@ class EditorState:
         want_proj = sources in ("all", "projections")
         proj = self.display_pts3d_projected(t) if want_proj else None
         changed = False
+        touched: set[int] = set()  # the points to re-derive (never the whole frame)
         absent = self.labels.absent_at(t)
         for view, point in targets:
-            # An absent point must be skipped here, not merely left NaN downstream: a
-            # select-all + confirm would otherwise fabricate GT on the phantom limb on
-            # every frame the operator visits, and `_grabbable` even clamps the invented
-            # pixel into the image so it looks like a real, draggable observation.
             if (
                 absent[point]
                 or self.labels.occluded[view, t, point]
                 or self.labels.has_gt[view, t, point]
             ):
                 continue
-            xy = prov = None
+            xy = None
             pred = self.result.pts2d[view, t, point]
             if want_pred and np.all(np.isfinite(pred)):
-                # The COORDINATE is the displayed one: bulk confirm means "I looked at these
-                # dots and they are right", so storing anything other than the dot the operator
-                # saw would record a position they never approved.
-                #
-                # The PROVENANCE, though, must not claim more than it knows. ``result.pts2d`` is
-                # the most-derived stage, and in a directory prepared for contralateral
-                # labeling the reprojected 3D has been written *over* the detector's pixels --
-                # measured on scape_Fly4_006: 457,481 of 1,068,256 finite cells (43%) differ
-                # from ``pose2d/points``, median 14.9 px, p90 161 px. Calling those
-                # CONFIRMED_PREDICTION would be false, and it matters because that is the one
-                # provenance ``labels-export`` keeps unconditionally, so geometry would enter
-                # training labeled as detector evidence.
-                #
-                # So the tag follows the pixel's actual origin: unchanged from ``raw_pts2d`` ->
-                # the detector really did say this; overwritten -> it is reprojected geometry,
-                # tagged CONFIRMED_PROJECTION like any other reprojection.
-                prov = (
-                    Provenance.CONFIRMED_PREDICTION
-                    if self._is_raw_detection(view, t, point, pred)
-                    else Provenance.CONFIRMED_PROJECTION
-                )
                 xy = pred
-            if (
-                xy is None
-                and proj is not None
-                and np.all(np.isfinite(proj[view, point]))
-            ):
-                xy, prov = proj[view, point], Provenance.CONFIRMED_PROJECTION
-            # Every targeted cell must end up with a point the operator can SEE and DRAG.
-            grab = self._grabbable(view, point, t, xy)
-            if grab is not None:
-                if xy is None or not np.allclose(
-                    grab, np.asarray(xy, dtype=float), atol=1e-9
-                ):
-                    # Clamped into frame, or filled from the placeholder chain -- either way the
-                    # coordinate is the editor's invention, not a claim about the fly, so it takes
-                    # the provenance `export_gt` drops unconditionally. It cannot share
-                    # CONFIRMED_PROJECTION: training may legitimately want real reprojected pixels,
-                    # and a clamped seed sits at the image edge, which is the worst place to put a
-                    # Gaussian the network is asked to reproduce. Dragging it restamps it DRAGGED.
-                    prov = Provenance.PLACEHOLDER_SEED
-                self.labels.set_gt(view, t, point, grab, provenance=prov)
-                changed = True
+            if xy is None and proj is not None:
+                cand = proj[view, point]
+                if np.all(np.isfinite(cand)):
+                    xy = cand
+            if xy is None or not self._on_image(view, xy):
+                continue
+            self.labels.set_gt(view, t, point, xy)
+            touched.add(point)
+            changed = True
         if changed:
-            self._invalidate_frame3d(t)
+            self._rederive_points(t, touched)
             self._invalidate_nmf(t)
         else:
             self._undo.pop()  # nothing changed: drop the no-op undo entry
@@ -1236,7 +1263,7 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         for view, point in targets:
             self.labels.clear_view(view, t, point)
-        self._invalidate_frame3d(t)
+        self._rederive_points(t, {point for _, point in targets})
         self._invalidate_nmf(t)
 
     def occlude_targets(self, targets, frame: int | None = None) -> None:
@@ -1264,5 +1291,5 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         for view, point in targets:
             self.labels.set_occluded(view, t, point, True)
-        self._invalidate_frame3d(t)
+        self._rederive_points(t, {point for _, point in targets})
         self._invalidate_nmf(t)

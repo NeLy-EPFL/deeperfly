@@ -9,7 +9,7 @@ a tri-state:
 .. code-block:: text
 
     unset      -> fall back to the detector's prediction, else the 3D reprojection
-    gt(x, y)   -> an affirmed 2D pixel (with provenance: how it was authored)
+    gt(x, y)   -> a 2D pixel the operator created (by dragging it into place)
     occluded   -> "a human cannot place this point from this view" (dropped from 3D)
 
 ``gt`` and ``occluded`` are mutually exclusive. Alongside that per-``(view, frame,
@@ -52,6 +52,15 @@ nothing, and the two masks are the whole contract:
     has_gt              gt_authored & ~absent          -- everything else
     occluded_effective  occluded    & ~absent          -- everything else
 
+**One kind of ground truth (schema v7).** v5/v6 tagged each ``gt`` row with a
+``provenance`` code recording which layer its pixel had been copied out of -- dragged,
+confirmed prediction, confirmed projection, or an editor-invented placeholder. v7 drops
+it. GT is created by *dragging a point from a proposed initial location* (a detection or a
+reprojection), and which proposal it started from is not a property of the label that
+results; the proposal layers are still there to be read separately whenever a consumer
+wants the precedence GT -> detection -> projection. Migrating a v5/v6 file keeps every row
+except the invented placeholder seeds, which were never exportable.
+
 On disk (schema v2) the deltas are stored **sparsely** (COO), which is tiny next to
 ``results.h5`` and, unlike the old dense ``corrections.h5``, carries no copy of the
 prediction NaN pattern:
@@ -62,10 +71,7 @@ prediction NaN pattern:
                           subject_id}   (subject_id added in v3; optional, may be null)
     gt/
         index       (N, 3) int32   [view, frame, point]
-        xy          (N, 2) float64  affirmed 2D pixel (footage space)
-        provenance  (N,)   uint8    1=dragged, 2=confirmed_prediction, 3=confirmed_projection,
-                                    4=placeholder_seed (v5; an editor-invented drag handle,
-                                    never exported -- see :class:`Provenance`)
+        xy          (N, 2) float64  the 2D pixel the operator created (footage space)
     occluded/
         index       (M, 3) int32   [view, frame, point]
     reviewed/                       (added in v2; absent in a v1 file -> no frames reviewed)
@@ -80,7 +86,6 @@ prediction NaN pattern:
         void_gt/                    the gt rows the declaration vetoes (quarantine)
             index   (N', 3) int32
             xy      (N', 2) float64
-            provenance (N',) uint8
         void_occluded/
             index   (M', 3) int32   the occlusion rows the declaration vetoes
 
@@ -122,7 +127,6 @@ __all__ = [
     "LandmarkLabels",
     "absent_to_spans",
     "spans_to_absent",
-    "Provenance",
     "save_labels",
     "load_labels",
     "load_landmark_labels",
@@ -140,7 +144,7 @@ log = logging.getLogger("deeperfly")
 #: stores; the rest of the schema is numeric).
 _STR = h5py.string_dtype("utf-8")
 
-LABELS_FORMAT_VERSION = 6
+LABELS_FORMAT_VERSION = 7
 
 #: The COO index width from v6 on: ``[view, frame, instance, point]``. Earlier versions
 #: wrote ``[view, frame, point]``.
@@ -157,34 +161,16 @@ LABELS_FORMAT_VERSION = 6
 _INDEX_WIDTH_V6 = 4
 
 
-class Provenance:
-    """How a GT pixel was authored (stored per ``gt`` row so it can be filtered).
-
-    ``dragged`` and ``confirmed_prediction`` are the operator affirming a pixel they
-    looked at; ``confirmed_projection`` is a bulk-accepted triangulation guess (the
-    network never fired there), so an export/solve can down-weight or drop it.
-
-    ``placeholder_seed`` is not a claim about the fly at all. When a bulk confirm has
-    no pixel to offer -- the reprojection landed off the image, or there is no 3D at
-    all -- the editor still stores *something* so the operator has a dot to grab and
-    drag (:meth:`EditorState._grabbable`, which clamps it into frame). That coordinate
-    is invented, and it is invented *at the image edge*, which is the worst possible
-    place to teach a heatmap. It is therefore dropped by :func:`export_gt`
-    unconditionally, including under ``include_projection=True``: a drag handle is
-    machinery, not evidence, and no training flag should be able to turn it into a
-    label. The moment the operator drags it, :meth:`EditorState.drag` restamps it
-    ``dragged`` and it becomes real.
-
-    The distinction is why v5 exists. Before it, a clamped seed and a genuine
-    reprojected pixel shared code 3, so "include projections in training" could not be
-    said without also saying "train on fabricated edge coordinates".
-    """
-
-    NONE = 0
-    DRAGGED = 1
-    CONFIRMED_PREDICTION = 2
-    CONFIRMED_PROJECTION = 3
-    PLACEHOLDER_SEED = 4
+#: v5/v6 stored a per-row ``provenance`` code saying which layer a GT pixel had been
+#: *copied out of* (dragged / confirmed_prediction / confirmed_projection /
+#: placeholder_seed). v7 drops it: there is one kind of ground truth -- a pixel the
+#: operator created -- and the layer a proposal came from is not a property of the
+#: resulting label. The one code that was never a claim about the animal was
+#: ``placeholder_seed = 4``, a coordinate the editor invented (clamped to the image edge)
+#: purely to give the operator something to grab; ``export_gt`` dropped it
+#: unconditionally. Migration must drop those rows rather than carry them over, or
+#: fabricated edge pixels would become indistinguishable from real labels.
+_LEGACY_PLACEHOLDER_SEED = 4
 
 
 @dataclass
@@ -193,7 +179,7 @@ class Labels:
 
     The per-``(view, frame, point)`` arrays are dense ``(V, T, P)``-shaped (2D pixels
     carry a trailing 2). A GT pixel is *stored* iff ``gt`` is finite there, which is
-    exactly ``provenance != 0``; ``occluded`` marks views the operator flagged
+    exactly ``isfinite(gt)``; ``occluded`` marks views the operator flagged
     unusable. ``reviewed`` is a separate per-*frame* ``(T,)`` flag (the operator's "I
     have checked this frame"), independent of the point labels. ``absent`` is a
     per-``(frame, point)`` ``(T, P)`` flag -- "this keypoint is not on this animal" -- which
@@ -210,13 +196,11 @@ class Labels:
     Because the veto is applied on read, declaring a point absent destroys nothing and
     un-declaring it restores every pixel and occlusion underneath byte for byte.
 
-    The invariants (``gt`` and ``occluded`` disjoint; ``provenance`` set iff ``gt``
-    finite) are maintained by the mutators and re-checked on load. ``dirty`` tracks
-    unsaved changes.
+    The invariant (``gt`` and ``occluded`` disjoint) is maintained by the mutators and
+    re-checked on load. ``dirty`` tracks unsaved changes.
     """
 
     gt: Float[np.ndarray, "V T P 2"]
-    gt_provenance: np.ndarray  # (V, T, P) uint8, a Provenance value
     occluded: Bool[np.ndarray, "V T P"]
     reviewed: Bool[np.ndarray, "T"]  # per-frame "operator has checked this frame"
     #: Per-``(frame, point)`` ``(T, P)`` "this keypoint is not on this animal" (v4; v3 was
@@ -247,7 +231,6 @@ class Labels:
         """An overlay with no GT, nothing occluded, no frame reviewed, nothing absent."""
         return cls(
             gt=np.full((n_views, n_frames, n_points, 2), np.nan),
-            gt_provenance=np.zeros((n_views, n_frames, n_points), dtype=np.uint8),
             occluded=np.zeros((n_views, n_frames, n_points), dtype=bool),
             reviewed=np.zeros(n_frames, dtype=bool),
             absent=np.zeros(n_points, dtype=bool),
@@ -322,25 +305,15 @@ class Labels:
 
     # -- mutators (maintain the invariants) -----------------------------------
 
-    def set_gt(
-        self,
-        view: int,
-        frame: int,
-        point: int,
-        xy,
-        *,
-        provenance: int = Provenance.DRAGGED,
-    ) -> None:
-        """Author a GT pixel for ``point`` in ``view`` at ``frame`` (clears occluded)."""
+    def set_gt(self, view: int, frame: int, point: int, xy) -> None:
+        """Create a GT pixel for ``point`` in ``view`` at ``frame`` (clears occluded)."""
         self.gt[view, frame, point] = np.asarray(xy, dtype=float)
-        self.gt_provenance[view, frame, point] = np.uint8(provenance)
         self.occluded[view, frame, point] = False
         self.dirty = True
 
     def clear_gt(self, view: int, frame: int, point: int) -> None:
         """Drop just the GT pixel for ``point`` in ``view`` (occlusion untouched)."""
         self.gt[view, frame, point] = np.nan
-        self.gt_provenance[view, frame, point] = Provenance.NONE
         self.dirty = True
 
     def set_occluded(self, view: int, frame: int, point: int, value: bool) -> None:
@@ -348,20 +321,17 @@ class Labels:
         self.occluded[view, frame, point] = bool(value)
         if value:
             self.gt[view, frame, point] = np.nan
-            self.gt_provenance[view, frame, point] = Provenance.NONE
         self.dirty = True
 
     def clear_view(self, view: int, frame: int, point: int) -> None:
         """Reset one ``(view, frame, point)`` to ``unset`` (drop GT and occlusion)."""
         self.gt[view, frame, point] = np.nan
-        self.gt_provenance[view, frame, point] = Provenance.NONE
         self.occluded[view, frame, point] = False
         self.dirty = True
 
     def clear_point(self, frame: int, point: int) -> None:
         """Reset every view of ``point`` at ``frame`` to ``unset``."""
         self.gt[:, frame, point] = np.nan
-        self.gt_provenance[:, frame, point] = Provenance.NONE
         self.occluded[:, frame, point] = False
         self.dirty = True
 
@@ -373,7 +343,6 @@ class Labels:
         frame" would silently un-declare an amputation for the whole recording.
         """
         self.gt[:, frame] = np.nan
-        self.gt_provenance[:, frame] = Provenance.NONE
         self.occluded[:, frame] = False
         self.dirty = True
 
@@ -423,16 +392,13 @@ class LandmarkLabels:
         ``(L,)`` whether each is one fixed 3D point over time. Stored alongside the
         observations so a solve reading the file alone knows how to treat each column.
     xy
-        ``(V, T, L, 2)`` observed pixel, NaN where unobserved.
-    provenance
-        ``(V, T, L)`` a :class:`Provenance` code (a landmark is always operator-placed, so
-        in practice ``DRAGGED``).
+        ``(V, T, L, 2)`` observed pixel, NaN where unobserved. A landmark is always
+        operator-placed, so ``isfinite(xy)`` is the whole of "this one is observed".
     """
 
     names: tuple[str, ...]
     static: Bool[np.ndarray, "L"]
     xy: Float[np.ndarray, "V T L 2"]
-    provenance: np.ndarray
     dirty: bool = field(default=False)
 
     @classmethod
@@ -445,7 +411,6 @@ class LandmarkLabels:
             if static is None
             else np.asarray(static, dtype=bool).reshape(n),
             xy=np.full((n_views, n_frames, n, 2), np.nan),
-            provenance=np.zeros((n_views, n_frames, n), dtype=np.uint8),
         )
 
     @property
@@ -475,13 +440,11 @@ class LandmarkLabels:
     def set(self, view: int, frame: int, landmark: int, xy) -> None:
         """Place (or move) a landmark observation."""
         self.xy[view, frame, landmark] = np.asarray(xy, dtype=float)
-        self.provenance[view, frame, landmark] = Provenance.DRAGGED
         self.dirty = True
 
     def clear(self, view: int, frame: int, landmark: int) -> None:
         """Drop one landmark observation."""
         self.xy[view, frame, landmark] = np.nan
-        self.provenance[view, frame, landmark] = Provenance.NONE
         self.dirty = True
 
     def counts(self) -> dict[str, int]:
@@ -509,9 +472,6 @@ def _write_landmarks(f, landmarks: LandmarkLabels | None) -> None:
         "index", data=np.stack([v, t, lm], axis=1).astype(np.int32), dtype="int32"
     )
     g.create_dataset("xy", data=landmarks.xy[obs].astype(np.float64), dtype="float64")
-    g.create_dataset(
-        "provenance", data=landmarks.provenance[obs].astype(np.uint8), dtype="uint8"
-    )
 
 
 def load_landmark_labels(
@@ -549,7 +509,6 @@ def load_landmark_labels(
         static = np.asarray(g["static"][()], dtype=bool).reshape(len(names))
         index = np.asarray(g["index"][()], dtype=np.int64).reshape(-1, 3)
         xy = np.asarray(g["xy"][()], dtype=float).reshape(-1, 2)
-        prov = np.asarray(g["provenance"][()], dtype=np.uint8).reshape(-1)
 
     out = LandmarkLabels.empty(n_views, n_frames, names, static)
     if index.size:
@@ -567,9 +526,8 @@ def load_landmark_labels(
             log.warning(
                 "%s: dropped %d out-of-range/NaN landmark row(s)", p, int((~keep).sum())
             )
-        for (vi, ti, li), pt, pr in zip(index[keep], xy[keep], prov[keep]):
+        for (vi, ti, li), pt in zip(index[keep], xy[keep]):
             out.xy[vi, ti, li] = pt
-            out.provenance[vi, ti, li] = pr
     out.dirty = False
     return out
 
@@ -649,10 +607,8 @@ def _check_identity(stored: dict, current: dict, path: Path) -> None:
 # -- persistence --------------------------------------------------------------
 
 
-def _coo_gt(
-    labels: Labels, mask: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(index (N,4), xy (N,2), provenance (N,))`` for the GT cells ``mask`` selects.
+def _coo_gt(labels: Labels, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``(index (N,4), xy (N,2))`` for the GT cells ``mask`` selects.
 
     The index is ``[view, frame, instance, point]``; ``instance`` is 0 throughout in this
     single-animal build (see :data:`_INDEX_WIDTH_V6`).
@@ -661,7 +617,6 @@ def _coo_gt(
     return (
         np.stack([v, t, np.zeros_like(v), p], axis=1).astype(np.int32),
         labels.gt[mask].astype(np.float64),
-        labels.gt_provenance[mask].astype(np.uint8),
     )
 
 
@@ -778,8 +733,8 @@ def save_labels(
     live_occ_mask = labels.occluded & ~vetoed
     void_occ_mask = labels.occluded & vetoed
 
-    gt_index, gt_xy, gt_prov = _coo_gt(labels, live_gt_mask)
-    vgt_index, vgt_xy, vgt_prov = _coo_gt(labels, void_gt_mask)
+    gt_index, gt_xy = _coo_gt(labels, live_gt_mask)
+    vgt_index, vgt_xy = _coo_gt(labels, void_gt_mask)
     rev_index = np.nonzero(labels.reviewed)[0].astype(np.int32)  # (K,) frame indices
     absent_spans = absent_to_spans(labels.absent)
     # ``index`` stays the whole-recording subset: it is what a v3 reader understands, and
@@ -798,7 +753,6 @@ def save_labels(
         g = f.create_group("gt")
         g.create_dataset("index", data=gt_index, dtype="int32")
         g.create_dataset("xy", data=gt_xy, dtype="float64")
-        g.create_dataset("provenance", data=gt_prov, dtype="uint8")
         o = f.create_group("occluded")
         o.create_dataset("index", data=_coo_cells(live_occ_mask), dtype="int32")
         r = f.create_group("reviewed")
@@ -809,7 +763,6 @@ def save_labels(
         vg = a.create_group("void_gt")
         vg.create_dataset("index", data=vgt_index, dtype="int32")
         vg.create_dataset("xy", data=vgt_xy, dtype="float64")
-        vg.create_dataset("provenance", data=vgt_prov, dtype="uint8")
         vo = a.create_group("void_occluded")
         vo.create_dataset("index", data=_coo_cells(void_occ_mask), dtype="int32")
         _write_landmarks(f, landmarks)
@@ -846,7 +799,13 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
         stored_version = int(meta.get("deeperfly_labels_format_version", 1))
         gt_index = _read_cells(f["gt/index"][()], p, "gt")  # type: ignore[index]
         gt_xy = np.asarray(f["gt/xy"][()], dtype=float).reshape(-1, 2)  # type: ignore[index]
-        gt_prov = np.asarray(f["gt/provenance"][()], dtype=np.uint8).reshape(-1)  # type: ignore[index]
+        # v5/v6 only: the legacy per-row provenance, read solely so the migration can
+        # drop the invented placeholder-seed rows (see :data:`_LEGACY_PLACEHOLDER_SEED`).
+        gt_prov = (
+            np.asarray(f["gt/provenance"][()], dtype=np.uint8).reshape(-1)  # type: ignore[index]
+            if "gt/provenance" in f
+            else np.zeros(len(gt_xy), dtype=np.uint8)
+        )
         occ_index = _read_cells(f["occluded/index"][()], p, "occluded")  # type: ignore[index]
         rev_index = (  # optional group: pre-v2 files carry no review progress
             np.asarray(f["reviewed/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
@@ -874,9 +833,13 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
                 vgt_xy = np.asarray(  # type: ignore[index]
                     f["absent/void_gt/xy"][()], dtype=float
                 ).reshape(-1, 2)
-                vgt_prov = np.asarray(  # type: ignore[index]
-                    f["absent/void_gt/provenance"][()], dtype=np.uint8
-                ).reshape(-1)
+                vgt_prov = (
+                    np.asarray(  # type: ignore[index]
+                        f["absent/void_gt/provenance"][()], dtype=np.uint8
+                    ).reshape(-1)
+                    if "absent/void_gt/provenance" in f
+                    else np.zeros(len(vgt_xy), dtype=np.uint8)
+                )
             if "absent/void_occluded" in f:
                 vocc_index = _read_cells(  # type: ignore[index]
                     f["absent/void_occluded/index"][()], p, "quarantined occlusion"
@@ -914,15 +877,28 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
             & (pt < n_points)
         )
 
+    # v5/v6 -> v7: an invented placeholder-seed row was never a claim about the animal
+    # (``export_gt`` dropped it unconditionally), and v7 has no provenance column to keep
+    # telling it apart from a real label. Drop it at the boundary rather than promote it.
+    if gt_index.size and (gt_prov == _LEGACY_PLACEHOLDER_SEED).any():
+        legacy = gt_prov == _LEGACY_PLACEHOLDER_SEED
+        log.warning(
+            "%s: dropped %d editor-invented placeholder GT row(s) while migrating to "
+            "labels format v%d (they were never exportable)",
+            p,
+            int(legacy.sum()),
+            LABELS_FORMAT_VERSION,
+        )
+        gt_index, gt_xy = gt_index[~legacy], gt_xy[~legacy]
+
     # GT rows: keep in-range, finite, last-write-wins on duplicate keys.
     if gt_index.size:
         keep = _in_range(gt_index) & np.isfinite(gt_xy).all(axis=1)
         n_dropped = int((~keep).sum())
         if n_dropped:
             log.warning("%s: dropped %d out-of-range/NaN GT row(s)", p, n_dropped)
-        for (v, t, pt), xy, prov in zip(gt_index[keep], gt_xy[keep], gt_prov[keep]):
+        for (v, t, pt), xy in zip(gt_index[keep], gt_xy[keep]):
             labels.gt[v, t, pt] = xy
-            labels.gt_provenance[v, t, pt] = prov
     # Occluded rows: keep in-range, but GT wins the disjointness tie. The tie is decided
     # on the RAW authored mask, not ``has_gt``: under the absence veto ``has_gt`` reads
     # False for a declared point, which would start *retaining* an occlusion that a v2
@@ -989,7 +965,7 @@ def migrate_from_corrections(
     drops) is:
 
     - ``pts2d_edited`` (incl. the old ``fixed`` finalized pixels) with a finite pixel
-      -> **GT** (provenance ``dragged``). ``fixed`` collapses into GT.
+      -> **GT**. ``fixed`` collapses into GT.
     - ``pts2d_invisible`` on a view the detector *did* see (``isfinite`` prediction)
       -> **occluded** (a confident human "delete this view").
     - ``pts2d_invisible`` where the detector *also* missed is ambiguous: the fresh
@@ -1010,7 +986,6 @@ def migrate_from_corrections(
     gt_mask = corrections.pts2d_edited & np.isfinite(corrections.pts2d).all(axis=-1)
     for v, t, pt in zip(*np.nonzero(gt_mask)):
         labels.gt[v, t, pt] = corrections.pts2d[v, t, pt]
-        labels.gt_provenance[v, t, pt] = Provenance.DRAGGED
 
     occ_confident = corrections.pts2d_invisible & pred_finite & ~gt_mask
     occ_ambiguous = corrections.pts2d_invisible & ~pred_finite & ~gt_mask
@@ -1037,15 +1012,18 @@ def migrate_from_corrections(
 
 
 def export_gt(
-    labels: Labels, *, include_projection: bool = False
+    labels: Labels,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Dense ground-truth arrays for training/eval, filtered by provenance.
+    """Dense ground-truth arrays for training/eval.
 
     Returns ``(gt_xy (V,T,P,2), gt_mask (V,T,P) bool, occluded (V,T,P) bool)``. The GT
-    is in **footage pixel space** -- the coordinate the operator clicked. By default
-    ``confirmed_projection`` GT (the model's own reprojected guess) is excluded so the
-    export is only human-placed / prediction-confirmed pixels; ``include_projection``
-    keeps it. ``placeholder_seed`` GT is dropped either way -- see :class:`Provenance`.
+    is in **footage pixel space** -- the coordinate the operator clicked.
+
+    There is nothing to filter: a GT pixel is a pixel the operator created, and that is
+    the only kind there is. A cell with *no* GT is not this function's business -- the
+    consumer decides what to fall back to, in the editor's own precedence order (GT,
+    else the detection, else the reprojection of the derived 3D), which needs the
+    detections and the rig this function deliberately does not take.
 
     To train the 2D detector, transform ``gt_xy`` from footage space into each
     pathway's model-input space by inverting the pathway ``FrameTransform``
@@ -1060,13 +1038,6 @@ def export_gt(
     :func:`export_absent` for the declaration itself.
     """
     mask = labels.has_gt.copy()
-    if not include_projection:
-        mask &= labels.gt_provenance != Provenance.CONFIRMED_PROJECTION
-    # Unconditional, and deliberately not behind ``include_projection``: a placeholder
-    # seed is a coordinate the editor invented so the operator would have something to
-    # grab, clamped to the image edge when the reprojection fell outside. It is the one
-    # provenance that is never a claim about where the keypoint is.
-    mask &= labels.gt_provenance != Provenance.PLACEHOLDER_SEED
     gt_xy = np.where(mask[..., None], labels.gt, np.nan)
     return gt_xy, mask, labels.occluded_effective
 

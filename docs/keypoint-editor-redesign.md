@@ -241,6 +241,17 @@ stay "all" while making projection-sourced GT **filterable**: it can be excluded
 optionally down-weighted/excluded from the solve, and audited later. Drag = `dragged`,
 confirm-a-prediction = `confirmed_prediction`, confirm-a-projection = `confirmed_projection`.
 
+> **SUPERSEDED (schema v7).** Provenance was removed. It recorded which layer a pixel had been
+> *copied out of*, a question that only arose because a bulk confirm copies a proposal into the GT
+> array. The model it was compensating for is simpler than the one above: GT is created by dragging a
+> point from a **proposed initial location** (a detection or a reprojection), a detection can be
+> excluded from triangulation, GT overrides detection in the solve, and an export follows the
+> precedence **GT → detection → projection** by reading each layer where it lives. Which proposal a
+> label started from is not a property of the label. The three proposal layers still exist and are
+> still separable, so nothing became unfilterable; what went away was a tag, four enum values,
+> `_is_raw_detection`'s post-hoc guessing at the pixel's origin, the invented `placeholder_seed`
+> coordinate, and the merge's provenance ranking. See `labels.py`'s module docstring.
+
 ### 4.2 Load-time invariants — **[review]** (two independent COO lists can violate them)
 
 The mutual-exclusion and uniqueness invariants of §2.2 are enforced in-memory by the edit ops but

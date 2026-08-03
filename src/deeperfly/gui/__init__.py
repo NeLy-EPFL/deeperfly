@@ -217,9 +217,6 @@ def _load_landmarks(project, labels_path: Path, n_views: int, n_frames: int):
         for i, name in enumerate(stored.names):
             if name in declared.names:
                 fresh.xy[:, :, declared.index(name)] = stored.xy[:, :, i]
-                fresh.provenance[:, :, declared.index(name)] = stored.provenance[
-                    :, :, i
-                ]
         fresh.dirty = False
         log.info(
             "the project's landmark set changed since %s was written; carried %d "

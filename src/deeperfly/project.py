@@ -330,14 +330,9 @@ def label_stats(labels_path: Path) -> dict:
     Counts *live* rows, so a keypoint declared absent -- whose labels are quarantined
     under ``absent/void_*`` -- is not counted as ground truth.
 
-    **Two GT counts, and the difference is the whole point.** ``gt_points`` is every
-    stored row; ``gt_trainable`` is what :func:`deeperfly.gui.labels.export_gt` would
-    actually yield -- rows whose provenance is a human's pixel
-    (``dragged``/``confirmed_prediction``), with ``confirmed_projection`` (a bulk-accepted
-    triangulation guess) and ``placeholder_seed`` (a drag handle the editor invented at the
-    image edge) excluded, exactly as the export excludes them. Reporting only the raw count
-    would overstate a training set by however much geometry got bulk-confirmed into it, and
-    a progress number that does not match the export is worse than no progress number.
+    ``gt_points`` is every stored row, which is exactly what
+    :func:`deeperfly.gui.labels.export_gt` yields: there is one kind of ground truth -- a
+    pixel the operator created -- so the progress number and the export cannot disagree.
 
     Parameters
     ----------
@@ -347,15 +342,13 @@ def label_stats(labels_path: Path) -> dict:
     Returns
     -------
     dict
-        ``gt_points``, ``gt_trainable``, ``provenance`` (a ``name -> count`` breakdown),
+        ``gt_points``,
         ``occluded``, ``labeled_frames``, ``reviewed_frames``, ``absent_points`` and
         ``format_version``. All zero when the file is absent or unreadable (with a
         warning in the unreadable case).
     """
     empty = {
         "gt_points": 0,
-        "gt_trainable": 0,
-        "provenance": {},
         "occluded": 0,
         "labeled_frames": 0,
         "reviewed_frames": 0,
@@ -371,15 +364,12 @@ def label_stats(labels_path: Path) -> dict:
         import h5py
         import numpy as np
 
-        from .gui.labels import Provenance
-
         with h5py.File(path, "r") as f:
             # Width-tolerant: v6+ stores [view, frame, instance, point], earlier versions
             # [view, frame, point]. Only column 1 (frame) is read, and it is column 1 in
             # both -- but the reshape must not assume a width, or a v6 file would raise
             # here and a whole project listing would report zeros.
             gt_index = _coo_rows(f["gt/index"][()])
-            prov = np.asarray(f["gt/provenance"][()]).reshape(-1)
             occ = _coo_rows(f["occluded/index"][()])
             reviewed = (
                 np.asarray(f["reviewed/index"][()]).reshape(-1)
@@ -390,26 +380,8 @@ def label_stats(labels_path: Path) -> dict:
                 np.asarray(f["absent/index"][()]).reshape(-1) if "absent" in f else []
             )
             meta = json.loads(f.attrs.get("meta", "{}"))
-        # Named rather than numeric, so a reader of the status output does not have to
-        # know that 3 means "the model's own guess, bulk-confirmed".
-        codes = {
-            "dragged": Provenance.DRAGGED,
-            "confirmed_prediction": Provenance.CONFIRMED_PREDICTION,
-            "confirmed_projection": Provenance.CONFIRMED_PROJECTION,
-            "placeholder_seed": Provenance.PLACEHOLDER_SEED,
-        }
-        breakdown = {
-            name: int((prov == code).sum())
-            for name, code in codes.items()
-            if (prov == code).any()
-        }
-        trainable = breakdown.get("dragged", 0) + breakdown.get(
-            "confirmed_prediction", 0
-        )
         return {
             "gt_points": int(len(gt_index)),
-            "gt_trainable": trainable,
-            "provenance": breakdown,
             "occluded": int(len(occ)),
             # Frames carrying human work: the distinct frame column of the GT rows.
             "labeled_frames": int(len(set(gt_index[:, 1].tolist())))
@@ -1243,7 +1215,6 @@ class Project:
         rows = self.status() if rows is None else rows
         keys = (
             "gt_points",
-            "gt_trainable",
             "occluded",
             "labeled_frames",
             "reviewed_frames",
@@ -1251,11 +1222,6 @@ class Project:
         out = {k: int(sum(r[k] for r in rows)) for k in keys}
         out["recordings"] = len(rows)
         out["with_labels"] = sum(1 for r in rows if r["gt_points"])
-        # Rows the export would drop, aggregated -- the gap between "labeled" and
-        # "trainable". Surfaced as a total because it is the number that changes a
-        # decision: 6,000 GT points of which 2,000 are reprojection guesses is a
-        # different training set than 6,000 human pixels.
-        out["gt_untrainable"] = out["gt_points"] - out["gt_trainable"]
         return out
 
     def bump_iteration(self) -> int:

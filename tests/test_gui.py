@@ -18,8 +18,6 @@ import numpy as np
 import pytest
 
 from deeperfly.gui import EditorState, resolve_footage
-from deeperfly.gui.labels import Provenance
-from deeperfly.results import PoseResult
 
 # -- displayed 2D: GT over prediction -----------------------------------------
 
@@ -34,7 +32,6 @@ def test_2d_edit_creates_gt_without_touching_original(result):
     assert np.allclose(disp[1, 3], result.pts2d[1, 1, 3])  # other view: the prediction
     np.testing.assert_array_equal(result.pts2d, original)  # result never mutated
     assert state.labels.has_gt[0, 1, 3]
-    assert state.labels.gt_provenance[0, 1, 3] == Provenance.DRAGGED
     assert state.dirty
 
 
@@ -355,10 +352,6 @@ def test_toggle_fixed_confirms_then_clears_gt(result):
     assert state.toggle_fixed(view, point, frame) is True
     assert state.labels.has_gt[view, frame, point]
     assert np.allclose(state.labels.gt[view, frame, point], pix)
-    assert (
-        state.labels.gt_provenance[view, frame, point]
-        == Provenance.CONFIRMED_PREDICTION
-    )
     assert np.allclose(state.display_pts2d_refine(frame)[view, point], pix)
 
     assert state.toggle_fixed(view, point, frame) is False
@@ -520,6 +513,44 @@ def test_a_streamed_drag_is_one_undo_step(result):
     assert not state.labels.has_gt[v, f, p]
 
 
+def test_two_gestures_on_one_point_are_two_undo_steps(result):
+    """A gesture ends at its settle, so a later nudge of the same joint is its own step.
+
+    Coalescing used to key on "the top of the undo stack has this same (frame, point)",
+    which merged two gestures the operator made minutes apart -- and in different views,
+    so one ctrl-z cleared GT in a view they never touched this time.
+    """
+    state = EditorState.from_result(result)
+    f, p = 0, 5
+    state.apply_3d_edit(0, p, state.display_pts2d_refine(f)[0, p] + 5.0, f, fix=True)
+    state.apply_3d_edit(3, p, state.display_pts2d_refine(f)[3, p] + 5.0, f, fix=True)
+    assert len(state._undo) == 2
+    state.undo()  # reverts only the second gesture
+    assert state.labels.has_gt[0, f, p] and not state.labels.has_gt[3, f, p]
+
+
+def test_a_new_drag_after_an_undo_does_not_rejoin_the_old_gesture(result):
+    """Drag A, drag B, ctrl-z, drag A again: the new drag is its own step ...
+
+    ... and it must not leave a live redo branch. The stale redo entry is a *whole-frame*
+    label snapshot, so redoing it re-applied B's edit and clobbered the drag the operator
+    had just made on A -- other points moving, from the operator's seat.
+    """
+    state = EditorState.from_result(result)
+    f, a, b = 0, 5, 9
+    state.apply_3d_edit(0, a, state.display_pts2d_refine(f)[0, a] + 5.0, f, fix=True)
+    state.apply_3d_edit(0, b, state.display_pts2d_refine(f)[0, b] + 5.0, f, fix=True)
+    state.undo()  # reverts b
+    assert state.can_redo
+
+    xy = state.display_pts2d_refine(f)[0, a] + np.array([11.0, -4.0])
+    state.apply_3d_edit(0, a, xy, f, fix=True)  # a fresh gesture on a
+    assert not state.can_redo  # the redo branch died with the new edit
+    assert len(state._undo) == 2  # ... and it did not rejoin a's first gesture
+    np.testing.assert_allclose(state.labels.gt[0, f, a], xy)
+    assert not state.labels.has_gt[0, f, b]  # b stayed reverted
+
+
 def test_reset_is_undoable(result):
     state = EditorState.from_result(result)
     state.apply_2d_edit(0, 4, (1.0, 2.0), frame=0)
@@ -527,6 +558,168 @@ def test_reset_is_undoable(result):
     assert not state.labels.has_gt[0, 0, 4]
     state.undo()  # undo the reset -> the GT returns
     assert state.labels.has_gt[0, 0, 4]
+
+
+# -- an edit never moves a point it did not target ----------------------------
+#
+# The derived 3D is *almost* a pure function of the labels, and the exception is what
+# these guard: a drag on a point with fewer than two usable views stores a ray-slide of
+# the prior 3D, which no re-derivation can reproduce (one pixel leaves depth free). So a
+# gesture that drops more of the derived-3D cache than it touched silently throws away
+# hand-placed depth -- and because the *labels* survive, it reads as "I undid one point
+# and the others moved". The fixture below is the case that used to break: an unplaced
+# joint placed by hand, then an unrelated edit, then history.
+
+UNPLACED = 10  # a joint triangulation dropped: NaN in the cleaned pts2d in every view
+OTHER = 3  # an ordinary joint, the one whose edit gets undone
+
+
+def _hand_placed_unplaced_joint(result, frame=1, xy=(410.0, 260.0)):
+    """A state where ``UNPLACED`` was placed by hand from a single view (a ray-slide).
+
+    Returns ``(state, placed_3d)``. ``placed_3d`` is only recoverable from the cache --
+    that is the whole point -- so every assertion below compares against it.
+    """
+    result.pts2d[:, :, UNPLACED] = np.nan
+    state = EditorState.from_result(result)
+    for i in range(1, 4):  # the client's streamed drag ...
+        f = i / 3
+        state.apply_3d_edit(
+            0, UNPLACED, (xy[0] * f + 200 * (1 - f), xy[1] * f + 200 * (1 - f)), frame
+        )
+    state.apply_3d_edit(0, UNPLACED, xy, frame, fix=True)  # ... and its settle
+    placed = state.display_pts3d(frame)[UNPLACED].copy()
+    assert np.all(np.isfinite(placed))
+    return state, placed
+
+
+def _assert_unplaced_held(state, placed, frame=1):
+    np.testing.assert_allclose(state.display_pts3d(frame)[UNPLACED], placed)
+    assert state.labels.has_gt[0, frame, UNPLACED]  # the label was never in doubt
+
+
+def test_undo_of_another_points_drag_keeps_a_hand_placed_depth(result):
+    state, placed = _hand_placed_unplaced_joint(result)
+    before = state.display_pts2d_refine(1).copy()
+    state.apply_3d_edit(0, OTHER, result.pts2d[0, 1, OTHER] + 15.0, 1, fix=True)
+    state.undo()
+    _assert_unplaced_held(state, placed)
+    # and nothing else in the frame moved either
+    np.testing.assert_allclose(
+        np.nan_to_num(state.display_pts2d_refine(1), nan=-1.0),
+        np.nan_to_num(before, nan=-1.0),
+    )
+
+
+def test_redo_of_another_points_drag_keeps_a_hand_placed_depth(result):
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.apply_3d_edit(0, OTHER, result.pts2d[0, 1, OTHER] + 15.0, 1, fix=True)
+    state.undo()
+    state.redo()
+    _assert_unplaced_held(state, placed)
+
+
+def test_undo_of_another_points_occlusion_keeps_a_hand_placed_depth(result):
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.toggle_invisible(2, OTHER, frame=1)
+    state.undo()
+    _assert_unplaced_held(state, placed)
+
+
+@pytest.mark.parametrize("whole_recording", [False, True])
+def test_marking_another_point_absent_keeps_a_hand_placed_depth(
+    result, whole_recording
+):
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.set_absent([OTHER], True, 1, whole_recording=whole_recording)
+    _assert_unplaced_held(state, placed)
+    state.undo()  # ... and undoing the declaration does not move it either
+    _assert_unplaced_held(state, placed)
+
+
+def test_bulk_confirm_keeps_an_untargeted_hand_placed_depth(result):
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.confirm([(v, OTHER) for v in range(state.n_views)], "all", 1)
+    _assert_unplaced_held(state, placed)
+    state.undo()
+    _assert_unplaced_held(state, placed)
+
+
+def test_bulk_reset_and_occlude_keep_an_untargeted_hand_placed_depth(result):
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.occlude_targets([(2, OTHER)], 1)
+    _assert_unplaced_held(state, placed)
+    state.reset_targets([(2, OTHER)], 1)
+    _assert_unplaced_held(state, placed)
+    state.undo()
+    _assert_unplaced_held(state, placed)
+
+
+def test_reset_frame_drops_the_hand_placed_depth_but_undo_restores_it(result):
+    # reset_frame really does clear every label in the frame, so re-deriving the whole
+    # frame is correct there -- but the undo must still be exact.
+    state, placed = _hand_placed_unplaced_joint(result)
+    state.reset_frame(1)
+    assert not np.allclose(state.display_pts3d(1)[UNPLACED], placed, equal_nan=True)
+    state.undo()
+    _assert_unplaced_held(state, placed)
+
+
+def test_undo_pressed_mid_drag_moves_nothing_else(result):
+    """Ctrl+Z while the point is still held -- only ``fix=False`` edits have landed."""
+    state, placed = _hand_placed_unplaced_joint(result)
+    before3d = state.display_pts3d(1).copy()
+    before2d = state.display_pts2d_refine(1).copy()
+    for dx in (5.0, 10.0, 15.0):  # the mid-drag stream, never released
+        state.apply_3d_edit(0, OTHER, result.pts2d[0, 1, OTHER] + dx, 1, fix=False)
+    assert state.undo() == 1
+    _assert_unplaced_held(state, placed)
+    keep = np.ones(before3d.shape[0], bool)
+    keep[OTHER] = False
+    np.testing.assert_allclose(
+        np.nan_to_num(state.display_pts3d(1)[keep], nan=-1.0),
+        np.nan_to_num(before3d[keep], nan=-1.0),
+    )
+    np.testing.assert_allclose(
+        np.nan_to_num(state.display_pts2d_refine(1)[:, keep], nan=-1.0),
+        np.nan_to_num(before2d[:, keep], nan=-1.0),
+    )
+
+
+def test_the_release_after_a_mid_drag_undo_is_its_own_undo_step(result):
+    """The pointerup still lands, and must start a fresh step -- not rejoin the undone one.
+
+    The operator ends with the joint under the cursor, so re-authoring the GT there is
+    right; what must not happen is the release silently joining the gesture the undo just
+    reverted (which also left the undone edit's redo entry alive to clobber it).
+    """
+    state, _placed = _hand_placed_unplaced_joint(result)
+    for dx in (5.0, 10.0, 15.0):
+        state.apply_3d_edit(0, OTHER, result.pts2d[0, 1, OTHER] + dx, 1, fix=False)
+    state.undo()
+    steps = len(state._undo)
+    state.apply_3d_edit(0, OTHER, result.pts2d[0, 1, OTHER] + 15.0, 1, fix=True)
+    assert state.labels.has_gt[0, 1, OTHER]  # released there, so authored there
+    assert not state.can_redo  # the reverted edit's redo branch is gone
+    assert len(state._undo) == steps + 1  # a step of its own
+    state.undo()  # ... and one ctrl-z takes it away again
+    assert not state.labels.has_gt[0, 1, OTHER]
+
+
+def test_a_drag_settles_onto_the_configured_solve(result):
+    """On release the 3D converges to what a plain re-derivation would give.
+
+    That is what keeps the cache a function of the labels for every point the labels
+    actually determine, so no later invalidation can move it.
+    """
+    state = EditorState.from_result(result)
+    f, p = 1, 5
+    for v in (0, 3):  # two GT views: the labels now determine the 3D
+        xy = state.display_pts2d_refine(f)[v, p] + np.array([6.0, -4.0])
+        state.apply_3d_edit(v, p, xy, f, fix=True)
+    cached = state.display_pts3d(f)[p].copy()
+    state._invalidate_frame3d(f)  # force the pure re-derivation
+    np.testing.assert_allclose(state.display_pts3d(f)[p], cached, atol=1e-9)
 
 
 # -- bulk confirm -------------------------------------------------------------
@@ -539,7 +732,6 @@ def test_confirm_predictions_promotes_to_gt(result):
     assert state.confirm(targets, "predictions", f) is True
     for v in range(state.n_views):
         assert state.labels.has_gt[v, f, 5]
-        assert state.labels.gt_provenance[v, f, 5] == Provenance.CONFIRMED_PREDICTION
     # one undo step reverts the whole bulk confirm
     assert state.undo() == f
     assert not state.labels.has_gt[:, f, 5].any()
@@ -562,52 +754,7 @@ def test_confirm_projections_uses_reprojection(result):
     proj = state.display_pts3d_projected(f)[:, point].copy()
     assert state.confirm([(v, point) for v in range(state.n_views)], "projections", f)
     for v in range(state.n_views):
-        assert (
-            state.labels.gt_provenance[v, f, point] == Provenance.CONFIRMED_PROJECTION
-        )
         assert np.allclose(state.labels.gt[v, f, point], proj[v], atol=1e-6)
-
-
-def test_confirm_tags_a_reseeded_pixel_as_projection_not_prediction(result):
-    """A displayed pixel that is NOT the detector's own must not be called a prediction.
-
-    ``dfpose.predict`` prepares a contralateral-labeling directory by writing the
-    reprojected 3D *over* the detector's pixels in the derived stage the editor displays
-    (measured on scape_Fly4_006: 43% of finite cells, median 14.9 px away). Bulk-confirming
-    those used to stamp CONFIRMED_PREDICTION -- the one provenance ``labels-export`` keeps
-    unconditionally -- so reprojected geometry entered training as detector evidence.
-    """
-    raw = np.array(result.pts2d, dtype=float)
-    reseeded = raw.copy()
-    reseeded[2, 0, 7] += 30.0  # this cell now holds geometry, not a detection
-    detector_untouched = raw[3, 0, 7].copy()
-    state = EditorState.from_result(
-        PoseResult(
-            cameras=result.cameras,
-            skeleton=result.skeleton,
-            pts2d=reseeded,
-            conf=result.conf,
-            pts3d=result.pts3d,
-            reproj_error=result.reproj_error,
-        ),
-        raw_pts2d=raw,
-    )
-    assert state.confirm([(2, 7), (3, 7)], "predictions", 0) is True
-    # the overwritten cell: the displayed pixel is stored, but tagged for what it is
-    assert np.allclose(state.labels.gt[2, 0, 7], reseeded[2, 0, 7])
-    assert state.labels.gt_provenance[2, 0, 7] == Provenance.CONFIRMED_PROJECTION
-    # the untouched cell is a genuine detection and stays a prediction
-    assert np.allclose(state.labels.gt[3, 0, 7], detector_untouched)
-    assert state.labels.gt_provenance[3, 0, 7] == Provenance.CONFIRMED_PREDICTION
-
-
-def test_confirm_tags_projection_where_the_detector_never_fired(result):
-    """No raw detection at a cell means the displayed pixel came from somewhere else."""
-    raw = np.array(result.pts2d, dtype=float)
-    raw[1, 0, 9] = np.nan  # the detector missed this cell; the derived stage filled it
-    state = EditorState.from_result(result, raw_pts2d=raw)
-    assert state.confirm([(1, 9)], "predictions", 0) is True
-    assert state.labels.gt_provenance[1, 0, 9] == Provenance.CONFIRMED_PROJECTION
 
 
 def test_clear_gt_reverts_to_prediction(result):
@@ -677,46 +824,47 @@ def test_quiet_child_output_swallows_then_restores(tmp_path):
     assert sink.read_text() == "kept\n"
 
 
-def test_confirm_always_leaves_a_grabbable_on_image_point(result):
-    """Every confirmed cell must have a point the operator can SEE and DRAG.
+def test_confirm_skips_a_cell_with_nothing_on_screen(result):
+    """A cell whose only candidate is off-image (or missing) is skipped, not invented.
 
-    The workflow is "select all, confirm, drag each point where it belongs", so a confirmed cell
-    with no on-image position is useless. Two ways it failed, both reported from the GUI:
+    The editor used to clamp such a position into the frame and store it, so the operator
+    would have something to grab. That fabricated a coordinate at the image edge -- the
+    worst place to put a training target -- and needed its own provenance code to keep it
+    out of the export.
 
-    * finite but OFF-IMAGE. Measured on IN10B014_260320_Fly2_009 frame 40, the derived 3D
-      reprojects `rh_claw` to x=-5.5 in view `rf` and `lm_claw` to y=512.1 in view `rm` on a
-      960x512 image. GT was created off-canvas: invisible, un-draggable.
-    * no position at all, where `confirm` never consulted the placeholder chain that exists
-      precisely for that.
+    The two skipped cases differ in what is left behind, and both are right:
+
+    * **no position at all** -> the Unplaced seed layer supplies a draggable ghost, so the
+      joint is still reachable in this view without anything being stored.
+    * **off-image** -> no ghost, because the cell *does* have a position of its own; it
+      simply is not inside this camera's image. A joint outside the frame is not placeable
+      from this view, which is what the Projected/occluded state is for, and it stays
+      placeable from every view that can see it.
     """
     sizes = {name: (480, 640) for name in result.cameras.names}  # (h, w)
     state = EditorState.from_result(result, image_sizes=sizes)
-    n_pts = result.pts2d.shape[2]
-    # push two cells off-image, one past each axis, and blank a third entirely
     state.result.pts3d = None  # no 3D -> no reprojection anywhere
-    state.result.pts2d[0, 0, 5] = [-40.0, 100.0]
-    state.result.pts2d[1, 0, 6] = [100.0, 999.0]
-    state.result.pts2d[2, 0, 7] = [np.nan, np.nan]
-    targets = [(v, p) for v in range(state.n_views) for p in range(n_pts)]
-    state.confirm(targets, "all", 0)
+    state.result.pts2d[0, 0, 5] = [-40.0, 100.0]  # off-image in x
+    state.result.pts2d[1, 0, 6] = [100.0, 999.0]  # off-image in y
+    state.result.pts2d[2, 0, 7] = [np.nan, np.nan]  # nothing at all
+    n_pts = result.pts2d.shape[2]
+    state.confirm(
+        [(v, p) for v in range(state.n_views) for p in range(n_pts)], "all", 0
+    )
+
+    for v, p in ((0, 5), (1, 6), (2, 7)):
+        assert not state.labels.has_gt[v, 0, p]  # skipped: no dot on screen to approve
+    # the cell with nothing at all keeps a draggable Unplaced ghost ...
+    assert np.isfinite(state.placeholder_pts2d(0)[2, 7]).all()
+    # ... while the off-image ones have a position of their own, just not in frame
+    assert not np.isfinite(state.placeholder_pts2d(0)[0, 5]).all()
+    # every cell that DID have a visible dot was authored, and inside the image
     for v in range(state.n_views):
         for p in range(n_pts):
-            assert state.labels.has_gt[v, 0, p], (
-                f"view {v} point {p} got no point to drag"
-            )
+            if not state.labels.has_gt[v, 0, p]:
+                continue
             x, y = state.labels.gt[v, 0, p]
-            assert np.isfinite([x, y]).all(), f"view {v} point {p} is NaN"
-            assert 0 <= x < 640 and 0 <= y < 480, (
-                f"view {v} point {p} off-image at {(x, y)}"
-            )
-    # the clamp moves the MINIMUM needed: the in-bounds axis is preserved
-    assert state.labels.gt[0, 0, 5][1] == pytest.approx(100.0)
-    assert state.labels.gt[1, 0, 6][0] == pytest.approx(100.0)
-    # A clamped or placeholder point is a seed to drag, not evidence. It gets its OWN
-    # provenance, not CONFIRMED_PROJECTION: training may legitimately ask for real reprojected
-    # pixels, and these coordinates are the editor's invention sitting on the image edge.
-    assert state.labels.gt_provenance[0, 0, 5] == Provenance.PLACEHOLDER_SEED
-    assert state.labels.gt_provenance[2, 0, 7] == Provenance.PLACEHOLDER_SEED
+            assert 0 <= x < 640 and 0 <= y < 480, f"view {v} point {p} at {(x, y)}"
 
 
 # -- absence: "this keypoint is not on this animal" ---------------------------

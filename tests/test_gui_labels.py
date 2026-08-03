@@ -11,7 +11,6 @@ from deeperfly.gui.corrections import Corrections
 from deeperfly.gui.labels import (
     LABELS_FORMAT_VERSION,
     Labels,
-    Provenance,
     export_absent,
     export_gt,
     labels_identity,
@@ -45,13 +44,12 @@ def test_empty_labels_are_blank(result):
     assert not lab.dirty
 
 
-def test_set_gt_records_pixel_and_provenance_and_clears_occluded(result):
+def test_set_gt_records_the_pixel_and_clears_occluded(result):
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
     lab.set_occluded(0, 1, 4, True)
-    lab.set_gt(0, 1, 4, (12.0, 34.0), provenance=Provenance.CONFIRMED_PREDICTION)
+    lab.set_gt(0, 1, 4, (12.0, 34.0))
     assert lab.has_gt[0, 1, 4]
     assert np.allclose(lab.gt[0, 1, 4], [12.0, 34.0])
-    assert lab.gt_provenance[0, 1, 4] == Provenance.CONFIRMED_PREDICTION
     assert not lab.occluded[0, 1, 4]  # placing GT clears occlusion
     assert lab.dirty
 
@@ -62,7 +60,7 @@ def test_set_occluded_clears_gt(result):
     lab.set_occluded(2, 0, 5, True)
     assert lab.occluded[2, 0, 5]
     assert not lab.has_gt[2, 0, 5]
-    assert lab.gt_provenance[2, 0, 5] == Provenance.NONE
+    assert not np.isfinite(lab.gt[2, 0, 5]).all()  # the pixel is gone, not just masked
 
 
 def test_clear_helpers(result):
@@ -79,8 +77,8 @@ def test_clear_helpers(result):
 
 def test_roundtrip_sparse(tmp_path, result):
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    lab.set_gt(0, 1, 4, (5.0, 6.0), provenance=Provenance.DRAGGED)
-    lab.set_gt(2, 0, 5, (7.0, 8.0), provenance=Provenance.CONFIRMED_PROJECTION)
+    lab.set_gt(0, 1, 4, (5.0, 6.0))
+    lab.set_gt(2, 0, 5, (7.0, 8.0))
     lab.set_occluded(3, 2, 6, True)
     lab.set_reviewed(1, True)  # a per-frame reviewed flag round-trips too
 
@@ -93,7 +91,6 @@ def test_roundtrip_sparse(tmp_path, result):
     assert loaded is not None
     np.testing.assert_array_equal(loaded.has_gt, lab.has_gt)
     np.testing.assert_array_equal(loaded.occluded, lab.occluded)
-    np.testing.assert_array_equal(loaded.gt_provenance, lab.gt_provenance)
     np.testing.assert_array_equal(np.nan_to_num(loaded.gt), np.nan_to_num(lab.gt))
     np.testing.assert_array_equal(loaded.reviewed, lab.reviewed)
 
@@ -241,59 +238,26 @@ def test_migration_drops_ambiguous_occlusions_on_nan_predictions(result):
 # -- export (training/eval seam) ----------------------------------------------
 
 
-def test_export_gt_filters_projection_provenance(result):
-    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    lab.set_gt(0, 0, 5, (1.0, 2.0), provenance=Provenance.DRAGGED)
-    lab.set_gt(1, 0, 5, (3.0, 4.0), provenance=Provenance.CONFIRMED_PROJECTION)
-    lab.set_occluded(2, 0, 6, True)
+def test_export_gt_yields_every_stored_pixel(result):
+    """There is nothing to filter: a GT pixel is a pixel the operator created.
 
-    gt_xy, mask, occ = export_gt(lab)  # excludes projection-sourced GT by default
-    assert mask[0, 0, 5] and not mask[1, 0, 5]
-    assert np.allclose(gt_xy[0, 0, 5], [1.0, 2.0])
-    assert not np.isfinite(gt_xy[1, 0, 5]).all()
-    assert occ[2, 0, 6]
-
-    _, mask_all, _ = export_gt(lab, include_projection=True)
-    assert mask_all[1, 0, 5]  # projection GT kept when asked
-
-
-def test_export_gt_never_exports_a_placeholder_seed(result):
-    """``include_projection`` must not be able to turn a drag handle into a label.
-
-    A placeholder seed is the coordinate ``EditorState._grabbable`` invents so a joint with
-    no on-image position still has a dot to drag -- clamped to the image edge when the
-    reprojection landed outside. Training on it would put a Gaussian at the frame border
-    where the keypoint demonstrably is not. Before v5 it shared code 3 with genuine
-    reprojected pixels, so "train on projections too" and "train on fabricated edge
-    coordinates" were the same switch. They are not any more, and this pins that.
+    v5/v6 tagged each row with the layer its pixel had been copied out of and the export
+    dropped two of the four codes. v7 has one kind of ground truth, so the export is the
+    stored rows -- which is also why the project's progress count and the export can no
+    longer disagree. A cell with *no* GT is the consumer's business: it falls back in the
+    editor's own precedence, GT -> detection -> projection.
     """
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    lab.set_gt(0, 0, 5, (1.0, 2.0), provenance=Provenance.DRAGGED)
-    lab.set_gt(1, 0, 5, (3.0, 4.0), provenance=Provenance.CONFIRMED_PROJECTION)
-    lab.set_gt(2, 0, 5, (4.0, 387.9), provenance=Provenance.PLACEHOLDER_SEED)
+    lab.set_gt(0, 0, 5, (1.0, 2.0))
+    lab.set_gt(1, 0, 5, (3.0, 4.0))
+    lab.set_occluded(2, 0, 6, True)
 
-    for include in (False, True):
-        _, mask, _ = export_gt(lab, include_projection=include)
-        assert mask[0, 0, 5], "a dragged pixel is always exported"
-        assert bool(mask[1, 0, 5]) == include, "projection follows the flag"
-        assert not mask[2, 0, 5], (
-            f"placeholder seed exported with include_projection={include}"
-        )
-
-
-def test_a_dragged_placeholder_seed_becomes_real(result):
-    """The seed is machinery until the operator moves it; then it is evidence."""
-    from deeperfly.gui.state import EditorState
-
-    state = EditorState.from_result(result)
-    state.labels.set_gt(0, 0, 5, (4.0, 387.9), provenance=Provenance.PLACEHOLDER_SEED)
-    _, mask, _ = export_gt(state.labels, include_projection=True)
-    assert not mask[0, 0, 5]
-
-    state.apply_2d_edit(0, 5, (123.0, 45.0), 0)
-    assert state.labels.gt_provenance[0, 0, 5] == Provenance.DRAGGED
-    _, mask, _ = export_gt(state.labels, include_projection=True)
-    assert mask[0, 0, 5]
+    gt_xy, mask, occ = export_gt(lab)
+    assert mask[0, 0, 5] and mask[1, 0, 5]
+    np.testing.assert_allclose(gt_xy[0, 0, 5], [1.0, 2.0])
+    np.testing.assert_allclose(gt_xy[1, 0, 5], [3.0, 4.0])
+    assert int(mask.sum()) == 2  # and nothing else
+    assert occ[2, 0, 6]
 
 
 # -- absence: "this keypoint is not on this animal" (v3) ----------------------
@@ -303,7 +267,7 @@ def _absent_labels(result, points=(4,)):
     """An overlay with GT + an occlusion on ``points``, then ``points`` declared absent."""
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
     for p in points:
-        lab.set_gt(0, 0, p, (1.0, 2.0), provenance=Provenance.DRAGGED)
+        lab.set_gt(0, 0, p, (1.0, 2.0))
         lab.set_occluded(1, 0, p, True)
     lab.set_gt(0, 0, 7, (9.0, 9.0))  # a bystander point that must be untouched
     lab.set_occluded(1, 0, 7, True)
@@ -471,6 +435,54 @@ def test_load_v2_file_without_absent_group(tmp_path, result):
     assert loaded is not None
     assert not loaded.absent.any()
     assert loaded.has_gt[0, 0, 1]
+
+
+def test_load_v6_file_keeps_real_gt_and_drops_the_invented_placeholder_rows(
+    tmp_path, result
+):
+    """v5/v6 -> v7: every authored pixel survives; the editor's invented ones do not.
+
+    A ``placeholder_seed`` row was a coordinate the editor made up (clamped to the image
+    edge) so a joint with nothing on screen still had a dot to drag; ``export_gt`` dropped
+    it unconditionally. v7 has no provenance column to keep telling it apart from a real
+    label, so carrying it over would silently promote a fabricated edge pixel to ground
+    truth. It has to be dropped at the boundary instead -- which is the one thing about
+    this migration that is not reversible, so it is pinned here.
+    """
+    import h5py
+
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (5.0, 6.0))  # a real pixel
+    lab.set_gt(1, 0, 2, (7.0, 8.0))  # another
+    lab.set_gt(2, 0, 3, (4.0, 387.9))  # the invented one
+    path = tmp_path / "labels.h5"
+    identity = _identity(result)
+    save_labels(path, lab, identity=identity)
+    # Re-add the v6 provenance column the current writer no longer emits.
+    with h5py.File(path, "a") as f:
+        rows = np.asarray(f["gt/index"][()])
+        prov = np.where(
+            (rows[:, 0] == 2) & (rows[:, -1] == 3),
+            4,
+            1,  # 4 = placeholder_seed
+        ).astype(np.uint8)
+        f["gt"].create_dataset("provenance", data=prov, dtype="uint8")
+        meta = json.loads(f.attrs["meta"])
+        meta["deeperfly_labels_format_version"] = 6
+        f.attrs["meta"] = json.dumps(meta)
+
+    loaded = load_labels(path, identity=identity)
+    assert loaded is not None
+    assert loaded.has_gt[0, 0, 1] and loaded.has_gt[1, 0, 2]
+    np.testing.assert_allclose(loaded.gt[0, 0, 1], [5.0, 6.0])
+    assert not loaded.has_gt[2, 0, 3], "an invented placeholder row became real GT"
+    assert int(loaded.gt_authored.sum()) == 2
+
+    # ... and re-saving writes v7, with no provenance column at all
+    save_labels(path, loaded, identity=identity)
+    with h5py.File(path, "r") as f:
+        assert "gt/provenance" not in f
+        assert json.loads(f.attrs["meta"])["deeperfly_labels_format_version"] == 7
 
 
 def test_load_refuses_a_newer_format_version(tmp_path, result):

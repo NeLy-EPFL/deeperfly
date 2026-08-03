@@ -22,10 +22,10 @@ else entirely.
 **Recordings.** Deduplicated by content id (:func:`deeperfly.project.recording_id`), so a
 backup copy is recognized rather than double-counted.
 
-**Cells.** Per ``(view, frame, point)``, with a **provenance-aware** default: a human's
-drag beats a bulk-confirmed reprojection, because the second is the model's own guess
-promoted to ground truth. Anything genuinely ambiguous goes to a review queue rather than
-being resolved by a coin flip.
+**Cells.** Per ``(view, frame, point)``. A cell only one side authored is taken; a cell
+both authored identically is a no-op. A genuine disagreement is two operators disagreeing
+about where a keypoint is, and nothing in the data ranks one above the other, so it goes to
+a review queue rather than being resolved by a coin flip.
 
 Every merge is **dry-run by default** and writes a pre-merge snapshot before applying.
 """
@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .gui.labels import Labels, Provenance
+from .gui.labels import Labels
 
 __all__ = [
     "SkeletonMapping",
@@ -54,18 +54,6 @@ log = logging.getLogger("deeperfly")
 #: How to resolve a cell both sides authored differently. ``"manual"`` defers to a review
 #: queue -- the honest answer when neither side is preferable.
 CONFLICT_POLICIES = ("manual", "ours", "theirs", "newest")
-
-#: Provenance ranking for the automatic tie-break. Higher wins. A human drag beats a
-#: confirmed prediction beats a bulk-confirmed *projection* (which is the model's own
-#: reprojected guess), and a placeholder seed -- a drag handle the editor invented at the
-#: image edge -- loses to everything, because it was never a claim about the animal.
-_PROVENANCE_RANK = {
-    Provenance.DRAGGED: 3,
-    Provenance.CONFIRMED_PREDICTION: 2,
-    Provenance.CONFIRMED_PROJECTION: 1,
-    Provenance.PLACEHOLDER_SEED: 0,
-    Provenance.NONE: -1,
-}
 
 
 @dataclass
@@ -137,8 +125,7 @@ def remap_labels(
 
     Cells whose point or camera has no destination are **dropped** (they have nowhere to
     go); frames beyond ``n_frames`` are dropped too. Everything that does map is carried
-    across verbatim, including provenance -- the merge decides *which* value wins later,
-    and it needs the provenance to do so.
+    across verbatim; the merge decides *which* value wins later.
 
     Returns
     -------
@@ -158,9 +145,6 @@ def remap_labels(
             if col.any():
                 rows = np.nonzero(col)[0]
                 out.gt[v_dst, rows, p_dst] = source.gt[v_src, rows, p_src]
-                out.gt_provenance[v_dst, rows, p_dst] = source.gt_provenance[
-                    v_src, rows, p_src
-                ]
             occ = source.occluded[v_src, :frames, p_src]
             if occ.any():
                 out.occluded[v_dst, np.nonzero(occ)[0], p_dst] = True
@@ -187,8 +171,6 @@ class CellDecision:
     reason: str
     ours_xy: tuple[float, float] | None = None
     theirs_xy: tuple[float, float] | None = None
-    ours_provenance: int = 0
-    theirs_provenance: int = 0
 
 
 @dataclass
@@ -266,7 +248,7 @@ def merge_labels(
         ``camera -> (h, w)``. A same-named camera whose sizes differ is **fatal**: the
         stored pixels would mean something else.
     on_conflict
-        One of :data:`CONFLICT_POLICIES` for cells the provenance rule cannot settle.
+        One of :data:`CONFLICT_POLICIES` for cells both sides authored differently.
     source_is_newer
         Which side ``"newest"`` prefers.
     apply
@@ -331,32 +313,20 @@ def merge_labels(
     ours = dest.gt_authored
     for v, t, p in zip(*np.nonzero(theirs)):
         their_xy = mapped.gt[v, t, p]
-        their_prov = int(mapped.gt_provenance[v, t, p])
         if not ours[v, t, p]:
             if apply:
-                dest.set_gt(v, t, p, their_xy, provenance=their_prov)
+                dest.set_gt(v, t, p, their_xy)
             report.taken_from_source += 1
             continue
         our_xy = dest.gt[v, t, p]
-        our_prov = int(dest.gt_provenance[v, t, p])
         if np.allclose(our_xy, their_xy, atol=1e-9):
             report.identical += 1
             continue
-        decision = _resolve(
-            v,
-            t,
-            p,
-            our_xy,
-            their_xy,
-            our_prov,
-            their_prov,
-            on_conflict,
-            source_is_newer,
-        )
+        decision = _resolve(v, t, p, our_xy, their_xy, on_conflict, source_is_newer)
         report.conflicts.append(decision)
         if decision.outcome == "theirs":
             if apply:
-                dest.set_gt(v, t, p, their_xy, provenance=their_prov)
+                dest.set_gt(v, t, p, their_xy)
             report.taken_from_source += 1
         elif decision.outcome == "ours":
             report.kept_from_dest += 1
@@ -393,14 +363,13 @@ def merge_labels(
 
 
 def _resolve(
-    view, frame, point, our_xy, their_xy, our_prov, their_prov, policy, source_is_newer
+    view, frame, point, our_xy, their_xy, policy, source_is_newer
 ) -> CellDecision:
     """Decide one conflicting cell.
 
-    Provenance decides first, whatever the policy: a human's drag beating a bulk-confirmed
-    reprojection is not a preference, it is the difference between evidence and the model's
-    own output. Only when both sides are the same *kind* of label does the policy apply --
-    and its honest default is to ask.
+    There is one kind of ground truth -- a pixel an operator created -- so two sides that
+    disagree are two humans disagreeing, and nothing in the data ranks one above the other.
+    The policy decides, and its honest default is to ask.
     """
     kwargs = dict(
         view=int(view),
@@ -408,18 +377,7 @@ def _resolve(
         point=int(point),
         ours_xy=(float(our_xy[0]), float(our_xy[1])),
         theirs_xy=(float(their_xy[0]), float(their_xy[1])),
-        ours_provenance=our_prov,
-        theirs_provenance=their_prov,
     )
-    our_rank = _PROVENANCE_RANK.get(our_prov, -1)
-    their_rank = _PROVENANCE_RANK.get(their_prov, -1)
-    if our_rank != their_rank:
-        better = "theirs" if their_rank > our_rank else "ours"
-        return CellDecision(
-            outcome=better,
-            reason=f"provenance: {_name(their_prov)} vs {_name(our_prov)}",
-            **kwargs,
-        )
     if policy == "ours":
         return CellDecision(outcome="ours", reason="policy=ours", **kwargs)
     if policy == "theirs":
@@ -433,16 +391,6 @@ def _resolve(
     distance = float(np.linalg.norm(np.asarray(our_xy) - np.asarray(their_xy)))
     return CellDecision(
         outcome="manual",
-        reason=f"both {_name(our_prov)}, {distance:.1f} px apart",
+        reason=f"both authored, {distance:.1f} px apart",
         **kwargs,
     )
-
-
-def _name(code: int) -> str:
-    return {
-        Provenance.DRAGGED: "dragged",
-        Provenance.CONFIRMED_PREDICTION: "confirmed_prediction",
-        Provenance.CONFIRMED_PROJECTION: "confirmed_projection",
-        Provenance.PLACEHOLDER_SEED: "placeholder_seed",
-        Provenance.NONE: "none",
-    }.get(int(code), f"code{code}")

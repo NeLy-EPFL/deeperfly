@@ -293,19 +293,11 @@ def labels_export(
             help="output .npz (default: labels_gt.npz beside results.h5)",
         ),
     ] = None,
-    include_projection: Annotated[
-        bool,
-        typer.Option(
-            "--include-projection",
-            help="also export GT confirmed from the 3D reprojection (the model's own "
-            "guess); excluded by default so the export is human-placed pixels only",
-        ),
-    ] = False,
     log_level: LogLevelOption = LogLevel.info,
 ) -> None:
     """Export saved ground-truth labels (labels.h5) as a training/eval dataset (.npz).
 
-    Writes the provenance-filtered GT pixels + occluded mask in footage pixel space
+    Writes the GT pixels + occluded mask in footage pixel space
     (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), ``absent``
     (P,), plus ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui'
     first.
@@ -316,11 +308,7 @@ def labels_export(
     not be supervised in either direction. Mask it in training.
     """
     _configure_logging(log_level.value)
-    _cmd_labels_export(
-        argparse.Namespace(
-            path=path, output=output, include_projection=include_projection
-        )
-    )
+    _cmd_labels_export(argparse.Namespace(path=path, output=output))
 
 
 @app.command(name="labels-absent")
@@ -1153,10 +1141,10 @@ def labels_merge(
         str,
         typer.Option(
             "--on-conflict",
-            help="how to settle a cell both sides authored differently AND with the same "
-            "provenance: 'manual' (default -- leave it and queue it for review), 'ours', "
-            "'theirs', or 'newest'. Provenance decides first regardless: a human's drag "
-            "always beats a bulk-confirmed reprojection, which is the model's own guess",
+            help="how to settle a cell both sides authored differently: 'manual' "
+            "(default -- leave it and queue it for review), 'ours', 'theirs', or "
+            "'newest'. Two disagreeing labels are two operators disagreeing, and nothing "
+            "in the data ranks one above the other, so the default is to ask",
         ),
     ] = "manual",
     apply: Annotated[

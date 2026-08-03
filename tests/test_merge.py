@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.gui.labels import Labels, Provenance
+from deeperfly.gui.labels import Labels
 from deeperfly.merge import map_by_name, merge_labels, remap_labels
 
 POINTS = ["head", "thorax", "abdomen"]
@@ -19,10 +19,10 @@ CAMS = ["left", "right"]
 
 
 def _labels(cells, *, n_views=2, n_frames=3, n_points=3, reviewed=(), absent=()):
-    """An overlay with ``cells`` = ``{(v, t, p): (xy, provenance)}``."""
+    """An overlay with ``cells`` = ``{(v, t, p): xy}``."""
     labels = Labels.empty(n_views, n_frames, n_points)
-    for (v, t, p), (xy, prov) in cells.items():
-        labels.set_gt(v, t, p, xy, provenance=prov)
+    for (v, t, p), xy in cells.items():
+        labels.set_gt(v, t, p, xy)
     for t in reviewed:
         labels.set_reviewed(t, True)
     for p in absent:
@@ -61,7 +61,7 @@ def test_names_only_on_one_side_are_reported():
 
 
 def test_remapping_moves_labels_to_the_right_columns():
-    source = _labels({(0, 1, 0): ((10.0, 20.0), Provenance.DRAGGED)})
+    source = _labels({(0, 1, 0): (10.0, 20.0)})
     points = map_by_name(POINTS, list(reversed(POINTS)))  # head -> index 2
     cameras = map_by_name(CAMS, CAMS)
     out = remap_labels(
@@ -73,7 +73,7 @@ def test_remapping_moves_labels_to_the_right_columns():
 
 
 def test_a_source_only_point_is_dropped_and_counted():
-    source = _labels({(0, 0, 2): ((1.0, 2.0), Provenance.DRAGGED)})
+    source = _labels({(0, 0, 2): (1.0, 2.0)})
     report = _merge(
         _labels({}),
         source,
@@ -91,7 +91,7 @@ def test_mismatched_image_sizes_are_fatal():
     """GT is stored in footage pixels, so merging across resolutions reinterprets it."""
     report = _merge(
         _labels({}),
-        _labels({(0, 0, 0): ((1.0, 2.0), Provenance.DRAGGED)}),
+        _labels({(0, 0, 0): (1.0, 2.0)}),
         image_sizes_dest={"left": (512, 960)},
         image_sizes_source={"left": (1008, 1600)},
     )
@@ -105,41 +105,27 @@ def test_mismatched_image_sizes_are_fatal():
 
 def test_a_cell_only_the_source_has_is_taken():
     dest = _labels({})
-    report = _merge(dest, _labels({(1, 2, 0): ((5.0, 6.0), Provenance.DRAGGED)}))
+    report = _merge(dest, _labels({(1, 2, 0): (5.0, 6.0)}))
     assert report.taken_from_source == 1
     assert dest.gt_authored[1, 2, 0]
     np.testing.assert_allclose(dest.gt[1, 2, 0], [5.0, 6.0])
 
 
 def test_an_identical_cell_is_not_a_conflict():
-    cells = {(0, 0, 0): ((3.0, 4.0), Provenance.DRAGGED)}
+    cells = {(0, 0, 0): (3.0, 4.0)}
     report = _merge(_labels(cells), _labels(cells))
     assert report.identical == 1
     assert report.conflicts == []
 
 
-def test_a_human_drag_beats_a_bulk_confirmed_reprojection():
-    """The second is the model's own output promoted to ground truth, not evidence."""
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.CONFIRMED_PROJECTION)})
-    report = _merge(dest, _labels({(0, 0, 0): ((9.0, 9.0), Provenance.DRAGGED)}))
-    assert [c.outcome for c in report.conflicts] == ["theirs"]
-    assert "provenance" in report.conflicts[0].reason
-    np.testing.assert_allclose(dest.gt[0, 0, 0], [9.0, 9.0])
+def test_two_labels_that_disagree_go_to_review():
+    """There is one kind of GT, so neither side outranks the other: the default asks.
 
-
-def test_a_human_drag_in_the_destination_is_not_displaced():
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)})
-    report = _merge(
-        dest, _labels({(0, 0, 0): ((9.0, 9.0), Provenance.CONFIRMED_PROJECTION)})
-    )
-    assert [c.outcome for c in report.conflicts] == ["ours"]
-    np.testing.assert_allclose(dest.gt[0, 0, 0], [1.0, 1.0])
-
-
-def test_two_human_drags_that_disagree_go_to_review():
-    """Neither side is preferable, so the honest default is to ask."""
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)})
-    report = _merge(dest, _labels({(0, 0, 0): ((20.0, 1.0), Provenance.DRAGGED)}))
+    Nothing in the data can settle this -- it is two operators disagreeing about where a
+    keypoint is -- which is why the merge has an explicit policy instead of a rule.
+    """
+    dest = _labels({(0, 0, 0): (1.0, 1.0)})
+    report = _merge(dest, _labels({(0, 0, 0): (20.0, 1.0)}))
     assert len(report.unresolved) == 1
     decision = report.unresolved[0]
     assert "19.0 px apart" in decision.reason
@@ -149,11 +135,11 @@ def test_two_human_drags_that_disagree_go_to_review():
 @pytest.mark.parametrize(
     "policy,expected", [("ours", [1.0, 1.0]), ("theirs", [20.0, 1.0])]
 )
-def test_an_explicit_policy_settles_same_provenance_conflicts(policy, expected):
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)})
+def test_an_explicit_policy_settles_a_conflict(policy, expected):
+    dest = _labels({(0, 0, 0): (1.0, 1.0)})
     report = _merge(
         dest,
-        _labels({(0, 0, 0): ((20.0, 1.0), Provenance.DRAGGED)}),
+        _labels({(0, 0, 0): (20.0, 1.0)}),
         on_conflict=policy,
     )
     assert report.unresolved == []
@@ -161,10 +147,10 @@ def test_an_explicit_policy_settles_same_provenance_conflicts(policy, expected):
 
 
 def test_newest_uses_the_declared_direction():
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)})
+    dest = _labels({(0, 0, 0): (1.0, 1.0)})
     _merge(
         dest,
-        _labels({(0, 0, 0): ((20.0, 1.0), Provenance.DRAGGED)}),
+        _labels({(0, 0, 0): (20.0, 1.0)}),
         on_conflict="newest",
         source_is_newer=False,
     )
@@ -181,7 +167,7 @@ def test_an_unknown_policy_is_refused():
 
 def test_an_occlusion_never_displaces_a_pixel():
     """An occlusion is the weaker statement: "I cannot place it", not "it is here"."""
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)})
+    dest = _labels({(0, 0, 0): (1.0, 1.0)})
     source = Labels.empty(2, 3, 3)
     source.set_occluded(0, 0, 0, True)
     source.set_occluded(1, 0, 0, True)
@@ -209,14 +195,14 @@ def test_reviewed_flags_are_ored():
 
 
 def test_a_dry_run_changes_nothing_but_reports_everything():
-    dest = _labels({(0, 0, 0): ((1.0, 1.0), Provenance.CONFIRMED_PROJECTION)})
+    dest = _labels({(0, 0, 0): (1.0, 1.0)})
     before = dest.gt.copy()
     report = _merge(
         dest,
         _labels(
             {
-                (0, 0, 0): ((9.0, 9.0), Provenance.DRAGGED),
-                (1, 1, 1): ((4.0, 4.0), Provenance.DRAGGED),
+                (0, 0, 0): (9.0, 9.0),
+                (1, 1, 1): (4.0, 4.0),
             },
             reviewed=(1,),
         ),
@@ -225,9 +211,11 @@ def test_a_dry_run_changes_nothing_but_reports_everything():
     np.testing.assert_array_equal(dest.gt, before)
     assert not dest.dirty
     # ...but the report is complete enough to decide on.
-    assert report.taken_from_source == 2  # the new cell plus the provenance win
+    # Only the cell the destination did not have: the disagreeing one is left for review,
+    # because no rule in the data can pick a winner between two authored pixels.
+    assert report.taken_from_source == 1
     assert report.reviewed_added == 1
-    assert len(report.conflicts) == 1
+    assert len(report.conflicts) == 1 and len(report.unresolved) == 1
 
 
 def test_the_summary_is_serializable(tmp_path):
@@ -235,8 +223,8 @@ def test_the_summary_is_serializable(tmp_path):
     import json
 
     report = _merge(
-        _labels({(0, 0, 0): ((1.0, 1.0), Provenance.DRAGGED)}),
-        _labels({(0, 0, 0): ((2.0, 2.0), Provenance.DRAGGED)}),
+        _labels({(0, 0, 0): (1.0, 1.0)}),
+        _labels({(0, 0, 0): (2.0, 2.0)}),
     )
     json.dumps(report.summary())
     assert report.summary()["unresolved"] == 1
@@ -299,9 +287,7 @@ def test_cli_dry_run_reports_without_writing(tmp_path, capsys):
     from deeperfly import cli
     from deeperfly.project import label_stats
 
-    project, entry, source = _project_with(
-        tmp_path, {}, {(0, 1, 5): ((3.0, 4.0), Provenance.DRAGGED)}
-    )
+    project, entry, source = _project_with(tmp_path, {}, {(0, 1, 5): (3.0, 4.0)})
     cli.main(
         [
             "labels-merge",
@@ -324,8 +310,8 @@ def test_cli_apply_merges_and_snapshots(tmp_path, capsys):
 
     project, entry, source = _project_with(
         tmp_path,
-        {(0, 0, 1): ((1.0, 1.0), Provenance.DRAGGED)},
-        {(0, 1, 5): ((3.0, 4.0), Provenance.DRAGGED)},
+        {(0, 0, 1): (1.0, 1.0)},
+        {(0, 1, 5): (3.0, 4.0)},
     )
     cli.main(
         [
@@ -355,7 +341,7 @@ def test_cli_merges_into_a_recording_with_no_labels_yet(tmp_path, capsys):
     project, entry, source = _project_with(
         tmp_path,
         {},
-        {(0, 1, 5): ((3.0, 4.0), Provenance.DRAGGED)},
+        {(0, 1, 5): (3.0, 4.0)},
         dest_labels=False,
     )
     cli.main(
@@ -380,8 +366,8 @@ def test_cli_writes_a_conflict_queue(tmp_path, capsys):
 
     project, entry, source = _project_with(
         tmp_path,
-        {(0, 0, 1): ((1.0, 1.0), Provenance.DRAGGED)},
-        {(0, 0, 1): ((30.0, 1.0), Provenance.DRAGGED)},
+        {(0, 0, 1): (1.0, 1.0)},
+        {(0, 0, 1): (30.0, 1.0)},
     )
     cli.main(
         [
@@ -406,9 +392,7 @@ def test_cli_writes_a_conflict_queue(tmp_path, capsys):
 def test_cli_refuses_to_merge_a_file_into_itself(tmp_path):
     from deeperfly import cli
 
-    project, entry, _ = _project_with(
-        tmp_path, {(0, 0, 1): ((1.0, 1.0), Provenance.DRAGGED)}, {}
-    )
+    project, entry, _ = _project_with(tmp_path, {(0, 0, 1): (1.0, 1.0)}, {})
     with pytest.raises(SystemExit, match="same file"):
         cli.main(
             [
