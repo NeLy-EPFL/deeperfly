@@ -329,3 +329,88 @@ def test_the_uncalibrated_editor_hides_the_reprojection_layer(uncal_page_and_err
     assert page.locator("#gt-wrap").is_visible()
     assert page.locator("#placeholder-wrap").is_visible()
     assert not errors
+
+
+# -- the jobs panel -------------------------------------------------------------
+
+
+@pytest.fixture
+def jobs_page_and_errors(browser_session, tmp_path):
+    """The editor with a job queue attached, loaded in a real browser."""
+    from deeperfly.jobs import JobQueue
+
+    queue = JobQueue(tmp_path / "proj")
+    browser_session.project_root = tmp_path / "proj"
+    browser_session.recording_slug = "flyA"
+    app = create_app(browser_session, jobs=queue)
+    import socket as _socket
+
+    with _socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    )
+    threading.Thread(target=server.run, daemon=True).start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(800)
+            yield page, errors
+            browser.close()
+    finally:
+        server.should_exit = True
+        queue.shutdown()
+
+
+def _open_jobs(page):
+    _open_panel(page)
+    page.locator('[data-tab="jobs"], button:has-text("Jobs")').first.click()
+    page.wait_for_timeout(600)
+
+
+def test_the_jobs_panel_renders_its_actions(jobs_page_and_errors):
+    page, errors = jobs_page_and_errors
+    _open_jobs(page)
+    assert page.locator("#jobs-actions button").count() >= 3
+    assert not errors, "JS errors in the jobs panel:\n  " + "\n  ".join(errors)
+
+
+def test_running_a_job_from_the_panel_shows_its_command(jobs_page_and_errors):
+    """The row IS the CLI command -- that is what makes a failed GUI action reproducible."""
+    page, errors = jobs_page_and_errors
+    _open_jobs(page)
+    page.locator('#jobs-actions button:has-text("Suggest frames")').click()
+    page.wait_for_timeout(2500)
+
+    rows = page.locator(".job-row")
+    assert rows.count() >= 1
+    assert "deeperfly labels-suggest" in rows.first.inner_text()
+    assert not errors
+
+
+def test_a_session_without_a_project_explains_the_empty_jobs_panel(page_and_errors):
+    """An unexplained empty panel reads as broken; it must say why."""
+    page, errors = page_and_errors
+    _open_jobs(page)
+    assert "open a project" in page.locator("#jobs-empty").inner_text()
+    assert page.locator("#jobs-actions button").count() == 0
+    assert not errors

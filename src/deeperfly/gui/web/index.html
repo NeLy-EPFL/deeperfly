@@ -170,6 +170,16 @@
           </table>
           <div id="suggest-empty" class="frames-empty"></div>
         </div>
+        <!-- Pipeline jobs. Each row IS a CLI command, shown verbatim so a GUI action that
+             fails is reproducible in a terminal without reverse-engineering what the GUI
+             did. There is no percentage: these commands emit human log lines, and a
+             number synthesized from those would be a fiction with a spinner attached, so
+             the last log line is what is shown instead. -->
+        <div class="sidebar-body" id="jobs-pane" hidden>
+          <div id="jobs-actions" class="jobs-actions"></div>
+          <div id="jobs-list" class="jobs-list"></div>
+          <div id="jobs-empty" class="frames-empty"></div>
+        </div>
       </aside>
     </div>
 

@@ -109,8 +109,15 @@ def create_app(
     on_shutdown: Callable[[], None] | None = None,
     exit_on_disconnect: bool = False,
     disconnect_grace: float = 0.5,
+    jobs=None,
 ) -> FastAPI:
     """Build the FastAPI app serving and editing ``session``.
+
+    ``jobs``, when given, is a :class:`~deeperfly.jobs.JobQueue` the browser may submit
+    work to (``/api/jobs``). ``None`` -- the default, and what a bare ``results.h5``
+    session gets -- leaves the endpoints reporting ``enabled: false`` rather than absent,
+    so the front-end can say *why* the buttons are missing instead of just not showing
+    them.
 
     ``on_shutdown``, when given, is invoked to stop the running server -- by
     ``POST /api/shutdown`` (the GUI's Close button) and, when ``exit_on_disconnect``
@@ -339,6 +346,67 @@ def create_app(
         ``200``: no sidecar is a normal state (``present: false``), not an error.
         """
         return _suggestions_payload(session)
+
+    # -- jobs ----------------------------------------------------------------
+    #
+    # Polled by the panel rather than pushed over `/ws`. The socket carries the *editing*
+    # stream and is single-writer by design; a read-only tab must still see the queue, and
+    # a broadcast would either bypass that lock or duplicate it. A 2 s poll of a
+    # handful-of-rows JSON payload is cheaper than the complexity.
+
+    @app.get("/api/jobs")
+    def list_jobs(tail: int = 5) -> dict:
+        """The queue, newest first. ``enabled: false`` when this session has no queue."""
+        if jobs is None:
+            return {
+                "enabled": False,
+                "reason": "this session was opened on a bare results.h5; open a project "
+                "to run jobs from the editor",
+                "jobs": [],
+            }
+        return {
+            "enabled": True,
+            "busy": jobs.busy,
+            "jobs": [j.as_dict(tail=tail) for j in jobs.list()],
+        }
+
+    @app.post("/api/jobs")
+    async def submit_job(payload: dict) -> dict:
+        """Queue a job. ``{"kind": ..., "argv": [...], "label": ..., "recording": ...}``.
+
+        Only allow-listed kinds are accepted (:data:`~deeperfly.jobs.JOB_KINDS`) -- the
+        editor is reachable over HTTP, and a queue that ran arbitrary argv would be a
+        remote shell.
+        """
+        if jobs is None:
+            raise HTTPException(409, "this session has no job queue (open a project)")
+        try:
+            job = jobs.submit(
+                str(payload.get("kind", "")),
+                [str(a) for a in (payload.get("argv") or [])],
+                label=str(payload.get("label", "")),
+                recording=payload.get("recording"),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return job.as_dict()
+
+    @app.get("/api/jobs/{job_id}")
+    def job_detail(job_id: str, tail: int = 200) -> dict:
+        if jobs is None:
+            raise HTTPException(409, "this session has no job queue")
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, f"no job {job_id}")
+        return job.as_dict(tail=tail)
+
+    @app.delete("/api/jobs/{job_id}")
+    def cancel_job(job_id: str) -> dict:
+        if jobs is None:
+            raise HTTPException(409, "this session has no job queue")
+        if jobs.get(job_id) is None:
+            raise HTTPException(404, f"no job {job_id}")
+        return {"cancelled": jobs.cancel(job_id)}
 
     @app.post("/api/save")
     async def save() -> dict:
@@ -632,6 +700,13 @@ def _meta_payload(session: Session, cache_v: str | None = None) -> dict:
         # front-end shows this as a banner rather than leaving the missing overlays
         # unexplained.
         "has_cameras": s.has_cameras,
+        # Whether this session can run pipeline commands (a project session can; a bare
+        # results.h5 cannot). Reported so the UI can explain an absent button.
+        "has_jobs": session.project_root is not None,
+        "project_root": None
+        if session.project_root is None
+        else str(session.project_root),
+        "recording": session.recording_slug,
         "camera_names": list(s.camera_names),
         "image_sizes": {
             name: [int(h), int(w)] for name, (h, w) in session.image_sizes.items()

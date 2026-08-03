@@ -180,6 +180,8 @@ def build_uncalibrated_session(
         labels_path=labels_path,
         identity=identity,
         image_sizes=image_sizes,
+        project_root=project.root,
+        recording_slug=entry.slug,
     )
 
 
@@ -463,7 +465,12 @@ def open_target(
 
     results = project.results_path(entry)
     if results.exists():
-        return build_session(results, footage_dir)
+        session = build_session(results, footage_dir)
+        # build_session works from a results.h5 alone (its bare-recording contract), so the
+        # project context is attached here rather than threaded through it.
+        session.project_root = project.root
+        session.recording_slug = entry.slug
+        return session
     log.info(
         "%s has no results.h5 -- opening it uncalibrated (2D labeling only)", entry.slug
     )
@@ -555,8 +562,20 @@ def serve(
     def request_shutdown() -> None:
         server.should_exit = True
 
+    # A job queue only where jobs make sense: they run `deeperfly <subcommand>` in the
+    # project directory, so a bare results.h5 session has nothing to run them against and
+    # reports `enabled: false` instead.
+    queue = None
+    if session.project_root is not None:
+        from ..jobs import JobQueue
+
+        queue = JobQueue(session.project_root)
+
     app = create_app(
-        session, on_shutdown=request_shutdown, exit_on_disconnect=exit_on_close
+        session,
+        on_shutdown=request_shutdown,
+        exit_on_disconnect=exit_on_close,
+        jobs=queue,
     )
 
     display_host = (
@@ -572,7 +591,13 @@ def serve(
 
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
-    server.run()
+    try:
+        server.run()
+    finally:
+        if queue is not None:
+            # Cancel anything still running: a job outliving the editor would keep writing
+            # into a results.h5 nobody is watching.
+            queue.shutdown()
 
 
 def _free_port(host: str) -> int:

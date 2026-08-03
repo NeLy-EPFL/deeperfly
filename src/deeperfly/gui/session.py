@@ -67,6 +67,13 @@ class Session:
     # Filled in by __post_init__ when not given, so every Session -- however it was
     # constructed -- has a concrete path to look for the suggestions sidecar at.
     suggestions_path: Path | None = None
+    #: The project this recording belongs to, when it was opened through one. ``None`` for a
+    #: bare ``results.h5``, which is what decides whether the editor can *run* anything:
+    #: a job needs a project root to work in and a recording to name.
+    project_root: Path | None = None
+    #: The recording's project slug, for job arguments and the window title. ``None`` for a
+    #: bare ``results.h5``.
+    recording_slug: str | None = None
 
     def __post_init__(self) -> None:
         if self.suggestions_path is None:
@@ -87,6 +94,8 @@ class Session:
         footage: dict | None = None,
         image_sizes: dict[str, tuple[int, int]] | None = None,
         nmf_hide_parts: "Sequence[str]" = ("wings",),
+        project_root: Path | None = None,
+        recording_slug: str | None = None,
     ) -> Session:
         """Assemble a session, clipping ``n_frames`` to the available footage.
 
@@ -117,4 +126,6 @@ class Session:
             identity=identity,
             image_sizes=dict(image_sizes or {}),
             nmf_hide_parts=tuple(nmf_hide_parts),
+            project_root=None if project_root is None else Path(project_root),
+            recording_slug=recording_slug,
         )

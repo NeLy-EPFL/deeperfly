@@ -174,3 +174,32 @@ export class EditSocket {
     }
   }
 }
+
+// -- pipeline jobs -------------------------------------------------------------
+//
+// Polled by the Jobs panel while it is open. Separate from the /ws edit stream on purpose:
+// that socket is single-writer, and a read-only tab must still be able to watch the queue.
+
+/** @returns {Promise<any>} the queue, or `{enabled: false, reason}` when there is none */
+export async function jobs(tail = 3) {
+  const res = await fetch(`/api/jobs?tail=${tail}`);
+  if (!res.ok) throw new Error(`GET /api/jobs -> ${res.status}`);
+  return res.json();
+}
+
+/** Queue a job. `kind` must be server-allow-listed; arbitrary argv is refused. */
+export async function submitJob(body) {
+  const res = await fetch("/api/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST /api/jobs -> ${res.status}`);
+  return res.json();
+}
+
+export async function cancelJob(id) {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`DELETE /api/jobs/${id} -> ${res.status}`);
+  return res.json();
+}

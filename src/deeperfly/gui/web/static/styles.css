@@ -1255,3 +1255,57 @@ body.read-only #redo {
 .readonly-banner:not([hidden]) + .uncal-banner {
   top: 52px;
 }
+
+/* Pipeline jobs panel. Deliberately text-forward: the useful content is the command and
+   its last log line, not a progress bar there is no honest number for. */
+.jobs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line, #2a3038);
+}
+.jobs-actions button {
+  font: inherit;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.jobs-list { padding: 4px 8px 10px; }
+.job-row {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line, #2a3038);
+  font-size: 12px;
+}
+.job-row:last-child { border-bottom: none; }
+.job-head { display: flex; align-items: baseline; gap: 8px; }
+.job-state {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.job-state.queued { color: #9aa7b4; }
+.job-state.running { color: #4db6d8; }
+.job-state.done { color: #6cc07a; }
+.job-state.failed { color: #e0625f; }
+.job-state.cancelled { color: #9aa7b4; }
+.job-label { font-weight: 600; }
+.job-elapsed { color: #8a97a4; margin-left: auto; font-variant-numeric: tabular-nums; }
+.job-cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #8a97a4;
+  word-break: break-all;
+  margin-top: 2px;
+}
+.job-tail {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #b9c4cf;
+  margin-top: 3px;
+  white-space: pre-wrap;
+  max-height: 5.5em;
+  overflow: hidden;
+}
+.job-cancel { font-size: 11px; padding: 1px 7px; margin-left: 6px; cursor: pointer; }

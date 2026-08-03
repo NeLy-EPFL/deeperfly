@@ -45,7 +45,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, saveCorrections, shutdownServer } from "./api.js";
+import { EditSocket, cancelJob, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, saveCorrections, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -55,7 +55,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"labeled" | "suggest"} SidebarTab */
+/** @typedef {"labeled" | "suggest" | "jobs"} SidebarTab */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -412,6 +412,18 @@ class App {
   /** @type {HTMLDivElement} */
   suggestPane = el("suggest-pane");
   /** @type {HTMLDivElement} */
+  jobsPane = el("jobs-pane");
+  /** @type {HTMLDivElement} */
+  jobsActions = el("jobs-actions");
+  /** @type {HTMLDivElement} */
+  jobsList = el("jobs-list");
+  /** @type {HTMLDivElement} */
+  jobsEmpty = el("jobs-empty");
+  // Poll handle for the jobs panel. Polled rather than pushed over /ws: that socket
+  // carries the single-writer EDITING stream, and a read-only tab must still see the
+  // queue. A 2 s poll of a few JSON rows is cheaper than the alternative.
+  jobsTimer = null;
+  /** @type {HTMLDivElement} */
   suggestStatusEl = el("suggest-status");
   /** @type {HTMLTableSectionElement} */
   suggestTbody = /** @type {HTMLTableElement} */ (el("suggest-table")).tBodies[0];
@@ -574,7 +586,7 @@ class App {
     // order), so they are separate tabs rather than one filtered list. Reuses the
     // established `.segmented` component, so the strip needs no new visual language.
     this.sidebarTabs = segmented(
-      [["Labeled", "labeled"], ["Suggested", "suggest"]],
+      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Jobs", "jobs"]],
       (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
     );
     this.sidebarTabsEl.append(this.sidebarTabs.root);
@@ -1767,6 +1779,138 @@ class App {
 
   // Fetch the queue and repaint the tab. A missing sidecar is the normal starting state
   // and resolves to `present: false`; a transient failure leaves whatever was there.
+  // -- pipeline jobs ---------------------------------------------------------
+  //
+  // Each row IS a CLI command, printed verbatim. That is deliberate: the GUI teaches the
+  // CLI rather than hiding it, and a job that fails is reproducible by copy-paste instead
+  // of requiring someone to reverse-engineer what the GUI did.
+  //
+  // There is no progress percentage. The commands emit human log lines and a
+  // terminal-sized progress bar; a number synthesized from those would be a fiction with a
+  // spinner attached, so the last log line is shown instead -- which is the honest signal.
+
+  startJobsPolling() {
+    this.refreshJobs();
+    if (this.jobsTimer === null) {
+      this.jobsTimer = window.setInterval(() => this.refreshJobs(), 2000);
+    }
+  }
+
+  stopJobsPolling() {
+    if (this.jobsTimer !== null) {
+      window.clearInterval(this.jobsTimer);
+      this.jobsTimer = null;
+    }
+  }
+
+  async refreshJobs() {
+    let payload;
+    try {
+      payload = await fetchJobs();
+    } catch {
+      // A transient fetch failure must not blank a list the operator is reading.
+      return;
+    }
+    if (!payload.enabled) {
+      this.jobsActions.replaceChildren();
+      this.jobsList.replaceChildren();
+      // Say WHY there are no buttons; an unexplained empty panel reads as broken.
+      this.jobsEmpty.textContent = payload.reason || "No job queue for this session.";
+      this.jobsEmpty.hidden = false;
+      this.stopJobsPolling();
+      return;
+    }
+    this.renderJobActions();
+    this.renderJobs(payload.jobs || []);
+  }
+
+  renderJobActions() {
+    if (this.jobsActions.childElementCount) return; // built once
+    const recording = this.meta.recording;
+    const actions = [
+      ["Suggest frames", "labels-suggest", ["."], "Rank which frames are worth labelling next"],
+      ["Export labels", "labels-export", ["."], "Write the training/eval dataset from the saved ground truth"],
+      ["Check calibration", "calibrate", ["--dry-run"], "Report how close this project is to a solvable camera rig"],
+      ["Solve calibration", "calibrate", [], "Solve the rig from the labels (writes a calibration; does not accept it)"],
+    ];
+    for (const [text, kind, argv, why] of actions) {
+      const btn = document.createElement("button");
+      btn.textContent = text;
+      btn.title = why;
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await submitJob({ kind, argv, label: text, recording });
+        } finally {
+          btn.disabled = false;
+          this.refreshJobs();
+        }
+      });
+      this.jobsActions.append(btn);
+    }
+  }
+
+  /** @param {any[]} jobs */
+  renderJobs(jobs) {
+    this.jobsEmpty.hidden = jobs.length > 0;
+    if (!jobs.length) {
+      this.jobsEmpty.textContent = "No jobs yet — start one above.";
+    }
+    this.jobsList.replaceChildren();
+    for (const job of jobs) {
+      const row = document.createElement("div");
+      row.className = "job-row";
+
+      const head = document.createElement("div");
+      head.className = "job-head";
+      const state = document.createElement("span");
+      state.className = `job-state ${job.state}`;
+      state.textContent = job.state;
+      const label = document.createElement("span");
+      label.className = "job-label";
+      label.textContent = job.label || job.kind;
+      head.append(state, label);
+      if (job.state === "queued" || job.state === "running") {
+        const cancel = document.createElement("button");
+        cancel.className = "job-cancel";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", async () => {
+          cancel.disabled = true;
+          await cancelJob(job.id);
+          this.refreshJobs();
+        });
+        head.append(cancel);
+      }
+      const elapsed = document.createElement("span");
+      elapsed.className = "job-elapsed";
+      elapsed.textContent = job.elapsed === null ? "" : `${job.elapsed.toFixed(1)}s`;
+      head.append(elapsed);
+      row.append(head);
+
+      const cmd = document.createElement("div");
+      cmd.className = "job-cmd";
+      cmd.textContent = job.command;
+      cmd.title = "Click to copy — this is exactly what runs, so it is reproducible in a terminal";
+      cmd.addEventListener("click", () => navigator.clipboard?.writeText(job.command));
+      row.append(cmd);
+
+      if (job.tail && job.tail.length) {
+        const tail = document.createElement("div");
+        tail.className = "job-tail";
+        tail.textContent = job.tail.slice(-3).join("\n");
+        row.append(tail);
+      }
+      if (job.error) {
+        const err = document.createElement("div");
+        err.className = "job-tail";
+        err.style.color = "#e0625f";
+        err.textContent = job.error;
+        row.append(err);
+      }
+      this.jobsList.append(row);
+    }
+  }
+
   async refreshSuggestions() {
     let payload;
     try {
@@ -1955,9 +2099,14 @@ class App {
     this.sidebarTabs.set(tab);
     this.labeledPane.hidden = tab !== "labeled";
     this.suggestPane.hidden = tab !== "suggest";
+    this.jobsPane.hidden = tab !== "jobs";
     this.sidebarEl.classList.toggle("tab-suggest", tab === "suggest");
     this.updateSidebarNavTitles();
     if (tab === "suggest") this.refreshSuggestions();
+    // Poll only while the panel is actually visible: a background poll on a tab nobody is
+    // looking at is pure waste, and a long detection run would make it thousands of them.
+    if (tab === "jobs") this.startJobsPolling();
+    else this.stopJobsPolling();
     this.updateActiveFrameRow();
   }
 
