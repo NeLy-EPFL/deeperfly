@@ -753,6 +753,16 @@ button:disabled {
   vertical-align: middle;
 }
 
+/* The shared .reviewed-tick wrapper is chip-shaped for the queue, where it has to say what
+   it is. Here the column heading already does, so strip it back to the bare box. */
+.frames-table td.reviewed-cell .reviewed-tick {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .frames-empty {
   padding: 14px;
   color: #888;
@@ -854,6 +864,48 @@ button:disabled {
 
 .kind-chip.is-done {
   background: #3f6b2a;
+}
+
+/* The reviewed tick, inline in a queue row. It is a chip you can click rather than a
+   chip that reports: the flag decides which frames are trusted downstream, and when the
+   only control lived in the other tab it went unticked on whole recordings. Sized and
+   spaced like .kind-chip so a row reads as one strip of chips. */
+.reviewed-tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 5px;
+  padding: 0 5px;
+  border: 1px solid #555;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  color: #bbb;
+  cursor: pointer;
+}
+
+.reviewed-tick.is-on {
+  border-color: #3f6b2a;
+  background: #3f6b2a;
+  color: #fff;
+}
+
+.reviewed-tick input {
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.reviewed-tick input:disabled {
+  cursor: default;
+}
+
+/* Work done but not ticked. Amber, like the other "believing this wastes a session"
+   states -- an unticked frame is human work the training basis will not trust. */
+.sidebar-status .is-warn {
+  color: #e0a030;
 }
 
 /* The strip above the queue, where it declares its own limits: how stale it is, and the

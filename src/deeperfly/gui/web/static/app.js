@@ -1595,14 +1595,7 @@ class App {
       // flag. Its own clicks must not bubble to the row (which jumps to the frame).
       const rcell = document.createElement("td");
       rcell.className = "reviewed-cell";
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = reviewed;
-      box.disabled = this.readOnly;
-      box.title = reviewed ? "Reviewed — click to un-mark" : "Mark this frame reviewed";
-      box.addEventListener("click", (e) => e.stopPropagation());
-      box.addEventListener("change", () => this.toggleReviewed(frame, box.checked, box));
-      rcell.append(box);
+      rcell.append(this.reviewedTick(frame, reviewed, false));
       tr.append(fcell, rcell);
       tr.addEventListener("click", () => this.goToFrame(frame));
       this.frameRows.set(frame, tr);
@@ -1625,13 +1618,77 @@ class App {
    */
   toggleReviewed(frame, value, box) {
     if (this.readOnly) {
-      box.checked = !value; // read-only: undo the visual toggle, change nothing
+      if (box) box.checked = !value; // read-only: undo the visual toggle, change nothing
       return;
     }
     const row = this.correctedFrames.find((f) => f.frame === frame);
-    if (row) row.reviewed = value;
+    if (row) {
+      row.reviewed = value;
+    } else if (value) {
+      // Ticking a frame that carries no label yet -- legitimate ("I looked, the
+      // predictions were right"), and reachable now that the tick lives in the queue.
+      // Without this the optimistic flip lands nowhere and the box appears to spring
+      // back until the refresh returns. Insert in frame order, which is the order the
+      // server returns and the Labeled list renders in.
+      const at = this.correctedFrames.findIndex((f) => f.frame > frame);
+      this.correctedFrames.splice(at < 0 ? this.correctedFrames.length : at, 0, {
+        frame,
+        reviewed: true,
+      });
+    }
     this.sendEdit({ type: "set_reviewed", frame, reviewed: value, mode: this.mode });
+    // Repaint both lists from the optimistic state so the queue's own tick, its row
+    // styling and the unreviewed warning all move together on the click rather than
+    // 150 ms later when the debounced refetch lands.
+    this.renderFrameList();
+    this.renderSuggestList();
     this.scheduleCorrectedRefresh();
+  }
+
+  // Flip the CURRENT frame's reviewed flag from the keyboard, without opening anything.
+  //
+  // Until this existed the flag had exactly one control: a checkbox in a side panel that is
+  // hidden by default (`j`), on a tab the operator may not be on. The result was not the
+  // occasional missed tick but wholesale loss -- an audit of 16 recordings found three of
+  // them at ZERO ticks while carrying 22 finished frames of hand labelling, and the other
+  // thirteen at 100%. A flag that decides which frames are trusted downstream cannot live
+  // only behind two disclosures.
+  toggleReviewedCurrent() {
+    if (this.readOnly) return;
+    const row = this.correctedFrames.find((f) => f.frame === this.frame);
+    this.toggleReviewed(this.frame, !(row?.reviewed ?? false), null);
+  }
+
+  // One "reviewed" checkbox, shared by the Labeled list and the suggestion queue so the
+  // two can never drift in behaviour. Clicks are kept off the row, which jumps to the frame.
+  // `withText` is off in the Labeled table, which already has a Reviewed column heading,
+  // and on in the queue, where the row has no column to say what the box means.
+  /**
+   * @param {number} frame
+   * @param {boolean} reviewed
+   * @param {boolean} [withText]
+   * @returns {HTMLLabelElement}
+   */
+  reviewedTick(frame, reviewed, withText = true) {
+    const wrap = document.createElement("label");
+    wrap.className = "reviewed-tick";
+    wrap.classList.toggle("is-on", reviewed);
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = reviewed;
+    box.disabled = this.readOnly;
+    wrap.title = reviewed
+      ? "You have checked this frame — click to un-mark"
+      : "Tick once you have checked this frame's points";
+    wrap.addEventListener("click", (e) => e.stopPropagation());
+    box.addEventListener("change", () => this.toggleReviewed(frame, box.checked, box));
+    wrap.append(box);
+    if (withText) {
+      const text = document.createElement("span");
+      text.textContent = reviewed ? "reviewed ✓" : "mark reviewed";
+      wrap.append(text);
+    }
+    return wrap;
   }
 
   // Highlight the row for the current frame (when it is a corrected one) and, while
@@ -1777,12 +1834,21 @@ class App {
     if (labeled) {
       const state = document.createElement("span");
       state.className = "kind-chip is-done";
-      state.textContent = reviewed ? "reviewed ✓" : "labeled";
-      state.title = reviewed
-        ? "You have labeled this frame and ticked it reviewed."
-        : "This frame now carries ground truth — done for this round.";
+      state.textContent = "labeled";
+      state.title = "This frame now carries ground truth — done for this round.";
       wcell.append(state);
     }
+    // The reviewed tick, IN the queue row. It used to be a read-only chip here and a real
+    // checkbox only in the Labeled tab, so ticking a frame meant leaving the tab you work
+    // from -- and the flag got forgotten wholesale: an audit found three recordings with
+    // 22 finished frames (42-148 GT cells each, all DRAGGED) and not one tick between
+    // them, while the other thirteen were ticked 100%. That is the signature of a flag
+    // that lives somewhere other than where the work happens.
+    //
+    // Offered on EVERY suggested frame, not only labeled ones: under the auto-correction
+    // workflow "I looked and the predictions were right" is a real review with nothing to
+    // store, and the flag is the only place that fact can go.
+    wcell.append(this.reviewedTick(s.frame, reviewed));
     const text = document.createElement("span");
     text.className = "suggest-why";
     text.textContent = s.reason?.summary ?? "";
@@ -1827,6 +1893,22 @@ class App {
       lines.push({
         text: `${done} of ${total} suggested frames labeled — recompute for a fresh queue`,
         cls: "progress",
+      });
+    }
+    // Labeled but never ticked, counted over the WHOLE recording rather than just the
+    // queue. This is the standing check the corpus needed and did not have: an audit of
+    // 16 recordings found 22 finished frames carrying 42-148 hand-dragged GT cells each
+    // with the flag unset, and three whole recordings at zero ticks. Nothing in the editor
+    // said so, because the only place the state was visible was a column in the other tab.
+    // Now `reviewed` decides which frames are trusted for pretraining, so a silent
+    // disagreement between work done and work ticked is a data-integrity bug, not cosmetics.
+    const unticked = this.correctedFrames.filter((f) => !f.reviewed).length;
+    if (unticked > 0) {
+      lines.push({
+        text:
+          `${unticked} labeled frame${unticked === 1 ? "" : "s"} in this recording ` +
+          `${unticked === 1 ? "is" : "are"} not ticked reviewed`,
+        cls: "warn",
       });
     }
     if (!hard) for (const n of s?.notes ?? []) lines.push({ text: n, cls: "note" });
@@ -2146,6 +2228,7 @@ class App {
     // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes
     // shift as implied by the key itself (see `matches`), the same way Shift+M works.
     b.push({ key: "X", group: "edit", label: hint("X", ["shift"]), desc: "Absent for the whole recording — the usual case, an animal that arrives with a leg already missing", run: () => this.toggleAbsentSelection("recording") });
+    b.push({ key: "d", group: "edit", label: "d", desc: "Reviewed — mark this frame checked (done); press again to un-mark", run: () => this.toggleReviewedCurrent() });
     b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
     // Redo answers to both ⌘Y and ⇧⌘Z; the help shows whichever the platform expects
     // (⇧⌘Z is the macOS idiom, Ctrl+Y the Windows/Linux one) while the other stays a
