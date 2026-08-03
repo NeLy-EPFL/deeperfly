@@ -21,6 +21,8 @@ from .merge import _cmd_labels_merge
 from .project import (
     _cmd_project_add,
     _cmd_project_config,
+    _cmd_project_export,
+    _cmd_project_import,
     _cmd_project_ls,
     _cmd_project_new,
     _cmd_project_rig,
@@ -838,6 +840,59 @@ def project_rig(
     """
     _configure_logging(log_level.value)
     _cmd_project_rig(argparse.Namespace(project=project, source=source))
+
+
+@project_app.command("export")
+def project_export(
+    output: Annotated[str, typer.Argument(help="destination .dfpkg")],
+    project: ProjectArg = None,
+    embed: Annotated[
+        str,
+        typer.Option(
+            "--embed",
+            help="which frames' PIXELS to include: 'user' (default -- the frames carrying "
+            "human labels), 'all' (also the suggested ones), or 'none' (index only, for a "
+            "collaborator who shares the filesystem)",
+        ),
+    ] = "user",
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Package a project into one shareable file.
+
+    Carries everything the project OWNS -- skeleton, rig, calibrations, landmarks, manifest
+    -- plus each recording's labels.h5 byte for byte and, by default, the frames those
+    labels annotate. That last part is affordable because only the labeled frames matter:
+    on this project's own corpus, 50 frames out of 4,073.
+
+    Footage is never packaged. A package makes the LABELS portable, not the videos.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_export(argparse.Namespace(project=project, output=output, embed=embed))
+
+
+@project_app.command("import")
+def project_import(
+    package: Annotated[str, typer.Argument(help="the .dfpkg to unpack")],
+    dest: Annotated[str, typer.Argument(help="directory to create the project in")],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply", help="actually write (otherwise this lists the contents)"
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Unpack a .dfpkg into a NEW project directory.
+
+    Only into a new or empty directory. Importing into an existing project is a merge --
+    with skeleton reconciliation, content dedup and a conflict policy ('deeperfly
+    labels-merge') -- and overwriting files instead would be the destructive shortcut that
+    looks like it worked.
+
+    Lists the contents and writes nothing without --apply.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_import(argparse.Namespace(package=package, dest=dest, apply=apply))
 
 
 # -- calibration (a command group) -------------------------------------------

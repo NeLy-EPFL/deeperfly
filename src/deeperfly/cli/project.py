@@ -334,3 +334,66 @@ def _cmd_project_rig(args: argparse.Namespace) -> None:
         "recording carries its own copy",
         highlight=False,
     )
+
+
+def _cmd_project_export(args: argparse.Namespace) -> None:
+    """Package a project into one shareable file (``deeperfly project export``)."""
+    from ..package import export_package
+
+    project = _open(args.project)
+    try:
+        report = export_package(project, args.output, embed=args.embed)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+
+    _info_line("wrote:    ", str(args.output))
+    _info_line("size:     ", f"{report.bytes_written / 1e6:.1f} MB")
+    _info_line("recordings:", f"{report.recordings} ({report.label_files} with labels)")
+    _info_line("frames:   ", f"{report.embedded_frames} embedded ({args.embed})")
+    for note in report.notes:
+        console.print(f"[yellow]note:[/yellow] {note}", highlight=False)
+    for skipped in report.skipped:
+        console.print(f"[yellow]skipped:[/yellow] {skipped}", highlight=False)
+
+
+def _cmd_project_import(args: argparse.Namespace) -> None:
+    """Unpack a ``.dfpkg`` into a new project (``deeperfly project import``)."""
+    from ..package import describe_package, import_package
+
+    try:
+        described = describe_package(args.package)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+
+    _info_line("package:  ", str(args.package))
+    _info_line("created:  ", described["created_utc"] or "unknown")
+    _info_line("embed:    ", described["embed"] or "none")
+    table = Table(title="contents")
+    table.add_column("recording", style="bold")
+    table.add_column("frames", justify="right")
+    table.add_column("labels")
+    table.add_column("embedded", justify="right")
+    for row in described["recordings"]:
+        table.add_row(
+            row["slug"],
+            "?" if row["n_frames"] < 0 else f"{row['n_frames']:,}",
+            "yes" if row["has_labels"] else "[yellow]no[/yellow]",
+            f"{row['embedded_frames']:,}",
+        )
+    console.print(table)
+
+    if not args.apply:
+        console.print(
+            f"dry run -- nothing written. Re-run with --apply to unpack into {args.dest}",
+            highlight=False,
+        )
+        return
+    report = import_package(args.package, args.dest, apply=True)
+    console.print(f"[green]imported[/green] into {args.dest}")
+    for note in report.notes:
+        console.print(f"[yellow]note:[/yellow] {note}", highlight=False)
+    console.print(
+        "the recordings' footage is NOT in the package -- re-point it, or re-add the "
+        "recordings locally, before the editor can show frames",
+        highlight=False,
+    )
