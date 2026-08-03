@@ -12,6 +12,7 @@ import typer
 
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
+from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .console import _configure_logging
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
@@ -773,6 +774,150 @@ def calibration_export(
     """
     _configure_logging(log_level.value)
     _cmd_calibration_export(argparse.Namespace(path=path, output=output))
+
+
+@app.command()
+def calibrate(
+    project: ProjectArg = None,
+    points: Annotated[
+        str,
+        typer.Option(
+            "--points",
+            help="what drives the solve: 'landmarks' (dedicated calibration points), "
+            "'keypoints' (the skeleton's ground truth), or 'both' (default). Landmarks "
+            "are worth far more per label -- a STATIC one is three unknowns however many "
+            "frames observe it, while a keypoint is three unknowns PER FRAME because the "
+            "animal moved",
+        ),
+    ] = "both",
+    recordings: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--recording",
+            help="restrict to these recordings (repeatable; default: all). A "
+            "rig-scoped landmark ties every named recording into one solve",
+        ),
+    ] = None,
+    from_calibration: Annotated[
+        str | None,
+        typer.Option(
+            "--from-calibration",
+            help="take intrinsics AND the initial extrinsics from an existing "
+            "calibration (a board solve, or a previous run) instead of solving cold",
+        ),
+    ] = None,
+    lens_mm: Annotated[
+        float | None,
+        typer.Option("--lens-mm", help="lens focal length in mm (with --sensor-mm)"),
+    ] = None,
+    sensor_mm: Annotated[
+        float | None,
+        typer.Option("--sensor-mm", help="sensor width in mm (with --lens-mm)"),
+    ] = None,
+    focal_px: Annotated[
+        float | None,
+        typer.Option("--focal-px", help="focal length in pixels, stated directly"),
+    ] = None,
+    scale_from: Annotated[
+        str | None,
+        typer.Option(
+            "--scale-from",
+            metavar="A,B=DISTANCE",
+            help="pin the scale with a known distance between two landmarks, e.g. "
+            "'tether_tip,coverslip_ne=1.8'. Without it the rig is valid up to scale: "
+            "angles are meaningful, lengths and velocities are not",
+        ),
+    ] = None,
+    free_focal: Annotated[
+        bool,
+        typer.Option(
+            "--free-focal",
+            help="let the solver adjust focal length. Off by default and rarely right: "
+            "focal error trades against depth, so the residual improves while the rig "
+            "gets worse",
+        ),
+    ] = False,
+    free_k1: Annotated[
+        bool,
+        typer.Option(
+            "--free-k1",
+            help="let the solver adjust the first radial distortion coefficient. Needs "
+            "plenty of well-spread labels to be identifiable",
+        ),
+    ] = False,
+    include_unreviewed: Annotated[
+        bool,
+        typer.Option(
+            "--include-unreviewed",
+            help="use frames that are not marked reviewed. Off by default: a "
+            "half-labeled frame contributes a systematically biased point, and no "
+            "residual will reveal that afterwards",
+        ),
+    ] = False,
+    loss: Annotated[
+        str,
+        typer.Option("--loss", help="robust loss: linear / huber / cauchy / arctan"),
+    ] = "cauchy",
+    f_scale: Annotated[
+        float, typer.Option("--f-scale", help="robust loss scale, in pixels")
+    ] = 4.0,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="calibration name (default: 'from-labels')"),
+    ] = None,
+    accept: Annotated[
+        bool,
+        typer.Option(
+            "--accept",
+            help="make the solved rig the project's current calibration. Without it the "
+            "file is written but nothing switches over, so a bad solve cannot silently "
+            "replace a good one",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="report readiness only: what is labeled, what is still weak, and what "
+            "labeling would fix it. Solves nothing and writes nothing",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Solve a project's camera rig from its hand labels.
+
+    The from-scratch path: label 2D by hand with no calibration, then recover the rig from
+    those labels. Run it with --dry-run while you are still labeling -- it reports exactly
+    what is still weak and what labeling would fix it.
+
+    Intrinsics are never derived from the labels. Extrinsics can be recovered from
+    correspondences; focal length essentially cannot, and a solve permitted to guess it
+    reports a small residual for a wrong rig. Supply --from-calibration (best),
+    --lens-mm/--sensor-mm, or --focal-px.
+
+    Nothing becomes the project's calibration without --accept.
+    """
+    _configure_logging(log_level.value)
+    _cmd_calibrate(
+        argparse.Namespace(
+            project=project,
+            points=points,
+            recordings=recordings,
+            from_calibration=from_calibration,
+            lens_mm=lens_mm,
+            sensor_mm=sensor_mm,
+            focal_px=focal_px,
+            scale_from=scale_from,
+            free_focal=free_focal,
+            free_k1=free_k1,
+            include_unreviewed=include_unreviewed,
+            loss=loss,
+            f_scale=f_scale,
+            name=name,
+            accept=accept,
+            dry_run=dry_run,
+        )
+    )
 
 
 def _normalize_overwrite_argv(argv: list[str]) -> list[str]:

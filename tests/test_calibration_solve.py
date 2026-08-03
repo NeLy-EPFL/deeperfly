@@ -388,3 +388,70 @@ def test_the_quality_block_is_per_camera(truth):
     )
     assert set(result.quality["per_camera_rms_px"]) == set(truth.names)
     assert result.report["observations"]["views"] == 7
+
+
+# -- merging several recordings ------------------------------------------------
+
+
+def test_a_rig_scoped_landmark_becomes_one_shared_track(truth):
+    """Sharing one 3D point across recordings is the strongest constraint available."""
+    from deeperfly.calibration_solve import merge_observations
+
+    a = _observations(truth, "landmarks", n_static=3, n_frames=2, seed=1)
+    b = _observations(truth, "landmarks", n_static=3, n_frames=2, seed=2)
+    for obs, name in ((a, "recA"), (b, "recB")):
+        obs.tracks = [
+            type(t)(
+                kind=t.kind,
+                label=t.label,
+                static=t.static,
+                recording=name,
+                frame=t.frame,
+                scatter_px=t.scatter_px,
+                n_observations=t.n_observations,
+            )
+            for t in obs.tracks
+        ]
+
+    unshared = merge_observations([a, b])
+    assert unshared.n_tracks == 6  # three per recording, kept apart
+
+    shared = merge_observations([a, b], share={"lm0", "lm1", "lm2"})
+    assert shared.n_tracks == 3
+    assert all(t.recording == "recA+recB" for t in shared.tracks)
+
+
+def test_merging_records_the_spread_across_recordings(truth):
+    """A rig-scoped landmark's cross-recording spread is the moved-camera signal."""
+    from deeperfly.calibration_solve import merge_observations
+
+    a = _observations(truth, "landmarks", n_static=2, n_frames=1, noise=0.0, seed=1)
+    b = _observations(truth, "landmarks", n_static=2, n_frames=1, noise=0.0, seed=1)
+    b.pts2d[:, 1] += 12.0  # landmark 1 lands somewhere else in recording B
+    for obs, name in ((a, "recA"), (b, "recB")):
+        obs.tracks = [
+            type(t)(kind=t.kind, label=t.label, static=True, recording=name)
+            for t in obs.tracks
+        ]
+
+    merged = merge_observations([a, b], share={"lm0", "lm1"})
+    scatter = {t.label: t.scatter_px for t in merged.tracks}
+    assert scatter["lm0"] < 0.01
+    assert scatter["lm1"] > 1.0
+
+
+def test_merging_mismatched_view_orders_is_refused(truth):
+    """The view axis is positional; merging different orders would transpose cameras."""
+    from deeperfly.calibration_solve import merge_observations
+
+    a = _observations(truth, "landmarks", n_frames=1)
+    b = _observations(truth, "landmarks", n_frames=1)
+    b.view_names = list(reversed(b.view_names))
+    with pytest.raises(ValueError, match="positional"):
+        merge_observations([a, b])
+
+
+def test_merging_nothing_is_empty_not_an_error():
+    from deeperfly.calibration_solve import merge_observations
+
+    assert merge_observations([]).n_tracks == 0

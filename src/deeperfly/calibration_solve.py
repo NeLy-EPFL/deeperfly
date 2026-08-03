@@ -47,6 +47,7 @@ __all__ = [
     "Observations",
     "Track",
     "build_observations",
+    "merge_observations",
     "conditioning",
     "covisibility",
     "initialize_extrinsics",
@@ -291,6 +292,95 @@ def _collapse_static(per_frame: np.ndarray) -> tuple[np.ndarray, float, int]:
             spreads.append(float(np.sqrt((pts.std(axis=0) ** 2).sum())))
     scatter = float(np.mean(spreads)) if spreads else float("nan")
     return mean, scatter, int(finite.sum())
+
+
+def merge_observations(
+    per_recording: list[Observations], *, share: set[str] | None = None
+) -> Observations:
+    """Combine several recordings' observations into one solve.
+
+    Tracks concatenate, **except** static landmarks named in ``share`` (the rig-scoped
+    ones): those become a *single* track whose per-view observation is the mean across
+    every recording that saw them. That sharing is the strongest constraint available --
+    it ties recordings into one rigid problem -- and the most dangerous, because it is
+    silently wrong the moment the rig is bumped between sessions. So the merged track keeps
+    the **spread across recordings** as its scatter, which is exactly the quantity that
+    reveals a moved camera, and the report breaks residuals down per recording.
+
+    Parameters
+    ----------
+    per_recording
+        One :class:`Observations` per recording. All must share the same view order.
+    share
+        Landmark labels to merge into one track (from ``scope = "rig"``).
+
+    Returns
+    -------
+    Observations
+        The merged problem.
+
+    Raises
+    ------
+    ValueError
+        If the recordings disagree on their view names -- the ``V`` axis is positional, so
+        merging mismatched orders would silently transpose cameras.
+    """
+    per_recording = [o for o in per_recording if o.n_tracks]
+    if not per_recording:
+        return Observations(np.zeros((0, 0, 2)), [], [])
+    views = per_recording[0].view_names
+    for other in per_recording[1:]:
+        if other.view_names != views:
+            raise ValueError(
+                "cannot merge recordings with different view names/order "
+                f"({views} vs {other.view_names}) -- the view axis is positional"
+            )
+    share = share or set()
+
+    columns: list[np.ndarray] = []
+    tracks: list[Track] = []
+    shared_cols: dict[str, list[np.ndarray]] = {}
+    shared_meta: dict[str, list[Track]] = {}
+
+    for obs in per_recording:
+        for i, track in enumerate(obs.tracks):
+            if track.kind == "landmark" and track.static and track.label in share:
+                shared_cols.setdefault(track.label, []).append(obs.pts2d[:, i])
+                shared_meta.setdefault(track.label, []).append(track)
+                continue
+            columns.append(obs.pts2d[:, i])
+            tracks.append(track)
+
+    for label, cols in shared_cols.items():
+        stack = np.stack(cols, axis=0)  # (R, V, 2)
+        with np.errstate(invalid="ignore"):
+            mean = np.nanmean(stack, axis=0)
+        # Spread ACROSS recordings, which is the drift signal a rig-scoped landmark exists
+        # to expose -- distinct from the within-recording scatter each track already has.
+        spread = float(np.nanmean(np.nanstd(stack, axis=0))) if len(cols) > 1 else 0.0
+        members = shared_meta[label]
+        columns.append(mean)
+        tracks.append(
+            Track(
+                kind="landmark",
+                label=label,
+                static=True,
+                recording="+".join(
+                    sorted({m.recording for m in members if m.recording})
+                )
+                or None,
+                scatter_px=spread,
+                n_observations=sum(m.n_observations for m in members),
+            )
+        )
+
+    if not columns:
+        return Observations(np.zeros((len(views), 0, 2)), [], list(views))
+    pts2d = np.stack(columns, axis=1)
+    keep = np.isfinite(pts2d).all(axis=-1).sum(axis=0) >= MIN_VIEWS_PER_TRACK
+    return Observations(
+        pts2d[:, keep], [t for t, k in zip(tracks, keep) if k], list(views)
+    )
 
 
 # -- step 2: the gate ----------------------------------------------------------

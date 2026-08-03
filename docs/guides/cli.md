@@ -436,3 +436,77 @@ Reports, each guarded so a missing piece is shown rather than crashing:
 
 Run it right after installing to confirm the GPU and frame-I/O backends are
 available.
+
+## `deeperfly calibrate` — solve a rig from hand labels
+
+The from-scratch path: label 2D with no calibration at all, then recover the camera rig
+from those labels.
+
+```bash
+deeperfly calibrate [PROJECT] --dry-run                     # readiness only
+deeperfly calibrate [PROJECT] --points both --focal-px 22388 --accept
+```
+
+### Run it with `--dry-run` while you label
+
+```console
+$ deeperfly calibrate --dry-run
+                             Calibration readiness
+┏━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃    ┃ check                  ┃ value             ┃ what would help            ┃
+┡━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ OK │ views with labels      │ 7 / 7             │                            │
+│ OK │ co-visibility          │ connected         │                            │
+│ !  │ static landmarks       │ 0                 │ one static point is worth   │
+│    │                        │                   │ more than many keypoint     │
+│    │                        │                   │ frames                      │
+│ OK │ observations/unknowns  │ 4.21x             │                            │
+│ !  │ scale reference        │ none              │ angles yes, lengths no      │
+└────┴────────────────────────┴───────────────────┴────────────────────────────┘
+```
+
+Each shortfall is phrased as the labeling that would fix it, so "enough" is never a guess.
+
+### `--points landmarks | keypoints | both`
+
+Your choice of what drives the solve, and it matters more than it looks:
+
+> A skeleton keypoint at frame *t* is a **different 3D point** from the same keypoint at
+> *t+1* — the animal moved. So *N* frames of *P* points add `3·N·P` unknowns, all inside a
+> 3 mm blob near the field centre. A **static** landmark — a coverslip scratch, the tether
+> tip, a dust speck — is **one** 3D point observed in `V·T` images, spread through the
+> scene volume. That is what conditions the solve.
+
+Declare landmarks in the project's `landmarks.toml`; `scope = "rig"` shares one 3D point
+across every recording on the rig (the strongest constraint available, and the easiest to
+get wrong if the rig is bumped — the report always breaks its residual down per recording).
+
+### Intrinsics are never guessed
+
+Extrinsics are recoverable from correspondences. Focal length essentially is not, from a
+few hundred hand labels on a 3 mm deforming animal — and a solve permitted to guess it
+trades focal error against depth and reports a *beautiful* residual for a wrong rig. So one
+of these is required, and which was used is recorded in the calibration's provenance:
+
+| flag | when |
+| --- | --- |
+| `--from-calibration PATH` | reuse a board solve or a previous run — **best** |
+| `--lens-mm F --sensor-mm W` | compute it: `f_px = f_mm · W_px / W_mm`, two datasheet numbers |
+| `--focal-px F` | state it directly |
+
+A badly wrong focal makes the solve **fail loudly** (views cannot be placed) rather than
+converge to a mis-scaled rig.
+
+### Nothing is accepted without `--accept`
+
+The solve always writes `calibrations/<name>.toml` and a `.report.json` beside it, but the
+project's *current* rig only changes with `--accept`. A calibration that silently replaced a
+good one would be the most destructive thing this command could do.
+
+Only frames marked **reviewed** are used, unless `--include-unreviewed`: a half-labeled
+frame contributes a systematically biased 3D point, and no residual reveals that afterwards.
+
+Scale: `--scale-from A,B=1.8` pins it with a known distance between two landmarks (which
+reuses the bundle adjuster's existing bone-length prior). Without one the rig is valid *up
+to scale* — angles are meaningful, lengths and velocities are not, and the calibration
+records `units = "arbitrary"` so nothing downstream can forget.

@@ -305,7 +305,12 @@ def test_a_recording_with_no_outputs_is_still_adoptable(tmp_path, project):
 
     assert entry.n_frames is None
     row = project.status()[0]
-    assert row["outputs_missing"] and not row["has_results"]
+    assert not row["has_results"]
+    # The outputs directory is created even so: the first thing that happens to a
+    # from-scratch recording is a labels.h5 being written into it, and no writer should
+    # have to guess whether the directory exists.
+    assert not row["outputs_missing"]
+    assert project.outputs_dir(entry).is_dir()
 
 
 def test_adoption_reads_the_frame_count_and_subject_from_the_result(

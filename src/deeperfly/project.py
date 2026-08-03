@@ -808,6 +808,12 @@ class Project:
         dest.mkdir(parents=True, exist_ok=True)
         if outputs is not None and outputs.is_dir():
             _attach_outputs(dest / OUTPUTS_DIRNAME, outputs, link=link)
+        else:
+            # A recording with no outputs yet -- the from-scratch case -- still needs
+            # somewhere for them, because the very first thing that happens to it is a
+            # labels.h5 being written. Creating it here means no writer has to guess
+            # whether the directory exists.
+            (dest / OUTPUTS_DIRNAME).mkdir(exist_ok=True)
 
         entry = RecordingEntry(
             id=rec_id,
