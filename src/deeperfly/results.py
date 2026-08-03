@@ -761,6 +761,11 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     )
     g.create_dataset("limb_id", data=s.limb_id)
     g.create_dataset("bones", data=s.bones)
+    # Additive, and read back with a default: a results.h5 written before symmetry
+    # existed has no such dataset and loads as a skeleton with no pairs. That only
+    # disables the pair-driven features for that file (the editor's chirality check falls
+    # back to name inference), so no format version bump is needed.
+    g.create_dataset("symmetries", data=np.asarray(s.symmetries).reshape(-1, 2))
     pal = g.create_group("palette")
     for name, color in s.palette.items():
         pal.attrs[name] = color
@@ -774,6 +779,7 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         name: (v.decode() if isinstance(v, bytes) else v)
         for name, v in g["palette"].attrs.items()  # type: ignore[index]
     }
+    sym = g.get("symmetries")
     return Skeleton(
         name=str(g.attrs["name"]),
         point_names=decode(g["point_names"][()]),  # type: ignore[index]
@@ -781,4 +787,9 @@ def _read_skeleton(g: h5py.Group) -> Skeleton:
         limb_id=g["limb_id"][()],  # type: ignore[index]
         bones=g["bones"][()],  # type: ignore[index]
         palette=palette,
+        symmetries=(
+            np.empty((0, 2), np.int64)
+            if sym is None
+            else np.asarray(sym[()]).reshape(-1, 2)
+        ),
     )

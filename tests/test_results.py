@@ -79,6 +79,32 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
     np.testing.assert_array_equal(sk.limb_id, Skeleton.fly().limb_id)
+    # The editor reads its skeleton from here, so losing the pairs on the way would leave
+    # the chirality check falling back to name inference for every run.
+    np.testing.assert_array_equal(sk.symmetries, Skeleton.fly().symmetries)
+
+
+def test_a_results_file_written_before_symmetry_existed_still_loads(
+    cameras, rng, tmp_path
+):
+    """The ``symmetries`` dataset is additive, so its absence must not be an error.
+
+    Such a file loads as a skeleton with no declared pairs, which disables the pair-driven
+    features for it rather than breaking it -- and the editor's chirality check then falls
+    back to inferring pairs by name (``Skeleton.symmetries_or_inferred``).
+    """
+    import h5py
+
+    path = tmp_path / "old.h5"
+    _result(cameras, rng).save(path)
+    with h5py.File(path, "r+") as f:
+        del f["skeleton/symmetries"]
+    sk = PoseResult.load(path).skeleton
+    assert sk.n_symmetries == 0
+    assert sk.point_names == Skeleton.fly().point_names
+    np.testing.assert_array_equal(
+        sk.symmetries_or_inferred(), Skeleton.fly().symmetries
+    )
 
 
 def test_optional_fields_absent(cameras, rng, tmp_path):

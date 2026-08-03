@@ -72,6 +72,46 @@ point_names = [
     "r_antenna", "r_abdomen0", "r_abdomen1", "r_abdomen2",
 ]
 
+# Left/right mirror pairs -- the same relation SLEAP models as a `type 2` skeleton edge.
+# Which side comes first means nothing (a pair is an unordered set), each point may appear
+# in at most one pair, and a point named in no pair simply carries no side. Three things
+# read this list, and each stops working (silently, in two cases) without it:
+#
+#   * `[pose2d.output_points]` validation. A pathway whose preprocessor mirrors the frame
+#     must land on the MIRRORED points; with the pairs declared, a one-word typo that maps
+#     a flipped pathway onto `rf_*` instead of `lf_*` is a config error at load time
+#     instead of a left/right-swapped reconstruction that still looks plausible.
+#   * flip augmentation for the trainer (`deeperfly.training.mirror`). Mirroring an image
+#     without permuting the channels trains every left channel on a right joint.
+#   * the editor's chirality check, which flags hand labels whose sides look swapped.
+#
+# Omitting the list is legal and switches all three off -- right for an asymmetric subject,
+# wrong for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
+# tokens (l*/r*, *_L/*_R, left_*/right_*) for a skeleton that does not declare them; the
+# 19 below are exactly what it proposes for these names, written out so that renaming a
+# point cannot quietly re-pair the skeleton.
+symmetries = [
+    ["lf_thorax_coxa",     "rf_thorax_coxa"],
+    ["lf_coxa_trochanter", "rf_coxa_trochanter"],
+    ["lf_femur_tibia",     "rf_femur_tibia"],
+    ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
+    ["lf_claw",            "rf_claw"],
+    ["lm_thorax_coxa",     "rm_thorax_coxa"],
+    ["lm_coxa_trochanter", "rm_coxa_trochanter"],
+    ["lm_femur_tibia",     "rm_femur_tibia"],
+    ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
+    ["lm_claw",            "rm_claw"],
+    ["lh_thorax_coxa",     "rh_thorax_coxa"],
+    ["lh_coxa_trochanter", "rh_coxa_trochanter"],
+    ["lh_femur_tibia",     "rh_femur_tibia"],
+    ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
+    ["lh_claw",            "rh_claw"],
+    ["l_antenna",          "r_antenna"],
+    ["l_abdomen0",         "r_abdomen0"],
+    ["l_abdomen1",         "r_abdomen1"],
+    ["l_abdomen2",         "r_abdomen2"],
+]
+
 # Limbs: each entry lists a limb's tracked points (by name) in kinematic-chain order.
 [skeleton.limb_points]
 lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]

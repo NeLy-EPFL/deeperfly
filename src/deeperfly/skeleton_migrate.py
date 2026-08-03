@@ -16,6 +16,7 @@ counts what it would touch, and -- for anything destructive -- a refusal to proc
     reorder points      remap by name; on-disk COO indices rewritten         notice
     add/remove a bone   none (bones are display + the BA prior only)         silent
     change limb/palette none                                                 silent
+    change symmetries   none (read by flip aug / mirror check / chirality)   silent
     delete a point      its labels are QUARANTINED, not deleted              confirm
 
 The one rule everything else follows from: **labels move by name, never by index.** The same
@@ -58,7 +59,7 @@ DESTRUCTIVE = ("delete",)
 class SkeletonChange:
     """One difference between two skeletons."""
 
-    kind: str  # "add" | "delete" | "rename" | "reorder" | "bones" | "limbs"
+    kind: str  # "add"|"delete"|"rename"|"reorder"|"bones"|"limbs"|"symmetries"
     detail: str
     points: tuple[str, ...] = ()
 
@@ -97,8 +98,13 @@ class MigrationPlan:
 
     @property
     def trivial(self) -> bool:
-        """Whether nothing about the *label indexing* changes (bones/palette only)."""
-        return all(c.kind in ("bones", "limbs") for c in self.changes)
+        """Whether nothing about the *label indexing* changes.
+
+        Bones, limbs/palette and symmetry pairs are all display or downstream-policy
+        metadata: no label row moves and no sidecar is rewritten, so such an edit needs
+        neither a rewrite nor a confirmation.
+        """
+        return all(c.kind in ("bones", "limbs", "symmetries") for c in self.changes)
 
     @property
     def quarantined(self) -> int:
@@ -177,6 +183,21 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
         )
     if tuple(old.limb_names) != tuple(new.limb_names) or old.palette != new.palette:
         changes.append(SkeletonChange("limbs", "the limbs or palette changed"))
+    # Symmetry is compared by NAME, not by index: a pure reorder moves both indices of
+    # every pair, so an index comparison would report a symmetry change for an edit that
+    # left the pairing untouched. Names are also what the emitted `[skeleton]` fragment
+    # carries, so this compares what actually round-trips.
+    if set(map(frozenset, old.symmetry_names)) != set(
+        map(frozenset, new.symmetry_names)
+    ):
+        changes.append(
+            SkeletonChange(
+                "symmetries",
+                "the left/right symmetry pairs changed (flip augmentation, the "
+                "[pose2d.output_points] mirror check and the chirality QC read them; "
+                "no label moves)",
+            )
+        )
     return changes, mapping
 
 
@@ -392,6 +413,18 @@ def _skeleton_toml(skeleton) -> str:
         "[skeleton]",
         f"name = {_toml.value(skeleton.name)}",
         f"point_names = {_toml.value(list(skeleton.point_names))}",
+    ]
+    # By NAME, so the emitted fragment survives a later reorder -- and emitted at all,
+    # because a migration rewrites the whole [skeleton] table: dropping the pairs here
+    # would silently disable the mirror check, flip augmentation and the chirality QC on
+    # the first skeleton edit a project ever makes.
+    if skeleton.n_symmetries:
+        lines += [
+            "",
+            "# Left/right mirror pairs (unordered; each point in at most one pair).",
+            f"symmetries = {_toml.value([list(p) for p in skeleton.symmetry_names])}",
+        ]
+    lines += [
         "",
         "# Each limb's points in kinematic-chain order (the bones are the consecutive pairs).",
         "[skeleton.limb_points]",

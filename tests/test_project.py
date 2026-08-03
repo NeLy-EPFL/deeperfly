@@ -132,14 +132,23 @@ def test_a_skeleton_path_keeps_only_the_skeleton_section(tmp_path):
     Two definitions of the rig in one project, with nothing saying which wins, is how a
     project ends up projecting with the wrong cameras.
     """
+    import tomllib
+
+    from deeperfly import _toml
     from deeperfly.config import DEFAULT_CONFIG_PATH
 
     project = Project.create(tmp_path / "p", skeleton=str(DEFAULT_CONFIG_PATH))
     text = project.skeleton_path().read_text()
-    assert "[skeleton]" in text
-    assert "[cameras" not in text
-    assert "[pose2d" not in text
+    # Asserted on the *declarations*, not on substrings: the [skeleton] block's prose names
+    # `[pose2d.output_points]` (as the thing that reads its symmetry pairs) and a comment
+    # mentioning a table is not a second definition of it. Substring matching cannot tell
+    # those apart in either direction, and the declaration is what the hazard is about.
+    assert _toml.top_level_tables(text) == ["skeleton"]
+    assert set(tomllib.loads(text)) == {"skeleton"}
     assert project.skeleton().n_points == 38
+    # The pairs must survive the lift, or a project seeded this way silently loses the
+    # mirror check, flip augmentation and the chirality QC.
+    assert project.skeleton().n_symmetries == 19
 
 
 def test_creating_over_an_existing_project_is_refused(tmp_path):

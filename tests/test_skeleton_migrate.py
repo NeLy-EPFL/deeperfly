@@ -292,3 +292,59 @@ def test_the_real_fly_skeleton_round_trips_through_a_migration(tmp_path):
     np.testing.assert_array_equal(back.bones, fly.bones)
     np.testing.assert_array_equal(back.limb_id, fly.limb_id)
     assert back.palette == fly.palette
+
+
+# -- symmetry pairs -----------------------------------------------------------
+
+
+def test_symmetries_survive_the_emitted_skeleton_fragment(fly):
+    """A migration rewrites the whole ``[skeleton]`` table, so dropping the pairs here
+    would silently disable the mirror check, flip augmentation and the chirality QC on the
+    first skeleton edit a project ever makes.
+    """
+    import tomllib
+
+    from deeperfly.config import Config
+    from deeperfly.skeleton import Skeleton
+    from deeperfly.skeleton_migrate import _skeleton_toml
+
+    back = Skeleton.from_config(Config.from_dict(tomllib.loads(_skeleton_toml(fly))))
+    np.testing.assert_array_equal(back.symmetries, fly.symmetries)
+    assert back.symmetry_names == fly.symmetry_names
+    # And a round trip is not itself reported as a change.
+    assert diff_skeletons(fly, back)[0] == []
+
+
+def test_the_pairs_are_emitted_by_name_so_a_reorder_carries_them(fly):
+    """Stored as indices, written as names: a later reorder then remaps them for free."""
+    import tomllib
+
+    from deeperfly.config import Config
+    from deeperfly.skeleton import Skeleton
+    from deeperfly.skeleton_migrate import _skeleton_toml
+
+    reversed_names = tuple(reversed(fly.point_names))
+    spec = tomllib.loads(_skeleton_toml(fly))
+    spec["skeleton"]["point_names"] = list(reversed_names)
+    moved = Skeleton.from_config(Config.from_dict(spec))
+    # Same pairing, different indices -- and diff_skeletons compares by name, so it reports
+    # the reorder and NOT a symmetry change.
+    assert set(map(frozenset, moved.symmetry_names)) == set(
+        map(frozenset, fly.symmetry_names)
+    )
+    kinds = [c.kind for c in diff_skeletons(fly, moved)[0]]
+    assert "reorder" in kinds
+    assert "symmetries" not in kinds
+
+
+def test_changing_the_pairs_is_reported_and_is_not_destructive(fly):
+    """No label moves, so a symmetry edit needs neither a rewrite nor a confirmation --
+    but it must still be *reported*, because it changes what three consumers do."""
+    import dataclasses
+
+    dropped = dataclasses.replace(fly, symmetries=fly.symmetries[:-1])
+    changes, mapping = diff_skeletons(fly, dropped)
+    assert [c.kind for c in changes] == ["symmetries"]
+    assert not any(c.destructive for c in changes)
+    # Every point keeps its index: the pairing is metadata, not indexing.
+    assert mapping == {i: i for i in range(fly.n_points)}

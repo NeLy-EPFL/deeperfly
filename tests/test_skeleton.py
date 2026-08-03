@@ -90,3 +90,159 @@ def test_limb_points_resolve_names():
     bad = {"skeleton": {"point_names": ["a", "b"], "limb_points": {"L": ["a", "z"]}}}
     with pytest.raises(ValueError, match="unknown point name"):
         Skeleton.from_config(Config.from_dict(bad))
+
+
+# -- left/right symmetry ------------------------------------------------------
+
+
+def test_fly38_declares_a_pair_for_every_point(fly):
+    """The packaged skeleton pairs all 38 points, and pairs them across the halves.
+
+    The left-first block layout means the partner of point ``i`` is ``i + 19``; asserting
+    that (rather than just "19 pairs exist") is what would catch a config edit that paired
+    two points on the same side.
+    """
+    assert fly.n_symmetries == 19
+    pairs = np.asarray(fly.symmetries)
+    assert pairs.shape == (19, 2)
+    assert sorted(pairs.reshape(-1).tolist()) == list(range(38))
+    np.testing.assert_array_equal(pairs[:, 1] - pairs[:, 0], np.full(19, 19))
+    for a, b in fly.symmetry_names:
+        assert a[0] == "l" and b[0] == "r" and a[1:] == b[1:]
+
+
+def test_flip_perm_is_an_involution_and_matches_the_block_layout(fly):
+    perm = fly.flip_perm()
+    assert perm.shape == (38,)
+    # Applying the mirror twice is the identity -- the property every consumer relies on.
+    np.testing.assert_array_equal(perm[perm], np.arange(38))
+    # For this layout it is exactly "swap the halves", which is also what the dfpose
+    # trainer's FLIP_PERM is; a divergence here would silently retrain on swapped sides.
+    np.testing.assert_array_equal(perm, np.roll(np.arange(38), 19))
+
+
+def test_partner(fly):
+    assert fly.point_names[fly.partner("lf_claw")] == "rf_claw"
+    assert fly.point_names[fly.partner("r_antenna")] == "l_antenna"
+    assert fly.partner(0) == 19
+    with pytest.raises(ValueError, match="not a point of skeleton"):
+        fly.partner("no_such_point")
+
+
+def test_a_skeleton_with_no_symmetries_disables_the_pair_features():
+    """No pairs is legal: the permutation is the identity and nothing else fires.
+
+    This is the side-agnostic detector's case -- a 19-channel model whose channels carry
+    no side has nothing to swap -- so it must be a supported state, not a degenerate one.
+    """
+    skel = Skeleton.from_config(
+        Config.from_dict({"skeleton": {"point_names": ["a", "b", "c"]}})
+    )
+    assert skel.n_symmetries == 0
+    assert skel.symmetry_names == ()
+    assert skel.partner("a") is None
+    np.testing.assert_array_equal(skel.flip_perm(), np.arange(3))
+
+
+def test_symmetries_are_canonicalized_so_declaration_order_carries_no_meaning():
+    """A pair is an unordered set, and two spellings of the same pairing compare equal."""
+    names = ["l_a", "r_a", "l_b", "r_b"]
+
+    def build(pairs):
+        return Skeleton.from_config(
+            Config.from_dict({"skeleton": {"point_names": names, "symmetries": pairs}})
+        )
+
+    forward = build([["l_a", "r_a"], ["l_b", "r_b"]])
+    shuffled = build([["r_b", "l_b"], ["r_a", "l_a"]])  # reversed rows, reversed order
+    by_index = build([[2, 3], [1, 0]])
+    np.testing.assert_array_equal(forward.symmetries, shuffled.symmetries)
+    np.testing.assert_array_equal(forward.symmetries, by_index.symmetries)
+
+
+@pytest.mark.parametrize(
+    "pairs, message",
+    [
+        ([["lf_claw", "lf_claw"]], "with itself"),
+        ([["lf_claw", "rf_claw"], ["lf_claw", "rm_claw"]], "second symmetry pair"),
+        ([["lf_claw", "nope"]], "unknown point name"),
+        ([["lf_claw"]], "exactly 2 points"),
+        ([["lf_claw", "rf_claw", "rm_claw"]], "exactly 2 points"),
+        ([[0, 999]], "outside"),
+        (["lf_claw"], "2-element pair"),
+        ("lf_claw", "list of 2-element pairs"),
+    ],
+)
+def test_malformed_symmetries_are_rejected_with_a_pointed_message(fly, pairs, message):
+    spec = {"skeleton": {"point_names": list(fly.point_names), "symmetries": pairs}}
+    with pytest.raises(ValueError, match=message):
+        Skeleton.from_config(Config.from_dict(spec))
+
+
+def test_a_point_in_two_pairs_is_rejected_however_the_skeleton_was_built(fly):
+    """The validation is in ``__post_init__``, not only in the config parser.
+
+    A skeleton also arrives from a ``results.h5`` and from the editor, and ``flip_perm``'s
+    involution guarantee only holds while no point has two partners -- so the check has to
+    sit where every construction path passes through it.
+    """
+    with pytest.raises(ValueError, match="more than one symmetry pair"):
+        Skeleton(
+            name="t",
+            point_names=fly.point_names,
+            limb_names=(),
+            limb_id=np.full(38, -1),
+            bones=np.empty((0, 2), int),
+            palette={},
+            symmetries=np.array([[0, 19], [0, 20]]),
+        )
+
+
+def test_symmetries_or_inferred_falls_back_only_when_nothing_is_declared(fly):
+    """An old ``results.h5`` carries no pairs, and the chirality QC still has to work.
+
+    The fallback must never *override* a declaration, though -- a skeleton that deliberately
+    pairs nothing (or pairs unusually) must be taken at its word.
+    """
+    np.testing.assert_array_equal(fly.symmetries_or_inferred(), fly.symmetries)
+
+    import dataclasses
+
+    stripped = dataclasses.replace(fly, symmetries=np.empty((0, 2), np.int64))
+    np.testing.assert_array_equal(stripped.symmetries_or_inferred(), fly.symmetries)
+
+
+@pytest.mark.parametrize(
+    "names, expected",
+    [
+        # This project's own scheme: the side letter is glued to the limb letter.
+        (["lf_claw", "rf_claw", "l_antenna", "r_antenna"], [(0, 1), (2, 3)]),
+        # SLEAP-style suffixes, and the word forms.
+        (["Ear_L", "Ear_R", "nose"], [(0, 1)]),
+        (["left_wing", "right_wing", "thorax"], [(0, 1)]),
+        (["shoulderleft", "shoulderright", "hipL", "hipR"], [(0, 1), (2, 3)]),
+        # A lone side-letter-looking name has no counterpart, so it stays unpaired --
+        # the guard that keeps the loosest rule from inventing pairs.
+        (["l_eye", "r_eye", "rostrum", "labellum"], [(0, 1)]),
+        # SLEAP's own mouse skeleton: genuinely no pairs.
+        (["head", "torso", "tail_base"], []),
+    ],
+)
+def test_infer_symmetries_by_name(names, expected):
+    from deeperfly.skeleton import infer_symmetries_by_name
+
+    got = [tuple(int(x) for x in row) for row in infer_symmetries_by_name(names)]
+    assert got == expected
+
+
+def test_inference_reproduces_the_packaged_declaration(fly):
+    """The 19 pairs in ``default_config.toml`` are exactly what inference proposes.
+
+    They are still written out (a rename must not silently re-pair the skeleton), but if
+    the two ever disagreed, one of them would be wrong.
+    """
+    from deeperfly.skeleton import infer_symmetries_by_name
+
+    np.testing.assert_array_equal(
+        infer_symmetries_by_name(fly.point_names), fly.symmetries
+    )
