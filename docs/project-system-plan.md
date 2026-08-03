@@ -906,9 +906,24 @@ calibration show/export`. **No GUI, no project.** Independently useful today: th
 gain a way to persist and share their BA result.
 
 ### Phase 1 — The project layer *(~2 weeks)*
-`deeperfly.project` (manifest, ids, adoption, resolution); `deeperfly project new/add/ls/status`;
-skeleton and rig extracted into their own files; profile layering; **adopt `~/fly-pose-data` into
-a real project as the acceptance test**. Still no GUI changes.
+**1a — SHIPPED.** `deeperfly.project` (manifest, content ids, adoption, resolution);
+`deeperfly project new/add/ls/status/rm`; the skeleton extracted into its own file;
+`~/fly-pose-data` adopted as the acceptance test (see §14). No GUI changes.
+
+**1b — moved to Phase 4.** Extracting the *rig* into `rig.toml` and layering profiles is
+config composition, which is the same work as the tier-2/tier-3 split in §7 — doing it twice
+would mean two competing notions of "the effective config". A project therefore owns its
+skeleton today and points at a calibration; the rig topology (`[[sources]]`, per-camera
+preprocessing) stays in the run config until Phase 4.
+
+Two deviations from the design as written, both deliberate:
+
+- **The recording fingerprint drops `n_frames` from the footage basis.** The plan had
+  `camera:basename:size:n_frames`; the frame count costs a video decode per camera on every
+  adoption, and per-camera byte size across seven files is already far more discriminative
+  than a frame count. `n_frames` survives in the *fallback* basis (`result`), where it is the
+  only recording-specific quantity available and there is a `results.h5` open anyway.
+- **`gt_points` is reported alongside `gt_trainable`.** See §14.
 
 ### Phase 2 — Uncalibrated editing *(~2 weeks)*
 `Session`/`EditorState` without a `PoseResult`; `has_3d = False` as a supported state; front-end
@@ -1097,3 +1112,67 @@ docs stops being true.
 - [Aniposelib tutorial — Anipose](https://anipose.readthedocs.io/en/latest/aniposelib-tutorial.html)
 - [Anipose: a toolkit for robust markerless 3D pose estimation](https://www.sciencedirect.com/science/article/pii/S2211124721011797)
 - [Multi-Camera Self-Calibration in Sports Motion Capture: Leveraging Human and Stick Poses](https://arxiv.org/pdf/2604.17567)
+
+---
+
+## 14. What adopting the real corpus taught (2026-08-03)
+
+Phase 1's acceptance test was to adopt `~/fly-pose-data` into a project. It surfaced two
+things that changed the code, and one that changes the plan's priorities.
+
+### 14.1 There is ~3× more hand labeling on disk than anything tracks
+
+`deeperfly project add` over `recordings/*` and `predicted/*_label/` found **21
+non-backup `labels.h5` files**, across three parallel trees:
+
+| tree | files | note |
+|---|---|---|
+| `recordings/<rid>/deeperfly_outputs/` | 2 | where the pipeline writes by default |
+| `predicted/<rid>_label/deeperfly_outputs/` | 15 | the `predict → correct` round outputs |
+| `predicted/_superseded/`, `predicted/_work/.../pass1/` | 4 | earlier passes, kept |
+
+Their provenance breakdown is the surprise: **essentially all of it is `dragged`** — 47,330
+of 47,354 stored GT rows are human-placed pixels, not machine seeds (one file has 24
+`confirmed_prediction`; nothing anywhere is `confirmed_projection` or `placeholder_seed`).
+Discounting the one recording whose 4,461 labels appear in *five* separate copies, that is
+roughly **29,500 unique human-placed points across ~17 recordings**.
+
+`~/dfpose/data/labels/MANIFEST.toml` tracks **3 files and 9,175 points**. The other ~20,000
+are real labels that no training set has ever seen.
+
+Two consequences:
+
+1. **`label_stats` agrees exactly with the manifest** wherever they overlap (1,759/12 and
+   4,461/28 GT/occlusions), which is the strongest available check that the project layer
+   reads these files correctly.
+2. **Phase 6 (merge) is worth more than its position suggests.** The blocker on using that
+   corpus is not labeling effort — it is reconciliation. Consider promoting the
+   label-merge half of Phase 6 ahead of Phase 4.
+
+### 14.2 One recording, several label sets
+
+Content-based identity worked exactly as designed: 13 of the 15 `predicted/*_label/`
+directories were recognized as recordings *already adopted* from `recordings/` (same footage
+bytes → same id), so adopting them was a no-op. Correct — but it means their labels are not
+counted, and a silent zero is indistinguishable from "the labels are gone".
+
+`add_recording` therefore **warns** when a de-duplicated source carries labels the indexed
+entry cannot see, naming both counts and both paths. The real fix is merge (§8): a recording
+having several label sets is a first-class situation here, not a mistake.
+
+### 14.3 "Labeled" is not "trainable"
+
+The first status table reported raw GT rows. But `export_gt` **drops**
+`confirmed_projection` (a bulk-accepted triangulation guess — the model's own output
+promoted to ground truth) and `placeholder_seed` (a coordinate the editor invented at the
+image edge so the operator had something to grab). A status number that counted those would
+overstate the training set by exactly the amount of geometry someone bulk-confirmed, and it
+would *disagree with the export it is supposed to predict*.
+
+So `label_stats` reports both, and the status table shows `trainable` with anything dropped
+counted and named. A test pins `gt_trainable` against `export_gt`'s own mask, so the two
+cannot drift.
+
+This corpus happens to be almost entirely `dragged`, so the numbers barely move — which is
+precisely why it was worth fixing now rather than after a round of bulk confirmation made
+the discrepancy load-bearing.
