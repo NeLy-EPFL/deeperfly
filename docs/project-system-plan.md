@@ -656,10 +656,19 @@ actually varies*:
 ### 7.2 The skeleton editor (tier 1)
 
 Canvas-based, on a chosen frame: add/rename/delete points, drag bones between them, assign limbs,
-pick palette colors, mark symmetry pairs (left/right — which the current `Skeleton` does not
-model and which SLEAP does, as edge `type 2`; worth adding for future flip augmentation and for
-`labels-absent`-style bulk operations). Presets ship: **fly38** (today's default), **fly19**
+pick palette colors, edit symmetry pairs. Presets ship: **fly38** (today's default), **fly19**
 (ipsilateral, the legacy DeepFly3D layout), **blank**.
+
+> **Symmetry pairs: done, ahead of the editor.** `Skeleton` now models them
+> (`[skeleton].symmetries`, the same relation SLEAP calls edge `type 2`), with
+> `flip_perm()` as the channel permutation a mirror implies and `infer_symmetries_by_name`
+> to propose pairs for a skeleton that declares none. They landed early because two
+> consumers wanted them before the editor did: `[pose2d.output_points]` validation (a
+> mirrored pathway must land on the mirrored points — previously 132 unchecked config rows,
+> where one typo swapped a body side silently) and `deeperfly.training.mirror` (flip
+> augmentation, per fork **F3**). The editor's chirality check reads them too. So this
+> section's remaining work is the *canvas*, not the model — editing pairs is already a
+> non-destructive migration (`SkeletonChange("symmetries", …)`).
 
 Every edit is a **migration**, not a mutation — see §9.
 
@@ -1037,6 +1046,15 @@ Recording them here so Phase 5 is not re-litigated:
    augmentation/transforms, the model zoo, the `LabelsH5Dataset` ingestion, the train loop, and
    metrics. `dfpose.predict` / `refit` / `crop` are *research* code and are **not** absorbed —
    only the train/eval/dataset core is.
+
+   *Landed so far:* `training.heatmaps` (the numeric contract) and `training.mirror` (the
+   left-right flip). The mirror went in ahead of the dataset because it is the piece whose
+   failure is silent — a wrong channel permutation trains every left channel on a right
+   joint with no error and no warning — and because it carries three details that are not
+   obvious from dfpose's code and would not survive a re-derivation: the flipped sample must
+   be relabeled with the **mirrored camera** (`[cameras.*].mirror`), the flip decision
+   belongs to the **frame group** rather than the sample, and the per-point masks riding
+   alongside the coordinates must be permuted too.
 2. **Dependency surface.** `timm` (and whatever the backbone needs) joins the dependency set,
    but as a `deeperfly[train]` **extra**, not core — mirroring how `quickik` is handled for the
    IK stage. A plain install must stay able to run `gui`, `run` and `calibrate` with no trainer

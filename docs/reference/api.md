@@ -20,6 +20,12 @@ coordinate conventions these functions share, see
 
 ::: deeperfly.skeleton.Skeleton
 
+::: deeperfly.skeleton.infer_symmetries_by_name
+
+## Chirality (left/right swap detection)
+
+::: deeperfly.chirality
+
 ## Results
 
 ::: deeperfly.results.PoseResult
@@ -63,6 +69,12 @@ coordinate conventions these functions share, see
 ## Pictorial structures
 
 ::: deeperfly.pictorial
+
+## Training (`deeperfly[train]`)
+
+::: deeperfly.training.heatmaps
+
+::: deeperfly.training.mirror
 
 ## Frame I/O
 

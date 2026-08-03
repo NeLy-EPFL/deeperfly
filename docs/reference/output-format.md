@@ -26,7 +26,7 @@ in float64; `NaN` encodes missing observations / un-triangulated points.
 
 ```text
 attrs["meta"]               json: {deeperfly_format_version: 2, created_utc, ...}
-skeleton/                   point_names, limb_names, limb_id, bones, palette/
+skeleton/                   point_names, limb_names, limb_id, bones, symmetries, palette/
 pose2d/
     points                  (V, T, P, 2)  arg-max 2D detections (visibility-masked)
     conf                    (V, T, P)     detection confidences
@@ -80,7 +80,14 @@ varies only rotation + translation per frame, so the body does not breathe.
 
 A `cameras/` group stores `names`, `rvecs`, `tvecs`, `intrs` (`[fx, fy, cx, cy]`),
 and `dists`. The `skeleton/` group stores `point_names`, `limb_names`, `limb_id`,
-`bones`, and a `palette/` subgroup of limb → hex color.
+`bones`, `symmetries` (`(S, 2)` left/right mirror pairs — see
+[`[skeleton].symmetries`](configuration.md#symmetries)), and a `palette/` subgroup of
+limb → hex color.
+
+`symmetries` is additive and **did not bump the format version**: a file written before
+it existed simply has no such dataset and loads as a skeleton with no declared pairs, so
+the editor's left/right check falls back to inferring pairs from the point names rather
+than refusing to open the file.
 
 Which groups are present depends on which stages ran. A group exists only once its
 stage completed; only the stages that were enabled (and whose inputs were

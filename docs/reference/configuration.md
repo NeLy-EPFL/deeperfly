@@ -60,6 +60,7 @@ default 38-point fly skeleton.
 | --- | --- | --- | --- |
 | `name` | str | `"skeleton"` | Skeleton identifier (e.g. `"fly38"`). |
 | `point_names` | list[str] | *required* | Ordered tracked-point names; the length is `P`. |
+| `symmetries` | list[[str, str]] | `[]` | Left/right mirror pairs (see below). Unordered within a pair; each point in at most one pair. |
 | `limb_points` | table | `{}` | `[skeleton.limb_points]`: each limb name → its points in kinematic-chain order. |
 | `limb_palette` | table | `{}` | `[skeleton.limb_palette]`: each limb name → a hex plotting color. Limbs without an entry fall back to a default colormap. |
 
@@ -67,6 +68,11 @@ default 38-point fly skeleton.
 [skeleton]
 name = "fly38"
 point_names = ["lf_thorax_coxa", "lf_coxa_trochanter", "..."]
+
+symmetries = [
+    ["lf_claw", "rf_claw"],
+    ["l_antenna", "r_antenna"],
+]
 
 [skeleton.limb_points]
 lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]
@@ -77,6 +83,31 @@ lf_leg = "#0f7399"
 
 Which view sees which point is **not** set here — it is the union of the
 [`[pose2d.output_points]`](#output_points) tables.
+
+### `symmetries` — left/right pairs { #symmetries }
+
+The same relation SLEAP models as a `type 2` skeleton edge: two points that mirror
+each other across the animal's sagittal plane. Which side comes first carries no
+meaning (a pair is an unordered set), and a point named in no pair simply carries
+no side.
+
+Three things read the pairs, and two of them fail *silently* without them:
+
+| Consumer | What it does with them | What its absence costs |
+| --- | --- | --- |
+| [`[pose2d.output_points]`](#output_points) validation | Checks that a pathway whose preprocessor **mirrors** the frame lands on the *mirrored* points | A one-word typo in one of 132 rows swaps a body side. The detector still fires and triangulation still converges — the reconstruction is just a fly with its legs crossed. |
+| Flip augmentation (`deeperfly.training.mirror`) | Permutes the point channels by `Skeleton.flip_perm()` | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
+| The editor's chirality check (`deeperfly.chirality`) | Flags hand labels whose sides look swapped in the derived 3D | The one labeling error that costs nothing in any point-cloud metric goes unfound. |
+
+Omitting the key switches all three off — correct for an asymmetric subject, wrong
+for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
+tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged fly38 skeleton
+writes out the 19 pairs that inference proposes, rather than relying on it, so that
+renaming a point cannot quietly re-pair the skeleton.
+
+Editing the pairs is a **non-destructive** skeleton migration: no label moves and no
+sidecar is rewritten, but the change is still reported, because it changes what the
+three consumers above do.
 
 ## `[cameras.*]` — rig geometry { #cameras }
 
@@ -109,6 +140,33 @@ accepted in a `[cameras.<name>]` table — an orbit is a *description* of a rig
 someone built, and half-specifying it with raw extrinsics is rejected rather than
 guessed at. To use raw, solved extrinsics, point at a calibration file instead
 (below). The internal `CameraGroup` still uses `rvec` / `tvec`.
+
+**Non-geometry keys.** A `[cameras.<name>]` table also carries per-view keys owned
+by other stages, which are stripped before the rig is parsed:
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `input` | str | *unset* | Footage glob for this view. |
+| `preprocess` | list[table] | `[]` | Frame ops applied to this view (see [`[[pose2d.preprocessors]]`](#pose2d)). |
+| `mirror` | str | *unset* | The view that sees **this view's mirror image**. |
+
+`mirror` is what makes flip augmentation honest. The animal is bilaterally
+symmetric, so a horizontally-flipped right-side view is a valid left-side view —
+which is what makes the augmentation legal at all, and why the flipped sample must
+be relabeled with the *mirrored* camera: a metric that splits ipsilateral from
+contralateral error reads the camera id, so without the remap it reports every
+swapped channel under the wrong side.
+
+The relation must be **symmetric**, and a camera on the midline (the front view,
+whose mirror is still a front view) names itself. A half-declared pairing is
+rejected rather than tolerated — it reads as correct and behaves as a silent side
+swap on one camera. A view that declares no `mirror` is left unremapped.
+
+It is declared rather than derived from the extrinsics because which camera mirrors
+which is a fact about how the rig was built, and it stays true before there is a
+calibration to compute it from. (For the packaged rig it happens to be `-azimuth`,
+but that is a coincidence of a symmetric layout, not something another rig
+inherits.)
 
 **A solved rig:** `[cameras].calibration`
 
@@ -145,6 +203,7 @@ roll_deg = 0.0
 
 [cameras.rh]
 azimuth_deg = -120
+mirror = "lh"
 ```
 
 ## `[pipeline]` — which stages run { #pipeline }
@@ -234,6 +293,32 @@ rf_thorax_coxa = { pathway = "rh", out_channel = 0 }
 channel `out_channel` of the named pathway. Keying by `(view, point)` means each
 point has exactly one source (a repeat is an error); a `(view, point)` left out
 stays unobserved (`NaN`). That union is the visibility.
+
+**The mirror check.** These tables are also where the plan's left/right identities
+are decided. The side cameras all feed one *side-agnostic* model and the left-side
+views reach its convention through a `fliplr` preprocessor, so whether a channel
+means a left or a right joint is settled here and nowhere else — 132 hand-written
+rows with, historically, nothing checking them.
+
+When the skeleton declares [`symmetries`](#symmetries) the invariant becomes
+decidable and is enforced at load: for each `(model, channel)`, every point an
+**un-mirrored** pathway maps it to must be the **symmetry partner** of every point
+a **mirrored** pathway maps it to. A pathway counts as mirrored when its
+preprocessor reverses handedness — an *odd* number of `fliplr`/`flipud` ops, so
+`fliplr` + `flipud` is a half-turn and reverses nothing.
+
+```
+ValueError: [pose2d.output_points] disagrees with [skeleton].symmetries about left/right:
+  - model 'deepfly2d' channel 2: un-mirrored -> 'rf_femur_tibia' ('rf' -> view 'rf')
+    but mirrored -> 'rf_femur_tibia' ('f_flip' -> view 'f'). Mirroring the frame
+    mirrors the animal, so the mirrored pathway must land on 'lf_femur_tibia'.
+```
+
+The check is skipped when the skeleton declares no pairs (there is nothing to check
+against), and per channel when only one parity maps it — a one-sided rig's pathways
+are all un-mirrored, which is legal. One channel feeding several points also stays
+legal: `output_points` constrains where a *point's* data comes from, not a channel's
+fan-out.
 
 ## `[bundle_adjustment]` — camera refinement { #bundle_adjustment }
 

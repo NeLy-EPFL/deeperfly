@@ -53,7 +53,7 @@ automatically; the server stops a few seconds after the last tab closes. See the
 
 - **Views.** Every camera is shown with its overlay. Two arrangements share the same
   canvases: **Grid** (all cameras equally, the default) and **Focus** (one big view
-  plus thumbnails) — toggle with the layout switch or `f` / `g`. In Focus, `[` / `]`
+  plus thumbnails) — toggle with the layout switch or `l`. In Focus, `[` / `]`
   cycle which camera is enlarged.
 - **Frame strip + slider.** Scrub with the slider, the `←` / `→` keys (`Shift` for
   ±10), or type a frame number. The slider drives the whole editor, including the 3D
@@ -170,6 +170,39 @@ detector that the joint exists but happens to be hidden in all seven cameras at 
 When exactly one point is selected, the **point-status widget** shows that
 `(point, view)`'s state — **Predicted** / **Ground truth** / **Occluded** — and lets you
 set it directly.
+
+### The left/right check
+
+A swapped symmetry pair — the left claw dragged onto the right leg and vice versa — is
+the one labeling error that costs **nothing** in every metric that looks at a point
+cloud. Both pixels are on a real joint, the reprojection error stays small, and
+triangulation converges; only the identity is wrong. So the editor looks for it directly.
+
+When the frame's derived 3D puts a pair on the wrong side of the body, an amber
+**⇄ left/right?** badge appears next to the save controls, naming the worst pair. Click it
+to select that pair in every view, so you land on the joints instead of hunting for them;
+hover it for the full list and each pair's margin.
+
+The check is judged on the **3D**, not per view, and that is not a shortcut. In 3D "left"
+is a fixed halfspace whatever the animal is doing, so a disagreement really is a swap —
+measured over 500 independently-posed flies it emits 0.002 false flags per pose and
+recovers 98–99% of planted swaps exactly. The same test on a *side view* emits 4–11 false
+flags per pose, because an asymmetric posture genuinely puts the left claw right-of the
+right claw in projection. That is real 3D structure, not an error, and no threshold
+separates the two.
+
+Two things the badge deliberately does not do:
+
+- **It stays silent when it could not judge** — no 3D in the session, too few co-visible
+  pairs, or a collapsed left-right axis. A badge that read "checked, all clear" when it
+  actually meant "could not tell" would be worse than no badge.
+- **It cannot catch a wholesale flip.** If *every* pair is swapped, the labeling is
+  self-consistent: it is a valid labeling of a mirror-image fly, and with no unpaired
+  landmark there is nothing inside the frame that says which side is which.
+
+It needs the skeleton's [`symmetries`](../reference/configuration.md#symmetries). The
+packaged fly38 skeleton declares them; a skeleton that does not gets pairs inferred from
+its point names.
 
 ### Undo / redo
 
@@ -299,7 +332,7 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | Key | Action |
 | --- | --- |
 | `←` / `→` (`Shift` ±10) | Previous / next frame |
-| `f` / `g`, `[` / `]` | Focus / Grid layout; cycle the focused camera |
+| `l`, `[` / `]` | Toggle Grid / Focus layout; cycle the focused camera |
 | Click / `Shift`+click / double-click | Select a point / add-remove / that keypoint in every view |
 | `Shift`+drag | Rubber-band box: add every enclosed point |
 | `a` (`Ctrl`/`Cmd`+`A`) / `v` / `Esc` | Select all / all in the current view / clear the selection |
