@@ -412,20 +412,21 @@ def test_dragging_a_gt_view_keeps_it_under_cursor(result):
 # -- occluded (obscured) views ------------------------------------------------
 
 
-def test_toggle_invisible_drops_a_biased_view_from_the_solve(result):
-    # A small (inlier) perturbation on one view biases the derived 3D; occluding that
-    # view drops it and recovers the clean solve.
+def test_marking_a_view_occluded_does_not_change_the_solve(result):
+    """Occlusion is a statement about the image, not an instruction to the solve.
+
+    It used to drop the view -- which was its whole point, back when a hand-exclusion was
+    the only defence against a bad observation. The robust estimator is that defence now,
+    so the flag is free to mean only what it says, and a cell can be both hand-placed and
+    marked not-visible without the two contradicting each other.
+    """
     state = EditorState.from_result(result)
-    bad_view, point, frame = 0, 5, 0
-    true = result.pts3d[frame, point].copy()
-    result.pts2d[bad_view, frame, point] += np.array([6.0, 5.0])  # within RANSAC thresh
+    view, point, frame = 0, 5, 0
     before = state.display_pts3d(frame)[point].copy()
 
-    assert state.toggle_invisible(bad_view, point, frame) is True
-    assert state.labels.occluded[bad_view, frame, point]
-    after = state.display_pts3d(frame)[point]
-    assert np.linalg.norm(after - true) < np.linalg.norm(before - true)
-    assert np.allclose(after, true, atol=1e-6)
+    assert state.toggle_invisible(view, point, frame) is True
+    assert state.labels.occluded[view, frame, point]
+    np.testing.assert_allclose(state.display_pts3d(frame)[point], before)
 
 
 def test_toggle_invisible_then_back(result):
@@ -436,27 +437,41 @@ def test_toggle_invisible_then_back(result):
     assert not state.labels.occluded[view, frame, point]
 
 
-def test_occluded_and_gt_are_mutually_exclusive(result):
+def test_occlusion_and_gt_are_orthogonal(result):
+    """Both at once is a legitimate state: a joint placed *through* an occluder.
+
+    They used to be mutually exclusive because occlusion meant "drop this view from the 3D
+    solve", so a pixel and an exclusion were contradictory. Occlusion no longer touches the
+    solve -- it is a statement about the image -- and "I know where this is from the other
+    views, and you cannot see it here" is exactly what a human labeling a contralateral leg
+    is asserting. Losing either half would lose a real label.
+    """
     state = EditorState.from_result(result)
     view, point, frame = 1, 5, 0
 
-    state.toggle_fixed(view, point, frame)  # confirm GT
+    state.toggle_fixed(view, point, frame)  # place GT
     assert state.labels.has_gt[view, frame, point]
-    state.toggle_invisible(view, point, frame)  # then occlude -> drops the GT
+    state.toggle_invisible(view, point, frame)  # ... and mark it not visible here
     assert state.labels.occluded[view, frame, point]
-    assert not state.labels.has_gt[view, frame, point]
+    assert state.labels.has_gt[view, frame, point], "the pixel was destroyed"
 
 
-def test_dragging_an_occluded_view_un_occludes_it(result):
+def test_dragging_an_occluded_view_places_gt_and_keeps_the_occlusion(result):
+    """A drag asserts a position, not visibility, so it leaves the occlusion standing.
+
+    It used to un-occlude, because an occlusion was an instruction to the solve and the
+    drag contradicted it. Now it is a statement about the pixels, which the drag does not
+    contradict -- placing a joint you cannot see, from the geometry of the views that can,
+    is the normal way a contralateral leg gets labeled.
+    """
     state = EditorState.from_result(result)
     view, point, frame = 2, 5, 0
     state.toggle_invisible(view, point, frame)
-    assert state.labels.occluded[view, frame, point]
 
     drag = state.display_pts2d_refine(frame)[view, point] + np.array([8.0, 6.0])
     assert state.apply_3d_edit(view, point, drag, frame) is not None
-    assert not state.labels.occluded[view, frame, point]  # placing it un-occludes it
-    assert state.labels.has_gt[view, frame, point]
+    assert state.labels.occluded[view, frame, point]  # still not visible here
+    assert state.labels.has_gt[view, frame, point]  # ... but we know where it is
     assert np.allclose(state.display_pts2d_refine(frame)[view, point], drag, atol=1e-6)
 
 
@@ -637,6 +652,134 @@ def test_toggle_exclude_refuses_when_nothing_is_eligible(result):
     assert state.toggle_exclude_targets([(0, p)], f) is None  # only a labeled cell
 
 
+# -- the annotation instance ---------------------------------------------------
+#
+# The unit of annotation. Before one exists the editor is showing the detector and nothing
+# is authored; creating one seeds a position for every (view, point), and from then on the
+# skeleton is its own object whose cells are GT or not-GT -- no third value, because there
+# is no longer a layer to defer to.
+
+
+def test_no_instance_until_one_is_created(result):
+    state = EditorState.from_result(result)
+    assert not state.has_instance(0)
+    assert state.display_instance_pts2d(0) is None
+    assert state.create_instance(0) is True
+    assert state.has_instance(0)
+    assert state.create_instance(0) is False  # idempotent; reseed_instance is the redo
+
+
+def test_creation_seeds_every_cell_finitely(result):
+    """An instance with a hole is a joint the operator cannot grab, so there are none."""
+    p_gone = 7
+    result.pts2d[:, :, p_gone] = np.nan  # the detector never fired for this joint
+    result.pts3d[:, p_gone] = np.nan  # ... and triangulation has nothing either
+    state = EditorState.from_result(result)
+    assert state.create_instance(0) is True
+    assert np.isfinite(state.labels.seeds[:, 0]).all(), "the instance has a hole"
+
+
+@pytest.mark.parametrize("mode", ["triangulate", "copy"])
+def test_the_two_seeding_modes_differ_where_a_view_disagrees(result, mode):
+    """`triangulate` pulls every view onto the consensus; `copy` keeps its own opinion."""
+    f, p, odd = 0, 5, 2
+    result.pts2d[odd, f, p] += np.array([40.0, 30.0])  # one view out of line
+    state = EditorState.from_result(result)
+    state.create_instance(f, mode=mode)
+    seed = state.labels.seeds[odd, f, p]
+    detection = state.detections[odd, f, p]
+    if mode == "copy":
+        np.testing.assert_allclose(seed, detection)
+    else:
+        assert np.linalg.norm(seed - detection) > 1.0  # pulled onto the consensus
+
+
+def test_an_unknown_seeding_mode_is_refused(result):
+    state = EditorState.from_result(result)
+    with pytest.raises(ValueError, match="mode must be"):
+        state.create_instance(0, mode="vibes")
+
+
+def test_creating_an_instance_is_one_undo_step(result):
+    state = EditorState.from_result(result)
+    state.create_instance(0)
+    assert state.can_undo
+    state.undo()
+    assert not state.has_instance(0), "the undo left the instance standing"
+    assert np.isnan(state.labels.seeds[:, 0]).all()
+
+
+def test_reseeding_keeps_every_gt_pixel(result):
+    """Seeds are frozen at birth; picking up new detections is explicit and non-destructive."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.create_instance(f, mode="copy")
+    state.apply_2d_edit(0, p, (11.0, 22.0), f)
+
+    result.pts2d[:, f, :] += 5.0  # the detector was re-run and moved
+    assert state.reseed_instance(f, mode="copy") is True
+    np.testing.assert_allclose(state.labels.gt[0, f, p], [11.0, 22.0])  # GT untouched
+    np.testing.assert_allclose(state.labels.seeds[1, f, p], result.pts2d[1, f, p])
+    state.undo()  # ... and the reseed is one undoable step
+    assert state.labels.has_gt[0, f, p]
+
+
+def test_the_instance_draws_gt_over_the_derived_position(result):
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.create_instance(f)
+    state.apply_2d_edit(0, p, (11.0, 22.0), f)
+
+    inst = state.display_instance_pts2d(f)
+    np.testing.assert_allclose(inst[0, p], [11.0, 22.0])  # the operator's pixel
+    proj = state.display_pts3d_projected(f)
+    np.testing.assert_allclose(inst[1, p], proj[1, p])  # ... the rest follow the 3D
+
+
+def test_the_seed_display_mode_shows_what_the_instance_started_from(result):
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.create_instance(f, mode="copy")
+    state.apply_3d_edit(0, p, state.detections[0, f, p] + 30.0, f, fix=True)
+
+    state.nongt_display = "reprojection"
+    moved = state.display_instance_pts2d(f)[1, p].copy()
+    state.nongt_display = "seed"
+    held = state.display_instance_pts2d(f)[1, p]
+    np.testing.assert_allclose(held, state.labels.seeds[1, f, p])
+    assert not np.allclose(moved, held), "the two modes should differ after a drag"
+
+
+def test_an_absent_point_has_no_instance_position(result):
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.create_instance(f)
+    state.set_absent([p], True, f)
+    assert np.isnan(state.display_instance_pts2d(f)[:, p]).all()
+
+
+def test_seeds_survive_a_save_load_round_trip(tmp_path, result):
+    """Unpersisted seeds would silently re-solve every non-GT point on reopen."""
+    from deeperfly.gui.labels import labels_identity, load_labels, save_labels
+
+    state = EditorState.from_result(result)
+    state.create_instance(1, mode="copy")
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=list(result.cameras.names),
+        n_frames=result.n_frames,
+        image_sizes={n: (256, 256) for n in result.cameras.names},
+        footage={n: {"rel": [f"{n}.mp4"]} for n in result.cameras.names},
+    )
+    path = tmp_path / "labels.h5"
+    save_labels(path, state.labels, identity=identity)
+    loaded = load_labels(path, identity=identity)
+    assert loaded is not None
+    np.testing.assert_allclose(
+        np.nan_to_num(loaded.seeds), np.nan_to_num(state.labels.seeds)
+    )
+
+
 # -- what triangulation uses ---------------------------------------------------
 #
 # GT if GT exists (it overrides the detection in its own view), else the detections that
@@ -644,60 +787,38 @@ def test_toggle_exclude_refuses_when_nothing_is_eligible(result):
 # the point where honoring it would leave the joint unsolvable -- see `_point_obs`.
 
 
-def test_excluding_one_view_is_honored(result):
-    """Six views still triangulate, so the excluded one really is dropped from the solve."""
-    f, p, bad = 0, 5, 2
-    state = EditorState.from_result(result)
-    state.toggle_invisible(bad, p, frame=f)
-
-    _, pred_obs, _ = state._point_obs(f, p)
-    assert not np.isfinite(pred_obs[bad]).all(), "the excluded view still fed the solve"
-    usable = np.isfinite(pred_obs).all(axis=-1)
-    assert int(usable.sum()) == state.n_views - 1  # and only that one was dropped
-
-
-def test_excluding_every_view_keeps_the_projection_alive(result):
-    """`a`+exclude is how the operator clears the canvas to label off the projection.
-
-    It must not take the projection with it: the skeleton they are about to drag GT from is
-    precisely what those detections triangulate to. So the exclusions stand down while
-    there is not enough GT to solve without them.
-    """
+def test_the_solve_reads_the_instance_seeds_once_one_exists(result):
+    """The one substitution the instance model makes: seeds take the detections' job."""
     f, p = 0, 5
     state = EditorState.from_result(result)
-    before = state.display_pts3d(f)[p].copy()
-    state.occlude_targets(
-        [(v, q) for v in range(state.n_views) for q in range(state.n_points)], f
-    )
+    _, before, _ = state._point_obs(f, p)
+    np.testing.assert_allclose(before, state.detections[:, f, p], equal_nan=True)
 
-    assert np.isnan(state.display_pts2d(f)).all()  # no detection markers drawn ...
-    np.testing.assert_allclose(
-        state.display_pts3d(f)[p], before
-    )  # ... projection intact
+    assert state.create_instance(f) is True
+    _, after, _ = state._point_obs(f, p)
+    np.testing.assert_allclose(after, state.labels.seeds[:, f, p], equal_nan=True)
 
 
-def test_gt_takes_over_from_the_detections_one_view_at_a_time(result):
-    """First GT replaces its own view's detection; at two GT the detections drop out."""
+def test_gt_takes_over_from_the_seeds_one_view_at_a_time(result):
+    """First GT overrides its own view; at two GT the evidence is not consulted at all."""
     f, p = 0, 5
     state = EditorState.from_result(result)
-    state.occlude_targets([(v, p) for v in range(state.n_views)], f)  # all excluded
+    state.create_instance(f)
 
-    # one GT: it overrides view 0, and the other views' detections still carry the solve
     xy0 = state.display_pts2d_refine(f)[0, p] + np.array([7.0, -5.0])
     state.apply_3d_edit(0, p, xy0, f, fix=True)
     gt_obs, pred_obs, _ = state._point_obs(f, p)
     assert np.isfinite(gt_obs[0]).all()  # GT here
-    assert not np.isfinite(pred_obs[0]).all()  # so no detection from this view
-    assert np.isfinite(pred_obs[1:]).all(axis=-1).any()  # the rest still feed the solve
+    assert not np.isfinite(pred_obs[0]).all()  # so the seed is not used in this view
+    assert (
+        np.isfinite(pred_obs[1:]).all(axis=-1).any()
+    )  # the rest still carry the depth
 
-    # two GT: enough to triangulate on its own, so no detection is used at all
     xy1 = state.display_pts2d_refine(f)[3, p] + np.array([-6.0, 4.0])
     state.apply_3d_edit(3, p, xy1, f, fix=True)
     gt_obs, pred_obs, _ = state._point_obs(f, p)
     assert int(np.isfinite(gt_obs).all(axis=-1).sum()) == 2
-    assert not np.isfinite(pred_obs).all(axis=-1).any(), (
-        "exclusions became moot, not the GT"
-    )
+    assert np.isfinite(pred_obs).all(axis=-1).sum() == state.n_views - 2
 
 
 def test_absence_is_never_softened(result):

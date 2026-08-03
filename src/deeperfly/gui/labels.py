@@ -3,20 +3,37 @@
 The keypoint editor is a *ground-truth annotation* tool, not a prediction editor:
 the operator's 2D labels are the source of truth and the 3D pose is a pure derived
 function of them (:mod:`deeperfly.gui.solve`). So the only state worth persisting
-is what the operator actually authored -- and that is, per ``(view, frame, point)``,
-a tri-state:
+is what the operator actually authored.
+
+**Instances (schema v8).** The unit of annotation is an *instance*: one annotation
+skeleton, created in a frame by double-clicking the detected skeleton, which seeds a
+position for every ``(view, point)`` and from then on is its own object. Before v8 there
+was no such thing -- the overlay was a per-cell tri-state over the detections, where
+``unset`` meant "defer to whatever the detector said". That third value existed only
+because the cell had no position of its own; once an instance owns its positions there is
+nothing for it to mean, and the model collapses to two facts per cell plus one flag:
 
 .. code-block:: text
 
-    unset      -> fall back to the detector's prediction, else the 3D reprojection
-    gt(x, y)   -> a 2D pixel the operator created (by dragging it into place)
-    occluded   -> "a human cannot place this point from this view" (dropped from 3D)
+    seeds(x, y)  -> where the instance's keypoint started (every cell, once created)
+    gt(x, y)     -> the operator dragged/placed it here; overrides the seed
+    occluded     -> "a human cannot see this keypoint in this view"
 
-``gt`` and ``occluded`` are mutually exclusive. Alongside that per-``(view, frame,
-point)`` tri-state, each *frame* carries one authored ``reviewed`` flag -- the
-operator ticking "I have finished checking this frame". Everything else --
-predictions, projections, the 3D point, reprojection error -- is derived, so it is
-never stored: no dense NaN arrays, no duplicate of the detector's output.
+``gt`` and ``occluded`` are **orthogonal** -- a joint can be hand-placed *through* an
+occluder from the geometry of the other views, and recording both is exactly right.
+Occlusion no longer touches triangulation either: it used to mean "drop this view from
+the 3D solve", and the robust solve retired that job (a bad observation is down-weighted
+on its merits). What survives is a training signal nothing else can supply.
+
+A non-GT cell contributes its **seed** to its point's 3D solve, precisely where the
+detections used to contribute -- so the solve, its Huber depth estimate for the one-GT
+case, and the undo history all carry over untouched. Each *frame* additionally carries one
+``reviewed`` flag. Everything else -- the 3D point, the reprojections, reprojection error
+-- stays derived and unstored.
+
+The instance axis is single-valued in this build (one animal), but it is the axis the COO
+index has reserved since v6, so multiple instances per frame land in a slot already on
+disk rather than needing a second migration of the one dataset that cannot be regenerated.
 
 **Absence (schema v3, per-frame in v4).** One more thing the operator can author is not a
 property of a *view* at all: a keypoint may not *exist on this animal* -- an amputated leg,
@@ -35,7 +52,7 @@ recording" alongside the per-frame toggle, and why the on-disk form is **run-len
 a whole-recording declaration is a single row no matter how long the recording.
 
 A caution the schema deliberately does *not* enforce: absence and occlusion are opposites
-at export time -- an occluded cell is a positive "unplaceable from this view" training
+at export time -- an occluded cell is a positive "not visible from this view" training
 label, an absent one is excluded from supervision entirely. So marking a joint absent in
 the handful of frames where it is merely hidden discards real training signal instead of
 contributing it. Absence is a claim about the animal; occlusion is a claim about the view.
@@ -72,6 +89,9 @@ prediction NaN pattern:
     gt/
         index       (N, 3) int32   [view, frame, point]
         xy          (N, 2) float64  the 2D pixel the operator created (footage space)
+    seeds/                          (v8) the instance's starting position for every cell
+        index       (S, 3) int32   [view, frame, point]
+        xy          (S, 2) float64
     occluded/
         index       (M, 3) int32   [view, frame, point]
     reviewed/                       (added in v2; absent in a v1 file -> no frames reviewed)
@@ -144,7 +164,7 @@ log = logging.getLogger("deeperfly")
 #: stores; the rest of the schema is numeric).
 _STR = h5py.string_dtype("utf-8")
 
-LABELS_FORMAT_VERSION = 7
+LABELS_FORMAT_VERSION = 8
 
 #: The COO index width from v6 on: ``[view, frame, instance, point]``. Earlier versions
 #: wrote ``[view, frame, point]``.
@@ -203,6 +223,14 @@ class Labels:
     gt: Float[np.ndarray, "V T P 2"]
     occluded: Bool[np.ndarray, "V T P"]
     reviewed: Bool[np.ndarray, "T"]  # per-frame "operator has checked this frame"
+    #: The **instance seeds** ``(V, T, P, 2)``: where each keypoint started when the
+    #: operator created an annotation skeleton in that frame, NaN in frames with no
+    #: instance yet. This is the array that used to be the detector's job (see
+    #: :attr:`EditorState.detections`): a non-GT cell's contribution to its point's 3D
+    #: solve. Persisted, and deliberately so -- deriving it at load time from whatever the
+    #: detections happen to be *then* would silently re-solve every non-GT point after a
+    #: model re-run, which is the same trap an unpersisted ray-slid depth was.
+    seeds: Float[np.ndarray, "V T P 2"] | None = None
     #: Per-``(frame, point)`` ``(T, P)`` "this keypoint is not on this animal" (v4; v3 was
     #: per-point). Vetoes the derived masks. View-independent by construction -- an
     #: amputated joint is missing from every camera at once, which is exactly what
@@ -217,7 +245,13 @@ class Labels:
         # ``absent`` is optional in the constructor so every existing call site keeps
         # working; normalize it to a real (T, P) array. A (P,) value is accepted and
         # broadcast, which is how a v3 whole-recording declaration loads.
-        n_frames, n_points = self.gt.shape[1], self.gt.shape[2]
+        n_views, n_frames, n_points = (
+            self.gt.shape[0],
+            self.gt.shape[1],
+            self.gt.shape[2],
+        )
+        if self.seeds is None:
+            self.seeds = np.full((n_views, n_frames, n_points, 2), np.nan)
         if self.absent is None:
             self.absent = np.zeros((n_frames, n_points), dtype=bool)
             return
@@ -234,6 +268,7 @@ class Labels:
             occluded=np.zeros((n_views, n_frames, n_points), dtype=bool),
             reviewed=np.zeros(n_frames, dtype=bool),
             absent=np.zeros(n_points, dtype=bool),
+            seeds=np.full((n_views, n_frames, n_points, 2), np.nan),
         )
 
     # -- derived masks --------------------------------------------------------
@@ -306,9 +341,14 @@ class Labels:
     # -- mutators (maintain the invariants) -----------------------------------
 
     def set_gt(self, view: int, frame: int, point: int, xy) -> None:
-        """Create a GT pixel for ``point`` in ``view`` at ``frame`` (clears occluded)."""
+        """Create a GT pixel for ``point`` in ``view`` at ``frame``.
+
+        Leaves :attr:`occluded` alone: the two are **orthogonal**. "Here is where the
+        keypoint is" and "a human cannot see it in this view" are compatible claims, and
+        the useful case is common -- placing a joint through the body from the geometry of
+        the other views, while still recording that the pixels do not show it.
+        """
         self.gt[view, frame, point] = np.asarray(xy, dtype=float)
-        self.occluded[view, frame, point] = False
         self.dirty = True
 
     def clear_gt(self, view: int, frame: int, point: int) -> None:
@@ -317,10 +357,15 @@ class Labels:
         self.dirty = True
 
     def set_occluded(self, view: int, frame: int, point: int, value: bool) -> None:
-        """Flag ``point`` in ``view`` occluded (or clear it); setting drops any GT."""
+        """Flag ``point`` as not visible to a human in ``view`` (or clear the flag).
+
+        Purely an annotation about the *image*, and orthogonal to GT (see :meth:`set_gt`):
+        it does not clear a pixel and it does not touch triangulation. It used to do both
+        -- it was "drop this view from the 3D solve" -- and the robust solve retired that
+        job: a bad observation is now down-weighted on its merits rather than by hand.
+        What survives is the training signal, which nothing else can supply.
+        """
         self.occluded[view, frame, point] = bool(value)
-        if value:
-            self.gt[view, frame, point] = np.nan
         self.dirty = True
 
     def clear_view(self, view: int, frame: int, point: int) -> None:
@@ -620,6 +665,16 @@ def _coo_gt(labels: Labels, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def _coo_seeds(labels: Labels) -> tuple[np.ndarray, np.ndarray]:
+    """``(index (S,4), xy (S,2))`` for every cell whose instance has a seed."""
+    mask = np.isfinite(labels.seeds).all(axis=-1)
+    v, t, p = np.nonzero(mask)
+    return (
+        np.stack([v, t, np.zeros_like(v), p], axis=1).astype(np.int32),
+        labels.seeds[mask].astype(np.float64),
+    )
+
+
 def absent_to_spans(absent: np.ndarray) -> np.ndarray:
     """``(T, P)`` absence -> ``(S, 3)`` ``[point, t0, t1)`` run-length spans.
 
@@ -735,6 +790,10 @@ def save_labels(
 
     gt_index, gt_xy = _coo_gt(labels, live_gt_mask)
     vgt_index, vgt_xy = _coo_gt(labels, void_gt_mask)
+    # Seeds are not vetoed by absence: they are the instance's own geometry, not a claim
+    # about the animal, and quarantining them would make un-declaring an amputation
+    # silently re-seed the joint somewhere else.
+    seed_index, seed_xy = _coo_seeds(labels)
     rev_index = np.nonzero(labels.reviewed)[0].astype(np.int32)  # (K,) frame indices
     absent_spans = absent_to_spans(labels.absent)
     # ``index`` stays the whole-recording subset: it is what a v3 reader understands, and
@@ -753,6 +812,9 @@ def save_labels(
         g = f.create_group("gt")
         g.create_dataset("index", data=gt_index, dtype="int32")
         g.create_dataset("xy", data=gt_xy, dtype="float64")
+        sd = f.create_group("seeds")
+        sd.create_dataset("index", data=seed_index, dtype="int32")
+        sd.create_dataset("xy", data=seed_xy, dtype="float64")
         o = f.create_group("occluded")
         o.create_dataset("index", data=_coo_cells(live_occ_mask), dtype="int32")
         r = f.create_group("reviewed")
@@ -807,6 +869,14 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
             else np.zeros(len(gt_xy), dtype=np.uint8)
         )
         occ_index = _read_cells(f["occluded/index"][()], p, "occluded")  # type: ignore[index]
+        # v8: the instance seeds. A pre-v8 file has none -- its frames carry labels but no
+        # instance, so the editor falls back to the detections as the solve's evidence
+        # exactly as it did before, and the first edit in a frame seeds it.
+        seed_index = np.empty((0, 3), dtype=np.int64)
+        seed_xy = np.empty((0, 2), dtype=float)
+        if "seeds" in f:
+            seed_index = _read_cells(f["seeds/index"][()], p, "seeds")  # type: ignore[index]
+            seed_xy = np.asarray(f["seeds/xy"][()], dtype=float).reshape(-1, 2)  # type: ignore[index]
         rev_index = (  # optional group: pre-v2 files carry no review progress
             np.asarray(f["reviewed/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
             if "reviewed" in f
@@ -899,24 +969,22 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
             log.warning("%s: dropped %d out-of-range/NaN GT row(s)", p, n_dropped)
         for (v, t, pt), xy in zip(gt_index[keep], gt_xy[keep]):
             labels.gt[v, t, pt] = xy
-    # Occluded rows: keep in-range, but GT wins the disjointness tie. The tie is decided
-    # on the RAW authored mask, not ``has_gt``: under the absence veto ``has_gt`` reads
-    # False for a declared point, which would start *retaining* an occlusion that a v2
-    # load drops -- and load/save would stop being idempotent across a declaration.
-    raw_gt = labels.gt_authored
+    # Seed rows: the instance's starting geometry, kept wherever it is in range and finite.
+    if seed_index.size:
+        keep = _in_range(seed_index) & np.isfinite(seed_xy).all(axis=1)
+        if int((~keep).sum()):
+            log.warning(
+                "%s: dropped %d out-of-range/NaN seed row(s)", p, int((~keep).sum())
+            )
+        for (v, t, pt), xy in zip(seed_index[keep], seed_xy[keep]):
+            labels.seeds[v, t, pt] = xy
+    # Occluded rows: keep every in-range one. There is no disjointness tie to break any
+    # more -- occlusion is orthogonal to GT (see Labels.set_occluded), so a cell that is
+    # both hand-placed and marked not-visible is a legitimate, useful state rather than a
+    # corrupt one. Pre-v8 writers could not produce it; v8 readers must not discard it.
     if occ_index.size:
         keep = _in_range(occ_index)
         for v, t, pt in occ_index[keep]:
-            if raw_gt[v, t, pt]:
-                log.warning(
-                    "%s: (view=%d, frame=%d, point=%d) is both GT and occluded; "
-                    "keeping the GT",
-                    p,
-                    v,
-                    t,
-                    pt,
-                )
-                continue
             labels.occluded[v, t, pt] = True
     # Reviewed frames: keep in-range indices (a stale/oversized index is dropped).
     if rev_index.size:
@@ -935,7 +1003,7 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
                 int((~keep).sum()),
             )
         labels.absent[:, absent_index[keep]] = True
-    n_void = int((raw_gt & labels._absent_bcast).sum())
+    n_void = int((labels.gt_authored & labels._absent_bcast).sum())
     n_void_occ = int((labels.occluded & labels._absent_bcast).sum())
     if n_void or n_void_occ:
         log.info(

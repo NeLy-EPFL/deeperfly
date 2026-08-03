@@ -44,23 +44,19 @@ def test_empty_labels_are_blank(result):
     assert not lab.dirty
 
 
-def test_set_gt_records_the_pixel_and_clears_occluded(result):
+def test_gt_and_occlusion_are_independent(result):
+    """Two orthogonal facts per cell: where it is, and whether a human can see it."""
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
     lab.set_occluded(0, 1, 4, True)
     lab.set_gt(0, 1, 4, (12.0, 34.0))
-    assert lab.has_gt[0, 1, 4]
+    assert lab.has_gt[0, 1, 4] and lab.occluded[0, 1, 4]
     assert np.allclose(lab.gt[0, 1, 4], [12.0, 34.0])
-    assert not lab.occluded[0, 1, 4]  # placing GT clears occlusion
     assert lab.dirty
 
-
-def test_set_occluded_clears_gt(result):
-    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    lab.set_gt(2, 0, 5, (1.0, 2.0))
-    lab.set_occluded(2, 0, 5, True)
-    assert lab.occluded[2, 0, 5]
-    assert not lab.has_gt[2, 0, 5]
-    assert not np.isfinite(lab.gt[2, 0, 5]).all()  # the pixel is gone, not just masked
+    lab.set_occluded(0, 1, 4, False)  # ... and each retracts on its own
+    assert lab.has_gt[0, 1, 4] and not lab.occluded[0, 1, 4]
+    lab.clear_gt(0, 1, 4)
+    assert not lab.has_gt[0, 1, 4]
 
 
 def test_clear_helpers(result):
@@ -178,24 +174,28 @@ def test_load_different_domain_refused(tmp_path, result):
         load_labels(path, identity=other)
 
 
-def test_load_normalises_gt_occluded_collision(tmp_path, result):
-    # Hand-write a file where one (view, frame, point) is BOTH gt and occluded; the
-    # loader keeps the GT (it carries an authored pixel) and drops the occlusion.
+def test_load_keeps_a_cell_that_is_both_gt_and_occluded(tmp_path, result):
+    """It is no longer a collision to resolve -- it is a label to preserve.
+
+    The loader used to drop the occlusion and keep the GT, because the two were exclusive.
+    Under orthogonality that would silently discard the operator's "you cannot see this
+    here", which is the half nothing else can reconstruct.
+    """
     import h5py
 
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
     lab.set_gt(0, 0, 1, (5.0, 6.0))
+    lab.set_occluded(0, 0, 1, True)
     path = tmp_path / "labels.h5"
     identity = _identity(result)
     save_labels(path, lab, identity=identity)
-    with h5py.File(path, "a") as f:
-        del f["occluded/index"]
-        f["occluded"].create_dataset("index", data=np.array([[0, 0, 1]], dtype="int32"))
+    with h5py.File(path, "r") as f:
+        assert len(np.asarray(f["occluded/index"][()]).reshape(-1, 4)) == 1
 
     loaded = load_labels(path, identity=identity)
     assert loaded is not None
-    assert loaded.has_gt[0, 0, 1]
-    assert not loaded.occluded[0, 0, 1]
+    assert loaded.has_gt[0, 0, 1] and loaded.occluded[0, 0, 1]
+    np.testing.assert_allclose(loaded.gt[0, 0, 1], [5.0, 6.0])
 
 
 # -- migration from the legacy corrections.h5 ---------------------------------
@@ -482,7 +482,7 @@ def test_load_v6_file_keeps_real_gt_and_drops_the_invented_placeholder_rows(
     save_labels(path, loaded, identity=identity)
     with h5py.File(path, "r") as f:
         assert "gt/provenance" not in f
-        assert json.loads(f.attrs["meta"])["deeperfly_labels_format_version"] == 7
+        assert json.loads(f.attrs["meta"])["deeperfly_labels_format_version"] == 8
 
 
 def test_load_refuses_a_newer_format_version(tmp_path, result):

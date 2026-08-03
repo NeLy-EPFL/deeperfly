@@ -1220,8 +1220,8 @@ def test_ws_occlude_targets_marks_cells_in_one_step(client):
         assert undo["invisible"][1][4] is False
 
 
-def test_ws_occlude_targets_drops_any_gt(client):
-    # Occluding a cell that carries GT drops the GT (they are mutually exclusive).
+def test_ws_occlude_targets_keeps_any_gt(client):
+    # Occlusion is orthogonal to GT now: marking a labeled cell not-visible records both.
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
             {
@@ -1245,8 +1245,8 @@ def test_ws_occlude_targets_drops_any_gt(client):
             }
         )
         reply = ws.receive_json()
-    assert reply["fixed"][0][2] is False  # GT dropped
-    assert reply["invisible"][0][2] is True
+    assert reply["fixed"][0][2] is True  # the pixel stands
+    assert reply["invisible"][0][2] is True  # ... and so does "not visible here"
 
 
 def test_ws_reset_targets_noop_stays_clean(client):

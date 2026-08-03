@@ -52,11 +52,6 @@ log = logging.getLogger("deeperfly")
 #: How many undo steps to keep (a backstop; one entry per operator gesture).
 UNDO_LIMIT = 200
 
-#: Views a point needs before its 3D can be triangulated at all -- and so also the
-#: threshold that decides whether an "exclude from triangulation" is honored or stands
-#: down (see :meth:`EditorState._point_obs`).
-_MIN_VIEWS_FOR_3D = 2
-
 
 def _resolve_view_names(result: PoseResult) -> list[str]:
     """The view names for a result: the rig's, else the recorded ones, else ``viewN``.
@@ -105,6 +100,10 @@ class _UndoEntry:
     coalesce: bool
     gt: np.ndarray
     occluded: np.ndarray
+    #: The frame's instance seeds ``(V, P, 2)``. Authored state like the pixels -- creating
+    #: an instance IS a seed write, so without this an undo of the creation would leave the
+    #: instance standing.
+    seeds: np.ndarray | None = None
     pts3d: np.ndarray | None = None  # (P, 3), or None if the frame was uncached
 
 
@@ -162,6 +161,12 @@ class EditorState:
     #: Undo / redo stacks of per-frame label snapshots (see :class:`_UndoEntry`).
     _undo: list = field(default_factory=list)
     _redo: list = field(default_factory=list)
+    #: How a non-GT point of the instance is drawn: at the reprojection of the point's
+    #: current 3D (``"reprojection"``, the default) or at its frozen seed (``"seed"``).
+    #: The reprojection is the multiview payoff -- drag two views and the other five move to
+    #: where the geometry says they are -- while the seed shows what the instance started
+    #: from, which is the honest single-view answer and useful when the geometry is suspect.
+    nongt_display: str = "reprojection"
     #: The ``(frame, point)`` of the drag gesture the operator currently has open, or
     #: ``None`` between gestures. This -- not the top of the undo stack -- is what a
     #: streamed drag coalesces on, so one gesture is one undo step and two gestures never
@@ -436,6 +441,36 @@ class EditorState:
         absent = self.labels.absent_at(t)[None, :]  # (1, P)
         return np.where(absent[..., None], np.nan, np.where(has[..., None], gt, proj))
 
+    def display_instance_pts2d(
+        self, frame: int | None = None
+    ) -> Float[np.ndarray, "V P 2"] | None:
+        """The annotation skeleton to draw for ``frame``, or ``None`` with no instance.
+
+        Two facts per cell and nothing else: a GT pixel shows where the operator put it,
+        and everything else shows the position the model derives for it --  the reprojection
+        of the point's current 3D by default, or the instance's frozen seed under
+        :attr:`nongt_display` ``= "seed"``.
+
+        An absent point is ``NaN`` in every view: it is not on the animal, so the instance
+        has no position to offer, and drawing one would invite the operator to confirm it.
+        """
+        t = self._resolve_frame(frame)
+        if not self.has_instance(t):
+            return None
+        gt = self.labels.gt[:, t]
+        has = self.labels.has_gt[:, t]
+        base = np.asarray(self.labels.seeds[:, t], dtype=float)
+        if self.nongt_display == "reprojection":
+            proj = self.display_pts3d_projected(t)
+            if proj is not None:
+                # A point with no 3D at all (never solvable, or absent) keeps its seed, so
+                # the instance stays complete and grabbable.
+                ok = np.isfinite(proj).all(axis=-1)
+                base = np.where(ok[..., None], np.asarray(proj, dtype=float), base)
+        absent = self.labels.absent_at(t)[None, :]
+        shown = np.where(has[..., None], gt, base)
+        return np.where(absent[..., None], np.nan, shown)
+
     # -- placeholder seeds for unobserved joints ------------------------------
 
     def placeholder_pts2d(
@@ -552,42 +587,162 @@ class EditorState:
             return self.image_sizes_wh[v] / 2.0
         return np.zeros(2)
 
+    # -- the annotation instance ----------------------------------------------
+
+    def has_instance(self, frame: int | None = None) -> bool:
+        """Whether an annotation skeleton has been created in ``frame``."""
+        t = self._resolve_frame(frame)
+        return bool(np.isfinite(self.labels.seeds[:, t]).all(axis=-1).any())
+
+    def _evidence(self, t: int) -> Float[np.ndarray, "V P 2"]:
+        """What a non-GT view contributes to its point's 3D solve, at frame ``t``.
+
+        The instance's seeds once one exists, the detections before that. Two arrays, one
+        job: a frame with no instance still needs a 3D, so the operator has a projected
+        skeleton to create one *from*.
+        """
+        if self.has_instance(t):
+            return self.labels.seeds[:, t]
+        return self.detections[:, t]
+
+    def create_instance(
+        self, frame: int | None = None, *, mode: str = "triangulate"
+    ) -> bool:
+        """Create the annotation skeleton for ``frame``, seeding every ``(view, point)``.
+
+        The gesture that starts a frame: until it happens the editor is showing the
+        detector's output and nothing is authored. Afterwards the instance is its own
+        object with a position everywhere, and the detections are only a reference layer --
+        which is what lets a cell drop from three states to two (GT, or not).
+
+        ``mode`` picks how the seeds are laid down:
+
+        * ``"triangulate"`` (default) -- robustly triangulate the detections per point (the
+          configured ``[triangulation]`` estimator, so RANSAC rejects a bad peak) and
+          reproject that 3D into *every* view. Views that disagreed with the consensus get
+          pulled onto it, which is usually what the operator wants to start from.
+        * ``"copy"`` -- take each view's own detection, falling back to the reprojection
+          only where a view has none. Keeps the detector's per-view opinion, including
+          where it disagrees with the geometry.
+
+        Either way every cell ends up finite: one with neither a detection nor a
+        reprojection falls back to the placeholder chain (:meth:`placeholder_pts2d`), so an
+        instance never has holes the operator cannot grab. Returns whether anything was
+        created (``False`` if the frame already has one -- see :meth:`reseed_instance`).
+        One undo step.
+        """
+        if mode not in ("triangulate", "copy"):
+            raise ValueError(f"mode must be 'triangulate' or 'copy', got {mode!r}")
+        t = self._resolve_frame(frame)
+        if self.has_instance(t):
+            return False
+        seeds = self._seed_instance(t, mode)
+        self._record_undo(t, None, coalesce=False)
+        self.labels.seeds[:, t] = seeds
+        self.labels.dirty = True
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+        return True
+
+    def reseed_instance(
+        self, frame: int | None = None, *, mode: str = "triangulate"
+    ) -> bool:
+        """Re-lay this frame's seeds, keeping every GT pixel. One undo step.
+
+        Seeds are frozen at creation on purpose -- a re-run of the detector must not move
+        the operator's evidence under them -- so picking up better detections is an explicit
+        act. GT is untouched: seeds are only what non-GT cells contribute.
+        """
+        t = self._resolve_frame(frame)
+        if not self.has_instance(t):
+            return False
+        # Seed from the detections, not from the instance's own current geometry: reseeding
+        # means "take another look at what the detector says", and computing it before the
+        # snapshot keeps the old seeds out of their own replacement.
+        seeds = self._seed_instance(t, mode, from_detections=True)
+        self._record_undo(t, None, coalesce=False)
+        self.labels.seeds[:, t] = seeds
+        self.labels.dirty = True
+        self._invalidate_frame3d(t)
+        self._invalidate_nmf(t)
+        return True
+
+    def _seed_instance(
+        self, t: int, mode: str, *, from_detections: bool = False
+    ) -> Float[np.ndarray, "V P 2"]:
+        """The ``(V, P, 2)`` seed positions for a fresh instance at ``t``."""
+        det = np.asarray(self.detections[:, t], dtype=float)
+        if from_detections:
+            # Triangulate the detections directly rather than reading the cached 3D, which
+            # by now reflects the seeds being replaced.
+            proj = self._project_detections(t)
+        else:
+            proj = self.display_pts3d_projected(t) if self.has_3d else None
+        if mode == "copy":
+            out = np.array(det, dtype=float, copy=True)
+            if proj is not None:
+                gap = ~np.isfinite(out).all(axis=-1)
+                out[gap] = np.asarray(proj, dtype=float)[gap]
+        else:
+            out = (
+                np.array(proj, dtype=float, copy=True)
+                if proj is not None
+                else np.full_like(det, np.nan)
+            )
+            gap = ~np.isfinite(out).all(axis=-1)
+            out[gap] = det[gap]  # no 3D for this point: its detections are all there is
+        gap = ~np.isfinite(out).all(axis=-1)
+        if gap.any():  # nothing to seed from at all: keep the cell reachable
+            out[gap] = np.asarray(self.placeholder_pts2d(t), dtype=float)[gap]
+        return out
+
+    def _project_detections(self, t: int) -> Float[np.ndarray, "V P 2"] | None:
+        """Triangulate the *detections* at ``t`` and reproject, ignoring every label."""
+        if self.result.cameras is None:
+            return None
+        det = np.asarray(self.detections[:, t], dtype=float)
+        nan_gt = np.full((self.n_views, 2), np.nan)
+        pts3d = np.stack(
+            [
+                solve_point_3d(
+                    self.result.cameras, nan_gt, det[:, p], None, self.ann, self.tri
+                )
+                for p in range(self.n_points)
+            ]
+        )
+        return np.asarray(self.result.cameras.project(pts3d[None, :, :]), dtype=float)[
+            :, 0
+        ]
+
     # -- derived 3D (the "cache") ---------------------------------------------
 
     def _point_obs(self, t: int, point: int):
         """``(gt_obs (V,2), pred_obs (V,2), conf (V,)|None)`` for one point at ``t``.
 
-        GT overrides the detection in its own view, so ``pred_obs`` NaNs out every view
-        that carries GT. It also NaNs out views the operator excluded from triangulation --
-        but **only while enough evidence survives to solve with**.
+        The second array is the **instance's evidence**: its seed positions once an
+        annotation skeleton exists in this frame, else the detections. That substitution is
+        the whole of the instance model as the solve sees it -- the seeds took over the job
+        the detector's peaks used to do, so everything downstream (the policy branches, the
+        Huber depth for the one-GT case, the caching, the undo history) is untouched.
 
-        That last clause is the "exclude" verb's actual contract, and it is deliberate.
-        Excluding one bad view is a real constraint and is honored. Excluding *everything*
-        is how the operator clears the canvas to label against the projected skeleton
-        instead, and it must not leave the point unsolvable: the projection they are about
-        to drag from is exactly what the excluded detections produce. So an exclusion that
-        would drop the point below two usable views is ignored, and the detections keep
-        working until GT replaces them -- the first GT takes over its own view, and at two
-        GT views the solve no longer needs a detection at all, so every exclusion becomes
-        moot on its own.
+        GT overrides the evidence in its own view, so ``pred_obs`` NaNs out every view that
+        carries GT. Occlusion does **not** gate it: a cell marked "a human cannot see this
+        here" still contributes, because the flag is a statement about the image rather than
+        an instruction to the solve (see :meth:`Labels.set_occluded`). A bad observation is
+        down-weighted on its merits by the robust estimator instead, which is what let the
+        hand-exclusion go.
 
         A point declared absent contributes nothing from any view: ``gt_obs`` is already
-        vetoed via ``has_gt``, and the detector's peaks -- which exist on an amputated limb
-        because an argmax decode always emits one -- are dropped rather than triangulated
-        into a phantom joint. Absence is a claim about the *animal*, so unlike an exclusion
-        (a claim about a view) it is never softened.
+        vetoed via ``has_gt``, and the evidence -- a detector peak exists on an amputated
+        limb because an argmax decode always emits one -- is dropped rather than
+        triangulated into a phantom joint. Absence is a claim about the *animal*, and it is
+        the one veto the solve still honors.
         """
         absent = bool(self.labels.absent_at(t)[point])
         has = self.labels.has_gt[:, t, point]  # (V,)
-        occ = self.labels.occluded_effective[:, t, point]  # (V,)
         gt_obs = np.where(has[:, None], self.labels.gt[:, t, point], np.nan)
-        pred = self.detections[:, t, point].astype(float)  # (V, 2)
-        finite = np.isfinite(pred).all(axis=-1)
-        pred_ok = finite & ~occ & ~has
-        if int(has.sum()) + int(pred_ok.sum()) < _MIN_VIEWS_FOR_3D:
-            pred_ok = (
-                finite & ~has
-            )  # too little left to solve: the exclusions stand down
+        pred = self._evidence(t)[:, point].astype(float)  # (V, 2)
+        pred_ok = np.isfinite(pred).all(axis=-1) & ~has
         if absent:
             pred_ok = np.zeros_like(pred_ok)
         pred_obs = np.where(pred_ok[:, None], pred, np.nan)
@@ -1080,6 +1235,7 @@ class EditorState:
             coalesce=coalesce,
             gt=self.labels.gt[:, t].copy(),
             occluded=self.labels.occluded[:, t].copy(),
+            seeds=self.labels.seeds[:, t].copy(),
             pts3d=None if cached is None else cached.copy(),
         )
 
@@ -1153,6 +1309,8 @@ class EditorState:
         t = entry.t
         self.labels.gt[:, t] = entry.gt
         self.labels.occluded[:, t] = entry.occluded
+        if entry.seeds is not None:
+            self.labels.seeds[:, t] = entry.seeds
         self.labels.dirty = True
         if entry.pts3d is None:
             self._invalidate_frame3d(t)  # uncached then, so there is nothing to restore
