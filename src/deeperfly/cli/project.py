@@ -278,3 +278,59 @@ def _cmd_project_rm(args: argparse.Namespace) -> None:
             f"its files are untouched at {Path(entry.origin.get('from', outputs))}",
             highlight=False,
         )
+
+
+def _cmd_project_config(args: argparse.Namespace) -> None:
+    """Print or write the project's resolved run config (``deeperfly project config``).
+
+    The composition is skeleton + rig + calibration + profile + whatever the base config
+    still supplies. A run consumes the *result*, so layering never reaches the pipeline as
+    ambiguity -- what gets snapshotted and fingerprinted is one resolved text, exactly as
+    before.
+    """
+    project = _open(args.project)
+    try:
+        text = project.compose_config(profile=args.profile, base=args.base)
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(str(exc)) from None
+
+    # Validate before handing it over: a composed config that does not load is worse than
+    # no composition, and the strict loader is the same one a run uses.
+    import tomllib
+
+    try:
+        from ..config import Config
+
+        parsed = tomllib.loads(text)
+        config = Config.from_dict(parsed)
+        config.skeleton()
+        config.detection_plan()
+    except Exception as exc:
+        raise SystemExit(
+            f"the composed config is not valid: {exc}\nThis is a project-file problem -- "
+            f"check {project.rig_path().name}, {project.skeleton_file} and the profile"
+        ) from None
+
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        console.print(f"[green]wrote[/green] {out}  ({len(text.splitlines())} lines)")
+        console.print(f"next: deeperfly run RECORDING -c {out}", highlight=False)
+    else:
+        print(text, end="")
+
+
+def _cmd_project_rig(args: argparse.Namespace) -> None:
+    """Lift the rig tables out of a config into the project (``deeperfly project rig``)."""
+    project = _open(args.project)
+    try:
+        path = project.write_rig(args.source)
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(str(exc)) from None
+    console.print(f"[green]wrote[/green] {path}")
+    console.print(
+        "the rig is now the project's: every recording composes against it, and no "
+        "recording carries its own copy",
+        highlight=False,
+    )

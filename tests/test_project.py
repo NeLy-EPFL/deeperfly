@@ -797,3 +797,123 @@ def test_re_adopting_a_duplicate_with_no_extra_labels_is_quiet(
     with caplog.at_level("WARNING", logger="deeperfly"):
         project.add_recording(rec)
     assert "will NOT count" not in caplog.text
+
+
+# -- config composition --------------------------------------------------------
+
+
+def test_composition_yields_a_valid_run_config(project):
+    """The whole point: one resolved text a run can consume, built from the parts."""
+    import tomllib
+
+    from deeperfly.config import Config
+
+    text = project.compose_config()
+    config = Config.from_dict(tomllib.loads(text))
+    assert config.skeleton().n_points == 38
+    assert len(config.source_patterns()) == 7
+    # The open-ended parts come from the base, so a project never restates 132 detector
+    # channel mappings to change one knob.
+    assert len(config.detection_plan().pathways) == 8
+
+
+def test_a_profile_overrides_only_what_it_names(project):
+    import tomllib
+
+    from deeperfly.config import Config
+
+    project.profile_path().write_text('[triangulation]\nmethod = "dlt"\n')
+    config = Config.from_dict(tomllib.loads(project.compose_config()))
+    assert config.triangulation.method == "dlt"
+    # Everything the profile did not mention still defaults.
+    assert config.triangulation.min_inliers == 2
+    assert len(config.detection_plan().pathways) == 8
+
+
+def test_a_fresh_project_seeds_an_empty_profile(project):
+    """Empty is the correct starting state -- a profile holds only what DIFFERS."""
+    import tomllib
+
+    text = project.profile_path().read_text()
+    assert tomllib.loads(text) == {}
+    assert "ONLY the keys that differ" in text
+
+
+def test_the_rig_can_be_lifted_into_the_project(project):
+    """The rig is a property of the setup, so it belongs to the project, not a recording."""
+    import tomllib
+
+    path = project.write_rig()
+    parsed = tomllib.loads(path.read_text())
+    assert len(parsed["sources"]) == 7
+    assert set(parsed["cameras"]) >= set(CAMERA_NAMES)
+    # A bare [cameras] would collide with the calibration key composition injects.
+    assert not any(
+        line.strip() == "[cameras]" for line in path.read_text().splitlines()
+    )
+    # Comments survive: the rig's prose explains the orbit convention.
+    assert "#" in path.read_text()
+
+
+def test_the_current_calibration_is_injected_into_the_composition(cameras, project):
+    import tomllib
+
+    project.write_rig()
+    cal = project.root / "calibrations" / "rig.toml"
+    cameras.to_calibration(name="rig", image_sizes=SIZES).save(cal)
+    project.calibration = "calibrations/rig.toml"
+    project.save()
+
+    parsed = tomllib.loads(project.compose_config())
+    assert parsed["cameras"]["calibration"].endswith("calibrations/rig.toml")
+    # ...and the composed config actually resolves the rig through it.
+    from deeperfly.config import Config
+
+    text = project.compose_config()
+    written = project.root / "composed.toml"
+    written.write_text(text)
+    rig = Config.from_toml(written).camera_group(image_sizes=SIZES)
+    assert rig.names == CAMERA_NAMES
+
+
+def test_two_fragments_declaring_one_table_is_refused(project):
+    """TOML forbids it, and the failure must name which files collide, not just fail to parse."""
+    project.write_rig()
+    project.profile_path().write_text('[[sources]]\nname = "oops"\n')
+    with pytest.raises(ValueError, match="declare"):
+        project.compose_config()
+
+
+def test_a_rig_with_a_bare_cameras_table_is_refused(cameras, project):
+    project.write_rig()
+    project.rig_path().write_text("[cameras]\nfocal_length_px = 1.0\n")
+    cal = project.root / "calibrations" / "rig.toml"
+    cameras.to_calibration(name="rig").save(cal)
+    project.calibration = "calibrations/rig.toml"
+    project.save()
+    with pytest.raises(ValueError, match="bare \\[cameras\\]"):
+        project.compose_config()
+
+
+def test_cli_config_writes_and_validates(tmp_path, capsys):
+    from deeperfly import cli
+    from deeperfly.config import Config
+
+    root = tmp_path / "proj"
+    cli.main(["project", "new", str(root), "--log-level", "error"])
+    cli.main(["project", "rig", str(root), "--log-level", "error"])
+    out = tmp_path / "run.toml"
+    cli.main(["project", "config", str(root), "-o", str(out), "--log-level", "error"])
+    assert out.exists()
+    assert Config.from_toml(out).skeleton().n_points == 38
+    assert "GENERATED" in out.read_text()
+
+
+def test_cli_config_reports_a_broken_composition(tmp_path):
+    from deeperfly import cli
+
+    root = tmp_path / "proj"
+    cli.main(["project", "new", str(root), "--log-level", "error"])
+    (root / "skeleton.toml").write_text("[skeleton]\npoint_names = 3\n")  # not a list
+    with pytest.raises(SystemExit, match="not valid|project-file problem"):
+        cli.main(["project", "config", str(root), "--log-level", "error"])

@@ -29,7 +29,16 @@ import re
 
 import numpy as np
 
-__all__ = ["key", "quote", "scalar", "value", "table_lines", "extract_section"]
+__all__ = [
+    "key",
+    "quote",
+    "scalar",
+    "value",
+    "table_lines",
+    "extract_section",
+    "extract_tables",
+    "top_level_tables",
+]
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -149,3 +158,86 @@ def extract_section(text: str, name: str) -> str:
     ):
         end -= 1
     return "\n".join(lines[start:end]) + "\n"
+
+
+def _header_name(line: str) -> str | None:
+    """The top-level table name a header line declares, or ``None`` if it is not a header.
+
+    Handles both ``[a.b]`` and the array-of-tables ``[[a]]``, returning the *first* path
+    segment in each case -- which is the granularity a section extractor works at.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("["):
+        return None
+    inner = stripped.lstrip("[").rstrip("]").strip()
+    if not inner:
+        return None
+    return inner.split(".", 1)[0].strip().strip('"')
+
+
+def top_level_tables(text: str) -> list[str]:
+    """Every top-level table name declared in ``text``, in order of first appearance.
+
+    Header lines only -- a name *mentioned* in a comment is not a declaration, which is the
+    distinction that makes this usable on the packaged config (whose prose discusses tables
+    before declaring them).
+    """
+    seen: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        name = _header_name(line)
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def extract_tables(text: str, names) -> str:
+    """Every ``[name]`` / ``[[name]]`` / ``[name.*]`` block for ``names``, verbatim and in order.
+
+    The composition primitive behind a project's ``rig.toml``: a *fragment* holding whole
+    top-level tables lifted out of a config with their comments intact. Fragments that own
+    disjoint table names can then simply be concatenated -- no TOML writer involved, so
+    nothing can be silently mis-serialized, and every comment survives.
+
+    Parameters
+    ----------
+    text
+        TOML source.
+    names
+        Top-level table names to keep.
+
+    Returns
+    -------
+    str
+        The kept blocks, newline-terminated (empty when none matched).
+    """
+    wanted = set(names)
+    lines = text.splitlines()
+    out: list[str] = []
+    keeping = False
+    # Comments immediately above a header introduce it, so they are buffered and emitted
+    # with the block they belong to -- the same convention extract_section relies on.
+    pending: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        name = None if stripped.startswith("#") else _header_name(line)
+        if name is not None:
+            keeping = name in wanted
+            if keeping:
+                out.extend(pending)
+                out.append(line)
+            pending = []
+            continue
+        if stripped.startswith("#") or not stripped:
+            pending.append(line)
+            if keeping:
+                out.extend(pending)
+                pending = []
+            continue
+        pending = []
+        if keeping:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return ("\n".join(out) + "\n") if out else ""

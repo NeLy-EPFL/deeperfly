@@ -85,6 +85,9 @@ PROJECT_FORMAT_VERSION = 1
 PROJECT_FILENAME = "project.toml"
 SKELETON_FILENAME = "skeleton.toml"
 RECORDING_FILENAME = "recording.toml"
+RIG_FILENAME = "rig.toml"
+PROFILE_DIRNAME = "profiles"
+DEFAULT_PROFILE = "default.toml"
 OUTPUTS_DIRNAME = "deeperfly_outputs"
 
 #: Skeletons ``deeperfly project new --skeleton`` understands, besides a path.
@@ -110,6 +113,35 @@ point_names = []
 
 [skeleton.limb_palette]
 # leg = "#0f7399"
+"""
+
+#: Top-level config tables a project's ``rig.toml`` owns: the footage sources and the
+#: camera topology/preprocessing. Everything else stays in the run config (the detection
+#: plan, the algorithm knobs) or in the project's own files (the skeleton, calibrations).
+RIG_TABLES = ("sources", "cameras", "io")
+
+#: What a fresh ``profiles/default.toml`` contains: nothing but an explanation. A profile
+#: holds only the keys that DIFFER from the packaged defaults, so an empty one is the
+#: correct starting state and its emptiness is the point.
+_BLANK_PROFILE = """\
+# Algorithm settings for this project -- ONLY the keys that differ from the packaged
+# defaults. An empty file means "use the defaults for everything", which is the right
+# starting state; `deeperfly config show` lists every key with its default, and marks the
+# ones a config actually sets.
+#
+# The composed config (skeleton + rig + this file) is what a run consumes:
+#
+#     deeperfly project config .            # print it
+#     deeperfly project config . -o run.toml && deeperfly run REC -c run.toml
+#
+# Do NOT put [[sources]] or [cameras...] here -- those live in rig.toml, and a table
+# declared in two fragments would make the composition invalid.
+
+# [triangulation]
+# method = "ransac"
+
+# [pipeline]
+# do_inverse_kinematics = true
 """
 
 #: A project/recording slug: safe as a directory name on every platform we target, and
@@ -520,6 +552,12 @@ class Project:
         skeleton_path = root / SKELETON_FILENAME
         if not skeleton_path.exists():
             skeleton_path.write_text(_skeleton_text(skeleton))
+        # An empty profile, whose emptiness is the point: it holds only what DIFFERS from
+        # the packaged defaults, so a project starts by overriding nothing.
+        profile = root / PROFILE_DIRNAME / DEFAULT_PROFILE
+        if not profile.exists():
+            profile.parent.mkdir(parents=True, exist_ok=True)
+            profile.write_text(_BLANK_PROFILE)
 
         project = cls(
             root=root,
@@ -675,6 +713,178 @@ class Project:
         if not path.exists():
             raise FileNotFoundError(f"the project's skeleton file {path} is missing")
         return Config.from_toml(path).skeleton()
+
+    # -- config composition ---------------------------------------------------
+    #
+    # A project owns its skeleton, its rig topology and its algorithm deltas as three
+    # separate files, and a run consumes ONE config. They are combined by *concatenating
+    # fragments*, not by serializing a merged dict: each fragment declares different
+    # top-level tables, so nothing is ever defined twice, no TOML writer is involved (so
+    # nothing can be silently mis-serialized -- the detection plan's 132 inline tables are
+    # the risk that would carry), and every comment survives byte-for-byte.
+    #
+    # Layering is therefore an AUTHORING convenience only. What a run receives, snapshots
+    # and fingerprints is a single resolved text, exactly as before.
+
+    def rig_path(self) -> Path:
+        return self.root / RIG_FILENAME
+
+    def profile_path(self, name: str | None = None) -> Path:
+        return self.root / PROFILE_DIRNAME / (name or DEFAULT_PROFILE)
+
+    def compose_config(self, *, profile: str | None = None, base=None) -> str:
+        """The project's resolved run config, as TOML text.
+
+        Assembled from, in order: the **skeleton**, the **rig** (``rig.toml``, when the
+        project has one), the current **calibration** (as ``[cameras].calibration``), the
+        **profile**'s deltas, and finally whatever tables ``base`` still supplies that none
+        of those did -- the detection plan and visualization, which are open-ended and stay
+        in the packaged config until a project has reason to override them.
+
+        Parameters
+        ----------
+        profile
+            Profile filename under ``profiles/``; defaults to the project's.
+        base
+            Config text (or path) to draw the remaining tables from. Defaults to the
+            packaged config.
+
+        Returns
+        -------
+        str
+            One TOML document.
+
+        Raises
+        ------
+        ValueError
+            If two fragments would declare the same top-level table -- which TOML forbids
+            and which would otherwise produce an invalid config only at parse time.
+        """
+        from . import _toml
+        from .config import DEFAULT_CONFIG_PATH
+
+        if base is None:
+            base_text = DEFAULT_CONFIG_PATH.read_text()
+        else:
+            base_text = (
+                Path(base).read_text()
+                if not str(base).startswith("#") and Path(str(base)).exists()
+                else str(base)
+            )
+
+        fragments: list[tuple[str, str]] = []
+        skeleton = self.skeleton_path()
+        if skeleton.exists():
+            fragments.append(("skeleton", skeleton.read_text()))
+
+        # The calibration is a [cameras] KEY and rig.toml owns the [cameras.*] sub-tables.
+        # TOML permits `[cameras]` before `[cameras.defaults]` but not two `[cameras]`, so
+        # this is emitted FIRST, as its own fragment -- and a rig that declares a bare
+        # [cameras] itself is rejected below rather than producing an invalid document.
+        if self.calibration is not None:
+            fragments.append(
+                (
+                    "calibration",
+                    "# The project's current calibration (deeperfly project config).\n"
+                    "[cameras]\n"
+                    f"calibration = {_toml.value(str((self.root / self.calibration).resolve()))}\n",
+                )
+            )
+
+        rig = self.rig_path()
+        rig_text = (
+            rig.read_text()
+            if rig.exists()
+            else _toml.extract_tables(base_text, RIG_TABLES)
+        )
+        if rig_text.strip():
+            fragments.append(("rig", rig_text))
+
+        prof = self.profile_path(profile)
+        if prof.exists():
+            fragments.append(("profile", prof.read_text()))
+
+        # Whatever no fragment claimed: the detection plan, visualization, and any table a
+        # project has not taken over. Taken from the base so a project never has to restate
+        # 132 detector channel mappings to change a triangulation knob.
+        claimed: set[str] = set()
+        for _, text in fragments:
+            claimed.update(_toml.top_level_tables(text))
+        remaining = [
+            name for name in _toml.top_level_tables(base_text) if name not in claimed
+        ]
+        if remaining:
+            fragments.append(("base", _toml.extract_tables(base_text, remaining)))
+
+        # Guard the one way concatenation can go wrong.
+        seen: dict[str, str] = {}
+        for source, text in fragments:
+            for name in _toml.top_level_tables(text):
+                if name in seen and not (
+                    # `[cameras]` (the calibration key) plus `[cameras.defaults]` from the
+                    # rig is the one legal overlap, and only in that direction.
+                    seen[name] == "calibration" and source == "rig"
+                ):
+                    raise ValueError(
+                        f"both the {seen[name]} and {source} fragments declare "
+                        f"[{name}]; a project's files must own disjoint tables. Remove "
+                        f"[{name}] from one of them"
+                    )
+                seen.setdefault(name, source)
+        if "cameras" in seen and seen["cameras"] == "calibration":
+            for source, text in fragments:
+                if source == "rig" and any(
+                    line.strip() == "[cameras]" for line in text.splitlines()
+                ):
+                    raise ValueError(
+                        f"{self.rig_path()} declares a bare [cameras] table, which "
+                        "collides with the calibration key the project injects. Keep only "
+                        "[cameras.defaults] / [cameras.<name>] there"
+                    )
+
+        header = [
+            "# GENERATED by 'deeperfly project config' -- do not edit.",
+            f"# Composed from project {self.name!r} ({self.root}):",
+        ]
+        header += [f"#   {source}" for source, _ in fragments]
+        header.append("")
+        return "\n".join(header) + "\n\n".join(
+            text.rstrip() + "\n" for _, text in fragments
+        )
+
+    def write_rig(self, base=None) -> Path:
+        """Extract the rig tables out of a config into the project's ``rig.toml``.
+
+        The rig -- footage sources, camera topology, per-camera preprocessing -- is a
+        property of the *setup*, shared by every recording on it. Lifting it into the
+        project is what stops each recording carrying its own copy.
+        """
+        from . import _toml
+        from .config import DEFAULT_CONFIG_PATH
+
+        text = Path(base).read_text() if base else DEFAULT_CONFIG_PATH.read_text()
+        fragment = _toml.extract_tables(text, RIG_TABLES)
+        if not fragment.strip():
+            raise ValueError(
+                f"no rig tables ({list(RIG_TABLES)}) in that config -- nothing to extract"
+            )
+        # A bare [cameras] would collide with the calibration key composition injects.
+        fragment = (
+            "\n".join(
+                line for line in fragment.splitlines() if line.strip() != "[cameras]"
+            )
+            + "\n"
+        )
+        out = self.rig_path()
+        out.write_text(
+            "# This project's camera rig: footage sources, camera topology and per-camera\n"
+            "# preprocessing. Shared by every recording on this setup.\n"
+            "#\n"
+            "# Do NOT add a bare [cameras] table here -- the project injects the current\n"
+            "# calibration as [cameras].calibration when it composes the run config.\n\n"
+            + fragment
+        )
+        return out
 
     def calibration_path(self) -> Path | None:
         """The project's current calibration file, or ``None`` (uncalibrated)."""

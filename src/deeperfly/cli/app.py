@@ -20,8 +20,10 @@ from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
 from .merge import _cmd_labels_merge
 from .project import (
     _cmd_project_add,
+    _cmd_project_config,
     _cmd_project_ls,
     _cmd_project_new,
+    _cmd_project_rig,
     _cmd_project_rm,
     _cmd_project_status,
 )
@@ -775,6 +777,67 @@ def config_set(
     """
     _configure_logging(log_level.value)
     _cmd_config_set(argparse.Namespace(key=key, value=value, config=config))
+
+
+@project_app.command("config")
+def project_config(
+    project: ProjectArg = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="write to this file instead of stdout"),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile", help="profile filename under profiles/ (default: default.toml)"
+        ),
+    ] = None,
+    base: Annotated[
+        str | None,
+        typer.Option(
+            "--base",
+            help="config to take the remaining tables from -- the detection plan and "
+            "visualization, which are open-ended (default: the packaged config)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Compose the project's resolved run config from its parts.
+
+    A project keeps its skeleton, its rig and its algorithm deltas in separate files; a run
+    consumes one config. This combines them, validates the result through the same strict
+    loader a run uses, and prints or writes it.
+
+    So layering is an AUTHORING convenience only: what a run snapshots and fingerprints is a
+    single resolved text, exactly as before. Change one triangulation knob in the profile
+    without restating 132 detector channel mappings.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_config(
+        argparse.Namespace(project=project, output=output, profile=profile, base=base)
+    )
+
+
+@project_app.command("rig")
+def project_rig(
+    project: ProjectArg = None,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="config to lift the rig out of (default: the packaged config)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Lift a config's camera rig into the project as rig.toml.
+
+    The rig -- footage sources, camera topology, per-camera preprocessing -- is a property
+    of the SETUP, shared by every recording on it. Making it the project's stops each
+    recording carrying its own copy, and is what lets one calibration serve all of them.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_rig(argparse.Namespace(project=project, source=source))
 
 
 # -- calibration (a command group) -------------------------------------------
