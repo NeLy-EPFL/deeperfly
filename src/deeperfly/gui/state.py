@@ -14,6 +14,16 @@ fewer than two views are usable). A drag creates/moves the GT at the dragged vie
 re-solves the 3D live via :func:`~deeperfly.gui.solve.solve_point_3d_drag`, which lands
 the point under the cursor even with a single usable view.
 
+Orthogonal to that per-cell tri-state, a *point* may be declared **absent** -- not on this
+animal, as with an amputated leg. It is view-independent (an amputated joint is missing
+from every camera at once) but per *frame*, so a leg lost to autotomy part-way through a
+recording is expressible; the editor's default gesture is nonetheless "apply to the whole
+recording", which is what almost every real declaration wants. Absence vetoes the derived
+masks, forces the point's 2D and 3D to ``NaN`` in the frames it covers, and refuses every
+authoring verb there (:meth:`EditorState.absent_refusal`). The ``_solve_point``
+short-circuit is what actually removes the limb -- see its docstring for why the run-cache
+fallback has to be skipped as well.
+
 The method names ``apply_2d_edit`` / ``apply_3d_edit`` / ``toggle_fixed`` /
 ``toggle_invisible`` / ``reset_*`` are kept as the wire-compatible surface the server
 dispatches to; under the new model ``toggle_fixed`` confirms/clears a GT pixel and
@@ -70,6 +80,25 @@ class _UndoEntry:
 
 
 @dataclass
+class _AbsentEntry:
+    """A snapshot of an absence declaration, so one gesture is one undo step.
+
+    Carries **no** cell payload: the declaration only vetoes the derived masks, it never
+    destroys a pixel, so restoring the per-``(frame, point)`` bits restores every label
+    underneath. ``prev`` is the ``(T, len(points))`` slice the gesture overwrote -- a few
+    kilobytes even for a whole-recording declaration, against the megabytes a snapshot of
+    the ``(V, T, P)`` overlay would cost.
+    """
+
+    points: list[int]
+    prev: np.ndarray  # (T, len(points)) bool
+    #: Never coalesces with a neighboring entry (an absence declaration is always its own
+    #: gesture), and carries no frame -- which is what stops ``_record_undo``'s coalescing
+    #: test at the first term, before it reaches the frame-scoped fields this has none of.
+    coalesce: bool = False
+
+
+@dataclass
 class EditorState:
     """A loaded result plus its ground-truth labels overlay and view state."""
 
@@ -113,7 +142,7 @@ class EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
         Unlike the old corrections overlay, a fresh labels overlay seeds *nothing*:
-        a view the detector missed is ``absent`` (derived), not a stored occlusion,
+        a view the detector missed is *unobserved* (derived), not a stored occlusion,
         so an untouched session carries no authored state. ``ann`` / ``tri`` are the
         annotation solve policy and shared triangulation params (from the run config
         beside ``results.h5``); both default to the packaged defaults.
@@ -124,7 +153,7 @@ class EditorState:
 
         ``raw_pts2d`` is the pristine ``pose2d`` detections (``result.pts2d`` is the
         triangulation-*cleaned* array, so a rejected point is NaN there); it seeds the
-        placeholder for an otherwise-absent joint. ``image_sizes`` (camera name ->
+        placeholder for an otherwise-unobserved joint. ``image_sizes`` (camera name ->
         ``(height, width)``) supplies the placeholder's last-resort image center.
         """
         if labels is None:
@@ -214,8 +243,28 @@ class EditorState:
         return self.labels.has_gt[:, self._resolve_frame(frame)]
 
     def occluded_mask(self, frame: int | None = None) -> np.ndarray:
-        """``(V, P)`` boolean: which per-view points are occluded at ``frame``."""
-        return self.labels.occluded[:, self._resolve_frame(frame)]
+        """``(V, P)`` boolean: which per-view points are occluded at ``frame``.
+
+        The *effective* mask: a point declared absent is not "occluded in every view",
+        it is not there at all, so it is vetoed out (the front-end draws it as a
+        tombstone, not as a rejected observation).
+        """
+        return self.labels.occluded_effective[:, self._resolve_frame(frame)]
+
+    def absent_mask(self, frame: int | None = None) -> np.ndarray:
+        """``(P,)`` boolean: which points are not on this animal at ``frame``."""
+        return self.labels.absent_at(self._resolve_frame(frame))
+
+    def absent_points(self) -> list[int]:
+        """Sorted indices of the points absent in *every* frame of the recording."""
+        return [int(i) for i in np.nonzero(self.labels.absent_all_frames())[0]]
+
+    def absent_points_any(self) -> list[int]:
+        """Sorted indices of the points absent in at least one frame."""
+        return [int(i) for i in np.nonzero(self.labels.absent_any_frame())[0]]
+
+    def _is_absent(self, point: int) -> bool:
+        return bool(self.labels.absent_at(self.frame)[point])
 
     # -- corrected frames -----------------------------------------------------
 
@@ -229,8 +278,12 @@ class EditorState:
         ``{"frame": t, "reviewed": bool}`` -- what the GUI's frame list shows so the
         operator can jump back to frames they have worked on and tick off the ones
         they have finished checking.
+
+        A recording-wide absence declaration is deliberately **not** a per-frame label:
+        folding it in would mark every frame of the recording "labeled" at a stroke, and
+        the suggestion queue (which excludes labeled frames) would empty.
         """
-        decided = self.labels.has_gt | self.labels.occluded  # (V, T, P)
+        decided = self.labels.has_gt | self.labels.occluded_effective  # (V, T, P)
         labeled = decided.any(axis=(0, 2))  # (T,) any authored label in the frame
         reviewed = self.labels.reviewed  # (T,)
         return [
@@ -245,14 +298,18 @@ class EditorState:
 
         A GT view shows its pixel; a plain view shows the prediction; an occluded
         view (or one with neither) is ``NaN`` -- the front-end draws the reprojection
-        ghost there instead.
+        ghost there instead. A point declared absent is ``NaN`` in *every* view: the
+        detector still fires somewhere on an amputated limb (an argmax decode always
+        emits a peak), and showing that peak would invite the operator to confirm it.
         """
         t = self._resolve_frame(frame)
         gt = self.labels.gt[:, t]  # (V, P, 2)
         has = self.labels.has_gt[:, t]  # (V, P)
-        occ = self.labels.occluded[:, t]  # (V, P)
+        occ = self.labels.occluded_effective[:, t]  # (V, P)
+        absent = self.labels.absent_at(t)[None, :]  # (1, P) -> broadcasts over views
         pred = self.result.pts2d[:, t]  # (V, P, 2)
-        return np.where(has[..., None], gt, np.where(~occ[..., None], pred, np.nan))
+        shown = np.where(has[..., None], gt, np.where(~occ[..., None], pred, np.nan))
+        return np.where(absent[..., None], np.nan, shown)
 
     def display_pts2d_refine(
         self, frame: int | None = None
@@ -261,7 +318,8 @@ class EditorState:
         view, with each GT view overridden by its authored pixel, or ``None``.
 
         GT views hold their pixel (they generally do not all agree with one 3D
-        point); every other view -- plain or occluded -- follows the reprojection.
+        point); every other view -- plain or occluded -- follows the reprojection. An
+        absent point has no 3D to reproject, so it stays ``NaN`` here too.
         """
         proj = self.display_pts3d_projected(frame)
         if proj is None:
@@ -269,9 +327,10 @@ class EditorState:
         t = self._resolve_frame(frame)
         gt = self.labels.gt[:, t]  # (V, P, 2)
         has = self.labels.has_gt[:, t]  # (V, P)
-        return np.where(has[..., None], gt, proj)
+        absent = self.labels.absent_at(t)[None, :]  # (1, P)
+        return np.where(absent[..., None], np.nan, np.where(has[..., None], gt, proj))
 
-    # -- placeholder seeds for absent joints ----------------------------------
+    # -- placeholder seeds for unobserved joints ------------------------------
 
     def placeholder_pts2d(
         self, frame: int | None = None, *, window: int = 30
@@ -394,19 +453,36 @@ class EditorState:
 
         ``pred_obs`` NaNs out occluded views and views that already carry GT (GT
         overrides the prediction there), so it is exactly the prediction contribution
-        the solve should see.
+        the solve should see. A point declared absent contributes nothing from any view:
+        ``gt_obs`` is already vetoed via ``has_gt``, and the detector's peaks -- which
+        exist on an amputated limb because an argmax decode always emits one -- are
+        dropped here rather than triangulated into a phantom joint.
         """
+        absent = bool(self.labels.absent_at(t)[point])
         has = self.labels.has_gt[:, t, point]  # (V,)
-        occ = self.labels.occluded[:, t, point]  # (V,)
+        occ = self.labels.occluded_effective[:, t, point]  # (V,)
         gt_obs = np.where(has[:, None], self.labels.gt[:, t, point], np.nan)
         pred = self.result.pts2d[:, t, point].astype(float)  # (V, 2)
         pred_ok = np.isfinite(pred).all(axis=-1) & ~occ & ~has
+        if absent:
+            pred_ok = np.zeros_like(pred_ok)
         pred_obs = np.where(pred_ok[:, None], pred, np.nan)
         conf = None if self.result.conf is None else self.result.conf[:, t, point]
         return gt_obs, pred_obs, conf
 
     def _solve_point(self, t: int, point: int) -> np.ndarray:
-        """Derive one point's 3D from its labels + predictions (run-cache fallback)."""
+        """Derive one point's 3D from its labels + predictions (run-cache fallback).
+
+        An absent point short-circuits to ``NaN`` **without** the run-cache fallback.
+        That skip is what actually removes the limb: ``solve_point_3d`` already returns
+        ``NaN`` once every view is dropped, but the fallback below would immediately
+        substitute the run's cached ``pts3d`` -- which is a perfectly finite phantom in
+        almost every frame -- and the editor would keep drawing the amputated leg. The
+        condition is keyed on *absence*, not on NaN, so the fallback keeps working
+        everywhere it is legitimately useful.
+        """
+        if bool(self.labels.absent_at(t)[point]):
+            return np.full(3, np.nan)
         gt_obs, pred_obs, conf = self._point_obs(t, point)
         x = solve_point_3d(
             self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
@@ -522,11 +598,36 @@ class EditorState:
 
     # -- edits (the wire-compatible surface) ----------------------------------
 
+    def absent_refusal(self, point: int, frame: int | None = None) -> str | None:
+        """Why ``point`` cannot be labeled at ``frame``, or ``None`` if it can.
+
+        Every authoring verb consults this. An absence declaration is *refused* rather
+        than silently no-op'd: a tool that swallows the gesture reads as broken, and the
+        operator needs to be told which fact is blocking them and how to lift it.
+        """
+        t = self._resolve_frame(frame)
+        if not bool(self.labels.absent_at(t)[point]):
+            return None
+        return (
+            f"{self.point_name(point)} is marked absent (not on this animal) -- "
+            "un-mark it first to label it"
+        )
+
+    def point_name(self, point: int) -> str:
+        """The skeleton name of ``point`` (its index, if names are unavailable)."""
+        names = getattr(self.result.skeleton, "point_names", None)
+        try:
+            return str(names[point])  # type: ignore[index]
+        except Exception:
+            return str(point)
+
     def apply_2d_edit(
         self, view: int, point: int, xy, frame: int | None = None
     ) -> None:
         """Author a GT pixel for ``point`` in ``view`` at ``xy`` (a 2D drag)."""
         t = self._resolve_frame(frame)
+        if self.absent_refusal(point, t):
+            return
         self._record_undo(t, point, coalesce=True)
         self.labels.set_gt(view, t, point, xy, provenance=Provenance.DRAGGED)
         self._rederive_point(t, point)
@@ -548,13 +649,15 @@ class EditorState:
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
+        if self.absent_refusal(point, t):
+            return None
         prior = self._ensure_pts3d(t)[point].copy()
         gt_obs, pred_obs, conf = self._point_obs(t, point)
         x_new = solve_point_3d_drag(
             self.result.cameras, gt_obs, pred_obs, conf, view, xy, prior, self.ann
         )
         # The 2D drop is ground truth whether or not a 3D can be derived from it yet.
-        # A first view placed on an otherwise-absent point (a triangulation reject, or
+        # A first view placed on an otherwise-unobserved point (a triangulation reject, or
         # one the detector never fired: no prior 3D and a single usable view) has no
         # solvable 3D, but the authored pixel must still stick so a second view can be
         # added and the point triangulated. So author the GT unconditionally; update
@@ -582,6 +685,8 @@ class EditorState:
         if self.result.pts3d is None:
             return None
         t = self._resolve_frame(frame)
+        if self.absent_refusal(point, t):
+            return None
         if self.labels.has_gt[view, t, point]:
             self._record_undo(t, point, coalesce=False)
             self.labels.clear_gt(view, t, point)
@@ -609,11 +714,16 @@ class EditorState:
 
         An occluded view contributes nothing to the 3D and follows the reprojection;
         toggling re-solves the 3D from the remaining views. Setting it drops any GT for
-        that view. Returns the new occluded state, or ``None`` if there is no 3D.
+        that view. Returns the new occluded state, or ``None`` if the point is absent.
+
+        Deliberately **not** gated on a 3D solve. "I cannot place this from this view" is
+        a label, not a derived quantity, and on a 2D-only pass (exactly where a hand
+        labeling round happens) gating it would leave the operator with no way to reject
+        a view except the much stronger anatomical claim that the joint does not exist.
         """
-        if self.result.pts3d is None:
-            return None
         t = self._resolve_frame(frame)
+        if self.absent_refusal(point, t):
+            return None
         self._record_undo(t, point, coalesce=False)
         now = not bool(self.labels.occluded[view, t, point])
         self.labels.set_occluded(view, t, point, now)
@@ -656,6 +766,49 @@ class EditorState:
         t = self._resolve_frame(frame)
         self.labels.set_reviewed(t, value)
 
+    def set_absent(
+        self,
+        points,
+        value: bool,
+        frame: int | None = None,
+        *,
+        whole_recording: bool = False,
+    ) -> list[int]:
+        """Declare (or un-declare) ``points`` as not being on this animal.
+
+        Scoped to ``frame`` by default -- a keypoint *can* stop existing part-way through
+        a recording (autotomy). ``whole_recording=True`` applies it to every frame at once,
+        which is the common case and the convenience the editor exposes as its own gesture:
+        an animal that arrives with a leg missing keeps it missing.
+
+        View-independent either way. Returns the point indices whose state actually
+        changed (an empty list is a no-op and records no undo step).
+
+        A whole-recording change invalidates the *entire* derived-3D and NMF caches; a
+        single-frame one only that frame's.
+        """
+        t = self._resolve_frame(frame)
+        idx = sorted({int(p) for p in np.atleast_1d(np.asarray(points, dtype=int))})
+        absent = self.labels.absent
+        rows = slice(None) if whole_recording else slice(t, t + 1)
+        changed = [p for p in idx if bool((absent[rows, p] != bool(value)).any())]
+        if not changed:
+            return []
+        self._undo.append(
+            _AbsentEntry(points=list(changed), prev=absent[:, changed].copy())
+        )
+        self._redo.clear()
+        if len(self._undo) > UNDO_LIMIT:
+            self._undo.pop(0)
+        self.labels.set_absent(changed, value, frames=None if whole_recording else [t])
+        if whole_recording:
+            self._pts3d_cache.clear()
+            self._nmf_cache.clear()
+        else:
+            self._invalidate_frame3d(t)
+            self._invalidate_nmf(t)
+        return changed
+
     # -- undo / redo + bulk confirm + explicit GT set/clear -------------------
 
     def _snapshot(self, t: int, point: int | None, coalesce: bool) -> _UndoEntry:
@@ -667,6 +820,15 @@ class EditorState:
             provenance=self.labels.gt_provenance[:, t].copy(),
             occluded=self.labels.occluded[:, t].copy(),
         )
+
+    def _snapshot_of(self, entry):
+        """The current-state counterpart of ``entry``, for the opposite history stack."""
+        if isinstance(entry, _AbsentEntry):
+            return _AbsentEntry(
+                points=list(entry.points),
+                prev=self.labels.absent[:, entry.points].copy(),
+            )
+        return self._snapshot(entry.t, entry.point, entry.coalesce)
 
     def _record_undo(self, t: int, point: int | None, *, coalesce: bool) -> None:
         """Push a pre-edit snapshot, coalescing a run of drag edits on one point."""
@@ -685,7 +847,17 @@ class EditorState:
         if len(self._undo) > UNDO_LIMIT:
             self._undo.pop(0)
 
-    def _apply_snapshot(self, entry: _UndoEntry) -> None:
+    def _apply_snapshot(self, entry) -> None:
+        if isinstance(entry, _AbsentEntry):
+            # An absence gesture may have spanned the whole recording, so drop the entire
+            # derived cache rather than trying to work out which frames moved. The entry
+            # carries no pixel payload: the veto never destroyed any, so restoring the
+            # bits restores everything underneath.
+            self.labels.absent[:, entry.points] = entry.prev
+            self.labels.dirty = True
+            self._pts3d_cache.clear()
+            self._nmf_cache.clear()
+            return
         t = entry.t
         self.labels.gt[:, t] = entry.gt
         self.labels.gt_provenance[:, t] = entry.provenance
@@ -707,18 +879,18 @@ class EditorState:
         if not self._undo:
             return None
         entry = self._undo.pop()
-        self._redo.append(self._snapshot(entry.t, entry.point, entry.coalesce))
+        self._redo.append(self._snapshot_of(entry))
         self._apply_snapshot(entry)
-        return entry.t
+        return None if isinstance(entry, _AbsentEntry) else entry.t
 
     def redo(self) -> int | None:
         """Re-apply the last undone edit; returns the affected frame."""
         if not self._redo:
             return None
         entry = self._redo.pop()
-        self._undo.append(self._snapshot(entry.t, entry.point, entry.coalesce))
+        self._undo.append(self._snapshot_of(entry))
         self._apply_snapshot(entry)
-        return entry.t
+        return None if isinstance(entry, _AbsentEntry) else entry.t
 
     def set_gt(
         self,
@@ -767,8 +939,10 @@ class EditorState:
           :meth:`placeholder_pts2d`) -- but ``confirm`` never consulted it.
 
         A clamped or placeholder position is deliberately NOT presented as evidence: the caller
-        tags it ``CONFIRMED_PROJECTION``, which ``export_gt`` drops, so an untouched one cannot
-        reach training. It exists to be dragged.
+        tags it ``PLACEHOLDER_SEED``, which ``export_gt`` drops unconditionally -- even under
+        ``include_projection=True``, because unlike a real reprojected pixel this coordinate was
+        invented by the editor, and invented at the image edge. An untouched one cannot reach
+        training. It exists to be dragged, and dragging it restamps it ``DRAGGED``.
         """
         q = None if xy is None else np.asarray(xy, dtype=float)
         if q is None or not np.all(np.isfinite(q)):
@@ -826,9 +1000,9 @@ class EditorState:
         displayed per-view pixel), ``"projections"`` (the current 3D reprojected), or
         ``"all"`` (prediction where present, else projection). A snapshotted pixel is
         tagged by where it actually came from, not by which source asked for it -- see
-        :meth:`_is_raw_detection`. Occluded or already-GT views are
-        left untouched. One undo step; the 3D re-derives once. Returns whether anything
-        changed.
+        :meth:`_is_raw_detection`. Occluded views, already-GT views and points declared
+        absent are left untouched. One undo step; the 3D re-derives once. Returns whether
+        anything changed.
         """
         t = self._resolve_frame(frame)
         saved_redo = list(self._redo)
@@ -837,9 +1011,15 @@ class EditorState:
         want_proj = sources in ("all", "projections")
         proj = self.display_pts3d_projected(t) if want_proj else None
         changed = False
+        absent = self.labels.absent_at(t)
         for view, point in targets:
+            # An absent point must be skipped here, not merely left NaN downstream: a
+            # select-all + confirm would otherwise fabricate GT on the phantom limb on
+            # every frame the operator visits, and `_grabbable` even clamps the invented
+            # pixel into the image so it looks like a real, draggable observation.
             if (
-                self.labels.occluded[view, t, point]
+                absent[point]
+                or self.labels.occluded[view, t, point]
                 or self.labels.has_gt[view, t, point]
             ):
                 continue
@@ -880,9 +1060,13 @@ class EditorState:
                 if xy is None or not np.allclose(
                     grab, np.asarray(xy, dtype=float), atol=1e-9
                 ):
-                    # clamped into frame, or filled from the placeholder chain -- either way it is
-                    # a seed to drag, not evidence, so it takes the export-dropped provenance
-                    prov = Provenance.CONFIRMED_PROJECTION
+                    # Clamped into frame, or filled from the placeholder chain -- either way the
+                    # coordinate is the editor's invention, not a claim about the fly, so it takes
+                    # the provenance `export_gt` drops unconditionally. It cannot share
+                    # CONFIRMED_PROJECTION: training may legitimately want real reprojected pixels,
+                    # and a clamped seed sits at the image edge, which is the worst place to put a
+                    # Gaussian the network is asked to reproduce. Dragging it restamps it DRAGGED.
+                    prov = Provenance.PLACEHOLDER_SEED
                 self.labels.set_gt(view, t, point, grab, provenance=prov)
                 changed = True
         if changed:
@@ -908,7 +1092,7 @@ class EditorState:
             return
         t = self._resolve_frame(frame)
         has_gt = self.labels.has_gt
-        occluded = self.labels.occluded
+        occluded = self.labels.occluded_effective
         if not any(
             has_gt[view, t, point] or occluded[view, t, point]
             for view, point in targets
@@ -925,17 +1109,20 @@ class EditorState:
 
         The batched counterpart of :meth:`toggle_invisible`, but a *set* not a toggle:
         every target is flagged occluded (dropping any GT there), and the frame's 3D
-        re-derives once. Reversal is :meth:`reset_targets` / undo. Requires 3D (an
-        occluded view only means something when there is a solve to drop it from). A
-        no-op batch (empty, or every target already occluded) does nothing: no undo
+        re-derives once. Reversal is :meth:`reset_targets` / undo. Targets on a point
+        declared absent are dropped -- an amputated joint is not "occluded everywhere".
+        A no-op batch (empty, or every target already occluded) does nothing: no undo
         entry, no cleared redo, nothing marked dirty (mirrors :meth:`confirm`).
+
+        Like :meth:`toggle_invisible`, deliberately not gated on a 3D solve: occlusion is
+        an authored label and a hand-labeling pass often starts before any triangulation.
         """
-        if self.result.pts3d is None:
-            return
         targets = list(targets)
         if not targets:
             return
         t = self._resolve_frame(frame)
+        absent = self.labels.absent_at(t)
+        targets = [(v, p) for v, p in targets if not absent[p]]
         occluded = self.labels.occluded
         if not any(not occluded[view, t, point] for view, point in targets):
             return

@@ -210,7 +210,12 @@ class NmfLive:
             and 0 <= frame < self._stored.shape[0]
         ):
             row = self._stored[frame]
-            if np.isfinite(row).all():
+            # Per-DOF, not all-or-nothing. A single permanently-NaN limb -- an amputated
+            # leg, an unfittable branch -- would otherwise veto the warm start for the
+            # WHOLE body, so every live re-fit would restart from the limit-midpoint
+            # neutral pose and the overlay would silently disagree with the rendered fit
+            # everywhere, not just on the missing limb.
+            if np.isfinite(row).any():
                 seed = row
         if seed is None:
             return self.plan.to_json()
@@ -218,7 +223,9 @@ class NmfLive:
         for joint in self._spec["joints"]:
             for dof in joint["dofs"]:
                 lo, hi = dof["limits"]
-                dof["neutral"] = float(np.clip(seed[d], lo, hi))
+                # A NaN DOF keeps the plan's own neutral; only the fitted ones warm-start.
+                if d < seed.shape[0] and np.isfinite(seed[d]):
+                    dof["neutral"] = float(np.clip(seed[d], lo, hi))
                 d += 1
         return json.dumps(self._spec, separators=(",", ":"))
 

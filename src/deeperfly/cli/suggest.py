@@ -76,6 +76,28 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
 
     labels = None
     labels_path = results_path.parent / "labels.h5"
+    # Absence shapes the RANKING, so it is read whether or not labeled frames are excluded:
+    # it says which keypoints exist on this animal, which is not labeling progress. A broken
+    # sidecar here is not fatal -- the ranking just cannot know, and says so.
+    absent_mask = None
+    absent_points: list[int] = []
+    try:
+        _lab = read_labeled_frames(labels_path, identity=inputs.identity)
+    except ValueError:
+        _lab = None
+    if _lab and _lab.get("absent_spans"):
+        import numpy as _np
+
+        from ..gui.labels import spans_to_absent
+
+        absent_mask = spans_to_absent(
+            _np.asarray(_lab["absent_spans"], dtype=int).reshape(-1, 3),
+            inputs.n_frames,
+            len(inputs.point_names),
+        )
+        # Report the whole-recording subset: "absent in some frames" is a different
+        # statement and belongs in the per-frame accounting, not the headline.
+        absent_points = [int(i) for i in _np.nonzero(absent_mask.all(axis=0))[0]]
     if args.exclude_labeled:
         try:
             labels = read_labeled_frames(labels_path, identity=inputs.identity)
@@ -98,6 +120,7 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         min_views=args.min_views,
         point_mask=point_mask,
         camera_mask=camera_mask,
+        absent_mask=absent_mask,
     )
     picks, shortfall = select_frames(
         scores,
@@ -123,6 +146,12 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         "points": list(args.points) if args.points else None,
         "cameras": list(args.cameras) if args.cameras else None,
         "exclude_labeled": bool(args.exclude_labeled),
+        "absent_points": absent_points,
+        "absent_point_names": [
+            str(inputs.point_names[i])
+            for i in absent_points
+            if i < len(inputs.point_names)
+        ],
         "score": SCORE_DESCRIPTION,
     }
     out = (
@@ -217,10 +246,16 @@ def _report(
             f"points={params['points'] or 'all'} cameras={params['cameras'] or 'all'} "
             "(triangulation still uses every view)",
         )
+    n_exist = coverage.get("n_existing_points", inputs.n_points)
+    denom = (
+        f"of the {n_exist} existing joints"
+        if n_exist != inputs.n_points
+        else "of joints"
+    )
     _info_line(
         "coverage:   ",
         f"{coverage['scorable_cell_frac']:.1%} of cells fired, "
-        f"{coverage['scorable_joint_frac']:.1%} of joints scorable "
+        f"{coverage['scorable_joint_frac']:.1%} {denom} scorable "
         f"(>= {params['min_views']} views; median "
         f"{coverage['median_observing_views']:g})",
     )
@@ -253,6 +288,13 @@ def _report(
         )
     else:
         _info_line("labels:     ", "none yet (no labels.h5 beside results.h5)")
+    if params.get("absent_point_names"):
+        names = ", ".join(params["absent_point_names"])
+        _info_line(
+            "absent:     ",
+            f"{len(params['absent_point_names'])} keypoint(s) not on this animal "
+            f"({names}) -- excluded from the score and from every denominator above",
+        )
     _info_line(
         "excluded:   ",
         f"{len(excluded)} already-labeled frame(s), and everything within "

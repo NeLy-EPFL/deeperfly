@@ -128,10 +128,44 @@ buttons, or their keys. Each is a **single undo step**, however large the select
   place ground truth. Occluded views are still recorded on export as a positive
   "unplaceable" label (useful negative training signal).
 
+- **Absent** (`x`, or `Shift`+`X` for the whole recording) — mark the selected
+  keypoint(s) **not on this animal**: an amputated leg, an ablated antenna. Unlike every
+  other action it is not per *view* — an amputated joint is missing from all seven cameras
+  at once, which is exactly what separates it from Occluded. `x` marks the current frame;
+  **`Shift`+`X` applies it to every frame**, which is what almost every real declaration
+  wants (an animal that arrives with a leg already missing). Per-frame exists for the case
+  where it genuinely changes: a leg lost to autotomy part-way through a recording.
+  The joint then draws as a dim grey ✕ with no bones, drops out of the 3D solve, and is
+  excluded from the training export in *both* directions (it is neither ground truth nor
+  "occluded"). A header badge lists what is declared and says whether it covers the whole
+  recording or just this frame. Press `x` again or `Ctrl`/`Cmd`+`Z` to lift it — nothing
+  you labeled underneath is lost, it is only hidden while the declaration stands.
+
 Everyday flows: click a point and press `Enter` to confirm one keypoint everywhere; `a`
 then `Enter` to confirm the whole frame; double-click a mislocated joint and press `r` to
 reset it across all views; Shift+drag a box around a few stray points and press `o` to
-occlude them.
+occlude them; double-click an amputated joint and press `Shift`+`X` once for the whole
+recording.
+
+### Occluded vs Absent vs Unplaced
+
+Three different reasons a keypoint has no pixel, and they must not be confused:
+
+| | means | scope | on export |
+|---|---|---|---|
+| **Occluded** (`o`) | it exists, but no usable view here | one (view, frame, point) | a positive "unplaceable" label |
+| **Absent** (`x` / `Shift`+`X`) | it is not on this animal | every view; this frame, or the whole recording | excluded from GT *and* from occluded |
+| **Unplaced** (`i`) | nobody has placed it yet | one (view, frame, point) | nothing (unlabeled) |
+
+Because Absent can be scoped to a frame, it is worth being deliberate about which you
+mean: a joint that is merely *hidden* in a few frames is Occluded, and marking it Absent
+there discards training signal rather than contributing it. Absence is a claim about the
+animal; occlusion is a claim about the view.
+
+Marking an amputated leg *occluded in every view* is the tempting shortcut and it is
+wrong twice: the leg still gets a 3D position (the other views reconstruct it from the
+detector's peaks, which fire on whatever looks leg-like), and the export teaches the
+detector that the joint exists but happens to be hidden in all seven cameras at once.
 
 When exactly one point is selected, the **point-status widget** shows that
 `(point, view)`'s state — **Predicted** / **Ground truth** / **Occluded** — and lets you
@@ -233,7 +267,15 @@ deeperfly labels-export RESULT           # writes labels_gt.npz beside results.h
 ```
 
 This writes the provenance-filtered ground-truth pixels + occluded mask in footage
-pixel space (reprojection-confirmed GT is excluded unless `--include-projection`).
+pixel space (reprojection-confirmed GT is excluded unless `--include-projection`), plus
+an `absent` (P,) mask of the keypoints that are not on this animal. Train by **masking**
+those channels — they should contribute no gradient. (Supervising them with an all-zero
+target heatmap is the stronger claim, "learn that nothing is here"; it needs a decode
+that can abstain and enough amputee animals to calibrate one.)
+
+To declare absence without opening the editor — across every clip of one animal at once,
+before any labeling — use
+[`deeperfly labels-absent`](cli.md#deeperfly-labels-absent).
 
 ## Remote use
 

@@ -165,6 +165,7 @@ def score_frames(
     min_views: int = 3,
     point_mask: Bool[np.ndarray, "P"] | None = None,
     camera_mask: Bool[np.ndarray, "V"] | None = None,
+    absent_mask: Bool[np.ndarray, "T P"] | None = None,
 ) -> FrameScores:
     """Score every frame by the multi-view disagreement of ``pts2d``.
 
@@ -188,6 +189,14 @@ def score_frames(
        ~1000 frames, leaving hundreds of exact ties for the spacing pass to break
        toward the start of the recording; the top-K mean takes ~1000 distinct
        values of ~1000 frames.
+
+    ``absent_mask`` marks keypoints that are **not on this animal** (an amputated leg).
+    It is kept separate from ``point_mask`` on purpose: ``point_mask`` is the operator's
+    choice of what to score, while absence is a fact about the animal that the sidecar must
+    state. It removes those points from the residuals, from the top-k aggregate, and from
+    every coverage *denominator* -- otherwise a recording whose amputated leg can never be
+    scored reports a permanently depressed ``scorable_joint_frac`` and its frame scores are
+    diluted by columns that can never carry signal.
 
     ``point_mask`` / ``camera_mask`` restrict which cells are *scored*; the
     triangulation always uses every view, so narrowing the score never degrades
@@ -247,19 +256,45 @@ def score_frames(
         if point_mask is None
         else np.asarray(point_mask, dtype=bool)
     )
-    if cam_sel.shape != (n_views,) or pt_sel.shape != (n_points,):
-        raise ValueError("point_mask / camera_mask must match pts2d's P / V")
+    # `exists` is (T, P): absence can vary over the recording (a leg lost part-way), so a
+    # frame where the joint was still there must keep scoring it.
+    if absent_mask is None:
+        exists = np.ones((n_frames, n_points), dtype=bool)
+    else:
+        a = np.asarray(absent_mask, dtype=bool)
+        if a.ndim == 1:  # a whole-recording declaration broadcasts over time
+            a = np.broadcast_to(a.reshape(1, -1), (n_frames, n_points))
+        exists = ~a
+    if (
+        cam_sel.shape != (n_views,)
+        or pt_sel.shape != (n_points,)
+        or exists.shape != (n_frames, n_points)
+    ):
+        raise ValueError(
+            "point_mask / camera_mask / absent_mask must match pts2d's T / P / V"
+        )
+    # A point that is not on the animal is never scored, in the frames it is missing.
+    sel_tp = pt_sel[None, :] & exists  # (T, P)
+    n_exist_t = exists.sum(axis=1)  # (T,) how many joints this frame could carry
+    n_exist = int(exists.all(axis=0).sum())  # points that exist in EVERY frame
 
     pts3d, _ = triangulate_ransac(
         cameras, pts, threshold=float(threshold), min_inliers=2
     )
+    # NaN out the joints that are not on this animal. The detector still emits a peak on an
+    # amputated limb (an argmax decode always does) and RANSAC will happily triangulate those
+    # peaks into a phantom 3D point, which would then bias the body centroid `_far_mask`
+    # derives the ipsi/contra word from -- and that word appears in every driver line.
+    if not exists.all():
+        pts3d = np.asarray(pts3d, dtype=float).copy()
+        pts3d[~exists] = np.nan
     resid = reprojection_error(cameras, pts3d, pts)  # (V, T, P), NaN where undefined
     observed = np.isfinite(resid)  # detector fired AND the joint triangulated
     n_obs = observed.sum(axis=0)  # (T, P) geometry support
 
     with np.errstate(invalid="ignore"):
         d = np.clip(resid, 0.0, float(cap)) / float(cap)  # (V, T, P) in [0, 1]
-    selected = observed & cam_sel[:, None, None] & pt_sel[None, None, :]
+    selected = observed & cam_sel[:, None, None] & sel_tp[None, :, :]
     d_sel = np.where(selected, d, np.nan)
     px_sel = np.where(selected, resid, np.nan)
 
@@ -268,18 +303,38 @@ def score_frames(
         joint = np.where(scorable, _nanmean0(d_sel), np.nan)  # (T, P)
         joint_px = np.where(scorable, _nanmean0(px_sel), np.nan)
 
-    filled = np.where(scorable, np.nan_to_num(joint, nan=0.0), 0.0)
-    k = min(int(top_k), n_points)
+    # Zero out the joints that do not exist in this frame before the top-k. An absent
+    # column is never scorable, so leaving it in would contribute a padding zero to the
+    # frame's mean -- diluting the score and shrinking the dynamic range that ranks frames
+    # against each other. Sorting puts those zeros first, so taking the last k over a
+    # per-frame k drops exactly them.
+    filled = np.where(scorable & exists, np.nan_to_num(joint, nan=0.0), 0.0)
+    ordered = np.sort(
+        filled, axis=1
+    )  # ascending; non-existent joints sort to the front
+    k_t = np.minimum(int(top_k), np.maximum(n_exist_t, 1))  # (T,) per-frame top-k
     # Sort ascending and take the last k: frames with fewer than k scorable joints
     # keep the padding zeros, so a frame the detector barely covered cannot win on
     # one loud joint.
-    score = np.sort(filled, axis=1)[:, n_points - k :].mean(axis=1)  # (T,)
+    cum = np.cumsum(ordered[:, ::-1], axis=1)  # running sum of the largest first
+    idx = np.clip(k_t - 1, 0, n_points - 1)
+    score = cum[np.arange(n_frames), idx] / np.maximum(k_t, 1)  # (T,)
     percentile = _percentile_of(score)
 
-    obs_all = observed & cam_sel[:, None, None] & pt_sel[None, None, :]
+    obs_all = observed & cam_sel[:, None, None] & sel_tp[None, :, :]
+    # Denominators count only cells that exist on this animal: a fraction over all 38 when
+    # 3 can never be labeled reads as a coverage problem that no amount of work can fix.
+    n_cells_exist = int(exists.sum()) * int(cam_sel.sum())
+    n_joints_exist = int(exists.sum())
     coverage = {
-        "scorable_cell_frac": float(obs_all.mean()) if obs_all.size else 0.0,
-        "scorable_joint_frac": float(scorable.mean()) if scorable.size else 0.0,
+        "scorable_cell_frac": (
+            float(obs_all.sum() / n_cells_exist) if n_cells_exist else 0.0
+        ),
+        "scorable_joint_frac": (
+            float((scorable & exists).sum() / n_joints_exist) if n_joints_exist else 0.0
+        ),
+        "n_existing_points": n_exist,
+        "n_absent_points": int(n_points - n_exist),
         "median_observing_views": float(np.median(n_obs)) if n_obs.size else 0.0,
         "global_residual_median_px": (
             float(np.median(resid[obs_all])) if obs_all.any() else float("nan")
@@ -296,6 +351,9 @@ def score_frames(
         "cap_px": float(cap),
         "top_k": int(top_k),
         "min_views": int(min_views),
+        # Stamped so two sidecars for one recording are comparable: scores are a
+        # within-recording ranking, and removing points from the top-k moves every level.
+        "absent_points": [int(i) for i in np.nonzero(~exists.all(axis=0))[0]],
         "score": SCORE_DESCRIPTION,
     }
     return FrameScores(
@@ -891,15 +949,19 @@ def read_labeled_frames(labels_path: str | Path, *, identity: dict) -> dict | No
     ValueError
         If the sidecar belongs to a different recording (identity mismatch).
     """
-    from .gui.labels import load_labels
+    from .gui.labels import absent_to_spans, load_labels
 
     path = Path(labels_path)
     labels = load_labels(path, identity=identity)
     if labels is None:
         return None
-    decided = labels.has_gt | labels.occluded  # (V, T, P)
+    # A recording-wide absence declaration is deliberately NOT folded into `decided`: it
+    # would mark every frame labeled at a stroke, and `select_frames` (which excludes
+    # labeled frames) would return nothing while the sidebar listed the whole recording.
+    decided = labels.has_gt | labels.occluded_effective  # (V, T, P)
     labeled = np.nonzero(decided.any(axis=(0, 2)))[0]
     reviewed = np.nonzero(labels.reviewed)[0]
+    absent = labels.absent_all_frames()
     return {
         "path": path.name,
         "exists": True,
@@ -907,7 +969,15 @@ def read_labeled_frames(labels_path: str | Path, *, identity: dict) -> dict | No
         "labeled_frames": [int(t) for t in labeled],
         "reviewed_frames": [int(t) for t in reviewed],
         "n_gt": int(labels.has_gt.sum()),
-        "n_occluded": int(labels.occluded.sum()),
+        "n_occluded": int(labels.occluded_effective.sum()),
+        # `absent_points` is the whole-recording subset (what a structural consumer may
+        # act on); `absent_spans` carries the full per-frame declaration compactly, so a
+        # caller can rebuild the (T, P) mask without re-reading the file.
+        "n_absent": int(labels.absent.sum()),
+        "absent_points": [int(i) for i in np.nonzero(absent)[0]],
+        "absent_spans": [
+            [int(v) for v in row] for row in absent_to_spans(labels.absent)
+        ],
     }
 
 

@@ -481,3 +481,131 @@ def test_stage_ik_weighs_by_confidence_when_asked(fly, monkeypatch):
         Config.from_dict({"inverse_kinematics": cfg}), fly, pts3d, conf
     )
     np.testing.assert_allclose(seen["weights"], 0.5)
+
+
+# -- absence: a keypoint that is not on this animal ---------------------------
+
+
+def test_an_amputated_leg_still_fits_the_stump(template, fly, articulation):
+    """Declaring the distal joints absent must not write off the whole leg.
+
+    An amputated leg leaves a stump whose remaining joints are real, and measuring them is
+    exactly what a leg-loss study exists to do. Two surviving markers already clear the
+    flat threshold, so the declaration must not *change* that -- this pins the invariance,
+    which is the property that would silently regress if absence started masking
+    per-branch instead of per-DOF.
+    """
+    rng = np.random.default_rng(11)
+    pts3d, _ = synth_leg_pose(template, fly, rng)
+    index = _index(fly)
+    absent = np.zeros(len(fly.point_names), dtype=bool)
+    for name in ("lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"):
+        pts3d[:, index[name]] = np.nan
+        absent[index[name]] = True
+
+    without = solve_inverse_kinematics(pts3d, fly, template, articulation=articulation)
+    with_decl = solve_inverse_kinematics(
+        pts3d, fly, template, articulation=articulation, absent_points=absent
+    )
+    col = {n: i for i, n in enumerate(with_decl.angle_names)}
+    lf = next(leg for leg in template.legs if leg.name == "lf")
+    cols = [col[n] for n in lf.dof_names]
+
+    # The stump is fitted, declared or not -- and the declaration does not perturb it.
+    assert np.isfinite(with_decl.angles[:, cols]).any()
+    np.testing.assert_allclose(
+        without.angles[:, cols], with_decl.angles[:, cols], atol=1e-9
+    )
+    # ... and no other leg's angles moved because of the declaration.
+    other = [col[n] for leg in template.legs if leg.name != "lf" for n in leg.dof_names]
+    np.testing.assert_allclose(
+        without.angles[:, other], with_decl.angles[:, other], atol=1e-9
+    )
+
+
+def test_declaring_absence_cannot_buy_an_underdetermined_fit(
+    template, fly, articulation
+):
+    """Relaxing the threshold stops where the data can no longer determine the branch.
+
+    A leg amputated down to its coxa leaves one marker -- three coordinates against seven
+    DOFs. Lowering the bar to "one observation" there would hand back QuickIK's
+    neutral-biased answer dressed up as a measurement, so the branch stays unset.
+    """
+    rng = np.random.default_rng(14)
+    pts3d, _ = synth_leg_pose(template, fly, rng)
+    index = _index(fly)
+    absent = np.zeros(len(fly.point_names), dtype=bool)
+    for name in (
+        "lf_coxa_trochanter",
+        "lf_femur_tibia",
+        "lf_tibia_tarsus",
+        "lf_claw",
+    ):
+        pts3d[:, index[name]] = np.nan
+        absent[index[name]] = True
+
+    res = solve_inverse_kinematics(
+        pts3d, fly, template, articulation=articulation, absent_points=absent
+    )
+    col = {n: i for i, n in enumerate(res.angle_names)}
+    lf = next(leg for leg in template.legs if leg.name == "lf")
+    assert np.isnan(res.angles[:, [col[n] for n in lf.dof_names]]).all()
+
+
+def test_one_absent_antenna_leaves_the_head_fittable(template, fly, articulation):
+    """The head chain has three DOFs but exactly two markers, the antennae.
+
+    So a flat two-joint threshold makes a routine unilateral antennal ablation NaN all
+    three head DOFs in every frame, forever -- while one antenna is three coordinates
+    against three DOFs, which is determinable. The threshold has to be judged against what
+    the branch can still deliver.
+    """
+    index = _index(fly)
+    sim = (rot_z(0.2), 1.5, np.array([1.0, 2.0, -1.0]))
+    rng = np.random.default_rng(12)
+    pts = np.full((2, fly.n_points, 3), np.nan)
+    _place_coxae(pts, index, articulation, sim)
+    for chain in articulation.chains:
+        place_chain_markers(
+            chain, bent_angles(chain, rng, frac=(0.4, 0.6)), sim, pts, index
+        )
+    absent = np.zeros(len(fly.point_names), dtype=bool)
+    pts[:, index["l_antenna"]] = np.nan  # a unilateral antennal ablation
+    absent[index["l_antenna"]] = True
+
+    head = next(c for c in articulation.chains if c.name == "head")
+    head_dofs = set(head.dof_names)
+
+    without = solve_inverse_kinematics(pts, fly, template, articulation=articulation)
+    with_decl = solve_inverse_kinematics(
+        pts, fly, template, articulation=articulation, absent_points=absent
+    )
+    cols = [i for i, n in enumerate(with_decl.angle_names) if n in head_dofs]
+    assert cols, "the head chain contributes DOFs"
+    assert np.isnan(without.angles[:, cols]).all()  # undeclared: head lost entirely
+    assert np.isfinite(with_decl.angles[:, cols]).all()  # declared: still fitted
+
+
+def test_a_missing_detection_does_not_lower_the_bar(template, fly, articulation):
+    """Only a *declaration* relaxes the threshold -- never a missing detection.
+
+    A leg the detector lost is a tracking failure; reporting neutral-biased angles for it
+    would be a fabricated measurement. This is the invariant that rules out inferring
+    absence from "never observed".
+    """
+    rng = np.random.default_rng(13)
+    pts3d, _ = synth_leg_pose(template, fly, rng)
+    index = _index(fly)
+    for name in ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"):
+        pts3d[:, index[name]] = np.nan  # only the coxa left, nothing declared absent
+    res = solve_inverse_kinematics(
+        pts3d,
+        fly,
+        template,
+        articulation=articulation,
+        absent_points=np.zeros(len(fly.point_names), dtype=bool),
+    )
+    col = {n: i for i, n in enumerate(res.angle_names)}
+    rh = next(leg for leg in template.legs if leg.name == "rh")
+    assert np.isnan(res.angles[:, [col[n] for n in rh.dof_names]]).all()

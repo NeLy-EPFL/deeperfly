@@ -38,7 +38,7 @@
 //
 // GT is editable whenever it is shown. A drag MOVES an existing GT point, or SPAWNS one from a
 // seed -- a detected node, a reprojected hollow point, or (when the joint has none of those in
-// this view) a faint "Missing" placeholder ghost -- and the point reads as GT under the cursor the
+// this view) a faint "Unplaced" placeholder ghost -- and the point reads as GT under the cursor the
 // instant the drag starts (before the server sets its GT flag). See nodeAt / anchorPos /
 // grabCandidates + drawSkeleton / drawPlaceholders. Selection rings, name labels, and hover
 // emphasis are drawn once on top by drawJointOverlay, anchored at the joint's best visible
@@ -119,13 +119,22 @@ const PROJ_WIDTH = 5; // reprojected-skeleton bone width (screen px): thick, wel
 const PROJ_ALPHA = 0.4; // ... and semi-transparent, so the solid editable palette always wins on top
 const PROJ_DASH = [7, 5]; // ... and dashed (screen px on/off), the "derived, not observed" cue
 
-// The "Missing" layer (see drawPlaceholders): a faint, draggable seed at a joint this view has
+// The "Unplaced" layer (see drawPlaceholders): a faint, draggable seed at a joint this view has
 // NOTHING else to grab (no GT / detected / reprojected point) -- a joint triangulation rejected,
 // or one the detector never fired. A small dashed hollow ring with a faint centre dot in the
 // joint's limb palette, at reduced opacity, so it reads as "not observed -- drag me to place",
 // clearly apart from the observed (filled disc), reprojected (solid hollow ring) and NMF markers.
-const PLACEHOLDER_ALPHA = 0.55; // the Missing seed's opacity: faint, but grabbable at a glance
+const PLACEHOLDER_ALPHA = 0.55; // the Unplaced seed's opacity: faint, but grabbable at a glance
 const PLACEHOLDER_DASH = [2, 3]; // its dashed hollow ring (screen px on/off)
+
+// The "Absent" tombstone (see drawAbsent): a joint the operator declared NOT on this animal.
+// Deliberately achromatic -- every other marker is drawn in the joint's limb palette, so grey
+// says "outside the anatomy" at a glance and cannot be mistaken for a faint observation. A cross
+// rather than a ring for the same reason: rings mean "a position, just not observed", and an
+// absent joint has no position at all.
+const ABSENT_ALPHA = 0.45;
+const ABSENT_COLOR = "#8a8f98";
+const ABSENT_MARK_PX = 4; // half-arm of the cross, screen px (constant under zoom)
 
 // The reprojection-distance warning (see drawReprojWarnings): when a joint's authored/detected
 // anchor sits farther than the (image-px) threshold from where the 3D reprojects it, flag it with
@@ -205,7 +214,7 @@ export class PoseView {
     this.gtVisible = true;
     this.detectedVisible = true;
     this.projectedVisible = true;
-    // The "Missing" layer: faint, draggable ghost seeds for joints a view has nothing
+    // The "Unplaced" layer: faint, draggable ghost seeds for joints a view has nothing
     // to grab for (no GT / detected / reprojected point) -- e.g. a joint triangulation
     // rejected. On by default; dragging a ghost authors GT like any other seed.
     this.placeholderVisible = true;
@@ -226,6 +235,8 @@ export class PoseView {
     /** @type {number | null} */
     this.dragging = null;
     this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
+    /** @type {boolean[] | null} per-point "not on this animal" -- see drawAbsent */
+    this.absent = null;
     this.panning = false;
     this.moved = false; // has the current press moved past the drag threshold?
 
@@ -416,7 +427,8 @@ export class PoseView {
    * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
    * @param {Point[] | null} [data.detected]  the raw detector prediction (the "detected" source), or null
    * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
-   * @param {Point[] | null} [data.placeholder]  seed positions for joints absent from this view (the "Missing" ghosts), or null
+   * @param {Point[] | null} [data.placeholder]  seed positions for joints with nothing else to grab in this view (the "Unplaced" ghosts), or null
+   * @param {boolean[] | null} [data.absent]  per-point "not on this animal" (amputated); drawn as a tombstone, never draggable
    */
   setFrameData(data) {
     if (data.points) {
@@ -429,6 +441,10 @@ export class PoseView {
     }
     if (data.fixed !== undefined) this.fixed = data.fixed;
     if (data.invisible !== undefined) this.invisible = data.invisible;
+    // Absence gates whether a joint is drawn at all, so -- unlike `detected` / `placeholder`
+    // -- it rides EVERY reply including the lean mid-drag stream. Keeping the last value on
+    // `undefined` would still be correct; assigning it unconditionally is the guarantee.
+    if (data.absent !== undefined) this.absent = data.absent;
     if (data.conf !== undefined) this.conf = data.conf;
     if (data.latent !== undefined) this.latent = data.latent;
     // The raw detections are static within a frame, so the mid-drag stream omits them
@@ -503,7 +519,7 @@ export class PoseView {
     this.draw();
   }
 
-  /** @param {boolean} visible  whether the "Missing" placeholder-seed layer is drawn (and grabbable) */
+  /** @param {boolean} visible  whether the "Unplaced" placeholder-seed layer is drawn (and grabbable) */
   setPlaceholderVisible(visible) {
     if (this.placeholderVisible === visible) return;
     this.placeholderVisible = visible;
@@ -629,7 +645,7 @@ export class PoseView {
     const anySkeleton = this.gtVisible || this.detectedVisible;
     const reprojLabels = this.labelsVisible && !anySkeleton;
     if (this.projectedVisible && this.latent) this.drawReprojection(this.latent, reprojLabels);
-    // The "Missing" seeds sit above the reprojection but below the editable skeleton. They only
+    // The "Unplaced" seeds sit above the reprojection but below the editable skeleton. They only
     // exist where nothing else is drawn (see placeholderPos), so ordering never hides a real point.
     if (this.placeholderVisible && this.placeholder) this.drawPlaceholders();
     // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
@@ -654,6 +670,8 @@ export class PoseView {
     // The reprojection-distance warning, drawn topmost among the annotations so a joint whose 2D
     // label disagrees with the multi-view 3D is impossible to miss. Needs a 3D solve (this.latent)
     // but is independent of the Projected overlay toggle -- the reprojection data is always here.
+    // Tombstones last among the marker passes, so they are never hidden by a stale layer.
+    this.drawAbsent();
     if (this.warnVisible && this.latent) this.drawReprojWarnings();
     // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
     // the rest of draw()).
@@ -725,12 +743,29 @@ export class PoseView {
     return this.combinedVisible && this.invisible && this.invisible[i] ? p : null;
   }
 
-  // The "Missing" placeholder seed for joint `i` -- a faint draggable ghost for a joint the
+  // The "Unplaced" placeholder seed for joint `i` -- a faint draggable ghost for a joint the
   // view has NOTHING to grab for (no GT, no detected, no reprojection), so a GT can still be
-  // authored where triangulation dropped the point. Null unless the Missing layer is on and the
+  // authored where triangulation dropped the point. Null unless the Unplaced layer is on and the
   // server sent a seed here. Suppressed the instant a real point exists for the joint (GT /
   // detected / projected) so a momentarily stale seed array never shows a ghost under a real
   // marker -- the seed only shows where the joint is genuinely absent.
+  // True when joint `i` is not on this animal (amputated / ablated). Such a joint has no
+  // position of its own in any view; it is drawn as a tombstone and cannot be dragged.
+  /** @param {number} i @returns {boolean} */
+  isAbsent(i) {
+    return !!(this.absent && this.absent[i]);
+  }
+
+  // Where to draw an absent joint's tombstone: the server's seed position for the cell. Unlike
+  // placeholderPos this ignores the "Unplaced" toggle -- the tombstone is the only handle the
+  // operator has to select the joint and un-declare it, so it must never be hideable.
+  /** @param {number} i @returns {Point | null} */
+  absentPos(i) {
+    if (!this.isAbsent(i)) return null;
+    if (!this.placeholder || i >= this.placeholder.length || !this.placeholder[i]) return null;
+    return this.placeholder[i];
+  }
+
   /** @param {number} i @returns {Point | null} */
   placeholderPos(i) {
     if (!this.placeholderVisible) return null;
@@ -754,8 +789,14 @@ export class PoseView {
   // filled disc (the overlay's hollow ring beneath it is its "derived, not observed" marker); with
   // the overlay hidden it draws that ring itself -- see drawSkeleton. With mergeDetected off only
   // GT is drawn (no detected / projected fallback).
-  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" } | null} */
+  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null} */
   nodeAt(i, mergeDetected) {
+    // An absent joint is not on the animal, so it precedes every other source: it must never
+    // resolve to GT / detected / projected, and drawSkeleton drops the bones that touch it.
+    if (this.isAbsent(i)) {
+      const ap = this.absentPos(i);
+      return ap ? { pos: ap, src: "absent" } : null;
+    }
     if (i === this.dragging && this.moved && this.pts[i]) {
       return { pos: this.pts[i], src: "gt" };
     }
@@ -771,7 +812,7 @@ export class PoseView {
       const occluded = !!(this.invisible && this.invisible[i]);
       const p = this.latentPos(i);
       if (p && (this.projectedVisible || occluded)) return { pos: p, src: "projected" };
-      // Last resort: the Missing seed. Without this a joint whose only position is a placeholder
+      // Last resort: the Unplaced seed. Without this a joint whose only position is a placeholder
       // returned null here, drawSkeleton's `if (!na || !nb) continue` dropped every bone touching
       // it, and the operator was left hunting a lone unconnected dot among 38 -- reported from the
       // GUI as "the point is actually there but it just isn't connected to anything and so really
@@ -801,7 +842,7 @@ export class PoseView {
     }
     const p = this.shownLatentPos(i);
     if (p) return p;
-    return this.placeholderPos(i); // last resort: the Missing seed, so its ring/label anchor
+    return this.placeholderPos(i); // last resort: the Unplaced seed, so its ring/label anchor
   }
 
   // The positions of a single point source: ground truth is the authored pixel (held in `pts`)
@@ -844,13 +885,16 @@ export class PoseView {
       this.detected ? this.detected.length : 0,
       mergeDetected && this.latent ? this.latent.length : 0,
     );
-    /** @type {({ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" } | null)[]} */
+    /** @type {({ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null)[]} */
     const nodes = new Array(n);
     for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i, mergeDetected);
     for (const [a, b] of this.bones) {
       const na = nodes[a];
       const nb = nodes[b];
       if (!na || !nb) continue;
+      // A limb that is not on the animal has no bones. This is the one node source that
+      // breaks the chain on purpose -- a placeholder deliberately keeps it connected.
+      if (na.src === "absent" || nb.src === "absent") continue;
       const [ax, ay] = this.toCanvas(na.pos[0], na.pos[1]);
       const [bx, by] = this.toCanvas(nb.pos[0], nb.pos[1]);
       ctx.strokeStyle = this.colors[a] || "#fff";
@@ -870,6 +914,7 @@ export class PoseView {
       // draws the hollow ring itself -- same vocabulary, so the joint never becomes a bone that
       // ends in empty space.
       if (node.src === "placeholder") continue; // bones only; drawPlaceholders draws its marker
+      if (node.src === "absent") continue; // drawAbsent draws its tombstone
       if (node.src === "projected") {
         if (!this.projectedVisible) {
           const [px, py] = this.toCanvas(node.pos[0], node.pos[1]);
@@ -979,6 +1024,8 @@ export class PoseView {
   // deliberately dropped the observation, so a mismatch is expected) and the actively-dragged joint
   // (its anchor is pinned to the cursor, not the solve) are skipped. Purely visual: hit-testing is
   // data-driven and never consults what is drawn, so this cannot disturb hover / selection / drag.
+  // Absent joints are skipped: they have no 3D by construction, so a distance warning there
+  // would be a permanent red flag against geometry that should not exist.
   drawReprojWarnings() {
     const thr = this.warnThreshold;
     const latent = this.latent;
@@ -1144,7 +1191,7 @@ export class PoseView {
     ctx.restore();
   }
 
-  // The "Missing" layer: a faint, draggable seed at every joint this view has nothing else to grab
+  // The "Unplaced" layer: a faint, draggable seed at every joint this view has nothing else to grab
   // (no GT / detected / reprojected point) -- e.g. a joint triangulation rejected, or one the
   // detector never fired. Each is drawn as a small dashed hollow ring with a faint centre dot in
   // the joint's limb palette at reduced opacity, so it reads as "not observed -- drag me to place"
@@ -1154,6 +1201,33 @@ export class PoseView {
   // point exists. The actively-dragged joint is skipped -- it draws as GT under the cursor. The
   // selection ring, hover emphasis and name label ride the shared drawJointOverlay pass (its
   // anchor falls through to placeholderPos), so a selected / hovered missing joint still reads.
+  // The tombstone layer: a joint the operator has declared NOT on this animal (an amputated leg,
+  // an ablated antenna). Drawn as a small dim grey cross -- no fill, no ring, and drawSkeleton
+  // drops every bone touching it, so the limb visibly ends at the stump. Deliberately always
+  // drawn (no toggle): it is the only handle for selecting the joint to un-declare it, and a
+  // declared amputation must not be confusable with "nobody has looked here yet".
+  drawAbsent() {
+    if (!this.absent) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = ABSENT_ALPHA;
+    ctx.strokeStyle = ABSENT_COLOR;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < this.absent.length; i++) {
+      const p = this.absentPos(i);
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const r = ABSENT_MARK_PX;
+      ctx.beginPath();
+      ctx.moveTo(cx - r, cy - r);
+      ctx.lineTo(cx + r, cy + r);
+      ctx.moveTo(cx + r, cy - r);
+      ctx.lineTo(cx - r, cy + r);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   drawPlaceholders() {
     const ctx = this.ctx;
     ctx.save();
@@ -1388,11 +1462,14 @@ export class PoseView {
   // resolves to the same authoring gesture on the joint index.
   /** @param {number} i @returns {(Point | null)[]} */
   grabCandidates(i) {
+    // An absent joint offers only its tombstone, so click- and rubber-band selection still find
+    // it (you must be able to select it to un-declare it). The press handler refuses the drag.
+    if (this.isAbsent(i)) return [this.absentPos(i)];
     return [
       this.gtPos(i),
       this.detectedVisible ? this.detPos(i) : null,
       this.shownLatentPos(i),
-      // The Missing placeholder is the lowest-priority seed: it only exists where the three
+      // The Unplaced placeholder is the lowest-priority seed: it only exists where the three
       // above are absent (see placeholderPos), so it never competes with a real point.
       this.placeholderPos(i),
     ];
@@ -1495,6 +1572,10 @@ export class PoseView {
       if (e.button !== 0) return; // only the primary button drags
       e.preventDefault();
       this.cb.onSelect(this.viewIndex, point, false); // selecting happens on press, not release
+      // A joint that is not on this animal cannot be placed anywhere: selecting it is how you
+      // reach the un-declare gesture, but dragging it would author ground truth for a limb that
+      // does not exist (and the server refuses it anyway). Select and stop.
+      if (this.isAbsent(point)) return;
       // An obscured joint can still be dragged -- doing so un-obscures it (the app
       // un-flags it on release via `wasInvisible`).
       this.dragInvisible = this.invisible != null && !!this.invisible[point];

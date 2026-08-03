@@ -236,7 +236,7 @@ def _pin_constant_points(pts3d: np.ndarray, cols: list[int]) -> np.ndarray:
 
 
 def stage_bundle_adjustment(
-    config: Config, cameras: CameraGroup, pts2d, conf, skeleton
+    config: Config, cameras: CameraGroup, pts2d, conf, skeleton, absent=None
 ) -> CameraGroup:
     """Refine ``cameras`` with bundle adjustment (the fly itself is the target).
 
@@ -262,9 +262,14 @@ def stage_bundle_adjustment(
         The refined rig.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import bundle_adjust_cameras
+    from .core import apply_absent, bundle_adjust_cameras
 
     ba = config.bundle_adjustment
+    # Erase keypoints that are not on this animal before they can influence the rig. A
+    # phantom limb's detections are real pixels on something -- usually the contralateral
+    # leg -- so left in they would pull the extrinsics toward explaining an object that
+    # is not there.
+    pts2d, conf = apply_absent(pts2d, conf, absent)
     ba_keypoints = _resolve_bundle_adjustment_points(ba.points_to_use, skeleton)
     weighted = ba.weigh_by_confidence and conf is not None
     v, t = pts2d.shape[:2]
@@ -351,7 +356,9 @@ def stage_pictorial_structures(
     return pts2d, pts3d, reproj
 
 
-def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
+def stage_triangulation(
+    config: Config, cameras: CameraGroup, pts2d, conf=None, absent=None
+):
     """Triangulate ``pts2d`` to 3D by the configured method.
 
     ``ransac`` builds each point from its largest multi-view consensus,
@@ -378,9 +385,15 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
         The (possibly cleaned) 2D, the 3D points, and the reprojection error.
     """
     from ..triangulation import reprojection_error, triangulate
-    from .core import _validate_triangulation, reconstruct, reconstruct_ransac
+    from .core import (
+        _validate_triangulation,
+        apply_absent,
+        reconstruct,
+        reconstruct_ransac,
+    )
 
     opts = config.triangulation
+    pts2d, conf = apply_absent(pts2d, conf, absent)
     method = _validate_triangulation(opts.method)
     weights = conf if (opts.weigh_by_confidence and conf is not None) else None
     v, t = pts2d.shape[:2]
@@ -414,7 +427,7 @@ def stage_triangulation(config: Config, cameras: CameraGroup, pts2d, conf=None):
 
 
 def stage_inverse_kinematics(
-    config: Config, skeleton: Skeleton | None, pts3d, conf=None
+    config: Config, skeleton: Skeleton | None, pts3d, conf=None, absent=None
 ):
     """Fit the NeuroMechFly model's joint angles to the triangulated 3D pose.
 
@@ -477,6 +490,7 @@ def stage_inverse_kinematics(
         parallel=p.parallel,
         segment_len=p.segment_len,
         overlap_len=p.overlap_len,
+        absent_points=absent,
     )
 
 
@@ -603,6 +617,10 @@ def assemble_result(
             if ik_meta.get("body_scale") is not None:
                 nmf_body_scale = float(ik_meta["body_scale"])
             nmf_body_plan = ik_meta.get("body_plan")
+    # The absence declaration is not a stage output -- it is an operator-authored fact about
+    # the specimen -- so it is read straight from the file and carried onto the assembled
+    # result. Without this the render path would disagree with the editor on the same file.
+    absent, subject_id = store.read_animal()
     return PoseResult(
         cameras=select_cameras(config, enabled, store),
         skeleton=store.read_skeleton(),  # type: ignore[arg-type]
@@ -616,6 +634,8 @@ def assemble_result(
         nmf_chain_scales=nmf_chain_scales,
         nmf_body_scale=nmf_body_scale,
         nmf_body_plan=nmf_body_plan,
+        absent=absent,  # type: ignore[arg-type]
+        subject_id=subject_id,
     )
 
 

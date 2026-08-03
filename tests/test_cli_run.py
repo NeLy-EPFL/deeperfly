@@ -175,11 +175,11 @@ def _stub_compute_stages(monkeypatch):
     ba_calls: list = []
     tri_calls: list = []
 
-    def stub_ba(config, cameras, pts2d, conf, skeleton):
+    def stub_ba(config, cameras, pts2d, conf, skeleton, absent=None):
         ba_calls.append(cameras)
         return cameras
 
-    def stub_tri(config, cameras, pts2d, conf=None):
+    def stub_tri(config, cameras, pts2d, conf=None, absent=None):
         tri_calls.append(config.triangulation)
         return pts2d, np.zeros((pts2d.shape[1], 38, 3)), None
 
@@ -1068,7 +1068,7 @@ def test_bundle_adjustment_always_starts_from_config_rig(tmp_path, monkeypatch):
     _stub_detect(monkeypatch, tmp_path)
     seen: list = []
 
-    def spy_ba(config, cameras, pts2d, conf, skeleton):
+    def spy_ba(config, cameras, pts2d, conf, skeleton, absent=None):
         seen.append(cameras)
         # return a recognizably different rig (the "refined" output)
         from deeperfly.cameras import CameraGroup

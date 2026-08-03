@@ -114,6 +114,9 @@ class FrameSource:
     ):
         self._readers: dict[str, io.FrameReader] = {}
         self._counts: dict[str, int | None] = {}
+        self._files: dict[str, list[Path]] = {
+            name: list(files) for name, files in files_by_camera.items()
+        }
         for name, files in files_by_camera.items():
             try:
                 reader = io.open_reader(files)
@@ -130,6 +133,15 @@ class FrameSource:
     def cameras(self) -> list[str]:
         """Names of cameras with an open reader (footage found)."""
         return list(self._readers)
+
+    @property
+    def footage_files(self) -> dict[str, list[Path]]:
+        """The resolved footage backing each camera (empty for a blank-frame source).
+
+        Identifies *which* pictures this source serves, which is what
+        :func:`~deeperfly.gui.server._session_version` keys the browser cache on.
+        """
+        return {name: list(files) for name, files in self._files.items()}
 
     def n_frames(self) -> int | None:
         """The largest frame index every readable camera covers (``min`` count)."""

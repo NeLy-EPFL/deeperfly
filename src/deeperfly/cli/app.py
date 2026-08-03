@@ -13,7 +13,7 @@ import typer
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
 from .console import _configure_logging
-from .gui import _cmd_gui, _cmd_labels_export
+from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
 from .report import _cmd_doctor, _cmd_init, _cmd_inspect
 from .run import _cmd_run
 from .suggest import _cmd_labels_suggest
@@ -280,13 +280,88 @@ def labels_export(
     """Export saved ground-truth labels (labels.h5) as a training/eval dataset (.npz).
 
     Writes the provenance-filtered GT pixels + occluded mask in footage pixel space
-    (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), plus
-    ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui' first.
+    (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), ``absent``
+    (P,), plus ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui'
+    first.
+
+    Keypoints declared **absent** (not on this animal -- an amputated leg) are excluded
+    from *both* ``gt_mask`` and ``occluded``, and reported separately in ``absent``: such a
+    keypoint is not ground truth, and it is not "occluded in every view" either, so it must
+    not be supervised in either direction. Mask it in training.
     """
     _configure_logging(log_level.value)
     _cmd_labels_export(
         argparse.Namespace(
             path=path, output=output, include_projection=include_projection
+        )
+    )
+
+
+@app.command(name="labels-absent")
+def labels_absent(
+    paths: Annotated[
+        list[str],
+        typer.Argument(
+            help="one or more results.h5 files, or directories containing one "
+            "(e.g. <recording>/deeperfly_outputs). Pass every clip of the same animal."
+        ),
+    ],
+    points: Annotated[
+        str,
+        typer.Option(
+            "--points",
+            help="comma-separated keypoint names or fnmatch globs, e.g. "
+            "'lf_femur_tibia,lf_tibia_tarsus,lf_claw' or 'lf_*'. An unmatched name is an "
+            "error, so a typo cannot silently declare nothing.",
+        ),
+    ],
+    subject: Annotated[
+        str | None,
+        typer.Option(
+            "--subject",
+            help="optional animal identifier stamped into the sidecar, so one animal's "
+            "several recordings can be grouped later",
+        ),
+    ] = None,
+    frames: Annotated[
+        str | None,
+        typer.Option(
+            "--frames",
+            help="restrict to a frame or half-open range: '900' (that frame), '900:' "
+            "(from 900 to the end -- a leg lost mid-recording), '0:900', ':900'. "
+            "Omit for the whole recording, which is the usual case.",
+        ),
+    ] = None,
+    clear: Annotated[
+        bool,
+        typer.Option(
+            "--clear",
+            help="un-declare instead of declare. Nothing is lost either way: the labels "
+            "an absence declaration hides are quarantined, not deleted.",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Mark keypoints as absent -- not on this animal -- in one or more labels.h5.
+
+    For an amputated leg or an ablated antenna: the keypoint does not exist, which is
+    different from "occluded" (it exists but no camera can see it) and from "unlabeled".
+    The declaration is per keypoint and, by default, covers the whole recording -- one
+    command replaces marking every frame and every view by hand. Pass ``--frames`` for a
+    limb lost part-way through (``--frames 900:``).
+
+    Downstream, an absent keypoint is dropped from the 3D solve, excluded from the
+    training export in *both* directions (neither ground truth nor occluded), and removed
+    from labeling-progress denominators.
+
+    The editor has the same gesture (select a joint, press ``x``). Close any running
+    'deeperfly gui' on these directories first: saving is a whole-file rewrite, so an open
+    session would overwrite what this writes.
+    """
+    _configure_logging(log_level.value)
+    _cmd_labels_absent(
+        argparse.Namespace(
+            paths=paths, points=points, subject=subject, clear=clear, frames=frames
         )
     )
 

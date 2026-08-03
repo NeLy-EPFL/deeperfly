@@ -131,7 +131,7 @@ def build_session(
     labels = _load_or_migrate_labels(labels_path, results_dir, result, identity)
     mesh_hide, template, articulation, ann, tri = _ik_config(results_dir)
     # The pristine detections (result.pts2d is the triangulation-*cleaned* array, so a
-    # rejected point is NaN there); they seed a placeholder for an otherwise-absent
+    # rejected point is NaN there); they seed a placeholder for an otherwise-unobserved
     # joint so it can still be dragged into a GT label.
     raw = store.read_pose2d()
     state = EditorState.from_result(

@@ -9,11 +9,21 @@
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {import("./types.js").EditMessage} EditMessage */
 
+// Identifies the recording this page is editing; stamped into the frame and mesh
+// URLs by `frameUrl`/`meshUrl` so the browser cannot serve another recording's
+// picture for the same camera+frame. See `_session_version` in server.py. Set from
+// /api/meta rather than by the caller so it cannot drift out of sync with the
+// session -- until it arrives the URLs go unstamped, which the server answers
+// `no-store` (correct, merely uncached).
+let cacheVersion = "";
+
 /** @returns {Promise<Meta>} */
 export async function fetchMeta() {
   const r = await fetch("/api/meta");
   if (!r.ok) throw new Error(`GET /api/meta -> ${r.status}`);
-  return r.json();
+  const meta = await r.json();
+  cacheVersion = meta.cache_v ?? "";
+  return meta;
 }
 
 /**
@@ -81,7 +91,12 @@ export async function shutdownServer() {
  * @returns {string}
  */
 export function frameUrl(camera, frame) {
-  return `/api/frame/${encodeURIComponent(camera)}/${frame}`;
+  return `/api/frame/${encodeURIComponent(camera)}/${frame}${cacheStamp()}`;
+}
+
+/** `?v=<recording token>`, or "" before /api/meta has answered. */
+function cacheStamp() {
+  return cacheVersion ? `?v=${encodeURIComponent(cacheVersion)}` : "";
 }
 
 /**
@@ -91,7 +106,7 @@ export function frameUrl(camera, frame) {
  * @returns {string}
  */
 export function meshUrl(camera, frame) {
-  return `/api/mesh/${encodeURIComponent(camera)}/${frame}`;
+  return `/api/mesh/${encodeURIComponent(camera)}/${frame}${cacheStamp()}`;
 }
 
 /**

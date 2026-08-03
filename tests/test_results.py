@@ -359,3 +359,51 @@ def test_store_truncate_from_drops_ik(cameras, rng, tmp_path):
     store.truncate_from("inverse_kinematics")
     assert not store.has("inverse_kinematics")
     assert store.read_ik() is None
+
+
+# -- the animal/ group: which keypoints are not on this specimen --------------
+
+
+def test_absent_roundtrips_and_is_omitted_when_empty(tmp_path, result):
+    import h5py
+
+    path = tmp_path / "r.h5"
+    result.save(path)
+    with h5py.File(path, "r") as f:
+        assert "animal" not in f  # an ordinary run's file is unchanged
+
+    result.absent = np.zeros(result.pts2d.shape[2], dtype=bool)
+    result.absent[4] = True
+    result.subject_id = "Fly2"
+    result.save(path)
+    back = PoseResult.load(path)
+    assert back.absent is not None and back.absent[4] and not back.absent[5]
+    assert back.subject_id == "Fly2"
+
+
+def test_absent_survives_a_pose2d_rewrite_and_a_stage_truncation(tmp_path, result):
+    # `write_pose2d` truncates the whole file and `truncate_from` drops stage groups, so
+    # both are places an operator-authored fact could silently vanish. `animal/` is not a
+    # stage, and write_pose2d carries it across its own truncation.
+    from deeperfly.results import StageStore
+
+    path = tmp_path / "r.h5"
+    result.save(path)
+    store = StageStore(path)
+    absent = np.zeros(result.pts2d.shape[2], dtype=bool)
+    absent[4] = True
+    store.write_animal(absent=absent, subject_id="Fly2")
+
+    store.truncate_from("triangulation")
+    assert store.read_animal()[0][4]
+
+    store.write_pose2d(
+        cameras=result.cameras,
+        skeleton=result.skeleton,
+        pts2d=result.pts2d,
+        conf=result.conf,
+        image_sizes={n: (256, 256) for n in result.cameras.names},
+    )
+    carried, subject = store.read_animal()
+    assert carried is not None and carried[4]
+    assert subject == "Fly2"

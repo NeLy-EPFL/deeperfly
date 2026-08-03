@@ -249,6 +249,7 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
         pts2d,
         conf,
         ctx.store.read_skeleton(),
+        absent=ctx.store.read_animal()[0],
     )
     ctx.store.truncate_from("bundle_adjustment")
     ctx.store.write_cameras("bundle_adjustment", refined)
@@ -295,6 +296,7 @@ def _run_triangulation(ctx: _RunContext) -> bool:
         stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
         stages.select_pts2d(ctx.enabled, ctx.store),
         conf,
+        absent=ctx.store.read_animal()[0],
     )
     ctx.store.truncate_from("triangulation")
     ctx.store.write_points(
@@ -316,7 +318,11 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
         pose2d = ctx.store.read_pose2d()
         conf = None if pose2d is None else pose2d[1]
     result = stages.stage_inverse_kinematics(
-        ctx.config, ctx.store.read_skeleton(), pts3d, conf
+        ctx.config,
+        ctx.store.read_skeleton(),
+        pts3d,
+        conf,
+        absent=ctx.store.read_animal()[0],
     )
     ctx.store.truncate_from("inverse_kinematics")
     ctx.store.write_ik(

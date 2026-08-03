@@ -93,6 +93,76 @@ def test_frame_unknown_camera_404(client):
     assert client.get("/api/frame/nope/0").status_code == 404
 
 
+def test_frames_are_only_cacheable_when_stamped_for_this_recording(client, result):
+    """Two recordings served on the same port must not share cached frames.
+
+    ``/api/frame/f/1506`` names a different picture in every recording, every
+    ``deeperfly gui`` binds the same default port, and the suggestion queue picks
+    near-identical frame indices across equal-length recordings -- so a long
+    ``max-age`` on an unstamped URL made the browser paint the previously-opened
+    recording's fly. Only a URL carrying this session's token may be cached.
+    """
+    cam = result.cameras.names[0]
+    token = client.get("/api/meta").json()["cache_v"]
+    assert token
+
+    stamped = client.get(f"/api/frame/{cam}/0?v={token}")
+    assert "immutable" in stamped.headers["cache-control"]
+
+    # No stamp, or a stamp minted for a different recording: never cacheable.
+    assert client.get(f"/api/frame/{cam}/0").headers["cache-control"] == "no-store"
+    other = client.get(f"/api/frame/{cam}/0?v=deadbeefcafe")
+    assert other.headers["cache-control"] == "no-store"
+
+
+def test_cache_token_differs_between_recordings(session, tmp_path, result):
+    """The token is derived from the recording, so two sessions never collide."""
+    image_sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other = Session.build(
+        EditorState.from_result(result),
+        FrameSource({}, image_sizes=image_sizes),
+        results_path=str(other_dir / "results.h5"),
+        labels_path=other_dir / "labels.h5",
+        image_sizes=image_sizes,
+    )
+    assert server._session_version(session) != server._session_version(other)
+
+
+def test_cache_token_survives_a_results_rewrite(result, tmp_path):
+    """Labelling must not retire the token, or every frame is refetched for nothing.
+
+    Declaring a keypoint absent mirrors the declaration into ``results.h5``. The
+    served pixels come from the footage, not from that file, so the token is keyed on
+    the footage and must be indifferent to the rewrite.
+    """
+    image_sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
+    video = tmp_path / "camera_a.mp4"
+    video.write_bytes(b"not a real video, only its identity is hashed")
+    results_path = tmp_path / "results.h5"
+    results_path.write_bytes(b"before")
+
+    def build():
+        source = FrameSource({}, image_sizes=image_sizes)
+        source._files = {"a": [video]}  # resolved footage, without opening a decoder
+        return Session.build(
+            EditorState.from_result(result),
+            source,
+            results_path=str(results_path),
+            labels_path=tmp_path / "labels.h5",
+            image_sizes=image_sizes,
+        )
+
+    before = server._session_version(build())
+    results_path.write_bytes(b"after the absence declaration was mirrored in")
+    assert server._session_version(build()) == before
+
+    # Re-pointing the result at different footage *does* retire it.
+    video.write_bytes(b"a different recording's video file entirely")
+    assert server._session_version(build()) != before
+
+
 def test_index_declares_favicon(client):
     # The page head points the browser tab icon at the deeperfly logo. The .ico must
     # come before the SVG: Safari renders ICO but not SVG favicons and won't fall
@@ -1508,3 +1578,89 @@ def test_writer_disconnect_promotes_the_next_client(session):
         reader.close()
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# -- absence over the wire ----------------------------------------------------
+
+
+def test_absent_rides_every_points_payload(client, session, result):
+    # Absence gates whether a joint is drawn, so it must be on the LEAN mid-drag reply
+    # too -- otherwise the phantom limb flashes back on for the duration of every drag.
+    p = 4
+    session.state.set_absent([p], True, whole_recording=True)
+    for url in ("/api/points/0?mode=view", "/api/points/0?mode=view&verbose=true"):
+        payload = client.get(url).json()
+        absent = payload["absent"]
+        assert len(absent) == result.n_views
+        assert all(row[p] for row in absent)
+        assert not any(row[5] for row in absent)
+        # ... and the point itself is drawn nowhere
+        assert all(row[p] is None for row in payload["points"])
+
+
+def test_set_absent_edit_collapses_targets_to_a_point_set(session):
+    from deeperfly.gui.server import _handle_edit
+
+    s = session.state
+    # A (view, point) selection spanning several views is ONE fact about the animal.
+    msg = {
+        "type": "set_absent",
+        "targets": [[0, 4], [1, 4], [2, 4]],
+        "absent": True,
+        "scope": "recording",
+        "frame": 0,
+        "mode": "view",
+    }
+    payload = _handle_edit(session, msg)
+    assert s.absent_mask(0)[4]
+    assert "notice" in payload and "not on this animal" in payload["notice"]
+    # ... and it is recording-wide, not just frame 0
+    assert s.absent_mask(s.n_frames - 1)[4]
+    assert payload["absent_recording"] == [4]
+
+
+def test_set_absent_defaults_to_this_frame_only(session):
+    from deeperfly.gui.server import _handle_edit
+
+    s = session.state
+    payload = _handle_edit(
+        session,
+        {
+            "type": "set_absent",
+            "targets": [[0, 4]],
+            "absent": True,
+            "frame": 1,
+            "mode": "view",
+        },  # no scope -> this frame
+    )
+    assert s.absent_mask(1)[4] and not s.absent_mask(0)[4]
+    assert payload["absent_recording"] == []  # not an amputation
+    assert "frame 1" in payload["notice"]
+
+
+def test_edit_on_an_absent_point_is_refused_with_a_notice(session):
+    from deeperfly.gui.server import _handle_edit
+
+    s = session.state
+    s.set_absent([4], True, whole_recording=True)
+    payload = _handle_edit(
+        session,
+        {"type": "edit_2d", "view": 0, "point": 4, "x": 5.0, "y": 6.0, "mode": "view"},
+    )
+    assert "notice" in payload
+    assert not s.labels.gt_authored[0, 0, 4]
+
+
+def test_save_mirrors_absence_into_results_h5(client, session, result, tmp_path):
+    # The pipeline reads `animal/` from results.h5 and never opens labels.h5, so the
+    # editor's Save is what carries an authored declaration across that boundary.
+    from deeperfly.results import StageStore
+
+    results_path = tmp_path / "results.h5"
+    result.save(results_path)
+    session.results_path = str(results_path)
+    session.state.set_absent([4], True, whole_recording=True)
+    assert client.post("/api/save").status_code == 200
+
+    absent, _ = StageStore(results_path).read_animal()
+    assert absent is not None and absent[4] and not absent[5]

@@ -34,7 +34,7 @@ import logging
 from dataclasses import dataclass, field
 
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 
 from ..config import InverseKinematicsParams
 from ..skeleton import Skeleton
@@ -131,6 +131,7 @@ def solve_inverse_kinematics(
     parallel: bool = _D.parallel,
     segment_len: int = _D.segment_len,
     overlap_len: int = _D.overlap_len,
+    absent_points: Bool[np.ndarray, "T P"] | None = None,
 ) -> IKResult:
     """Fit the model's joint angles to a 3D pose sequence.
 
@@ -158,6 +159,14 @@ def solve_inverse_kinematics(
     parallel, segment_len, overlap_len
         Solve in overlapping segments across worker threads. Off by default: segments
         restart from the neutral pose, so the angle traces can step at a seam.
+    absent_points
+        ``(T, P)`` keypoints that are **not on this animal** (an amputated leg, an ablated
+        antenna), per frame; a ``(P,)`` whole-recording declaration is accepted too. Used
+        only to judge how many observations a branch could possibly deliver, so a stump is
+        still fitted from what remains instead of being written off as an unobserved limb
+        -- see :func:`unfittable_branches`. The **body plan** is built once per recording
+        and so cannot vary in time: a leg lost part-way through stays in the plan, which is
+        correct (it existed, and its angles up to the loss are the measurement).
 
     Returns
     -------
@@ -201,7 +210,9 @@ def solve_inverse_kinematics(
             "its angles are left unset",
             name,
         )
-    unfittable = unfittable_branches(obs_weights, plan, never_placed=never_placed)
+    unfittable = unfittable_branches(
+        obs_weights, plan, never_placed=never_placed, absent_points=absent_points
+    )
     for d, branch in enumerate(plan.dof_branch):
         bad = unfittable.get(branch)
         if bad is not None:
@@ -405,6 +416,7 @@ def unfittable_branches(
     plan: BodyPlan,
     *,
     never_placed: frozenset[str] = frozenset(),
+    absent_points: Bool[np.ndarray, "T P"] | None = None,
 ) -> dict[str, np.ndarray]:
     """``branch -> (T,) bool`` frames whose observations cannot support a fit.
 
@@ -414,15 +426,68 @@ def unfittable_branches(
     all) is not fitted in any frame. QuickIK has no notion of an unconstrained sub-chain
     -- it returns the neutral-biased answer for every DOF regardless -- so this is where
     "not fitted" becomes NaN again, for the batch fit and the editor's live re-fit alike.
+
+    ``absent_points`` is the ``(T, P)`` "not on this animal" declaration (a ``(P,)``
+    whole-recording one is accepted and broadcast). It lowers a branch's threshold to what
+    that branch *can* still deliver **in that frame**, because an anatomically absent
+    keypoint is categorically different from one the detector merely missed -- and because
+    a leg lost part-way through should be fitted in full before the loss and as a stump
+    after:
+
+    - the ``head`` chain has three DOFs but exactly two markers (the antennae). Declaring
+      one antenna absent -- a routine unilateral ablation -- would otherwise put the head
+      permanently below a flat threshold of 2 and NaN all three head DOFs forever.
+    - an amputated leg leaves a stump whose remaining joints are real and worth measuring,
+      which is precisely what a leg-loss study exists to record.
+
+    A missing *detection* must NOT lower the bar the same way: a leg the detector found
+    once is a tracking failure, and reporting neutral-biased angles for it would be a
+    fabricated measurement. So the threshold is computed from the declaration and the
+    plan's topology only, never from what happened to be observed.
+
+    Lowering the bar is itself capped by whether the remaining markers can *determine* the
+    branch: each observed joint contributes three coordinates, so the threshold only drops
+    below :data:`_MIN_VALID_JOINTS` while ``3 * n_fittable >= n_dofs``. One antenna (3
+    coordinates, 3 head DOFs) qualifies; a leg amputated down to a single coxa (3
+    coordinates, 7 DOFs) does not, and stays unfittable rather than reporting the
+    neutral-biased answer QuickIK would return for it.
     """
     branches = np.asarray(plan.joint_branch)
     observed = np.asarray(obs_weights) > 0
+    # A joint can contribute an observation only if it maps to a keypoint at all
+    # (`joint_row < 0` is a pure kinematic joint, e.g. two of the three head DOFs) and
+    # that keypoint is on this animal.
+    n_frames = observed.shape[0]
+    rows = np.asarray(plan.joint_row)
+    tracked = rows >= 0  # (N,) a joint with no keypoint can never be observed
+    fittable_joint = np.broadcast_to(tracked, (n_frames, tracked.size)).copy()
+    if absent_points is not None:
+        absent = np.asarray(absent_points, dtype=bool)
+        if absent.ndim == 1:  # a whole-recording declaration broadcasts over time
+            absent = np.broadcast_to(absent.reshape(1, -1), (n_frames, absent.size))
+        # (T, N): for each joint that maps to a keypoint, is that keypoint on the animal
+        # in this frame?
+        present = ~absent[:, np.clip(rows, 0, absent.shape[1] - 1)]
+        fittable_joint &= np.where(tracked[None, :], present, False)
+    dof_branches = np.asarray(plan.dof_branch)
     out: dict[str, np.ndarray] = {}
     for branch in sorted(set(plan.dof_branch)):
         if not branch:
             continue
-        count = observed[:, branches == branch].sum(axis=1)
-        bad = count < _MIN_VALID_JOINTS
+        in_branch = branches == branch
+        n_fittable = fittable_joint[:, in_branch].sum(axis=1)  # (T,)
+        n_dofs = int((dof_branches == branch).sum())
+        count = observed[:, in_branch].sum(axis=1)  # (T,)
+        # Relax the bar only as far as the frame's own remaining markers can determine the
+        # branch: each observed joint contributes three coordinates, so the threshold drops
+        # below _MIN_VALID_JOINTS only while 3 * n_fittable >= n_dofs. One antenna (3
+        # coordinates, 3 head DOFs) qualifies; a leg amputated to a single coxa (3
+        # coordinates, 7 DOFs) does not.
+        determinable = (n_fittable >= _MIN_VALID_JOINTS) | (3 * n_fittable >= n_dofs)
+        threshold = np.minimum(_MIN_VALID_JOINTS, n_fittable)
+        # n_fittable == 0 is the genuine "nothing to fit" case: lowering the bar to zero
+        # would report neutral-pose angles as if they were measured.
+        bad = np.where((n_fittable == 0) | ~determinable, True, count < threshold)
         if branch in never_placed:
             bad = np.ones_like(bad)
         if bad.any():

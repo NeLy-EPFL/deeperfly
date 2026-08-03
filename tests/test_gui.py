@@ -456,10 +456,22 @@ def test_dragging_an_occluded_view_un_occludes_it(result):
     assert np.allclose(state.display_pts2d_refine(frame)[view, point], drag, atol=1e-6)
 
 
-def test_toggle_invisible_unavailable_without_3d(result):
+def test_toggle_invisible_available_without_3d(result):
+    # Occlusion is an authored label, not a derived quantity, so it does not need a
+    # solve to record. Gating it would leave a 2D-only hand-labeling pass with no way to
+    # reject a view except the far stronger "this joint is not on this animal".
     result.pts3d = None
     state = EditorState.from_result(result)
-    assert state.toggle_invisible(0, 0, 0) is None
+    assert state.toggle_invisible(0, 0, 0) is True
+    assert state.labels.occluded[0, 0, 0]
+    assert state.toggle_invisible(0, 0, 0) is False
+
+
+def test_occlude_targets_available_without_3d(result):
+    result.pts3d = None
+    state = EditorState.from_result(result)
+    state.occlude_targets([(0, 4), (1, 4)], frame=0)
+    assert state.labels.occluded[0, 0, 4] and state.labels.occluded[1, 0, 4]
 
 
 def test_reset_point_clears_occluded(result):
@@ -700,6 +712,146 @@ def test_confirm_always_leaves_a_grabbable_on_image_point(result):
     # the clamp moves the MINIMUM needed: the in-bounds axis is preserved
     assert state.labels.gt[0, 0, 5][1] == pytest.approx(100.0)
     assert state.labels.gt[1, 0, 6][0] == pytest.approx(100.0)
-    # a clamped or placeholder point is a seed to drag, not evidence, so export must drop it
-    assert state.labels.gt_provenance[0, 0, 5] == Provenance.CONFIRMED_PROJECTION
-    assert state.labels.gt_provenance[2, 0, 7] == Provenance.CONFIRMED_PROJECTION
+    # A clamped or placeholder point is a seed to drag, not evidence. It gets its OWN
+    # provenance, not CONFIRMED_PROJECTION: training may legitimately ask for real reprojected
+    # pixels, and these coordinates are the editor's invention sitting on the image edge.
+    assert state.labels.gt_provenance[0, 0, 5] == Provenance.PLACEHOLDER_SEED
+    assert state.labels.gt_provenance[2, 0, 7] == Provenance.PLACEHOLDER_SEED
+
+
+# -- absence: "this keypoint is not on this animal" ---------------------------
+
+
+def test_absent_point_has_no_3d_and_does_not_fall_back_to_the_run_cache(result):
+    # The linchpin. `solve_point_3d` already returns NaN once every view is dropped, but
+    # `_solve_point`'s run-cache fallback would immediately substitute `result.pts3d` --
+    # a perfectly finite phantom -- and the editor would keep drawing the amputated leg.
+    state = EditorState.from_result(result)
+    p = 4
+    assert np.all(np.isfinite(state.result.pts3d[0, p]))  # the phantom is finite
+    state.set_absent([p], True)
+    assert np.isnan(state.display_pts3d(0)[p]).all()
+
+
+def test_absent_point_is_nan_in_every_view(result):
+    state = EditorState.from_result(result)
+    p = 4
+    assert np.isfinite(state.display_pts2d(0)[:, p]).any()  # drawn before
+    state.set_absent([p], True)
+    assert not np.isfinite(state.display_pts2d(0)[:, p]).any()
+    assert state.absent_mask(0)[p]
+
+
+def test_absent_refuses_authoring_and_says_why(result):
+    state = EditorState.from_result(result)
+    p, v = 4, 0
+    state.set_absent([p], True)
+    reason = state.absent_refusal(p)
+    assert reason and "not on this animal" in reason
+    state.apply_2d_edit(v, p, (10.0, 20.0), 0)
+    assert not state.labels.gt_authored[v, 0, p]  # nothing authored at all
+    assert state.toggle_invisible(v, p, 0) is None
+    assert not state.labels.occluded[v, 0, p]
+    assert state.absent_refusal(5) is None  # a bystander point is unaffected
+
+
+def test_bulk_confirm_skips_absent_points(result):
+    # Without this, `a` then `1` fabricates GT on the phantom limb on every frame the
+    # operator visits -- and `_grabbable` clamps the invented pixel into the image, so it
+    # looks like a real observation.
+    state = EditorState.from_result(result)
+    p = 4
+    state.set_absent([p], True)
+    targets = [(v, pt) for v in range(state.n_views) for pt in range(state.n_points)]
+    state.confirm(targets, "all", 0)
+    assert not state.labels.gt_authored[:, 0, p].any()
+    assert state.labels.has_gt[:, 0, 5].any()  # other points were confirmed
+
+
+def test_absent_whole_recording_and_undoable(result):
+    state = EditorState.from_result(result)
+    p = 4
+    state.apply_2d_edit(0, p, (11.0, 22.0), 0)
+    assert state.labels.has_gt[0, 0, p]
+    changed = state.set_absent([p], True, whole_recording=True)
+    assert changed == [p]
+    # every frame, not just the current one
+    assert all(state.absent_mask(t)[p] for t in (0, 1, state.n_frames - 1))
+    assert state.labels.absent_all_frames()[p]
+    assert not state.labels.has_gt[0, 0, p]  # vetoed ...
+    assert state.labels.gt_authored[0, 0, p]  # ... but not destroyed
+    state.undo()
+    assert not state.absent_mask(0)[p]
+    assert state.labels.has_gt[0, 0, p]  # the pixel is back, untouched
+    assert np.allclose(state.labels.gt[0, 0, p], [11.0, 22.0])
+
+
+def test_absent_defaults_to_the_current_frame_only(result):
+    # A keypoint can stop existing part-way through a recording (autotomy), so the base
+    # gesture is frame-scoped; "apply to the whole recording" is the separate convenience.
+    state = EditorState.from_result(result)
+    p = 4
+    state.set_absent([p], True, frame=1)
+    assert state.absent_mask(1)[p]
+    assert not state.absent_mask(0)[p]
+    assert not state.labels.absent_all_frames()[p]  # structural consumers see nothing
+    assert state.labels.absent_any_frame()[p]
+    # ... and the 3D is gone only in that frame
+    assert np.isnan(state.display_pts3d(1)[p]).all()
+    assert np.all(np.isfinite(state.display_pts3d(0)[p]))
+
+
+def test_absent_in_one_frame_is_undoable_without_touching_others(result):
+    state = EditorState.from_result(result)
+    p = 4
+    state.set_absent([p], True, whole_recording=True)
+    state.set_absent([p], False, frame=1)  # a hole in the declaration
+    assert state.absent_mask(0)[p] and not state.absent_mask(1)[p]
+    state.undo()
+    assert state.absent_mask(0)[p] and state.absent_mask(1)[p]
+
+
+def test_resetting_a_frame_does_not_undeclare_absence(result):
+    # The everyday reset verbs must not silently un-declare an amputation.
+    state = EditorState.from_result(result)
+    p = 4
+    state.set_absent([p], True, whole_recording=True)
+    state.reset_frame(0)
+    assert state.absent_mask(0)[p]
+    state.reset_point(p, frame=0)
+    assert state.absent_mask(0)[p]
+    state.reset_targets([(0, p)], frame=0)
+    assert state.absent_mask(0)[p]
+
+
+def test_absent_is_not_a_labeled_frame(result):
+    # Folding a recording-wide declaration into per-frame progress would mark every frame
+    # labeled at a stroke, and the suggestion queue (which skips labeled frames) empties.
+    state = EditorState.from_result(result)
+    state.set_absent([4], True, whole_recording=True)
+    assert state.corrected_frames() == []
+    state.apply_2d_edit(0, 5, (1.0, 2.0), 0)
+    assert [f["frame"] for f in state.corrected_frames()] == [0]
+
+
+def test_per_frame_absence_survives_a_labels_roundtrip(tmp_path, result):
+    # The whole point of spans: a partial declaration must persist exactly, and a
+    # whole-recording one must not blow up to one row per frame.
+    from deeperfly.gui.labels import labels_identity, load_labels, save_labels
+
+    state = EditorState.from_result(result)
+    state.set_absent([4], True, frame=1)
+    state.set_absent([5], True, whole_recording=True)
+
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=list(result.cameras.names),
+        n_frames=result.n_frames,
+    )
+    path = tmp_path / "labels.h5"
+    save_labels(path, state.labels, identity=identity)
+    back = load_labels(path, identity=identity)
+    assert back is not None
+    np.testing.assert_array_equal(back.absent, state.labels.absent)
+    assert back.absent_all_frames()[5] and not back.absent_all_frames()[4]
+    assert back.absent_any_frame()[4]

@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 
 from .cameras import CameraGroup
 from .config import STAGES
@@ -77,6 +77,34 @@ _STAGE_MARKER = {
 }
 
 
+def _write_animal(f, *, absent, subject_id) -> None:
+    """Write the ``animal/`` group (which keypoints are not on this specimen).
+
+    Skipped entirely when there is nothing to record, so an ordinary run's file is
+    byte-identical to before this existed.
+    """
+    if absent is None and subject_id is None:
+        return
+    a = np.asarray(absent, dtype=bool) if absent is not None else None
+    if (a is None or not a.any()) and subject_id is None:
+        return
+    g = f.create_group("animal")
+    if a is not None:
+        g.create_dataset("absent", data=a)
+    if subject_id is not None:
+        g.attrs["subject_id"] = str(subject_id)
+
+
+def _read_animal(f) -> "tuple[np.ndarray | None, str | None]":
+    """``(absent (P,) | None, subject_id | None)`` from the optional ``animal/`` group."""
+    if "animal" not in f:
+        return None, None
+    g = f["animal"]
+    absent = np.asarray(g["absent"][()], dtype=bool) if "absent" in g else None
+    subject = g.attrs.get("subject_id")
+    return absent, (str(subject) if subject is not None else None)
+
+
 @dataclass
 class PoseResult:
     """A complete multi-view pose-estimation result for one recording."""
@@ -97,6 +125,15 @@ class PoseResult:
     #: re-deriving it. ``None`` for a file written before plans were stored -- every
     #: consumer must cope, since the stored fit and its overlays do not need it.
     nmf_body_plan: str | None = None
+    #: ``(T, P)`` which skeleton keypoints are **not on this animal** -- an amputated leg,
+    #: an ablated antenna -- per frame, since a limb can be lost part-way through a
+    #: recording. Columns align to ``skeleton.point_names``. ``None`` (the common case)
+    #: means nothing is declared absent; consumers must treat that as all-False. Persisted
+    #: in a top-level ``animal/`` group, which is deliberately *not* a pipeline stage: it
+    #: is an operator-authored fact about the specimen, so no stage recompute discards it.
+    absent: Bool[np.ndarray, "T P"] | None = None
+    #: Optional animal identifier, so one specimen's several recordings can be grouped.
+    subject_id: str | None = None
     meta: dict = field(default_factory=dict)
 
     @property
@@ -135,6 +172,10 @@ class PoseResult:
         ``pts2d`` is duplicated into both groups in that case (it is small next
         to the footage).
 
+        ``absent`` (keypoints not on this animal) is written to a top-level ``animal/``
+        group. This is a whole-file rewrite, so the group must be written here or a plain
+        load -> mutate -> save round trip would silently drop the declaration.
+
         Parameters
         ----------
         path
@@ -160,6 +201,7 @@ class PoseResult:
                     g3d.create_dataset("points3d", data=self.pts3d)
                 if self.reproj_error is not None:
                     g3d.create_dataset("reproj_error", data=self.reproj_error)
+            _write_animal(f, absent=self.absent, subject_id=self.subject_id)
 
     @classmethod
     def load(cls, path: str | Path) -> PoseResult:
@@ -189,6 +231,7 @@ class PoseResult:
                     f"{FORMAT_VERSION}; re-run the pipeline to regenerate it"
                 )
             skeleton = _read_skeleton(f["skeleton"])  # type: ignore[arg-type]
+            absent, subject_id = _read_animal(f)
             cameras_group = (
                 f["bundle_adjustment/cameras"]
                 if "bundle_adjustment/cameras" in f
@@ -241,6 +284,8 @@ class PoseResult:
             nmf_chain_scales=nmf_chain_scales,
             nmf_body_scale=nmf_body_scale,
             nmf_body_plan=nmf_body_plan,
+            absent=absent,  # type: ignore[arg-type]
+            subject_id=subject_id,
             meta=meta,
         )
 
@@ -330,7 +375,21 @@ class StageStore:
             enabled), or ``None``.
         meta
             Extra free-form metadata merged into ``attrs["meta"]``.
+
+        Notes
+        -----
+        Any existing ``animal/`` group (which keypoints are not on this animal) is read
+        *before* the truncation and written back after. It is an operator-authored fact
+        about the specimen, not a pipeline product, so re-running detection must not erase
+        it -- and this method's ``mode="w"`` would otherwise do exactly that.
         """
+        carried_absent, carried_subject = (None, None)
+        if self.path.exists():
+            try:
+                with h5py.File(self.path, "r") as f:
+                    carried_absent, carried_subject = _read_animal(f)
+            except (OSError, KeyError):  # unreadable/older file: nothing to carry
+                pass
         full_meta = {
             "deeperfly_format_version": FORMAT_VERSION,
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -343,6 +402,7 @@ class StageStore:
             g.create_dataset("points", data=np.asarray(pts2d, dtype=float))
             if conf is not None:
                 g.create_dataset("conf", data=np.asarray(conf, dtype=float))
+            _write_animal(f, absent=carried_absent, subject_id=carried_subject)
             _write_cameras(g.create_group("cameras"), cameras)
             g.attrs["image_sizes"] = json.dumps(
                 {name: [int(h), int(w)] for name, (h, w) in image_sizes.items()}
@@ -486,6 +546,30 @@ class StageStore:
                     del f[name]
 
     # -- reads ----------------------------------------------------------------
+
+    def write_animal(self, *, absent=None, subject_id: str | None = None) -> None:
+        """Record which keypoints are not on this animal, **in place**.
+
+        Deliberately an ``mode="a"`` patch rather than a rewrite: this is called from the
+        editor's Save, and it must not disturb any pipeline stage's output. ``animal/`` is
+        not in :data:`STAGES`, so :meth:`truncate_from` never deletes it and a
+        mid-pipeline recompute keeps the declaration.
+
+        This is also the seam by which the *pipeline* learns about absence: it reads
+        ``animal/`` from ``results.h5`` and never opens the GUI's ``labels.h5``, so the two
+        stay decoupled and a stale or unreadable sidecar cannot stop a run.
+        """
+        if not self.path.exists():
+            return
+        with h5py.File(self.path, "a") as f:
+            if "animal" in f:
+                del f["animal"]
+            _write_animal(f, absent=absent, subject_id=subject_id)
+
+    def read_animal(self) -> "tuple[np.ndarray | None, str | None]":
+        """``(absent (P,) | None, subject_id | None)``; ``(None, None)`` when unrecorded."""
+        with self._open() as f:
+            return _read_animal(f) if f else (None, None)
 
     def read_skeleton(self) -> Skeleton | None:
         with self._open() as f:

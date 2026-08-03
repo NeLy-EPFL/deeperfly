@@ -287,3 +287,103 @@ def test_warns_when_the_global_residual_exceeds_the_threshold(outputs, capsys):
     out = " ".join(capsys.readouterr().out.split())
     assert "already exceeds" in out
     assert "bundle_adjustment/cameras" in out
+
+
+# -- absence: keypoints that are not on this animal ---------------------------
+
+
+def test_labels_absent_declares_and_clears(tmp_path, result, capsys):
+    """The batch CLI: declare, then un-declare, without losing anything."""
+    import argparse
+
+    from deeperfly.cli.gui import _cmd_labels_absent
+    from deeperfly.gui.labels import labels_identity, load_labels
+
+    outdir = tmp_path / "deeperfly_outputs"
+    outdir.mkdir()
+    result.save(outdir / "results.h5")
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=list(result.cameras.names),
+        n_frames=result.n_frames,
+    )
+    names = list(result.skeleton.point_names)
+    want = names[2:4]
+
+    _cmd_labels_absent(
+        argparse.Namespace(
+            paths=[str(outdir)],
+            points=",".join(want),
+            subject="Fly2",
+            clear=False,
+            frames=None,
+        )
+    )
+    lab = load_labels(outdir / "labels.h5", identity=identity)
+    assert lab is not None
+    assert [names[i] for i in np.nonzero(lab.absent_all_frames())[0]] == want
+    assert lab.subject_id == "Fly2"
+
+    _cmd_labels_absent(
+        argparse.Namespace(
+            paths=[str(outdir)],
+            points=",".join(want),
+            subject=None,
+            clear=True,
+            frames=None,
+        )
+    )
+    lab = load_labels(outdir / "labels.h5", identity=identity)
+    assert lab is not None and not lab.absent.any()
+
+
+def test_labels_absent_accepts_a_frame_range(tmp_path, result):
+    """`--frames 1:` is the autotomy case: absent from frame 1 to the end."""
+    import argparse
+
+    from deeperfly.cli.gui import _cmd_labels_absent
+    from deeperfly.gui.labels import labels_identity, load_labels
+
+    outdir = tmp_path / "deeperfly_outputs"
+    outdir.mkdir()
+    result.save(outdir / "results.h5")
+    name = list(result.skeleton.point_names)[4]
+    _cmd_labels_absent(
+        argparse.Namespace(
+            paths=[str(outdir)], points=name, subject=None, clear=False, frames="1:"
+        )
+    )
+    lab = load_labels(
+        outdir / "labels.h5",
+        identity=labels_identity(
+            point_names=list(result.skeleton.point_names),
+            camera_names=list(result.cameras.names),
+            n_frames=result.n_frames,
+        ),
+    )
+    assert lab is not None
+    assert not lab.absent_at(0)[4]
+    assert all(lab.absent_at(t)[4] for t in range(1, result.n_frames))
+    assert not lab.absent_all_frames()[4]  # structural consumers must not act on it
+
+
+def test_labels_absent_rejects_an_unknown_point(tmp_path, result):
+    import argparse
+
+    import pytest as _pytest
+
+    from deeperfly.cli.gui import _cmd_labels_absent
+
+    outdir = tmp_path / "deeperfly_outputs"
+    outdir.mkdir()
+    result.save(outdir / "results.h5")
+    with _pytest.raises(SystemExit, match="no skeleton point matches"):
+        _cmd_labels_absent(
+            argparse.Namespace(
+                paths=[str(outdir)],
+                points="not_a_keypoint",
+                subject=None,
+                clear=False,
+                frames=None,
+            )
+        )

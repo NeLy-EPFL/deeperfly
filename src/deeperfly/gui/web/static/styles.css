@@ -450,9 +450,34 @@ body {
 }
 
 .mk.m-placeholder {
-  background: transparent; /* faint dashed hollow ring: the "Missing" seed ghost */
+  background: transparent; /* faint dashed hollow ring: the "Unplaced" seed ghost */
   border: 1.5px dashed #888;
   opacity: 0.7;
+}
+
+/* The "Absent" tombstone: achromatic and cross-shaped, so it reads as "outside the anatomy"
+   rather than as a faint observation. Every other marker is drawn in the limb palette. */
+.mk.m-absent {
+  background: transparent;
+  border: none;
+  opacity: 0.6;
+  position: relative;
+}
+
+.mk.m-absent::before,
+.mk.m-absent::after {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto 0;
+  border-top: 1.5px solid #8a8f98;
+}
+
+.mk.m-absent::before {
+  transform: rotate(45deg);
+}
+
+.mk.m-absent::after {
+  transform: rotate(-45deg);
 }
 
 /* The frame slider gets a row to itself, so let it span the full width. */
@@ -1118,4 +1143,33 @@ body.read-only #undo,
 body.read-only #redo {
   opacity: 0.4;
   pointer-events: none;
+}
+
+
+/* The Absent toggle in the point-status card. Achromatic when off (it is not a source chip);
+   when pressed it reads as an asserted fact about the animal, not a selected option. */
+.act-absent[aria-pressed="true"],
+.act-absent.is-absent {
+  border-color: #8a8f98;
+  background: rgba(138, 143, 152, 0.22);
+  color: #e6e8eb;
+}
+
+/* The persistent header badge listing what this animal is missing. Without it, a declared
+   amputation simply looks like a rig that never mapped those points. */
+.absent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.1em 0.5em;
+  border: 1px solid #8a8f98;
+  border-radius: 999px;
+  font-size: 0.85em;
+  color: #c8ccd2;
+  background: rgba(138, 143, 152, 0.14);
+  white-space: nowrap;
+}
+
+.absent-badge[hidden] {
+  display: none;
 }

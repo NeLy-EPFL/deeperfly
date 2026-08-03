@@ -74,6 +74,35 @@ def _asset_version() -> str:
     return h.hexdigest()[:12]
 
 
+def _session_version(session: Session) -> str:
+    """A short token identifying *which pictures* this session serves.
+
+    Frame JPEGs and mesh overlays are addressed only by camera and frame index, so
+    ``/api/frame/f/1506`` names a different picture in every recording while looking
+    identical to an HTTP cache. Every ``deeperfly gui`` runs on the same default
+    ``127.0.0.1:8000``, and the suggestion queue picks near-identical frame indices
+    across recordings of the same length -- so opening one recording after another
+    within the cached lifetime made the browser paint the *previous* recording's fly.
+    Stamping this token into the URLs puts the recording into the cache key, which is
+    what makes the long ``max-age`` safe.
+
+    Keyed on the resolved footage (identity and bytes-on-disk), not on ``results.h5``:
+    the footage is what the served pixels actually come from, and it does not change
+    as the operator labels -- whereas an absence declaration rewrites ``results.h5``,
+    which would needlessly retire every cached frame. Re-pointing a result at
+    different videos does change the token, so those frames are refetched.
+    """
+    parts = [str(Path(session.results_path).resolve())]
+    for name, files in sorted(session.source.footage_files.items()):
+        for path in files:
+            try:
+                st = path.stat()
+                parts.append(f"{name}:{path.resolve()}:{st.st_size}:{st.st_mtime_ns}")
+            except OSError:  # pragma: no cover -- resolved footage exists
+                parts.append(f"{name}:{path}")
+    return hashlib.sha1("\0".join(parts).encode()).hexdigest()[:12]
+
+
 def create_app(
     session: Session,
     *,
@@ -95,6 +124,10 @@ def create_app(
     """
     app = FastAPI(title="deeperfly gui")
     lock = asyncio.Lock()
+    # Computed once: it stats the footage (on a network share, for this lab), and a
+    # single value keeps the token the page stamps into its URLs identical to the one
+    # the frame handler validates against.
+    cache_v = _session_version(session)
     # Open `/ws` sockets (one per browser tab), the single "writer" allowed to edit
     # the shared session, and the timer that -- once the last socket closes -- stops
     # the server after the grace period (cancelled on reconnect).
@@ -114,7 +147,8 @@ def create_app(
     # policy a browser's heuristic cache can serve a stale app.js/styles.css
     # against freshly changed HTML -- a half-broken editor. Force revalidation on
     # every load of the page and its assets; the ETag keeps it cheap (a 304 when
-    # nothing changed). Frame JPEGs keep their own long max-age (set per-response).
+    # nothing changed). Frame JPEGs and mesh overlays keep their own long max-age,
+    # but only when their URL carries this session's `_session_version` stamp.
     @app.middleware("http")
     async def _revalidate_assets(request: Request, call_next):
         response = await call_next(request)
@@ -171,10 +205,19 @@ def create_app(
 
     @app.get("/api/meta")
     def meta() -> dict:
-        return _meta_payload(session)
+        return _meta_payload(session, cache_v)
+
+    def _image_cache_control(v: str | None) -> str:
+        """Long-lived only for URLs stamped with *this* session's token.
+
+        A stamped URL can never collide with another recording's, so it is safe to
+        keep (and ``immutable`` spares the revalidation on scrub-back). An unstamped
+        or stale-stamped request is not addressed to a unique picture, so it must not
+        enter the cache at all -- see :func:`_session_version`."""
+        return "max-age=3600, immutable" if v == cache_v else "no-store"
 
     @app.get("/api/frame/{camera}/{t}")
-    def frame(camera: str, t: int) -> Response:
+    def frame(camera: str, t: int, v: str | None = None) -> Response:
         img = session.source.frame(camera, t)
         if img is None:
             raise HTTPException(404, f"no frame for {camera!r} at {t}")
@@ -184,13 +227,13 @@ def create_app(
         return Response(
             content=buf.tobytes(),
             media_type="image/jpeg",
-            headers={"Cache-Control": "max-age=3600"},
+            headers={"Cache-Control": _image_cache_control(v)},
         )
 
     mesh_cache: dict[tuple[str, int], bytes] = {}
 
     @app.get("/api/mesh/{camera}/{t}")
-    def mesh(camera: str, t: int) -> Response:
+    def mesh(camera: str, t: int, v: str | None = None) -> Response:
         """The posed NeuroMechFly mesh for ``camera`` at frame ``t`` as an RGBA PNG.
 
         404 when the result carries no fitted model (IK off). Rendered on demand and
@@ -208,7 +251,7 @@ def create_app(
         return Response(
             content=mesh_cache[key],
             media_type="image/png",
-            headers={"Cache-Control": "max-age=3600"},
+            headers={"Cache-Control": _image_cache_control(v)},
         )
 
     @app.get("/api/nmf/asset")
@@ -269,7 +312,23 @@ def create_app(
                 session.labels_path,
                 session.state.labels,
                 identity=session.identity,
+                subject_id=session.state.labels.subject_id,
             )
+            # Mirror the absence declaration into results.h5's `animal/` group. That is the
+            # seam the pipeline and every results.h5-only consumer read, so a fact authored
+            # here reaches a re-run (and the render path) without anyone parsing labels.h5.
+            # An in-place patch, so no stage output is touched.
+            try:
+                from ..results import StageStore
+
+                StageStore(Path(session.results_path)).write_animal(
+                    absent=session.state.labels.absent_all_frames(),
+                    subject_id=session.state.labels.subject_id,
+                )
+            except Exception:  # a read-only results.h5 must not fail the label save
+                log.exception(
+                    "could not mirror the absence declaration into results.h5"
+                )
         return {"dirty": session.state.dirty}
 
     @app.post("/api/shutdown")
@@ -512,13 +571,20 @@ def _limb_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
     return out
 
 
-def _meta_payload(session: Session) -> dict:
-    """The one-time metadata the front-end needs to lay out and draw the editor."""
+def _meta_payload(session: Session, cache_v: str | None = None) -> dict:
+    """The one-time metadata the front-end needs to lay out and draw the editor.
+
+    ``cache_v`` is the recording token the server will validate frame URLs against;
+    it is passed in (rather than recomputed) so the two can never disagree.
+    """
     s = session.state
     skel = s.result.skeleton
     colors = (np.asarray(point_colors_rgb(skel)) * 255).round().astype(int)
     return {
         "results_path": session.results_path,
+        # Stamped into the frame/mesh URLs so one recording's images can never be
+        # served from cache for another -- see `_session_version`.
+        "cache_v": cache_v if cache_v is not None else _session_version(session),
         "n_views": s.n_views,
         "n_frames": session.n_frames,
         "n_points": s.n_points,
@@ -591,6 +657,11 @@ def _points_payload(
     # until the Phase-C source-aware rendering lands.
     fixed = s.gt_mask(t)  # (V, P)
     invisible = s.occluded_mask(t)  # (V, P)
+    # Absence is per-(frame, point), but this frame's row is broadcast to (V, P) so the
+    # front-end indexes it exactly like `fixed` / `invisible`. It must ride the lean
+    # mid-drag reply too: it gates whether a joint is drawn at all, so omitting it would
+    # flash the phantom limb back on for the duration of every drag.
+    absent = np.broadcast_to(s.absent_mask(t)[None, :], fixed.shape)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
     payload = {
         "frame": t,
@@ -598,6 +669,10 @@ def _points_payload(
         "points": _points_to_json(np.asarray(pts)),
         "fixed": fixed.tolist(),
         "invisible": invisible.tolist(),
+        "absent": np.asarray(absent).tolist(),
+        # Which of those are absent in EVERY frame, so the front-end can tell an
+        # amputation from a single-frame declaration without fetching the whole mask.
+        "absent_recording": s.absent_points(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
         "dirty": bool(s.dirty),
         "can_undo": s.can_undo,
@@ -613,7 +688,7 @@ def _points_payload(
         payload["conf"] = _conf_to_json(s.result.conf, t)
     if verbose:
         payload["pred"] = _points_to_json(np.asarray(s.result.pts2d[:, t]))
-        # Draggable seeds for joints absent from a view (no detection / reprojection),
+        # Draggable seeds for joints unobserved in a view (no detection / reprojection),
         # so a GT can still be placed where triangulation dropped the point. Depends on
         # the frame's GT / occlusion / 3D state, so -- unlike `pred` -- it refreshes on
         # every settle/discrete edit (which request verbose), not just on navigation.
@@ -903,7 +978,9 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     # undo/redo can revert an edit on a *different* frame than the one being viewed;
     # `goto` tells the client to navigate there before applying the repaint.
     goto: int | None = None
+    notice: str | None = None
     if typ == "edit_2d":
+        notice = s.absent_refusal(int(msg["point"]), t)
         s.apply_2d_edit(int(msg["view"]), int(msg["point"]), _xy(msg), t)
     elif typ == "edit_3d":
         s.apply_3d_edit(
@@ -920,6 +997,7 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ in ("toggle_fixed", "confirm_point"):
         s.toggle_fixed(int(msg["view"]), int(msg["point"]), t)
     elif typ in ("toggle_invisible", "toggle_occluded"):
+        notice = s.absent_refusal(int(msg["point"]), t)
         s.toggle_invisible(int(msg["view"]), int(msg["point"]), t)
     elif typ == "confirm":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
@@ -942,6 +1020,32 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_frame(t)
     elif typ == "set_reviewed":
         s.set_reviewed(bool(msg["reviewed"]), t)
+    elif typ == "set_absent":
+        # View-independent, so the batched (view, point) targets collapse to a point set:
+        # "absent in view rf but present in lf" is not an expressible state. Frames are a
+        # different matter -- a leg can be lost part-way through -- so the client says
+        # which scope it means.
+        points = sorted({int(b) for _, b in msg.get("targets", [])})
+        if "point" in msg:
+            points = sorted(set(points) | {int(msg["point"])})
+        whole = str(msg.get("scope", "frame")) == "recording"
+        want = msg.get("absent")
+        cur = s.labels.absent_all_frames() if whole else s.labels.absent_at(t)
+        value = (
+            bool(want)
+            if want is not None
+            else not all(bool(cur[p]) for p in points)  # toggle: set unless all are set
+        )
+        changed = s.set_absent(points, value, t, whole_recording=whole)
+        if changed:
+            names = ", ".join(s.point_name(p) for p in changed)
+            where = f"all {s.n_frames} frames" if whole else f"frame {t}"
+            notice = (
+                f"{names} marked absent (not on this animal) in {where}, all views"
+                if value
+                else f"{names} no longer marked absent in {where}"
+            )
+        goto = None
     else:  # pragma: no cover -- an unknown type is a client bug; ignore it
         log.warning("ignoring unknown edit message type %r", typ)
     reply_frame = goto if goto is not None else t
@@ -954,6 +1058,8 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     # frame) is null for in-place edits.
     payload["seq"] = msg.get("seq")
     payload["goto"] = goto
+    if notice:
+        payload["notice"] = notice
     return payload
 
 

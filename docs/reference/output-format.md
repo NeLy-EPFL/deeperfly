@@ -148,21 +148,49 @@ authored is stored — sparsely (COO), so the file is tiny and carries no copy o
 predictions:
 
 ```
-attrs["meta"]   json: { deeperfly_labels_format_version, created_utc, identity }
+attrs["meta"]   json: { deeperfly_labels_format_version, created_utc, identity,
+                        subject_id }        # subject_id added in v3; may be null
 gt/
-    index       (N, 3) int32    [view, frame, point]
+    index       (N, 3) int32    [view, frame, point]   LIVE rows only
     xy          (N, 2) float64  affirmed 2D pixel (footage space)
     provenance  (N,)   uint8     1=dragged, 2=confirmed-prediction, 3=confirmed-projection
 occluded/
     index       (M, 3) int32    [view, frame, point]  views a human flagged unusable
+reviewed/
+    index       (K,)   int32    frames the operator ticked reviewed
+absent/                          # v3; missing in a v1/v2 file -> nothing absent
+    index       (Q,)   int32    skeleton points NOT ON THIS ANIMAL (amputation, ablation)
+    void_gt/                     rows the declaration vetoes, kept so it can be lifted
+        index   (N', 3) int32
+        xy      (N', 2) float64
+        provenance (N',) uint8
+    void_occluded/
+        index   (M', 3) int32
 ```
+
+**Absence** (`absent/`) is "this joint is not on this animal" — categorically different
+from `occluded` ("it exists but no camera here can see it") and from unlabeled ("nobody
+has looked yet"). It is view-independent by construction (an amputated joint is missing
+from every camera at once), which is why it is not stored per cell; it *is* per frame,
+since a limb can be lost part-way through a recording. `spans` is the authoritative
+run-length form, so a whole-recording declaration — the common case — costs one row
+however long the recording is, while `index` keeps the whole-recording subset that a v3
+reader understands.
+
+`gt/` and `occluded/` hold **live rows only**: rows an absence declaration vetoes are
+moved to `absent/void_*`. So a consumer that reads `gt/index` straight out of HDF5 sees a
+self-consistent file with no labels on keypoints that do not exist, while nothing authored
+is lost — un-declaring a point restores its rows on the next load.
 
 `identity` fingerprints the recording (skeleton points, camera names, frame count,
 image sizes, footage basenames) so a sidecar from a *different* recording is refused;
 it excludes the predictions and `created_utc`, so re-running detection/triangulation
 on the same recording keeps the labels valid (ground truth is absolute, not relative
-to what the network predicted). A legacy `corrections.h5` is migrated to this schema
-on open. Export the labels as a training/eval `.npz` with
+to what the network predicted). It deliberately excludes `absent`, which is
+point-indexed and so already domain-checked by the `point_names` match — which is also
+what lets one animal's declaration be copied across all of its recordings. A legacy
+`corrections.h5` is migrated to this schema on open. A file written by a *newer*
+deeperfly is refused rather than silently misread. Export the labels as a training/eval `.npz` with
 [`deeperfly labels-export`](../guides/cli.md#deeperfly-labels-export).
 
 ## `labels_suggest.json`

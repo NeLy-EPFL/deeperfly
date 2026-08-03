@@ -231,6 +231,10 @@ class App {
   fixedMask = null;
   /** @type {boolean[][] | null} */
   projectedMask = null;
+  /** @type {boolean[][] | null} [view][point] "not on this animal" IN THIS FRAME -- broadcast over views */
+  absentMask = null;
+  /** @type {number[]} point indices absent in EVERY frame, so the badge can say which scope */
+  absentRecording = [];
   // Per-view mask of cells the detector actually fired for (a finite raw prediction).
   // A cell with no detection can never be reset *to* the detector, so the "Detected"
   // state chip is disabled for it. Built from the verbose payload's `pred`; static
@@ -343,6 +347,8 @@ class App {
   meshTimer = 0;
   /** @type {HTMLSpanElement} */
   pointStatusName = el("point-status-name");
+  absentBtn = el("act-absent");
+  absentBadge = el("absent-badge");
   /** @type {Segmented} */
   stateSwitch;
   /** @type {Segmented} */
@@ -557,6 +563,9 @@ class App {
       (v) => this.setSelectedState(v)
     );
     el("point-status-states").append(this.stateSwitch.root);
+    this.absentBtn.addEventListener("click", (e) =>
+      this.toggleAbsentSelection(e.shiftKey ? "recording" : "frame"),
+    );
 
     // The side panel's tab strip, in place of a plain title: two lists that differ in
     // both columns and ordering (labeled frames in time order; suggested frames in rank
@@ -581,7 +590,7 @@ class App {
     this.detectedCheck.addEventListener("change", () => this.applyDetected());
     this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
     this.projectedCheck.addEventListener("change", () => this.applyProjected());
-    // The "Missing" placeholder seeds are the guarantee that no joint is ever unreachable: a cell
+    // The "Unplaced" placeholder seeds are the guarantee that no joint is ever unreachable: a cell
     // with nothing else drawn still gets a faint ghost to drag into a GT label (the authored 2D
     // needs no prior 3D), so the layer is available with or without a 3D solve.
     this.placeholderCheck.addEventListener("change", () => this.applyPlaceholder());
@@ -834,6 +843,14 @@ class App {
     // the sending edit's seq; only the latest edit's reply (seq === editSeq) wins.
     // Plain frame fetches carry no seq and always apply.
     if (fromEdit && p.seq !== this.editSeq) return;
+    // A one-line, self-dismissing notice: the server refused an edit, or confirmed a
+    // recording-wide declaration. Non-blocking on purpose -- this gesture happens once per
+    // recording, so a modal would be worse than the thing it guards against.
+    if (p.notice) {
+      this.statusEl.textContent = p.notice;
+      clearTimeout(this._noticeTimer);
+      this._noticeTimer = setTimeout(() => (this.statusEl.textContent = ""), 4000);
+    }
     // The per-view masks drive the source-styled markers (ground truth / projected) and
     // the status widget; they are meaningful whether or not the result carries 3D.
     this.fixedMask = p.fixed;
@@ -844,6 +861,13 @@ class App {
     // occluded-only `p.invisible` mask still rides through to each view for the drag
     // un-occlude, but is a strict subset here).
     this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
+    // Absence rides every reply (it gates drawing), so assign unconditionally rather than
+    // keeping a previous value the way `pred` / `placeholder` do.
+    if (p.absent) {
+      this.absentMask = p.absent;
+      this.absentRecording = p.absent_recording ?? [];
+      this.updateAbsentBadge();
+    }
     // Which cells the detector fired for -- a finite raw prediction. Only the verbose
     // navigation fetch carries `pred`; on the mid-drag edit stream (no `pred`) the
     // detections are unchanged within the frame, so keep the mask we already have.
@@ -861,8 +885,9 @@ class App {
         // `pred` (the raw detections) rides the verbose navigation fetch only; when absent
         // (the mid-drag stream) leave each view's detected set unchanged.
         detected: p.pred ? p.pred[v] : undefined,
-        // The Missing seeds ride the same verbose reply (`placeholder`); absent mid-drag -> keep.
+        // The Unplaced seeds ride the same verbose reply (`placeholder`); omitted mid-drag -> keep.
         placeholder: p.placeholder ? p.placeholder[v] : undefined,
+        absent: p.absent ? p.absent[v] : undefined,
         nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
       });
     });
@@ -1214,9 +1239,13 @@ class App {
   /**
    * @param {number} view
    * @param {number} point
-   * @returns {"normal" | "fixed" | "projected"} the cell's per-view state
+   * @returns {"normal" | "fixed" | "projected" | "absent"} the cell's per-view state
    */
   cellState(view, point) {
+    // Absence is checked FIRST and short-circuits. An absent cell is null in `points`, so it
+    // would otherwise fall through to "projected" and the readout would report the machine's
+    // reprojected guess back to the operator as if it were their own label.
+    if (this.absentMask && this.absentMask[view][point]) return "absent";
     if (this.fixedMask && this.fixedMask[view][point]) return "fixed";
     // No observed pixel here -- the operator occluded the view, or the detector never
     // fired -- so the drawn position blindly follows the 3D reprojection: the "projected"
@@ -1240,7 +1269,7 @@ class App {
   /**
    * The state shared by every selected cell, or null when they disagree (or none are
    * selected). This is what lights a chip up as the readout.
-   * @returns {"normal" | "fixed" | "projected" | null}
+   * @returns {"normal" | "fixed" | "projected" | "absent" | null}
    */
   uniformState() {
     const cells = this.selCells();
@@ -1298,14 +1327,25 @@ class App {
     // widget's own explanatory tooltip still shows.
     this.pointStatusName.title =
       this.pointStatusName.scrollWidth > this.pointStatusName.clientWidth ? txt : "";
-    this.stateSwitch.setDisabled(n === 0);
-    this.stateSwitch.setDisabledValue("projected", n === 0 || !this.meta.has_3d);
+    // Absence readout + availability. `aria-pressed` (mirrored by a class) is the state: a
+    // selection of joints that are ALL absent shows the toggle pressed, so the button doubles as
+    // the answer to "is this joint declared absent?" without a fourth chip.
+    const selPts = [...new Set(this.selCells().map(([, p]) => p))];
+    const allAbsent =
+      selPts.length > 0 && selPts.every((p) => this.absentMask && this.absentMask[0][p]);
+    this.absentBtn.disabled = n === 0 || this.readOnly;
+    this.absentBtn.setAttribute("aria-pressed", String(allAbsent));
+    this.absentBtn.classList.toggle("is-absent", allAbsent);
+    // The three source chips answer "where did this marker come from", which has no meaning for
+    // a joint that is not on the animal -- so they are all disabled while it is declared absent.
+    this.stateSwitch.setDisabled(n === 0 || allAbsent);
+    this.stateSwitch.setDisabledValue("projected", n === 0 || allAbsent);
     // "Detected" resets a cell back to the detector's raw prediction -- meaningless for a
     // cell the detector never fired for (it would just fall through to the reprojection).
     // Disable the chip unless at least one selected cell has a detection, so an
     // undetected joint can't be "converted to Detected".
     const anyDetected = this.selCells().some(([v, p]) => this.cellDetected(v, p));
-    this.stateSwitch.setDisabledValue("normal", n === 0 || !anyDetected);
+    this.stateSwitch.setDisabledValue("normal", n === 0 || allAbsent || !anyDetected);
     // The lit chip: the hovered joint's own state while hovering (the readout peek),
     // else the selection's shared state (nothing lit when the cells disagree).
     this.stateSwitch.set(hov ? this.cellState(hov.view, hov.point) : (this.uniformState() ?? ""));
@@ -1333,7 +1373,7 @@ class App {
   sendEdit(msg) {
     if (this.readOnly) return; // a read-only browser cannot mutate the shared state
     // Ask for the verbose reply (which carries the refreshed `pred` + `placeholder` seeds, both
-    // affected by the edit) on every settle / discrete edit, so the Missing ghosts appear/vanish
+    // affected by the edit) on every settle / discrete edit, so the Unplaced ghosts appear/vanish
     // as points are placed and cleared. The one exception is the mid-drag live stream (edit_3d
     // with fix:false, ~60x/s) -- it stays lean, and the seeds refresh on the settle reply.
     const liveDrag = msg.type === "edit_3d" && msg.fix === false;
@@ -1414,12 +1454,76 @@ class App {
   }
 
   // Occlude the selection: flag each selected cell unreadable in its view (dropping it
-  // from the 3D solve). Needs 3D; reverse via Reset / undo. One undo step.
+  // from the 3D solve). Reverse via Reset / undo. One undo step. Deliberately NOT gated on
+  // 3D: occlusion is an authored label, and on a 2D-only pass gating it would leave the
+  // operator reaching for the far stronger "not on this animal" instead.
   occludeSelection() {
-    if (!this.meta.has_3d) return;
     const targets = this.selCells();
     if (!targets.length) return;
     this.sendEdit({ type: "occlude", targets, frame: this.frame, mode: this.mode });
+  }
+
+  // Toggle "not on this animal" for the selected joint(s) -- an amputated leg, an ablated
+  // antenna. View-independent, so the (view, point) selection collapses to a point SET:
+  // "absent in rf but present in lf" is not expressible. Frames are different -- a leg can
+  // be lost part-way through a recording -- so `scope` says which the gesture meant:
+  // "frame" (the default, `x`) or "recording" (`Shift+X`, the convenience for the common
+  // case of an animal that arrives with a leg already missing).
+  //
+  // Sends an explicit `absent` value rather than a per-point toggle so a mixed selection
+  // resolves one way (set unless every selected point is already absent) instead of
+  // splitting. For the recording scope that test reads the whole-recording set, so
+  // Shift+X on a partly-declared point extends it rather than clearing it.
+  /** @param {"frame" | "recording"} scope */
+  toggleAbsentSelection(scope = "frame") {
+    const targets = this.selCells();
+    if (!targets.length) return;
+    const pts = [...new Set(targets.map(([, p]) => p))];
+    const whole = new Set(this.absentRecording ?? []);
+    const allAbsent =
+      scope === "recording"
+        ? pts.every((p) => whole.has(p))
+        : pts.every((p) => this.absentMask && this.absentMask[0][p]);
+    this.sendEdit({
+      type: "set_absent",
+      targets,
+      absent: !allAbsent,
+      scope,
+      frame: this.frame,
+      mode: this.mode,
+    });
+  }
+
+  // A persistent readout of what this animal is missing. Absence removes the joint from every
+  // view, so without a standing badge a declared amputation is indistinguishable from a rig that
+  // never mapped those points -- and from a bug.
+  updateAbsentBadge() {
+    const mask = this.absentMask;
+    if (!mask || !mask.length) {
+      this.absentBadge.hidden = true;
+      return;
+    }
+    const points = [];
+    for (let p = 0; p < mask[0].length; p++) if (mask[0][p]) points.push(p);
+    if (!points.length) {
+      this.absentBadge.hidden = true;
+      return;
+    }
+    const names = points.map((p) => this.meta.point_names[p] ?? `#${p}`);
+    // The mask is this FRAME's, so the badge says "here" unless every absent point is
+    // absent in every frame -- a per-frame declaration must not read like an amputation,
+    // and vice versa. `absent_recording` (the whole-recording subset) rides the payload so
+    // the two can be told apart without fetching the full mask.
+    const whole = new Set(this.absentRecording ?? []);
+    const allWhole = points.every((p) => whole.has(p));
+    const scope = allWhole ? "" : " here";
+    this.absentBadge.hidden = false;
+    this.absentBadge.textContent =
+      `✕ absent${scope}: ${names.length} point${names.length > 1 ? "s" : ""}`;
+    this.absentBadge.title =
+      `Not on this animal, every view${allWhole ? ", every frame" : ` (frame ${this.frame})`}: ` +
+      `${names.join(", ")}. Select a joint and press x (this frame) or Shift+X ` +
+      `(whole recording) to change this.`;
   }
 
   // -- undo / redo ------------------------------------------------------------
@@ -2012,7 +2116,7 @@ class App {
     b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
     b.push({ key: "s", group: "show", label: "s", desc: "Combined — merge ground truth + detected into one skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
-    b.push({ key: "i", group: "show", label: "i", desc: "Missing-point seeds — draggable ghosts wherever a joint has nothing else to grab", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
+    b.push({ key: "i", group: "show", label: "i", desc: "Unplaced-point seeds — draggable ghosts wherever a joint has nothing else to grab", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
     if (has3d) {
       b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
       b.push({ key: "w", group: "show", label: "w", desc: "Reprojection-distance warning", run: () => this.toggleCheck(this.warnCheck, () => this.applyWarn()) });
@@ -2036,10 +2140,12 @@ class App {
     b.push({ key: "r", group: "edit", hidden: true, label: "r", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Backspace", hidden: true, label: "Backspace", desc: "", run: () => this.resetSelection() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.resetSelection() });
-    if (has3d) {
-      b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no usable observation here; drop the view from the 3D solve and follow the reprojection", run: () => this.occludeSelection() });
-      b.push({ key: "o", group: "edit", hidden: true, label: "o", desc: "", run: () => this.occludeSelection() });
-    }
+    b.push({ key: "3", group: "edit", label: "3", desc: "Projected — no usable observation here; drop the view from the 3D solve and follow the reprojection", run: () => this.occludeSelection() });
+    b.push({ key: "o", group: "edit", hidden: true, label: "o", desc: "", run: () => this.occludeSelection() });
+    b.push({ key: "x", group: "edit", label: "x", desc: "Absent — this keypoint is not on this animal (amputated / ablated). This frame, every view; press again to un-mark", run: () => this.toggleAbsentSelection("frame") });
+    // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes
+    // shift as implied by the key itself (see `matches`), the same way Shift+M works.
+    b.push({ key: "X", group: "edit", label: hint("X", ["shift"]), desc: "Absent for the whole recording — the usual case, an animal that arrives with a leg already missing", run: () => this.toggleAbsentSelection("recording") });
     b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
     // Redo answers to both ⌘Y and ⇧⌘Z; the help shows whichever the platform expects
     // (⇧⌘Z is the macOS idiom, Ctrl+Y the Windows/Linux one) while the other stays a
@@ -2160,10 +2266,10 @@ class App {
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there. Reject a joint in so many views that fewer than two are left and there is no 3D to follow, so nothing is drawn — the joint then falls back to its faint <b>Missing</b> seed (<kbd>i</kbd>) in every view, still draggable, so you can always get back to it.`,
+        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there. Reject a joint in so many views that fewer than two are left and there is no 3D to follow, so nothing is drawn — the joint then falls back to its faint <b>Unplaced</b> seed (<kbd>i</kbd>) in every view, still draggable, so you can always get back to it.`,
       ]);
     }
-    // The "Missing" seed is the guarantee that no joint is ever unreachable, so it is always
+    // The "Unplaced" seed is the guarantee that no joint is ever unreachable, so it is always
     // in the vocabulary -- with or without a 3D solve (only its causes differ).
     const missingWhy = this.meta.has_3d
       ? `You see it where the point has no observation of its own and no reprojection to fall back on — triangulation dropped it, or you set it Projected in too many views — and wherever a joint's only position was a reprojection you have hidden.`
@@ -2173,7 +2279,14 @@ class App {
       : `the raw detector pixel, a nearby frame, a neighboring joint, or the image center`;
     markers.push([
       `<i class="mk m-placeholder"></i>`,
-      `<b>Missing</b> — a faint dashed ghost drawn wherever a view has nothing else to grab, so no joint is ever unreachable (<kbd>i</kbd>). ${missingWhy} Its spot is only a guess (${missingWhere}), so drag it to where the joint really is: that authors ground truth there like any other drag.`,
+      `<b>Unplaced</b> — a faint dashed ghost drawn wherever a view has nothing else to grab, so no joint is ever unreachable (<kbd>i</kbd>). ${missingWhy} Its spot is only a guess (${missingWhere}), so drag it to where the joint really is: that authors ground truth there like any other drag.`,
+    ]);
+    // Absence is a claim about the ANIMAL, not about a view, so it is described last and framed
+    // against the three source states above: those answer "where did this marker come from",
+    // this one answers "does this joint exist at all".
+    markers.push([
+      `<i class="mk m-absent"></i>`,
+      `<b>Absent</b> — this keypoint is not on this animal: an amputated leg, an ablated antenna. Not the same as <b>Projected</b> ("it exists but I cannot place it from <i>this</i> view") and not the same as <b>Unplaced</b> ("nobody has placed it yet"). Select the joint and press <kbd>x</kbd> to mark it — one gesture covers <i>every frame and every view</i>, because it is one fact about the animal. It then draws as a dim grey ✕ with no bones, contributes nothing to the 3D solve, and is excluded from the training export (neither ground truth nor "occluded"). Press <kbd>x</kbd> again, or <kbd>Ctrl+Z</kbd>, to un-mark it: nothing you labeled underneath is lost.`,
     ]);
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)

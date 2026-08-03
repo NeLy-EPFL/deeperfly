@@ -232,9 +232,45 @@ the occluded mask, in footage pixel space.
 | `-o`, `--output` | `labels_gt.npz` beside `results.h5` | Destination `.npz`. |
 | `--include-projection` | off | Also export GT confirmed from the 3D reprojection (the model's own guess); excluded by default so the export is human-placed pixels only. |
 
-The `.npz` holds `gt_xy` (V,T,P,2), `gt_mask` (V,T,P), `occluded` (V,T,P), and
-`point_names` / `camera_names`. Coordinates are footage-space; a detector-training
+The `.npz` holds `gt_xy` (V,T,P,2), `gt_mask` (V,T,P), `occluded` (V,T,P), `absent` (T,P),
+and `point_names` / `camera_names`. Coordinates are footage-space; a detector-training
 pipeline maps them into model-input space by inverting each pathway's preprocessing.
+
+`absent` marks keypoints that are **not on this animal** (see
+[`deeperfly labels-absent`](#deeperfly-labels-absent)). Those channels are excluded from
+`gt_mask` *and* from `occluded` — an amputated joint is not ground truth, and it is not
+"hidden in every view" either. **Mask** them in the loss.
+
+## `deeperfly labels-absent` — mark keypoints that are not on this animal
+
+```bash
+deeperfly labels-absent PATH... --points 'lf_femur_tibia,lf_tibia_tarsus,lf_claw' \
+    [--subject ID] [--clear]
+```
+
+For an amputated leg or an ablated antenna: the keypoint does not exist. That is
+different from *occluded* (it exists but no camera can see it) and from *unlabeled*, and
+getting it wrong costs real accuracy — the detector's argmax decode always emits a peak,
+so a phantom limb is confidently localized onto whatever looks leg-like nearby and that
+peak feeds triangulation, bundle adjustment and the bone-length prior.
+
+The declaration is per keypoint and, by default, covers the whole recording — one command
+replaces marking every frame and every view by hand, and because it carries no view
+indices it means the same thing in every clip of the same animal, hence `PATH...`. Use
+`--frames` for a limb lost part-way through (`--frames 900:` = from frame 900 to the end).
+
+| Argument / option | Default | Meaning |
+| --- | --- | --- |
+| `PATH...` | — | One or more `results.h5` files or directories. Pass every clip of the same animal. |
+| `--points` | — | Comma-separated keypoint names or `fnmatch` globs (`lf_*`). An unmatched name is an error, so a typo cannot silently declare nothing. |
+| `--frames` | whole recording | A frame or half-open range: `900`, `900:`, `0:900`, `:900`. For a limb lost mid-recording. |
+| `--subject` | none | Animal identifier stamped into the sidecar, so one animal's recordings can be grouped. |
+| `--clear` | off | Un-declare instead of declare. |
+
+Nothing is destroyed either way: labels an absence declaration hides are quarantined in
+the sidecar and restored if it is lifted. The editor has the same gesture — select a
+joint and press `x`. **Close any running `deeperfly gui` on these directories first**:
+saving is a whole-file rewrite, so an open session would overwrite what this writes.
 
 ## `deeperfly inspect` — summarize a result
 

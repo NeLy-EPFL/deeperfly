@@ -23,7 +23,7 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult
 
 from .. import pictorial
@@ -465,6 +465,37 @@ def _validate_triangulation(triangulation: str) -> str:
     return triangulation
 
 
+def apply_absent(
+    pts2d: Float[np.ndarray, "V T P 2"],
+    conf: Float[np.ndarray, "V T P"] | None,
+    absent: Bool[np.ndarray, "T P"] | None,
+) -> "tuple[np.ndarray, np.ndarray | None]":
+    """Erase the keypoints that are not on this animal from the observations.
+
+    The one place a declaration turns into data. Returns copies with the absent columns
+    NaN in ``pts2d`` and 0 in ``conf``; a ``None``/empty declaration returns the inputs
+    untouched, so an ordinary run is unaffected.
+
+    Detection is deliberately *not* consulted: a heatmap-argmax decoder always emits a peak,
+    so an amputated limb is confidently localized onto whatever looks leg-like nearby, and
+    the peak's score does not separate it from a real joint. Absence is declared by the
+    operator and applied here, after detection.
+    """
+    if absent is None:
+        return pts2d, conf
+    mask = np.asarray(absent, dtype=bool)
+    if mask.ndim == 1:  # a whole-recording (P,) declaration broadcasts over time
+        mask = np.broadcast_to(mask.reshape(1, -1), np.shape(pts2d)[1:3])
+    if not mask.any():
+        return pts2d, conf
+    pts2d = np.asarray(pts2d, dtype=float).copy()
+    pts2d[:, mask] = np.nan  # advanced-index the (frame, point) axes together
+    if conf is not None:
+        conf = np.asarray(conf, dtype=float).copy()
+        conf[:, mask] = 0.0
+    return pts2d, conf
+
+
 def run_from_points2d(
     cameras: CameraGroup,
     skeleton: Skeleton,
@@ -483,12 +514,21 @@ def run_from_points2d(
     reproj_threshold: float = 40.0,
     max_drops: int = 5,
     fps: float = 100.0,
+    absent: Bool[np.ndarray, "T P"] | None = None,
     meta: dict | None = None,
 ) -> PoseResult:
     """Run the full 2D-to-3D pipeline and return a :class:`PoseResult`.
 
     Steps: (optional) bundle-adjust cameras -> reconstruct 3D. Unobserved points are
     expected to already be NaN (the detector's pathway scatter leaves them so).
+
+    ``absent`` marks keypoints that are **not on this animal** (an amputated leg). This is
+    the single seam where a declaration becomes data: those points are NaN-ed out of
+    ``pts2d`` *and* zeroed in ``conf`` before anything downstream runs, after which the
+    existing NaN convention carries them through triangulation, bundle adjustment, the
+    bone prior and the render. Zeroing ``conf`` matters as much as the points -- a
+    confidence array still asserting 0.5 on a limb that does not exist would keep weighting
+    the phantom in every confidence-weighted solve, including its *neighbors'*.
 
     Parameters
     ----------
@@ -546,6 +586,10 @@ def run_from_points2d(
     # Unobserved (view, point) pairs are NaN (the detector's pathway scatter leaves
     # them so), which the bundle adjustment and triangulation below treat as "not seen".
     pts2d = np.asarray(pts2d, dtype=float)
+    # Keypoints not on this animal are erased here, before ANY consumer: bundle adjustment,
+    # the bone-length prior, the pictorial structures pass and every triangulator all read
+    # `pts2d` / `conf` below, so one seam covers them all.
+    pts2d, conf = apply_absent(pts2d, conf, absent)
 
     if do_bundle_adjust:
         cameras, _ = bundle_adjust_cameras(
@@ -589,6 +633,7 @@ def run_from_points2d(
         conf=conf,
         pts3d=pts3d,
         reproj_error=reproj,
+        absent=None if absent is None else np.asarray(absent, dtype=bool),
         meta={
             "fps": fps,
             "triangulation": method,

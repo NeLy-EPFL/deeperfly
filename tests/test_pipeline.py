@@ -548,3 +548,57 @@ def test_run_pictorial_requires_candidates(cameras, fly, rng):
         run_from_points2d(
             cameras, fly, pts2d, do_bundle_adjust=False, do_pictorial=True
         )
+
+
+# -- absence: keypoints that are not on this animal ---------------------------
+
+
+def test_apply_absent_erases_points_and_confidence():
+    from deeperfly.pipeline.core import apply_absent
+
+    pts2d = np.zeros((3, 5, 4, 2))
+    conf = np.full((3, 5, 4), 0.9)
+    absent = np.array([False, False, True, False])
+    out2d, outconf = apply_absent(pts2d, conf, absent)
+
+    assert np.isnan(out2d[:, :, 2]).all()
+    assert np.isfinite(out2d[:, :, [0, 1, 3]]).all()
+    # Zeroing conf matters as much as the points: an array still asserting 0.9 on a limb
+    # that does not exist keeps weighting the phantom in every confidence-weighted solve.
+    assert (outconf[:, :, 2] == 0.0).all()
+    assert (outconf[:, :, [0, 1, 3]] == 0.9).all()
+    assert np.isfinite(pts2d).all()  # inputs untouched
+
+
+def test_apply_absent_is_a_no_op_without_a_declaration():
+    from deeperfly.pipeline.core import apply_absent
+
+    pts2d, conf = np.zeros((2, 3, 4, 2)), np.ones((2, 3, 4))
+    for absent in (None, np.zeros(4, dtype=bool)):
+        a, c = apply_absent(pts2d, conf, absent)
+        assert a is pts2d and c is conf  # same objects: provably unchanged
+
+
+def test_apply_absent_is_per_frame():
+    # A limb lost part-way through: the frames before the loss keep their observations.
+    from deeperfly.pipeline.core import apply_absent
+
+    pts2d = np.zeros((3, 5, 4, 2))
+    conf = np.full((3, 5, 4), 0.9)
+    absent = np.zeros((5, 4), dtype=bool)
+    absent[2:, 1] = True  # point 1 disappears at frame 2
+
+    out2d, outconf = apply_absent(pts2d, conf, absent)
+    assert np.isfinite(out2d[:, :2, 1]).all()  # before the loss: untouched
+    assert np.isnan(out2d[:, 2:, 1]).all()  # after: erased
+    assert (outconf[:, :2, 1] == 0.9).all()
+    assert (outconf[:, 2:, 1] == 0.0).all()
+    assert np.isfinite(out2d[:, :, [0, 2, 3]]).all()  # other points untouched
+
+
+def test_apply_absent_accepts_a_whole_recording_declaration():
+    from deeperfly.pipeline.core import apply_absent
+
+    pts2d, conf = np.zeros((2, 3, 4, 2)), np.ones((2, 3, 4))
+    a, c = apply_absent(pts2d, conf, np.array([False, True, False, False]))
+    assert np.isnan(a[:, :, 1]).all() and (c[:, :, 1] == 0).all()
