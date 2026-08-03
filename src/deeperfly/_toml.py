@@ -69,11 +69,15 @@ def scalar(v) -> str:
 
 
 def value(v) -> str:
-    """One TOML value: a scalar, or a flat array of them."""
+    """One TOML value: a scalar, or an array of them -- nested to any depth.
+
+    Recursive rather than flat-only because ``[skeleton].symmetries`` is an array of
+    2-element arrays. A ``str`` is a scalar, never iterated.
+    """
     if isinstance(v, np.ndarray):
         v = v.tolist()
     if isinstance(v, (list, tuple)):
-        return "[" + ", ".join(scalar(x) for x in v) + "]"
+        return "[" + ", ".join(value(x) for x in v) + "]"
     return scalar(v)
 
 
@@ -133,19 +137,23 @@ def extract_section(text: str, name: str) -> str:
         If ``text`` has no ``[name]`` table.
     """
     lines = text.splitlines()
+    headers = _header_scan(lines)
     start = next(
-        (i for i, line in enumerate(lines) if line.strip() == f"[{name}]"),
+        (
+            i
+            for i, line in enumerate(lines)
+            if headers[i] == name and line.strip() == f"[{name}]"
+        ),
         None,
     )
     if start is None:
         raise ValueError(f"no [{name}] table in this TOML text")
     end = len(lines)
     for i in range(start + 1, len(lines)):
-        stripped = lines[i].lstrip()
-        # The next top-level header ends the section; `[name.sub]` belongs to it.
-        if stripped.startswith("[") and not stripped.startswith(
-            (f"[{name}.", f"[[{name}.")
-        ):
+        # The next top-level header ends the section; `[name.sub]` belongs to it. Read from
+        # the depth-aware scan, so a `symmetries = [ ["a","b"], ... ]` row does not read as
+        # one.
+        if headers[i] is not None and headers[i] != name:
             end = i
             break
     # The comment block sitting immediately above the next header documents *that*
@@ -165,6 +173,11 @@ def _header_name(line: str) -> str | None:
 
     Handles both ``[a.b]`` and the array-of-tables ``[[a]]``, returning the *first* path
     segment in each case -- which is the granularity a section extractor works at.
+
+    Line-local, so it cannot tell a header from a *continuation line of a multi-line
+    array* that happens to begin with ``[`` -- which ``[skeleton].symmetries`` does, one
+    ``["lf_claw", "rf_claw"],`` row per line. Callers must go through
+    :func:`_header_scan`, which supplies the missing bracket-depth context.
     """
     stripped = line.strip()
     if not stripped.startswith("["):
@@ -175,6 +188,53 @@ def _header_name(line: str) -> str | None:
     return inner.split(".", 1)[0].strip().strip('"')
 
 
+def _bracket_delta(line: str) -> int:
+    """Net ``[`` minus ``]`` on ``line``, ignoring comments and quoted strings.
+
+    Only used to decide whether the *next* line is inside a multi-line array, so a header
+    line's own balanced brackets cancel and contribute nothing.
+
+    Single-line quoting only: TOML's multi-line basic/literal strings (``\"\"\"``) would
+    need a running state this package has no use for, and the configs here do not use them.
+    """
+    depth = 0
+    quote = ""
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+    return depth
+
+
+def _header_scan(lines: list[str]) -> list[str | None]:
+    """Per line, the top-level table it declares -- ``None`` for everything else.
+
+    The one place the "is this a header?" question is answered, because answering it
+    per-line is wrong in a way that is invisible until some config grows a multi-line array
+    of arrays: a comment line, and any line reached at nonzero bracket depth, cannot be a
+    header however much it looks like one.
+    """
+    out: list[str | None] = []
+    depth = 0
+    for line in lines:
+        stripped = line.lstrip()
+        commented = stripped.startswith("#")
+        name = None if (commented or depth > 0) else _header_name(line)
+        out.append(name)
+        if not commented:
+            depth = max(0, depth + _bracket_delta(line))
+    return out
+
+
 def top_level_tables(text: str) -> list[str]:
     """Every top-level table name declared in ``text``, in order of first appearance.
 
@@ -183,10 +243,7 @@ def top_level_tables(text: str) -> list[str]:
     before declaring them).
     """
     seen: list[str] = []
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            continue
-        name = _header_name(line)
+    for name in _header_scan(text.splitlines()):
         if name and name not in seen:
             seen.append(name)
     return seen
@@ -214,14 +271,15 @@ def extract_tables(text: str, names) -> str:
     """
     wanted = set(names)
     lines = text.splitlines()
+    headers = _header_scan(lines)
     out: list[str] = []
     keeping = False
     # Comments immediately above a header introduce it, so they are buffered and emitted
     # with the block they belong to -- the same convention extract_section relies on.
     pending: list[str] = []
-    for line in lines:
+    for i, line in enumerate(lines):
         stripped = line.lstrip()
-        name = None if stripped.startswith("#") else _header_name(line)
+        name = headers[i]
         if name is not None:
             keeping = name in wanted
             if keeping:
