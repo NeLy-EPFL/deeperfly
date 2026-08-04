@@ -29,6 +29,7 @@ derived stage's output is used downstream only while that stage is *enabled*.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -133,12 +134,55 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
 
 
 def _camera_geometry(config: Config) -> dict:
-    """The ``[cameras]`` table -- the views' pure geometry (intrinsics/extrinsics)."""
+    """The rig the config describes -- the orbit tables *and* the calibration it points at.
+
+    ``camera_table()`` deliberately drops the scalar ``calibration`` key (it is a path, not a
+    view), and that key is what :meth:`~deeperfly.cameras.CameraGroup.from_config` actually
+    builds the rig from when it is set. Fingerprinting only the tables therefore made the
+    solved rig **invisible to the cache**: pointing a project at a different calibration, or
+    re-solving one in place, changed no stage's fingerprint, so cached
+    ``bundle_adjustment`` / ``pictorial_structures`` / ``triangulation`` / ``visualization``
+    outputs were all reused against a rig that no longer existed.
+
+    The file's *content* is digested, not just its path, because re-solving a calibration
+    rewrites it under the same name -- which is the common case, and the one a path alone
+    cannot see.
+    """
     defaults, cams = config.camera_table()
-    return {
+    digest: dict = {
         "defaults": dict(defaults),
         "cameras": {n: dict(s) for n, s in cams.items()},
     }
+    path = config.calibration_path()
+    if path is not None:
+        digest["calibration"] = {
+            # The name travels too: two rigs that happen to hash alike are still two
+            # different artifacts to a human reading `run.json`.
+            "name": Path(path).name,
+            "content": _file_digest(path),
+        }
+    return digest
+
+
+def _file_digest(path) -> str | None:
+    """``sha256:<hex>`` of a calibration file or directory, or ``None`` if unreadable.
+
+    Unreadable yields ``None`` rather than raising: a missing calibration is diagnosed by
+    the rig builder with a message about the rig, and a fingerprint helper is the wrong
+    place to pre-empt it. ``None`` is itself a distinct fingerprint value, so a calibration
+    that disappears still invalidates.
+    """
+    p = Path(path)
+    h = hashlib.sha256()
+    try:
+        files = sorted(p.rglob("*")) if p.is_dir() else [p]
+        for f in files:
+            if f.is_file():
+                h.update(f.name.encode())
+                h.update(f.read_bytes())
+    except OSError:
+        return None
+    return f"sha256:{h.hexdigest()[:16]}"
 
 
 def cameras_source(enabled: dict[str, bool], store: StageStore) -> str:

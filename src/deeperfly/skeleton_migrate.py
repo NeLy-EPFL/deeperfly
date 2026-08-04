@@ -217,9 +217,20 @@ def plan_migration(project, new_skeleton) -> MigrationPlan:
     Returns
     -------
     MigrationPlan
-        The plan, with ``errors`` naming any sidecar that could not be read -- which blocks
-        the migration rather than being skipped, because a half-migrated project is worse
-        than an unmigrated one.
+        The plan, with ``errors`` naming any sidecar that could not be read **or that is not
+        on the axis the project declares** -- either of which blocks the migration rather
+        than being skipped, because a half-migrated project is worse than an unmigrated one.
+
+    Notes
+    -----
+    The axis check is the load-bearing one. ``mapping`` is derived from ``skeleton.toml``
+    alone, and :func:`_rewrite` reads each sidecar's identity *out of the sidecar*, so
+    :func:`~deeperfly.gui.labels._check_identity` compares that file with itself and can
+    never fire. Nothing else asks a ``labels.h5`` which point order its rows are actually
+    on. Without this comparison, a project whose ``skeleton.toml`` has drifted from its
+    sidecars -- by a hand edit, or just by adopting a recording produced under a different
+    config, which :meth:`~deeperfly.project.Project.add_recording` does not check -- has
+    every label silently transposed and then restamped as consistent.
     """
     old = project.skeleton()
     changes, mapping = diff_skeletons(old, new_skeleton)
@@ -235,12 +246,54 @@ def plan_migration(project, new_skeleton) -> MigrationPlan:
         if not path.exists():
             continue
         try:
+            stored = _sidecar_point_names(path)
             counts = _count(path, survivors, mapping)
         except Exception as exc:
             plan.errors.append(f"{path}: {exc}")
             continue
+        if stored is not None and tuple(stored) != plan.old_names:
+            plan.errors.append(_axis_error(path, stored, plan.old_names))
+            continue
         plan.affected[str(path)] = counts
     return plan
+
+
+def _sidecar_point_names(path: Path) -> list[str] | None:
+    """The point order a ``labels.h5``'s rows are actually on, or ``None`` if unstamped."""
+    import json
+
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        meta = json.loads(f.attrs.get("meta", "{}"))
+    names = (meta.get("identity") or {}).get("point_names")
+    return None if names is None else [str(n) for n in names]
+
+
+def _axis_error(path: Path, stored: list[str], declared: tuple[str, ...]) -> str:
+    """Why this sidecar cannot be migrated, and what to do about it.
+
+    Two distinguishable cases, because they call for different repairs: a pure reordering is
+    a bookkeeping mismatch the project can be re-pointed at, while a different *set* of names
+    means the sidecar was authored against another skeleton entirely.
+    """
+    if sorted(stored) == sorted(declared):
+        return (
+            f"{path} holds labels on a DIFFERENT POINT ORDER than the project declares "
+            f"(the same {len(stored)} names, reordered). Migrating with the project's "
+            "mapping would silently transpose every label in it. Point the project's "
+            "skeleton.toml at the order these labels were authored on, then migrate"
+        )
+    only_sidecar = [n for n in stored if n not in declared]
+    only_project = [n for n in declared if n not in stored]
+    return (
+        f"{path} holds labels on a different skeleton than the project declares "
+        f"({len(stored)} points vs {len(declared)}"
+        + (f"; only in the labels: {only_sidecar[:6]}" if only_sidecar else "")
+        + (f"; only in the project: {only_project[:6]}" if only_project else "")
+        + "). It was authored against another skeleton, so the project's mapping does not "
+        "describe it -- reconcile it with 'deeperfly labels-merge', which maps by name"
+    )
 
 
 def _count(path: Path, survivors: set[int], mapping: dict[int, int]) -> dict:

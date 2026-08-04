@@ -242,6 +242,58 @@ def test_bundle_adjustment_fingerprint_is_geometry_only(store):
     )
 
 
+def test_the_calibration_a_config_points_at_is_fingerprinted_by_content(
+    store, tmp_path
+):
+    """A solved rig must invalidate its consumers -- by CONTENT, not merely by path.
+
+    ``camera_table()`` drops the scalar ``calibration`` key (it is a path, not a view), so
+    fingerprinting the tables alone left the rig a run *actually builds from* invisible to
+    the cache. Re-solving a calibration rewrites it under the same name, which is the common
+    case and the one a path cannot see -- so cached bundle_adjustment /
+    pictorial_structures / triangulation / visualization were reused against a rig that no
+    longer existed.
+    """
+    rig = tmp_path / "solved.toml"
+    rig.write_text("# solved rig, pass 1\n")
+    enabled = _cfg().stage_flags()
+    before = stage_fingerprint(
+        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+    )
+
+    # Re-solved IN PLACE: same path, different numbers.
+    rig.write_text("# solved rig, pass 2 -- different numbers\n")
+    after = stage_fingerprint(
+        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+    )
+    assert fingerprint_diff(before, after), (
+        "re-solving in place must invalidate the cache"
+    )
+
+    # And pointing at a different file is a different rig too.
+    other = tmp_path / "other.toml"
+    other.write_text(
+        "# solved rig, pass 2 -- different numbers\n"
+    )  # same bytes, new name
+    elsewhere = stage_fingerprint(
+        "bundle_adjustment", _cfg({"cameras.calibration": str(other)}), enabled, store
+    )
+    assert fingerprint_diff(after, elsewhere)
+
+    # A calibration that vanishes is a distinct state, not a silently unchanged one.
+    rig.unlink()
+    gone = stage_fingerprint(
+        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+    )
+    assert fingerprint_diff(after, gone)
+
+
+def test_an_orbit_only_config_is_unaffected_by_the_calibration_key(store):
+    """The default path must not gain a fingerprint entry it never had."""
+    fp = stage_fingerprint("bundle_adjustment", _cfg(), _cfg().stage_flags(), store)
+    assert "calibration" not in json.dumps(fp)
+
+
 def test_source_selectors_follow_enabled_and_present(store, cameras):
     config = _cfg()
     enabled = {n: True for n in config.stage_flags()}

@@ -181,6 +181,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
         Labels,
         labels_identity,
         load_labels,
+        load_landmark_labels,
         resolve_point_names,
         save_labels,
     )
@@ -251,11 +252,19 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
         vetoed = after[None, :, :]
         vetoed_gt = int((labels.gt_authored & vetoed).sum())
         vetoed_occ = int((labels.occluded & vetoed).sum())
+        # Passed back explicitly: save_labels rewrites the whole file, so omitting the
+        # landmarks would silently DELETE this recording's calibration observations --
+        # which live in the same file but not in the skeleton's namespace, and which an
+        # absence declaration has no business touching.
+        landmarks = load_landmark_labels(
+            labels_path, n_views=result.n_views, n_frames=result.n_frames
+        )
         save_labels(
             labels_path,
             labels,
             identity=identity,
             subject_id=args.subject or labels.subject_id,
+            landmarks=landmarks,
         )
         whole = after.all(axis=0)
         partial = after.any(axis=0) & ~whole

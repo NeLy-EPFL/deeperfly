@@ -267,6 +267,85 @@ def test_an_unreadable_sidecar_blocks_the_whole_migration(tmp_path):
         apply_migration(project, _skeleton(["b", "a"]), plan, snapshot=False)
 
 
+def test_a_sidecar_on_a_different_point_ORDER_blocks_the_migration(tmp_path):
+    """The silent-corruption case, and the reason this check exists.
+
+    ``mapping`` comes from ``skeleton.toml`` alone, and ``_rewrite`` reads each sidecar's
+    identity out of the sidecar itself -- so ``_check_identity`` compares the file with
+    itself and can never fire. If the project's declared order has drifted from the order
+    the labels were authored on, migrating rewrites every row with a mapping that does not
+    describe them, then restamps the file as consistent. Nothing else asks.
+    """
+    project, entry = _project(
+        tmp_path, ("a", "b", "c"), cells={(0, 1, 0): (10.0, 20.0)}
+    )
+    # The drift: the project now declares the reverse order, while the sidecar's rows (and
+    # its stamped identity) are still on a, b, c.
+    project.skeleton_path().write_text(
+        '[skeleton]\nname = "test"\npoint_names = ["c", "b", "a"]\n'
+        '\n[skeleton.limb_points]\nall = ["c", "b", "a"]\n'
+    )
+    plan = plan_migration(project, _skeleton(["a", "b", "c"]))
+
+    assert plan.errors, "a drifted sidecar must be reported, not migrated"
+    assert "DIFFERENT POINT ORDER" in plan.errors[0]
+    assert str(project.labels_path(entry)) in plan.errors[0]
+    # And nothing is counted as safely affected, so the CLI cannot print a reassuring total.
+    assert plan.affected == {}
+    with pytest.raises(ValueError, match="refusing to migrate"):
+        apply_migration(project, _skeleton(["a", "b", "c"]), plan, snapshot=False)
+
+    # The label is untouched: still at index 0, still 'a'.
+    labels = load_labels(
+        project.labels_path(entry),
+        identity=labels_identity(
+            point_names=["a", "b", "c"],
+            camera_names=list(CAMERA_NAMES),
+            n_frames=4,
+            image_sizes=SIZES,
+        ),
+    )
+    assert labels.gt_authored[0, 1, 0]
+    assert tuple(labels.gt[0, 1, 0]) == (10.0, 20.0)
+
+
+def test_a_sidecar_on_a_different_skeleton_names_what_differs(tmp_path):
+    """A different point *set* is a different repair, so it gets a different message."""
+    project, entry = _project(tmp_path, ("a", "b", "c"))
+    project.skeleton_path().write_text(
+        '[skeleton]\nname = "test"\npoint_names = ["a", "b", "z"]\n'
+        '\n[skeleton.limb_points]\nall = ["a", "b", "z"]\n'
+    )
+    plan = plan_migration(project, _skeleton(["a", "b", "z", "w"]))
+    assert plan.errors
+    assert "different skeleton" in plan.errors[0]
+    assert "labels-merge" in plan.errors[0]  # the tool that maps by name
+    assert str(project.labels_path(entry)) in plan.errors[0]
+
+
+def test_a_sidecar_on_the_declared_axis_still_migrates(tmp_path):
+    """The guard must not block the ordinary case it was added to protect."""
+    project, entry = _project(
+        tmp_path, ("a", "b", "c"), cells={(0, 1, 0): (10.0, 20.0)}
+    )
+    plan = plan_migration(project, _skeleton(["c", "b", "a"]))
+    assert not plan.errors
+    assert plan.affected  # counted, ready to apply
+    apply_migration(project, _skeleton(["c", "b", "a"]), plan, snapshot=False)
+    labels = load_labels(
+        project.labels_path(entry),
+        identity=labels_identity(
+            point_names=["c", "b", "a"],
+            camera_names=list(CAMERA_NAMES),
+            n_frames=4,
+            image_sizes=SIZES,
+        ),
+    )
+    # 'a' moved from index 0 to index 2, carrying its pixel -- by NAME.
+    assert labels.gt_authored[0, 1, 2]
+    assert tuple(labels.gt[0, 1, 2]) == (10.0, 20.0)
+
+
 def test_the_rewritten_skeleton_file_round_trips(tmp_path):
     """The migrated skeleton must parse back to exactly what was asked for."""
     project, _ = _project(tmp_path, ("a", "b", "c"))

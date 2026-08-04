@@ -337,6 +337,70 @@ def test_labels_absent_declares_and_clears(tmp_path, result, capsys):
     assert lab is not None and not lab.absent.any()
 
 
+def test_labels_absent_does_not_erase_the_calibration_landmarks(tmp_path, result):
+    """Declaring an amputation must not delete the recording's landmark observations.
+
+    ``save_labels`` is a whole-file rewrite, so a caller that omits ``landmarks=`` silently
+    drops the ``landmarks/`` group -- and absence is per-(frame, point) over the *skeleton*,
+    which has no business touching a namespace it does not share. The observations are
+    operator-placed and unrecoverable, and they are what a from-scratch rig is solved from.
+    """
+    import argparse
+
+    from deeperfly.cli.gui import _cmd_labels_absent
+    from deeperfly.gui.labels import (
+        LandmarkLabels,
+        labels_identity,
+        load_landmark_labels,
+        save_labels,
+    )
+
+    outdir = tmp_path / "deeperfly_outputs"
+    outdir.mkdir()
+    result.save(outdir / "results.h5")
+    identity = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=list(result.cameras.names),
+        n_frames=result.n_frames,
+    )
+    landmarks = LandmarkLabels.empty(
+        result.n_views, result.n_frames, ["tether_tip", "post_base"]
+    )
+    landmarks.xy[0, 0, 0] = (12.5, 34.5)
+    landmarks.xy[1, 0, 1] = (56.5, 78.5)
+    save_labels(
+        outdir / "labels.h5",
+        Labels.empty(result.n_views, result.n_frames, len(result.skeleton.point_names)),
+        identity=identity,
+        landmarks=landmarks,
+    )
+    assert (
+        load_landmark_labels(
+            outdir / "labels.h5", n_views=result.n_views, n_frames=result.n_frames
+        )
+        is not None
+    )
+
+    _cmd_labels_absent(
+        argparse.Namespace(
+            paths=[str(outdir)],
+            points=result.skeleton.point_names[3],
+            subject=None,
+            clear=False,
+            frames=None,
+        )
+    )
+
+    after = load_landmark_labels(
+        outdir / "labels.h5", n_views=result.n_views, n_frames=result.n_frames
+    )
+    assert after is not None, "the landmark group was deleted by an absence declaration"
+    assert after.names == ("tether_tip", "post_base")
+    assert int(after.observed.sum()) == 2
+    assert tuple(after.xy[0, 0, 0]) == (12.5, 34.5)
+    assert tuple(after.xy[1, 0, 1]) == (56.5, 78.5)
+
+
 def test_labels_absent_accepts_a_frame_range(tmp_path, result):
     """`--frames 1:` is the autotomy case: absent from frame 1 to the end."""
     import argparse
