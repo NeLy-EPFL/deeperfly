@@ -309,24 +309,34 @@ def test_the_verb_keys_create_exclude_and_delete_ground_truth(page_and_errors):
 def test_creating_the_annotation_skeleton_auto_hides_the_detections(page_and_errors):
     """The gesture that starts a frame, end to end through the socket.
 
-    Python tests prove `create_instance` seeds correctly; only the browser can prove the
-    gesture reaches it, that the reply's `has_instance` lands, and that the detected layer
-    auto-hides -- all in event handlers where a wrong field name throws while every python
-    test stays green. Asserted through the DOM rather than app internals, so the test cannot
-    pass vacuously.
+    The checkbox is the operator's standing *intent* and stays checked; what changes is what is
+    actually drawn. Keeping those separate is the point -- otherwise "auto-hidden" and "I
+    unchecked it" become the same state and the rule silently overwrites a decision.
     """
     page, errors = page_and_errors
     detected = page.locator("#show-detected")
-    assert detected.is_checked(), "the detected layer starts visible"
+    row = page.locator("#detected-wrap")
+    page.locator("#show-toggle").click()
+    page.wait_for_timeout(200)
+    assert detected.is_checked()
+    assert "is-suppressed" not in (row.get_attribute("class") or "")
+    page.locator("#show-toggle").click()  # close it again
 
     page.keyboard.press("a")  # select every joint in every view
     page.wait_for_timeout(250)
-    page.keyboard.press("Enter")  # creating GT implies the skeleton
+    page.keyboard.press("Enter")  # placing GT implies the skeleton
     page.wait_for_timeout(800)
 
     # The detections seeded the skeleton and would now double every joint on screen.
-    assert not detected.is_checked(), "the detected layer did not auto-hide"
+    assert "is-suppressed" in (row.get_attribute("class") or ""), "no auto-hide"
+    assert detected.is_checked(), "the rule overwrote the operator's own checkbox"
     assert page.locator("#point-status-facts").inner_text() == "ground truth"
+
+    page.keyboard.press("t")  # ... and one key brings them back
+    page.wait_for_timeout(400)
+    assert "is-suppressed" not in (row.get_attribute("class") or ""), (
+        "t did not show them"
+    )
     assert not errors, "JS errors creating the instance:\n  " + "\n  ".join(errors)
 
 
@@ -417,8 +427,8 @@ def test_the_uncalibrated_editor_hides_the_reprojection_layer(uncal_page_and_err
     assert not page.locator("#projected-wrap").is_visible()
     assert not page.locator("#warn-wrap").is_visible()
     # The 2D authoring layers stay: they are what this mode is for.
-    assert page.locator("#gt-wrap").is_visible()
-    assert page.locator("#placeholder-wrap").is_visible()
+    assert page.locator("#detected-wrap").is_visible()
+    assert page.locator("#nongt-row").is_visible()
     assert not errors
 
 

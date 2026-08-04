@@ -244,9 +244,6 @@ class App {
   //: Whether the current frame carries an annotation skeleton. Drives the auto-hide of the
   //: detected layer and what a double-click on a joint means.
   hasInstance = false;
-  //: Whether the detected layer has already been auto-hidden once, so a later frame does not
-  //: keep overriding an operator who turned it back on.
-  _autoHidDetected = false;
   detectedMask = null;
   //: The operator's "exclude this detection from triangulation" mask, per (view, point).
   //: Narrower than `projectedMask`, which is every cell with no position of its own --
@@ -312,15 +309,15 @@ class App {
   /** @type {HTMLInputElement} */
   hideAllCheck = el("show-hide-all");
   /** @type {HTMLInputElement} */
-  seedsCheck = el("show-seeds");
+  autoHideCheck = el("detected-autohide");
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
   /** @type {HTMLLabelElement} */
-  gtWrap = el("gt-wrap");
   /** @type {HTMLInputElement} */
-  gtCheck = el("show-gt");
   /** @type {HTMLLabelElement} */
   detectedWrap = el("detected-wrap");
+  //: The row's own title, kept so the auto-hide note can be swapped in and back out.
+  _detectedTitle = "";
   /** @type {HTMLInputElement} */
   detectedCheck = el("show-detected");
   /** @type {HTMLLabelElement} */
@@ -328,9 +325,7 @@ class App {
   /** @type {HTMLInputElement} */
   projectedCheck = el("show-projected");
   /** @type {HTMLLabelElement} */
-  placeholderWrap = el("placeholder-wrap");
   /** @type {HTMLInputElement} */
-  placeholderCheck = el("show-placeholder");
   /** @type {HTMLDivElement} */
   warnSection = el("warn-section");
   /** @type {HTMLLabelElement} */
@@ -627,11 +622,19 @@ class App {
     this.reserveStatusNameWidth();
 
     this.hideAllCheck.addEventListener("change", () => this.applyHideAll());
-    this.seedsCheck.addEventListener("change", () => this.applySeedDisplay());
+    this._detectedTitle = this.detectedWrap.title;
+    this.autoHideCheck.addEventListener("change", () => this.applyDetected());
+    // Where an unplaced joint is drawn -- a MODE of the one skeleton, not a layer, which is
+    // why it is a two-value switch nested under it rather than a checkbox among the layers.
+    this.nongtSwitch = segmented(
+      [["3D reprojection", "reprojection"], ["seed", "seed"]],
+      (v) => this.setNongtDisplay(v),
+    );
+    el("nongt-switch").append(this.nongtSwitch.root);
+    this.nongtSwitch.set(this.nongtDisplay);
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The ground-truth and detected source layers exist without 3D (they are the authored
     // pixels and the raw detector output); only the projected source needs a 3D solve.
-    this.gtCheck.addEventListener("change", () => this.applyGt());
     this.detectedCheck.addEventListener("change", () => this.applyDetected());
     // No solved rig -> say so, once, at the top. `has_cameras` is distinct from
     // `has_3d`: a calibrated recording whose triangulation stage has not run also has no
@@ -643,7 +646,6 @@ class App {
     // The "Unplaced" placeholder seeds are the guarantee that no joint is ever unreachable: a cell
     // with nothing else drawn still gets a faint ghost to drag into a GT label (the authored 2D
     // needs no prior 3D), so the layer is available with or without a 3D solve.
-    this.placeholderCheck.addEventListener("change", () => this.applyPlaceholder());
     // The reprojection-distance warning flags joints whose GT/detected pixel is far from the 3D
     // reprojection -- only meaningful with a 3D solve, so it shares the projected row's has_3d gate.
     const warnAvailable = this.meta.has_3d;
@@ -930,17 +932,9 @@ class App {
     // un-occlude, but is a strict subset here).
     this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
     if (p.invisible) this.excludedMask = p.invisible;
-    if (p.has_instance != null) {
-      const born = p.has_instance && !this.hasInstance;
+    if (p.has_instance != null && p.has_instance !== this.hasInstance) {
       this.hasInstance = p.has_instance;
-      // The detections have done their job once a skeleton exists: they seeded it, and
-      // leaving them drawn doubles every joint. Hidden once, not every frame -- an operator
-      // who turns them back on is answering a question and must not be overridden.
-      if (born && !this._autoHidDetected && this.detectedCheck.checked) {
-        this._autoHidDetected = true;
-        this.detectedCheck.checked = false;
-        this.detectedCheck.dispatchEvent(new Event("change"));
-      }
+      this.applyDetected(); // the auto-hide rule is derived from it, so re-resolve
     }
     // Absence rides every reply (it gates drawing), so assign unconditionally rather than
     // keeping a previous value the way `pred` / `placeholder` do.
@@ -1012,13 +1006,14 @@ class App {
   // where the geometry says the joint is. The seed is where the skeleton started: the honest
   // single-view answer, and what to look at when the geometry is suspect. Server-side, since
   // it is the server that resolves the position (EditorState.nongt_display).
-  applySeedDisplay() {
-    this.sendEdit({
-      type: "set_nongt_display",
-      value: this.seedsCheck.checked ? "seed" : "reprojection",
-      frame: this.frame,
-      mode: this.mode,
-    });
+  //: Where a joint you have NOT placed is drawn: "reprojection" (the default) or "seed".
+  nongtDisplay = "reprojection";
+
+  /** @param {string} value */
+  setNongtDisplay(value) {
+    this.nongtDisplay = value;
+    this.nongtSwitch.set(value);
+    this.sendEdit({ type: "set_nongt_display", value, frame: this.frame, mode: this.mode });
   }
 
   applyLabels() {
@@ -1026,14 +1021,38 @@ class App {
     this.views.forEach((view) => view.setLabelsVisible(visible));
   }
 
-  applyGt() {
-    const visible = this.gtCheck.checked;
-    this.views.forEach((view) => view.setGtVisible(visible));
+
+  //: Whether the detected reference layer is actually drawn: the operator's standing intent,
+  //: minus the auto-hide rule. Derived rather than stored, so "auto-hidden" and "I unchecked
+  //: it" never collapse into the same state -- the checkbox keeps meaning what they asked for.
+  detectedShown() {
+    return (
+      this.detectedCheck.checked &&
+      !(this.autoHideCheck.checked && this.hasInstance)
+    );
+  }
+
+  // `t` has to do something every time it is pressed. When the layer is suppressed by the
+  // auto-hide rule rather than by the operator, the honest response is to lift the rule -- not
+  // to toggle a checkbox whose state is already what they wanted.
+  toggleDetected() {
+    if (this.detectedCheck.checked && !this.detectedShown()) {
+      this.autoHideCheck.checked = false;
+    } else {
+      this.detectedCheck.checked = !this.detectedCheck.checked;
+    }
+    this.applyDetected();
   }
 
   applyDetected() {
-    const visible = this.detectedCheck.checked;
-    this.views.forEach((view) => view.setDetectedVisible(visible));
+    const shown = this.detectedShown();
+    this.views.forEach((view) => view.setDetectedVisible(shown));
+    // The row says what is actually drawn while the checkbox keeps saying what was asked for.
+    const suppressed = this.detectedCheck.checked && !shown;
+    this.detectedWrap.classList.toggle("is-suppressed", suppressed);
+    this.detectedWrap.title = suppressed
+      ? "auto-hidden: this frame has an annotation skeleton (t shows them again)"
+      : this._detectedTitle;
   }
 
   applyProjected() {
@@ -1041,10 +1060,6 @@ class App {
     this.views.forEach((view) => view.setProjectedVisible(visible));
   }
 
-  applyPlaceholder() {
-    const visible = this.placeholderCheck.checked;
-    this.views.forEach((view) => view.setPlaceholderVisible(visible));
-  }
 
   applyWarn() {
     const on = this.warnCheck.checked;
@@ -2728,9 +2743,9 @@ class App {
     // press again to restore them exactly as they were. Leads the "show" group -- it governs
     // all the per-layer toggles below it.
     b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
-    b.push({ key: "s", group: "show", label: "s", desc: "Seed positions — draw non-ground-truth joints where the skeleton started, instead of at the reprojection of its 3D", run: () => this.toggleCheck(this.seedsCheck, () => this.applySeedDisplay()) });
+    b.push({ key: "s", group: "show", label: "s", desc: "Where an unplaced joint is drawn — the reprojection of its 3D, or the seed the skeleton started from", run: () => this.setNongtDisplay(this.nongtDisplay === "seed" ? "reprojection" : "seed") });
+    b.push({ key: "t", group: "show", label: "t", desc: "Detected — the detector's own output, as a read-only reference", run: () => this.toggleDetected() });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
-    b.push({ key: "i", group: "show", label: "i", desc: "Unplaced-point seeds — draggable ghosts wherever a joint has nothing else to grab", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
     if (has3d) {
       b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
       b.push({ key: "w", group: "show", label: "w", desc: "Reprojection-distance warning", run: () => this.toggleCheck(this.warnCheck, () => this.applyWarn()) });

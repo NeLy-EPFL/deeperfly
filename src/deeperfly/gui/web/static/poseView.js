@@ -211,13 +211,11 @@ export class PoseView {
     // projected layer is the reprojection of the derived 3D, its own dashed overlay, on by
     // default as a guide. There used to be a fourth, "Combined", merging GT and detected
     // into one skeleton; the instance owns every position now, so there is nothing to merge.
-    this.gtVisible = true;
     this.detectedVisible = true;
     this.projectedVisible = true;
     // The "Unplaced" layer: faint, draggable ghost seeds for joints a view has nothing
     // to grab for (no GT / detected / reprojected point) -- e.g. a joint triangulation
     // rejected. On by default; dragging a ghost authors GT like any other seed.
-    this.placeholderVisible = true;
     // Calibration landmarks observed in THIS view at the current frame, or null. Their own
     // layer because they are their own namespace: a landmark is not a skeleton joint, has no
     // bones, no confidence and no 3D of its own here, and it drives only the rig solve.
@@ -497,7 +495,7 @@ export class PoseView {
   // the view inspect-only (pan/zoom still work). The `h` peek (overlaysHidden) also drops it: a
   // point you cannot see must not be draggable, so a peek can't be misread as an edit surface.
   get canGrab() {
-    return this.editable && this.gtVisible && !this.overlaysHidden;
+    return this.editable && !this.overlaysHidden;
   }
 
   /** @param {boolean} zoomable  whether wheel-zoom + pan are allowed (large views only) */
@@ -509,12 +507,6 @@ export class PoseView {
 
   /** @param {boolean} visible  merge mode: on = GT + Detected draw as one skeleton, off = two separate skeletons */
 
-  /** @param {boolean} visible  whether the ground-truth layer is drawn (also the editable layer) */
-  setGtVisible(visible) {
-    if (this.gtVisible === visible) return;
-    this.gtVisible = visible;
-    this.draw();
-  }
 
   /** @param {boolean} visible  whether the detected (raw prediction) source layer is drawn */
   setDetectedVisible(visible) {
@@ -530,12 +522,6 @@ export class PoseView {
     this.draw();
   }
 
-  /** @param {boolean} visible  whether the "Unplaced" placeholder-seed layer is drawn (and grabbable) */
-  setPlaceholderVisible(visible) {
-    if (this.placeholderVisible === visible) return;
-    this.placeholderVisible = visible;
-    this.draw();
-  }
 
   /** @param {boolean} visible  whether the reprojection-distance warning cue is drawn */
   setWarnVisible(visible) {
@@ -653,12 +639,17 @@ export class PoseView {
     // (see drawReprojection). It is its own layer in every mode and never merges in. It owns the
     // name labels only when it is the sole visible layer -- i.e. neither GT nor Detected is shown
     // (the joint overlay below claims them otherwise).
-    const anySkeleton = this.gtVisible || this.detectedVisible;
+    const anySkeleton = true; // the annotation skeleton is always drawn
     const reprojLabels = this.labelsVisible && !anySkeleton;
     if (this.projectedVisible && this.latent) this.drawReprojection(this.latent, reprojLabels);
     // The "Unplaced" seeds sit above the reprojection but below the editable skeleton. They only
     // exist where nothing else is drawn (see placeholderPos), so ordering never hides a real point.
-    if (this.placeholderVisible && this.placeholder) this.drawPlaceholders();
+    // Ghosts only before there is a skeleton. After that every cell of the instance has a
+    // drawn position -- filled from this same chain where it has no evidence-backed seed
+    // (state.py _seed_instance) -- so a ghost could only be a second, contradictory dot for one
+    // cell. That is also why the layer lost its toggle: the state it serves lasts from arriving
+    // on a frame until the first keystroke.
+    if (!this.instanceMode && this.placeholder) this.drawPlaceholders();
     if (this.landmarksVisible && this.landmarks) this.drawLandmarks();
     // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
@@ -832,7 +823,7 @@ export class PoseView {
 
   /** @param {number} i @returns {Point | null} */
   placeholderPos(i) {
-    if (!this.placeholderVisible) return null;
+    if (this.instanceMode) return null; // the instance draws every cell itself
     if (!this.placeholder || i >= this.placeholder.length || !this.placeholder[i]) return null;
     if (this.gtPos(i)) return null;
     if (this.detectedVisible && this.detPos(i)) return null;
@@ -863,14 +854,12 @@ export class PoseView {
     if (i === this.dragging && this.moved && this.pts[i]) {
       return { pos: this.pts[i], src: "gt" };
     }
-    if (this.gtVisible) {
-      const g = this.gtPos(i);
-      if (g) return { pos: g, src: "gt" };
-    }
+    const g = this.gtPos(i);
+    if (g) return { pos: g, src: "gt" };
     // The instance owns every position, so a non-GT node is still drawn from `pts` -- at
     // the reprojection of its point's current 3D, or its frozen seed, whichever the
     // operator chose. It reads as derived (thin ring) rather than authored (lime ring).
-    if (this.instanceMode && this.gtVisible && this.pts[i]) {
+    if (this.instanceMode && this.pts[i]) {
       return { pos: this.pts[i], src: "projected" };
     }
     if (this.detectedVisible) {
@@ -901,10 +890,8 @@ export class PoseView {
   /** @param {number} i @returns {Point | null} */
   anchorPos(i) {
     if (i === this.dragging && this.moved && this.pts[i]) return this.pts[i];
-    if (this.gtVisible) {
-      const g = this.gtPos(i);
-      if (g) return g;
-    }
+    const g = this.gtPos(i);
+    if (g) return g;
     // The instance's own drawn position, for the same reason grabCandidates needs it: the
     // ring and the label must anchor where the joint IS, not where the reprojection is.
     if (this.instanceMode && this.pts[i]) return this.pts[i];
@@ -1037,14 +1024,14 @@ export class PoseView {
   // however a joint is drawn: the selection ring, the name label, and hover emphasis. Each is
   // placed at anchorPos(i) -- GT else detected else projected -- so a selected or hovered joint
   // still reads even before it has a GT pixel (a fresh detected-only or projected-only joint).
-  // Selection + hover belong to the editable layer (gated on gtVisible); labels ride whenever a
+  // Selection + hover belong to the editable layer; labels ride whenever a
   // GT/Detected skeleton is shown (else the projected overlay owns them, see draw()).
   drawJointOverlay() {
-    const anySkeleton = this.gtVisible || this.detectedVisible;
+    const anySkeleton = true;
     const wantLabels = this.labelsVisible && anySkeleton;
-    const wantSel = this.gtVisible && this.selectionSet.size > 0;
+    const wantSel = this.selectionSet.size > 0;
     const hi = this.highlight;
-    const wantHover = this.gtVisible && hi != null;
+    const wantHover = hi != null;
     if (!wantLabels && !wantSel && !wantHover) return;
     const ctx = this.ctx;
     const n = Math.max(

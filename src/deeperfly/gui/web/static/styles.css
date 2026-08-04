@@ -179,6 +179,10 @@ body {
 }
 
 .popover-menu {
+  /* The bar sits at the screen's bottom edge and the menu opens upward, so an over-tall menu
+     does not merely lose its scrollbar -- its top rows render off-viewport and unreachable. */
+  max-height: min(70vh, 620px);
+  overflow-y: auto;
   position: absolute;
   left: 0;
   bottom: calc(100% + 6px);
@@ -561,6 +565,13 @@ body {
 
 /* The facts line beside the name: what IS true of the cell, never a control. Deliberately
    quiet -- it is read on demand, and it sits in a toolbar that already carries the verbs. */
+/* A layer the auto-hide rule is suppressing: the checkbox still says what the operator asked
+   for, so the row is dimmed to say what is actually drawn. */
+#show-menu label.is-suppressed .pm-name {
+  opacity: 0.55;
+  font-style: italic;
+}
+
 .point-status-facts {
   display: inline-block;
   flex: 0 0 auto;
