@@ -51,6 +51,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
+import { BundleAdjustPanel } from "./baPanel.js";
 import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
@@ -61,7 +62,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"labeled" | "suggest" | "marks" | "jobs" | "settings"} SidebarTab */
+/** @typedef {"labeled" | "suggest" | "marks" | "bundle" | "jobs" | "settings"} SidebarTab */
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -455,6 +456,9 @@ class App {
   /** @type {HTMLDivElement} */
   suggestPane = el("suggest-pane");
   /** @type {HTMLDivElement} */
+  baPane = el("ba-pane");
+  /** The Bundle-adjust pane owns itself; built on first activation. @type {any} */
+  baPanel = null;
   jobsPane = el("jobs-pane");
   /** @type {HTMLDivElement} */
   marksPane = el("marks-pane");
@@ -653,7 +657,7 @@ class App {
     // order), so they are separate tabs rather than one filtered list. Reuses the
     // established `.segmented` component, so the strip needs no new visual language.
     this.sidebarTabs = segmented(
-      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Jobs", "jobs"], ["Settings", "settings"]],
+      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Bundle adjust", "bundle"], ["Jobs", "jobs"], ["Settings", "settings"]],
       (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
     );
     this.sidebarTabsEl.append(this.sidebarTabs.root);
@@ -2431,6 +2435,24 @@ class App {
   // terminal-sized progress bar; a number synthesized from those would be a fiction with a
   // spinner attached, so the last log line is shown instead -- which is the honest signal.
 
+  /** Build the Bundle-adjust pane on first use, then refresh it.
+   *
+   * Lazy because the plan route gathers every label in the session to compute readiness,
+   * which is wasted work for an operator who never opens the tab.
+   */
+  refreshBundleAdjust() {
+    if (this.baPanel === null) {
+      this.baPanel = new BundleAdjustPanel(this.baPane, {
+        isReadOnly: () => Boolean(this.readOnly),
+        isDirty: () => Boolean(this.dirty),
+        // A new rig changes every derived position, so the views must be redrawn from the
+        // server rather than from anything this page still holds.
+        onRigChanged: () => this.refreshPoints(),
+      });
+    }
+    this.baPanel.refresh();
+  }
+
   startJobsPolling() {
     this.refreshJobs();
     if (this.jobsTimer === null) {
@@ -2741,6 +2763,7 @@ class App {
     this.sidebarTabs.set(tab);
     this.labeledPane.hidden = tab !== "labeled";
     this.suggestPane.hidden = tab !== "suggest";
+    this.baPane.hidden = tab !== "bundle";
     this.jobsPane.hidden = tab !== "jobs";
     this.marksPane.hidden = tab !== "marks";
     this.settingsPane.hidden = tab !== "settings";
@@ -2749,6 +2772,7 @@ class App {
     if (tab === "suggest") this.refreshSuggestions();
     // Poll only while the panel is actually visible: a background poll on a tab nobody is
     // looking at is pure waste, and a long detection run would make it thousands of them.
+    if (tab === "bundle") this.refreshBundleAdjust();
     if (tab === "jobs") this.startJobsPolling();
     else this.stopJobsPolling();
     if (tab === "marks") this.renderLandmarks();

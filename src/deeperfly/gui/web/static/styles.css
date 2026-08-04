@@ -1496,3 +1496,36 @@ body.arming-landmark canvas { cursor: crosshair !important; }
   letter-spacing: 0.04em;
   color: #d7a03a;
 }
+
+/* -- Bundle adjustment pane (static/baPanel.js) ------------------------------
+   Sized to the same narrow sidebar the other panes live in, so the fix/free
+   matrix has to stay compact: one short column per parameter group and the
+   camera name doing the explaining. */
+#ba-pane { padding: 10px 12px 18px; overflow-y: auto; }
+.ba-section { margin-bottom: 18px; }
+.ba-section h4 { margin: 0 0 4px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; opacity: .75; }
+.ba-note { margin: 0 0 12px; padding: 8px 10px; border-left: 3px solid #6aa9c9; background: #1b2733; font-size: 11px; line-height: 1.45; }
+.ba-problem { margin: 4px 0; padding: 7px 9px; border-left: 3px solid #d1596b; background: #2a1c20; font-size: 11px; line-height: 1.45; }
+.ba-warn { margin: 4px 0; padding: 7px 9px; border-left: 3px solid #c9a227; background: #272317; font-size: 11px; line-height: 1.45; }
+.ba-ok { margin: 6px 0; padding: 7px 9px; border-left: 3px solid #5fb37a; background: #1a2620; font-size: 11px; line-height: 1.45; }
+.ba-matrix { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ba-matrix th { text-align: left; font-weight: 500; opacity: .6; padding: 3px 4px; font-size: 10px; }
+.ba-matrix td { padding: 2px 4px; border-top: 1px solid #23313d; }
+.ba-matrix tr.is-free .ba-cam { color: #ffd479; font-weight: 600; }
+.ba-cam { font-family: var(--mono, monospace); }
+.ba-count { text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
+.ba-count.is-zero { color: #d1596b; }
+.ba-held { opacity: .45; }
+.ba-grid { display: flex; flex-direction: column; gap: 5px; }
+.ba-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
+.ba-field input[type="number"], .ba-field input[type="text"], .ba-field select { width: 44%; font-size: 11px; }
+.ba-label { opacity: .8; }
+.ba-run { width: 100%; margin-top: 8px; padding: 6px; font-size: 12px; }
+.ba-result { margin-top: 10px; }
+.ba-cal-list { display: flex; flex-direction: column; gap: 4px; }
+.ba-cal { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center;
+          padding: 6px 8px; border: 1px solid #23313d; border-radius: 3px; }
+.ba-cal.is-active { border-color: #5fb37a; background: #182320; }
+.ba-cal-name { font-size: 11px; font-family: var(--mono, monospace); }
+.ba-cal-meta { grid-column: 1 / -1; font-size: 10px; opacity: .65; line-height: 1.4; }
+.ba-active-tag { font-size: 10px; color: #5fb37a; }

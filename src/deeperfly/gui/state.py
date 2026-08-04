@@ -896,6 +896,29 @@ class EditorState:
     def _invalidate_frame3d(self, t: int) -> None:
         self._pts3d_cache.pop(t, None)
 
+    def invalidate_derived(self) -> None:
+        """Drop every derived 3D, so the next read re-solves it from the CURRENT rig.
+
+        For the one operation that changes the geometry under the labels rather than the
+        labels themselves: swapping the calibration the editor derives from. Every cached
+        row was solved through the old cameras, so keeping any of it would mix two rigs in
+        one file -- a 3D point from the old geometry reprojected through the new one.
+
+        This is lossy in exactly one way, and the loss is inherent rather than a bug. A drag
+        on a point with fewer than two usable views stores a ray-slide of the prior 3D (see
+        :meth:`_settle_point3d`), which the labels cannot reproduce -- so that depth lives
+        only here. But it was a depth along a ray cast by the OLD camera; once that camera
+        moves the ray moves with it and the stored depth no longer means anything. Callers
+        should still make sure the operator has saved, and say what is being discarded.
+
+        The undo history is dropped for the same reason: its snapshots restore label state,
+        but the 3D they were taken against is gone.
+        """
+        self._pts3d_cache.clear()
+        self._nmf_cache.clear()
+        self._undo.clear()
+        self._redo.clear()
+
     def display_pts3d(
         self, frame: int | None = None
     ) -> Float[np.ndarray, "P 3"] | None:

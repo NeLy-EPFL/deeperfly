@@ -235,6 +235,10 @@
           <div id="settings-list" class="settings-list"></div>
           <div id="settings-empty" class="frames-empty"></div>
         </div>
+        <!-- Bundle adjustment: solve the rig from the ground truth in this session, save it
+             as a new calibration, and choose which calibration the editor derives from. The
+             whole pane is built by static/baPanel.js, which owns this one node. -->
+        <div class="sidebar-body" id="ba-pane" hidden></div>
         <div class="sidebar-body" id="jobs-pane" hidden>
           <div id="jobs-actions" class="jobs-actions"></div>
           <div id="jobs-list" class="jobs-list"></div>
