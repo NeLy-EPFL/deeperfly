@@ -1443,27 +1443,12 @@ class App {
     // cell whose GT already overrides its detection, and on a joint that is not there.
     const anyWithoutGt = this.selCells().some(([v, p]) => !(this.fixedMask && this.fixedMask[v][p]));
     const anyWithGt = this.selCells().some(([v, p]) => this.fixedMask && this.fixedMask[v][p]);
-    this.createBtn.disabled =
-      n === 0 || this.readOnly || allAbsent || this.visibleSources() === null || !anyWithoutGt;
+    this.createBtn.disabled = n === 0 || this.readOnly || allAbsent || !anyWithoutGt;
     this.deleteGtBtn.disabled = n === 0 || this.readOnly || !anyWithGt;
     // Labeled cells included: "placed through an occluder" is both facts at once.
     this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent;
   }
 
-  // Which proposal layers Enter is allowed to take a pixel from: the ones the operator can
-  // actually SEE. "Create GT from what's shown" has to mean shown -- taking a pixel from a
-  // layer that was deliberately hidden would author a position nobody looked at. This is
-  // also what makes the label-off-the-projection workflow exact: hide Detected and every
-  // dot on screen is a reprojection, so Enter turns the projected skeleton into GT.
-  /** @returns {"all" | "predictions" | "projections" | null} */
-  visibleSources() {
-    const det = this.detectedCheck.checked;
-    const proj = this.projectedCheck.checked;
-    if (det && proj) return "all";
-    if (det) return "predictions";
-    if (proj) return "projections";
-    return null; // nothing on screen to affirm
-  }
 
   // Create GT for the selection at the position already drawn there. The bulk half of a
   // drag: it authors the dot the operator is looking at so the joint becomes theirs, ready
@@ -1471,12 +1456,7 @@ class App {
   createSelectionGt() {
     const targets = this.selCells();
     if (!targets.length) return;
-    const sources = this.visibleSources();
-    if (sources === null) {
-      this.flash("nothing to create ground truth from — both proposal layers are hidden");
-      return;
-    }
-    this.sendEdit({ type: "confirm", targets, sources, frame: this.frame, mode: this.mode });
+    this.sendEdit({ type: "confirm", targets, frame: this.frame, mode: this.mode });
   }
 
   // Delete the selection's GT pixels, leaving any exclusion alone. Distinct from Reset,

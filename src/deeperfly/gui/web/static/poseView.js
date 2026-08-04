@@ -905,6 +905,9 @@ export class PoseView {
       const g = this.gtPos(i);
       if (g) return g;
     }
+    // The instance's own drawn position, for the same reason grabCandidates needs it: the
+    // ring and the label must anchor where the joint IS, not where the reprojection is.
+    if (this.instanceMode && this.pts[i]) return this.pts[i];
     if (this.detectedVisible) {
       const d = this.detPos(i);
       if (d) return d;
@@ -1535,6 +1538,14 @@ export class PoseView {
     if (this.isAbsent(i)) return [this.absentPos(i)];
     return [
       this.gtPos(i),
+      // The instance's own drawn position. Without this a non-GT joint is grabbable only by
+      // coincidence -- `pts[i]` equals the reprojection under the default display, so
+      // `shownLatentPos` happens to answer at the same pixel. Hide the reprojection (`p`) and
+      // it answers null; switch to seed positions (`s`) and it answers at a DIFFERENT pixel
+      // than the one drawn. Either way the joint stops being clickable while still visible --
+      // and with the detections auto-hidden, the contralateral joints this project exists for
+      // would be the ones to go.
+      this.instanceMode ? this.pts[i] : null,
       this.detectedVisible ? this.detPos(i) : null,
       this.shownLatentPos(i),
       // The Unplaced placeholder is the lowest-priority seed: it only exists where the three

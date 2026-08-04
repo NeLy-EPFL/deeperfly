@@ -952,7 +952,7 @@ def test_marking_another_point_absent_keeps_a_hand_placed_depth(
 
 def test_bulk_confirm_keeps_an_untargeted_hand_placed_depth(result):
     state, placed = _hand_placed_unplaced_joint(result)
-    state.confirm([(v, OTHER) for v in range(state.n_views)], "all", 1)
+    state.confirm([(v, OTHER) for v in range(state.n_views)], 1)
     _assert_unplaced_held(state, placed)
     state.undo()
     _assert_unplaced_held(state, placed)
@@ -1038,11 +1038,11 @@ def test_a_drag_settles_onto_the_configured_solve(result):
 # -- bulk confirm -------------------------------------------------------------
 
 
-def test_confirm_predictions_promotes_to_gt(result):
+def test_confirm_authors_gt_for_the_selection(result):
     state = EditorState.from_result(result)
     f = 0
     targets = [(v, 5) for v in range(state.n_views)]
-    assert state.confirm(targets, "predictions", f) is True
+    assert state.confirm(targets, f) is True
     for v in range(state.n_views):
         assert state.labels.has_gt[v, f, 5]
     # one undo step reverts the whole bulk confirm
@@ -1055,19 +1055,61 @@ def test_confirm_skips_occluded_and_existing_gt(result):
     f = 0
     state.toggle_invisible(0, 5, f)  # occlude view 0
     state.toggle_fixed(1, 5, f)  # already GT at view 1
-    state.confirm([(v, 5) for v in range(state.n_views)], "predictions", f)
+    state.confirm([(v, 5) for v in range(state.n_views)], f)
     assert not state.labels.has_gt[0, f, 5]  # occluded view left untouched
     assert state.labels.occluded[0, f, 5]
     assert state.labels.has_gt[1, f, 5]  # pre-existing GT kept
 
 
-def test_confirm_projections_uses_reprojection(result):
+def test_confirm_stores_the_position_that_was_drawn(result):
+    """No source to choose: the skeleton has one position per cell, and that is the one."""
     state = EditorState.from_result(result)
     f, point = 0, 5
-    proj = state.display_pts3d_projected(f)[:, point].copy()
-    assert state.confirm([(v, point) for v in range(state.n_views)], "projections", f)
+    state.create_instance(f)
+    shown = state.display_instance_pts2d(f)[:, point].copy()
+    assert state.confirm([(v, point) for v in range(state.n_views)], f)
     for v in range(state.n_views):
-        assert np.allclose(state.labels.gt[v, f, point], proj[v], atol=1e-6)
+        np.testing.assert_allclose(state.labels.gt[v, f, point], shown[v], atol=1e-6)
+
+
+def test_confirm_on_a_fresh_frame_stores_what_was_on_screen(result):
+    """Not the freshly triangulated reprojection creating the skeleton produces.
+
+    Creating the instance re-solves the frame, so reading the positions afterwards would
+    store something the operator never saw. The snapshot has to precede the creation.
+    """
+    state = EditorState.from_result(result)
+    f, point = 0, 5
+    assert not state.has_instance(f)
+    before = state.display_pts2d(f)[:, point].copy()
+    assert state.confirm([(v, point) for v in range(state.n_views)], f)
+    assert state.has_instance(f)  # ... and it did create one
+    for v in range(state.n_views):
+        np.testing.assert_allclose(state.labels.gt[v, f, point], before[v], atol=1e-6)
+
+
+def test_confirm_never_authors_a_position_the_editor_invented(result):
+    """The select-all hazard, and the reason the invented mask exists.
+
+    A joint the detector predicts in no view gets no seed, and if its 3D is unsolvable too
+    then its DRAWN position comes from the placeholder chain -- a neighbour mean, the view
+    centroid, the image centre. Those keep it grabbable; they are not observations. Without
+    this skip, `a` then Enter writes "the operator placed this pixel" at a view centroid,
+    across every frame of a labeling pass, on exactly the contralateral joints an
+    ipsilateral-only detector leaves unseeded.
+    """
+    p_gone = 7
+    result.pts2d[:, :, p_gone] = np.nan  # predicted in no view
+    result.pts3d[:, p_gone] = np.nan  # ... and no 3D to reproject either
+    state = EditorState.from_result(result)
+    state.create_instance(0)
+    assert np.isfinite(state.display_instance_pts2d(0)[:, p_gone]).all()  # drawn ...
+
+    state.confirm([(v, p_gone) for v in range(state.n_views)], 0)
+    assert not state.labels.has_gt[:, 0, p_gone].any(), "authored an invented pixel"
+    # a joint that DOES have evidence is authored normally
+    state.confirm([(v, 5) for v in range(state.n_views)], 0)
+    assert state.labels.has_gt[:, 0, 5].any()
 
 
 def test_clear_gt_reverts_to_prediction(result):
@@ -1161,9 +1203,7 @@ def test_confirm_skips_a_cell_with_nothing_on_screen(result):
     state.result.pts2d[1, 0, 6] = [100.0, 999.0]  # off-image in y
     state.result.pts2d[2, 0, 7] = [np.nan, np.nan]  # nothing at all
     n_pts = result.pts2d.shape[2]
-    state.confirm(
-        [(v, p) for v in range(state.n_views) for p in range(n_pts)], "all", 0
-    )
+    state.confirm([(v, p) for v in range(state.n_views) for p in range(n_pts)], 0)
 
     for v, p in ((0, 5), (1, 6), (2, 7)):
         assert not state.labels.has_gt[v, 0, p]  # skipped: no dot on screen to approve
@@ -1224,7 +1264,7 @@ def test_bulk_confirm_skips_absent_points(result):
     p = 4
     state.set_absent([p], True)
     targets = [(v, pt) for v in range(state.n_views) for pt in range(state.n_points)]
-    state.confirm(targets, "all", 0)
+    state.confirm(targets, 0)
     assert not state.labels.gt_authored[:, 0, p].any()
     assert state.labels.has_gt[:, 0, 5].any()  # other points were confirmed
 

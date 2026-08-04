@@ -1138,7 +1138,6 @@ def test_ws_confirm_promotes_predictions(client, result):
             {
                 "type": "confirm",
                 "targets": [[v, 5] for v in range(result.n_views)],
-                "sources": "predictions",
                 "frame": 0,
                 "mode": "edit_3d",
                 "seq": 1,
@@ -1302,7 +1301,6 @@ def test_ws_confirm_noop_preserves_redo(client):
             {
                 "type": "confirm",
                 "targets": [[0, 1]],
-                "sources": "all",
                 "frame": 0,
                 "mode": "edit_2d",
             }

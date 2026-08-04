@@ -909,7 +909,13 @@ def _points_payload(
         payload["conf"] = _conf_to_json(s.result.conf, t)
         payload["chirality"] = _chirality_to_json(s, t)
     if verbose:
-        payload["pred"] = _points_to_json(np.asarray(s.result.pts2d[:, t]))
+        # `s.detections`, not `result.pts2d`: the Detected overlay has to be what the network
+        # said. `result.pts2d` is the triangulation-cleaned array and, in a directory prepared
+        # for contralateral labeling, has reprojected geometry written over 43% of its finite
+        # cells (see EditorState.detections). The solve and the primary layer were switched to
+        # `detections`; this reference overlay was missed, so the layer labelled "Detected" was
+        # drawing something else.
+        payload["pred"] = _points_to_json(np.asarray(s.detections[:, t]))
         # Draggable seeds for joints unobserved in a view (no detection / reprojection),
         # so a GT can still be placed where triangulation dropped the point. Depends on
         # the frame's GT / occlusion / 3D state, so -- unlike `pred` -- it refreshes on
@@ -1283,7 +1289,7 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.toggle_invisible(int(msg["view"]), int(msg["point"]), t)
     elif typ == "confirm":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
-        s.confirm(targets, str(msg.get("sources", "all")), t)
+        s.confirm(targets, t)
     elif typ == "reset":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         s.reset_targets(targets, t)

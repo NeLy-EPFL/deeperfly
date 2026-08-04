@@ -1419,42 +1419,52 @@ class EditorState:
             return True
         return bool(0.0 <= float(xy[0]) <= w - 1.0 and 0.0 <= float(xy[1]) <= h - 1.0)
 
-    def confirm(
-        self,
-        targets,
-        sources: str = "all",
-        frame: int | None = None,
-    ) -> bool:
-        """Create GT at the *displayed* position for many ``(view, point)`` targets at once.
+    def confirm(self, targets, frame: int | None = None) -> bool:
+        """Create GT at the *drawn* position for many ``(view, point)`` targets at once.
 
-        The bulk form of a drag's first half: it plants a GT pixel where the operator can
-        already see a dot, so the joint is authored and can then be nudged. ``sources``
-        picks which proposal layers are eligible -- ``"predictions"`` (the detection),
-        ``"projections"`` (the reprojected 3D), or ``"all"`` (detection where it fired,
-        else the reprojection).
+        The bulk half of a drag: it plants a GT pixel where the operator can already see the
+        joint, so it becomes theirs and can then be nudged. There is no source to choose any
+        more -- the annotation skeleton has one position per cell, and that is the one on
+        screen -- which is why this used to take a ``sources`` argument and no longer does.
 
-        The stored coordinate is the displayed one, because bulk-creating GT means "these
-        dots are right", and storing anything other than the dot the operator saw would
-        record a position they never approved.
+        Two cells are skipped, and both matter:
 
-        A cell with **nothing on screen** is skipped, not invented. An off-image
-        reprojection, or a joint with no 3D and no detection, has no dot to approve; its
-        Unplaced seed (:meth:`placeholder_pts2d`) is already a draggable handle, so the
-        editor does not need to store a fabricated pixel to give the operator something to
-        grab. Occluded views, already-GT views and absent points are skipped too -- for an
-        absent point a select-all would otherwise author GT on a phantom limb in every
-        frame visited. One undo step; the touched points re-derive once. Returns whether
-        anything changed.
+        * one whose drawn position is **off-image**: there is no dot to approve.
+        * one whose position the editor **invented**. Where an instance has no evidence-backed
+          seed and no reprojection either, :meth:`display_instance_pts2d` falls back to the
+          placeholder chain, whose last rungs are the mean of a joint's neighbours, the view
+          centroid, and the image centre. Those exist so the joint stays grabbable. Authoring
+          them would write "the operator placed this pixel" at a view centroid -- and with
+          ``a`` then Enter, tens of thousands of times, on exactly the contralateral joints an
+          ipsilateral-only detector leaves unseeded.
+
+        Cells that are already GT, declared absent, or marked not-visible are skipped too. The
+        last is deliberate: per cell, marking a hidden joint's position is legitimate (that is
+        what a drag does), but this verb is reachable via select-all, and sweeping every cell
+        the operator said they cannot see into "I placed this pixel" is a claim they did not
+        make. One undo step. Returns whether anything changed.
         """
         t = self._resolve_frame(frame)
         saved_redo = list(self._redo)
+        # Snapshot what is on screen BEFORE creating anything. Creating the instance re-solves
+        # the frame, so reading the positions afterwards would store a freshly triangulated
+        # reprojection the operator never saw.
+        shown = self.display_instance_pts2d(t)
+        if shown is None:
+            shown = self.display_pts2d(t)
+        proj = self.display_pts3d_projected(t) if self.has_3d else None
+        seeded = np.isfinite(self.labels.seeds[:, t]).all(axis=-1)
+        proj_ok = (
+            np.zeros_like(seeded)
+            if proj is None
+            else np.isfinite(np.asarray(proj, dtype=float)).all(axis=-1)
+        )
+        invented = (
+            ~seeded & ~proj_ok
+        )  # the placeholder chain is the only thing left there
+
         self._record_undo(t, None, coalesce=False)
-        # Authoring GT presupposes a skeleton, whichever verb does it -- not just a drag.
-        # Folded into this entry, so the whole bulk create stays one ctrl-Z.
         created = self._ensure_instance(t)
-        want_pred = sources in ("all", "predictions")
-        want_proj = sources in ("all", "projections")
-        proj = self.display_pts3d_projected(t) if want_proj else None
         changed = False
         touched: set[int] = set()  # the points to re-derive (never the whole frame)
         absent = self.labels.absent_at(t)
@@ -1463,17 +1473,11 @@ class EditorState:
                 absent[point]
                 or self.labels.occluded[view, t, point]
                 or self.labels.has_gt[view, t, point]
+                or invented[view, point]
             ):
                 continue
-            xy = None
-            pred = self.detections[view, t, point]
-            if want_pred and np.all(np.isfinite(pred)):
-                xy = pred
-            if xy is None and proj is not None:
-                cand = proj[view, point]
-                if np.all(np.isfinite(cand)):
-                    xy = cand
-            if xy is None or not self._on_image(view, xy):
+            xy = np.asarray(shown[view, point], dtype=float)
+            if not np.all(np.isfinite(xy)) or not self._on_image(view, xy):
                 continue
             self.labels.set_gt(view, t, point, xy)
             touched.add(point)
@@ -1485,7 +1489,6 @@ class EditorState:
             # Nothing was authored, but the skeleton was created on the way in: that IS a
             # change, so the entry stays and the frame keeps its instance.
             changed = True
-            self._rederive_points(t, range(self.n_points))
             self._invalidate_nmf(t)
         else:
             self._undo.pop()  # nothing changed: drop the no-op undo entry
