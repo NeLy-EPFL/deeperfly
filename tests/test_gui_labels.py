@@ -162,6 +162,132 @@ def test_load_different_recording_refused(tmp_path, result):
         load_labels(path, identity=other)
 
 
+def test_a_reordered_camera_axis_is_remapped_by_name(tmp_path, result):
+    """A from-scratch session names its views in the footage table's ALPHABETICAL order; a
+    run names them in config order. Same cameras, different order -- refusing that threw
+    away hand labels for a bookkeeping difference.
+    """
+    names = list(result.cameras.names)
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (1.0, 2.0))  # authored on camera names[0]
+    path = tmp_path / "labels.h5"
+    save_labels(path, lab, identity=_identity(result))
+
+    shuffled = names[::-1]
+    other = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=shuffled,
+        n_frames=result.n_frames,
+        image_sizes={n: (256, 256) for n in shuffled},
+        footage={n: {"rel": [f"{n}.mp4"]} for n in shuffled},
+    )
+    loaded = load_labels(path, identity=other)
+    assert loaded is not None
+    # The pixel followed its CAMERA: names[0] is last in the reversed order.
+    assert loaded.gt_authored[len(names) - 1, 0, 1]
+    np.testing.assert_allclose(loaded.gt[len(names) - 1, 0, 1], [1.0, 2.0])
+    assert not loaded.gt_authored[0, 0, 1]
+
+
+def test_renamed_cameras_are_remapped_by_their_footage(tmp_path, result):
+    """The from-scratch break, exactly: ``camera_F`` before a run, ``f`` after it.
+
+    The two names share no string, so name matching cannot bridge them -- but both are
+    recorded against the same footage file, and a camera IS its footage. Without this, every
+    label authored before the first run was refused afterwards, which is the whole
+    label-first-then-calibrate workflow walking into a wall.
+    """
+    names = list(result.cameras.names)
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(2, 1, 3, (7.0, 8.0))
+    path = tmp_path / "labels.h5"
+    # Authored from a bare directory: views named after the FILE STEMS, alphabetically.
+    stems = sorted(f"camera_{n}" for n in names)
+    stem_of = {f"camera_{n}": n for n in names}
+    save_labels(
+        path,
+        lab,
+        identity=labels_identity(
+            point_names=list(result.skeleton.point_names),
+            camera_names=stems,
+            n_frames=result.n_frames,
+            image_sizes={s: (256, 256) for s in stems},
+            footage={s: {"abs": [f"/data/{s}.mp4"]} for s in stems},
+        ),
+    )
+    # After the run: view names, config order, same footage files.
+    after = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=names,
+        n_frames=result.n_frames,
+        image_sizes={n: (256, 256) for n in names},
+        footage={n: {"abs": [f"/data/camera_{n}.mp4"]} for n in names},
+    )
+    loaded = load_labels(path, identity=after)
+    assert loaded is not None, "the labels were refused after the first run"
+    # stems[2] is some camera_X; its pixel must land on view names.index(X).
+    expected = names.index(stem_of[stems[2]])
+    np.testing.assert_allclose(loaded.gt[expected, 1, 3], [7.0, 8.0])
+    assert int(loaded.gt_authored.sum()) == 1
+
+
+def test_cameras_that_cannot_be_put_in_correspondence_are_still_refused(
+    tmp_path, result
+):
+    """The remap must not become a way to accept genuinely foreign labels."""
+    names = list(result.cameras.names)
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (1.0, 2.0))
+    path = tmp_path / "labels.h5"
+    save_labels(path, lab, identity=_identity(result))
+
+    alien = [f"zzz{i}" for i in range(len(names))]
+    other = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=alien,
+        n_frames=result.n_frames,
+        image_sizes={n: (256, 256) for n in alien},
+        footage={n: {"rel": [f"{n}.mp4"]} for n in alien},  # different files too
+    )
+    with pytest.raises(ValueError, match="cannot be put in correspondence"):
+        load_labels(path, identity=other)
+
+
+def test_a_reordered_camera_axis_still_refuses_a_size_mismatch(tmp_path, result):
+    """Through the correspondence, not around it: a same-camera size change stays fatal."""
+    names = list(result.cameras.names)
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (1.0, 2.0))
+    path = tmp_path / "labels.h5"
+    save_labels(path, lab, identity=_identity(result))
+
+    shuffled = names[::-1]
+    other = labels_identity(
+        point_names=list(result.skeleton.point_names),
+        camera_names=shuffled,
+        n_frames=result.n_frames,
+        image_sizes={n: (128, 128) for n in shuffled},  # a crop changed
+        footage={n: {"rel": [f"{n}.mp4"]} for n in shuffled},
+    )
+    with pytest.raises(ValueError, match="different recording"):
+        load_labels(path, identity=other)
+
+
+def test_the_point_axis_is_never_silently_remapped(tmp_path, result):
+    """Points stay exact. Reordering them is a project-wide migration with a dry run and a
+    confirmation ('deeperfly project skeleton'); remapping here would bypass both.
+    """
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 1, (1.0, 2.0))
+    path = tmp_path / "labels.h5"
+    save_labels(path, lab, identity=_identity(result))
+
+    other = dict(_identity(result))
+    other["point_names"] = list(reversed(other["point_names"]))
+    with pytest.raises(ValueError, match="different result"):
+        load_labels(path, identity=other)
+
+
 def test_load_different_domain_refused(tmp_path, result):
     lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
     lab.set_gt(0, 0, 1, (1.0, 2.0))

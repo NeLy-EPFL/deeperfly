@@ -135,7 +135,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -621,43 +620,200 @@ def labels_identity(
 
 
 def _footage_basenames(footage: dict | None) -> dict[str, list[str]]:
-    """``camera -> sorted footage file basenames`` from a StageStore footage map."""
-    out: dict[str, list[str]] = {}
-    for cam, spec in (footage or {}).items():
-        paths: list[str] = []
-        if isinstance(spec, dict):
-            for key in ("rel", "abs"):
-                paths = list(spec.get(key) or [])
-                if paths:
-                    break
-        elif isinstance(spec, (list, tuple)):
-            paths = list(spec)
-        out[str(cam)] = sorted(os.path.basename(str(p)) for p in paths)
-    return out
+    """``camera -> sorted footage file basenames`` from any footage pointer map.
 
-
-def _check_identity(stored: dict, current: dict, path: Path) -> None:
-    """Raise ``ValueError`` if ``stored`` labels do not belong to ``current``.
-
-    The index domain must match exactly (name-based remap of reordered points/cameras
-    is a future enhancement); the recording fingerprint must match wherever both
-    sides carry it (a bare ``results.h5`` with no footage/sizes cannot be checked on
-    those fields and falls back to the index domain).
+    One line, because :func:`deeperfly.footage.basenames` is the shared projection -- and it
+    is deliberately byte-identical to what this function used to compute, so adopting it
+    cannot invalidate a single stored label.
     """
-    for key in ("point_names", "camera_names", "n_frames"):
+    from ..footage import basenames
+
+    return {str(cam): basenames(spec) for cam, spec in (footage or {}).items()}
+
+
+def _check_identity(stored: dict, current: dict, path: Path) -> dict[int, int] | None:
+    """Validate that ``stored`` labels belong to ``current``, and say how to read them.
+
+    Returns
+    -------
+    dict of int to int, or None
+        ``stored view index -> current view index`` when the two disagree about the camera
+        axis but describe the same cameras (see :func:`_camera_correspondence`); ``None``
+        when no remap is needed. The caller applies it to the stored COO rows.
+
+    Raises
+    ------
+    ValueError
+        If the two do not describe the same recording at all.
+
+    Notes
+    -----
+    ``point_names`` and ``n_frames`` must still match **exactly**. Points are the axis whose
+    reordering is a project-wide migration (``deeperfly project skeleton``), and remapping
+    them silently here would bypass its dry run and its confirmation.
+
+    Cameras are different, and they had to become so: this rig names the same seven cameras
+    three ways -- file stems from a bare directory, source names from a config, view names
+    from the detection plan -- so labels authored *before* a recording was ever run were
+    stamped with one naming and then refused after the first run, which is the whole
+    label-first-then-calibrate workflow walking into a wall.
+    """
+    for key in ("point_names", "n_frames"):
         if stored.get(key) != current.get(key):
             raise ValueError(
                 f"{path} labels do not match this result ({key} differs); "
                 "they belong to a different result"
             )
+    remap = _camera_correspondence(stored, current, path)
+    # Sizes and footage are compared per camera *through* the correspondence, so a rename
+    # does not read as a different recording.
+    _check_per_camera(stored, current, remap, path)
+    return remap
+
+
+def _camera_correspondence(
+    stored: dict, current: dict, path: Path
+) -> dict[int, int] | None:
+    """``stored view -> current view``, or ``None`` when the axes already agree.
+
+    Three attempts, in decreasing confidence, and never an index-based fallback:
+
+    1. **Identical name lists** -- nothing to do.
+    2. **By name.** Handles a pure reordering: a from-scratch session names its views in the
+       alphabetical order of ``recording.toml``'s footage table, while a run names them in
+       config order.
+    3. **By footage.** Handles a *rename*, which name matching cannot: ``camera_F`` and ``f``
+       share no string, but if both are recorded against the same footage file they are the
+       same camera. This matches on what a camera *is* rather than on what it is called.
+
+    Raises
+    ------
+    ValueError
+        When neither correspondence is complete. A partial one is refused rather than applied
+        to the cameras it does cover: the uncovered views' rows would silently vanish.
+    """
+    s_names = list(stored.get("camera_names") or [])
+    c_names = list(current.get("camera_names") or [])
+    if s_names == c_names:
+        return None
+    if not s_names or not c_names:
+        raise ValueError(
+            f"{path} labels do not match this result (camera_names differs); "
+            "they belong to a different result"
+        )
+
+    by_name = {i: c_names.index(n) for i, n in enumerate(s_names) if n in c_names}
+    if len(by_name) == len(s_names):
+        log.info(
+            "%s: the camera order changed (%s -> %s); its rows are remapped by NAME",
+            path.name,
+            s_names,
+            c_names,
+        )
+        return by_name
+
+    by_footage = _match_by_footage(stored, current, s_names, c_names)
+    if by_footage is not None:
+        log.info(
+            "%s: the cameras were renamed (%s -> %s); its rows are remapped by matching "
+            "each camera's FOOTAGE, which is what identifies it",
+            path.name,
+            s_names,
+            c_names,
+        )
+        return by_footage
+
+    raise ValueError(
+        f"{path} labels do not match this result: its cameras are {s_names} and this "
+        f"result's are {c_names}, and they cannot be put in correspondence by name or by "
+        "footage. The stored GT pixels would be attributed to the wrong view, so they are "
+        "refused"
+    )
+
+
+def _match_by_footage(stored, current, s_names, c_names) -> dict[int, int] | None:
+    """Camera correspondence from each camera's footage basenames, or ``None``."""
+    s_foot, c_foot = stored.get("footage") or {}, current.get("footage") or {}
+    if not s_foot or not c_foot:
+        return None
+
+    # basename tuple -> index, on each side. A repeated tuple makes the match ambiguous, and
+    # an ambiguous match is no match.
+    def _index(names, footage):
+        out: dict[tuple, int] = {}
+        for i, name in enumerate(names):
+            key = tuple(_footage_basenames({name: footage.get(name)}).get(name) or ())
+            if not key or key in out:
+                return None
+            out[key] = i
+        return out
+
+    s_index, c_index = _index(s_names, s_foot), _index(c_names, c_foot)
+    if s_index is None or c_index is None:
+        return None
+    mapping = {i: c_index[key] for key, i in s_index.items() if key in c_index}
+    return mapping if len(mapping) == len(s_names) else None
+
+
+def _remap_views(index: np.ndarray, remap: dict[int, int]) -> np.ndarray:
+    """Rewrite the view column of COO rows. A view with no home is dropped, loudly.
+
+    Dropping cannot happen through :func:`_camera_correspondence`, which refuses a partial
+    correspondence -- this is the belt-and-braces path, so a future caller that hands over an
+    incomplete map loses rows visibly rather than mis-attributing them.
+    """
+    if not index.size:
+        return index
+    out = np.array(index, copy=True)
+    keep = np.zeros(len(out), dtype=bool)
+    for i, row in enumerate(out):
+        j = remap.get(int(row[0]))
+        if j is None:
+            continue
+        out[i, 0] = j
+        keep[i] = True
+    if not keep.all():
+        log.warning(
+            "dropped %d label row(s) whose camera has no place in this result",
+            int((~keep).sum()),
+        )
+    return out[keep]
+
+
+def _check_per_camera(
+    stored: dict, current: dict, remap: dict[int, int] | None, path: Path
+) -> None:
+    """Compare ``image_sizes`` and ``footage`` per camera, through the correspondence.
+
+    Compared *through* the remap rather than as whole dicts, because a rename changes every
+    key of both maps while changing nothing about the recording. A same-camera size mismatch
+    is still fatal: ground truth is stored in footage pixels.
+    """
+    s_names = list(stored.get("camera_names") or [])
+    c_names = list(current.get("camera_names") or [])
+    pairs = (
+        [(n, n) for n in s_names]
+        if remap is None
+        else [(s_names[i], c_names[j]) for i, j in remap.items()]
+    )
     for key in ("image_sizes", "footage"):
-        s, c = stored.get(key), current.get(key)
-        if s and c and s != c:
-            raise ValueError(
-                f"{path} labels belong to a different recording ({key} differs -- e.g. "
-                "a changed resolution/crop or different footage); the stored GT pixels "
-                "would be misinterpreted, so they are refused"
-            )
+        s, c = stored.get(key) or {}, current.get(key) or {}
+        if not s or not c:
+            continue
+        for s_name, c_name in pairs:
+            a, b = s.get(s_name), c.get(c_name)
+            if a is None or b is None:
+                continue
+            if key == "footage":
+                a = _footage_basenames({s_name: a}).get(s_name)
+                b = _footage_basenames({c_name: b}).get(c_name)
+            if a != b:
+                raise ValueError(
+                    f"{path} labels belong to a different recording ({key} differs for "
+                    f"camera {s_name!r}/{c_name!r} -- e.g. a changed resolution/crop or "
+                    "different footage); the stored GT pixels would be misinterpreted, so "
+                    "they are refused"
+                )
 
 
 # -- persistence --------------------------------------------------------------
@@ -940,7 +1096,7 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
             f"this build understands v{LABELS_FORMAT_VERSION}); refusing to read it "
             "rather than silently dropping state it carries"
         )
-    _check_identity(stored_identity, identity, p)
+    view_remap = _check_identity(stored_identity, identity, p)
 
     # Quarantined rows rejoin the live ones -- they are authored state, just vetoed.
     if vgt_index.size:
@@ -949,6 +1105,14 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
         gt_prov = np.concatenate([gt_prov, vgt_prov])
     if vocc_index.size:
         occ_index = np.concatenate([occ_index, vocc_index])
+
+    # The camera axis moved (a reorder, or a rename bridged by footage). Rewrite the view
+    # column of every stored row before it is materialized -- once, here, so no consumer
+    # downstream has to know the axis ever differed.
+    if view_remap is not None:
+        gt_index = _remap_views(gt_index, view_remap)
+        occ_index = _remap_views(occ_index, view_remap)
+        seed_index = _remap_views(seed_index, view_remap)
 
     n_views = len(identity["camera_names"])
     n_frames = int(identity["n_frames"])
