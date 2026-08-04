@@ -170,7 +170,10 @@ def _cmd_labels_merge(args: argparse.Namespace) -> None:
         dest_path,
         dest,
         identity=dest_identity,
-        subject_id=dest.subject_id,
+        # The source's subject id is taken only to fill a gap, never to overwrite: it groups
+        # one specimen's several clips and shares an absence declaration between them, so
+        # losing it costs that grouping -- but the destination's own answer wins.
+        subject_id=dest.subject_id or source.subject_id,
         landmarks=landmarks,
     )
     project.bump_iteration()
@@ -209,6 +212,8 @@ def _print(report, slug: str, source_path: Path, *, applying: bool) -> None:
         ("cells already identical", report.identical),
         ("cells dropped (no destination point)", report.dropped_cells),
         ("occlusions taken", report.occluded_taken),
+        ("instance seeds taken", report.seeds_taken),
+        ("frames newly carrying an annotation skeleton", report.instances_added),
         ("absence declarations added", report.absent_union),
         ("frames newly marked reviewed", report.reviewed_added),
         ("conflicts needing a human", len(report.unresolved)),

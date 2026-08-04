@@ -27,6 +27,19 @@ both authored identically is a no-op. A genuine disagreement is two operators di
 about where a keypoint is, and nothing in the data ranks one above the other, so it goes to
 a review queue rather than being resolved by a coin flip.
 
+Every piece of authored state in a ``labels.h5`` travels, not just the pixels: ``gt``,
+``occluded``, ``seeds``, ``instance``, ``reviewed`` and ``absent``. Two of those have rules
+worth stating here, because getting them wrong is silent:
+
+- **Seeds are additive, never overwritten.** A seed is where an instance's keypoint
+  *started* -- evidence, not a claim -- so two sides cannot conflict over one. But
+  overwriting a seed is reseeding, and reseeding is an explicit operator gesture; a merge
+  must not do it as a side effect.
+- **The instance flag is unioned AND implied.** A frame this merge put a GT or seed row into
+  gains the flag even if the source never carried one. Without that, imported labels land in
+  a frame the editor treats as having no annotation skeleton and the whole frame drops back
+  to the pre-v8 display layer -- which looks like the labels went missing.
+
 Every merge is **dry-run by default** and writes a pre-merge snapshot before applying.
 """
 
@@ -134,6 +147,7 @@ def remap_labels(
     """
     out = Labels.empty(n_views, n_frames, n_points)
     gt_mask = source.gt_authored
+    seed_mask = np.isfinite(source.seeds).all(axis=-1)
     for v_src, v_dst in cameras.source_to_dest.items():
         if v_src >= gt_mask.shape[0] or v_dst >= n_views:
             continue
@@ -148,9 +162,20 @@ def remap_labels(
             occ = source.occluded[v_src, :frames, p_src]
             if occ.any():
                 out.occluded[v_dst, np.nonzero(occ)[0], p_dst] = True
+            # Seeds move by name too. They are the instance's start positions -- authored
+            # state, persisted precisely so a re-run cannot silently re-solve every non-GT
+            # point -- so dropping them here would discard what the file exists to keep.
+            sd = seed_mask[v_src, :frames, p_src]
+            if sd.any():
+                rows = np.nonzero(sd)[0]
+                out.seeds[v_dst, rows, p_dst] = source.seeds[v_src, rows, p_src]
 
     frames = min(source.reviewed.shape[0], n_frames)
     out.reviewed[:frames] |= source.reviewed[:frames]
+    # The per-frame instance flag is view- and point-independent, so it needs no name
+    # reconciliation -- only truncation to the destination's frame count.
+    inst_frames = min(source.instance.shape[0], n_frames)
+    out.instance[:inst_frames] |= source.instance[:inst_frames]
     absent = np.asarray(source.absent, dtype=bool)
     for p_src, p_dst in points.source_to_dest.items():
         if p_src < absent.shape[1] and p_dst < n_points:
@@ -187,6 +212,12 @@ class MergeReport:
     occluded_taken: int = 0
     absent_union: int = 0
     reviewed_added: int = 0
+    #: Instance seeds taken where the destination had none (never overwritten).
+    seeds_taken: int = 0
+    #: Frames that gained an annotation skeleton -- unioned from the source, plus every
+    #: frame this merge put a GT or seed row into. Without the second half, imported labels
+    #: land in a frame the editor treats as un-annotated.
+    instances_added: int = 0
     fatal: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -215,6 +246,8 @@ class MergeReport:
             "occluded_taken": self.occluded_taken,
             "absent_union": self.absent_union,
             "reviewed_added": self.reviewed_added,
+            "seeds_taken": self.seeds_taken,
+            "instances_added": self.instances_added,
             "fatal": self.fatal,
             "notes": self.notes,
         }
@@ -331,14 +364,48 @@ def merge_labels(
         elif decision.outcome == "ours":
             report.kept_from_dest += 1
 
-    # Occlusions: taken where the destination has neither a label nor an occlusion. An
-    # occlusion is a weaker statement than a pixel, so it never displaces one.
+    # Occlusions: taken where the destination has no occlusion of its own.
+    #
+    # Deliberately NOT gated on the destination having a GT pixel. That gate predates v8,
+    # which made the two facts **orthogonal**: a joint can be hand-placed *through* an
+    # occluder from the geometry of the other views, and recording both is exactly right
+    # (see the labels module docstring). Under the old rule a source occlusion was silently
+    # discarded on every cell the destination had a pixel for -- losing a training signal
+    # nothing else can supply.
     for v, t, p in zip(*np.nonzero(mapped.occluded)):
-        if dest.gt_authored[v, t, p] or dest.occluded[v, t, p]:
+        if dest.occluded[v, t, p]:
             continue
         if apply:
             dest.set_occluded(v, t, p, True)
         report.occluded_taken += 1
+
+    # Seeds: additive only, never overwriting. A seed is *evidence* (where the instance's
+    # keypoint started), not a claim, so there is nothing for two sides to conflict over --
+    # but overwriting one is reseeding, which is an explicit operator gesture in the editor
+    # and must not happen as a side effect of a merge.
+    theirs_seeded = np.isfinite(mapped.seeds).all(axis=-1)
+    ours_seeded = np.isfinite(dest.seeds).all(axis=-1)
+    fresh_seeds = theirs_seeded & ~ours_seeded
+    report.seeds_taken = int(fresh_seeds.sum())
+    if apply and report.seeds_taken:
+        dest.seeds[fresh_seeds] = mapped.seeds[fresh_seeds]
+        dest.dirty = True
+
+    # The instance flag: unioned, and then *implied* for every frame this merge put a GT or
+    # seed row into. The second half is not cosmetic -- it is what stops imported labels
+    # landing in a frame the editor treats as having no annotation skeleton, which drops the
+    # whole frame back to the pre-v8 display layer.
+    implied = np.zeros(n_frames, dtype=bool)
+    if report.taken_from_source or report.seeds_taken:
+        implied |= (theirs & ~ours).any(axis=(0, 2))
+        implied |= fresh_seeds.any(axis=(0, 2))
+    wanted = (np.asarray(mapped.instance, dtype=bool) | implied) & ~np.asarray(
+        dest.instance, dtype=bool
+    )
+    report.instances_added = int(wanted.sum())
+    if apply and report.instances_added:
+        dest.instance |= wanted
+        dest.dirty = True
 
     # Absence is unioned rather than resolved: both sides are claims about the animal, and
     # a declaration is non-destructive by construction (the labels underneath are

@@ -165,16 +165,109 @@ def test_an_unknown_policy_is_refused():
 # -- the other authored state ---------------------------------------------------
 
 
-def test_an_occlusion_never_displaces_a_pixel():
-    """An occlusion is the weaker statement: "I cannot place it", not "it is here"."""
+def test_an_occlusion_and_a_hand_placed_pixel_now_coexist():
+    """v8 made the two facts ORTHOGONAL, so an occlusion no longer has to yield to a pixel.
+
+    A joint can be hand-placed *through* an occluder from the geometry of the other views,
+    and recording both is exactly right. The old rule -- "an occlusion never displaces a
+    pixel" -- silently discarded a source occlusion on every cell the destination had a
+    pixel for, losing a training signal nothing else can supply. Nothing is displaced here
+    either: ``gt`` and ``occluded`` are separate arrays.
+    """
     dest = _labels({(0, 0, 0): (1.0, 1.0)})
     source = Labels.empty(2, 3, 3)
     source.set_occluded(0, 0, 0, True)
     source.set_occluded(1, 0, 0, True)
     report = _merge(dest, source)
-    assert report.occluded_taken == 1  # only the cell with no destination label
-    assert dest.gt_authored[0, 0, 0]
-    assert dest.occluded[1, 0, 0]
+    assert report.occluded_taken == 2  # both, including the one over a GT pixel
+    assert dest.gt_authored[0, 0, 0]  # the pixel is untouched
+    assert tuple(dest.gt[0, 0, 0]) == (1.0, 1.0)
+    assert dest.occluded[0, 0, 0] and dest.occluded[1, 0, 0]
+
+
+def test_an_occlusion_the_destination_already_has_is_not_double_counted():
+    dest = _labels({})
+    dest.set_occluded(0, 0, 0, True)
+    source = Labels.empty(2, 3, 3)
+    source.set_occluded(0, 0, 0, True)
+    assert _merge(dest, source).occluded_taken == 0
+
+
+def test_seeds_are_carried_across_by_name():
+    """A seed is authored state -- the array persisted so a re-run cannot re-solve it."""
+    dest = _labels({})
+    source = Labels.empty(2, 3, 3)
+    source.seeds[0, 1, 2] = (7.0, 8.0)
+    report = _merge(dest, source)
+    assert report.seeds_taken == 1
+    np.testing.assert_allclose(dest.seeds[0, 1, 2], [7.0, 8.0])
+
+
+def test_a_seed_is_never_overwritten_because_reseeding_is_a_deliberate_gesture():
+    dest = _labels({})
+    dest.seeds[0, 1, 2] = (1.0, 2.0)
+    source = Labels.empty(2, 3, 3)
+    source.seeds[0, 1, 2] = (9.0, 9.0)
+    report = _merge(dest, source)
+    assert report.seeds_taken == 0
+    np.testing.assert_allclose(dest.seeds[0, 1, 2], [1.0, 2.0])
+
+
+def test_seeds_are_remapped_by_name_not_by_index():
+    """The same hazard as GT: a reordered source must not transpose its seeds."""
+    source = Labels.empty(2, 3, 3)
+    source.seeds[0, 0, 0] = (5.0, 5.0)  # 'abdomen' in the reversed order
+    dest = _labels({})
+    _merge(dest, source, point_names_source=list(reversed(POINTS)))
+    np.testing.assert_allclose(dest.seeds[0, 0, 2], [5.0, 5.0])  # 'abdomen' is index 2
+    assert not np.isfinite(dest.seeds[0, 0, 0]).all()
+
+
+def test_an_imported_gt_frame_gains_an_annotation_skeleton():
+    """Otherwise the editor treats the frame as un-annotated and drops to the pre-v8 layer.
+
+    The source here carries NO instance flag of its own -- which is exactly what a pre-v8
+    label set looks like -- so a plain union would leave the frame flagless.
+    """
+    dest = _labels({})
+    source = Labels.empty(2, 3, 3)
+    source.set_gt(0, 1, 0, (3.0, 4.0))
+    assert not source.instance.any()
+    report = _merge(dest, source)
+    assert report.taken_from_source == 1
+    assert report.instances_added == 1
+    assert dest.instance[1]
+    assert not dest.instance[0] and not dest.instance[2]
+
+
+def test_a_frame_that_only_gained_a_seed_also_gains_the_flag():
+    dest = _labels({})
+    source = Labels.empty(2, 3, 3)
+    source.seeds[0, 2, 1] = (1.0, 1.0)
+    report = _merge(dest, source)
+    assert report.instances_added == 1
+    assert dest.instance[2]
+
+
+def test_the_sources_own_instance_flags_are_unioned_in():
+    dest = _labels({})
+    source = Labels.empty(2, 3, 3)
+    source.instance[0] = True  # a created instance with nothing authored on it yet
+    report = _merge(dest, source)
+    assert report.instances_added == 1
+    assert dest.instance[0]
+
+
+def test_a_dry_run_reports_seeds_and_instances_without_writing_them():
+    dest = _labels({})
+    source = Labels.empty(2, 3, 3)
+    source.seeds[0, 1, 2] = (7.0, 8.0)
+    source.set_gt(0, 1, 0, (3.0, 4.0))
+    report = _merge(dest, source, apply=False)
+    assert report.seeds_taken == 1 and report.instances_added == 1
+    assert not np.isfinite(dest.seeds).any()
+    assert not dest.instance.any()
+    assert not dest.gt_authored.any()
 
 
 def test_absence_is_unioned_because_declaring_it_destroys_nothing():
