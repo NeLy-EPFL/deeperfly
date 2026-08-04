@@ -690,7 +690,48 @@ def test_re_adopting_warns_when_the_duplicate_carries_labels_the_index_cannot_se
 
     assert again.id == first.id  # correctly deduplicated
     assert "will NOT count" in caplog.text
-    assert "40 ground-truth point" in caplog.text
+    assert "40 ground-truth cell(s)" in caplog.text
+    # And it names the command that reconciles them, rather than telling the operator to
+    # pick one copy to abandon.
+    assert "import-outputs" in caplog.text
+
+
+def test_a_smaller_but_disjoint_second_label_set_is_still_reported(
+    cameras, fly, tmp_path, project, caplog
+):
+    """Two annotators on DIFFERENT frames: the smaller set is entirely unseen.
+
+    Comparing totals returned early here and said nothing at all -- the incoming set is
+    smaller, so it "looked" like a subset. Cells are what matter, not counts.
+    """
+    from deeperfly.gui.labels import Labels, labels_identity, save_labels
+
+    big = _make_recording(tmp_path / "big" / "flyA")
+    small = _make_recording(tmp_path / "small" / "flyA")
+    _make_outputs(big, cameras, fly, gt_cells=0)
+    outputs = _make_outputs(small, cameras, fly, gt_cells=0)
+
+    def _write(path, cells):
+        labels = Labels.empty(len(CAMERA_NAMES), 6, len(fly.point_names))
+        for v, t, p in cells:
+            labels.set_gt(v, t, p, (1.0 * t, 2.0 * p))
+        save_labels(
+            path,
+            labels,
+            identity=labels_identity(
+                point_names=list(fly.point_names),
+                camera_names=list(CAMERA_NAMES),
+                n_frames=6,
+            ),
+        )
+
+    entry = project.add_recording(big)
+    _write(project.labels_path(entry), [(0, 0, i) for i in range(10)])
+    _write(outputs / "labels.h5", [(0, 3, i) for i in range(4)])  # fewer, but disjoint
+
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        project.add_recording(small)
+    assert "4 ground-truth cell(s) this project will NOT count" in caplog.text
 
 
 def test_re_adopting_a_duplicate_with_no_extra_labels_is_quiet(

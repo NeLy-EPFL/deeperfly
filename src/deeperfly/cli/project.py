@@ -381,6 +381,191 @@ def _cmd_project_import(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
+    """Merge stray ``deeperfly_outputs/`` corrections in (``deeperfly project import-outputs``)."""
+    from ..import_outputs import find_outputs, import_outputs
+
+    project = _open(args.project)
+    sources = []
+    for raw in args.sources:
+        try:
+            found = find_outputs(raw)
+        except FileNotFoundError as exc:
+            console.print(f"[red]skipped[/red] {raw}: {exc}", highlight=False)
+            continue
+        if not found:
+            console.print(
+                f"[yellow]skipped[/yellow] {raw}: no deeperfly_outputs/ there",
+                highlight=False,
+            )
+            continue
+        sources += found
+
+    if not sources:
+        raise SystemExit("no outputs directories found in what you passed")
+
+    _info_line("project:  ", f"{project.name}  ({project.root})")
+    _info_line("iteration:", str(project.iteration))
+    _info_line("sources:  ", str(len(sources)))
+
+    try:
+        plans = import_outputs(
+            project,
+            sources,
+            recording=args.recording,
+            on_conflict=args.on_conflict,
+            on_absent=args.on_absent,
+            apply=False,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+
+    for plan in plans:
+        _print_import(plan)
+
+    counts: dict[str, int] = {}
+    for plan in plans:
+        counts[plan.outcome] = counts.get(plan.outcome, 0) + 1
+    console.print(
+        "\n"
+        + ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+        + f"  (of {len(plans)} source(s))",
+        highlight=False,
+    )
+
+    blocked = [p for p in plans if p.outcome == "fatal"]
+    mergeable = [p for p in plans if p.outcome == "merged"]
+    if blocked:
+        raise SystemExit("refusing to import: see the fatal source(s) above")
+
+    # A quarantine cost must be chosen, not absorbed: the project's live GT total would drop.
+    cost = [p for p in mergeable if p.quarantined_dest_gt]
+    if cost and args.on_absent == "union" and not args.absent_explicit:
+        total = sum(p.quarantined_dest_gt for p in cost)
+        raise SystemExit(
+            f"the incoming absence declarations would quarantine {total} ground-truth "
+            f"row(s) this project currently counts, across {len(cost)} recording(s). They "
+            "are recoverable -- un-declaring the point restores them -- but the project's "
+            "GT total drops. Pass --on-absent union to accept, or --on-absent ours to "
+            "ignore the source's declarations"
+        )
+
+    if not args.apply:
+        if mergeable:
+            console.print(
+                "dry run -- nothing written. Re-run with --apply to import "
+                "(a snapshot of every destination labels.h5 is taken first)",
+                highlight=False,
+            )
+        return
+    if not mergeable:
+        console.print("nothing to import.", highlight=False)
+        return
+
+    applied = import_outputs(
+        project,
+        [p.source for p in mergeable],
+        recording=args.recording,
+        on_conflict=args.on_conflict,
+        on_absent=args.on_absent,
+        apply=True,
+    )
+    for plan in applied:
+        if plan.outcome != "merged":
+            console.print(
+                f"[red]failed[/red] {plan.slug}: {plan.reason}", highlight=False
+            )
+            continue
+        console.print(f"[green]imported[/green] into {project.labels_path(plan.entry)}")
+        if plan.snapshot is not None:
+            console.print(f"  pre-import snapshot: {plan.snapshot}", highlight=False)
+        if plan.merge is not None and plan.merge.unresolved:
+            console.print(
+                f"  {len(plan.merge.unresolved)} cell(s) need a human decision -- they "
+                "were left as the destination had them",
+                highlight=False,
+            )
+    console.print(f"project iteration is now {project.iteration}", highlight=False)
+
+
+def _print_import(plan) -> None:
+    """One source's section: the verdict first, then the numbers."""
+    console.print(f"\n[bold]── {plan.slug}[/bold]", highlight=False)
+    _info_line("source:   ", str(plan.source.path))
+    if plan.matched_by:
+        _info_line("matched:  ", plan.matched_by)
+    if plan.source.format_version is not None:
+        _info_line("labels:   ", f"v{plan.source.format_version}")
+
+    if plan.outcome == "noop":
+        console.print(f"[green]nothing to do:[/green] {plan.reason}", highlight=False)
+        return
+    if plan.outcome == "unindexed":
+        console.print(
+            f"[yellow]not in this project:[/yellow] {plan.reason}", highlight=False
+        )
+        return
+    if plan.outcome == "empty":
+        console.print(f"[yellow]skipped:[/yellow] {plan.reason}", highlight=False)
+        return
+    if plan.outcome == "fatal":
+        console.print(f"[red]fatal:[/red] {plan.reason}", highlight=False)
+        return
+
+    report = plan.merge
+    for note in report.notes:
+        console.print(f"[yellow]note:[/yellow] {note}", highlight=False)
+    table = Table(title="would import")
+    table.add_column("what", style="bold")
+    table.add_column("n", justify="right")
+    for label, count in (
+        ("points matched by name", len(report.points.matched)),
+        ("cameras matched by name", len(report.cameras.matched)),
+        ("ground-truth pixels taken (human-placed)", report.taken_from_source),
+        ("ground-truth pixels kept (the destination's)", report.kept_from_dest),
+        ("ground-truth pixels already identical", report.identical),
+        ("instance seeds taken", report.seeds_taken),
+        ("frames newly carrying an annotation skeleton", report.instances_added),
+        ("occlusions taken", report.occluded_taken),
+        ("absence declarations added", report.absent_union),
+        ("frames newly marked reviewed", report.reviewed_added),
+        ("landmark observations taken", plan.landmarks_taken),
+        ("cells dropped (no destination point/camera)", report.dropped_cells),
+        ("conflicts needing a human", len(report.unresolved)),
+    ):
+        table.add_row(label, f"{count:,}")
+    console.print(table)
+
+    for decision in report.unresolved[:3]:
+        console.print(
+            f"  conflict view={decision.view} frame={decision.frame} "
+            f"point={decision.point}: {decision.reason}",
+            highlight=False,
+        )
+    if len(report.unresolved) > 3:
+        console.print(f"  ... and {len(report.unresolved) - 3} more", highlight=False)
+    if plan.landmarks_only_source:
+        console.print(
+            f"[yellow]note:[/yellow] landmark(s) {plan.landmarks_only_source} are in the "
+            "source but not declared in this project's landmarks.toml -- dropped",
+            highlight=False,
+        )
+    if plan.subject_id_taken:
+        console.print(
+            f"  subject id {plan.subject_id_taken!r} taken from the source "
+            "(the destination had none)",
+            highlight=False,
+        )
+    if plan.quarantined_dest_gt:
+        console.print(
+            f"[yellow]warning:[/yellow] the incoming absence declarations would "
+            f"QUARANTINE {plan.quarantined_dest_gt} ground-truth row(s) this project "
+            "currently counts. Recoverable -- un-declaring restores them -- but the GT "
+            "total drops.",
+            highlight=False,
+        )
+
+
 def _cmd_project_skeleton(args: argparse.Namespace) -> None:
     """Change a project's skeleton as a migration (``deeperfly project skeleton``).
 

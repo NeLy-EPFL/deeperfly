@@ -23,6 +23,7 @@ from .project import (
     _cmd_project_config,
     _cmd_project_export,
     _cmd_project_import,
+    _cmd_project_import_outputs,
     _cmd_project_ls,
     _cmd_project_new,
     _cmd_project_rig,
@@ -882,6 +883,82 @@ def project_import(
     """
     _configure_logging(log_level.value)
     _cmd_project_import(argparse.Namespace(package=package, dest=dest, apply=apply))
+
+
+@project_app.command("import-outputs")
+def project_import_outputs(
+    project: Annotated[
+        str, typer.Argument(help="the project to import the corrections INTO")
+    ],
+    sources: Annotated[
+        list[str],
+        typer.Argument(
+            metavar="SOURCE...",
+            help="one or more deeperfly_outputs/ dirs, recording dirs, or a tree "
+            "containing them (every deeperfly_outputs/ underneath is found)",
+        ),
+    ],
+    recording: Annotated[
+        str | None,
+        typer.Option(
+            "--recording",
+            help="force every source onto this recording (slug, id, or id prefix). The "
+            "escape hatch for an archived recording whose content id cannot be derived",
+        ),
+    ] = None,
+    on_conflict: Annotated[
+        str,
+        typer.Option(
+            "--on-conflict",
+            help="a cell BOTH sides authored differently: manual (queue it, the "
+            "default), ours, theirs, newest",
+        ),
+    ] = "manual",
+    on_absent: Annotated[
+        str | None,
+        typer.Option(
+            "--on-absent",
+            help="an incoming absence declaration that would quarantine ground truth "
+            "this project counts: union (accept) or ours (ignore the source's). Must be "
+            "chosen explicitly when there is a cost",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="actually import (otherwise this only reports)"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Add corrections from a stray deeperfly_outputs/ to the recording it belongs to.
+
+    For labels made in the standalone editor, outside the project -- the gap 'project add'
+    reports and cannot fix, because one recording is one entry, so a second label set beside
+    a second copy of the footage reads as zero.
+
+    Which recording is answered from CONTENT identity, not from a name you type. Three
+    answers: the project already reads that very file (nothing to do -- the normal state for
+    a symlink-adopted recording); the same recording in a different file (merge); or a
+    recording this project does not index, which is 'deeperfly project add' instead -- and
+    better, because adding SYMLINKS the outputs and needs no merge at all.
+
+    Labels move by NAME, never by index. Predictions are never promoted to ground truth: a
+    source's seeds arrive as seeds. Dry-run by default, and every destination labels.h5 is
+    snapshotted before the first write.
+    """
+    _configure_logging(log_level.value)
+    _cmd_project_import_outputs(
+        argparse.Namespace(
+            project=project,
+            sources=sources,
+            recording=recording,
+            on_conflict=on_conflict,
+            # Whether the operator CHOSE a policy, as opposed to getting the default: the
+            # quarantine cost must be accepted knowingly, so silence is not consent.
+            on_absent=on_absent or "union",
+            absent_explicit=on_absent is not None,
+            apply=apply,
+        )
+    )
 
 
 @project_app.command("skeleton")

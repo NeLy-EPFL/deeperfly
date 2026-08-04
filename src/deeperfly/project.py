@@ -313,6 +313,30 @@ def _coo_rows(raw):
     return arr.reshape(-1, arr.shape[-1])
 
 
+def _gt_cells(labels_path: Path) -> set[tuple[int, int, int]]:
+    """The ``(view, frame, point)`` cells a ``labels.h5`` holds ground truth for.
+
+    Read straight out of HDF5 for the same reason :func:`label_stats` is: a comparison
+    between two label sets has no business requiring either to validate against a result.
+    Empty for an absent or unreadable file, which makes a comparison against it degrade to
+    "everything is unseen" rather than raising.
+    """
+    path = Path(labels_path)
+    if not path.exists():
+        return set()
+    try:
+        import h5py
+
+        with h5py.File(path, "r") as f:
+            rows = _coo_rows(f["gt/index"][()]) if "gt/index" in f else []
+        # The point column is last in both index widths (v6 widened the middle), and the
+        # view/frame columns are 0 and 1 in both.
+        return {(int(r[0]), int(r[1]), int(r[-1])) for r in rows}
+    except Exception as exc:
+        log.warning("could not read %s: %s", path, exc)
+        return set()
+
+
 def label_stats(labels_path: Path) -> dict:
     """Counts from a ``labels.h5``, read straight out of HDF5.
 
@@ -1109,32 +1133,40 @@ class Project:
         are gone".
 
         So it is reported, with both counts and both paths, rather than left to be
-        discovered by a training set that came out smaller than expected. Reconciling the
-        two is a merge, which does not exist yet; until then the actionable move is to
-        re-point the entry at whichever copy is authoritative.
+        discovered by a training set that came out smaller than expected -- and the fix it
+        names is ``deeperfly project import-outputs``, which merges the two by name instead
+        of making the operator pick one to abandon.
+
+        Compares label *sets*, not totals. Comparing totals meant a second set that was
+        merely **smaller** returned early and said nothing -- and two annotators working on
+        disjoint frames is exactly that case, with every one of the smaller set's cells
+        genuinely unseen.
         """
         if outputs is None:
             return
-        incoming = label_stats(outputs / "labels.h5")
+        incoming_path = outputs / "labels.h5"
+        incoming = label_stats(incoming_path)
         if not incoming["gt_points"]:
             return
         indexed_path = self.labels_path(existing)
         indexed = label_stats(indexed_path)
-        if incoming["gt_points"] <= indexed["gt_points"]:
+        unseen = len(_gt_cells(incoming_path) - _gt_cells(indexed_path))
+        if not unseen:
             return
         log.warning(
-            "%s carries %d ground-truth point(s) in %d frame(s) that this project will "
-            "NOT count: %r is already indexed (same footage) and points at %s, which "
-            "has %d. One recording is one entry, so only the indexed copy is read -- "
-            "re-point the entry with 'deeperfly project rm %s' then add the copy you "
-            "want, or keep both by adopting this one with an explicit --id",
-            outputs / "labels.h5",
+            "%s carries %d ground-truth cell(s) this project will NOT count (it holds %d "
+            "in %d frame(s); %r is already indexed for the same footage and points at %s, "
+            "which holds %d). One recording is one entry, so only the indexed copy is "
+            "read -- merge them with 'deeperfly project import-outputs %s %s'",
+            incoming_path,
+            unseen,
             incoming["gt_points"],
             incoming["labeled_frames"],
             existing.slug,
             indexed_path,
             indexed["gt_points"],
-            existing.slug,
+            self.root,
+            outputs,
         )
 
     def update_recording(self, key: str, **fields) -> RecordingEntry:
