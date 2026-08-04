@@ -626,12 +626,19 @@ def serve(
         exit_on_disconnect=exit_on_close,
         jobs=queue,
     )
+    # The app owns the session from here. Keeping a second reference would pin the
+    # OUTGOING session -- its decoded-frame LRU, its 3D and NMF caches, its 200-deep undo
+    # stacks -- alive for the life of the process every time the editor switches
+    # recording in place (POST /api/recordings/open), so they would accumulate one per
+    # switch. Dropping it here lets refcounting reclaim each one at the swap.
+    opened = session.results_path
+    del session
 
     display_host = (
         "localhost" if host in ("0.0.0.0", "127.0.0.1", "::", "::1") else host
     )
     url = f"http://{display_host}:{port}/"
-    log.info("deeperfly gui serving %s at %s", session.results_path, url)
+    log.info("deeperfly gui serving %s at %s", opened, url)
     if open_browser:
         connect_host = "127.0.0.1" if host in ("0.0.0.0", "::") else display_host
         threading.Thread(

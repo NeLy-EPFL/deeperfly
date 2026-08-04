@@ -73,6 +73,39 @@ export async function fetchSuggestions() {
   return r.json();
 }
 
+/**
+ * This project's recordings with their label counts, and which one is open.
+ * `enabled: false` (with a `reason`) for a bare results.h5 session.
+ * @returns {Promise<any>}
+ */
+export async function fetchRecordings() {
+  const r = await fetch("/api/recordings");
+  if (!r.ok) throw new Error(`GET /api/recordings -> ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Switch the whole editor to another recording of this project. The server swaps the
+ * session in place and pushes a reload to every open browser. `discard` abandons unsaved
+ * labels, which the server refuses to do without it -- so a 409 here is the server
+ * protecting hand work, not a failure.
+ * @param {string} recording
+ * @param {boolean} discard
+ * @returns {Promise<any>}
+ */
+export async function openRecording(recording, discard) {
+  const res = await fetch("/api/recordings/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recording, discard }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `POST /api/recordings/open -> ${res.status}`);
+  }
+  return res.json();
+}
+
 /** @returns {Promise<{ dirty: boolean }>} */
 export async function saveCorrections() {
   const r = await fetch("/api/save", { method: "POST" });
@@ -143,17 +176,25 @@ export class EditSocket {
    * @param {(r: import("./types.js").RoleMessage) => void} [onRole]  the role
    *   handshake: whether this browser is the writer (editable) or read-only
    */
-  constructor(onPoints, onRole) {
+  constructor(onPoints, onRole, onReload) {
     this.onPoints = onPoints;
     this.onRole = onRole;
+    this.onReload = onReload;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-      // Two message kinds share this socket: the role handshake carries a `type`
-      // field; an edit reply (a points payload) never does.
+      // Three message kinds share this socket, discriminated by `type`: the role
+      // handshake, the "the open recording changed underneath you" push, and an edit
+      // reply (a points payload), which never carries one. A new type WITHOUT a branch
+      // here falls through to onPoints and is then silently eaten by applyPoints' frame
+      // guard -- it looks exactly like a message that never arrived.
       if (msg && msg.type === "role") {
         this.onRole?.(msg);
+        return;
+      }
+      if (msg && msg.type === "reload") {
+        this.onReload?.(msg);
         return;
       }
       this.onPoints(msg);

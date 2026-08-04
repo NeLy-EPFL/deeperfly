@@ -2,18 +2,23 @@
 // The editor controller: lays out one PoseView per camera and routes edits to
 // the server. There is one unified editing model -- a drag authors ground-truth 2D at
 // the drop and, when the result carries 3D, re-solves the 3D point live and refreshes
-// every view (pinning the dragged view on release). Each joint is drawn with a marker
-// whose style tells its source apart: ground truth (lime ring over a filled disc),
-// detector prediction (dark ring over a disc that fades with confidence), or a point
-// derived by reprojecting the 3D (a hollow palette circle -- no observation in this
-// view). Annotation is two steps: build a selection of (point, view) cells, then set its
-// state from one combined control -- a chip picks Ground truth (Enter) or Projected (o)
-// for the whole selection at once, and Reset (r) clears the labels back to the
-// detector. That chip row doubles as the status readout: the active chip is the
-// selection's shared state (detected / ground truth / projected; none lit when the cells
-// disagree), and its name field shows the single cell's "point . camera" or, for several,
-// the count. Marking a view Projected deletes its observation so it drops from the
-// triangulation and then follows the reprojection; dragging it back in restores it.
+// every view (pinning the dragged view on release).
+//
+// There is one annotation skeleton per frame -- an "instance" -- created by dragging a joint,
+// double-clicking one, or pressing `g`, and seeded from the detections. Each of its joints is
+// either the operator's own pixel (a lime ring over a filled disc) or derived from the joints
+// they have placed in other views (a hollow palette circle); a joint nothing in the frame can
+// place is drawn faint and dashed, because its position is a guess the editor made rather than
+// anything the geometry produced. The detections themselves stay as a read-only reference layer
+// that hides itself once a skeleton exists.
+//
+// Annotation is two steps: build a selection of (point, view) cells, then set a fact on it.
+// The facts are orthogonal and each has its own toggle, pressed when set: GT (Enter / Backspace
+// place and clear), Hidden ("a human cannot see it here", `e`, a training note that does not
+// move the joint or touch the 3D), and Absent ("not on this animal", `x`, one gesture covering
+// every frame and view). Reset (`r`) retracts them. The toggles ARE the readout -- two of them
+// can be pressed at once, which is a state no single status line could report.
+//
 //
 // Two layouts share the same PoseView instances. "grid" shows every camera in an
 // equal grid; "focus" shows one large editable view plus a strip of live,
@@ -46,7 +51,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, saveCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
+import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -208,7 +213,7 @@ class App {
   layout = "grid";
   focused = 0;
   // The current selection: a set of (view, point) cells the state control
-  // (the Detected / Ground truth / Projected chips + Reset) acts on, keyed
+  // (the GT / Hidden / Absent toggles + Reset) acts on, keyed
   // "view:point". `selAnchor` is the most-recently-added cell -- the single cell
   // whose name the widget shows -- and `activeView` is the camera the pointer is
   // over (the target of the `v` "select every point in this view" gesture).
@@ -220,7 +225,7 @@ class App {
   // The joint the pointer is currently over (its (view, point)), or null. While set it
   // temporarily takes over the status widget's readout -- the name field and the lit
   // state chip -- so hovering any joint peeks at its identity and state without
-  // disturbing the selection (the chips still act on the selection, not the hover).
+  // disturbing the selection (the toggles still act on the selection, not the hover).
   /** @type {{ view: number, point: number } | null} */
   hoverCell = null;
   // The latest per-view ground-truth mask and "projected" mask (from the points payload),
@@ -265,6 +270,11 @@ class App {
   // (beforeunload) from nagging after the operator has already decided.
   closing = false;
   closeConfirmOpen = false;
+  // The pending recording switch: which slug, and whether its confirm modal is up. The
+  // server refuses to switch while labels are unsaved, so this prompt is the only path
+  // that can answer that refusal -- there is no beforeunload for an in-process swap.
+  switchConfirmOpen = false;
+  pendingSwitch = "";
   // The corrected-frames side panel: the list (sorted, each with a reviewed flag),
   // whether the panel is open, the row elements keyed by frame (for the current-frame
   // highlight), and a debounce timer coalescing post-edit refreshes.
@@ -385,6 +395,23 @@ class App {
   /** @type {HTMLDivElement} */
   showMenu = el("show-menu");
   showMenuOpen = false;
+  /** @type {HTMLDivElement} */
+  recordingWrap = el("recording-wrap");
+  /** @type {HTMLButtonElement} */
+  recordingToggle = el("recording-toggle");
+  /** @type {HTMLDivElement} */
+  recordingMenu = el("recording-menu");
+  /** @type {HTMLSpanElement} */
+  recordingNameEl = el("recording-name");
+  /** @type {HTMLDivElement} */
+  recordingListEl = el("recording-list");
+  /** @type {HTMLDivElement} */
+  recordingEmptyEl = el("recording-empty");
+  recordingMenuOpen = false;
+  //: The last /api/recordings payload, kept so a role change can re-render the rows
+  //: (a read-only tab may not switch) without another round trip.
+  /** @type {any} */
+  recordings = null;
   /** @type {HTMLButtonElement} */
   /** @type {HTMLDivElement} */
   /** @type {HTMLDivElement} */
@@ -471,6 +498,18 @@ class App {
   /** @type {HTMLButtonElement} */
   closeSaveBtn = el("close-save");
   /** @type {HTMLDivElement} */
+  switchOverlay = el("switch-overlay");
+  /** @type {HTMLButtonElement} */
+  switchCancelBtn = el("switch-cancel");
+  /** @type {HTMLButtonElement} */
+  switchDiscardBtn = el("switch-discard");
+  /** @type {HTMLButtonElement} */
+  switchSaveBtn = el("switch-save");
+  /** @type {HTMLSpanElement} */
+  switchFromEl = el("switch-from");
+  /** @type {HTMLSpanElement} */
+  switchToEl = el("switch-to");
+  /** @type {HTMLDivElement} */
   stoppedOverlay = el("stopped-overlay");
   /** @type {HTMLDivElement} */
   readonlyBanner = el("readonly-banner");
@@ -531,6 +570,7 @@ class App {
     this.socket = new EditSocket(
       (p) => this.applyPoints(p, true),
       (r) => this.applyRole(r),
+      () => this.reloadForNewRecording(),
     );
     await this.goToFrame(0);
     this.updateSelected();
@@ -709,6 +749,30 @@ class App {
         this.closeShowMenu();
       }
     });
+    // The recording picker. Only a project session has siblings to switch between; a
+    // bare results.h5 hides the button rather than offering one that always refuses.
+    this.recordingWrap.style.display = this.meta.project_root ? "" : "none";
+    this.recordingNameEl.textContent = this.meta.recording ?? "recording";
+    this.recordingToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleRecordingMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (
+        this.recordingMenuOpen &&
+        !this.recordingWrap.contains(/** @type {Node} */ (e.target))
+      ) {
+        this.closeRecordingMenu();
+      }
+    });
+    this.switchCancelBtn.addEventListener("click", () => this.closeSwitchConfirm());
+    this.switchDiscardBtn.addEventListener("click", () =>
+      this.doSwitch(this.pendingSwitch, true)
+    );
+    this.switchSaveBtn.addEventListener("click", () => this.saveAndSwitch());
+    this.switchOverlay.addEventListener("click", (e) => {
+      if (e.target === this.switchOverlay) this.closeSwitchConfirm();
+    });
     this.resetViewBtn.addEventListener("click", () => this.resetView());
     this.framesToggleBtn.addEventListener("click", () => this.toggleFrames());
     this.framesCollapseBtn.addEventListener("click", () => this.closeFrames());
@@ -750,7 +814,7 @@ class App {
     /** @type {import("./poseView.js").PoseViewCallbacks} */
     const cb = {
       onDragging: (v, p, x, y) => this.onDragging(v, p, x, y),
-      onDragged: (v, p, x, y, wasInvisible) => this.onDragged(v, p, x, y, wasInvisible),
+      onDragged: (v, p, x, y) => this.onDragged(v, p, x, y),
       onToggleFixed: (v, p) => this.onToggleFixed(v, p),
       onSelect: (v, p, additive) => this.onSelect(v, p, additive),
       onSelectRegion: (v, points, additive) => this.onSelectRegion(v, points, additive),
@@ -854,6 +918,9 @@ class App {
     this.updateViewRoles(); // re-apply per-view editability
     this.updateDirty(); // the Save button is disabled while read-only
     this.renderFrameList(); // re-render so the reviewed checkboxes track editability
+    // A demoted tab must not be able to switch the recording out from under the writer,
+    // and a promoted one should stop saying it cannot.
+    if (this.recordings) this.renderRecordings(this.recordings);
   }
 
   // -- frame navigation -------------------------------------------------------
@@ -928,7 +995,7 @@ class App {
     this.fixedMask = p.fixed;
     // A cell with no observed pixel (null in `points`) follows the 3D reprojection -- the
     // "projected" state. That covers both an operator-occluded view (`p.invisible`) and
-    // one the detector missed, since display_pts2d NaNs out both; the status chips read
+    // one the detector missed, since display_pts2d NaNs out both; the card's toggles read
     // it off this so an undetected view reads as "Projected", not "Detected" (the
     // occluded-only `p.invisible` mask still rides through to each view for the drag
     // un-occlude, but is a strict subset here).
@@ -966,6 +1033,7 @@ class App {
         points: p.points[v],
         fixed: p.fixed[v],
         instanceMode: !!p.has_instance,
+        invented: p.invented ? p.invented[v] : undefined,
         invisible: p.invisible[v],
         conf: "conf" in p && p.conf ? p.conf[v] : undefined,
         latent: p.proj ? p.proj[v] : null,
@@ -1197,6 +1265,7 @@ class App {
 
   openShowMenu() {
     this.closeSkeletonMenu(); // only one popover open at a time
+    this.closeRecordingMenu();
     this.showMenu.hidden = false;
     this.showMenuOpen = true;
     this.showToggle.setAttribute("aria-expanded", "true");
@@ -1215,6 +1284,164 @@ class App {
     else this.openShowMenu();
   }
 
+  // -- the recording picker ---------------------------------------------------
+  //
+  // Which recording is open, and the project's others with the counts that decide which
+  // is worth opening next. Fetched on open and never polled: the listing reads every
+  // recording's labels.h5, which is cheap once and wasteful every two seconds.
+
+  openRecordingMenu() {
+    this.closeShowMenu(); // only one popover open at a time
+    this.closeSkeletonMenu();
+    this.recordingMenu.hidden = false;
+    this.recordingMenuOpen = true;
+    this.recordingToggle.setAttribute("aria-expanded", "true");
+    this.recordingToggle.classList.add("is-open");
+    this.refreshRecordings();
+  }
+
+  closeRecordingMenu() {
+    this.recordingMenu.hidden = true;
+    this.recordingMenuOpen = false;
+    this.recordingToggle.setAttribute("aria-expanded", "false");
+    this.recordingToggle.classList.remove("is-open");
+  }
+
+  toggleRecordingMenu() {
+    if (this.recordingMenuOpen) this.closeRecordingMenu();
+    else this.openRecordingMenu();
+  }
+
+  /** Fetch the project's recordings and render them into the menu. */
+  async refreshRecordings() {
+    try {
+      this.recordings = await fetchRecordings();
+    } catch (err) {
+      // Leave whatever is already listed: a transient failure should not blank a menu
+      // the operator is looking at.
+      this.recordingEmptyEl.hidden = false;
+      this.recordingEmptyEl.textContent = `could not list recordings: ${err.message || err}`;
+      return;
+    }
+    this.renderRecordings(this.recordings);
+  }
+
+  /** @param {any} payload  the /api/recordings body */
+  renderRecordings(payload) {
+    this.recordingListEl.replaceChildren();
+    if (!payload || payload.enabled === false) {
+      this.recordingEmptyEl.hidden = false;
+      this.recordingEmptyEl.textContent =
+        payload?.reason ?? "no project, so no other recordings to switch to";
+      return;
+    }
+    const rows = payload.recordings ?? [];
+    this.recordingEmptyEl.hidden = rows.length > 0;
+    if (!rows.length) this.recordingEmptyEl.textContent = "this project has no recordings";
+    for (const rec of rows) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rec-row" + (rec.active ? " is-active" : "");
+      const name = document.createElement("span");
+      name.className = "rec-name";
+      name.textContent = rec.slug;
+      btn.append(name);
+      // A recording with no results.h5 has never been run: it opens as an uncalibrated
+      // 2D session, which is a different (and much emptier) editor. Say so before the
+      // click, not after.
+      if (!rec.has_results) {
+        const flag = document.createElement("span");
+        flag.className = "rec-flag";
+        flag.textContent = "2D only";
+        btn.append(flag);
+      }
+      const stats = document.createElement("span");
+      stats.className = "rec-stats";
+      stats.textContent = rec.labeled_frames
+        ? `${rec.labeled_frames} labeled · ${rec.gt_points.toLocaleString()} pts`
+        : "unlabeled";
+      btn.append(stats);
+      const frames = rec.n_frames == null ? "?" : rec.n_frames.toLocaleString();
+      btn.title =
+        `${rec.slug} — ${frames} frames, ${rec.gt_points.toLocaleString()} ground-truth ` +
+        `points in ${rec.labeled_frames} frame(s), ${rec.reviewed_frames} reviewed, ` +
+        `${rec.occluded.toLocaleString()} hidden marks`;
+      if (rec.active) {
+        btn.disabled = true;
+        btn.title = `${btn.title}\n(open)`;
+      } else if (this.readOnly) {
+        // A read-only tab must not swap the recording out from under the writer.
+        btn.disabled = true;
+        btn.title = `${btn.title}\n(this tab is read-only — another browser is editing)`;
+      } else {
+        btn.addEventListener("click", () => this.requestSwitch(rec.slug));
+      }
+      this.recordingListEl.append(btn);
+    }
+  }
+
+  // Mirrors requestClose(): switching drops this recording's session -- unsaved labels,
+  // undo history and all -- so ask first, and make saving the default.
+  /** @param {string} slug */
+  requestSwitch(slug) {
+    this.closeRecordingMenu();
+    if (!this.dirty) {
+      this.doSwitch(slug, false);
+      return;
+    }
+    this.pendingSwitch = slug;
+    this.switchFromEl.textContent = this.meta.recording ?? "this recording";
+    this.switchToEl.textContent = slug;
+    this.switchOverlay.hidden = false;
+    this.switchConfirmOpen = true;
+  }
+
+  closeSwitchConfirm() {
+    this.switchOverlay.hidden = true;
+    this.switchConfirmOpen = false;
+  }
+
+  /** @param {string} slug @param {boolean} discard */
+  async doSwitch(slug, discard) {
+    this.closeSwitchConfirm();
+    this.statusEl.textContent = `opening ${slug}…`;
+    try {
+      await openRecording(slug, discard);
+    } catch (err) {
+      // Nothing was swapped: the server builds the new session completely before it
+      // rebinds anything, so a failure leaves this recording open and intact.
+      this.statusEl.textContent = `could not open ${slug}: ${err.message || err}`;
+      return;
+    }
+    // The server pushes the reload to every browser, this one included; doing it here
+    // too covers a tab whose socket has dropped, and a second reload is a no-op.
+    this.reloadForNewRecording();
+  }
+
+  async saveAndSwitch() {
+    const slug = this.pendingSwitch;
+    try {
+      await this.save();
+    } catch (_err) {
+      this.closeSwitchConfirm();
+      this.statusEl.textContent = "save failed — nothing was switched";
+      return;
+    }
+    await this.doSwitch(slug, false);
+  }
+
+  // The open recording changed underneath this page (switched here, or in another tab).
+  // Everything the editor built at boot -- the canvases, the key bindings, the frame-URL
+  // cache token -- comes from /api/meta, which is fetched exactly once per page load, so
+  // a full page load is the only correct response to it changing.
+  reloadForNewRecording() {
+    // Deliberate: the labels were either saved or explicitly discarded a moment ago, so
+    // the browser's generic "Leave site?" dialog would only nag about a decision the
+    // operator has already made.
+    this.closing = true;
+    location.reload();
+  }
+
   // -- the "Layout" popover (arrangement + view reset) ------------------------
 
 
@@ -1229,6 +1456,7 @@ class App {
 
   openSkeletonMenu() {
     this.closeShowMenu();
+    this.closeRecordingMenu();
     this.skeletonMenu.hidden = false;
     this.skeletonMenuOpen = true;
     this.skeletonToggle.setAttribute("aria-expanded", "true");
@@ -1427,7 +1655,7 @@ class App {
   updateStatusWidget() {
     const n = this.selection.size;
     // Hovering a joint takes over the readout (name + lit chip) with that joint's own
-    // identity and state -- a transient peek. The chips' enabled/disabled state stays
+    // identity -- a transient peek. The toggles' enabled/disabled state stays
     // governed by the selection, since clicking a chip still acts on the selection.
     const hov = this.hoverCell;
     const cellName = (view, point) => {
@@ -1560,19 +1788,16 @@ class App {
    * @param {number} point
    * @param {number} x
    * @param {number} y
-   * @param {boolean} [wasInvisible]  whether the grabbed joint was obscured (now un-obscured by the drag)
    */
-  onDragged(view, point, x, y, wasInvisible = false) {
+  onDragged(view, point, x, y) {
     if (!this.resolves3d) {
       // No 3D to re-solve: the drop is simply this view's ground-truth pixel.
       this.sendEdit({ type: "edit_2d", view, point, x, y, frame: this.frame, mode: this.mode });
       return;
     }
-    // Releasing a drag pins the dragged view at the drop pixel (a finalized
-    // constraint) so the placed point stays put -- including a previously occluded
-    // view: dragging it in is the operator asserting where the point is, so it is
-    // both un-occluded (server-side) and finalized here rather than left to drift
-    // back to the reprojection.
+    // Releasing a drag pins the dragged view at the drop pixel (a finalized constraint) so the
+    // placed point stays put -- including one marked Hidden, which the drag leaves marked: the
+    // operator is asserting where the joint is, not that the pixels show it.
     this.sendEdit({ type: "edit_3d", view, point, x, y, frame: this.frame, fix: true, mode: this.mode });
   }
 
@@ -2794,8 +3019,11 @@ class App {
     b.push({ key: "a", label: "a", desc: "Select all points (every view)", run: () => this.selectAll() });
     b.push({ key: "a", mod: true, hidden: true, label: hint("A", ["mod"]), desc: "", run: () => this.selectAll() });
     b.push({ key: "v", label: "v", desc: "Select every point in the view under the cursor", run: () => this.selectActiveView() });
-    // Acting on the selection: 1 / 2 / 3 set the whole selection's state, left-to-right in the
-    // same order as the status-card chips (Ground truth · Detected · Projected). Enter / r / o
+    // Acting on the selection. Each key sets one orthogonal fact and each has a toggle in the
+    // card that shows whether it is set: Enter / Backspace place and clear the GT pixel, e marks
+    // "a human cannot see it here", x marks the joint absent from the animal, r retracts both of
+    // the per-cell facts. There used to be 1 / 2 / 3 setting one of three mutually exclusive
+    // "states", which is not the shape the data has.
     // stay as hidden aliases so the older muscle memory -- and the Reset button's r -- keep working.
     // Verbs, not states. A cell is not "set to Ground truth"; a GT pixel is created at the
     // position already drawn, deleted, or a detection is excluded from triangulation.
@@ -2818,6 +3046,11 @@ class App {
     b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels", run: () => this.save() });
     b.push({ key: "c", group: "panel", label: "c", desc: "Show / hide the 3D scene", run: () => this.toggleScene() });
     b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — labeled frames + the suggested queue", run: () => this.toggleFrames() });
+    // Only a project session has other recordings to browse, so the key is not
+    // advertised in the help of a bare results.h5 session that could not honor it.
+    if (this.meta.project_root) {
+      b.push({ key: "b", group: "panel", label: "b", desc: "Browse this project's recordings — and switch to another", run: () => this.toggleRecordingMenu() });
+    }
     b.push({ key: "k", group: "panel", label: "k", desc: "Open the labeling guide (keypoint map, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "?", group: "panel", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
     return b;
@@ -2925,41 +3158,43 @@ class App {
       + `<p class="legend-note">Each keypoint takes its limb's colour from the skeleton palette (from your config).</p>`
       + `<div class="legend-limbs">${limbs}</div>`;
 
-    // Marker vocabulary -- what a keypoint's marker tells you about where it came from.
+    // Marker vocabulary. What a marker says is now one of two things about the annotation
+    // skeleton -- did you place this pixel, and can a human see the joint here -- plus two
+    // read-only reference layers. It used to name four "point sources" for one cell; provenance
+    // was deleted in labels v7 and the instance owns every position, so there is one skeleton
+    // whose joints are yours or derived.
     const markers = [
-      [`<i class="mk m-gt"></i>`, `<b>Ground truth</b> — you authored it (dragged or confirmed); trusted.`],
-      [`<i class="mk m-pred"></i>`, `<b>Detected</b> — the detector's raw 2D; the fill fades as confidence drops.`],
+      [
+        `<i class="mk m-gt"></i>`,
+        `<b>Ground truth</b> — a pixel you placed. Drag a joint to place one, or select and press <kbd>Enter</kbd>; the <b>GT</b> toggle in the card is pressed whenever the selection carries yours.`,
+      ],
+      [
+        `<i class="mk m-pred"></i>`,
+        `<b>Detected</b> — the detector's own output, straight from the 2D network (the fill fades as its confidence drops). A read-only reference: it is what your skeleton was seeded from, and it hides itself once the frame has one (<kbd>t</kbd> brings it back).`,
+      ],
     ];
     if (this.meta.has_3d) {
       markers.push([
         `<i class="mk m-proj"></i>`,
-        `<b>Projected</b> — the 3D reprojected here; no usable observation in this view (you occluded it, or the detector missed). This <i>is</i> the joint's position here: setting a point Projected drops that view from the solve, so it stops showing the rejected detection and follows the reprojection instead. The reprojected skeleton is also its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges (on by default). Drag a reprojected point to spawn ground truth there. Reject a joint in so many views that fewer than two are left and there is no 3D to follow, so nothing is drawn — the joint then falls back to its faint <b>Unplaced</b> seed (<kbd>i</kbd>) in every view, still draggable, so you can always get back to it.`,
+        `<b>Derived</b> — a joint you have not placed, drawn where the multi-view 3D puts it. Label it in two views and the other cameras move to where the geometry says it is; that is the whole point of labeling across views. The reprojection is also its own dashed overlay (<kbd>p</kbd>), and <kbd>s</kbd> switches these joints to the seed the skeleton started from instead.`,
       ]);
     }
-    // The "Unplaced" seed is the guarantee that no joint is ever unreachable, so it is always
-    // in the vocabulary -- with or without a 3D solve (only its causes differ).
-    const missingWhy = this.meta.has_3d
-      ? `You see it where the point has no observation of its own and no reprojection to fall back on — triangulation dropped it, or you set it Projected in too many views — and wherever a joint's only position was a reprojection you have hidden.`
-      : `You see it wherever the detector fired nothing for that joint in that view.`;
-    const missingWhere = this.meta.has_3d
-      ? `the reprojection if there is one, else the raw detector pixel, a nearby frame, a neighboring joint, or the image center`
-      : `the raw detector pixel, a nearby frame, a neighboring joint, or the image center`;
+    // The one thing a marker has to say that nothing else can: that its position is a guess the
+    // editor made, not something the geometry produced. With an ipsilateral-only detector every
+    // contralateral keypoint is in this state, so it is the common case, not an edge one.
     markers.push([
       `<i class="mk m-placeholder"></i>`,
-      `<b>Unplaced</b> — a faint dashed ghost drawn wherever a view has nothing else to grab, so no joint is ever unreachable (<kbd>i</kbd>). ${missingWhy} Its spot is only a guess (${missingWhere}), so drag it to where the joint really is: that authors ground truth there like any other drag.`,
-    ]);
-    // Absence is a claim about the ANIMAL, not about a view, so it is described last and framed
-    // against the three source states above: those answer "where did this marker come from",
-    // this one answers "does this joint exist at all".
+      `<b>Invented</b> — faint and dashed: nothing in this frame can place this joint (the detector predicted it in no view, and there is no 3D to reproject), so its position is only a guess — a neighbouring joint, the centre of the view. It is drawn so you can find and drag it; it never feeds the 3D solve, and <kbd>Enter</kbd> skips it rather than recording a made-up pixel as yours. Drag it to where the joint really is.`,
+    ])
     markers.push([
       `<i class="mk m-absent"></i>`,
-      `<b>Absent</b> — this keypoint is not on this animal: an amputated leg, an ablated antenna. Not the same as <b>Projected</b> ("it exists but I cannot place it from <i>this</i> view") and not the same as <b>Unplaced</b> ("nobody has placed it yet"). Select the joint and press <kbd>x</kbd> to mark it — one gesture covers <i>every frame and every view</i>, because it is one fact about the animal. It then draws as a dim grey ✕ with no bones, contributes nothing to the 3D solve, and is excluded from the training export (neither ground truth nor "occluded"). Press <kbd>x</kbd> again, or <kbd>Ctrl+Z</kbd>, to un-mark it: nothing you labeled underneath is lost.`,
+      `<b>Absent</b> — this keypoint is not on this animal: an amputated leg, an ablated antenna. A claim about the <i>animal</i>, so one gesture covers every frame and every view. Select the joint and press <kbd>x</kbd>. It draws as a dim grey ✕ with no bones, contributes nothing to the 3D, and is excluded from the training export. Press <kbd>x</kbd> again, or <kbd>Ctrl+Z</kbd>, to un-mark it — nothing underneath is lost.`,
     ]);
     const markerRows = markers
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");
-    const markerBlock = `<h3 class="legend-title">Point sources — where a point came from</h3>`
-      + `<p class="legend-note"><b>Ground truth</b> is the editable layer — drag a point to move it, or drag a detected / projected node to create one. <b>Combined</b> merges Ground truth + Detected into one skeleton (GT where authored, else the detector's point, else the reprojection — a view marked Projected shows no detection, since you rejected it); turn it off to see them as two separate skeletons. <b>Projected</b> stays its own overlay.</p>`
+    const markerBlock = `<h3 class="legend-title">What a marker tells you</h3>`
+      + `<p class="legend-note">There is one annotation skeleton per frame. Each of its joints is either <b>yours</b> — a pixel you placed — or <b>derived</b> from the joints you have placed in other views. Separately, any joint can be marked <b>Hidden</b> (<kbd>e</kbd>): "a human cannot see it here". That is a note for training and nothing else — it does not move the joint and does not affect the 3D.</p>`
       + `<div class="legend-rows">${markerRows}</div>`;
 
     // Read-only reference overlays (shown only when the result carries them). The projected
@@ -3025,7 +3260,7 @@ class App {
     const mesh = hint("M", ["shift"]);
     setTitle(
       "show-toggle",
-      `Show / hide the view layers (keyboard: h Hide all · s Combined · n Names${this.meta.has_3d ? " · p Reprojected · w Reproj. warning" : ""}${this.meta.has_nmf ? ` · m NMF skeleton · ${mesh} NMF mesh` : ""})`,
+      `What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected${this.meta.has_3d ? " · p Reprojected 3D · w Reproj. warning" : ""}${this.meta.has_nmf ? " · m NMF skeleton · Shift+M NMF mesh" : ""} · l Grid/Focus · 0 Fit every camera)`,
     );
     const meshChip = document.querySelector("#mesh-wrap kbd");
     if (meshChip) meshChip.textContent = mesh;
@@ -3036,7 +3271,7 @@ class App {
     // The selection status card's how-to, re-spelled for this OS and this model.
     setTitle(
       "point-status",
-      `The selected point(s): click a chip to set the whole selection's state — Ground truth (1), Detected (2), or Projected (3) — or the Reset button (r) to clear the labels back to the detector. Select with click, ${add}-click to add/remove, double-click (all views), Shift-drag (new region), ${add}-drag to add; a = all, v = this view. Click the background or Esc to clear. Hover a point to peek at its name + state.`,
+      `The selected point(s). Each button is a state: GT (a pixel you placed), Hidden (a human cannot see it here), Absent (not on this animal) — pressed means it is set, and Reset retracts them. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, Esc clears.`,
     );
   }
 
@@ -3069,8 +3304,16 @@ class App {
       if (this.showMenuOpen) {
         this.closeShowMenu();
             e.preventDefault();
+      } else if (this.recordingMenuOpen) {
+        this.closeRecordingMenu();
+        e.preventDefault();
       } else if (this.closeConfirmOpen) {
         this.closeCloseConfirm();
+        e.preventDefault();
+      } else if (this.switchConfirmOpen) {
+        // Backing out of "switch?" cancels the switch and keeps this recording open,
+        // which is the safe half of the choice.
+        this.closeSwitchConfirm();
         e.preventDefault();
       } else if (this.helpOpen) {
         this.closeHelp();

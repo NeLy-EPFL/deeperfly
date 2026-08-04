@@ -18,7 +18,7 @@
 // gesture picks, Ctrl/Cmd adds to it (Ctrl/Cmd+click toggles a single joint).
 // Right-click toggles a point's fixed flag. An occluded joint has no
 // observed pixel, so it draws as a derived (reprojected) point; dragging it is still
-// allowed and reports `wasInvisible` on `onDragged` so the app can un-occlude it.
+// allowed; the occlusion mark is orthogonal to the pixel and is deliberately left standing.
 // Hovering a joint reports it via `onHover` so the app can emphasize the same point
 // across every view. The app stays in control of what a drag does to the 3D point.
 //
@@ -27,14 +27,10 @@
 // authors GT. DETECTED is the detector's output (a filled disc, faded by confidence, under a
 // thin dark ring) wherever it is still usable -- a view the operator flagged occluded
 // ("Projected") has rejected its detection, so none is drawn there and the joint's position falls
-// through to its reprojection. "COMBINED" is not a visibility switch -- it is a MERGE toggle over
-// GT + Detected: on, the two draw as ONE skeleton (each joint = GT if authored, else the detector's
-// usable point, else its reprojected point, so a bone never drops out just because one endpoint is
-// only derived); off, GT and Detected draw as two separate overlaid skeletons (Detected beneath,
-// the editable GT skeleton on top). The "projected" source is the REPROJECTED SKELETON -- an
-// independent overlay of the full 3D reprojection (hollow rings joined by thick, semi-transparent,
-// DASHED palette edges), its own layer in every mode (it never merges in), so the 3D's opinion of
-// every joint reads at a glance and the gap to a placed pixel is the live disagreement.
+// through to its reprojection. There is ONE annotation skeleton: its joints are the operator's
+// own pixels where they placed them, and derived positions everywhere else, so there is nothing
+// to merge it with. (A "COMBINED" toggle used to choose between that and drawing ground truth
+// and the detections as two separate skeletons; the instance owns every position now.)
 //
 // GT is editable whenever it is shown. A drag MOVES an existing GT point, or SPAWNS one from a
 // seed -- a detected node, a reprojected hollow point, or (when the joint has none of those in
@@ -58,7 +54,7 @@
 /**
  * @typedef {object} PoseViewCallbacks
  * @property {(view: number, point: number, x: number, y: number) => void} onDragging
- * @property {(view: number, point: number, x: number, y: number, wasInvisible: boolean) => void} onDragged
+ * @property {(view: number, point: number, x: number, y: number) => void} onDragged
  * @property {(view: number, point: number) => void} onToggleFixed
  * @property {(view: number, point: number, additive: boolean) => void} onSelect  a joint was clicked/grabbed; additive (Ctrl/Cmd) toggles it in the selection, else it replaces
  * @property {(view: number, points: number[], additive: boolean) => void} onSelectRegion  a marquee enclosed these joints in this view; additive (Ctrl/Cmd-drag) adds them, else (Shift-drag) replaces the selection
@@ -209,8 +205,7 @@ export class PoseView {
     // detected layer is a read-only reference that auto-hides once an annotation skeleton
     // exists -- it seeded that skeleton and would otherwise double every joint. The
     // projected layer is the reprojection of the derived 3D, its own dashed overlay, on by
-    // default as a guide. There used to be a fourth, "Combined", merging GT and detected
-    // into one skeleton; the instance owns every position now, so there is nothing to merge.
+    // default as a guide.
     this.detectedVisible = true;
     this.projectedVisible = true;
     // The "Unplaced" layer: faint, draggable ghost seeds for joints a view has nothing
@@ -245,8 +240,9 @@ export class PoseView {
     // whether the node reads as the operator's pixel or as a derived one. Before that,
     // `pts` is the old GT-over-detection resolution and the layer precedence applies.
     this.instanceMode = false;
+    // Per-joint "this position was invented, not derived" -- see EditorState.invented_mask.
+    this.invented = null;
     this.dragging = null;
-    this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
     /** @type {boolean[] | null} per-point "not on this animal" -- see drawAbsent */
     this.absent = null;
     this.panning = false;
@@ -444,6 +440,7 @@ export class PoseView {
    */
   setFrameData(data) {
     if (data.instanceMode !== undefined) this.instanceMode = !!data.instanceMode;
+    if (data.invented !== undefined) this.invented = data.invented;
     if (data.points) {
       // Keep the actively dragged joint pinned to the cursor: the server's live
       // re-solve reprojects it a hair off, and letting that fight the mouse feels
@@ -655,10 +652,7 @@ export class PoseView {
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
     if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
     // The annotation skeleton: one skeleton, each joint at its ground-truth pixel or at the
-    // position derived for it. There used to be a "Combined" toggle here, choosing between
-    // that and drawing GT and Detected as two separate layers -- a merge that no longer
-    // happens. The instance owns every position now, so there is nothing to merge it with;
-    // the detections are a reference overlay with its own visibility toggle.
+    // position derived for it. The detections are a reference overlay with their own toggle.
     this.drawSkeleton();
     // One pass on top of every skeleton for the cross-cutting per-joint marks: selection rings,
     // name labels, and hover emphasis -- each anchored at the joint's best visible position, so a
@@ -713,7 +707,7 @@ export class PoseView {
   // operator flagged occluded ("Projected") is an assertion that its pixel is not readable here:
   // it is dropped from the 3D solve, so it is not a position source either. The joint then falls
   // through to its reprojection -- the best estimate left for this view -- everywhere a position
-  // is resolved (nodeAt, anchorPos, grabCandidates, sourcePositions). Without this, occluding a
+  // is resolved (nodeAt, anchorPos, grabCandidates). Without this, occluding a
   // view left its rejected pixel drawn as the joint's position, contradicting the state it reports.
   /** @param {number} i @returns {Point | null} */
   detPos(i) {
@@ -860,7 +854,12 @@ export class PoseView {
     // the reprojection of its point's current 3D, or its frozen seed, whichever the
     // operator chose. It reads as derived (thin ring) rather than authored (lime ring).
     if (this.instanceMode && this.pts[i]) {
-      return { pos: this.pts[i], src: "projected" };
+      // "invented" reads as the retired Unplaced ghost did -- faint, dashed -- because that is
+      // exactly what it is: a coordinate the editor made up so the joint stays grabbable. It
+      // must not look like a joint the geometry placed.
+      const src =
+        this.invented && this.invented[i] ? "invented" : "projected";
+      return { pos: this.pts[i], src };
     }
     if (this.detectedVisible) {
       const d = this.detPos(i);
@@ -904,26 +903,6 @@ export class PoseView {
     return this.placeholderPos(i); // last resort: the Unplaced seed, so its ring/label anchor
   }
 
-  // The positions of a single point source: ground truth is the authored pixel (held in `pts`)
-  // wherever the GT flag is set; detected is the detector's usable pixel -- a view flagged occluded
-  // ("Projected") shows none, since the operator has rejected that pixel and the joint's position
-  // there is its reprojection (see detPos). Null where the source has no point in this view. (The
-  // 3D reprojection is not a source layer here -- it draws as its own overlay, the reprojected
-  // skeleton; see drawReprojection.)
-  /** @param {"gt" | "detected"} kind @returns {(Point | null)[]} */
-  sourcePositions(kind) {
-    if (kind === "detected") {
-      const n = this.detected ? this.detected.length : 0;
-      const det = new Array(n).fill(null);
-      for (let i = 0; i < n; i++) det[i] = this.detPos(i);
-      return det;
-    }
-    const out = new Array(this.pts.length).fill(null);
-    for (let i = 0; i < this.pts.length; i++) {
-      if (this.fixed && this.fixed[i] && this.pts[i]) out[i] = this.pts[i];
-    }
-    return out;
-  }
 
   // The editable skeleton: the colored bones (a bone touching the hovered joint thickens, so
   // hover reads on the whole limb, not just the dot), then each joint drawn with a marker
@@ -993,6 +972,7 @@ export class PoseView {
       // FILL: a filled disc in the limb palette colour -- a detected point's fill fades with
       // the detector's confidence, so faint points that want a second look read as faint.
       let fillAlpha = 1;
+      if (node.src === "invented") fillAlpha = PLACEHOLDER_ALPHA;
       if (node.src === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
         fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
       }
@@ -1017,6 +997,7 @@ export class PoseView {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
@@ -1131,70 +1112,6 @@ export class PoseView {
     ctx.restore();
   }
 
-  // One point source (ground truth or the raw detections) drawn as its own read-only layer, at
-  // that source's own positions, in the limb palette -- the same marker vocabulary the combined
-  // skeleton uses, so a source reads the same whether it is merged in or inspected on its own:
-  //   ground truth -> a filled palette disc under a bold lime ring
-  //   detected     -> a filled palette disc (faded by the detector's confidence) under a thin dark ring
-  // (The 3D reprojection is NOT a source layer -- it is the reprojected skeleton, its own overlay;
-  // see drawReprojection.) `withBones` draws the bones between two present points (on for a
-  // standalone layer; off when overlaid on the combined skeleton, which already carries the
-  // bones). `withLabels` draws the per-joint name labels -- only one layer should, so the combined
-  // skeleton owns them when it is shown, and only the first visible standalone source owns them
-  // otherwise (no doubling). These layers are read-only, so their markers do NOT hover-scale
-  // (unlike the combined skeleton) -- a fixed size avoids a stale cross-view hover leaving a lone
-  // marker enlarged.
-  /** @param {"gt" | "detected"} kind @param {boolean} withBones @param {boolean} withLabels */
-  drawSourceLayer(kind, withBones, withLabels) {
-    const ctx = this.ctx;
-    const pos = this.sourcePositions(kind);
-    if (withBones) {
-      ctx.save();
-      ctx.lineWidth = BONE_WIDTH;
-      for (const [a, b] of this.bones) {
-        const pa = pos[a];
-        const pb = pos[b];
-        if (!pa || !pb) continue;
-        const [ax, ay] = this.toCanvas(pa[0], pa[1]);
-        const [bx, by] = this.toCanvas(pb[0], pb[1]);
-        ctx.strokeStyle = this.colors[a] || "#fff";
-        ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(bx, by);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-    for (let i = 0; i < pos.length; i++) {
-      const p = pos[i];
-      if (!p) continue;
-      const [cx, cy] = this.toCanvas(p[0], p[1]);
-      const r = POINT_RADIUS_PX; // read-only layer: fixed size, no hover-scale
-      // FILL: a filled palette disc; a detection fades with the detector's confidence.
-      let fillAlpha = 1;
-      if (kind === "detected" && this.conf && i < this.conf.length && this.conf[i] != null) {
-        fillAlpha = Math.max(0.4, Math.min(1, /** @type {number} */ (this.conf[i])));
-      }
-      ctx.globalAlpha = fillAlpha;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fillStyle = this.colors[i] || "#fff";
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      // RING: ground truth = bold lime; detected = a thin dark ring.
-      if (kind === "gt") {
-        ctx.strokeStyle = FIXED_COLOR;
-        ctx.lineWidth = 2.5;
-      } else {
-        ctx.strokeStyle = "rgba(0,0,0,0.6)";
-        ctx.lineWidth = 1;
-      }
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.stroke();
-      if (this.labelsVisible && withLabels) this.drawLabel(i, cx, cy, r);
-    }
-  }
 
   // The reprojected 3D drawn as its own independent overlay: the full reprojected skeleton in the
   // limb palette -- hollow rings at every reprojected joint joined by thick, semi-transparent,
@@ -1643,8 +1560,6 @@ export class PoseView {
       // does not exist (and the server refuses it anyway). Select and stop.
       if (this.isAbsent(point)) return;
       // An obscured joint can still be dragged -- doing so un-obscures it (the app
-      // un-flags it on release via `wasInvisible`).
-      this.dragInvisible = this.invisible != null && !!this.invisible[point];
       this.dragging = point;
       this.canvas.setPointerCapture(e.pointerId);
       return;
@@ -1773,7 +1688,7 @@ export class PoseView {
       if (this.moved) {
         const [ix, iy] = this.toImage(...this.cssXY(e));
         this.pts[point] = [ix, iy];
-        this.cb.onDragged(this.viewIndex, point, ix, iy, this.dragInvisible);
+        this.cb.onDragged(this.viewIndex, point, ix, iy);
       }
       return;
     }

@@ -68,6 +68,29 @@
  * @property {Camera3D[]} cameras_3d  per-camera world poses for the rig plot
  * @property {CameraProj[]} cameras_proj  per-camera pinhole projection for the mesh overlay
  * @property {boolean} dirty
+ * @property {boolean} has_jobs  whether this session can run pipeline commands
+ * @property {string | null} project_root  the project this recording belongs to, if any
+ * @property {string | null} recording  the project slug of the open recording
+ * @property {any[]} landmarks  the calibration landmarks placed in this recording
+ */
+
+/**
+ * One row of `GET /api/recordings`: a recording of the open project, with the counts
+ * that decide which is worth opening next.
+ * @typedef {object} RecordingRow
+ * @property {string} slug  the name to pass back to `POST /api/recordings/open`
+ * @property {string} id  the content-derived recording id
+ * @property {string | null} subject  animal identifier, when the result records one
+ * @property {number | null} n_frames
+ * @property {number | null} fps
+ * @property {boolean} active  whether this is the recording currently open
+ * @property {boolean} has_results  false for a recording that has never been run (2D only)
+ * @property {boolean} has_labels
+ * @property {boolean} outputs_missing  the adopted outputs directory has gone away
+ * @property {number} gt_points
+ * @property {number} occluded
+ * @property {number} labeled_frames
+ * @property {number} reviewed_frames
  */
 
 /**
@@ -223,6 +246,17 @@
  * @property {"role"} type
  * @property {"writer" | "reader"} role
  * @property {number} clients  how many browsers are currently connected
+ */
+
+/**
+ * Pushed to every open browser when the server swaps the recording underneath them
+ * (`POST /api/recordings/open`). The page must do a full `location.reload()`: its
+ * canvases, key bindings and frame-URL cache token were all built from `/api/meta`,
+ * which it fetches exactly once per load.
+ * @typedef {object} ReloadMessage
+ * @property {"reload"} type
+ * @property {string} reason  why -- currently always "recording"
+ * @property {string} recording  the slug now open
  */
 
 export {};

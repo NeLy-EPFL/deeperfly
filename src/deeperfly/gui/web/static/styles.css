@@ -250,7 +250,7 @@ body {
   text-align: right;
 }
 
-/* A quiet group heading inside a popover menu (e.g. "Point sources" / "Reference" in
+/* A quiet group heading inside a popover menu (e.g. "Reference" / "Cameras" in
    Show, "Arrangement" / "View" in Layout), so its rows read as a set. */
 .popover-menu .pm-section {
   margin: 6px 8px 1px;
@@ -1440,4 +1440,59 @@ body.arming-landmark canvas { cursor: crosshair !important; }
   padding: 0 5px;
   cursor: pointer;
   opacity: 0.8;
+}
+
+/* -- the recording picker ---------------------------------------------------
+   A popover on the toolbar's right-hand utilities, so unlike the left-anchored
+   Show/Skeleton menus it is anchored to its button's RIGHT edge -- the default
+   would run off the viewport. Rows are buttons, never a <select> or a filter
+   <input>: `onKey`'s typing guard kills every non-global shortcut while an
+   input holds focus, and nothing in the toolbar blurs it. */
+#recording-menu {
+  left: auto;
+  right: 0;
+  min-width: 320px;
+}
+#recording-toggle #recording-name {
+  display: inline-block;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.rec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rec-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.rec-row:hover:not(:disabled) { background: #3a3a3a; }
+.rec-row:disabled { cursor: default; opacity: 0.75; }
+.rec-row.is-active { background: #34506e; }
+.rec-name { font-weight: 600; }
+.rec-stats {
+  margin-left: auto;
+  color: #8a97a4;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.rec-flag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d7a03a;
 }

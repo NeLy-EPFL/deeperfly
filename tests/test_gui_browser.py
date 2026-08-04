@@ -18,6 +18,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from deeperfly.gui.readers import FrameSource
@@ -177,6 +178,49 @@ def _open_suggest(page):
 def test_the_editor_loads_without_javascript_errors(page_and_errors):
     page, errors = page_and_errors
     assert not errors, "JS errors on load:\n  " + "\n  ".join(errors)
+
+
+def test_the_toolbar_is_one_row(page_and_errors):
+    """Every toolbar group sits inside ``.toolbar-row``, on one line.
+
+    ``#controls`` is ``flex-direction: column``, so a group that escapes the row does not
+    look broken in the DOM -- it renders as its own full-width band, and ``.spacer``
+    (which is ``flex: 1`` *within* the row) stops pushing the session controls right.
+    Retiring the Layout popover left its ``</div>`` behind, which closed ``.toolbar-row``
+    immediately and dropped all six groups into the column: the toolbar became a six-high
+    stack. No existing test noticed, because every element still existed, still had its
+    id, and still worked -- only the geometry was wrong. So this asserts the geometry.
+    """
+    page, errors = page_and_errors
+    assert page.locator(".toolbar-row").count() == 1, "expected one .toolbar-row"
+
+    # Structural, not geometric: `.control-row` is `flex-wrap: wrap` on purpose, so a
+    # narrow window legitimately puts the toolbar on two lines. What must never happen is
+    # a group escaping the row -- and that is exactly what stacking looks like.
+    kids = page.evaluate(
+        "() => [...document.getElementById('controls').children].map(e => e.className)"
+    )
+    assert kids == ["control-row frame-row", "control-row toolbar-row"], (
+        f"#controls should hold exactly the two rows, got {kids}"
+    )
+    for sel in ("#show-wrap", "#point-status", "#save", "#frames-toggle"):
+        assert page.evaluate(
+            "sel => !!document.querySelector(sel)?.closest('.toolbar-row')", sel
+        ), f"{sel} escaped .toolbar-row"
+
+    # Given the width to fit, the row is one line and .spacer pushes the session
+    # controls to the right edge -- neither is true when the groups stack.
+    page.set_viewport_size({"width": 1800, "height": 900})
+    page.wait_for_timeout(200)
+    left = page.locator("#show-wrap").bounding_box()
+    right = page.locator("#save").bounding_box()
+    assert left and right, "toolbar controls have no layout box"
+    assert left["y"] < right["y"] + right["height"], "toolbar stacked at 1800px"
+    assert right["y"] < left["y"] + left["height"], "toolbar stacked at 1800px"
+    assert right["x"] > left["x"] + left["width"], (
+        "the session controls are not pushed right -- .spacer is not inside the row"
+    )
+    assert not errors, "JS errors laying out the toolbar:\n  " + "\n  ".join(errors)
 
 
 def test_the_suggestion_queue_carries_its_own_reviewed_tick(page_and_errors):
@@ -732,3 +776,156 @@ def test_a_session_without_a_project_explains_the_settings_panel(page_and_errors
     _open_settings(page)
     assert "Open a project" in page.locator("#settings-empty").inner_text()
     assert not errors
+
+
+# -- the recording picker --------------------------------------------------------
+
+
+@pytest.fixture
+def recording_page_and_errors(tmp_path, cameras, fly):
+    """The editor on a real two-recording project, so a switch is genuinely executable.
+
+    Built through ``open_target`` rather than ``Session.build`` because that is what the
+    switch handler itself calls -- a fixture that hand-assembled the session would not
+    prove the second recording can be opened the way the server opens it.
+    """
+    import cv2
+    from test_gui_recordings import _make_recording
+
+    from deeperfly.gui import open_target
+    from deeperfly.project import Project
+
+    def _real_video(root, n_frames):
+        """Overwrite the byte-only footage with decodable video.
+
+        The API tests do not need pixels, but the browser does: an undecodable frame is
+        a 404, and Chrome logs every failed resource as a `console.error` -- which this
+        suite asserts against, so the fixture's own footage would fail every test here
+        for a reason that has nothing to do with switching.
+        """
+        for camera in root.glob("camera_*.mp4"):
+            writer = cv2.VideoWriter(
+                str(camera), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (WIDTH, HEIGHT)
+            )
+            for _ in range(n_frames):
+                writer.write(np.zeros((HEIGHT, WIDTH, 3), np.uint8))
+            writer.release()
+
+    project = Project.create(tmp_path / "proj", name="switchproj")
+    a = _make_recording(tmp_path / "flyA", cameras, fly, seed=0, n_frames=6, gt_cells=5)
+    b = _make_recording(tmp_path / "flyB", cameras, fly, seed=500, n_frames=9)
+    _real_video(a, 6)
+    _real_video(b, 9)
+    project.add_recording(a, slug="flyA")
+    project.add_recording(b, slug="flyB")
+    session = open_target(project.root, recording="flyA")
+    server, port = _serve_app(create_app(session))
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(900)
+            yield page, errors, port
+            browser.close()
+    finally:
+        server.should_exit = True
+
+
+def _open_recording_menu(page):
+    page.locator("#recording-toggle").click()
+    page.wait_for_timeout(600)
+
+
+def test_the_toolbar_names_the_open_recording(recording_page_and_errors):
+    """Before this, the open recording's name existed only in the browser tab's title."""
+    page, errors, _ = recording_page_and_errors
+    assert page.locator("#recording-name").inner_text() == "flyA"
+    assert not errors, "JS errors on load:\n  " + "\n  ".join(errors)
+
+
+def test_the_picker_lists_the_projects_recordings(recording_page_and_errors):
+    page, errors, _ = recording_page_and_errors
+    _open_recording_menu(page)
+    rows = page.locator(".rec-row")
+    assert rows.count() == 2
+    assert [rows.nth(i).locator(".rec-name").inner_text() for i in range(2)] == [
+        "flyA",
+        "flyB",
+    ]
+    # The open one is marked and unclickable; the other carries its label count.
+    assert page.locator(".rec-row.is-active .rec-name").inner_text() == "flyA"
+    assert page.locator(".rec-row.is-active").is_disabled()
+    assert "unlabeled" in rows.nth(1).inner_text()
+    assert not errors, "JS errors listing recordings:\n  " + "\n  ".join(errors)
+
+
+def test_the_picker_opens_from_the_keyboard(recording_page_and_errors):
+    """`b` toggles it. Registered only for a project session, so it is not advertised
+    in the help of a bare results.h5 that could not honor it."""
+    page, errors, _ = recording_page_and_errors
+    assert page.locator("#recording-menu").is_hidden()
+    page.keyboard.press("b")
+    page.wait_for_timeout(600)
+    assert not page.locator("#recording-menu").is_hidden(), "b did not open the picker"
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+    assert page.locator("#recording-menu").is_hidden(), "Escape did not close it"
+    assert not errors, "JS errors on the picker shortcut:\n  " + "\n  ".join(errors)
+
+
+def test_switching_reloads_the_editor_onto_the_new_recording(recording_page_and_errors):
+    """The whole point: a different recording, without restarting the server."""
+    page, errors, port = recording_page_and_errors
+    _open_recording_menu(page)
+    page.locator(".rec-row:not(.is-active)").first.click()
+    # The server swaps, pushes a reload, and the page rebuilds from the new /api/meta.
+    page.wait_for_function(
+        "() => document.getElementById('recording-name')?.textContent === 'flyB'",
+        timeout=15000,
+    )
+    assert page.locator("#recording-name").inner_text() == "flyB"
+    # flyA has 6 frames and flyB has 9: the canvases were rebuilt, not just relabeled.
+    assert (
+        page.evaluate("() => Number(document.getElementById('frame-number').max)") == 8
+    )
+    assert not errors, "JS errors switching recordings:\n  " + "\n  ".join(errors)
+
+
+def test_switching_with_unsaved_labels_asks_before_dropping_them(
+    recording_page_and_errors,
+):
+    """The swap discards the outgoing session, and no beforeunload fires for it."""
+    page, errors, _ = recording_page_and_errors
+    # Dirty the session. The Reviewed toggle needs no point selection, so this does not
+    # depend on a click landing on a joint.
+    page.locator("#reviewed-toggle").click()
+    page.wait_for_timeout(700)
+    # `updateDirty()` appends " *" to the title; without this the test would pass
+    # vacuously, by prompting for a switch that was never unsafe.
+    assert page.title().endswith("*"), "the session is not dirty; this proves nothing"
+
+    _open_recording_menu(page)
+    page.locator(".rec-row:not(.is-active)").first.click()
+    page.wait_for_timeout(600)
+    assert not page.locator("#switch-overlay").is_hidden(), "switched without asking"
+    assert page.locator("#recording-name").inner_text() == "flyA", "switched anyway"
+
+    page.locator("#switch-cancel").click()
+    page.wait_for_timeout(300)
+    assert page.locator("#switch-overlay").is_hidden()
+    assert page.locator("#recording-name").inner_text() == "flyA"
+    assert not errors, "JS errors on the switch prompt:\n  " + "\n  ".join(errors)

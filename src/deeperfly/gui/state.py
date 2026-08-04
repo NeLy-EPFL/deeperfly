@@ -6,13 +6,19 @@ operator's 2D labels are the source of truth and the 3D pose is a pure derived
 function of them (see :mod:`deeperfly.gui.solve`), so nothing 3D is stored -- it is
 recomputed from the labels + the detector's predictions and cached per frame.
 
-Per ``(view, frame, point)`` the operator authors at most a tri-state
-(:class:`~deeperfly.gui.labels.Labels`): a GT pixel, an "occluded" flag, or nothing.
-The *displayed* 2D for a view resolves by precedence GT -> prediction, and the 3D
-point is ``solve_point_3d(gt, predictions)`` (falling back to the run's cached 3D when
-fewer than two views are usable). A drag creates/moves the GT at the dragged view and
-re-solves the 3D live via :func:`~deeperfly.gui.solve.solve_point_3d_drag`, which lands
-the point under the cursor even with a single usable view.
+The unit of annotation is an **instance**: one skeleton per frame, created from the
+detections and owning a position for every ``(view, point)`` thereafter. Per cell the
+operator authors two orthogonal facts (:class:`~deeperfly.gui.labels.Labels`): a GT pixel,
+and an "occluded" flag meaning *a human cannot see this keypoint in this view*. The second
+is a training signal only -- it does not move the joint and does not touch the solve, which
+is robust to a bad observation on its own.
+
+A cell with no GT contributes its **seed** to its point's 3D, exactly where the detector's
+peak used to; the 3D is ``solve_point_3d(gt, seeds)``, and with a single GT view the pixel
+fixes the viewing ray while a Huber fit over the seeds fixes the depth. A drag creates or
+moves the GT at the dragged view and re-solves live via
+:func:`~deeperfly.gui.solve.solve_point_3d_drag`, which lands the point under the cursor
+even with one usable view.
 
 Orthogonal to that per-cell tri-state, a *point* may be declared **absent** -- not on this
 animal, as with an amputated leg. It is view-independent (an amputated joint is missing
@@ -37,7 +43,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 
 from ..config import AnnotationParams, TriangulationParams
 from ..results import PoseResult
@@ -611,6 +617,34 @@ class EditorState:
 
     # -- the annotation instance ----------------------------------------------
 
+    def invented_mask(self, frame: int | None = None) -> Bool[np.ndarray, "V P"]:
+        """``(V, P)`` cells whose drawn position the editor invented rather than derived.
+
+        True where the instance has no evidence-backed seed *and* no reprojection, so
+        :meth:`display_instance_pts2d` fell back to the placeholder chain -- whose last rungs
+        are the mean of a joint's skeleton neighbours, the view centroid, and the image
+        centre. Those exist so the joint stays visible and draggable; they are not
+        observations, they never reach the solve (:meth:`_point_obs`), and :meth:`confirm`
+        skips them rather than authoring them as GT.
+
+        Which leaves one problem this answers: on screen such a joint is indistinguishable
+        from a properly triangulated one. With an ipsilateral-only detector every
+        contralateral keypoint is in exactly this state, so it is not an edge case -- the
+        front end draws these faintly, the way the retired "Unplaced" layer drew its ghosts.
+        All ``False`` before an instance exists (nothing is being claimed yet).
+        """
+        t = self._resolve_frame(frame)
+        if not self.has_instance(t):
+            return np.zeros((self.n_views, self.n_points), dtype=bool)
+        seeded = np.isfinite(self.labels.seeds[:, t]).all(axis=-1)
+        proj = self.display_pts3d_projected(t) if self.has_3d else None
+        proj_ok = (
+            np.zeros_like(seeded)
+            if proj is None
+            else np.isfinite(np.asarray(proj, dtype=float)).all(axis=-1)
+        )
+        return ~seeded & ~proj_ok
+
     def has_instance(self, frame: int | None = None) -> bool:
         """Whether an annotation skeleton has been created in ``frame``."""
         return bool(self.labels.instance[self._resolve_frame(frame)])
@@ -1130,7 +1164,7 @@ class EditorState:
     def toggle_invisible(
         self, view: int, point: int, frame: int | None = None
     ) -> bool | None:
-        """Toggle whether ``point`` in ``view`` is occluded (dropped from the 3D solve).
+        """Toggle "a human cannot see ``point`` in ``view``" -- a training annotation.
 
         An occluded view contributes nothing to the 3D and follows the reprojection;
         toggling re-solves the 3D from the remaining views. Setting it drops any GT for
@@ -1168,7 +1202,7 @@ class EditorState:
         self._invalidate_nmf(t)
 
     def reset_frame(self, frame: int | None = None) -> None:
-        """Reset every label in ``frame`` to ``unset`` -- back to the pipeline pose."""
+        """Retract every label in ``frame``, leaving the instance's seeds standing."""
         t = self._resolve_frame(frame)
         self._record_undo(t, None, coalesce=False)
         self.labels.clear_frame(t)

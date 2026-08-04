@@ -251,7 +251,7 @@ class AnnotationParams:
     """``[annotation]`` -- how the GUI turns 2D labels into a live 3D estimate.
 
     The keypoint editor is a *ground-truth annotation* tool: per ``(frame, point,
-    view)`` the operator authors at most a GT 2D pixel or an "occluded" flag, and
+    view)`` the operator authors a GT 2D pixel and/or an "occluded" flag (orthogonal), and
     the 3D point is a pure function of those labels plus the detector's predictions
     (``triangulate(active 2D, cameras, method, hyperparams)``). These knobs govern
     that function; the triangulation *method* + thresholds are shared with the batch

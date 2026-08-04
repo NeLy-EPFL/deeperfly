@@ -103,6 +103,70 @@ def _session_version(session: Session) -> str:
     return hashlib.sha1("\0".join(parts).encode()).hexdigest()[:12]
 
 
+#: How long the exit-on-last-tab timer stays disarmed around a recording switch. Every
+#: browser reloads at once, so every socket drops at once, and ``exit_on_disconnect``
+#: would read that as "the last tab closed". Generous on purpose: the cost of being
+#: wrong is the server stopping in the middle of a switch, and the cost of being
+#: over-generous is a closed editor lingering for half a minute.
+_SWITCH_GRACE = 30.0
+
+#: Refusing to switch is the only thing standing between an operator and losing hand
+#: labels: the swap drops the outgoing session -- its labels and its whole undo history
+#: -- and no ``beforeunload`` fires for an in-process change.
+_UNSAVED_MSG = (
+    "this recording has unsaved labels; save them first (POST /api/save), or pass "
+    '"discard": true to abandon them'
+)
+
+
+def _open_for_switch(root: Path, slug: str) -> tuple[Session, str]:
+    """Open ``slug`` from the project at ``root``, with the cache token for its pictures.
+
+    Runs in a worker thread (see ``POST /api/recordings/open``): opening a recording
+    reads every camera's video header, loads ``results.h5`` + ``labels.h5`` and may build
+    the IK model, and :func:`_session_version` then ``stat``s all that footage again --
+    on a network share, for this lab. None of that belongs on the event loop.
+
+    Both values are produced by this one call so a session and its token can never be
+    minted from *different* recordings, which is precisely the mix-up the token exists to
+    prevent.
+    """
+    from . import open_target  # deferred: deeperfly.gui imports this module
+
+    session = open_target(root, recording=slug)
+    return session, _session_version(session)
+
+
+def _recording_rows(project, active: str | None) -> list[dict]:
+    """One JSON-safe row per recording of ``project``, in index order.
+
+    :meth:`~deeperfly.project.Project.status` rows carry a ``RecordingEntry`` dataclass
+    and ``Path``s, which FastAPI's encoder cannot serialize. Naming the fields here makes
+    the payload a contract rather than a dump of whatever ``status()`` happens to return.
+    """
+    rows = []
+    for row in project.status():
+        entry = row["entry"]
+        rows.append(
+            {
+                "slug": entry.slug,
+                "id": entry.id,
+                "subject": entry.subject,
+                "n_frames": entry.n_frames,
+                "fps": entry.fps,
+                "active": entry.slug == active,
+                "has_results": bool(row["has_results"]),
+                "has_labels": bool(row["has_labels"]),
+                "outputs_missing": bool(row["outputs_missing"]),
+                "gt_points": int(row["gt_points"]),
+                "occluded": int(row["occluded"]),
+                "labeled_frames": int(row["labeled_frames"]),
+                "reviewed_frames": int(row["reviewed_frames"]),
+            }
+        )
+    return rows
+
+
 def create_app(
     session: Session,
     *,
@@ -131,9 +195,10 @@ def create_app(
     """
     app = FastAPI(title="deeperfly gui")
     lock = asyncio.Lock()
-    # Computed once: it stats the footage (on a network share, for this lab), and a
-    # single value keeps the token the page stamps into its URLs identical to the one
-    # the frame handler validates against.
+    # Recomputed only when the open recording changes (POST /api/recordings/open): it
+    # stats the footage (on a network share, for this lab), and a single value keeps the
+    # token the page stamps into its URLs identical to the one the frame handler
+    # validates against.
     cache_v = _session_version(session)
     # Open `/ws` sockets (one per browser tab), the single "writer" allowed to edit
     # the shared session, and the timer that -- once the last socket closes -- stops
@@ -141,6 +206,12 @@ def create_app(
     sockets: set[WebSocket] = set()
     writer: WebSocket | None = None
     pending_exit: asyncio.TimerHandle | None = None
+    # Live while a recording switch is in flight. Every browser reloads at once, so every
+    # socket drops at once, and `exit_on_disconnect` must not read that as the last tab
+    # closing. `switch_busy` additionally makes two overlapping switches a 409 rather
+    # than a race between two half-built sessions.
+    switching: asyncio.TimerHandle | None = None
+    switch_busy = False
 
     def _role_msg(ws: WebSocket) -> dict:
         """The role handshake for a browser: may it edit (writer) or is it read-only?"""
@@ -149,6 +220,42 @@ def create_app(
             "role": "writer" if ws is writer else "reader",
             "clients": len(sockets),
         }
+
+    async def _broadcast(payload: dict) -> None:
+        """Push one message to every open browser, dropping the sockets that have gone.
+
+        Iterates a *copy*: the set is mutated by connects and disconnects, and a send to
+        a socket the browser has already closed must not stop the live ones receiving it.
+        """
+        for cand in list(sockets):
+            try:
+                await cand.send_json(payload)
+            except Exception:  # pragma: no cover -- the socket is on its way out
+                sockets.discard(cand)
+
+    def _begin_switch() -> None:
+        """Open the window in which a dropped socket means "reloading", not "closed"."""
+        nonlocal pending_exit, switching
+        if pending_exit is not None:
+            pending_exit.cancel()
+            pending_exit = None
+        if switching is not None:
+            switching.cancel()
+        switching = asyncio.get_running_loop().call_later(_SWITCH_GRACE, _end_switch)
+
+    def _end_switch() -> None:
+        """The reload window closed. Re-arm the exit timer if no browser came back.
+
+        Without this, closing the last tab shortly after a switch would leave the server
+        running forever -- the switch would have disabled the only thing that stops it.
+        """
+        nonlocal pending_exit, switching
+        switching = None
+        if exit_on_disconnect and not sockets and on_shutdown is not None:
+            log.info("no browser returned after the recording switch; stopping")
+            pending_exit = asyncio.get_running_loop().call_later(
+                disconnect_grace, on_shutdown
+            )
 
     # The web assets are edited in place (no build step), so without an explicit
     # policy a browser's heuristic cache can serve a stale app.js/styles.css
@@ -211,7 +318,13 @@ def create_app(
         )
 
     @app.get("/api/meta")
-    def meta() -> dict:
+    def meta(response: Response) -> dict:
+        # Never cached. After a recording switch this payload is the only thing telling a
+        # reloaded page which recording it is now editing -- and which token to stamp into
+        # its frame URLs. A heuristically cached copy would have the new page stamping the
+        # PREVIOUS recording's token onto the new recording's pictures, which is exactly
+        # the collision `_session_version` exists to prevent.
+        response.headers["Cache-Control"] = "no-store"
         return _meta_payload(session, cache_v)
 
     @app.get("/api/schema")
@@ -260,7 +373,12 @@ def create_app(
 
     @app.get("/api/frame/{camera}/{t}")
     def frame(camera: str, t: int, v: str | None = None) -> Response:
-        img = session.source.frame(camera, t)
+        # One atomic read of the session per request. These are `def` handlers, so
+        # Starlette runs them in a threadpool where `lock` cannot exclude them, and a
+        # recording switch landing between two reads would split one response across two
+        # recordings. Every handler below takes the same snapshot.
+        s = session
+        img = s.source.frame(camera, t)
         if img is None:
             raise HTTPException(404, f"no frame for {camera!r} at {t}")
         ok, buf = cv2.imencode(".jpg", _to_bgr(img))
@@ -272,21 +390,28 @@ def create_app(
             headers={"Cache-Control": _image_cache_control(v)},
         )
 
-    mesh_cache: dict[tuple[str, int], bytes] = {}
+    # Keyed by the recording token as well as camera+frame. `/api/mesh/f/1506` names a
+    # different overlay in every recording, and this dict sits INSIDE the HTTP cache the
+    # token protects -- so without the token in the key, a switch would serve the previous
+    # recording's rendered fly for the new one, under `max-age=3600, immutable`. The
+    # switch clears it too, but the key is what makes that belt-and-braces rather than a
+    # step a later refactor can quietly drop.
+    mesh_cache: dict[tuple[str, str, int], bytes] = {}
 
     @app.get("/api/mesh/{camera}/{t}")
     def mesh(camera: str, t: int, v: str | None = None) -> Response:
         """The posed NeuroMechFly mesh for ``camera`` at frame ``t`` as an RGBA PNG.
 
         404 when the result carries no fitted model (IK off). Rendered on demand and
-        memoized per ``(camera, frame)`` so scrubbing back is instant; the overlay is
-        heavy enough that re-rendering every scrub would lag.
+        memoized per ``(recording, camera, frame)`` so scrubbing back is instant; the
+        overlay is heavy enough that re-rendering every scrub would lag.
         """
-        if not session.state.has_nmf:
+        s, token = session, cache_v
+        if not s.state.has_nmf:
             raise HTTPException(404, "no inverse-kinematics model to overlay")
-        key = (camera, _clamp_frame(session, t))
+        key = (token, camera, _clamp_frame(s, t))
         if key not in mesh_cache:
-            png = _render_mesh_png(session, camera, key[1])
+            png = _render_mesh_png(s, camera, key[2])
             if png is None:
                 raise HTTPException(404, f"no mesh overlay for {camera!r} at {t}")
             mesh_cache[key] = png
@@ -311,21 +436,24 @@ def create_app(
     @app.get("/api/nmf/verts/{t}")
     async def nmf_verts(t: int) -> Response:
         """The posed NMF vertices, normals + valid-face mask for ``t`` (re-fit from edits)."""
-        if not session.state.has_nmf:
+        s = session
+        if not s.state.has_nmf:
             raise HTTPException(404, "no inverse-kinematics model to overlay")
         async with lock:
-            data = _nmf_verts_bytes(session, _clamp_frame(session, t))
+            data = _nmf_verts_bytes(s, _clamp_frame(s, t))
         if data is None:
             raise HTTPException(404, f"no mesh overlay at frame {t}")
         return Response(content=data, media_type="application/octet-stream")
 
     @app.get("/api/points/{t}")
     def points(t: int, mode: str = "view", verbose: bool = False) -> dict:
-        return _points_payload(session, _clamp_frame(session, t), mode, verbose=verbose)
+        s = session
+        return _points_payload(s, _clamp_frame(s, t), mode, verbose=verbose)
 
     @app.get("/api/scene/{t}")
     def scene(t: int) -> dict:
-        return _scene_payload(session, _clamp_frame(session, t))
+        s = session
+        return _scene_payload(s, _clamp_frame(s, t))
 
     @app.get("/api/corrected")
     def corrected() -> dict:
@@ -430,6 +558,130 @@ def create_app(
         log.info("set %s.%s in %s", section, key, path.name)
         return {"ok": True, "profile": str(path)}
 
+    # -- recordings -----------------------------------------------------------
+    #
+    # The editor shows exactly one recording; this is how the operator changes which,
+    # without restarting the server and without hunting for the next results.h5 in a
+    # shell. The swap happens in this process -- `session` and `cache_v` are rebound
+    # below -- and every open browser is then told to reload, because the front-end
+    # builds its canvases, its key bindings and its frame-URL cache token from /api/meta,
+    # which it fetches exactly once per page load.
+    #
+    # Deliberately restricted to the CURRENT project. The JobQueue is built once, from
+    # `session.project_root`, in `deeperfly.gui.serve`; a cross-project swap would leave
+    # it running commands in -- and writing logs into -- the previous project, and
+    # nothing here would notice. Keeping the project fixed makes that correct by
+    # construction rather than by a second rebind someone has to remember.
+
+    @app.get("/api/recordings")
+    def list_recordings() -> dict:
+        """This project's recordings with their label counts, and which one is open.
+
+        ``enabled: false`` for a bare ``results.h5`` session -- the same convention as
+        ``/api/jobs`` and ``/api/config``, so the picker can say *why* it cannot switch
+        instead of rendering an unexplained empty menu. This opens every recording's
+        ``labels.h5``, which is why it is a route of its own rather than a field of
+        ``/api/meta`` (fetched on every page load, including the ones after a switch).
+        """
+        s = session
+        if s.project_root is None:
+            return {
+                "enabled": False,
+                "reason": "this session was opened on a bare results.h5; open a project "
+                "to switch between its recordings",
+                "recordings": [],
+            }
+        project = _project()
+        return {
+            "enabled": True,
+            "project": project.name,
+            "project_root": str(project.root),
+            "active": s.recording_slug,
+            "dirty": bool(s.state.dirty),
+            "recordings": _recording_rows(project, s.recording_slug),
+        }
+
+    @app.post("/api/recordings/open")
+    async def open_recording(payload: dict) -> dict:
+        """Switch the editor to another recording of this project, in place.
+
+        ``{"recording": "<slug>", "discard": false}``. Refused with 409 while labels are
+        unsaved unless ``discard`` is set: the swap drops the outgoing session -- its
+        labels and its whole undo history -- and no ``beforeunload`` fires for an
+        in-process change, so this refusal is the only thing standing between a careless
+        click and lost hand work. The front-end asks first, with the same three-way
+        prompt as Close, and saves through ``/api/save``.
+
+        The new session is built completely, in a worker thread, *before* anything is
+        rebound -- so a recording that cannot be opened leaves the current one untouched.
+        """
+        nonlocal session, cache_v, switch_busy
+        if session.project_root is None:
+            raise HTTPException(
+                409,
+                "this session was opened on a bare results.h5; open a project to switch "
+                "between its recordings",
+            )
+        slug = str(payload.get("recording") or "")
+        if not slug:
+            raise HTTPException(400, "no recording named")
+        if slug == session.recording_slug:
+            return {"switched": False, "recording": slug, "reason": "already open"}
+        discard = bool(payload.get("discard"))
+        if session.state.dirty and not discard:
+            raise HTTPException(409, _UNSAVED_MSG)
+        if switch_busy:
+            raise HTTPException(409, "a recording switch is already under way")
+
+        root = session.project_root
+        try:
+            entry = _project().recording(slug)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc).strip("'")) from None
+        slug = entry.slug  # accept an id or an id prefix, then speak in slugs
+
+        switch_busy = True
+        try:
+            # Opened before the build: a tab that closes while we are still reading the
+            # new recording's videos must not be mistaken for the last tab going away.
+            _begin_switch()
+            try:
+                new_session, new_v = await asyncio.to_thread(
+                    _open_for_switch, root, slug
+                )
+            except SystemExit as exc:
+                # `open_target` is written for the CLI and reports "this cannot be
+                # opened" by exiting. SystemExit is a BaseException, so it would sail
+                # straight past `except Exception` and out of the request handler.
+                raise HTTPException(409, f"could not open {slug!r}: {exc}") from None
+            except Exception as exc:
+                log.exception("could not open recording %s", slug)
+                raise HTTPException(409, f"could not open {slug!r}: {exc}") from None
+
+            async with lock:
+                # Re-checked INSIDE the lock: building the new session took real I/O, and
+                # an edit that landed in that window would be discarded by the rebind
+                # below without ever having been offered to the operator.
+                if session.state.dirty and not discard:
+                    raise HTTPException(409, _UNSAVED_MSG)
+                session = new_session
+                cache_v = new_v
+                mesh_cache.clear()
+            # The outgoing session is deliberately NOT closed. `FrameSource.close()`
+            # clears the decoded-frame LRU that `FrameSource.frame` pops from outside its
+            # try block, so closing it here -- while every tab is mid-reload and still
+            # requesting frames -- can raise KeyError in a threadpool handler. Nothing
+            # leaks: the readers hold no OS handle, and dropping the last reference
+            # reclaims the cache, the state and the undo stacks.
+            _begin_switch()  # restart the window: the reloads begin now
+            await _broadcast(
+                {"type": "reload", "reason": "recording", "recording": slug}
+            )
+            log.info("editor switched to recording %s", slug)
+            return {"switched": True, "recording": slug, "cache_v": new_v}
+        finally:
+            switch_busy = False
+
     # -- jobs ----------------------------------------------------------------
     #
     # Polled by the panel rather than pushed over `/ws`. The socket carries the *editing*
@@ -494,14 +746,19 @@ def create_app(
     @app.post("/api/save")
     async def save() -> dict:
         async with lock:
+            # One snapshot for the whole save. A recording switch takes this same lock,
+            # so it cannot interleave -- but reading `session` seven times would make
+            # that a property of the lock rather than of this function, and the failure
+            # it prevents is writing the NEW recording's labels to the OLD one's path.
+            s = session
             save_labels(
-                session.labels_path,
-                session.state.labels,
-                identity=session.identity,
-                subject_id=session.state.labels.subject_id,
+                s.labels_path,
+                s.state.labels,
+                identity=s.identity,
+                subject_id=s.state.labels.subject_id,
                 # Passed back explicitly: save_labels rewrites the whole file, so omitting
                 # them would drop the landmarks group the solve reads.
-                landmarks=session.state.landmarks,
+                landmarks=s.state.landmarks,
             )
             # Mirror the absence declaration into results.h5's `animal/` group. That is the
             # seam the pipeline and every results.h5-only consumer read, so a fact authored
@@ -510,15 +767,15 @@ def create_app(
             try:
                 from ..results import StageStore
 
-                StageStore(Path(session.results_path)).write_animal(
-                    absent=session.state.labels.absent_all_frames(),
-                    subject_id=session.state.labels.subject_id,
+                StageStore(Path(s.results_path)).write_animal(
+                    absent=s.state.labels.absent_all_frames(),
+                    subject_id=s.state.labels.subject_id,
                 )
             except Exception:  # a read-only results.h5 must not fail the label save
                 log.exception(
                     "could not mirror the absence declaration into results.h5"
                 )
-        return {"dirty": session.state.dirty}
+            return {"dirty": s.state.dirty}
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict:
@@ -601,8 +858,16 @@ def create_app(
                         continue
                     break
             # The last tab closed: stop the server, but give a refresh's reconnect
-            # the grace period to cancel it first.
-            if exit_on_disconnect and not sockets and on_shutdown is not None:
+            # the grace period to cancel it first. `switching` suppresses this entirely
+            # for the duration of a recording switch, where EVERY tab drops its socket at
+            # once and the reconnect only comes after the reloaded page has fetched
+            # /api/meta -- which on a large recording takes longer than the grace.
+            if (
+                exit_on_disconnect
+                and not sockets
+                and on_shutdown is not None
+                and switching is None
+            ):
                 log.info("browser disconnected; stopping in %ss", disconnect_grace)
                 pending_exit = asyncio.get_running_loop().call_later(
                     disconnect_grace, on_shutdown
@@ -877,6 +1142,13 @@ def _points_payload(
     # mid-drag reply too: it gates whether a joint is drawn at all, so omitting it would
     # flash the phantom limb back on for the duration of every drag.
     absent = np.broadcast_to(s.absent_mask(t)[None, :], fixed.shape)
+    # Cells whose drawn position the EDITOR invented: no evidence-backed seed and no
+    # reprojection either, so `display_instance_pts2d` fell back to the placeholder chain (a
+    # neighbour mean, the view centroid, the image centre). They look identical to a
+    # triangulated joint on screen, `confirm` silently skips them, and the operator has no way
+    # to tell -- so the marker has to say so. Rides every reply, like `fixed`: adding GT can
+    # make a point solvable, which un-invents its cells.
+    invented = s.invented_mask(t)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
     landmarks = s.display_landmarks(t)
     payload = {
@@ -891,6 +1163,7 @@ def _points_payload(
         "fixed": fixed.tolist(),
         "invisible": invisible.tolist(),
         "absent": np.asarray(absent).tolist(),
+        "invented": invented.tolist(),
         # Which of those are absent in EVERY frame, so the front-end can tell an
         # amputation from a single-frame declaration without fetching the whole mask.
         "absent_recording": s.absent_points(),

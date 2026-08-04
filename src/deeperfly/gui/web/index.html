@@ -80,7 +80,6 @@
                hide overlay toggles). The single .spacer splits the left work area (view
                toggles · annotate · history) from the right utilities (panels · session). -->
           <div class="control-row toolbar-row">
-            </div>
             <!-- The overlay toggles collapse behind one "Show" button: a popover that opens
                  upward (the bar sits at the screen's bottom edge). Each overlay keeps its
                  own keyboard shortcut, which is the fast path -- the menu is the
@@ -136,6 +135,21 @@
               <button id="redo" title="Redo (Ctrl/Cmd+Y)" disabled>↷</button>
             </div>
             <span class="spacer"></span>
+            <!-- Which recording is open, and how to open another. A session-level fact,
+                 so it sits with the session utilities rather than with the panels -- and
+                 the button IS the readout: before this, the open recording's name lived
+                 only in the browser tab's title, where a tab truncates it. The menu
+                 carries each recording's label counts, because "which is worth opening
+                 next" is the question actually being asked. Hidden for a bare
+                 results.h5, which has no siblings to switch to. -->
+            <div class="ctl-group popover-wrap" id="recording-wrap">
+              <button id="recording-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Which recording is open — and switch to another in this project, without restarting the editor (b)"><span id="recording-name">recording</span> <span class="caret">▾</span></button>
+              <div id="recording-menu" class="popover-menu" role="menu" hidden>
+                <div class="pm-section" id="recording-heading">Recordings</div>
+                <div id="recording-list" class="rec-list"></div>
+                <div id="recording-empty" class="frames-empty" hidden></div>
+              </div>
+            </div>
             <div class="ctl-group">
               <!-- One button for the whole side panel, carrying a badge per tab: the
                    number of frames labeled, and (only once a suggestion queue exists)
@@ -243,6 +257,23 @@
           <button id="close-cancel">Cancel</button>
           <button id="close-discard" class="danger">Close without saving</button>
           <button id="close-save" class="primary">Save &amp; close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Switching recordings drops this session -- its labels AND its undo history --
+         and no beforeunload fires for an in-process swap, so this is the only thing
+         between a careless click and lost hand work. Same three-way shape as Close, same
+         default (save), and it names both recordings because the operator is about to
+         stop looking at one of them. -->
+    <div id="switch-overlay" class="overlay" hidden>
+      <div class="modal">
+        <div class="modal-head"><span>Unsaved changes</span></div>
+        <div class="modal-body">You have unsaved labels in <span id="switch-from"></span>. Save them before opening <span id="switch-to"></span>?</div>
+        <div class="modal-actions">
+          <button id="switch-cancel">Cancel</button>
+          <button id="switch-discard" class="danger">Switch without saving</button>
+          <button id="switch-save" class="primary">Save &amp; switch</button>
         </div>
       </div>
     </div>
