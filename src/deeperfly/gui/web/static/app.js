@@ -32,8 +32,9 @@
 // hovered view -- then a state chip (or Reset) applies to the whole selection at once.
 //
 // Display layers the operator toggles: the ground-truth layer (the editable one -- a drag moves
-// or spawns GT), the raw-detection layer, "Combined" (a merge toggle: on, GT + detected draw as
-// one skeleton; off, as two separate skeletons), per-joint name labels, and the "projected" 3D
+// or spawns GT), the raw-detection reference layer (auto-hidden once an annotation skeleton
+// exists), "Seed positions" (draw a non-GT joint where the skeleton started rather than at the
+// reprojection of its 3D), per-joint name labels, and the "projected" 3D
 // reprojection as its own overlay -- the reprojected skeleton (hollow rings joined by thick,
 // dashed, semi-transparent edges; on by default), whose points double as spawn seeds for a
 // ground-truth drag. A non-modal floating panel shows the 3D
@@ -311,7 +312,7 @@ class App {
   /** @type {HTMLInputElement} */
   hideAllCheck = el("show-hide-all");
   /** @type {HTMLInputElement} */
-  combinedCheck = el("show-combined");
+  seedsCheck = el("show-seeds");
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
   /** @type {HTMLLabelElement} */
@@ -626,7 +627,7 @@ class App {
     this.reserveStatusNameWidth();
 
     this.hideAllCheck.addEventListener("change", () => this.applyHideAll());
-    this.combinedCheck.addEventListener("change", () => this.applyCombined());
+    this.seedsCheck.addEventListener("change", () => this.applySeedDisplay());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The ground-truth and detected source layers exist without 3D (they are the authored
     // pixels and the raw detector output); only the projected source needs a 3D solve.
@@ -1006,12 +1007,18 @@ class App {
     this.views.forEach((view) => view.setOverlaysHidden(hidden));
   }
 
-  // "Combined" is the merge toggle over the Ground truth + Detected layers: on, they draw as
-  // one merged skeleton (GT where authored, else the detector's point); off, as two separate
-  // overlaid skeletons. It no longer shows / hides the whole skeleton.
-  applyCombined() {
-    const merged = this.combinedCheck.checked;
-    this.views.forEach((view) => view.setCombinedVisible(merged));
+  // Where a non-GT joint of the instance is drawn. The reprojection of its point's current
+  // 3D is the default and the multiview payoff -- label two views and the other five move to
+  // where the geometry says the joint is. The seed is where the skeleton started: the honest
+  // single-view answer, and what to look at when the geometry is suspect. Server-side, since
+  // it is the server that resolves the position (EditorState.nongt_display).
+  applySeedDisplay() {
+    this.sendEdit({
+      type: "set_nongt_display",
+      value: this.seedsCheck.checked ? "seed" : "reprojection",
+      frame: this.frame,
+      mode: this.mode,
+    });
   }
 
   applyLabels() {
@@ -1407,13 +1414,22 @@ class App {
     // The facts line: what IS true of this cell, not a state to assign. Reports the hovered
     // joint while hovering (the peek), else the selection's shared description, else how
     // many cells disagree.
+    // Two orthogonal facts, composed: where the joint is, and whether a human can see it
+    // here. They are not alternatives -- a joint placed *through* an occluder is both -- so
+    // the readout says both rather than picking one, which is what a single state chip could
+    // never do.
     const describe = (view, point) => {
       if (this.absentMask && this.absentMask[view][point]) return "not on this animal";
-      if (this.fixedMask && this.fixedMask[view][point]) return "ground truth";
-      const excluded = this.excludedMask && this.excludedMask[view][point];
-      if (excluded) return "detection excluded — follows the 3D";
-      if (this.cellDetected(view, point)) return "detected";
-      return "unplaced — drag to place";
+      const gt = !!(this.fixedMask && this.fixedMask[view][point]);
+      const hidden = !!(this.excludedMask && this.excludedMask[view][point]);
+      const where = gt
+        ? "ground truth"
+        : this.hasInstance
+          ? "derived"
+          : this.cellDetected(view, point)
+            ? "detected"
+            : "unplaced — drag to place";
+      return hidden ? `${where} · hidden` : where;
     };
     let facts = "";
     if (hov) facts = describe(hov.view, hov.point);
@@ -1430,7 +1446,8 @@ class App {
     this.createBtn.disabled =
       n === 0 || this.readOnly || allAbsent || this.visibleSources() === null || !anyWithoutGt;
     this.deleteGtBtn.disabled = n === 0 || this.readOnly || !anyWithGt;
-    this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent || !anyWithoutGt;
+    // Labeled cells included: "placed through an occluder" is both facts at once.
+    this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent;
   }
 
   // Which proposal layers Enter is allowed to take a pixel from: the ones the operator can
@@ -1470,9 +1487,9 @@ class App {
     this.sendEdit({ type: "clear_gt_targets", targets, frame: this.frame, mode: this.mode });
   }
 
-  // Toggle "exclude this detection from triangulation" over the selection. Server-side this
-  // skips cells that carry GT: storing an exclusion clears the pixel under it, so a bulk
-  // toggle over a partly-labeled selection would delete the operator's own work.
+  // Toggle "a human cannot see this keypoint in this view" over the selection. Orthogonal to
+  // ground truth (a joint placed through an occluder carries both) and inert in the solve --
+  // it is a training signal, and the one thing geometry cannot supply.
   toggleSelectionExclude() {
     const targets = this.selCells();
     if (!targets.length) return;
@@ -2731,7 +2748,7 @@ class App {
     // press again to restore them exactly as they were. Leads the "show" group -- it governs
     // all the per-layer toggles below it.
     b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
-    b.push({ key: "s", group: "show", label: "s", desc: "Combined — merge ground truth + detected into one skeleton", run: () => this.toggleCheck(this.combinedCheck, () => this.applyCombined()) });
+    b.push({ key: "s", group: "show", label: "s", desc: "Seed positions — draw non-ground-truth joints where the skeleton started, instead of at the reprojection of its 3D", run: () => this.toggleCheck(this.seedsCheck, () => this.applySeedDisplay()) });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
     b.push({ key: "i", group: "show", label: "i", desc: "Unplaced-point seeds — draggable ghosts wherever a joint has nothing else to grab", run: () => this.toggleCheck(this.placeholderCheck, () => this.applyPlaceholder()) });
     if (has3d) {
@@ -2756,7 +2773,7 @@ class App {
     b.push({ key: "Enter", group: "edit", label: "⏎", desc: "Create ground truth for the selection, at the position shown", run: () => this.createSelectionGt() });
     b.push({ key: "Backspace", group: "edit", label: "⌫", desc: "Delete the selection's ground truth (the detection / reprojection shows through again)", run: () => this.deleteSelectionGt() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.deleteSelectionGt() });
-    b.push({ key: "e", group: "edit", label: "e", desc: "Exclude the selection's detections from triangulation (toggle) — the point follows the reprojection there", run: () => this.toggleSelectionExclude() });
+    b.push({ key: "e", group: "edit", label: "e", desc: "Hidden (toggle) — mark the selection as not visible to a human in this view. A training signal only: it does not move the joint and does not affect triangulation", run: () => this.toggleSelectionExclude() });
     b.push({ key: "r", group: "edit", label: "r", desc: "Reset the selection — retract both the ground truth and the exclusion", run: () => this.resetSelection() });
     b.push({ key: "x", group: "edit", label: "x", desc: "Absent — this keypoint is not on this animal (amputated / ablated). This frame, every view; press again to un-mark", run: () => this.toggleAbsentSelection("frame") });
     // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes

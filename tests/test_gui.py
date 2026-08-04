@@ -626,30 +626,31 @@ def test_toggle_exclude_targets_round_trips(result):
     assert not state.labels.occluded[:, f, p].any()
 
 
-def test_toggle_exclude_never_deletes_a_gt_pixel(result):
-    """Storing an exclusion clears the pixel under it, so the verb must skip labeled cells.
+def test_marking_a_labeled_cell_hidden_keeps_the_pixel(result):
+    """The case that matters: a joint placed *through* an occluder is both facts.
 
-    Without this, one keystroke over a partly-labeled selection would silently destroy the
-    operator's own work -- and it would be pointless, because GT already overrides the
-    detection in its own view. Excluding a view you have labeled takes two named
-    retractions: delete the GT, then exclude.
+    The verb used to skip labeled cells, because storing the flag cleared the pixel under it
+    and a bulk toggle would have destroyed the operator's work. The two are orthogonal now,
+    so the cell records both -- "here it is" from the geometry of the views that can see it,
+    and "the pixels here do not show it" for training. Nothing else can produce that pairing.
     """
     f, p = 0, 5
     state = EditorState.from_result(result)
     state.apply_2d_edit(2, p, (30.0, 40.0), f)
-    state.toggle_exclude_targets([(v, p) for v in range(state.n_views)], f)
+    assert (
+        state.toggle_exclude_targets([(v, p) for v in range(state.n_views)], f) is True
+    )
 
-    assert state.labels.has_gt[2, f, p]  # the labeled cell survived untouched
+    assert state.labels.has_gt[2, f, p]  # the pixel stands
     np.testing.assert_allclose(state.labels.gt[2, f, p], [30.0, 40.0])
-    assert state.labels.occluded[0, f, p] and state.labels.occluded[1, f, p]
-    assert not state.labels.occluded[2, f, p]
+    assert state.labels.occluded[:, f, p].all()  # ... including the labeled view
 
 
-def test_toggle_exclude_refuses_when_nothing_is_eligible(result):
+def test_toggle_hidden_refuses_only_for_an_absent_point(result):
     f, p = 0, 5
     state = EditorState.from_result(result)
-    state.apply_2d_edit(0, p, (1.0, 2.0), f)
-    assert state.toggle_exclude_targets([(0, p)], f) is None  # only a labeled cell
+    state.set_absent([p], True, f)
+    assert state.toggle_exclude_targets([(0, p)], f) is None
 
 
 # -- the annotation instance ---------------------------------------------------

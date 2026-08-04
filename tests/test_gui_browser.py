@@ -285,22 +285,24 @@ def test_the_verb_keys_create_exclude_and_delete_ground_truth(page_and_errors):
     page.wait_for_timeout(600)
     assert facts.inner_text() == "ground truth", f"readout says {facts.inner_text()!r}"
     assert not page.locator("#act-delete-gt").is_disabled()
-    # GT already overrides the detection, so there is nothing left to exclude
-    assert page.locator("#act-exclude").is_disabled(), (
-        "Exclude offered over labeled cells"
-    )
 
-    page.keyboard.press("Backspace")  # delete it again
-    page.wait_for_timeout(600)
-    assert facts.inner_text() != "ground truth", "Backspace did not delete the GT"
+    # Hidden composes with ground truth rather than replacing it: a joint placed *through*
+    # an occluder is both facts at once, and the readout has to say both. This is also why
+    # the verb is offered over labeled cells -- it used to be refused there, back when
+    # storing the flag deleted the pixel underneath it.
     assert not page.locator("#act-exclude").is_disabled()
-
-    page.keyboard.press("e")  # exclude the detections from triangulation
+    page.keyboard.press("e")
     page.wait_for_timeout(600)
-    assert "excluded" in facts.inner_text(), f"readout says {facts.inner_text()!r}"
+    assert facts.inner_text() == "ground truth \u00b7 hidden", (
+        f"readout says {facts.inner_text()!r}"
+    )
     page.keyboard.press("e")  # ... and it is a toggle
     page.wait_for_timeout(600)
-    assert "excluded" not in facts.inner_text(), "e did not toggle back"
+    assert facts.inner_text() == "ground truth", "e did not toggle back"
+
+    page.keyboard.press("Backspace")  # delete the GT
+    page.wait_for_timeout(600)
+    assert facts.inner_text() != "ground truth", "Backspace did not delete the GT"
     assert not errors, "JS errors driving the verbs:\n  " + "\n  ".join(errors)
 
 

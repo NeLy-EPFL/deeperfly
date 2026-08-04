@@ -1290,6 +1290,14 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ == "occlude":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         s.occlude_targets(targets, t)
+    elif typ == "set_nongt_display":
+        # Where a non-GT joint of the instance is drawn. Server-side because the server is
+        # what resolves the position; it changes no label, so it records no undo step.
+        want = str(msg.get("value", "reprojection"))
+        if want not in ("reprojection", "seed"):
+            notice = f"unknown non-GT display mode {want!r}"
+        else:
+            s.nongt_display = want
     elif typ == "create_instance":
         # Double-clicking the detected skeleton. The drag paths create one implicitly too,
         # so this is for starting a frame deliberately without authoring anything yet.
@@ -1312,10 +1320,7 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ == "toggle_exclude":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         if s.toggle_exclude_targets(targets, t) is None:
-            notice = (
-                "nothing to exclude -- a labeled view already overrides its detection; "
-                "delete the ground truth first"
-            )
+            notice = "nothing to mark -- these keypoints are not on this animal"
     elif typ == "undo":
         goto = s.undo()
     elif typ == "redo":

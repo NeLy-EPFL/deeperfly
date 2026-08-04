@@ -1542,28 +1542,26 @@ class EditorState:
         self._invalidate_nmf(t)
 
     def toggle_exclude_targets(self, targets, frame: int | None = None) -> bool | None:
-        """Toggle "exclude this detection from triangulation" over many cells.
+        """Toggle "a human cannot see this keypoint in this view" over many cells.
 
         A *toggle*, so one key both marks and un-marks: if every eligible target is already
-        excluded the batch clears, otherwise it excludes. Returns the new state, or ``None``
-        when nothing was eligible.
+        marked the batch clears, otherwise it marks. Returns the new state, or ``None`` when
+        nothing was eligible (an empty batch, or every point declared absent).
 
-        Cells that carry **GT are skipped**, and that is a safety property rather than a
-        technicality. Storing an exclusion clears the pixel underneath it
-        (:meth:`Labels.set_occluded` -- the cell tri-state is exclusive), so a bulk
-        exclusion over a selection that happens to include labeled cells would delete the
-        operator's own work on a keystroke. It is also meaningless: GT already overrides the
-        detection in its own view, so there is nothing left there to exclude. To exclude a
-        view you have labeled, delete the GT first (:meth:`clear_gt_targets`) -- two
-        retractions, named separately.
+        Cells carrying GT are **included**. They used to be skipped, because storing the
+        flag cleared the pixel underneath it and a bulk toggle would have destroyed the
+        operator's own work. It no longer does -- the two are orthogonal -- and marking a
+        labeled cell is the case that matters most: a joint placed *through* the body from
+        the geometry of the views that can see it, recorded as both "here it is" and "the
+        pixels do not show it". That pairing is the training signal, and nothing else in the
+        pipeline can produce it.
         """
         targets = list(targets)
         if not targets:
             return None
         t = self._resolve_frame(frame)
         absent = self.labels.absent_at(t)
-        has = self.labels.has_gt
-        eligible = [(v, p) for v, p in targets if not absent[p] and not has[v, t, p]]
+        eligible = [(v, p) for v, p in targets if not absent[p]]
         if not eligible:
             return None
         occluded = self.labels.occluded
@@ -1571,7 +1569,6 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         for view, point in eligible:
             self.labels.set_occluded(view, t, point, now)
-        self._rederive_points(t, {point for _, point in eligible})
         self._invalidate_nmf(t)
         return now
 

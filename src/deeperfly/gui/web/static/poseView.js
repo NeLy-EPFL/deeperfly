@@ -204,15 +204,13 @@ export class PoseView {
     this.marqueeAdditive = false; // Ctrl/Cmd-drag adds to the selection; Shift-drag replaces it
     this.editable = false;
     this.zoomable = false;
-    // Point-source layer toggles. Ground truth is the EDITABLE layer: whenever it is
-    // shown a drag authors GT (move a GT point, or spawn one from a detected / projected
-    // seed). "Combined" is no longer a visibility switch -- it is a MERGE toggle over GT +
-    // Detected: on, they draw as ONE skeleton (each joint = GT if authored, else the
-    // detector's point); off, as two separate overlaid skeletons. Projected stays its own
-    // dashed overlay in both modes and never merges in. All four are on by default (the
-    // plain editing view: a merged GT/detected skeleton over the projected reprojection),
-    // kept in sync with the `checked` checkboxes in index.html.
-    this.combinedVisible = true;
+    // Layer toggles. Ground truth is the EDITABLE layer: whenever it is shown a drag
+    // authors GT (moving a GT point, or spawning one from the position drawn there). The
+    // detected layer is a read-only reference that auto-hides once an annotation skeleton
+    // exists -- it seeded that skeleton and would otherwise double every joint. The
+    // projected layer is the reprojection of the derived 3D, its own dashed overlay, on by
+    // default as a guide. There used to be a fourth, "Combined", merging GT and detected
+    // into one skeleton; the instance owns every position now, so there is nothing to merge.
     this.gtVisible = true;
     this.detectedVisible = true;
     this.projectedVisible = true;
@@ -510,11 +508,6 @@ export class PoseView {
   }
 
   /** @param {boolean} visible  merge mode: on = GT + Detected draw as one skeleton, off = two separate skeletons */
-  setCombinedVisible(visible) {
-    if (this.combinedVisible === visible) return;
-    this.combinedVisible = visible;
-    this.draw();
-  }
 
   /** @param {boolean} visible  whether the ground-truth layer is drawn (also the editable layer) */
   setGtVisible(visible) {
@@ -670,16 +663,12 @@ export class PoseView {
     // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
     if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
-    // The GT / Detected skeleton(s). "Combined" is the merge toggle: on, GT and Detected draw as
-    // ONE skeleton (drawSkeleton picks GT else the detector's point per joint); off, Detected
-    // draws as its own read-only layer underneath and the editable GT skeleton on top (GT reads
-    // on top since it is the layer being edited). drawSkeleton(false) is a no-op when GT is off.
-    if (this.combinedVisible) {
-      this.drawSkeleton(true);
-    } else {
-      if (this.detectedVisible) this.drawSourceLayer("detected", true, false);
-      this.drawSkeleton(false);
-    }
+    // The annotation skeleton: one skeleton, each joint at its ground-truth pixel or at the
+    // position derived for it. There used to be a "Combined" toggle here, choosing between
+    // that and drawing GT and Detected as two separate layers -- a merge that no longer
+    // happens. The instance owns every position now, so there is nothing to merge it with;
+    // the detections are a reference overlay with its own visibility toggle.
+    this.drawSkeleton();
     // One pass on top of every skeleton for the cross-cutting per-joint marks: selection rings,
     // name labels, and hover emphasis -- each anchored at the joint's best visible position, so a
     // selected/hovered joint with no GT yet (only detected / projected) still reads.
@@ -759,7 +748,7 @@ export class PoseView {
     const p = this.latentPos(i);
     if (!p) return null;
     if (this.projectedVisible) return p;
-    return this.combinedVisible && this.invisible && this.invisible[i] ? p : null;
+    return this.invisible && this.invisible[i] ? p : null;
   }
 
   // Calibration landmarks: a diamond plus its name, in one warm colour distinct from every
@@ -855,17 +844,16 @@ export class PoseView {
   // has nothing to draw here. GT wins over detected. While a joint is being dragged it is authored
   // as ground truth, so render it as GT under the cursor immediately -- even before the server sets
   // its GT flag and even if it had no pixel before (a spawn from a detected / projected seed).
-  // `mergeDetected` is the "Combined" merge: it folds in, as fallbacks, first the detector's usable
+  // Below the GT pixel it folds in, as fallbacks, first the detector's usable
   // point (an occluded view has none -- see detPos) and then the reprojected point, so the merged
   // skeleton stays fully connected (no bone drops out just because one endpoint is only derived).
   // The reprojection stands in either when its overlay is shown, or -- whatever that toggle says --
   // when the view has no usable observation at all: an occluded ("Projected") cell HAS no position
   // but the derived one, so that is where the joint is drawn. A "projected" node normally draws no
   // filled disc (the overlay's hollow ring beneath it is its "derived, not observed" marker); with
-  // the overlay hidden it draws that ring itself -- see drawSkeleton. With mergeDetected off only
-  // GT is drawn (no detected / projected fallback).
-  /** @param {number} i @param {boolean} mergeDetected @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null} */
-  nodeAt(i, mergeDetected) {
+  // the overlay hidden it draws that ring itself -- see drawSkeleton.
+  /** @param {number} i @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null} */
+  nodeAt(i) {
     // An absent joint is not on the animal, so it precedes every other source: it must never
     // resolve to GT / detected / projected, and drawSkeleton drops the bones that touch it.
     if (this.isAbsent(i)) {
@@ -885,11 +873,11 @@ export class PoseView {
     if (this.instanceMode && this.gtVisible && this.pts[i]) {
       return { pos: this.pts[i], src: "projected" };
     }
-    if (mergeDetected && this.detectedVisible) {
+    if (this.detectedVisible) {
       const d = this.detPos(i);
       if (d) return { pos: d, src: "detected" };
     }
-    if (mergeDetected) {
+    {
       const occluded = !!(this.invisible && this.invisible[i]);
       const p = this.latentPos(i);
       if (p && (this.projectedVisible || occluded)) return { pos: p, src: "projected" };
@@ -949,7 +937,7 @@ export class PoseView {
 
   // The editable skeleton: the colored bones (a bone touching the hovered joint thickens, so
   // hover reads on the whole limb, not just the dot), then each joint drawn with a marker
-  // whose fill + ring encode its source. `mergeDetected` is the "Combined" merge: on, each joint
+  // whose fill + ring encode its source. Each joint
   // is GT if authored, else the detector's point, else its reprojected point when neither exists
   // and the projected overlay is shown (so the merged skeleton stays connected) -- a projected
   // node carries its bone but draws no disc, deferring to the reprojection overlay's hollow ring;
@@ -957,18 +945,17 @@ export class PoseView {
   // at all (undetected with the projected overlay hidden, or GT off) is skipped -- it shows only
   // in the projected overlay. Selection rings and name labels are drawn by drawJointOverlay on
   // top, so they anchor consistently.
-  /** @param {boolean} mergeDetected */
-  drawSkeleton(mergeDetected) {
+  drawSkeleton() {
     const ctx = this.ctx;
     const hi = this.highlight;
     const n = Math.max(
       this.pts.length,
       this.detected ? this.detected.length : 0,
-      mergeDetected && this.latent ? this.latent.length : 0,
+      this.latent ? this.latent.length : 0,
     );
     /** @type {({ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null)[]} */
     const nodes = new Array(n);
-    for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i, mergeDetected);
+    for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i);
     for (const [a, b] of this.bones) {
       const na = nodes[a];
       const nb = nodes[b];
@@ -1075,7 +1062,7 @@ export class PoseView {
       // a projected-fallback node (which carries a bone but no marker) -- so cross-view hover still
       // reads on it. Joints drawn with a gt/detected disc already got their hover-scaled marker +
       // white ring in drawSkeleton.
-      const node = this.nodeAt(i, this.combinedVisible);
+      const node = this.nodeAt(i);
       if (needHover && (!node || node.src === "projected")) {
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
