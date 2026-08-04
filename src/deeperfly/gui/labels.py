@@ -89,9 +89,11 @@ prediction NaN pattern:
     gt/
         index       (N, 3) int32   [view, frame, point]
         xy          (N, 2) float64  the 2D pixel the operator created (footage space)
-    seeds/                          (v8) the instance's starting position for every cell
+    seeds/                          (v8) the instance's evidence-backed start positions
         index       (S, 3) int32   [view, frame, point]
         xy          (S, 2) float64
+    instance/                       (v8) frames carrying an annotation skeleton
+        index       (J,)   int32
     occluded/
         index       (M, 3) int32   [view, frame, point]
     reviewed/                       (added in v2; absent in a v1 file -> no frames reviewed)
@@ -223,6 +225,12 @@ class Labels:
     gt: Float[np.ndarray, "V T P 2"]
     occluded: Bool[np.ndarray, "V T P"]
     reviewed: Bool[np.ndarray, "T"]  # per-frame "operator has checked this frame"
+    #: Per-frame "an annotation skeleton has been created here". Explicit rather than
+    #: derived from ``isfinite(seeds).any()``, because a seed is only written where there is
+    #: real evidence for it -- a detection or a reprojection. A frame whose keypoints the
+    #: network predicts nowhere (an ipsilateral-only model, say) gets an instance with *no*
+    #: finite seeds at all, and it still has to count as created.
+    instance: Bool[np.ndarray, "T"] | None = None
     #: The **instance seeds** ``(V, T, P, 2)``: where each keypoint started when the
     #: operator created an annotation skeleton in that frame, NaN in frames with no
     #: instance yet. This is the array that used to be the detector's job (see
@@ -252,6 +260,8 @@ class Labels:
         )
         if self.seeds is None:
             self.seeds = np.full((n_views, n_frames, n_points, 2), np.nan)
+        if self.instance is None:
+            self.instance = np.zeros(n_frames, dtype=bool)
         if self.absent is None:
             self.absent = np.zeros((n_frames, n_points), dtype=bool)
             return
@@ -269,6 +279,7 @@ class Labels:
             reviewed=np.zeros(n_frames, dtype=bool),
             absent=np.zeros(n_points, dtype=bool),
             seeds=np.full((n_views, n_frames, n_points, 2), np.nan),
+            instance=np.zeros(n_frames, dtype=bool),
         )
 
     # -- derived masks --------------------------------------------------------
@@ -795,6 +806,7 @@ def save_labels(
     # silently re-seed the joint somewhere else.
     seed_index, seed_xy = _coo_seeds(labels)
     rev_index = np.nonzero(labels.reviewed)[0].astype(np.int32)  # (K,) frame indices
+    inst_index = np.nonzero(labels.instance)[0].astype(np.int32)
     absent_spans = absent_to_spans(labels.absent)
     # ``index`` stays the whole-recording subset: it is what a v3 reader understands, and
     # writing it means such a reader degrades to "misses the partial declarations" rather
@@ -819,6 +831,8 @@ def save_labels(
         o.create_dataset("index", data=_coo_cells(live_occ_mask), dtype="int32")
         r = f.create_group("reviewed")
         r.create_dataset("index", data=rev_index, dtype="int32")
+        it = f.create_group("instance")
+        it.create_dataset("index", data=inst_index, dtype="int32")
         a = f.create_group("absent")
         a.create_dataset("index", data=absent_index, dtype="int32")
         a.create_dataset("spans", data=absent_spans, dtype="int32")
@@ -877,6 +891,11 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
         if "seeds" in f:
             seed_index = _read_cells(f["seeds/index"][()], p, "seeds")  # type: ignore[index]
             seed_xy = np.asarray(f["seeds/xy"][()], dtype=float).reshape(-1, 2)  # type: ignore[index]
+        inst_index = (
+            np.asarray(f["instance/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
+            if "instance" in f
+            else np.empty(0, dtype=np.int64)
+        )
         rev_index = (  # optional group: pre-v2 files carry no review progress
             np.asarray(f["reviewed/index"][()], dtype=np.int64).reshape(-1)  # type: ignore[index]
             if "reviewed" in f
@@ -990,6 +1009,13 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
     if rev_index.size:
         keep = (rev_index >= 0) & (rev_index < n_frames)
         labels.reviewed[rev_index[keep]] = True
+    if inst_index.size:
+        keep = (inst_index >= 0) & (inst_index < n_frames)
+        labels.instance[inst_index[keep]] = True
+    else:
+        # Pre-v8, or a v8 file written before the flag: a frame with any seed had an
+        # instance, which is exactly what the old derived test said.
+        labels.instance |= np.isfinite(labels.seeds).all(axis=-1).any(axis=(0, 2))
     # Absence. ``spans`` is authoritative when present (v4); a v3 file has only ``index``,
     # which meant "absent in every frame", so it materializes as a full column.
     if absent_spans is not None and absent_spans.size:

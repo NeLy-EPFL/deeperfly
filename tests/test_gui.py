@@ -669,14 +669,32 @@ def test_no_instance_until_one_is_created(result):
     assert state.create_instance(0) is False  # idempotent; reseed_instance is the redo
 
 
-def test_creation_seeds_every_cell_finitely(result):
-    """An instance with a hole is a joint the operator cannot grab, so there are none."""
+def test_a_joint_with_no_evidence_gets_no_seed_but_is_still_drawn(result):
+    """Seeds are observations; the drawn position may be invented. Keep those separate.
+
+    A seed feeds the 3D solve, so it may only hold something real -- a detection, or a
+    reprojection. A joint the detector predicts in *no* view (an ipsilateral-only model, and
+    the contralateral keypoints this project exists to fix) would otherwise be seeded from
+    the placeholder chain's last rungs -- its neighbours' mean, the view centroid, the image
+    centre -- and triangulating those manufactures a confident 3D out of coordinates the
+    editor made up. So the seed stays NaN and the *display* fills the cell instead, which is
+    all the operator needs to see it and drag it into place.
+    """
     p_gone = 7
     result.pts2d[:, :, p_gone] = np.nan  # the detector never fired for this joint
     result.pts3d[:, p_gone] = np.nan  # ... and triangulation has nothing either
     state = EditorState.from_result(result)
     assert state.create_instance(0) is True
-    assert np.isfinite(state.labels.seeds[:, 0]).all(), "the instance has a hole"
+    assert state.has_instance(0)  # the instance exists even with nothing to seed it
+
+    assert np.isnan(state.labels.seeds[:, 0, p_gone]).all()  # no invented evidence
+    _, evidence, _ = state._point_obs(0, p_gone)
+    assert not np.isfinite(evidence).any(), "invented pixels reached the solve"
+    assert np.isfinite(
+        state.display_instance_pts2d(0)[:, p_gone]
+    ).all()  # still grabbable
+    # every other joint does have evidence, so it is seeded
+    assert np.isfinite(state.labels.seeds[:, 0, 5]).all()
 
 
 @pytest.mark.parametrize("mode", ["triangulate", "copy"])
@@ -698,6 +716,29 @@ def test_an_unknown_seeding_mode_is_refused(result):
     state = EditorState.from_result(result)
     with pytest.raises(ValueError, match="mode must be"):
         state.create_instance(0, mode="vibes")
+
+
+def test_the_first_drag_in_a_frame_creates_the_instance(result):
+    """Implicit creation: telling us where a keypoint is presupposes a skeleton."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    assert not state.has_instance(f)
+    state.apply_2d_edit(0, p, (11.0, 22.0), f)
+    assert state.has_instance(f)
+    assert np.isfinite(state.labels.seeds[1, f, p]).all()  # the rest got seeded too
+
+
+def test_the_implicit_creation_and_its_drag_are_one_undo_step(result):
+    """One gesture, one ctrl-Z -- the creation folds into the drag's own entry."""
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    state.apply_3d_edit(0, p, (110.0, 130.0), f, fix=True)
+    assert state.has_instance(f) and state.labels.has_gt[0, f, p]
+
+    state.undo()
+    assert not state.labels.has_gt[0, f, p]
+    assert not state.has_instance(f), "the undo left the instance behind"
+    assert not state.can_undo  # ... and it really was one step
 
 
 def test_creating_an_instance_is_one_undo_step(result):

@@ -240,6 +240,12 @@ class App {
   // state chip is disabled for it. Built from the verbose payload's `pred`; static
   // within a frame, so it survives the mid-drag edit stream (which omits `pred`).
   /** @type {boolean[][] | null} */
+  //: Whether the current frame carries an annotation skeleton. Drives the auto-hide of the
+  //: detected layer and what a double-click on a joint means.
+  hasInstance = false;
+  //: Whether the detected layer has already been auto-hidden once, so a later frame does not
+  //: keep overriding an operator who turned it back on.
+  _autoHidDetected = false;
   detectedMask = null;
   //: The operator's "exclude this detection from triangulation" mask, per (view, point).
   //: Narrower than `projectedMask`, which is every cell with no position of its own --
@@ -923,6 +929,18 @@ class App {
     // un-occlude, but is a strict subset here).
     this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
     if (p.invisible) this.excludedMask = p.invisible;
+    if (p.has_instance != null) {
+      const born = p.has_instance && !this.hasInstance;
+      this.hasInstance = p.has_instance;
+      // The detections have done their job once a skeleton exists: they seeded it, and
+      // leaving them drawn doubles every joint. Hidden once, not every frame -- an operator
+      // who turns them back on is answering a question and must not be overridden.
+      if (born && !this._autoHidDetected && this.detectedCheck.checked) {
+        this._autoHidDetected = true;
+        this.detectedCheck.checked = false;
+        this.detectedCheck.dispatchEvent(new Event("change"));
+      }
+    }
     // Absence rides every reply (it gates drawing), so assign unconditionally rather than
     // keeping a previous value the way `pred` / `placeholder` do.
     if (p.absent) {
@@ -948,6 +966,7 @@ class App {
       view.setFrameData({
         points: p.points[v],
         fixed: p.fixed[v],
+        instanceMode: !!p.has_instance,
         invisible: p.invisible[v],
         conf: "conf" in p && p.conf ? p.conf[v] : undefined,
         latent: p.proj ? p.proj[v] : null,
@@ -1245,6 +1264,13 @@ class App {
    * @param {boolean} [additive]
    */
   onSelectKeypointAllViews(point, additive = false) {
+    // Double-clicking the detected skeleton is how a frame is started deliberately: it
+    // creates the annotation skeleton, seeded from the detections, without authoring
+    // anything. Once one exists the gesture goes back to selecting the joint everywhere.
+    if (!this.hasInstance && !this.readOnly) {
+      this.sendEdit({ type: "create_instance", frame: this.frame, mode: this.mode });
+      return;
+    }
     if (!additive) this.selection.clear();
     for (let v = 0; v < this.meta.n_views; v++) this.selection.add(this.selKey(v, point));
     this.selAnchor = { view: this.activeView, point };

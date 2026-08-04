@@ -304,6 +304,30 @@ def test_the_verb_keys_create_exclude_and_delete_ground_truth(page_and_errors):
     assert not errors, "JS errors driving the verbs:\n  " + "\n  ".join(errors)
 
 
+def test_creating_the_annotation_skeleton_auto_hides_the_detections(page_and_errors):
+    """The gesture that starts a frame, end to end through the socket.
+
+    Python tests prove `create_instance` seeds correctly; only the browser can prove the
+    gesture reaches it, that the reply's `has_instance` lands, and that the detected layer
+    auto-hides -- all in event handlers where a wrong field name throws while every python
+    test stays green. Asserted through the DOM rather than app internals, so the test cannot
+    pass vacuously.
+    """
+    page, errors = page_and_errors
+    detected = page.locator("#show-detected")
+    assert detected.is_checked(), "the detected layer starts visible"
+
+    page.keyboard.press("a")  # select every joint in every view
+    page.wait_for_timeout(250)
+    page.keyboard.press("Enter")  # creating GT implies the skeleton
+    page.wait_for_timeout(800)
+
+    # The detections seeded the skeleton and would now double every joint on screen.
+    assert not detected.is_checked(), "the detected layer did not auto-hide"
+    assert page.locator("#point-status-facts").inner_text() == "ground truth"
+    assert not errors, "JS errors creating the instance:\n  " + "\n  ".join(errors)
+
+
 # -- the uncalibrated editor ----------------------------------------------------
 #
 # A from-scratch project opens with no rig, no detections and no 3D. Every other test in

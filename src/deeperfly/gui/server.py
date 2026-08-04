@@ -857,7 +857,13 @@ def _points_payload(
     fetches.
     """
     s = session.state
-    if mode == "edit_3d" and s.has_3d:
+    # Once the frame has an annotation skeleton, IT is the primary layer -- GT pixels over
+    # the derived position -- and the detections drop to a reference overlay. Before that
+    # there is nothing authored, so the old GT-over-detection view is what to show.
+    instance = s.display_instance_pts2d(t)
+    if instance is not None:
+        pts = instance
+    elif mode == "edit_3d" and s.has_3d:
         pts = s.display_pts2d_refine(t)
     else:
         pts = s.display_pts2d(t)
@@ -880,6 +886,8 @@ def _points_payload(
         if landmarks is None
         else _points_to_json(np.asarray(landmarks)),
         "points": _points_to_json(np.asarray(pts)),
+        "instance": None if instance is None else _points_to_json(np.asarray(instance)),
+        "has_instance": s.has_instance(t),
         "fixed": fixed.tolist(),
         "invisible": invisible.tolist(),
         "absent": np.asarray(absent).tolist(),
@@ -1282,6 +1290,20 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     elif typ == "occlude":
         targets = [(int(a), int(b)) for a, b in msg.get("targets", [])]
         s.occlude_targets(targets, t)
+    elif typ == "create_instance":
+        # Double-clicking the detected skeleton. The drag paths create one implicitly too,
+        # so this is for starting a frame deliberately without authoring anything yet.
+        seed_mode = str(msg.get("seed_mode", "triangulate"))
+        if seed_mode not in ("triangulate", "copy"):
+            notice = f"unknown seeding mode {seed_mode!r}"
+        elif not s.create_instance(t, mode=seed_mode):
+            notice = "this frame already has an annotation skeleton"
+    elif typ == "reseed_instance":
+        seed_mode = str(msg.get("seed_mode", "triangulate"))
+        if seed_mode not in ("triangulate", "copy"):
+            notice = f"unknown seeding mode {seed_mode!r}"
+        elif not s.reseed_instance(t, mode=seed_mode):
+            notice = "no annotation skeleton in this frame yet"
     elif typ == "clear_gt_targets":
         # Delete the operator's pixels and nothing else -- distinct from "reset", which
         # also lifts an exclusion (see EditorState.clear_gt_targets).

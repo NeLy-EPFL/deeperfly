@@ -104,6 +104,9 @@ class _UndoEntry:
     #: an instance IS a seed write, so without this an undo of the creation would leave the
     #: instance standing.
     seeds: np.ndarray | None = None
+    #: Whether the frame had an annotation skeleton. Restored with the seeds, so undoing the
+    #: gesture that created one really removes it.
+    instance: bool = False
     pts3d: np.ndarray | None = None  # (P, 3), or None if the frame was uncached
 
 
@@ -460,6 +463,14 @@ class EditorState:
         gt = self.labels.gt[:, t]
         has = self.labels.has_gt[:, t]
         base = np.asarray(self.labels.seeds[:, t], dtype=float)
+        # Cells the instance has no evidence-backed seed for (see _seed_instance) are drawn
+        # from the placeholder chain: invented, but a joint you cannot see is a joint you
+        # cannot drag into place.
+        gap = ~np.isfinite(base).all(axis=-1)
+        if gap.any():
+            base = np.where(
+                gap[..., None], np.asarray(self.placeholder_pts2d(t), dtype=float), base
+            )
         if self.nongt_display == "reprojection":
             proj = self.display_pts3d_projected(t)
             if proj is not None:
@@ -591,8 +602,7 @@ class EditorState:
 
     def has_instance(self, frame: int | None = None) -> bool:
         """Whether an annotation skeleton has been created in ``frame``."""
-        t = self._resolve_frame(frame)
-        return bool(np.isfinite(self.labels.seeds[:, t]).all(axis=-1).any())
+        return bool(self.labels.instance[self._resolve_frame(frame)])
 
     def _evidence(self, t: int) -> Float[np.ndarray, "V P 2"]:
         """What a non-GT view contributes to its point's 3D solve, at frame ``t``.
@@ -639,9 +649,28 @@ class EditorState:
         seeds = self._seed_instance(t, mode)
         self._record_undo(t, None, coalesce=False)
         self.labels.seeds[:, t] = seeds
+        self.labels.instance[t] = True
         self.labels.dirty = True
         self._invalidate_frame3d(t)
         self._invalidate_nmf(t)
+        return True
+
+    def _ensure_instance(self, t: int) -> bool:
+        """Create the instance at ``t`` if there is none. Records **no** undo step.
+
+        The first drag in a frame implies the instance: the operator is telling us where a
+        keypoint is, which only makes sense for a skeleton that exists. Folding it into the
+        caller's own undo entry rather than pushing one of its own is what keeps that one
+        gesture one ctrl-z -- the caller must therefore have snapshotted *before* calling.
+        Double-clicking the detected skeleton (:meth:`create_instance`) stays available for
+        starting a frame deliberately, without authoring anything.
+        """
+        if self.has_instance(t):
+            return False
+        self.labels.seeds[:, t] = self._seed_instance(t, "triangulate")
+        self.labels.instance[t] = True
+        self.labels.dirty = True
+        self._invalidate_frame3d(t)
         return True
 
     def reseed_instance(
@@ -691,9 +720,16 @@ class EditorState:
             )
             gap = ~np.isfinite(out).all(axis=-1)
             out[gap] = det[gap]  # no 3D for this point: its detections are all there is
-        gap = ~np.isfinite(out).all(axis=-1)
-        if gap.any():  # nothing to seed from at all: keep the cell reachable
-            out[gap] = np.asarray(self.placeholder_pts2d(t), dtype=float)[gap]
+        # A cell with neither a detection nor a reprojection is left NaN on purpose. Its
+        # only available position would come from the placeholder chain's last rungs -- the
+        # mean of its skeleton neighbours, the view centroid, the image centre -- which are
+        # coordinates the editor invents so the joint stays grabbable, not observations. A
+        # seed feeds the 3D solve, and triangulating invented pixels would manufacture a
+        # confident-looking 3D out of nothing. That matters for exactly the case this
+        # project cares about: with an ipsilateral-only detector the contralateral keypoints
+        # have no detection in any view, so every one of their seeds would be invented.
+        # The display fills those cells from the placeholder chain instead
+        # (:meth:`display_instance_pts2d`), so they are still drawn and still draggable.
         return out
 
     def _project_detections(self, t: int) -> Float[np.ndarray, "V P 2"] | None:
@@ -963,6 +999,7 @@ class EditorState:
         if self.absent_refusal(point, t):
             return
         self._record_undo(t, point, coalesce=True)
+        self._ensure_instance(t)  # the first drag in a frame implies the skeleton
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
@@ -990,6 +1027,10 @@ class EditorState:
         t = self._resolve_frame(frame)
         if self.absent_refusal(point, t):
             return None
+        # Snapshot before the implicit creation so one gesture stays one undo step, and
+        # create before solving so the drag's evidence is the instance's, not the detector's.
+        self._record_undo(t, point, coalesce=True)
+        self._ensure_instance(t)
         prior = self._ensure_pts3d(t)[point].copy()
         gt_obs, pred_obs, conf = self._point_obs(t, point)
         x_new = solve_point_3d_drag(
@@ -1002,7 +1043,6 @@ class EditorState:
         # added and the point triangulated. So author the GT unconditionally; update
         # the 3D cache when the solve produced one, else re-derive (it may stay NaN
         # until a second view lands).
-        self._record_undo(t, point, coalesce=True)
         self.labels.set_gt(view, t, point, xy)
         if x_new is not None:
             if fix:
@@ -1066,6 +1106,7 @@ class EditorState:
         if not np.all(np.isfinite(xy)):
             return None  # cannot confirm a point that is not visible in this view
         self._record_undo(t, point, coalesce=False)
+        self._ensure_instance(t)
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
@@ -1236,6 +1277,7 @@ class EditorState:
             gt=self.labels.gt[:, t].copy(),
             occluded=self.labels.occluded[:, t].copy(),
             seeds=self.labels.seeds[:, t].copy(),
+            instance=bool(self.labels.instance[t]),
             pts3d=None if cached is None else cached.copy(),
         )
 
@@ -1311,6 +1353,7 @@ class EditorState:
         self.labels.occluded[:, t] = entry.occluded
         if entry.seeds is not None:
             self.labels.seeds[:, t] = entry.seeds
+            self.labels.instance[t] = entry.instance
         self.labels.dirty = True
         if entry.pts3d is None:
             self._invalidate_frame3d(t)  # uncached then, so there is nothing to restore
@@ -1350,6 +1393,7 @@ class EditorState:
         """Create a GT pixel without a drag re-solve (a click-place)."""
         t = self._resolve_frame(frame)
         self._record_undo(t, point, coalesce=False)
+        self._ensure_instance(t)
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
         self._invalidate_nmf(t)
@@ -1405,6 +1449,9 @@ class EditorState:
         t = self._resolve_frame(frame)
         saved_redo = list(self._redo)
         self._record_undo(t, None, coalesce=False)
+        # Authoring GT presupposes a skeleton, whichever verb does it -- not just a drag.
+        # Folded into this entry, so the whole bulk create stays one ctrl-Z.
+        created = self._ensure_instance(t)
         want_pred = sources in ("all", "predictions")
         want_proj = sources in ("all", "projections")
         proj = self.display_pts3d_projected(t) if want_proj else None
@@ -1433,6 +1480,12 @@ class EditorState:
             changed = True
         if changed:
             self._rederive_points(t, touched)
+            self._invalidate_nmf(t)
+        elif created:
+            # Nothing was authored, but the skeleton was created on the way in: that IS a
+            # change, so the entry stays and the frame keeps its instance.
+            changed = True
+            self._rederive_points(t, range(self.n_points))
             self._invalidate_nmf(t)
         else:
             self._undo.pop()  # nothing changed: drop the no-op undo entry

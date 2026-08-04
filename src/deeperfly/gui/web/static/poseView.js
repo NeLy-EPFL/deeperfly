@@ -244,6 +244,11 @@ export class PoseView {
     this.warnVisible = true;
     this.warnThreshold = 8; // image px: an anchor<->reprojection gap above this flags the joint
     /** @type {number | null} */
+    // Whether this frame carries an annotation skeleton. When it does, EVERY joint's
+    // position comes from `pts` -- the instance owns them -- and `fixed` only decides
+    // whether the node reads as the operator's pixel or as a derived one. Before that,
+    // `pts` is the old GT-over-detection resolution and the layer precedence applies.
+    this.instanceMode = false;
     this.dragging = null;
     this.dragInvisible = false; // was the grabbed joint obscured? (reported on release)
     /** @type {boolean[] | null} per-point "not on this animal" -- see drawAbsent */
@@ -442,6 +447,7 @@ export class PoseView {
    * @param {boolean[] | null} [data.absent]  per-point "not on this animal" (amputated); drawn as a tombstone, never draggable
    */
   setFrameData(data) {
+    if (data.instanceMode !== undefined) this.instanceMode = !!data.instanceMode;
     if (data.points) {
       // Keep the actively dragged joint pinned to the cursor: the server's live
       // re-solve reprojects it a hair off, and letting that fight the mouse feels
@@ -872,6 +878,12 @@ export class PoseView {
     if (this.gtVisible) {
       const g = this.gtPos(i);
       if (g) return { pos: g, src: "gt" };
+    }
+    // The instance owns every position, so a non-GT node is still drawn from `pts` -- at
+    // the reprojection of its point's current 3D, or its frozen seed, whichever the
+    // operator chose. It reads as derived (thin ring) rather than authored (lime ring).
+    if (this.instanceMode && this.gtVisible && this.pts[i]) {
+      return { pos: this.pts[i], src: "projected" };
     }
     if (mergeDetected && this.detectedVisible) {
       const d = this.detPos(i);
