@@ -49,12 +49,21 @@ __all__ = [
     "Landmark",
     "LandmarkSet",
     "LANDMARKS_FILENAME",
+    "LANDMARKS_FORMAT_VERSION",
     "SCOPES",
 ]
 
 log = logging.getLogger("deeperfly")
 
 LANDMARKS_FILENAME = "landmarks.toml"
+
+#: Bumped when this file's schema changes incompatibly. It needs a version more than the
+#: other config fragments do: the landmark ORDER is an ``L`` axis that every stored
+#: observation indexes into positionally, and unlike the skeleton there is no
+#: ``skeleton_migrate`` equivalent for it and no fingerprint of it in ``labels.h5``. Until
+#: now the axis survived only because ``labels.h5`` happens to store the landmark ``names``
+#: alongside, making each file self-describing -- which is luck, not design.
+LANDMARKS_FORMAT_VERSION = 1
 
 #: How widely a static landmark's single 3D point is shared. ``"recording"`` is the safe
 #: default; ``"rig"`` ties every recording on the rig into one solve.
@@ -157,6 +166,15 @@ class LandmarkSet:
         if not p.exists():
             return cls()
         data = tomllib.loads(p.read_text())
+        # An absent key means v1, matching every other versioned artifact -- so files written
+        # before this existed keep loading and no migration is forced.
+        version = int((data.get("landmarks") or {}).get("format_version", 1))
+        if version > LANDMARKS_FORMAT_VERSION:
+            raise ValueError(
+                f"{p} was written by a newer deeperfly (landmarks format v{version}, this "
+                f"build understands v{LANDMARKS_FORMAT_VERSION}); refusing to read it "
+                "rather than silently dropping state it carries"
+            )
         out: list[Landmark] = []
         seen: set[str] = set()
         for row in data.get("landmark", []) or []:
@@ -206,6 +224,9 @@ class LandmarkSet:
             "# the solve report always breaks its residual down per recording.",
             "#",
             "# `note` matters: it is how the next operator finds the SAME speck.",
+            "",
+            "[landmarks]",
+            f"format_version = {LANDMARKS_FORMAT_VERSION}",
         ]
         for lm in self.landmarks:
             lines += ["", "[[landmark]]"]

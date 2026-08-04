@@ -389,3 +389,49 @@ def test_a_scale_spec_naming_an_unknown_track_lists_the_real_ones(tmp_path, trut
                 "error",
             ]
         )
+
+
+# -- the landmark set as a versioned artifact ----------------------------------
+
+
+def test_a_landmark_set_round_trips_with_its_format_version(tmp_path):
+    """The L-axis order is positional in every stored observation, and unlike the skeleton
+    there is no migration tool for it and no fingerprint of it in labels.h5. So the file
+    carries a version, like every other deeperfly artifact.
+    """
+    from deeperfly.landmarks import LANDMARKS_FORMAT_VERSION
+
+    original = LandmarkSet(
+        [
+            Landmark(
+                name="tether_tip", static=True, scope="rig", note="the same speck"
+            ),
+            Landmark(name="dust", static=False),
+        ]
+    )
+    path = original.save(tmp_path / "landmarks.toml")
+    assert f"format_version = {LANDMARKS_FORMAT_VERSION}" in path.read_text()
+
+    back = LandmarkSet.load(path)
+    assert back.names == original.names
+    assert back.static_mask == original.static_mask
+    assert back[0].scope == "rig" and back[0].note == "the same speck"
+
+
+def test_a_landmark_file_with_no_version_still_loads_as_v1(tmp_path):
+    """Absent means v1, so files written before the version existed are unaffected."""
+    path = tmp_path / "landmarks.toml"
+    path.write_text('[[landmark]]\nname = "tether_tip"\nstatic = true\n')
+    assert LandmarkSet.load(path).names == ["tether_tip"]
+
+
+def test_a_newer_landmark_file_is_refused(tmp_path):
+    from deeperfly.landmarks import LANDMARKS_FORMAT_VERSION
+
+    path = tmp_path / "landmarks.toml"
+    path.write_text(
+        f"[landmarks]\nformat_version = {LANDMARKS_FORMAT_VERSION + 1}\n\n"
+        '[[landmark]]\nname = "tether_tip"\n'
+    )
+    with pytest.raises(ValueError, match="newer deeperfly"):
+        LandmarkSet.load(path)
