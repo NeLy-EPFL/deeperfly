@@ -230,16 +230,10 @@ def recording_fingerprint(
 
 
 def _basenames(spec) -> list[str]:
-    """Sorted footage basenames from a ``read_footage`` entry (either path flavor)."""
-    paths: list = []
-    if isinstance(spec, dict):
-        for flavor in ("rel", "abs"):
-            paths = list(spec.get(flavor) or [])
-            if paths:
-                break
-    elif isinstance(spec, (list, tuple)):
-        paths = list(spec)
-    return sorted(os.path.basename(str(p)) for p in paths)
+    """Sorted footage basenames from any footage pointer (see :mod:`deeperfly.footage`)."""
+    from .footage import basenames
+
+    return basenames(spec)
 
 
 def recording_id(fingerprint: str) -> str:
@@ -1036,10 +1030,22 @@ class Project:
             from .results import StageStore
 
             store = StageStore(results)
-            result_footage = store.read_footage()
-            n_frames, fps = _frames_and_fps(store)
-            if subject is None:
-                subject = store.read_animal()[1]
+            try:
+                result_footage = store.read_footage()
+                n_frames, fps = _frames_and_fps(store)
+                if subject is None:
+                    subject = store.read_animal()[1]
+            except ValueError as exc:
+                # A results.h5 this build refuses (e.g. written by a newer deeperfly) must
+                # not block adoption: the reason to adopt a recording is usually its
+                # labels.h5, which is a separate file and separately versioned. The
+                # metadata this would have supplied is optional -- an unknown frame count
+                # prints as '?' and is backfilled when the editor opens the footage.
+                log.warning(
+                    "%s: %s -- adopting anyway, without its recorded metadata",
+                    results,
+                    exc,
+                )
 
         footage = discover_footage(rec_root, config) if rec_root.is_dir() else {}
         if rec_id is None:
@@ -1355,16 +1361,20 @@ def _write_recording_file(
     ]
     lines += _toml.table_lines(["recording"], table)
     if footage:
-        # Resolvable files: absolute paths, so the project can find the footage from
-        # anywhere.
+        # The canonical pointer (deeperfly.footage): every flavor, always, anchored at this
+        # file's own directory. `rel` is what the plan specified and the implementation had
+        # dropped -- and it is what survives the recording being moved with its project,
+        # where an absolute path does not. `bytes` makes the content id re-derivable.
+        from .footage import write_pointer
+
         lines += ["", "# camera -> the footage files this recording was adopted from."]
         for camera in sorted(footage):
-            files = [Path(p) for p in footage[camera]]
+            pointer = write_pointer(footage[camera], path.parent)
             lines += ["", f"[recording.footage.{_toml.key(camera)}]"]
-            lines.append(f"abs = {_toml.value([str(p.resolve()) for p in files])}")
+            lines += [f"{k} = {_toml.value(v)}" for k, v in pointer.items()]
     elif result_footage:
-        # Footage that no longer resolves: record only the basenames results.h5 knows.
-        # Writing a stale absolute path would look like a location and be a fiction.
+        # Footage that no longer resolves: only the names results.h5 knows. Writing a stale
+        # absolute path would look like a location and be a fiction.
         lines += ["", "# The footage did not resolve; only its names are known."]
         for camera in sorted(result_footage):
             lines += ["", f"[recording.footage.{_toml.key(camera)}]"]

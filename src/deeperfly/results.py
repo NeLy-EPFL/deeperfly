@@ -45,7 +45,6 @@ un-triangulated points and is preserved by the float64 datasets.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +65,28 @@ __all__ = ["PoseResult", "StageStore"]
 
 FORMAT_VERSION = 2
 _STR = h5py.string_dtype("utf-8")
+
+
+def _is_newer(version) -> bool:
+    """Whether a stored ``deeperfly_format_version`` is from a *later* build than this one.
+
+    Tolerant of junk: an unparseable version is not "newer", it is unrecognized, and the
+    caller's older-file path (regenerate) is the right answer for it.
+    """
+    try:
+        return int(version) > FORMAT_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def _newer_message(path, version) -> str:
+    """The refusal every deeperfly artifact shares, so it reads the same wherever it lands."""
+    return (
+        f"{path} was written by a newer deeperfly (result format v{version}, this build "
+        f"understands v{FORMAT_VERSION}); refusing to read it rather than silently "
+        "dropping state it carries"
+    )
+
 
 #: The dataset whose presence means a stage's output is complete, per stage.
 _STAGE_MARKER = {
@@ -289,8 +310,12 @@ class PoseResult:
             The assembled result (cameras, skeleton, points and ``meta``).
         """
         with h5py.File(path, "r") as f:
-            meta = json.loads(f.attrs["meta"])  # type: ignore[arg-type]
+            # ``.get``, not ``[...]``: a file that is not a deeperfly result at all must
+            # produce this function's own diagnosis, not a raw KeyError on 'meta'.
+            meta = json.loads(f.attrs.get("meta", "{}"))  # type: ignore[arg-type]
             version = meta.pop("deeperfly_format_version", None)
+            if _is_newer(version):
+                raise ValueError(_newer_message(path, version))
             if version != FORMAT_VERSION:
                 raise ValueError(
                     f"{path} has deeperfly format version {version!r}, expected "
@@ -469,21 +494,20 @@ class StageStore:
             if conf is not None:
                 g.create_dataset("conf", data=np.asarray(conf, dtype=float))
             _write_animal(f, absent=carried_absent, subject_id=carried_subject)
-            _write_cameras(g.create_group("cameras"), cameras)
+            # The image sizes go in BOTH places: in the camera group (so the rig carries its
+            # own pixel frame, like a calibration.toml does) and in the legacy sibling attr,
+            # which every existing reader uses and which stays authoritative for now.
+            _write_cameras(g.create_group("cameras"), cameras, image_sizes=image_sizes)
             g.attrs["image_sizes"] = json.dumps(
                 {name: [int(h), int(w)] for name, (h, w) in image_sizes.items()}
             )
             if footage:
+                from .footage import write_pointer
+
                 outdir = self.path.parent
                 g.attrs["footage"] = json.dumps(
                     {
-                        name: {
-                            "abs": [str(Path(p).resolve()) for p in files],
-                            "rel": [
-                                os.path.relpath(Path(p).resolve(), outdir)
-                                for p in files
-                            ],
-                        }
+                        name: write_pointer(files, outdir)
                         for name, files in footage.items()
                     }
                 )
@@ -492,12 +516,29 @@ class StageStore:
                 gc.create_dataset("xy", data=candidates.xy)
                 gc.create_dataset("score", data=candidates.score)
 
-    def write_cameras(self, stage: str, cameras: CameraGroup) -> None:
-        """Replace ``<stage>/cameras`` (used by ``bundle_adjustment``)."""
+    def write_cameras(
+        self,
+        stage: str,
+        cameras: CameraGroup,
+        *,
+        image_sizes: dict | None = None,
+        meta: dict | None = None,
+    ) -> None:
+        """Replace ``<stage>/cameras`` (used by ``bundle_adjustment``).
+
+        ``image_sizes`` and ``meta`` (``units``/``scale_source``/``provenance``/``quality``)
+        are what make this the same record ``calibration.toml`` carries, so an exporter can
+        pass the rig's real provenance through instead of inventing one.
+        """
         with h5py.File(self.path, "a") as f:
             if stage in f:
                 del f[stage]
-            _write_cameras(f.create_group(f"{stage}/cameras"), cameras)
+            _write_cameras(
+                f.create_group(f"{stage}/cameras"),
+                cameras,
+                image_sizes=image_sizes,
+                meta=meta,
+            )
 
     def write_points(self, stage: str, *, pts2d, pts3d, reproj_error) -> None:
         """Replace ``stage``'s points group (pictorial_structures / triangulation)."""
@@ -649,6 +690,17 @@ class StageStore:
             conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
             return f["pose2d/points"][()], conf  # type: ignore[index, return-value]
 
+    def read_camera_meta(self, stage: str) -> dict:
+        """``units``/``scale_source``/``provenance``/``quality``/``image_sizes`` for a rig.
+
+        ``{}`` when the stage or the metadata is absent, which is what lets a caller pass
+        *through* what it finds rather than assert a value of its own.
+        """
+        with self._open() as f:
+            if f is None or f"{stage}/cameras" not in f:
+                return {}
+            return _read_camera_meta(f[f"{stage}/cameras"])  # type: ignore[arg-type]
+
     def read_cameras(self, stage: str) -> CameraGroup | None:
         """The rig stored by ``stage`` (``pose2d`` or ``bundle_adjustment``)."""
         with self._open() as f:
@@ -710,7 +762,17 @@ class StageStore:
     # -- internals -------------------------------------------------------------
 
     def _open(self):
-        """Open the file read-only iff it exists in the current schema version."""
+        """Open the file read-only iff it exists in the current schema version.
+
+        An **older** file reads as absent: every stage is regenerable, so the run simply
+        recomputes it (and :meth:`write_pose2d` truncates it on the way).
+
+        A **newer** file is refused, because that same treat-as-absent would be silent data
+        destruction: every ``has(stage)`` would report false, the run would recompute
+        ``pose2d``, and the truncating write would take the newer file with it -- reporting
+        success. Regenerable is not the same as disposable, and only the older direction is
+        the former.
+        """
         import contextlib
 
         if not self.path.exists():
@@ -720,7 +782,11 @@ class StageStore:
             meta = json.loads(f.attrs.get("meta", "{}"))
         except (TypeError, ValueError):
             meta = {}
-        if meta.get("deeperfly_format_version") != FORMAT_VERSION:
+        version = meta.get("deeperfly_format_version")
+        if _is_newer(version):
+            f.close()
+            raise ValueError(_newer_message(self.path, version))
+        if version != FORMAT_VERSION:
             f.close()
             return contextlib.nullcontext(None)
         return contextlib.closing(f)
@@ -729,12 +795,58 @@ class StageStore:
 # -- camera (de)serialization ------------------------------------------------
 
 
-def _write_cameras(g: h5py.Group, cameras: CameraGroup) -> None:
+#: The rig facts a ``calibration.toml`` carries and the HDF5 camera group had no slot for.
+#: Stored as group attrs so the two artifacts describe a rig the *same* way -- and, more
+#: importantly, so the exporters stop **inventing** them. Both
+#: ``deeperfly calibration export`` and the pipeline's own writer hardcoded
+#: ``units="config", scale_source="orbit_prior"``, which re-labels a millimeter board
+#: calibration as an arbitrary-scale orbit guess: a false provenance claim on the one field
+#: that tells a reader whether the numbers mean anything physical.
+CAMERA_META_KEYS = ("units", "scale_source", "provenance", "quality")
+
+
+def _write_cameras(
+    g: h5py.Group,
+    cameras: CameraGroup,
+    *,
+    image_sizes: dict | None = None,
+    meta: dict | None = None,
+) -> None:
+    """Write a rig, plus the metadata that makes it the same record ``calibration.toml`` is.
+
+    Everything beyond the five original datasets is **additive**: an older file has none of
+    it and :func:`_read_cameras` returns ``None`` for what is missing, so no format version
+    moves and no file needs regenerating.
+    """
     g.create_dataset("names", data=np.array(cameras.names, dtype=object), dtype=_STR)
     g.create_dataset("rvecs", data=cameras.rvecs)
     g.create_dataset("tvecs", data=cameras.tvecs)
     g.create_dataset("intrs", data=cameras.intrs)
     g.create_dataset("dists", data=cameras.dists)
+    # ``CameraGroup.dists`` zero-pads every camera to the group-wide max K, by contract, for
+    # the JAX call sites. Harmless numerically (all-zero coefficients are the identity) but a
+    # textual round-trip failure: a camera authored `dist = []` reads back as five zeros. The
+    # true lengths make the round trip exact without changing the padded array anyone reads.
+    g.create_dataset(
+        "dist_lengths",
+        data=np.asarray([len(np.atleast_1d(c.dist)) for c in cameras], dtype=np.int32),
+    )
+    if image_sizes:
+        # In the group, not in a sibling attr on `pose2d` only -- which is why the BA rig had
+        # no pixel frame of its own and `check_image_sizes` silently stopped guarding it.
+        g.create_dataset(
+            "image_sizes",
+            data=np.asarray(
+                [
+                    [int(h), int(w)]
+                    for (h, w) in (image_sizes.get(n, (-1, -1)) for n in cameras.names)
+                ],
+                dtype=np.int32,
+            ),
+        )
+    for key, value in (meta or {}).items():
+        if key in CAMERA_META_KEYS and value is not None:
+            g.attrs[key] = value if isinstance(value, str) else json.dumps(value)
 
 
 def _read_cameras(g: h5py.Group) -> CameraGroup:
@@ -746,6 +858,38 @@ def _read_cameras(g: h5py.Group) -> CameraGroup:
         g["intrs"][()],  # type: ignore[index]
         g["dists"][()],  # type: ignore[index]
     )
+
+
+def _read_camera_meta(g: h5py.Group) -> dict:
+    """The rig's ``units``/``scale_source``/``provenance``/``quality``, plus image sizes.
+
+    ``{}`` for a group written before any of it existed -- which is what makes a caller
+    pass *through* what it finds instead of inventing a value.
+    """
+    out: dict = {}
+    for key in CAMERA_META_KEYS:
+        if key not in g.attrs:
+            continue
+        raw = g.attrs[key]
+        raw = raw.decode() if isinstance(raw, bytes) else raw
+        if key in ("provenance", "quality"):
+            try:
+                out[key] = json.loads(raw)
+                continue
+            except (TypeError, ValueError):
+                pass
+        out[key] = raw
+    if "image_sizes" in g:
+        names = [n.decode() if isinstance(n, bytes) else n for n in g["names"][()]]
+        rows = np.asarray(g["image_sizes"][()], dtype=int).reshape(-1, 2)
+        out["image_sizes"] = {
+            str(n): (int(h), int(w))
+            for n, (h, w) in zip(names, rows)
+            if h > 0 and w > 0
+        }
+    if "dist_lengths" in g:
+        out["dist_lengths"] = [int(k) for k in np.asarray(g["dist_lengths"][()])]
+    return out
 
 
 # -- skeleton (de)serialization ----------------------------------------------

@@ -38,30 +38,20 @@ def resolve_camera_files(
     Parameters
     ----------
     info
-        ``{"abs": [...], "rel": [...]}`` as stored by
-        :meth:`~deeperfly.results.StageStore.write_pose2d`.
+        A footage pointer (see :mod:`deeperfly.footage`), or a bare list of paths.
     results_dir
-        The directory holding ``results.h5`` (anchors the relative paths).
+        The directory of the file the pointer came from (anchors ``rel`` and ``names``).
     footage_dir
-        An optional directory to search by file name as a last resort.
+        An optional directory to search by file name.
 
     Returns
     -------
     list of Path or None
         The resolved files, or ``None`` if none of the strategies found them.
     """
-    abs_files = [Path(p) for p in info.get("abs", [])]
-    if abs_files and all(p.exists() for p in abs_files):
-        return abs_files
-    rel_files = [Path(results_dir) / r for r in info.get("rel", [])]
-    if rel_files and all(p.exists() for p in rel_files):
-        return rel_files
-    if footage_dir is not None:
-        names = [Path(p).name for p in (info.get("abs") or info.get("rel") or [])]
-        candidates = [Path(footage_dir) / n for n in names]
-        if candidates and all(p.exists() for p in candidates):
-            return candidates
-    return None
+    from ..footage import resolve
+
+    return resolve(info, results_dir, footage_dir)
 
 
 def resolve_footage(

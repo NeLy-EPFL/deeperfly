@@ -109,24 +109,9 @@ def build_uncalibrated_session(
         If the recording's footage cannot be resolved at all -- with nothing to show and
         no predictions to fall back on, an editor would be a set of blank rectangles.
     """
-    footage = _recording_footage(project, entry)
-    if not footage:
-        raise SystemExit(
-            f"recording {entry.slug!r} has no resolvable footage, and no results.h5 to "
-            "fall back on -- there would be nothing to label. Check the paths in "
-            f"{project.recording_dir(entry) / 'recording.toml'}, or re-add the recording"
-        )
-    # Reuse the same resolver the calibrated path uses, in its `{"abs": [...]}` shape,
-    # so the absolute-then-by-name fallback (and --footage-dir) behaves identically.
-    resolved_or_none = {
-        name: resolve_camera_files(
-            {"abs": [str(p) for p in paths]},
-            project.recording_dir(entry),
-            footage_dir,
-        )
-        for name, paths in footage.items()
-    }
-    resolved = {name: files for name, files in resolved_or_none.items() if files}
+    # Already resolved against every pointer flavor, including --footage-dir: the reader
+    # returns files that exist, so there is nothing left to re-resolve here.
+    resolved = _recording_footage(project, entry, footage_dir)
     if not resolved:
         raise SystemExit(
             f"none of {entry.slug!r}'s footage files could be found (looked beside "
@@ -227,24 +212,35 @@ def _load_landmarks(project, labels_path: Path, n_views: int, n_frames: int):
     return fresh
 
 
-def _recording_footage(project, entry) -> dict[str, list[Path]]:
-    """``camera -> footage paths`` for a project recording, from its ``recording.toml``.
+def _recording_footage(
+    project, entry, footage_dir: str | Path | None = None
+) -> dict[str, list[Path]]:
+    """``camera -> RESOLVED footage paths`` for a project recording, from ``recording.toml``.
+
+    Resolution goes through :func:`deeperfly.footage.resolve`, so every pointer flavor is
+    understood -- including the ``rel`` one this reader used to ignore, which is what lets a
+    recording that moved with its project still be found. It returns files that *exist*,
+    rather than paths a caller must re-resolve; the ``{"abs": [...]}`` wrappers that used to
+    exist at the call sites were there only to borrow that resolver.
 
     Falls back to re-discovering the videos beside the recorded origin, so a recording
     adopted before the footage table existed still opens.
     """
     import tomllib
 
+    from ..footage import resolve
+
     path = project.recording_dir(entry) / "recording.toml"
     if path.exists():
         table = tomllib.loads(path.read_text()).get("recording", {})
-        footage = table.get("footage") or {}
-        out = {
-            name: [Path(p) for p in (spec.get("abs") or spec.get("names") or [])]
-            for name, spec in footage.items()
-            if isinstance(spec, dict)
-        }
-        if any(out.values()):
+        out: dict[str, list[Path]] = {}
+        for name, spec in (table.get("footage") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            files = resolve(spec, path.parent, footage_dir)
+            if files:
+                out[name] = files
+        if out:
             return out
     origin = (entry.origin or {}).get("from")
     if origin and Path(origin).is_dir():

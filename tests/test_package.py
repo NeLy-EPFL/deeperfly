@@ -162,6 +162,53 @@ def test_a_round_trip_reopens_as_a_project(tmp_path):
     )
 
 
+def test_an_imported_recording_can_actually_be_re_pointed_at_its_footage(tmp_path):
+    """A package used to arrive with no recording.toml at all, which made it unopenable.
+
+    The editor reads a project recording's footage from that file. With none, it fell back
+    to ``origin.from`` -- the *exporter's* absolute path on another machine -- and found
+    nothing, so an imported package could not be opened even with the frames embedded.
+
+    The exporter's ``abs``/``rel`` are fictions here, so only ``names`` and ``bytes``
+    travel: enough for ``--footage-dir``, and enough to re-derive the content id.
+    """
+    import tomllib
+
+    from deeperfly.footage import resolve
+
+    project, entry = _project(tmp_path)
+    export_package(project, tmp_path / "out.dfpkg", embed="none")
+    import_package(tmp_path / "out.dfpkg", tmp_path / "back")
+
+    rec_toml = tmp_path / "back" / "recordings" / entry.slug / "recording.toml"
+    assert rec_toml.exists(), "an imported recording has no footage pointer at all"
+    footage = tomllib.loads(rec_toml.read_text())["recording"]["footage"]
+    assert footage, "the pointer is empty"
+    for spec in footage.values():
+        assert spec["names"], "the file names did not travel"
+        # The exporter's machine-specific paths deliberately did NOT travel.
+        assert "abs" not in spec and "rel" not in spec
+    # And --footage-dir finds them, which is the whole point.
+    a_camera = sorted(footage)[0]
+    assert resolve(footage[a_camera], rec_toml.parent, tmp_path / "flyA") is not None
+
+
+def test_the_package_records_the_footage_names_and_sizes_it_promised(tmp_path):
+    """The module docstring always claimed "footage basenames, sizes"; nothing wrote them."""
+    import json
+
+    import h5py
+
+    project, entry = _project(tmp_path)
+    out = export_package(project, tmp_path / "out.dfpkg", embed="none")
+    assert out.recordings == 1
+    with h5py.File(tmp_path / "out.dfpkg", "r") as f:
+        pointer = json.loads(f[f"recordings/{entry.slug}"].attrs["footage"])
+    assert pointer
+    for spec in pointer.values():
+        assert spec["names"] and spec["bytes"]
+
+
 def test_a_calibration_travels(cameras, tmp_path):
     project, _ = _project(tmp_path)
     cameras.to_calibration(name="rig", image_sizes=SIZES).save(

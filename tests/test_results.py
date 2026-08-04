@@ -10,7 +10,7 @@ import pytest
 
 from deeperfly.cameras import CameraGroup
 from deeperfly.pictorial import Candidates
-from deeperfly.results import PoseResult, StageStore
+from deeperfly.results import FORMAT_VERSION, PoseResult, StageStore
 from deeperfly.skeleton import Skeleton
 
 
@@ -280,6 +280,49 @@ def test_store_treats_old_format_as_empty(tmp_path):
     assert store.read_image_sizes() is None
 
 
+def test_store_refuses_a_newer_format_instead_of_reading_it_as_empty(tmp_path):
+    """A newer file must RAISE, not read as absent.
+
+    Treating it as absent is what made this destructive: every ``has(stage)`` reports
+    false, so a run recomputes ``pose2d``, and ``write_pose2d`` truncates the whole file --
+    destroying a newer result and reporting success. Older files stay regenerable; only
+    this direction is refused.
+    """
+    path = tmp_path / "results.h5"
+    with h5py.File(path, "w") as f:
+        f.attrs["meta"] = json.dumps({"deeperfly_format_version": FORMAT_VERSION + 1})
+        f.create_group("pose2d").create_dataset("points", data=np.zeros((1, 1, 1, 2)))
+    store = StageStore(path)
+    for call in (
+        store.has,
+        lambda _: store.read_pose2d(),
+        lambda _: store.read_image_sizes(),
+        lambda _: store.read_footage(),
+        lambda _: store.read_animal(),
+    ):
+        with pytest.raises(ValueError, match="newer deeperfly"):
+            call("pose2d")
+
+
+def test_load_refuses_a_newer_format_with_the_shared_message(tmp_path):
+    """And it must not advise re-running the pipeline, which would destroy the file."""
+    path = tmp_path / "results.h5"
+    with h5py.File(path, "w") as f:
+        f.attrs["meta"] = json.dumps({"deeperfly_format_version": FORMAT_VERSION + 1})
+    with pytest.raises(ValueError, match="newer deeperfly") as exc:
+        PoseResult.load(path)
+    assert "re-run the pipeline" not in str(exc.value)
+
+
+def test_load_of_a_foreign_hdf5_diagnoses_itself(tmp_path):
+    """A file that is not a deeperfly result at all gets this loader's message, not KeyError."""
+    path = tmp_path / "foreign.h5"
+    with h5py.File(path, "w") as f:
+        f.create_dataset("something", data=[1, 2, 3])
+    with pytest.raises(ValueError, match="format version"):
+        PoseResult.load(path)
+
+
 def test_store_missing_file_reads_empty(tmp_path):
     store = StageStore(tmp_path / "nope.h5")
     assert not store.has("pose2d")
@@ -433,3 +476,90 @@ def test_absent_survives_a_pose2d_rewrite_and_a_stage_truncation(tmp_path, resul
     carried, subject = store.read_animal()
     assert carried is not None and carried[4]
     assert subject == "Fly2"
+
+
+# -- the rig as the same record calibration.toml carries -----------------------
+
+
+def test_the_camera_group_carries_the_rigs_units_and_provenance(tmp_path, cameras, fly):
+    """The HDF5 group had no slot for units/scale/provenance/quality, so both exporters
+    INVENTED them -- hardcoding units="config", scale_source="orbit_prior". That re-labels a
+    millimeter board calibration as an arbitrary-scale orbit guess.
+    """
+    store = StageStore(tmp_path / "results.h5")
+    v, t, n = len(cameras.names), 2, len(fly.point_names)
+    store.write_pose2d(
+        cameras=cameras,
+        skeleton=fly,
+        pts2d=np.zeros((v, t, n, 2)),
+        conf=np.ones((v, t, n)),
+        image_sizes={name: (48, 64) for name in cameras.names},
+    )
+    store.write_cameras(
+        "bundle_adjustment",
+        cameras,
+        image_sizes={name: (48, 64) for name in cameras.names},
+        meta={
+            "units": "mm",
+            "scale_source": "board",
+            "provenance": {"method": "labels_ba", "intrinsics": "board"},
+            "quality": {"rms_px": 1.25},
+        },
+    )
+    meta = store.read_camera_meta("bundle_adjustment")
+    assert meta["units"] == "mm"
+    assert meta["scale_source"] == "board"
+    assert meta["provenance"]["intrinsics"] == "board"
+    assert meta["quality"]["rms_px"] == 1.25
+    assert meta["image_sizes"][cameras.names[0]] == (48, 64)
+
+
+def test_a_camera_group_written_without_metadata_reads_as_empty(tmp_path, cameras, fly):
+    """Additive: an older file has none of it, and {} is what makes a caller pass through."""
+    store = StageStore(tmp_path / "results.h5")
+    v, t, n = len(cameras.names), 2, len(fly.point_names)
+    store.write_pose2d(
+        cameras=cameras,
+        skeleton=fly,
+        pts2d=np.zeros((v, t, n, 2)),
+        conf=np.ones((v, t, n)),
+        image_sizes={name: (48, 64) for name in cameras.names},
+    )
+    store.write_cameras("bundle_adjustment", cameras)
+    meta = store.read_camera_meta("bundle_adjustment")
+    assert "units" not in meta and "scale_source" not in meta
+    assert store.read_camera_meta("triangulation") == {}
+
+
+def test_the_true_distortion_lengths_survive_the_round_trip(tmp_path, fly):
+    """`CameraGroup.dists` pads to the group max by contract (for the JAX call sites), so a
+    camera authored `dist = []` read back as five zeros -- a textual round-trip failure.
+    Numerically harmless, but it made the HDF5 group a lossy copy of a calibration.toml.
+    """
+    from deeperfly.cameras import Camera
+
+    # Built from Cameras directly: `from_arrays` cannot express a ragged dist, which is
+    # itself the reason the padded array is the only thing that ever reached disk.
+    group = CameraGroup(
+        {
+            name: Camera(
+                rvec=np.zeros(3),
+                tvec=np.array([0.0, 0.0, 10.0]),
+                intr=np.array([100.0, 100.0, 32.0, 24.0]),
+                dist=np.asarray(dist, dtype=float),
+                name=name,
+            )
+            for name, dist in (("a", []), ("b", [0.1, 0.2, 0.0, 0.0, 0.3]))
+        }
+    )
+    assert group.dists.shape == (2, 5)  # padded, by contract, for the JAX call sites
+    store = StageStore(tmp_path / "results.h5")
+    v, t, n = 2, 2, len(fly.point_names)
+    store.write_pose2d(
+        cameras=group,
+        skeleton=fly,
+        pts2d=np.zeros((v, t, n, 2)),
+        conf=np.ones((v, t, n)),
+        image_sizes={"a": (48, 64), "b": (48, 64)},
+    )
+    assert store.read_camera_meta("pose2d")["dist_lengths"] == [0, 5]

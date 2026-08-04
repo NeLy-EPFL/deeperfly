@@ -254,9 +254,59 @@ def _run_bundle_adjustment(ctx: _RunContext) -> bool:
         report=report,
     )
     ctx.store.truncate_from("bundle_adjustment")
-    ctx.store.write_cameras("bundle_adjustment", refined)
+    ctx.store.write_cameras(
+        "bundle_adjustment",
+        refined,
+        image_sizes=ctx.store.read_image_sizes(),
+        meta=_rig_meta(ctx, report),
+    )
     _write_calibration(ctx, refined, report)
     return True
+
+
+def _rig_meta(ctx: _RunContext, report: dict) -> dict:
+    """The refined rig's units, scale source and provenance -- inherited, not invented.
+
+    A run may build its rig from a **calibration file** (``[cameras].calibration``), which
+    already knows what its numbers mean: a board solve in millimeters, a known-distance
+    scale, or an orbit prior in arbitrary units. Refining that rig does not change any of
+    it, so the answer is *inherited*. Only when the config describes the rig as a bare orbit
+    is the honest answer the config-orbit one -- and that is what was being asserted
+    unconditionally, which re-labelled a millimeter rig as arbitrary.
+    """
+    ba = ctx.config.bundle_adjustment
+    units, scale_source, parent = "config", "orbit_prior", None
+    path = ctx.config.calibration_path()
+    if path is not None:
+        try:
+            from ..calibration import Calibration
+
+            parent_cal = Calibration.load(path)
+            units = parent_cal.units
+            scale_source = parent_cal.scale_source
+            parent = {"name": parent_cal.name, "path": str(path)}
+        except Exception as exc:  # a rig that loaded once for the solve, unreadable now
+            log.warning("could not read the parent calibration %s: %s", path, exc)
+    provenance: dict = {
+        "method": "labels_ba",
+        "intrinsics": "config",
+        "frames": report.get("n_frames"),
+        "source": str(ctx.store.path),
+        "solver": {
+            "weigh_by_confidence": bool(ba.weigh_by_confidence),
+            "max_frames": ba.max_frames,
+            "frame_sampling": ba.frame_sampling,
+            **{k: v for k, v in ba.least_squares.items() if _is_scalar(v)},
+        },
+    }
+    if parent is not None:
+        provenance["refined_from"] = parent
+    return {
+        "units": units,
+        "scale_source": scale_source,
+        "provenance": provenance,
+        "quality": report.get("quality") or {},
+    }
 
 
 def _write_calibration(ctx: _RunContext, refined, report: dict) -> None:
@@ -272,30 +322,19 @@ def _write_calibration(ctx: _RunContext, refined, report: dict) -> None:
     """
     from ..calibration import CALIBRATION_FILENAME, Calibration
 
-    ba = ctx.config.bundle_adjustment
+    meta = _rig_meta(ctx, report)
     try:
         Calibration.from_camera_group(
             refined,
             name=ctx.outdir.parent.name or ctx.outdir.name,
             image_sizes=ctx.store.read_image_sizes(),
-            # The config orbit set the scale and the solver has no reason to move along
-            # that gauge freedom -- but deeperfly was never told what the orbit's
-            # `distance` measures, so the unit stays honestly unnamed.
-            units="config",
-            scale_source="orbit_prior",
-            provenance={
-                "method": "labels_ba",
-                "intrinsics": "config",
-                "frames": report.get("n_frames"),
-                "source": str(ctx.store.path),
-                "solver": {
-                    "weigh_by_confidence": bool(ba.weigh_by_confidence),
-                    "max_frames": ba.max_frames,
-                    "frame_sampling": ba.frame_sampling,
-                    **{k: v for k, v in ba.least_squares.items() if _is_scalar(v)},
-                },
-            },
-            quality=report.get("quality") or {},
+            # Inherited from whatever rig this refined, so a millimeter calibration stays a
+            # millimeter calibration. Only a bare-orbit config yields the unnamed unit --
+            # deeperfly was never told what an orbit's `distance` measures.
+            units=meta["units"],
+            scale_source=meta["scale_source"],
+            provenance=meta["provenance"],
+            quality=meta["quality"],
         ).save(ctx.outdir / CALIBRATION_FILENAME)
     except Exception:  # pragma: no cover -- a read-only outdir must not fail the run
         log.exception("could not write %s", ctx.outdir / CALIBRATION_FILENAME)

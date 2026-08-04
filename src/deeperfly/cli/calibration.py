@@ -99,19 +99,32 @@ def _cmd_calibration_export(args) -> None:
     out = (
         Path(args.output) if args.output else results_path.parent / CALIBRATION_FILENAME
     )
+    # Pass the rig's OWN units/scale/intrinsics through when the result recorded them, and
+    # only fall back to the config-orbit answer when it did not. Hardcoding them re-labelled
+    # a millimeter board calibration as an arbitrary-scale orbit guess -- a false claim on
+    # the one field that says whether the numbers mean anything physical.
+    stored_meta = store.read_camera_meta(
+        "bundle_adjustment" if method == "labels_ba" else "pose2d"
+    )
+    stored_provenance = dict(stored_meta.get("provenance") or {})
     calibration = Calibration.from_camera_group(
         cameras,
         name=results_path.parent.parent.name or results_path.parent.name,
-        image_sizes=store.read_image_sizes(),
-        units="config",
-        scale_source="orbit_prior",
+        image_sizes=stored_meta.get("image_sizes") or store.read_image_sizes(),
+        units=stored_meta.get("units", "config"),
+        scale_source=stored_meta.get("scale_source", "orbit_prior"),
         provenance={
             "method": method,
-            "intrinsics": "config",
+            "intrinsics": stored_provenance.get("intrinsics", "config"),
             "source": str(results_path),
             "exported_by": "deeperfly calibration export",
+            **{
+                k: v
+                for k, v in stored_provenance.items()
+                if k not in ("method", "intrinsics", "source", "exported_by")
+            },
         },
-        quality=quality,
+        quality=quality or stored_meta.get("quality") or {},
     )
     written = calibration.save(out)
     log.info("wrote %s", written)

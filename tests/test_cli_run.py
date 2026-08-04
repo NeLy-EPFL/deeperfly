@@ -1575,3 +1575,66 @@ def test_a_run_can_be_driven_by_the_calibration_a_previous_run_wrote(
     rig_b = StageStore(tmp_path / "out_b" / "results.h5").read_cameras("pose2d")
     np.testing.assert_allclose(rig_b.tvecs, cal.cameras.tvecs + 3.5)
     assert rig_b.names == FLY_CAMERAS
+
+
+def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
+    tmp_path, monkeypatch
+):
+    """Refining a millimeter rig must not re-label it as an arbitrary-scale orbit guess.
+
+    Both exporters hardcoded ``units="config", scale_source="orbit_prior"``, so a run driven
+    by a board calibration in millimeters wrote out a calibration asserting its numbers were
+    an unnamed orbit unit. Bundle adjustment does not move along that gauge freedom, so the
+    honest answer is inherited from whatever rig was refined.
+    """
+    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
+    from deeperfly.results import StageStore
+
+    cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
+    _stub_detect(monkeypatch, tmp_path)
+    _stub_compute_stages(monkeypatch)
+    cli.main(_run_args(tmp_path, cfg))
+
+    # Re-save run A's rig as a MILLIMETER, board-scaled calibration and drive run B with it.
+    cal = Calibration.load(tmp_path / "out" / CALIBRATION_FILENAME)
+    (tmp_path / "b").mkdir()
+    Calibration.from_camera_group(
+        cal.cameras,
+        name="board_mm",
+        image_sizes=cal.image_sizes,
+        units="mm",
+        scale_source="board",
+        provenance={"method": "board", "intrinsics": "board"},
+    ).save(tmp_path / "b" / CALIBRATION_FILENAME)
+
+    text, n = re.subn(
+        rf'(?m)^# (calibration = "{CALIBRATION_FILENAME}")$',
+        r"\1",
+        DEFAULT_CONFIG_PATH.read_text(),
+        count=1,
+    )
+    assert n == 1
+    cfg_b = tmp_path / "b" / "config.toml"
+    cfg_b.write_text(text)
+    cli.main(
+        [
+            "run",
+            str(tmp_path / "rec"),
+            "-c",
+            str(cfg_b),
+            "-o",
+            str(tmp_path / "out_b"),
+            "--log-level",
+            "error",
+        ]
+    )
+
+    out_b = Calibration.load(tmp_path / "out_b" / CALIBRATION_FILENAME)
+    assert (out_b.units, out_b.scale_source) == ("mm", "board")
+    assert out_b.provenance["method"] == "labels_ba"  # it WAS refined, and says so
+    assert out_b.provenance["refined_from"]["name"] == "board_mm"
+    # And the rig inside results.h5 carries the same record, not just the sidecar.
+    meta = StageStore(tmp_path / "out_b" / "results.h5").read_camera_meta(
+        "bundle_adjustment"
+    )
+    assert (meta["units"], meta["scale_source"]) == ("mm", "board")

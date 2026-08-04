@@ -160,6 +160,13 @@ def export_package(project, out: str | Path, *, embed: str = "user") -> PackageR
             if entry.fps is not None:
                 group.attrs["fps"] = float(entry.fps)
             group.attrs["origin"] = json.dumps(entry.origin or {})
+            # The footage pointer the docstring always promised and the code never wrote.
+            # It is what lets an imported package's recordings be re-pointed at footage --
+            # and the names + byte sizes are what identify the recording, so without them a
+            # package could not even say which recording its labels belong to.
+            pointer = _recording_pointer(project, entry)
+            if pointer:
+                group.attrs["footage"] = json.dumps(pointer)
             report.recordings += 1
 
             labels_path = project.labels_path(entry)
@@ -195,6 +202,30 @@ def _put_text(f, name: str, path: Path) -> None:
     """Store a project text file, if it exists, as one utf-8 dataset."""
     if path.exists():
         f.create_dataset(name, data=path.read_text(), dtype=_STR)
+
+
+def _recording_pointer(project, entry) -> dict:
+    """One recording's footage pointer as stored in its ``recording.toml``, verbatim.
+
+    Read from the TOML rather than re-derived, so a recording whose footage no longer
+    resolves still contributes the ``names`` (and ``bytes``, when it has them) that identify
+    it -- which is the case a package most needs to survive.
+    """
+    import tomllib
+
+    path = project.recording_dir(entry) / "recording.toml"
+    if not path.exists():
+        return {}
+    try:
+        table = tomllib.loads(path.read_text()).get("recording", {})
+    except Exception as exc:
+        log.warning("could not read %s: %s", path, exc)
+        return {}
+    return {
+        name: spec
+        for name, spec in (table.get("footage") or {}).items()
+        if isinstance(spec, dict)
+    }
 
 
 def _frames_to_embed(project, entry, policy: str) -> list[int]:
@@ -245,18 +276,12 @@ def _embed_frames(project, entry, group, policy: str, report: PackageReport) -> 
         return 0
     try:
         from .gui import _recording_footage
-        from .gui.readers import FrameSource, resolve_camera_files
+        from .gui.readers import FrameSource
     except Exception:  # pragma: no cover -- the GUI package is a core dep
         return 0
 
-    footage = _recording_footage(project, entry)
-    resolved = {}
-    for name, paths in footage.items():
-        files = resolve_camera_files(
-            {"abs": [str(p) for p in paths]}, project.recording_dir(entry), None
-        )
-        if files:
-            resolved[name] = files
+    # Resolved by the reader, against every pointer flavor -- no re-wrapping needed.
+    resolved = _recording_footage(project, entry)
     if not resolved:
         report.skipped.append(
             f"{entry.slug}: footage does not resolve, so its frames could not be embedded "
@@ -418,6 +443,11 @@ def import_package(
                     (outputs / "labels.h5").write_bytes(
                         np.asarray(group["labels"][()], dtype=np.uint8).tobytes()
                     )
+            if apply:
+                # A recording.toml, or the imported project cannot be opened AT ALL: the
+                # editor reads its footage from that file, and with none it falls back to
+                # `origin.from` -- the exporter's absolute path on another machine.
+                _write_recording_toml(group, slug, target / "recordings" / slug)
             if "frames" in group:
                 n = sum(len(group[f"frames/{c}"]) for c in group["frames"])
                 report.embedded_frames += int(n)
@@ -431,6 +461,42 @@ def import_package(
     if apply:
         log.info("imported %s into %s", package, target)
     return report
+
+
+def _write_recording_toml(group, slug: str, rec_dir: Path) -> None:
+    """Re-create one recording's ``recording.toml`` on the far side of an import.
+
+    The packaged pointer's ``abs`` and ``rel`` are the *exporter's* paths and are fictions
+    here, so only ``names`` and ``bytes`` are written -- the two flavors that mean the same
+    thing on any machine. That is enough for ``--footage-dir`` to find the footage, and
+    enough to re-derive the recording's content id.
+    """
+    from . import _toml
+
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        pointer = json.loads(group.attrs.get("footage", "{}"))
+    except (TypeError, ValueError):
+        pointer = {}
+    lines = [
+        "# One recording's footage pointers, re-created by 'deeperfly project import'.",
+        "#",
+        "# Only the file NAMES and byte sizes travelled in the package -- the exporter's",
+        "# absolute paths mean nothing here. Point the editor at the footage with",
+        "# --footage-dir, or add `abs = [...]` below once you know where it lives.",
+        "",
+    ]
+    lines += _toml.table_lines(
+        ["recording"], {"slug": slug, "id": str(group.attrs.get("id", ""))}
+    )
+    for camera in sorted(pointer):
+        spec = pointer[camera] or {}
+        portable = {k: spec[k] for k in ("names", "bytes") if spec.get(k)}
+        if not portable:
+            continue
+        lines += ["", f"[recording.footage.{_toml.key(camera)}]"]
+        lines += [f"{k} = {_toml.value(v)}" for k, v in portable.items()]
+    (rec_dir / "recording.toml").write_text("\n".join(lines) + "\n")
 
 
 def _write_frames(group, out: Path) -> None:
