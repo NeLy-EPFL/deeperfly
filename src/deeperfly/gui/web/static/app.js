@@ -305,11 +305,13 @@ class App {
   /** @type {Segmented} */
   layoutSwitch;
   /** @type {HTMLDivElement} */
-  layoutWrap = el("layout-wrap");
   /** @type {HTMLInputElement} */
   hideAllCheck = el("show-hide-all");
   /** @type {HTMLInputElement} */
   autoHideCheck = el("detected-autohide");
+  reviewedBtn = el("reviewed-toggle");
+  //: Whether the current frame is marked reviewed, mirrored from the payload.
+  reviewed = false;
   skeletonCreateBtn = el("skeleton-create");
   skeletonToggle = el("skeleton-toggle");
   skeletonMenu = el("skeleton-menu");
@@ -359,9 +361,7 @@ class App {
   meshTimer = 0;
   /** @type {HTMLSpanElement} */
   pointStatusName = el("point-status-name");
-  pointStatusFacts = el("point-status-facts");
-  createBtn = el("act-create");
-  deleteGtBtn = el("act-delete-gt");
+  gtBtn = el("act-gt");
   excludeBtn = el("act-exclude");
   absentBtn = el("act-absent");
   absentBadge = el("absent-badge");
@@ -386,10 +386,7 @@ class App {
   showMenu = el("show-menu");
   showMenuOpen = false;
   /** @type {HTMLButtonElement} */
-  layoutToggle = el("layout-toggle");
   /** @type {HTMLDivElement} */
-  layoutMenu = el("layout-menu");
-  layoutMenuOpen = false;
   /** @type {HTMLDivElement} */
   layoutArrangeSection = el("layout-arrange-section");
   /** @type {HTMLDivElement} */
@@ -592,9 +589,8 @@ class App {
     const multiCam = this.meta.n_views > 1;
     this.layoutArrangeSection.style.display = multiCam ? "" : "none";
     this.layoutArrangeRow.style.display = multiCam ? "" : "none";
-    // The default button title advertises the Grid/Focus + step-focus keys; drop that clause
-    // for a single camera, where only "Reset view" remains.
-    if (!multiCam) this.layoutToggle.title = "View — reset zoom & pan on the camera (0)";
+    // With one camera there is no arrangement to choose, so the Cameras section collapses to
+    // "Fit every camera" and the rows above hide themselves.
     this.layoutSwitch = segmented(
       [["Grid", "grid"], ["Focus", "focus"]],
       (v) => this.setLayout(/** @type {Layout} */ (v))
@@ -606,8 +602,7 @@ class App {
     // an authored pixel or it does not, and its detection is excluded from triangulation or
     // it is not. `#point-status-facts` reports those facts and the buttons beside it are the
     // verbs -- create GT from what is shown, delete GT, toggle the exclusion.
-    this.createBtn.addEventListener("click", () => this.createSelectionGt());
-    this.deleteGtBtn.addEventListener("click", () => this.deleteSelectionGt());
+    this.gtBtn.addEventListener("click", () => this.toggleSelectionGt());
     this.excludeBtn.addEventListener("click", () => this.toggleSelectionExclude());
     this.absentBtn.addEventListener("click", (e) =>
       this.toggleAbsentSelection(e.shiftKey ? "recording" : "frame"),
@@ -650,6 +645,7 @@ class App {
       this.closeSkeletonMenu();
     });
     this.skeletonToggle.addEventListener("click", () => this.toggleSkeletonMenu());
+    this.reviewedBtn.addEventListener("click", () => this.toggleReviewedCurrent());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The ground-truth and detected source layers exist without 3D (they are the authored
     // pixels and the raw detector output); only the projected source needs a 3D solve.
@@ -711,18 +707,6 @@ class App {
     document.addEventListener("click", (e) => {
       if (this.showMenuOpen && !this.showWrap.contains(/** @type {Node} */ (e.target))) {
         this.closeShowMenu();
-      }
-    });
-    // The "Layout" popover mirrors "Show": the button toggles it, a click outside closes
-    // it, and it holds the Grid/Focus arrangement plus "Reset view". Opening one popover
-    // closes the other (see openLayoutMenu / openShowMenu), so they never overlap.
-    this.layoutToggle.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.toggleLayoutMenu();
-    });
-    document.addEventListener("click", (e) => {
-      if (this.layoutMenuOpen && !this.layoutWrap.contains(/** @type {Node} */ (e.target))) {
-        this.closeLayoutMenu();
       }
     });
     this.resetViewBtn.addEventListener("click", () => this.resetView());
@@ -1001,6 +985,12 @@ class App {
     // settles, coalescing a live drag's many replies into one GPU render.
     this.scheduleMeshRefresh();
     this.dirty = p.dirty;
+    if (p.reviewed != null) {
+      this.reviewed = !!p.reviewed;
+      this.reviewedBtn.setAttribute("aria-pressed", String(this.reviewed));
+      this.reviewedBtn.classList.toggle("is-on", this.reviewed);
+      this.reviewedBtn.disabled = this.readOnly;
+    }
     if (p.can_undo != null) this.undoBtn.disabled = !p.can_undo;
     if (p.can_redo != null) this.redoBtn.disabled = !p.can_redo;
     this.updateDirty();
@@ -1206,7 +1196,6 @@ class App {
   // -- the "Show" overlay-toggle popover --------------------------------------
 
   openShowMenu() {
-    this.closeLayoutMenu(); // only one popover open at a time
     this.closeSkeletonMenu(); // only one popover open at a time
     this.showMenu.hidden = false;
     this.showMenuOpen = true;
@@ -1228,38 +1217,18 @@ class App {
 
   // -- the "Layout" popover (arrangement + view reset) ------------------------
 
-  openLayoutMenu() {
-    this.closeShowMenu(); // only one popover open at a time
-    this.closeSkeletonMenu();
-    this.layoutMenu.hidden = false;
-    this.layoutMenuOpen = true;
-    this.layoutToggle.setAttribute("aria-expanded", "true");
-    this.layoutToggle.classList.add("is-open");
-  }
 
-  closeLayoutMenu() {
-    this.layoutMenu.hidden = true;
-    this.layoutMenuOpen = false;
-    this.layoutToggle.setAttribute("aria-expanded", "false");
-    this.layoutToggle.classList.remove("is-open");
-  }
 
-  toggleLayoutMenu() {
-    if (this.layoutMenuOpen) this.closeLayoutMenu();
-    else this.openLayoutMenu();
-  }
 
   /** Reset zoom + pan on every camera back to the letterboxed fit (the "tight fit"). */
   resetView() {
     this.views.forEach((view) => view.resetZoom());
-    this.closeLayoutMenu();
   }
 
   // -- the "Skeleton" popover (how a new one is seeded, and reseeding this frame) ----
 
   openSkeletonMenu() {
     this.closeShowMenu();
-    this.closeLayoutMenu();
     this.skeletonMenu.hidden = false;
     this.skeletonMenuOpen = true;
     this.skeletonToggle.setAttribute("aria-expanded", "true");
@@ -1412,8 +1381,7 @@ class App {
       }
       view.setSelection(set);
     });
-    this.actResetBtn.disabled = this.selection.size === 0;
-    this.updateStatusWidget();
+    this.updateStatusWidget(); // gates every card button, Reset included
   }
 
   // -- point state control ----------------------------------------------------
@@ -1491,37 +1459,27 @@ class App {
     // The facts line: what IS true of this cell, not a state to assign. Reports the hovered
     // joint while hovering (the peek), else the selection's shared description, else how
     // many cells disagree.
-    // Two orthogonal facts, composed: where the joint is, and whether a human can see it
-    // here. They are not alternatives -- a joint placed *through* an occluder is both -- so
-    // the readout says both rather than picking one, which is what a single state chip could
-    // never do.
-    const describe = (view, point) => {
-      if (this.absentMask && this.absentMask[view][point]) return "not on this animal";
-      const gt = !!(this.fixedMask && this.fixedMask[view][point]);
-      const hidden = !!(this.excludedMask && this.excludedMask[view][point]);
-      const where = gt
-        ? "ground truth"
-        : this.hasInstance
-          ? "derived"
-          : this.cellDetected(view, point)
-            ? "detected"
-            : "unplaced — drag to place";
-      return hidden ? `${where} · hidden` : where;
-    };
-    let facts = "";
-    if (hov) facts = describe(hov.view, hov.point);
-    else if (n === 1 && this.selAnchor) facts = describe(this.selAnchor.view, this.selAnchor.point);
-    else if (n > 1) {
-      const all = this.selCells().map(([v, p]) => describe(v, p));
-      facts = all.every((d) => d === all[0]) ? all[0] : "mixed";
-    }
-    this.pointStatusFacts.textContent = facts;
     // Verb availability. Create needs a visible proposal layer; Exclude is meaningless on a
     // cell whose GT already overrides its detection, and on a joint that is not there.
     const anyWithoutGt = this.selCells().some(([v, p]) => !(this.fixedMask && this.fixedMask[v][p]));
     const anyWithGt = this.selCells().some(([v, p]) => this.fixedMask && this.fixedMask[v][p]);
-    this.createBtn.disabled = n === 0 || this.readOnly || allAbsent || !anyWithoutGt;
-    this.deleteGtBtn.disabled = n === 0 || this.readOnly || !anyWithGt;
+    // Each button reports its own fact by being pressed, which is what retired the text
+    // readout beside the name: it was saying what three toggles could show themselves.
+    const allGt = n > 0 && !anyWithoutGt;
+    this.gtBtn.setAttribute("aria-pressed", String(allGt));
+    this.gtBtn.classList.toggle("is-on", allGt);
+    this.gtBtn.disabled = n === 0 || this.readOnly || allAbsent;
+    const anyHidden = this.selCells().some(
+      ([v, p]) => this.excludedMask && this.excludedMask[v][p],
+    );
+    const allHidden =
+      n > 0 && this.selCells().every(([v, p]) => this.excludedMask && this.excludedMask[v][p]);
+    this.excludeBtn.setAttribute("aria-pressed", String(allHidden));
+    this.excludeBtn.classList.toggle("is-on", allHidden);
+    // Reset retracts both facts, so it is only live when there is one to retract -- the
+    // rightmost button in the card must not be the one most often a no-op.
+    this.actResetBtn.disabled =
+      n === 0 || this.readOnly || !(anyWithGt || anyHidden);
     // Labeled cells included: "placed through an occluder" is both facts at once.
     this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent;
   }
@@ -1530,6 +1488,18 @@ class App {
   // Create GT for the selection at the position already drawn there. The bulk half of a
   // drag: it authors the dot the operator is looking at so the joint becomes theirs, ready
   // to nudge. Cells with nothing visible are skipped server-side rather than invented.
+  // One control for one mutually exclusive pair. Pressed means the selection carries the
+  // operator's pixels, so the click clears them; otherwise it places them. A mixed selection
+  // places, so the first click completes it -- the same rule the Hidden toggle uses, and the one
+  // that makes a second click always the inverse of the first.
+  toggleSelectionGt() {
+    const cells = this.selCells();
+    if (!cells.length) return;
+    const allGt = cells.every(([v, p]) => this.fixedMask && this.fixedMask[v][p]);
+    if (allGt) this.deleteSelectionGt();
+    else this.createSelectionGt();
+  }
+
   createSelectionGt() {
     const targets = this.selCells();
     if (!targets.length) return;
@@ -3096,10 +3066,9 @@ class App {
   onKey(e) {
     // Escape always backs out of an open dialog first.
     if (e.key === "Escape") {
-      if (this.showMenuOpen || this.layoutMenuOpen) {
+      if (this.showMenuOpen) {
         this.closeShowMenu();
-        this.closeLayoutMenu();
-        e.preventDefault();
+            e.preventDefault();
       } else if (this.closeConfirmOpen) {
         this.closeCloseConfirm();
         e.preventDefault();

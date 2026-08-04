@@ -57,6 +57,11 @@
                  view. Create is harmless; reseed is not; they do not share a hotspot. The
                  primary disables once the frame has a skeleton, which doubles as the "does this
                  frame have one" readout. -->
+            <!-- A <button aria-pressed>, not a checkbox: `onKey`'s typing guard disables every
+                 non-global binding while an <input> has focus, and nothing blurs it, so a mouse
+                 click on a checkbox here would silently freeze the keyboard until the operator
+                 clicked back onto a canvas. -->
+            <button id="reviewed-toggle" aria-pressed="false" title="Reviewed — mark this frame as checked, and keep it in the labeled list even if its labels are later reset. A record of your attention, not of the pose (d)">&#10003; Reviewed</button>
             <div class="ctl-group popover-wrap" id="skeleton-wrap">
               <button id="skeleton-create" title="Create the annotation skeleton for this frame, seeded from the detections. Dragging a point or pressing Enter does this implicitly; this is the deliberate way, and it authors nothing (g)">&#10022; Skeleton</button>
               <button id="skeleton-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="How a new skeleton is seeded, and re-seeding this frame">&#9662;</button>
@@ -75,20 +80,6 @@
                hide overlay toggles). The single .spacer splits the left work area (view
                toggles · annotate · history) from the right utilities (panels · session). -->
           <div class="control-row toolbar-row">
-            <!-- Camera arrangement + view controls, collapsed behind one "Layout" button
-                 (mirrors "Show"): a popover, opening upward, holding the Grid/Focus
-                 arrangement and a "Reset view" action. The Grid/Focus segment is hidden for
-                 a single camera (no arrangement to choose), but the menu itself stays --
-                 Reset view still helps on one (zoomable) camera. The l / [ / ] and 0
-                 keys are the fast path; the menu is the discoverable one. -->
-            <div class="ctl-group popover-wrap" id="layout-wrap">
-              <button id="layout-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Camera arrangement + view — toggle Grid / Focus (l), step focus ([ / ]), and reset zoom &amp; pan on every camera (0)">Layout <span class="caret">▾</span></button>
-              <div id="layout-menu" class="popover-menu" role="menu" hidden>
-                <div class="pm-section" id="layout-arrange-section">Arrangement</div>
-                <div class="pm-row" id="layout-arrange-row"><div id="layout-switch" class="segmented"></div></div>
-                <div class="pm-section">View</div>
-                <button type="button" id="reset-view" class="pm-btn" title="Reset zoom &amp; pan on every camera back to the tight fit (0)">Reset view <kbd>0</kbd></button>
-              </div>
             </div>
             <!-- The overlay toggles collapse behind one "Show" button: a popover that opens
                  upward (the bar sits at the screen's bottom edge). Each overlay keeps its
@@ -117,14 +108,20 @@
                 <div class="pm-section" id="reference-section">Model</div>
                 <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> <span class="pm-name">NMF skeleton</span> <kbd>m</kbd></label>
                 <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">NMF mesh</span> <kbd>⇧M</kbd></label>
+                <div class="pm-section" id="layout-arrange-section">Cameras</div>
+                <div class="pm-row" id="layout-arrange-row"><div id="layout-switch" class="segmented"></div> <kbd>l</kbd></div>
+                <button type="button" id="reset-view" class="pm-btn" title="Reset zoom &amp; pan on every camera back to the tight fit (0)">Fit every camera <kbd>0</kbd></button>
               </div>
             </div>
             <div class="ctl-group annot-card" id="point-status" title="The selected point(s). A cell is not SET to a state -- it either carries a ground-truth pixel you created or it does not, and its detection is either excluded from triangulation or it is not. The line here reports which; the buttons are the verbs. Enter creates ground truth at the position already shown (from whichever proposal layers are visible), Backspace deletes it, e excludes the detection from triangulation, r retracts both. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear.">
               <span id="point-status-name" class="point-status-name">&mdash;</span>
-              <span id="point-status-facts" class="point-status-facts"></span>
-              <button id="act-create" title="Place ground truth for the selection at the position already drawn there. The bulk half of a drag: it makes the joint yours, ready to nudge. A cell with nothing on screen, or one drawn at a position the editor invented to keep it grabbable, is skipped rather than authored (Enter)" disabled>&#9166; Place</button>
-              <button id="act-delete-gt" title="Delete the selection's ground-truth pixels, so those joints go back to the position derived for them. Leaves the Hidden marks alone -- Reset retracts both (Backspace)" disabled>&#9003; Clear</button>
-              <button id="act-exclude" title="Hidden -- mark the selection as not visible to a human in this view, or clear the mark (toggle). Purely an annotation about the IMAGE: it does not move the joint and it does not affect triangulation, which is robust to a bad observation on its own. It is a training signal, and the one thing nothing else can supply. Orthogonal to ground truth, so a joint placed THROUGH an occluder can carry both (e)" disabled>&#128065; Hidden</button>
+              <!-- One control per fact, each showing its own state, because the facts are what
+                   a cell has: a ground-truth pixel, a "cannot see it here" mark, a "not on this
+                   animal" declaration. Place and Clear were two buttons for one mutually
+                   exclusive pair, and a separate text readout for what the buttons could show
+                   themselves. -->
+              <button id="act-gt" aria-pressed="false" title="Ground truth — place a pixel for the selection at the position already drawn there, or clear it again. Pressed means the selection carries your pixel; the joint then follows the position derived for it instead. Dragging a point places it too (Enter places, Backspace clears)" disabled>&#9678; GT</button>
+              <button id="act-exclude" aria-pressed="false" title="Hidden -- mark the selection as not visible to a human in this view, or clear the mark (toggle). Purely an annotation about the IMAGE: it does not move the joint and it does not affect triangulation, which is robust to a bad observation on its own. It is a training signal, and the one thing nothing else can supply. Orthogonal to ground truth, so a joint placed THROUGH an occluder can carry both (e)" disabled>&#128065; Hidden</button>
               <!-- Absent is deliberately not one of the verbs above: those all concern one
                    view's observation of a joint, while Absent says the joint is not on the
                    animal at all -- view-independent, and usually recording-wide. -->

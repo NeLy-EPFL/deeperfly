@@ -266,44 +266,55 @@ def test_l_toggles_the_camera_layout(page_and_errors):
     assert not errors, "JS errors pressing l:\n  " + "\n  ".join(errors)
 
 
-def test_the_verb_keys_create_exclude_and_delete_ground_truth(page_and_errors):
-    """Enter / e / Backspace on a selection, end to end through the socket.
+def test_the_verb_toggles_report_their_own_state(page_and_errors):
+    """Enter / e / Backspace through the socket, read back off the buttons.
 
-    The point of this test is the half a python test cannot reach: these verbs run in a
-    keydown handler, build a socket message and then repaint from the reply, so a wrong
-    field name or a missing element throws in the browser and the python-level state tests
-    stay green regardless. It also pins the readout, which is the whole reason the state
-    chips went away -- the panel must report what IS true rather than offer a state to set.
+    Each button shows its own fact by being pressed, which is what retired the text readout:
+    it was saying what three toggles could show themselves. And the two facts are orthogonal --
+    a joint placed *through* an occluder is both -- so both can be pressed at once, which no
+    single readout line and no radio group could ever express.
     """
     page, errors = page_and_errors
-    facts = page.locator("#point-status-facts")
+    gt = page.locator("#act-gt")
+    hidden = page.locator("#act-exclude")
+    reset = page.locator("#act-reset")
     page.keyboard.press("a")  # select every point in every view
     page.wait_for_timeout(300)
-    assert not page.locator("#act-create").is_disabled(), "Create GT unavailable"
+    assert gt.get_attribute("aria-pressed") == "false"
+    assert reset.is_disabled(), "Reset offered with nothing to retract"
 
-    page.keyboard.press("Enter")  # create GT at the drawn positions
+    page.keyboard.press("Enter")  # place ground truth
     page.wait_for_timeout(600)
-    assert facts.inner_text() == "ground truth", f"readout says {facts.inner_text()!r}"
-    assert not page.locator("#act-delete-gt").is_disabled()
+    assert gt.get_attribute("aria-pressed") == "true"
+    assert not reset.is_disabled()
 
-    # Hidden composes with ground truth rather than replacing it: a joint placed *through*
-    # an occluder is both facts at once, and the readout has to say both. This is also why
-    # the verb is offered over labeled cells -- it used to be refused there, back when
-    # storing the flag deleted the pixel underneath it.
-    assert not page.locator("#act-exclude").is_disabled()
-    page.keyboard.press("e")
+    page.keyboard.press("e")  # ... and mark it not visible here, at the same time
     page.wait_for_timeout(600)
-    assert facts.inner_text() == "ground truth \u00b7 hidden", (
-        f"readout says {facts.inner_text()!r}"
-    )
-    page.keyboard.press("e")  # ... and it is a toggle
-    page.wait_for_timeout(600)
-    assert facts.inner_text() == "ground truth", "e did not toggle back"
+    assert gt.get_attribute("aria-pressed") == "true", "the pixel was lost"
+    assert hidden.get_attribute("aria-pressed") == "true"
 
-    page.keyboard.press("Backspace")  # delete the GT
+    page.keyboard.press("e")  # both toggles round-trip independently
     page.wait_for_timeout(600)
-    assert facts.inner_text() != "ground truth", "Backspace did not delete the GT"
-    assert not errors, "JS errors driving the verbs:\n  " + "\n  ".join(errors)
+    assert hidden.get_attribute("aria-pressed") == "false"
+    page.keyboard.press("Backspace")
+    page.wait_for_timeout(600)
+    assert gt.get_attribute("aria-pressed") == "false"
+    assert not errors, "JS errors driving the toggles:\n  " + "\n  ".join(errors)
+
+
+def test_the_gt_button_toggles_both_ways(page_and_errors):
+    """One control for one mutually exclusive pair: click places, click again clears."""
+    page, errors = page_and_errors
+    gt = page.locator("#act-gt")
+    page.keyboard.press("a")
+    page.wait_for_timeout(300)
+    gt.click()
+    page.wait_for_timeout(700)
+    assert gt.get_attribute("aria-pressed") == "true"
+    gt.click()
+    page.wait_for_timeout(700)
+    assert gt.get_attribute("aria-pressed") == "false"
+    assert not errors, "JS errors toggling GT:\n  " + "\n  ".join(errors)
 
 
 def test_creating_the_annotation_skeleton_auto_hides_the_detections(page_and_errors):
@@ -330,7 +341,7 @@ def test_creating_the_annotation_skeleton_auto_hides_the_detections(page_and_err
     # The detections seeded the skeleton and would now double every joint on screen.
     assert "is-suppressed" in (row.get_attribute("class") or ""), "no auto-hide"
     assert detected.is_checked(), "the rule overwrote the operator's own checkbox"
-    assert page.locator("#point-status-facts").inner_text() == "ground truth"
+    assert page.locator("#act-gt").get_attribute("aria-pressed") == "true"
 
     page.keyboard.press("t")  # ... and one key brings them back
     page.wait_for_timeout(400)
@@ -426,9 +437,15 @@ def test_the_uncalibrated_editor_hides_the_reprojection_layer(uncal_page_and_err
     page.wait_for_timeout(300)
     assert not page.locator("#projected-wrap").is_visible()
     assert not page.locator("#warn-wrap").is_visible()
-    # The 2D authoring layers stay: they are what this mode is for.
-    assert page.locator("#detected-wrap").is_visible()
-    assert page.locator("#nongt-row").is_visible()
+    # The 2D authoring layers stay: they are what this mode is for. The menu scrolls (it
+    # absorbed the Cameras section), so scroll the row into view rather than asserting on
+    # whatever happens to be within the initial scroll window.
+    det = page.locator("#detected-wrap")
+    det.scroll_into_view_if_needed()
+    assert det.is_visible()
+    box = page.locator("#nongt-row")
+    box.scroll_into_view_if_needed()
+    assert box.is_visible()
     assert not errors
 
 

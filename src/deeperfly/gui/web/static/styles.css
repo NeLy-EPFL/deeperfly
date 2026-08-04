@@ -565,6 +565,7 @@ body {
 
 /* The facts line beside the name: what IS true of the cell, never a control. Deliberately
    quiet -- it is read on demand, and it sits in a toolbar that already carries the verbs. */
+
 /* A layer the auto-hide rule is suppressing: the checkbox still says what the operator asked
    for, so the row is dimmed to say what is actually drawn. */
 #show-menu label.is-suppressed .pm-name {
@@ -572,15 +573,23 @@ body {
   font-style: italic;
 }
 
-.point-status-facts {
-  display: inline-block;
-  flex: 0 0 auto;
-  width: 18ch;
-  color: #8a8a8a;
-  font-size: 0.9em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* A state toggle that is ON. The card's buttons ARE the readout now -- each one shows its own
+   fact by being pressed -- so "on" has to be unmistakable at a glance, not a subtle tint. */
+#point-status button[aria-pressed="true"] {
+  background: #3a6ea5;
+  border-color: #5b8fc9;
+  color: #fff;
+}
+
+#point-status button#act-absent[aria-pressed="true"] {
+  background: #6b6b6b; /* absence is a fact about the animal, not an annotation: neutral */
+  border-color: #8a8a8a;
+}
+
+#reviewed-toggle[aria-pressed="true"] {
+  background: #3f7d3f;
+  border-color: #5da85d;
+  color: #fff;
 }
 
 #controls .spacer {

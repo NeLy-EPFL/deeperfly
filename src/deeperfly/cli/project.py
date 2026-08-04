@@ -196,7 +196,12 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
         return
 
     table = Table(show_footer=True)
-    table.add_column("slug", style="bold", footer="total")
+    # `overflow="fold"` rather than rich's default ellipsis: the slug is not decoration,
+    # it is the name the operator types back into '--recording' / 'project rm', and a
+    # project with a couple of dozen long recording names is exactly when a narrow
+    # terminal starts truncating. A wrapped slug is readable; an ellipsized one is not
+    # usable at all.
+    table.add_column("slug", style="bold", footer="total", overflow="fold")
     table.add_column("frames", justify="right")
     table.add_column("labeled", justify="right", footer=f"{totals['labeled_frames']:,}")
     table.add_column(

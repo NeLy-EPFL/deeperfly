@@ -895,6 +895,9 @@ def _points_payload(
         # amputation from a single-frame declaration without fetching the whole mask.
         "absent_recording": s.absent_points(),
         "proj": None if proj is None else _points_to_json(np.asarray(proj)),
+        # One bool, on every reply including the lean mid-drag stream: the Reviewed control
+        # sits on the frame row and must not lag behind the debounced corrected-frames refresh.
+        "reviewed": bool(s.labels.reviewed[t]),
         "dirty": bool(s.dirty),
         "can_undo": s.can_undo,
         "can_redo": s.can_redo,
