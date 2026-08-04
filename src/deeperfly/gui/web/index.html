@@ -50,6 +50,23 @@
             <label title="Jump to a frame — drag the slider or use ← / → (Shift for ±10)">Frame <input id="frame-slider" type="range" /></label>
             <input id="frame-number" type="number" title="Current frame — type a number to jump there" />
             <span id="frame-total"></span>
+            <!-- Starting a frame lives on the FRAME row, because that is its scope, and it is
+                 the second thing done on every one of thousands of frames. The caption never
+                 flips to "Reseed": a muscle-memory click on a button whose action changed would
+                 land on the one that rewrites every seed and moves every unplaced joint in every
+                 view. Create is harmless; reseed is not; they do not share a hotspot. The
+                 primary disables once the frame has a skeleton, which doubles as the "does this
+                 frame have one" readout. -->
+            <div class="ctl-group popover-wrap" id="skeleton-wrap">
+              <button id="skeleton-create" title="Create the annotation skeleton for this frame, seeded from the detections. Dragging a point or pressing Enter does this implicitly; this is the deliberate way, and it authors nothing (g)">&#10022; Skeleton</button>
+              <button id="skeleton-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="How a new skeleton is seeded, and re-seeding this frame">&#9662;</button>
+              <div id="skeleton-menu" class="popover-menu" role="menu" hidden>
+                <div class="pm-section">Seed a new skeleton from</div>
+                <div class="pm-row"><div id="seed-switch" class="segmented"></div></div>
+                <div class="pm-section">This frame</div>
+                <button type="button" id="reseed" class="pm-btn" title="Lay this frame's seeds down again from the detections, keeping every ground-truth pixel you have placed. Seeds are frozen when the skeleton is created so a detector re-run cannot move your evidence under you; this is how you pick up better detections on purpose (Shift+G)">Reseed this frame <kbd>&#8679;G</kbd></button>
+              </div>
+            </div>
           </div>
           <!-- The toolbar reads as intentional clusters purely through spacing: each
                .ctl-group packs its controls tight (6px), while the row spaces the groups

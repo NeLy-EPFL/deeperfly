@@ -698,6 +698,36 @@ def test_a_joint_with_no_evidence_gets_no_seed_but_is_still_drawn(result):
     assert np.isfinite(state.labels.seeds[:, 0, 5]).all()
 
 
+def test_the_session_seed_mode_reaches_the_implicit_door(result):
+    """A preference that only reached the explicit gesture would not apply on most frames.
+
+    The first drag in a frame creates the skeleton too, and so does the bulk Place -- those are
+    the *common* doors. `_ensure_instance` hard-coding a mode would make the UI switch a lie
+    everywhere except the one button that sets it.
+    """
+    f, p, odd = 0, 5, 2
+    result.pts2d[odd, f, p] += np.array([40.0, 30.0])  # one view out of line
+    state = EditorState.from_result(result)
+    state.seed_mode = "copy"
+
+    state.apply_2d_edit(0, p, (11.0, 22.0), f)  # the implicit door
+    assert state.has_instance(f)
+    # "copy" keeps the odd view's own detection; "triangulate" would have pulled it onto the
+    # consensus, so this is the assertion that tells the two apart.
+    np.testing.assert_allclose(
+        state.labels.seeds[odd, f, p], state.detections[odd, f, p]
+    )
+
+
+def test_reseed_uses_the_session_mode_too(result):
+    f = 0
+    state = EditorState.from_result(result)
+    state.create_instance(f, mode="triangulate")
+    state.seed_mode = "copy"
+    assert state.reseed_instance(f) is True
+    np.testing.assert_allclose(state.labels.seeds[:, f, 5], state.detections[:, f, 5])
+
+
 @pytest.mark.parametrize("mode", ["triangulate", "copy"])
 def test_the_two_seeding_modes_differ_where_a_view_disagrees(result, mode):
     """`triangulate` pulls every view onto the consensus; `copy` keeps its own opinion."""

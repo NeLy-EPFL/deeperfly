@@ -310,6 +310,12 @@ class App {
   hideAllCheck = el("show-hide-all");
   /** @type {HTMLInputElement} */
   autoHideCheck = el("detected-autohide");
+  skeletonCreateBtn = el("skeleton-create");
+  skeletonToggle = el("skeleton-toggle");
+  skeletonMenu = el("skeleton-menu");
+  skeletonMenuOpen = false;
+  //: How a new skeleton is seeded. Server-side state; mirrored here for the switch.
+  seedMode = "triangulate";
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
   /** @type {HTMLLabelElement} */
@@ -632,6 +638,18 @@ class App {
     );
     el("nongt-switch").append(this.nongtSwitch.root);
     this.nongtSwitch.set(this.nongtDisplay);
+    this.seedSwitch = segmented(
+      [["Triangulated", "triangulate"], ["Each view's own", "copy"]],
+      (v) => this.setSeedMode(v),
+    );
+    el("seed-switch").append(this.seedSwitch.root);
+    this.seedSwitch.set(this.seedMode);
+    this.skeletonCreateBtn.addEventListener("click", () => this.createInstance());
+    el("reseed").addEventListener("click", () => {
+      this.reseedInstance();
+      this.closeSkeletonMenu();
+    });
+    this.skeletonToggle.addEventListener("click", () => this.toggleSkeletonMenu());
     this.labelsCheck.addEventListener("change", () => this.applyLabels());
     // The ground-truth and detected source layers exist without 3D (they are the authored
     // pixels and the raw detector output); only the projected source needs a 3D solve.
@@ -935,6 +953,8 @@ class App {
     if (p.has_instance != null && p.has_instance !== this.hasInstance) {
       this.hasInstance = p.has_instance;
       this.applyDetected(); // the auto-hide rule is derived from it, so re-resolve
+      // Disabled IS the "this frame already has one" indicator, so no separate dot is needed.
+      this.skeletonCreateBtn.disabled = this.hasInstance || this.readOnly;
     }
     // Absence rides every reply (it gates drawing), so assign unconditionally rather than
     // keeping a previous value the way `pred` / `placeholder` do.
@@ -1008,6 +1028,23 @@ class App {
   // it is the server that resolves the position (EditorState.nongt_display).
   //: Where a joint you have NOT placed is drawn: "reprojection" (the default) or "seed".
   nongtDisplay = "reprojection";
+
+  /** @param {string} value */
+  setSeedMode(value) {
+    this.seedMode = value;
+    this.seedSwitch.set(value);
+    this.sendEdit({ type: "set_seed_mode", value, frame: this.frame, mode: this.mode });
+  }
+
+  // Start this frame without authoring anything. Idempotent: with a skeleton already there the
+  // server flashes a notice rather than the key doing nothing.
+  createInstance() {
+    this.sendEdit({ type: "create_instance", frame: this.frame, mode: this.mode });
+  }
+
+  reseedInstance() {
+    this.sendEdit({ type: "reseed_instance", frame: this.frame, mode: this.mode });
+  }
 
   /** @param {string} value */
   setNongtDisplay(value) {
@@ -1170,6 +1207,7 @@ class App {
 
   openShowMenu() {
     this.closeLayoutMenu(); // only one popover open at a time
+    this.closeSkeletonMenu(); // only one popover open at a time
     this.showMenu.hidden = false;
     this.showMenuOpen = true;
     this.showToggle.setAttribute("aria-expanded", "true");
@@ -1192,6 +1230,7 @@ class App {
 
   openLayoutMenu() {
     this.closeShowMenu(); // only one popover open at a time
+    this.closeSkeletonMenu();
     this.layoutMenu.hidden = false;
     this.layoutMenuOpen = true;
     this.layoutToggle.setAttribute("aria-expanded", "true");
@@ -1214,6 +1253,29 @@ class App {
   resetView() {
     this.views.forEach((view) => view.resetZoom());
     this.closeLayoutMenu();
+  }
+
+  // -- the "Skeleton" popover (how a new one is seeded, and reseeding this frame) ----
+
+  openSkeletonMenu() {
+    this.closeShowMenu();
+    this.closeLayoutMenu();
+    this.skeletonMenu.hidden = false;
+    this.skeletonMenuOpen = true;
+    this.skeletonToggle.setAttribute("aria-expanded", "true");
+    this.skeletonToggle.classList.add("is-open");
+  }
+
+  closeSkeletonMenu() {
+    this.skeletonMenu.hidden = true;
+    this.skeletonMenuOpen = false;
+    this.skeletonToggle.setAttribute("aria-expanded", "false");
+    this.skeletonToggle.classList.remove("is-open");
+  }
+
+  toggleSkeletonMenu() {
+    if (this.skeletonMenuOpen) this.closeSkeletonMenu();
+    else this.openSkeletonMenu();
   }
 
   // -- hover / selection ------------------------------------------------------
@@ -2744,6 +2806,8 @@ class App {
     // all the per-layer toggles below it.
     b.push({ key: "h", group: "show", label: "h", desc: "Hide all overlays — an unobstructed look at the raw frames", run: () => this.toggleCheck(this.hideAllCheck, () => this.applyHideAll()) });
     b.push({ key: "s", group: "show", label: "s", desc: "Where an unplaced joint is drawn — the reprojection of its 3D, or the seed the skeleton started from", run: () => this.setNongtDisplay(this.nongtDisplay === "seed" ? "reprojection" : "seed") });
+    b.push({ key: "g", group: "frame", label: "g", desc: "Create the annotation skeleton for this frame, seeded from the detections", run: () => this.createInstance() });
+    b.push({ key: "G", shift: true, group: "frame", label: hint("G", ["shift"]), desc: "Reseed this frame from the detections, keeping every ground-truth pixel", run: () => this.reseedInstance() });
     b.push({ key: "t", group: "show", label: "t", desc: "Detected — the detector's own output, as a read-only reference", run: () => this.toggleDetected() });
     b.push({ key: "n", group: "show", label: "n", desc: "Keypoint names", run: () => this.toggleCheck(this.labelsCheck, () => this.applyLabels()) });
     if (has3d) {
@@ -2774,7 +2838,7 @@ class App {
     // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes
     // shift as implied by the key itself (see `matches`), the same way Shift+M works.
     b.push({ key: "X", group: "edit", label: hint("X", ["shift"]), desc: "Absent for the whole recording — the usual case, an animal that arrives with a leg already missing", run: () => this.toggleAbsentSelection("recording") });
-    b.push({ key: "d", group: "edit", label: "d", desc: "Reviewed — mark this frame checked (done); press again to un-mark", run: () => this.toggleReviewedCurrent() });
+    b.push({ key: "d", group: "frame", label: "d", desc: "Reviewed — mark this frame checked (done); press again to un-mark", run: () => this.toggleReviewedCurrent() });
     b.push({ key: "z", mod: true, group: "hist", label: hint("Z", ["mod"]), desc: "Undo", run: () => this.undo() });
     // Redo answers to both ⌘Y and ⇧⌘Z; the help shows whichever the platform expects
     // (⇧⌘Z is the macOS idiom, Ctrl+Y the Windows/Linux one) while the other stays a
@@ -2835,6 +2899,10 @@ class App {
     // Select points -- one rule leads, then the base gestures once each. The add-modifier
     // is the app's convention (Ctrl/⌘), spelled for this OS.
     const add = MOD_GLYPH.mod;
+    // The per-frame verbs, beside the navigation ladder rather than among the cell verbs:
+    // they have frame scope, and grouping them with the selection taught the wrong one.
+    out.push(section("This frame", this.bindingRows("frame")));
+
     out.push(section("Select points", [
       row(["Click"], "Select a point"),
       row([hint("Click", ["mod"])], "Add / remove a point"),

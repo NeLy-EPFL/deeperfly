@@ -1304,20 +1304,25 @@ def _handle_edit(session: Session, msg: dict) -> dict:
             notice = f"unknown non-GT display mode {want!r}"
         else:
             s.nongt_display = want
+    elif typ == "set_seed_mode":
+        # A session preference, not a per-call argument: the first drag in a frame creates the
+        # skeleton too, so a mode that only reached the explicit gesture would not apply on most
+        # frames. Changes no label, so it records no undo step.
+        want = str(msg.get("value", "triangulate"))
+        if want not in ("triangulate", "copy"):
+            notice = f"unknown seeding mode {want!r}"
+        else:
+            s.seed_mode = want
     elif typ == "create_instance":
-        # Double-clicking the detected skeleton. The drag paths create one implicitly too,
-        # so this is for starting a frame deliberately without authoring anything yet.
-        seed_mode = str(msg.get("seed_mode", "triangulate"))
-        if seed_mode not in ("triangulate", "copy"):
-            notice = f"unknown seeding mode {seed_mode!r}"
-        elif not s.create_instance(t, mode=seed_mode):
+        # Starting a frame deliberately, without authoring anything. The drag paths and the
+        # bulk Place both create one implicitly, using the same session seed mode.
+        if not s.create_instance(t):
             notice = "this frame already has an annotation skeleton"
     elif typ == "reseed_instance":
-        seed_mode = str(msg.get("seed_mode", "triangulate"))
-        if seed_mode not in ("triangulate", "copy"):
-            notice = f"unknown seeding mode {seed_mode!r}"
-        elif not s.reseed_instance(t, mode=seed_mode):
+        if not s.reseed_instance(t):
             notice = "no annotation skeleton in this frame yet"
+        else:
+            notice = "seeds laid down again from the detections; ground truth kept"
     elif typ == "clear_gt_targets":
         # Delete the operator's pixels and nothing else -- distinct from "reset", which
         # also lifts an exclusion (see EditorState.clear_gt_targets).

@@ -164,6 +164,17 @@ class EditorState:
     #: Undo / redo stacks of per-frame label snapshots (see :class:`_UndoEntry`).
     _undo: list = field(default_factory=list)
     _redo: list = field(default_factory=list)
+    #: How a new annotation skeleton is seeded: ``"triangulate"`` (robustly triangulate the
+    #: detections and reproject into every view) or ``"copy"`` (each view's own detection,
+    #: falling back to the reprojection where a view has none). A session field rather than a
+    #: per-call argument because :meth:`_ensure_instance` is the *common* door -- the first drag
+    #: in a frame, and ``confirm`` -- so a preference that only reached the explicit gesture
+    #: would silently not apply on most frames.
+    #:
+    #: ``"copy"`` is also the only cure for a frozen off-image seed: the triangulate path takes
+    #: the reprojection wherever it is *finite*, which includes off-canvas, and the seed display
+    #: cannot rescue that because the frozen seed IS the off-image reprojection.
+    seed_mode: str = "triangulate"
     #: How a non-GT point of the instance is drawn: at the reprojection of the point's
     #: current 3D (``"reprojection"``, the default) or at its frozen seed (``"seed"``).
     #: The reprojection is the multiview payoff -- drag two views and the other five move to
@@ -616,7 +627,7 @@ class EditorState:
         return self.detections[:, t]
 
     def create_instance(
-        self, frame: int | None = None, *, mode: str = "triangulate"
+        self, frame: int | None = None, *, mode: str | None = None
     ) -> bool:
         """Create the annotation skeleton for ``frame``, seeding every ``(view, point)``.
 
@@ -641,6 +652,7 @@ class EditorState:
         created (``False`` if the frame already has one -- see :meth:`reseed_instance`).
         One undo step.
         """
+        mode = mode or self.seed_mode
         if mode not in ("triangulate", "copy"):
             raise ValueError(f"mode must be 'triangulate' or 'copy', got {mode!r}")
         t = self._resolve_frame(frame)
@@ -667,14 +679,14 @@ class EditorState:
         """
         if self.has_instance(t):
             return False
-        self.labels.seeds[:, t] = self._seed_instance(t, "triangulate")
+        self.labels.seeds[:, t] = self._seed_instance(t, self.seed_mode)
         self.labels.instance[t] = True
         self.labels.dirty = True
         self._invalidate_frame3d(t)
         return True
 
     def reseed_instance(
-        self, frame: int | None = None, *, mode: str = "triangulate"
+        self, frame: int | None = None, *, mode: str | None = None
     ) -> bool:
         """Re-lay this frame's seeds, keeping every GT pixel. One undo step.
 
@@ -682,6 +694,9 @@ class EditorState:
         the operator's evidence under them -- so picking up better detections is an explicit
         act. GT is untouched: seeds are only what non-GT cells contribute.
         """
+        mode = mode or self.seed_mode
+        if mode not in ("triangulate", "copy"):
+            raise ValueError(f"mode must be 'triangulate' or 'copy', got {mode!r}")
         t = self._resolve_frame(frame)
         if not self.has_instance(t):
             return False
