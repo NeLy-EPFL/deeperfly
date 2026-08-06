@@ -74,6 +74,11 @@ class Session:
     #: The recording's project slug, for job arguments and the window title. ``None`` for a
     #: bare ``results.h5``.
     recording_slug: str | None = None
+    #: The calibration the editor is deriving non-GT positions from, when the operator has
+    #: chosen one (``POST /api/calibrations/select``). ``None`` means the rig that came out of
+    #: ``results.h5``, which is the default and what a pipeline run would use. Recorded so the
+    #: tab can show which rig is live -- a residual is only interpretable against a named rig.
+    active_calibration: str | None = None
 
     def __post_init__(self) -> None:
         if self.suggestions_path is None:

@@ -211,6 +211,22 @@ class EditorState:
     #: the IK plan or the training export, and must not perturb the fingerprinted
     #: ``point_names``. ``None`` when the project declares none.
     landmarks: "LandmarkLabels | None" = None
+    #: Views whose camera pose is a GUESS, not a calibration -- currently a camera that has
+    #: been added to the rig so it can be *seen* and *labeled*, but never solved for.
+    #:
+    #: Such a view is fully live for display: the 3D reprojects into it, so the operator gets
+    #: a correctly-limbed skeleton to drag onto the animal. What it must NOT do is feed the
+    #: live 3D solve. Its pose is wrong by hundreds of pixels, so a GT pixel placed there
+    #: would drag the point's 3D and, through it, the overlays in every properly calibrated
+    #: view -- leading the operator to "correct" points that were already right. Its seed is
+    #: excluded for a second reason: that seed IS the reprojection of the other views' 3D, so
+    #: feeding it back would be circular.
+    #:
+    #: The labels themselves are kept, of course. They are the whole point: bundle adjustment
+    #: reads them (it is not routed through :meth:`_point_obs`) and solves the camera, and
+    #: once a calibration that actually solved the view is selected the view stops being
+    #: provisional and starts informing the other views like any other.
+    provisional_views: tuple[str, ...] = ()
     #: The view names, in ``V``-axis order. Held here rather than read off the rig
     #: because an **uncalibrated** recording has named views and no geometry at all: the
     #: names are what the operator labels against, and they must not depend on a
@@ -295,6 +311,15 @@ class EditorState:
             image_sizes_wh=image_sizes_wh,
             view_names=view_names,
             landmarks=landmarks,
+            # Recorded by whatever added an un-solved camera to the rig (see
+            # `provisional_views`). Read from the result rather than passed in, so a view
+            # that was never calibrated cannot start informing the others just because a
+            # caller forgot to say so.
+            provisional_views=tuple(
+                str(v)
+                for v in ((result.meta or {}).get("provisional_cameras") or ())
+                if str(v) in set(view_names)
+            ),
         )
 
     @staticmethod
@@ -814,6 +839,37 @@ class EditorState:
 
     # -- derived 3D (the "cache") ---------------------------------------------
 
+    def _provisional_mask(self) -> np.ndarray | None:
+        """``(V,)`` True where the view's pose is a guess, or ``None`` when none is.
+
+        Cached on first use: it is read once per solved point and the names cannot change
+        within a session (a rig swap rebuilds the mask through :meth:`set_provisional`).
+        """
+        if not self.provisional_views:
+            return None
+        cached = getattr(self, "_provisional_cache", None)
+        if cached is None or cached[0] != self.provisional_views:
+            names = list(self.view_names)
+            mask = np.array(
+                [n in set(self.provisional_views) for n in names], dtype=bool
+            )
+            cached = (tuple(self.provisional_views), mask)
+            self._provisional_cache = cached
+        return cached[1]
+
+    def set_provisional(self, views) -> None:
+        """Declare which views are display-only, and drop the 3D derived under the old set.
+
+        Every cached 3D was solved with the previous set of views participating, so changing
+        it changes the answer for every point -- exactly as swapping the rig does.
+        """
+        new = tuple(dict.fromkeys(str(v) for v in views))
+        if new == self.provisional_views:
+            return
+        self.provisional_views = new
+        self._provisional_cache = None
+        self.invalidate_derived()
+
     def set_solve_stabilizers(self, on: bool) -> None:
         """Whether the unlabelled views still help once the GT views are exclusive.
 
@@ -886,6 +942,15 @@ class EditorState:
             stab_ok = np.zeros_like(stab_ok)
         pred_obs = np.where(pred_ok[:, None], pred, np.nan)
         stab_obs = np.where(stab_ok[:, None], stab, np.nan)
+        # A provisional view is drawn but never solved from -- see `provisional_views`. This
+        # is the one place that has to enforce it, because every path into the live 3D goes
+        # through here, and it is deliberately AFTER the arrays are built so the view keeps
+        # its GT and its seed for display.
+        veto = self._provisional_mask()
+        if veto is not None:
+            gt_obs = np.where(veto[:, None], np.nan, gt_obs)
+            pred_obs = np.where(veto[:, None], np.nan, pred_obs)
+            stab_obs = np.where(veto[:, None], np.nan, stab_obs)
         conf = None if self.result.conf is None else self.result.conf[:, t, point]
         return gt_obs, pred_obs, conf, stab_obs
 
@@ -950,6 +1015,29 @@ class EditorState:
 
     def _invalidate_frame3d(self, t: int) -> None:
         self._pts3d_cache.pop(t, None)
+
+    def invalidate_derived(self) -> None:
+        """Drop every derived 3D, so the next read re-solves it from the CURRENT rig.
+
+        For the one operation that changes the geometry under the labels rather than the
+        labels themselves: swapping the calibration the editor derives from. Every cached
+        row was solved through the old cameras, so keeping any of it would mix two rigs in
+        one file -- a 3D point from the old geometry reprojected through the new one.
+
+        This is lossy in exactly one way, and the loss is inherent rather than a bug. A drag
+        on a point with fewer than two usable views stores a ray-slide of the prior 3D (see
+        :meth:`_settle_point3d`), which the labels cannot reproduce -- so that depth lives
+        only here. But it was a depth along a ray cast by the OLD camera; once that camera
+        moves the ray moves with it and the stored depth no longer means anything. Callers
+        should still make sure the operator has saved, and say what is being discarded.
+
+        The undo history is dropped for the same reason: its snapshots restore label state,
+        but the 3D they were taken against is gone.
+        """
+        self._pts3d_cache.clear()
+        self._nmf_cache.clear()
+        self._undo.clear()
+        self._redo.clear()
 
     def display_pts3d(
         self, frame: int | None = None

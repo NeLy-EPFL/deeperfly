@@ -429,6 +429,106 @@ def test_the_listing_marks_which_recordings_are_unsaved(client):
     assert rows["flyA"]["gt_points"] == 6, "the row was read from disk, not the session"
 
 
+# -- bundle adjustment across a switch -----------------------------------------
+
+# The editor runs ONE solve at a time, on one worker, for whatever recording is open --
+# but the tab reporting it survives a switch, because the page rebuilds in place. So the
+# run has to say which recording it belongs to, or the last solve is announced under
+# whichever animal happens to be open next: a calibration written into flyA's directory
+# read as flyB's, and a per-camera reprojection table matched against a rig it was never
+# solved on.
+
+
+def _label_every_view(root, cameras, fly, *, n_frames, n_points, names=CAMERAS):
+    """Ground truth in EVERY view, at the true projection of a random 3D point.
+
+    A bundle adjustment fits tracks seen from more than one camera. The per-view random
+    ``pts2d`` :func:`_make_recording` writes share nothing, so ``preflight`` refuses a
+    session built on them before a solve ever starts -- these labels are what make one
+    genuinely runnable.
+    """
+    rng = np.random.default_rng(7)
+    pts3d = rng.uniform(-1.5, 1.5, size=(n_frames, 38, 3))
+    proj = np.asarray(cameras.project(pts3d))  # (V, T, P, 2)
+    labels = Labels.empty(len(names), n_frames, 38)
+    for v in range(len(names)):
+        for t in range(n_frames):
+            for p in range(n_points):
+                xy = proj[v, t, p]
+                labels.set_gt(v, t, p, (float(xy[0]), float(xy[1])))
+    save_labels(
+        root / "deeperfly_outputs" / "labels.h5",
+        labels,
+        identity=labels_identity(
+            point_names=list(fly.point_names),
+            camera_names=list(names),
+            n_frames=n_frames,
+        ),
+    )
+
+
+@pytest.fixture
+def solvable_client(tmp_path, cameras, fly):
+    """Two recordings a bundle adjustment can actually be run on, with flyA open."""
+    project = Project.create(tmp_path / "proj", name="solveproj")
+    a = _make_recording(tmp_path / "flyA", cameras, fly, seed=0, n_frames=3)
+    b = _make_recording(tmp_path / "flyB", cameras, fly, seed=500, n_frames=3)
+    for root in (a, b):
+        _label_every_view(root, cameras, fly, n_frames=3, n_points=12)
+    project.add_recording(a, slug="flyA")
+    project.add_recording(b, slug="flyB")
+    return TestClient(create_app(open_target(project.root, recording="flyA")))
+
+
+def _run_bundle_adjustment(client, name):
+    """Solve, wait, and return the finished run. Fails loudly rather than timing out."""
+    plan = client.get("/api/bundle-adjust").json()
+    assert plan["enabled"], plan.get("reason")
+    assert plan["readiness"]["ok"], plan["readiness"]["problems"]
+    started = client.post(
+        "/api/bundle-adjust", json={"name": name, "settings": plan["settings"]}
+    )
+    assert started.status_code == 200, started.text
+    for _ in range(600):
+        run = client.get("/api/bundle-adjust/run").json()
+        if run["state"] != "running":
+            return run
+        time.sleep(0.05)
+    raise AssertionError("the solve never finished")
+
+
+def test_a_solve_is_reported_only_under_the_recording_it_was_run_on(solvable_client):
+    """flyA's result must vanish on the way to flyB -- and be there again on the way back.
+
+    Both halves matter. Reporting it under flyB attributes another animal's calibration to
+    this one; dropping it for good would lose the result of a solve the operator started
+    and merely walked away from.
+    """
+    run = _run_bundle_adjustment(solvable_client, "across-the-switch")
+    assert run["state"] == "done", run
+    assert run["recording"] == "flyA"
+
+    solvable_client.post("/api/recordings/open", json={"recording": "flyB"})
+    assert solvable_client.get("/api/bundle-adjust/run").json() == {"state": "idle"}
+    assert solvable_client.get("/api/bundle-adjust").json()["run"] == {"state": "idle"}
+
+    solvable_client.post("/api/recordings/open", json={"recording": "flyA"})
+    back = solvable_client.get("/api/bundle-adjust").json()["run"]
+    assert back["state"] == "done"
+    assert back["calibration_file"].startswith("across-the-switch")
+
+
+def test_the_plans_camera_list_is_the_open_recordings(solvable_client):
+    """The fix/free matrix is keyed by camera name, so this list is what the pane trusts."""
+    assert solvable_client.get("/api/bundle-adjust").json()["cameras"] == list(CAMERAS)
+    solvable_client.post("/api/recordings/open", json={"recording": "flyB"})
+    plan = solvable_client.get("/api/bundle-adjust").json()
+    assert plan["recording"] == "flyB", (
+        "the plan does not say which recording it is for"
+    )
+    assert plan["cameras"] == list(CAMERAS)
+
+
 # -- refusals ------------------------------------------------------------------
 
 

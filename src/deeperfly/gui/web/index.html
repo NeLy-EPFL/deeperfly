@@ -227,6 +227,9 @@
             <button type="button" class="side-tab" id="tab-jobs" role="tab"
                     aria-selected="false" aria-controls="jobs-pane"
                     title="Pipeline jobs — run one of the CLI commands and watch its log. Polls every two seconds while this tab is showing">Jobs <span id="jobs-count" class="count-badge" hidden>0</span></button>
+            <button type="button" class="side-tab" id="tab-bundle" role="tab"
+                    aria-selected="false" aria-controls="ba-pane"
+                    title="Bundle adjustment — solve the camera rig from the ground truth you placed, save it as a new calibration, and choose which calibration the editor derives from">Bundle adjust</button>
             <button type="button" class="side-tab" id="tab-settings" role="tab"
                     aria-selected="false" aria-controls="settings-pane"
                     title="Project settings, derived from the pipeline's own parameter dataclasses">Settings</button>
@@ -319,6 +322,12 @@
                defaults -- so "reset" genuinely removes the key. Read on activation only: each
                read is a Project.load + compose_config + two TOML parses (server.py:496-543),
                and it re-reads after every knob write. -->
+          <!-- Bundle adjustment. Solve the rig from the ground truth in THIS session (never
+               the detector's 2D), write it as a new calibration, and pick which calibration
+               the editor derives non-GT positions from. Built entirely by static/baPanel.js,
+               which owns this one node -- so the pane has no markup to keep in step. -->
+          <div class="sidebar-body" id="ba-pane" role="tabpanel" aria-labelledby="tab-bundle" hidden></div>
+
           <div class="sidebar-body" id="settings-pane" role="tabpanel" aria-labelledby="tab-settings" hidden>
             <div id="settings-list" class="settings-list"></div>
             <div id="settings-empty" class="frames-empty"></div>

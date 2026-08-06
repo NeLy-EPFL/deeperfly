@@ -30,7 +30,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import json
 import logging
+import threading
+import tomllib
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -74,7 +77,7 @@ def _asset_version() -> str:
     HTML no longer has. Computed per request (cheap) so in-place edits take effect on
     the next reload with no server restart."""
     h = hashlib.sha1()
-    for name in ("app.js", "styles.css"):
+    for name in ("app.js", "styles.css", "baPanel.js"):
         p = _WEB_DIR / "static" / name
         if p.is_file():
             h.update(p.read_bytes())
@@ -664,6 +667,480 @@ def create_app(
         log.info("set %s.%s in %s", section, key, path.name)
         return {"ok": True, "profile": str(path)}
 
+    # -- bundle adjustment ----------------------------------------------------
+    #
+    # Solve the rig from the operator's own ground truth, from inside the session, and
+    # write the result as a NEW calibration the session can then be switched onto. See
+    # :mod:`deeperfly.gui.ba` for why the two regimes (refine / cold start) differ and
+    # what the gauge check refuses.
+    #
+    # Deliberately solved IN PROCESS rather than shelled out to `deeperfly calibrate` as a
+    # job. Three reasons, each a behaviour difference the operator would feel: the CLI reads
+    # labels.h5 from disk (so unsaved work would be silently ignored), it uses only frames
+    # flagged reviewed, and its `--from-calibration` path refuses a prior that does not cover
+    # every view -- which is exactly the case here, a 7-camera rig against an 8-view session.
+    # Running against `session.state.labels` fits what the operator can actually see.
+    #
+    # The solve is slow enough to outlive a request (a real rig, hundreds of tracks, JAX
+    # tracing on the first call), so it runs on a worker thread and is polled -- the same
+    # shape as the recording switch, which also builds off-thread before rebinding.
+    ba_run: dict = {"state": "idle"}
+    ba_lock = threading.Lock()
+
+    #: Why the tab is unavailable, or ``None``. A bare ``results.h5`` has nowhere to write a
+    #: calibration, which is the same reason Settings and Jobs are unavailable there -- so the
+    #: GET routes answer ``enabled: false`` with this sentence rather than an error status. A
+    #: 4xx would be logged as a console error by the browser, which is how the editor reports
+    #: a *fault*, and "you opened a file instead of a project" is not one.
+    _BA_NO_PROJECT = (
+        "This session was opened on a bare results.h5. Bundle adjustment needs a project to "
+        "write the calibration into — open one with 'deeperfly gui <project>'."
+    )
+
+    def _ba_run_here() -> dict:
+        """The solve state, but only when it belongs to the recording that is open.
+
+        There is one ``ba_run`` per SERVER while the tab reporting it survives a recording
+        switch (the editor rebuilds in place, and the pane with it). Unstamped, the last
+        solve would be announced under whichever animal happens to be open next: a
+        calibration written into flyA's directory read as flyB's, and a per-camera table
+        matched against a rig it was never solved on. Another recording's run is reported
+        as ``idle`` rather than hidden by a flag, so the pane needs no rule of its own.
+        """
+        with ba_lock:
+            run = dict(ba_run)
+        if run.get("state") == "idle" or run.get("recording") == session.recording_slug:
+            return run
+        return {"state": "idle"}
+
+    def _ba_context():
+        """``(project, camera_names, config)`` for the open session, or a 409."""
+        project = _project()
+        names = list(session.state.camera_names)
+        config = None
+        try:
+            from ..config import Config
+
+            config = Config.from_dict(tomllib.loads(project.compose_config()))
+        except Exception as exc:  # a malformed profile must not break the whole tab
+            log.warning("could not compose the project config for BA defaults: %s", exc)
+        return project, names, config
+
+    @app.get("/api/bundle-adjust")
+    def bundle_adjust_plan(max_frames: int | None = None) -> dict:
+        """The tab's initial state: the fix/free matrix, the settings, and the readiness.
+
+        Everything is defaulted from the project config's ``[bundle_adjustment]`` so the tab
+        agrees with what a pipeline run would do, and the readiness block is computed BEFORE
+        anything is solved -- a rig the labels cannot determine is reported as refused here
+        rather than as a flattering residual afterwards.
+        """
+        from . import ba
+
+        if session.project_root is None:
+            return {"enabled": False, "reason": _BA_NO_PROJECT}
+        project, names, config = _ba_context()
+        has_rig = bool(session.state.result.has_cameras)
+        settings, note = ba.settings_from_config(config, names, has_rig=has_rig)
+        if max_frames is not None:
+            settings.max_frames = max_frames or None
+        obs = ba.gather(
+            session.state,
+            source=settings.source,
+            max_frames=settings.max_frames,
+            frame_sampling=settings.frame_sampling,
+        )
+        pre = ba.preflight(obs, settings, names)
+        return {
+            "enabled": True,
+            "recording": session.recording_slug,
+            "cameras": names,
+            "params": list(ba.PARAMS),
+            "losses": list(ba.LOSSES),
+            "samplings": list(ba.SAMPLINGS),
+            "has_rig": has_rig,
+            "cold_start": not has_rig,
+            "provisional": list(session.state.provisional_views),
+            "settings": settings.to_json(),
+            "defaults_note": note,
+            "readiness": pre,
+            "point_names": list(session.state.result.skeleton.point_names),
+            "run": {k: v for k, v in _ba_run_here().items() if k != "cameras"},
+        }
+
+    @app.post("/api/bundle-adjust/check")
+    def bundle_adjust_check(payload: dict) -> dict:
+        """Readiness for a candidate fix/free split, without solving anything.
+
+        Ticking a box changes whether the problem is well posed, so the tab re-asks on every
+        change. Cheap by construction: it gathers the labels and counts co-visibility, which
+        is the same work the plan route does and nothing more.
+        """
+        from . import ba
+
+        if session.project_root is None:
+            return {"enabled": False, "reason": _BA_NO_PROJECT}
+        _project, names, _config = _ba_context()
+        try:
+            settings = ba.BaSettings.from_json(payload.get("settings") or {}, names)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        obs = ba.gather(
+            session.state,
+            source=settings.source,
+            max_frames=settings.max_frames,
+            frame_sampling=settings.frame_sampling,
+        )
+        return ba.preflight(obs, settings, names)
+
+    @app.post("/api/bundle-adjust")
+    def bundle_adjust_run(payload: dict) -> dict:
+        """Start a solve on a worker thread. Poll ``GET /api/bundle-adjust/run``.
+
+        The whole settings object arrives in one request -- a per-key config route cannot
+        express "these cameras fixed, those free, with this loss" atomically, and a half-
+        applied split would solve something the operator never asked for.
+        """
+        from . import ba
+
+        project, names, config = _ba_context()
+        with ba_lock:
+            if ba_run.get("state") == "running":
+                # Named, because the operator can be standing somewhere else entirely: one
+                # worker serves the whole editor, so the solve holding the slot may belong
+                # to a recording whose pane is not even on screen.
+                other = ba_run.get("recording")
+                where = (
+                    "" if other in (None, session.recording_slug) else f" (on {other})"
+                )
+                raise HTTPException(
+                    409, f"a bundle adjustment is already running{where}"
+                )
+        try:
+            settings = ba.BaSettings.from_json(payload.get("settings") or {}, names)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        name = str(payload.get("name") or "from-labels").strip() or "from-labels"
+        has_rig = bool(session.state.result.has_cameras)
+        obs = ba.gather(
+            session.state,
+            source=settings.source,
+            max_frames=settings.max_frames,
+            frame_sampling=settings.frame_sampling,
+        )
+        pre = ba.preflight(obs, settings, names)
+        if not pre["ok"]:
+            raise HTTPException(400, pre["problems"][0])
+
+        cameras = session.state.result.cameras if has_rig else None
+        intrs = dists = None
+        if not has_rig:
+            # Cold start: intrinsics are never derived from labels, so they must come from
+            # the config's own camera specs (the orbit rig's focal length).
+            try:
+                from ..cameras import CameraGroup
+
+                prior = CameraGroup.from_config(config, image_sizes=session.image_sizes)
+                intrs = np.stack([prior[n].intr for n in names])
+                dists = np.stack([prior[n].dist for n in names])
+            except Exception as exc:
+                raise HTTPException(
+                    400,
+                    "this session has no rig and no intrinsics could be read from the "
+                    f"project config, so a cold-start solve has nothing to start from: {exc}",
+                ) from None
+
+        recording = session.recording_slug
+        cal_dir = ba.recording_dir(Path(project.root), recording)
+        sizes = dict(session.image_sizes)
+
+        def work():
+            try:
+                report = ba.solve(
+                    cameras,
+                    obs,
+                    settings,
+                    cold_start=not has_rig,
+                    intrinsics=intrs,
+                    dists=dists,
+                )
+                path = ba.save_calibration(
+                    cal_dir,
+                    report["cameras"],
+                    name=name,
+                    image_sizes=sizes,
+                    obs=obs,
+                    settings=settings,
+                    report=report,
+                    recording=recording,
+                )
+                with ba_lock:
+                    ba_run.clear()
+                    ba_run.update(
+                        state="done",
+                        recording=recording,
+                        calibration=str(path),
+                        calibration_file=path.name,
+                        before=report["before"],
+                        after=report["after"],
+                        moved=report["moved"],
+                        fixed_refs=report["fixed_refs"],
+                        success=report["success"],
+                        nfev=report["nfev"],
+                        message=report["message"],
+                        readiness=pre,
+                        settings=settings.to_json(),
+                    )
+            except Exception as exc:  # reported to the operator, never swallowed
+                log.exception("bundle adjustment failed")
+                with ba_lock:
+                    ba_run.clear()
+                    ba_run.update(
+                        state="failed",
+                        recording=recording,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+
+        with ba_lock:
+            ba_run.clear()
+            ba_run.update(
+                state="running",
+                recording=recording,
+                name=name,
+                n_tracks=obs.n_tracks,
+                n_frames=obs.n_frames,
+                readiness=pre,
+            )
+        threading.Thread(target=work, name="deeperfly-ba", daemon=True).start()
+        return {"state": "running", "n_tracks": obs.n_tracks, "n_frames": obs.n_frames}
+
+    @app.get("/api/bundle-adjust/run")
+    def bundle_adjust_status() -> dict:
+        return _ba_run_here()
+
+    @app.get("/api/calibrations")
+    def list_calibrations() -> dict:
+        """Every calibration in the project, and which rig the editor is using now."""
+        from . import ba
+
+        if session.project_root is None:
+            return {
+                "enabled": False,
+                "reason": _BA_NO_PROJECT,
+                "items": [],
+                "active": None,
+            }
+        project = _project()
+        # Per recording: a rig belongs to the session it was solved in, and a flat list mixed
+        # every recording's calibrations together with no way to tell which applied here.
+        cal_dir = ba.recording_dir(Path(project.root), session.recording_slug)
+        current = getattr(session, "active_calibration", None)
+        items = ba.list_calibrations(cal_dir, active=Path(current) if current else None)
+        for row in items:
+            cams = set(row.get("cameras") or ())
+            row["covers_session"] = (
+                bool(cams) and set(session.state.camera_names) <= cams
+            )
+        return {
+            "enabled": True,
+            "directory": str(cal_dir),
+            "active": current,
+            "session_cameras": list(session.state.camera_names),
+            "items": items,
+        }
+
+    def _still_provisional(path: Path, current) -> list[str]:
+        """Which of ``current`` this calibration did NOT solve -- see :func:`ba.still_provisional`.
+
+        The rule lives in ``ba`` so that anything reproducing the editor's derived 3D
+        outside the editor makes the identical promotion decision.
+        """
+        from . import ba
+
+        return ba.still_provisional(path, current)
+
+    def _meta_patch(sess, **changes) -> None:
+        """Merge ``changes`` into ``results.h5``'s meta, best effort.
+
+        Both the provisional set and the chosen rig live here rather than in the project
+        index: they are facts about ONE recording, they must survive a restart, and a bare
+        results.h5 session has no project to write to. A read-only file must not break a
+        switch, so this logs and carries on.
+        """
+        try:
+            import h5py
+
+            with h5py.File(sess.results_path, "r+") as f:
+                meta = json.loads(f.attrs.get("meta", "{}"))
+                for key, value in changes.items():
+                    if value in (None, [], ()):
+                        meta.pop(key, None)
+                    else:
+                        meta[key] = value
+                f.attrs["meta"] = json.dumps(meta)
+        except Exception:
+            log.exception("could not record %s in results.h5", ", ".join(changes))
+
+    def _restore_active_calibration(sess) -> None:
+        """Re-apply the rig this recording was last switched onto.
+
+        Selecting a calibration is a decision about the recording, not about the window that
+        happened to be open, so it has to outlive the session -- otherwise every restart
+        silently reverts to the rig in results.h5 and the operator's 3D quietly changes
+        underneath work they already did against the other one.
+        """
+        from . import ba
+
+        path = ba.apply_active_calibration(
+            sess.state, sess.results_path, sess.project_root, sess.recording_slug
+        )
+        if path is None:
+            return
+        sess.active_calibration = str(path)
+        log.info("%s: using calibration %s", sess.recording_slug, path.name)
+
+    def _base_provisional(sess) -> list[str]:
+        """Views the rig in ``results.h5`` never calibrated -- see :func:`ba.base_provisional`."""
+        from . import ba
+
+        return ba.base_provisional(sess.results_path, sess.state.camera_names)
+
+    def _persist_provisional(sess, views) -> None:
+        """Record the surviving provisional views in ``results.h5``, best effort.
+
+        Kept on disk so reopening the recording does not silently re-demote a camera that has
+        since been solved -- and so nothing has to remember which rig was selected last time.
+        """
+        try:
+            import h5py
+
+            with h5py.File(sess.results_path, "r+") as f:
+                meta = json.loads(f.attrs.get("meta", "{}"))
+                if list(views):
+                    meta["provisional_cameras"] = list(views)
+                else:
+                    meta.pop("provisional_cameras", None)
+                f.attrs["meta"] = json.dumps(meta)
+        except Exception:  # a read-only results.h5 must not fail the switch
+            log.exception("could not record the provisional cameras in results.h5")
+
+    # Before anything is served: re-apply the rig this recording was last switched onto, so
+    # a restart shows the same 3D the operator left. Done here rather than in the session
+    # builders because the choice is recorded per recording in results.h5, and every path
+    # that produces a session -- project, bare file, uncalibrated -- lands in this function.
+    _restore_active_calibration(session)
+    cache_v = _session_version(session)
+
+    @app.post("/api/calibrations/delete")
+    async def delete_calibration(payload: dict) -> dict:
+        """Remove a calibration this editor solved (never the one in use)."""
+        from . import ba
+
+        project = _project()
+        raw = str(payload.get("calibration") or "")
+        if not raw:
+            raise HTTPException(400, "no calibration named")
+        path = Path(raw)
+        if not path.is_absolute():
+            path = ba.recording_dir(Path(project.root), session.recording_slug) / path
+        async with lock:
+            try:
+                ba.delete_calibration(
+                    path, active=getattr(session, "active_calibration", None)
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(404, str(exc)) from None
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        return {"ok": True, "deleted": path.name}
+
+    @app.post("/api/calibrations/select")
+    async def select_calibration(payload: dict) -> dict:
+        """Derive the editor's non-GT positions from a different calibration.
+
+        Rebinds the rig on the OPEN session: the labels are untouched (they are 2D), but
+        every derived 3D is a function of the rig, so the cache of derived positions is
+        dropped and re-derived. That cache can hold the operator's only record of a
+        hand-placed DEPTH -- a drag on a point with fewer than two usable views stores a
+        ray-slide the labels cannot reproduce -- so this refuses while there are unsaved
+        labels unless ``discard`` is set, exactly as a recording switch does.
+        """
+        nonlocal cache_v
+        from ..cameras import CameraGroup
+        from . import ba
+
+        project = _project()
+        raw = str(payload.get("calibration") or "")
+        if session.state.dirty and not bool(payload.get("discard")):
+            raise HTTPException(409, _UNSAVED_RIG_MSG)
+        names = list(session.state.camera_names)
+        if not raw:
+            # Back to the rig that came out of the pipeline. Reachable because the choice
+            # now persists: without a way back, one click would pin a recording to a
+            # calibration for good.
+            from ..results import StageStore
+
+            stored = StageStore(Path(session.results_path))
+            group = stored.read_cameras("bundle_adjustment") or stored.read_cameras(
+                "pose2d"
+            )
+            if group is None:
+                raise HTTPException(
+                    409, "this results.h5 carries no rig to fall back to"
+                )
+            async with lock:
+                session.state.result.cameras = group
+                session.state.invalidate_derived()
+                # Whatever was provisional when the pipeline wrote this file is provisional
+                # again: the rig that solved it is no longer the one in use.
+                session.state.set_provisional(_base_provisional(session))
+                _meta_patch(session, active_calibration=None)
+                session.active_calibration = None
+                cache_v = _session_version(session)
+            log.info("editor rig switched back to the one in results.h5")
+            return {"ok": True, "calibration": None, "file": None, "cache_v": cache_v}
+        path = Path(raw)
+        if not path.is_absolute():
+            path = ba.recording_dir(Path(project.root), session.recording_slug) / path
+        if not path.is_file():
+            raise HTTPException(404, f"no such calibration: {path}")
+        async with lock:
+            try:
+                group = CameraGroup.from_calibration(path, names=names)
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(
+                    400,
+                    f"{path.name} does not cover this session's views {names}: {exc}",
+                ) from None
+            session.state.result.cameras = group
+            # Every derived 3D came from the OLD rig; keeping any of it would mix two
+            # geometries in one file. Cleared wholesale, then re-derived on demand.
+            session.state.invalidate_derived()
+            # A view stops being display-only exactly when a calibration SOLVED it -- not
+            # merely when one mentions it. The provenance records what was held fixed, so a
+            # rig that pinned the hind camera and refined the others leaves it provisional.
+            base = _base_provisional(session)
+            still = _still_provisional(path, base)
+            if set(still) != set(session.state.provisional_views):
+                promoted = sorted(set(session.state.provisional_views) - set(still))
+                if promoted:
+                    log.info(
+                        "%s solved %s; it now informs the other views",
+                        path.name,
+                        promoted,
+                    )
+            session.state.set_provisional(still)
+            _meta_patch(session, active_calibration=path.name)
+            session.active_calibration = str(path)
+            cache_v = _session_version(session)
+        log.info("editor rig switched to %s", path.name)
+        return {
+            "ok": True,
+            "calibration": str(path),
+            "file": path.name,
+            "cache_v": cache_v,
+        }
+
     # -- recordings -----------------------------------------------------------
     #
     # The editor shows exactly one recording; this is how the operator changes which,
@@ -788,6 +1265,7 @@ def create_app(
                 outgoing, outgoing_v = session, cache_v
                 session = new_session
                 if not restored:
+                    _restore_active_calibration(session)
                     new_v = _session_version(session)
                 cache_v = new_v
                 # Keyed by slug, so a reopen MOVES the entry to the end rather than

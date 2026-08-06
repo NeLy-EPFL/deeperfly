@@ -52,6 +52,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
+import { BundleAdjustPanel } from "./baPanel.js";
 import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveAllCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
@@ -62,7 +63,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"recordings"|"labeled"|"suggest"|"instances"|"marks"|"jobs"|"settings"} TabId */
+/** @typedef {"recordings"|"labeled"|"suggest"|"instances"|"marks"|"bundle"|"jobs"|"settings"} TabId */
 
 // The side panel's tabs, in strip order -- one pane on screen at a time. Activating a tab
 // IS the lazy-load trigger, which is what keeps the three expensive panes free until asked
@@ -76,6 +77,7 @@ const SIDEBAR_TABS = [
   { id: "instances", pane: "instances-pane" },
   { id: "marks", pane: "marks-pane" },
   { id: "jobs", pane: "jobs-pane" },
+  { id: "bundle", pane: "ba-pane" },
   { id: "settings", pane: "settings-pane" },
 ];
 /** @type {TabId} */
@@ -1712,6 +1714,10 @@ class App {
       for (const rec of this.recordings.recordings) rec.active = rec.slug === this.meta.recording;
       this.renderRecordings(this.recordings);
     }
+    // The Bundle-adjust pane is built once and outlives the switch, so its own per-recording
+    // state -- the fix/free matrix above all, which is keyed by camera name -- has to be
+    // dropped here with everything else. See BundleAdjustPanel.forget.
+    this.baPanel?.forget();
     this.addMod = false;
     this.overViews = false;
     document.body.classList.remove("adding");
@@ -1815,6 +1821,11 @@ class App {
         await this.refreshCorrected();
         this.refreshSuggestions();
         if (this.tabActive("recordings")) this.refreshRecordings();
+        // A switch keeps you on the pane you were working in, and this one was just
+        // emptied by resetRecordingState -- so if it is the pane on screen it has to be
+        // re-read now rather than when it is next activated. (A switch can arrive from
+        // another browser, which is how this pane gets to be the visible one.)
+        if (this.baPanel && this.tabActive("bundle")) this.refreshBundleAdjust();
         this.statusEl.textContent = `opened ${this.meta.recording}`;
       } finally {
         this.rebuilding = null;
@@ -2662,6 +2673,30 @@ class App {
   // skeleton, sources, the detection plan) are NAMED as needing the file rather than
   // rendered as empty forms.
 
+  /** @type {any} The Bundle-adjust pane owns itself; built on first activation. */
+  baPanel = null;
+
+  /** Build the Bundle-adjust pane on first use, then refresh it.
+   *
+   * Lazy for the same reason Settings and Jobs are: the plan route gathers every label in the
+   * session to compute readiness, which is wasted work for an operator who never opens it.
+   */
+  refreshBundleAdjust() {
+    if (this.baPanel === null) {
+      this.baPanel = new BundleAdjustPanel(
+        /** @type {HTMLElement} */ (document.getElementById("ba-pane")),
+        {
+          isReadOnly: () => Boolean(this.readOnly),
+          isDirty: () => Boolean(this.dirty),
+          // A new rig changes every derived position, so the views must be redrawn from the
+          // server rather than from anything this page still holds.
+          onRigChanged: () => this.refreshPoints(),
+        },
+      );
+    }
+    this.baPanel.refresh();
+  }
+
   async refreshSettings() {
     let schema = this.configSchemaCache;
     let values;
@@ -3359,6 +3394,7 @@ class App {
     if (id === "suggest") this.refreshSuggestions();
     if (id === "marks") this.renderLandmarks();
     if (id === "settings") this.refreshSettings();
+    if (id === "bundle") this.refreshBundleAdjust();
     // Showing a list makes it the one ↑/↓ step, and scrolls the current frame into it.
     if (id === "labeled" || id === "suggest") {
       this.setNavList(id);

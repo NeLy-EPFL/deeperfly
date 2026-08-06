@@ -1256,11 +1256,12 @@ _TABS = [
     ("instances", "instances-pane"),
     ("marks", "marks-pane"),
     ("jobs", "jobs-pane"),
+    ("bundle", "ba-pane"),
     ("settings", "settings-pane"),
 ]
 
 
-def test_the_sidebar_holds_exactly_the_seven_tabs_and_panes_in_order(page_and_errors):
+def test_the_sidebar_holds_exactly_the_eight_tabs_and_panes_in_order(page_and_errors):
     """The structural net for the DOM rewrite, mirroring ``test_the_toolbar_is_one_row``.
 
     A stray ``</div>`` in a nested rewrite like this does not throw and does not remove
@@ -1464,3 +1465,325 @@ def test_the_reprojection_warning_anchors_on_what_the_view_asserts(page_and_erro
     assert got["seed_display"] == [180, 100], "the seed is a claim of its own"
     assert got["ground_truth"] == [150, 100], "GT always wins"
     assert not errors, "JS errors reading the warning anchor:\n  " + "\n  ".join(errors)
+
+
+# -- the bundle-adjust fix/free matrix ---------------------------------------------
+
+# The per-camera master box. Worth browser tests rather than unit ones because it exists
+# only in the DOM: the server has no notion of "all", so the only thing that makes the box
+# true is that it writes the same four parameter groups the operator would have ticked by
+# hand -- and the only way to see that is the request the pane sends.
+
+
+def _open_bundle(page):
+    """Show the Bundle-adjust tab and wait for the matrix to settle.
+
+    The pane is built on first activation and then re-rendered when its readiness round trip
+    lands, so a click placed between the two lands on a table that is about to be replaced.
+    """
+    _tab(page, "bundle")
+    page.wait_for_selector("#ba-pane .ba-matrix tbody tr", timeout=10000)
+    page.wait_for_timeout(700)
+
+
+def _ba_row(page, cam):
+    """The matrix row for one camera, found by the name it prints rather than by index."""
+    cams = page.evaluate(
+        "() => [...document.querySelectorAll('#ba-pane .ba-matrix tbody .ba-cam')]"
+        "  .map(e => e.textContent)"
+    )
+    assert cam in cams, f"{cam} is not in the fix/free matrix ({cams})"
+    return page.locator("#ba-pane .ba-matrix tbody tr").nth(cams.index(cam))
+
+
+def _row_boxes(page, cam):
+    """``[(class, checked, indeterminate), ...]`` -- the master first, then the groups.
+
+    Read as properties, never as attributes: nothing here sets ``checked=""`` in the markup,
+    so an assertion on the HTML would read every box as unticked and pass on a broken pane.
+    """
+    return _ba_row(page, cam).evaluate(
+        "tr => [...tr.querySelectorAll('input[type=checkbox]')]"
+        "  .map(b => [b.className, b.checked, b.indeterminate])"
+    )
+
+
+def _ba_params(page):
+    """The parameter-group column names, between the 'all' column and the label count."""
+    return page.evaluate(
+        "() => [...document.querySelectorAll('#ba-pane .ba-matrix thead th')]"
+        "  .map(e => e.textContent).slice(2, -1)"
+    )
+
+
+def _held(page, cam):
+    """``(master_state, {group, ...})`` for one row, as the operator sees it.
+
+    Derived from the header rather than hardcoded, because what the matrix opens on comes from
+    the project's own ``[bundle_adjustment] fixed`` -- these tests are about what the master
+    box does to that state, not about what the state happens to be.
+    """
+    boxes = _row_boxes(page, cam)
+    assert boxes[0][0] == "ba-all-box", f"the master is not first in the row: {boxes}"
+    groups = {p for p, b in zip(_ba_params(page), boxes[1:]) if b[1]}
+    return (boxes[0][1], boxes[0][2]), groups
+
+
+def test_the_all_box_holds_every_parameter_of_its_own_camera(recording_page_and_errors):
+    """One click holds the whole camera -- and only that camera."""
+    page, errors, _ = recording_page_and_errors
+    posted: list[str] = []
+    page.on(
+        "request",
+        lambda r: (
+            posted.append(r.post_data)
+            if r.url.endswith("/api/bundle-adjust/check")
+            else None
+        ),
+    )
+    _open_bundle(page)
+    params = set(_ba_params(page))
+    (checked, _mixed), opened_with = _held(page, "rm")
+    assert not checked and opened_with != params, "premise: rm does not open fully held"
+    neighbour = _held(page, "rf")
+
+    _ba_row(page, "rm").locator(".ba-all-box").check()
+    page.wait_for_timeout(900)
+
+    boxes = _row_boxes(page, "rm")
+    assert [b[1] for b in boxes] == [True] * (len(params) + 1), (
+        f"the row did not follow the master: {boxes}"
+    )
+    assert not any(b[2] for b in boxes), (
+        "a fully held row must not also read as half-held"
+    )
+    assert _held(page, "rf") == neighbour, (
+        "the master is per camera; the neighbouring row must not move"
+    )
+
+    # The DOM agreeing with itself proves nothing about the solve: what the server is asked
+    # about is the payload, and that is where a master box that only paints ticks would show.
+    assert posted, "ticking the master did not re-ask the server for readiness"
+    sent = json.loads(posted[-1])["settings"]["fixed"]
+    assert set(sent["rm"]) == params, (
+        f"the whole camera was not sent as held: {sent['rm']}"
+    )
+    assert set(sent["rf"]) == neighbour[1], f"a neighbour moved too: {sent['rf']}"
+    assert not errors, "JS errors holding a camera:\n  " + "\n  ".join(errors)
+
+
+def test_unticking_the_all_box_releases_the_camera_and_the_gauge_notices(
+    recording_page_and_errors,
+):
+    """Releasing the anchored camera must come back as a refusal, not just as empty ticks.
+
+    ``rh`` opens with its pose held because nothing else defines the world frame. Clearing it
+    has to reach ``check_gauge`` server-side -- a master box that only repainted its own row
+    would leave the pane cheerfully offering to solve a rig that can drift for free.
+    """
+    page, errors, _ = recording_page_and_errors
+    _open_bundle(page)
+    gauge = "the world frame is free"
+    before = page.locator("#ba-pane .ba-problem").all_inner_texts()
+    assert not any(gauge in p for p in before), (
+        f"premise: the world frame is anchored when the pane opens ({before})"
+    )
+
+    master = _ba_row(page, "rh").locator(".ba-all-box")
+    master.check()  # half-held -> held entirely
+    page.wait_for_timeout(900)
+    assert _held(page, "rh") == ((True, False), set(_ba_params(page)))
+
+    _ba_row(page, "rh").locator(".ba-all-box").uncheck()
+    page.wait_for_timeout(900)
+    assert _held(page, "rh") == ((False, False), set()), "the row was not released"
+    problems = page.locator("#ba-pane .ba-problem").all_inner_texts()
+    assert any(gauge in p for p in problems), (
+        f"no camera is anchored any more, but the pane did not say so: {problems}"
+    )
+    assert not errors, "JS errors releasing a camera:\n  " + "\n  ".join(errors)
+
+
+def test_a_half_held_camera_reads_as_half_held(recording_page_and_errors):
+    """The third state is the honest one: some groups pinned is neither on nor off.
+
+    Both directions are pinned here -- the box that opens half-held, and the box that becomes
+    half-held when a single group is ticked underneath it. The second is the one that rots:
+    the per-parameter handler only re-rendered after its readiness round trip, so a master
+    left out of that redraw would sit unticked over a camera that is already partly held.
+    """
+    page, errors, _ = recording_page_and_errors
+    _open_bundle(page)
+    params = set(_ba_params(page))
+    state, groups = _held(page, "rh")
+    assert groups and groups != params, f"premise: rh opens partly held ({groups})"
+    assert state == (False, True), (
+        f"{groups} of {params} are held, so the master must read as half-held, not {state}"
+    )
+
+    # ...and a camera reaches that state the other way round too, one group at a time. Clear
+    # rm through the master first: from half-held that is two clicks (on to all, then off to
+    # none), which is what a browser does with an indeterminate box and is worth pinning.
+    _ba_row(page, "rm").locator(".ba-all-box").check()
+    page.wait_for_timeout(800)
+    _ba_row(page, "rm").locator(".ba-all-box").uncheck()
+    page.wait_for_timeout(800)
+    assert _held(page, "rm") == ((False, False), set()), (
+        "the master did not clear the row"
+    )
+
+    first = _ba_params(page)[0]
+    _ba_row(page, "rm").locator("input[type=checkbox]").nth(1).check()
+    page.wait_for_timeout(900)
+    assert _held(page, "rm") == ((False, True), {first}), (
+        f"the master ignored {first} being ticked under it"
+    )
+    assert not errors, "JS errors half-holding a camera:\n  " + "\n  ".join(errors)
+
+
+# -- the pane across a recording switch --------------------------------------------
+
+# The pane is built once and then outlives every switch (the editor rebuilds itself in
+# place, with no page load), so everything it holds describes the recording it was opened
+# on. The fix/free matrix is the sharp edge: it is keyed by camera NAME, and a project
+# holds recordings filmed on different rigs.
+
+
+@pytest.fixture
+def mixed_rig_page_and_errors(tmp_path, rig, fly):
+    """Two recordings whose camera LISTS differ, with the smaller rig open.
+
+    ``flySix`` is missing the front camera that ``flySeven`` has -- exactly the shape of a
+    real project, where a view is added between sessions or a camera fails on the day.
+    """
+    from test_gui_recordings import _make_recording
+
+    from deeperfly.cameras import CameraGroup
+    from deeperfly.gui import open_target
+    from deeperfly.project import Project
+
+    def group(names):
+        idx = [rig["names"].index(n) for n in names]
+        return CameraGroup.from_arrays(
+            list(names),
+            rig["rvecs"][idx],
+            rig["tvecs"][idx],
+            rig["intrs"][idx],
+            rig["dists"][idx],
+        )
+
+    six = [n for n in rig["names"] if n != "f"]
+    project = Project.create(tmp_path / "proj", name="mixedrig")
+    a = _make_recording(
+        tmp_path / "flySix", group(six), fly, seed=0, n_frames=6, gt_cells=5, names=six
+    )
+    b = _make_recording(
+        tmp_path / "flySeven",
+        group(rig["names"]),
+        fly,
+        seed=500,
+        n_frames=6,
+        gt_cells=5,
+        names=rig["names"],
+    )
+    _real_video(a, 6)
+    _real_video(b, 6)
+    project.add_recording(a, slug="flySix")
+    project.add_recording(b, slug="flySeven")
+    server, port = _serve_app(create_app(open_target(project.root, recording="flySix")))
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = _launch(pw)
+            except PWError as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.on(
+                "console",
+                lambda m: (
+                    errors.append(f"console.error: {m.text}")
+                    if m.type == "error"
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.wait_for_timeout(900)
+            yield page, errors, port
+            browser.close()
+    finally:
+        server.should_exit = True
+
+
+def _switch_to(page, slug):
+    _tab(page, "recordings")
+    page.locator(f'.rec-row[data-slug="{slug}"]').click()
+    page.wait_for_function(
+        f"() => document.getElementById('recording-name')?.textContent === '{slug}'",
+        timeout=15000,
+    )
+    page.wait_for_timeout(500)
+
+
+def test_the_matrix_follows_the_new_recordings_camera_list(mixed_rig_page_and_errors):
+    """A switch to a rig with a camera the pane has never seen must redraw, not refuse.
+
+    The fix/free matrix is a map keyed by camera name, adopted once from the server. Kept
+    across a switch it describes the animal you left, and the first camera the new rig has
+    and the old one lacked has no entry at all -- which threw out of the render and left the
+    whole tab reading "Could not read the bundle-adjustment plan".
+    """
+    page, errors, _ = mixed_rig_page_and_errors
+    _open_bundle(page)
+    assert "f" not in page.evaluate(
+        "() => [...document.querySelectorAll('#ba-pane .ba-matrix tbody .ba-cam')]"
+        "  .map(e => e.textContent)"
+    ), "premise: the open recording has no front camera"
+
+    _switch_to(page, "flySeven")
+    # Not `_open_bundle`: that waits for a matrix, and the failure under test is a pane
+    # with no matrix at all. Show the tab, let it settle, then say what is actually wrong.
+    _tab(page, "bundle")
+    page.wait_for_timeout(1200)
+
+    refusal = page.locator("#ba-pane .ba-empty").all_inner_texts()
+    assert not refusal, f"the pane refused to read the plan: {refusal}"
+    cams = page.evaluate(
+        "() => [...document.querySelectorAll('#ba-pane .ba-matrix tbody .ba-cam')]"
+        "  .map(e => e.textContent)"
+    )
+    assert "f" in cams, f"the matrix still shows the previous rig: {cams}"
+    # The label counts are the new recording's too -- a matrix redrawn over the previous
+    # animal's readiness would still be describing the wrong labels.
+    assert page.locator("#ba-pane .ba-matrix tbody tr").count() == 7
+    assert not errors, "JS errors after the switch:\n  " + "\n  ".join(errors)
+
+
+def test_the_pane_redraws_when_the_recording_changes_under_it(
+    mixed_rig_page_and_errors,
+):
+    """A switch made elsewhere must redraw the pane in place, not leave it stale.
+
+    Another browser -- or another operator -- can open a different recording while this
+    page is sitting on the Bundle-adjust tab; the server pushes the swap to every socket
+    and the editor rebuilds itself around it. The pane cannot wait to be re-activated, or
+    it goes on showing the previous animal's matrix, label counts and calibration list
+    under the new recording's name.
+    """
+    page, errors, port = mixed_rig_page_and_errors
+    _open_bundle(page)
+    page.request.post(
+        f"http://127.0.0.1:{port}/api/recordings/open",
+        data={"recording": "flySeven", "discard": False},
+    )
+    page.wait_for_function(
+        "() => document.getElementById('recording-name')?.textContent === 'flySeven'",
+        timeout=15000,
+    )
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('#ba-pane .ba-matrix tbody .ba-cam')]"
+        "  .map(e => e.textContent).includes('f')",
+        timeout=15000,
+    )
+    assert not errors, "JS errors refreshing the pane:\n  " + "\n  ".join(errors)
