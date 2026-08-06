@@ -386,6 +386,28 @@ def test_export_gt_yields_every_stored_pixel(result):
     assert occ[2, 0, 6]
 
 
+def test_export_returns_the_hidden_flag_beside_the_gt_mask_not_folded_in(result):
+    """The export contract the flag exists for: two masks, and their conjunction is the loss.
+
+    A hidden cell that carries a pixel must still appear in ``gt_mask`` -- the label is
+    there, and "there is a label here" and "train on it" are different questions. Folding the
+    veto in would make a withheld pixel indistinguishable from one nobody ever placed, so a
+    trainer could never put it back without re-reading the file.
+    """
+    lab = Labels.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
+    lab.set_gt(0, 0, 5, (1.0, 2.0))  # a pixel to train on
+    lab.set_gt(1, 0, 5, (3.0, 4.0))  # ... and a pixel to withhold
+    lab.set_occluded(1, 0, 5, True)
+
+    gt_xy, mask, hidden = export_gt(lab)
+    assert mask[0, 0, 5] and mask[1, 0, 5]  # both are labels
+    np.testing.assert_allclose(gt_xy[1, 0, 5], [3.0, 4.0])  # the withheld pixel lives
+    assert hidden[1, 0, 5] and not hidden[0, 0, 5]
+    supervise = mask & ~hidden  # what a trainer's loss sees
+    assert supervise[0, 0, 5] and not supervise[1, 0, 5]
+    assert int(supervise.sum()) == 1
+
+
 # -- absence: "this keypoint is not on this animal" (v3) ----------------------
 
 

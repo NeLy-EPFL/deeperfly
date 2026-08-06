@@ -84,9 +84,9 @@ class OutputsSource:
     def has_authored_state(self) -> bool:
         """Whether there is any human work here at all.
 
-        Zero GT is **not** empty. Occlusions, absence declarations and reviewed flags have no
-        producer but the operator, so a set with 400 occlusions and no pixels is still 400
-        pieces of irreplaceable work -- and seeds mean an instance was *created*, which is
+        Zero GT is **not** empty. Hidden marks, absence declarations and reviewed flags have
+        no producer but the operator, so a set with 400 hidden marks and no pixels is still
+        400 pieces of irreplaceable work -- and seeds mean an instance was *created*, which is
         also a gesture only a human makes.
         """
         s = self.stats

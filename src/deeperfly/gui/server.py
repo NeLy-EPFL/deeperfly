@@ -1132,9 +1132,10 @@ def _points_payload(
         pts = s.display_pts2d_refine(t)
     else:
         pts = s.display_pts2d(t)
-    # Wire-compat masks: "fixed" now means "carries a GT pixel", "invisible" means
-    # "occluded" -- the front-end still renders them as the finalized/obscured rings
-    # until the Phase-C source-aware rendering lands.
+    # Wire-compat mask names: "fixed" means "carries a GT pixel" and "invisible" is the
+    # **hidden** flag -- "hold this cell out of the training loss". The two are independent,
+    # so a cell may appear in both, and neither says anything about `points`: `invisible`
+    # selects a mark drawn over the joint, never the joint's position.
     fixed = s.gt_mask(t)  # (V, P)
     invisible = s.occluded_mask(t)  # (V, P)
     # Absence is per-(frame, point), but this frame's row is broadcast to (V, P) so the

@@ -141,8 +141,8 @@ deeperfly gui PATH [--footage-dir DIR] [--host HOST] [--port PORT] [--no-browser
 
 Opens the interactive web viewer for a result and lets you author the ground-truth
 2D pose (with the run's prediction as a starting point): every camera view with its
-2D skeleton overlay, drag-to-place / confirm keypoints, occlude unusable views, and
-the live NeuroMechFly overlays. Labels go to a `labels.h5` sidecar and never modify
+2D skeleton overlay, drag-to-place / confirm keypoints, mark cells **Hidden** (held out of
+the training loss), and the live NeuroMechFly overlays. Labels go to a `labels.h5` sidecar and never modify
 `results.h5` (an older `corrections.h5` is migrated on open). See the
 [annotation GUI guide](gui.md) for the editor itself.
 
@@ -223,8 +223,8 @@ deeperfly labels-export PATH [-o OUT.npz] [--include-projection]
 ```
 
 Exports the labels authored in [`deeperfly gui`](gui.md) (the `labels.h5` beside the
-result) as a training/eval dataset: the provenance-filtered ground-truth pixels and
-the occluded mask, in footage pixel space.
+result) as a training/eval dataset: the ground-truth pixels and the **Hidden** mask, in
+footage pixel space.
 
 | Argument / option | Default | Meaning |
 | --- | --- | --- |
@@ -236,10 +236,22 @@ The `.npz` holds `gt_xy` (V,T,P,2), `gt_mask` (V,T,P), `occluded` (V,T,P), `abse
 and `point_names` / `camera_names`. Coordinates are footage-space; a detector-training
 pipeline maps them into model-input space by inverting each pathway's preprocessing.
 
+`occluded` is the editor's **Hidden** flag — *"do not include this cell in the training
+loss"* — keeping its old array name. It is a **separate axis** from `gt_mask`, not a filter
+already applied to it: a cell can carry a hand-placed pixel and still be held out, which is
+exactly the pairing the flag exists to record. So the supervision mask is
+
+```python
+supervise = gt_mask & ~occluded
+```
+
+and dropping the second term trains on everything, which is a valid choice the export
+deliberately leaves to you.
+
 `absent` marks keypoints that are **not on this animal** (see
 [`deeperfly labels-absent`](#deeperfly-labels-absent)). Those channels are excluded from
-`gt_mask` *and* from `occluded` — an amputated joint is not ground truth, and it is not
-"hidden in every view" either. **Mask** them in the loss.
+`gt_mask` *and* from `occluded` — an amputated joint is not ground truth, and a hold-out mark
+on something already unsupervised is not a decision anyone made. **Mask** them in the loss.
 
 ## `deeperfly labels-absent` — mark keypoints that are not on this animal
 
@@ -249,7 +261,8 @@ deeperfly labels-absent PATH... --points 'lf_femur_tibia,lf_tibia_tarsus,lf_claw
 ```
 
 For an amputated leg or an ablated antenna: the keypoint does not exist. That is
-different from *occluded* (it exists but no camera can see it) and from *unlabeled*, and
+different from *Hidden* (it exists and keeps its position; only the loss skips that cell)
+and from *unlabeled*, and
 getting it wrong costs real accuracy — the detector's argmax decode always emits a peak,
 so a phantom limb is confidently localized onto whatever looks leg-like nearby and that
 peak feeds triangulation, bundle adjustment and the bone-length prior.
@@ -543,7 +556,7 @@ stored in footage pixels, so merging across resolutions would reinterpret every 
 | identical | kept, counted |
 | a human **drag** vs a bulk-confirmed **reprojection** | **the drag wins**, whatever the policy |
 | both the same provenance, different pixels | `--on-conflict` (default `manual`) |
-| an occlusion vs a pixel | the pixel wins — an occlusion is the weaker statement |
+| a **Hidden** mark vs a pixel | **both are kept** — they are independent axes, not rival claims |
 | absence declarations | **unioned** (declaring is non-destructive by construction) |
 | `reviewed` flags | OR'd |
 

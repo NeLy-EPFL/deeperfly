@@ -103,9 +103,10 @@ def _cmd_gui(args: argparse.Namespace) -> None:
 def _cmd_labels_export(args: argparse.Namespace) -> None:
     """Export the saved ground-truth labels (``labels.h5``) as an ``.npz`` dataset.
 
-    Resolves ``results.h5`` (a file or a directory holding one), loads the
-    ``labels.h5`` beside it (refusing a sidecar from a different recording), and writes
-    the provenance-filtered GT + occluded masks in footage pixel space. Raises
+    Resolves ``results.h5`` (a file or a directory holding one), loads the ``labels.h5``
+    beside it (refusing a sidecar from a different recording), and writes the GT pixels plus
+    the **hidden** mask (still named ``occluded`` in the file) in footage pixel space. The two
+    are independent arrays and the consumer conjoins them; see :func:`export_gt`. Raises
     ``SystemExit`` when there are no saved labels to export.
     """
     import numpy as np
@@ -150,8 +151,8 @@ def _cmd_labels_export(args: argparse.Namespace) -> None:
     names = [str(n) for n, a in zip(result.skeleton.point_names, whole) if a]
     n_partial = int((absent.any(axis=0) & ~whole).sum()) if absent.size else 0
     log.info(
-        "exported %d ground-truth point(s), %d occlusion(s), %d keypoint(s) not on this "
-        "animal%s%s (footage space) -> %s",
+        "exported %d ground-truth point(s), %d held out of the loss, %d keypoint(s) not on "
+        "this animal%s%s (footage space) -> %s",
         int(gt_mask.sum()),
         int(occluded.sum()),
         int(whole.sum()),
@@ -277,7 +278,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
             ", ".join(declared) if declared else "none",
             f"; {len(some)} in some frames only ({', '.join(some)})" if some else "",
             (
-                f"; quarantined {vetoed_gt} GT row(s) and {vetoed_occ} occlusion(s) "
+                f"; quarantined {vetoed_gt} GT row(s) and {vetoed_occ} hidden mark(s) "
                 "(restored if you un-declare)"
                 if vetoed_gt or vetoed_occ
                 else ""

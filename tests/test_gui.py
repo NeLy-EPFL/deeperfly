@@ -6,10 +6,11 @@ over HTTP/WebSocket is tested in ``test_gui_server.py``; the sparse ``labels.h5`
 sidecar and the per-point 3D solve have their own suites (``test_gui_labels.py`` /
 ``test_gui_solve.py``).
 
-The editor is a ground-truth annotation tool: per ``(view, frame, point)`` the
-operator authors a tri-state (GT pixel / occluded / nothing) and the 3D is derived.
-So a "2D edit" creates a GT pixel, ``toggle_fixed`` confirms/clears a GT, and
-``toggle_invisible`` toggles the occluded flag.
+The editor is a ground-truth annotation tool: per ``(view, frame, point)`` the operator
+authors a GT pixel (or not) and, on an independent axis, the **hidden** flag -- "hold this
+cell out of the training loss" (or not). The 3D is derived from the pixels alone. So a "2D
+edit" creates a GT pixel, ``toggle_fixed`` confirms/clears one, and ``toggle_invisible``
+flips the hidden flag without touching anything else.
 """
 
 from __future__ import annotations
@@ -35,11 +36,46 @@ def test_2d_edit_creates_gt_without_touching_original(result):
     assert state.dirty
 
 
-def test_occluded_view_displays_nan(result):
+def test_hidden_leaves_the_displayed_position_untouched(result):
+    """The display coupling that had to go: Hidden must not move or remove a position.
+
+    It used to NaN the cell out, which is how the flag got rendered -- and it cost the
+    operator the pixel they needed in order to place the joint they had just said not to
+    train on. The flag now selects a mark drawn over the position, so the position is
+    byte-identical either side of the toggle.
+    """
     state = EditorState.from_result(result)
+    before = state.display_pts2d(0).copy()
     state.toggle_invisible(0, 5, frame=0)
-    disp = state.display_pts2d(0)
-    assert not np.all(np.isfinite(disp[0, 5]))  # occluded -> NaN (front-end ghosts it)
+    np.testing.assert_array_equal(state.display_pts2d(0), before)
+    assert state.occluded_mask(0)[0, 5]  # ... and the flag itself is set
+
+
+def test_hidden_is_inert_in_the_derived_3d(result):
+    """Toggling the flag cannot change a single derived coordinate.
+
+    The solve reads GT and the instance's evidence; the flag is not one of them
+    (``_point_obs``). Asserted on the whole frame rather than the toggled point, so a future
+    re-introduction anywhere in the chain fails here.
+    """
+    state = EditorState.from_result(result)
+    before = np.asarray(state.display_pts3d(0)).copy()
+    for v in range(state.n_views):
+        state.toggle_invisible(v, 5, frame=0)
+    np.testing.assert_array_equal(np.asarray(state.display_pts3d(0)), before)
+
+
+def test_hidden_and_gt_are_written_independently(result):
+    """All four combinations are reachable, and setting either never disturbs the other."""
+    state = EditorState.from_result(result)
+    v, p, f = 0, 5, 0
+    state.toggle_invisible(v, p, f)  # hidden, no GT
+    assert state.labels.occluded[v, f, p] and not state.labels.has_gt[v, f, p]
+    state.apply_2d_edit(view=v, point=p, xy=(10.0, 20.0), frame=f)  # ... + a pixel
+    assert state.labels.occluded[v, f, p] and state.labels.has_gt[v, f, p]
+    state.toggle_invisible(v, p, f)  # GT, not hidden -- the pixel survives
+    assert not state.labels.occluded[v, f, p]
+    np.testing.assert_allclose(state.labels.gt[v, f, p], [10.0, 20.0])
 
 
 # -- placeholder seeds for joints absent from a view --------------------------
@@ -82,51 +118,39 @@ def test_a_triangulation_rejected_peak_is_still_a_detection(result):
     assert np.isnan(state.placeholder_pts2d(0)[:, p]).all()  # nothing to seed
 
 
-def test_placeholder_seeds_a_projected_view_at_its_reprojection(result):
-    # A Projected (occluded) view has no position of its OWN, so it is seeded even when a
-    # reprojection exists -- and the seed sits exactly on that reprojection. The front-end
-    # hides the seed underneath the visible ring (poseView.js ``placeholderPos``); it is
-    # there for when the operator hides the reprojected overlay (`p`), which would
-    # otherwise take the cell's only handle with it.
+def test_hidden_needs_no_placeholder_seed(result):
+    # A Hidden cell keeps its own detection, so it needs nothing from the seed layer. This is
+    # the inverse of the test that used to stand here: the flag suppressed the cell's pixel,
+    # which made the seed the joint's only remaining handle. Now the flag takes no handle
+    # away, so there is nothing to hand back.
     p = 5
-    state = EditorState.from_result(result)  # 3D intact: the reprojection exists
+    state = EditorState.from_result(result)
     state.toggle_invisible(0, p, frame=0)
-    proj = state.display_pts3d_projected(0)
-    assert np.isfinite(proj[0, p]).all()  # a ghost is drawn there
-    ph = state.placeholder_pts2d(0)
-    assert np.allclose(ph[0, p], proj[0, p])  # seeded, right where the ring is
-    assert np.isnan(ph[1, p]).all()  # an unoccluded view keeps its own detection
+    assert np.isfinite(state.display_pts2d(0)[0, p]).all()  # detection still here
+    assert np.isnan(state.placeholder_pts2d(0)[:, p]).all()  # ... so no view is seeded
 
 
-def test_placeholder_seeds_a_projected_view_with_no_reprojection_to_follow(result):
-    # The real strand, reproduced: a joint the run's triangulation rejected (finite
-    # detections, NaN 3D -- so `_solve_point` has no cache to fall back on either) that
-    # the operator then set Projected in EVERY view. The solve is now below two usable
-    # views, so there is no 3D and hence no reprojection to follow: the detection is
-    # suppressed and the ghost never appears. Every view must still get a draggable seed,
-    # or the joint is unreachable -- not drawn means not hit-testable, so it could not even
-    # be selected to be Reset. Regression: rh_tibia_tarsus vanished from a real labeled
-    # frame exactly this way (all 6 views Projected, RANSAC had dropped its 3D).
+def test_placeholder_seeds_a_point_with_no_detection_and_no_reprojection(result):
+    # A joint the run's triangulation rejected (no detection, NaN 3D -- so `_solve_point` has
+    # no cache to fall back on either). Nothing can place it, so every view must still get a
+    # draggable seed or the joint is unreachable: not drawn means not hit-testable, so it
+    # could not even be selected to be Reset. Regression: rh_tibia_tarsus vanished from a
+    # real labeled frame this way. Hiding cells is no longer one of the routes into it -- the
+    # flag takes no position away -- so this is now purely about missing evidence.
     p = 5
-    # No detections anywhere and no cached 3D: nothing can place this joint. (Excluding
-    # every view would NOT do it -- an exclusion that would leave the point unsolvable
-    # stands down, see test_excluding_every_view_keeps_the_projection_alive.)
     result.pts2d[:, :, p] = np.nan
     result.pts3d[:, p] = np.nan
     result.reproj_error[:, :, p] = np.nan
     state = EditorState.from_result(result)
-    for v in range(state.n_views):
-        state.toggle_invisible(v, p, frame=0)
     assert np.isnan(state.display_pts3d(0)[p]).any()  # nothing left to project
     assert np.isnan(state.display_pts2d(0)[:, p]).all()  # ... and nothing displayed
     ph = state.placeholder_pts2d(0)
     assert np.isfinite(ph[:, p]).all()  # every view stays correctable
 
 
-def test_placeholder_seeds_a_projected_view_of_a_rejected_point(result):
-    # The same strand via the other route: a point triangulation dropped (no detection,
-    # no 3D) that the operator then set Projected in one view. That view has nothing to
-    # follow either, so it is seeded like the rest.
+def test_placeholder_seeds_a_rejected_point_in_every_view(result):
+    # The same strand via the other route: a point triangulation dropped (no detection, no
+    # 3D). Every view is seeded, hidden or not.
     p = 5
     state = EditorState.from_result(_reject_point(result, p))
     state.toggle_invisible(0, p, frame=0)
@@ -139,10 +163,10 @@ def _grabbable(state, frame, *, projected_visible=True):
     """``(V, P)`` bool: does the canvas draw SOMETHING grabbable for each cell?
 
     Mirrors the front-end's position precedence (poseView.js): the cell's own position
-    -- GT, else the view's usable detection, which an occluded view has none of
-    (``detPos``) -- else the reprojection while that overlay is shown
-    (``shownLatentPos``), else the Missing seed (``placeholderPos``). Not drawn means not
-    hit-testable and not marquee-selectable (``grabCandidates``), i.e. unreachable.
+    -- GT, else the view's detection (``detPos``) -- else the reprojection while that
+    overlay is shown (``shownLatentPos``), else the Missing seed (``placeholderPos``). Not
+    drawn means not hit-testable and not marquee-selectable (``grabCandidates``), i.e.
+    unreachable. The Hidden flag appears in none of those, by design.
     """
 
     def on_image(a):
@@ -170,23 +194,27 @@ def _grabbable(state, frame, *, projected_visible=True):
     return own | ring | seed
 
 
-def test_every_joint_stays_grabbable_after_bulk_projected(result):
-    # THE invariant the seed layer exists for: `a` then `3` -- select every point in every
-    # view, set them all Projected -- must leave every cell with something to grab. Every
-    # view is now dropped from every point's solve, so a point the run cached no 3D for has
-    # no ghost either (the solve is below two usable views and the run-cache fallback is
-    # empty), and the seed is its only handle. Checked with the reprojected overlay both on
-    # and OFF: hiding it must not strip the last handle off an occluded cell either.
-    # Regression: lm_claw vanished from a real labeled frame exactly this way.
+def test_every_joint_stays_grabbable_after_hiding_the_whole_frame(result):
+    # `a` then `e` -- select every cell and hold the whole frame out of the training loss --
+    # must change nothing about what is drawn. This was THE reason the seed layer had to
+    # guarantee a handle for every cell: hiding suppressed each cell's pixel, a point the run
+    # cached no 3D for then had no ghost either, and the joint disappeared with no way to
+    # select it back (regression: lm_claw vanished from a real labeled frame this way). The
+    # flag no longer touches a position, so the frame is byte-identical across the bulk
+    # toggle -- and still fully grabbable with the reprojected overlay both on and OFF.
     result.pts2d[:, :, 5] = np.nan  # a joint nothing can place: no detection, no 3D
     result.pts3d[:, 5] = np.nan
     result.reproj_error[:, :, 5] = np.nan
     state = EditorState.from_result(result)
+    before2d = state.display_pts2d(0).copy()
+    before3d = np.asarray(state.display_pts3d(0)).copy()
     targets = [(v, p) for v in range(state.n_views) for p in range(state.n_points)]
     state.occlude_targets(targets, 0)
 
-    assert np.isnan(state.display_pts2d(0)).all()  # no cell has a position of its own
-    assert np.isnan(state.display_pts3d(0)[5]).any()  # ... and point 5 has no 3D left
+    assert state.occluded_mask(0).all()  # every cell is marked ...
+    # ... and not one drawn position, or one derived coordinate, moved
+    np.testing.assert_array_equal(state.display_pts2d(0), before2d)
+    np.testing.assert_array_equal(np.asarray(state.display_pts3d(0)), before3d)
     for projected_visible in (True, False):
         assert _grabbable(state, 0, projected_visible=projected_visible).all()
 
@@ -1223,14 +1251,22 @@ def test_confirm_authors_gt_for_the_selection(result):
     assert not state.labels.has_gt[:, f, 5].any()
 
 
-def test_confirm_skips_occluded_and_existing_gt(result):
+def test_confirm_includes_hidden_cells_and_keeps_the_flag(result):
+    """The flag decides what the loss uses, not what may be labeled.
+
+    It used to gate this verb, on the reasoning that a select-all sweep should not claim a
+    pixel in a cell the operator had said they could not see. That reasoning belonged to the
+    retired meaning: under this one, holding a cell out of the loss is exactly when recording
+    where the joint is costs nothing and is worth having. So the cell is confirmed -- and it
+    stays hidden, because ``confirm`` writes positions and never the flag.
+    """
     state = EditorState.from_result(result)
     f = 0
-    state.toggle_invisible(0, 5, f)  # occlude view 0
+    state.toggle_invisible(0, 5, f)  # hidden at view 0
     state.toggle_fixed(1, 5, f)  # already GT at view 1
     state.confirm([(v, 5) for v in range(state.n_views)], f)
-    assert not state.labels.has_gt[0, f, 5]  # occluded view left untouched
-    assert state.labels.occluded[0, f, 5]
+    assert state.labels.has_gt[0, f, 5]  # the hidden cell got its pixel ...
+    assert state.labels.occluded[0, f, 5]  # ... and is still held out of the loss
     assert state.labels.has_gt[1, f, 5]  # pre-existing GT kept
 
 

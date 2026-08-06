@@ -18,16 +18,22 @@ them (triangulation over the cameras). The 3D that `deeperfly run` wrote is a ca
 the editor recomputes it live from whatever 2D you settle on. So you never edit 3D
 directly: you author **2D ground truth**, and the 3D follows.
 
-Per `(view, point)` you author at most one of:
+Per `(view, point)` — one *cell* — you author two things, on two **independent** axes:
 
-- **Ground truth** — an affirmed 2D pixel. Placed by dragging, or by confirming a
-  suggestion (below). This is what gets saved and what a future training run consumes.
-- **Occluded** — *"a human cannot place this point from this view."* The view is
-  dropped from the 3D solve. This is a positive judgement, not "the pixel is hidden":
-  if you can infer the location (e.g. the intersection of two visible segments), place
-  ground truth instead.
-- **nothing** — the view follows the detector's prediction, or (where the detector
-  fired nothing) the 3D reprojection, as a *suggestion* you can accept or move.
+- **Where the keypoint is.** Either **ground truth** (a 2D pixel you placed, by dragging or
+  by confirming what is drawn) or nothing, in which case the cell follows the detector's
+  prediction, or the 3D reprojection where the detector fired nothing, as a *suggestion*
+  you can accept or move. This is what a future training run learns from.
+- **Whether the cell is included in the training loss.** That is the **Hidden** flag
+  (`e`) and it is all it means: marked = held out, unmarked = used. It is a binary switch
+  of its own, not a third value of the first axis.
+
+Because they are separate axes, all four combinations are meaningful, and the useful one
+is the pair: place the pixel *and* mark it Hidden when you are confident where a joint is —
+inferred from the views that can see it, say — but do not want the detector trained on
+pixels that do not show it. Hiding a cell does exactly one thing. It does **not** move the
+joint, remove its marker, break its bones, make it undraggable, or change the 3D by a single
+coordinate; the joint is drawn exactly as it would be, with a bar struck through it.
 
 The displayed point resolves by precedence **ground truth → prediction →
 reprojection**. How ground truth and predictions combine into the live 3D is
@@ -69,14 +75,14 @@ tells you where it came from** so you know at a glance what still needs attentio
 | Filled disc, **lime** ring | **Ground truth** | you authored it (dragged or confirmed) — trusted |
 | Filled disc, thin **dark** ring (fill fades when faint) | **Prediction** | the detector's raw 2D; the fainter the fill, the lower its confidence |
 | **Hollow** circle in the point's limb colour | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
+| A **bar struck through** any of the above | **Hidden** | this cell is held out of the training loss — see below. It *annotates* the marker rather than replacing it, because it says nothing about where the keypoint is |
 
 The **`?` button** (or the `?` key) opens the **Help panel**, which carries the full
 legend — the keypoint colours (one swatch per limb, taken from your skeleton's
 `limb_palette`, so it matches whatever config you loaded), the marker vocabulary above,
 and the reference-overlay line styles — alongside the keyboard shortcuts. The displayed
-point resolves by precedence **ground truth → prediction → projection**. A view you
-**occlude** (below) has its observation deleted, so it too shows as a projection — there
-is deliberately no separate marker for it.
+point resolves by precedence **ground truth → prediction → projection**, and the Hidden
+bar rides on top of whichever of those the cell landed on.
 
 ## Annotating the pose
 
@@ -109,67 +115,68 @@ act on the same joints frame after frame.
 
 ### Acting on the selection
 
-Three verbs act on whatever is selected — the **Confirm** / **Reset** / **Occlude**
-buttons, or their keys. Each is a **single undo step**, however large the selection.
+The verbs act on whatever is selected — the **GT** / **Hidden** / **Absent** toggles and
+**Reset**, or their keys. Each is a **single undo step**, however large the selection. Each
+toggle is also its own readout: it is *pressed* when the fact is set, and **GT and Hidden can
+be pressed at the same time**, which is the whole shape of the data.
 
-- **Confirm** (`Enter`) — promote each selected cell's suggestion to ground truth.
-  Confirming a *prediction* snapshots the detector's pixel; confirming a *reprojection*
-  (a view where the detector fired nothing) snapshots the 3D's reprojected pixel and is
-  tagged as such, so it can be filtered out on export.
-- **Reset** (`r`, or `Delete` / `Backspace`) — clear each selected cell's label (ground
-  truth *or* occlusion) back to unset, so it falls back to the detector's original
-  prediction (or, where the detector fired nothing, the reprojection). The
-  "start over on these points" action.
-- **Occlude** (`o`) — mark each selected cell **occluded**: its observation is deleted,
-  so it drops from the 3D solve and the other views carry the reconstruction. On the
-  canvas it then looks like any other projection (a hollow palette circle) — occluding is
-  just *"delete this view's observation"*, and a deleted observation is indistinguishable
-  from one the detector never made. Reverse it with **Reset**, **undo**, or by dragging to
-  place ground truth. Occluded views are still recorded on export as a positive
-  "unplaceable" label (useful negative training signal).
+- **GT** (`Enter` places, `Backspace` clears) — place a ground-truth pixel for each
+  selected cell at the position already drawn there, so the joint becomes yours and can be
+  nudged. Cells whose position the editor *invented* (a neighbour mean, the view centre —
+  see **Invented** in the Help legend) are skipped rather than recorded as your pixel.
+- **Hidden** (`e`) — hold each selected cell **out of the training loss**, or put it back
+  (a toggle). That is the entire effect. The joint does not move, keeps its marker and its
+  bones, stays draggable and hoverable, and the 3D does not change — a bar is struck through
+  it, and the export reports it in its own mask beside the ground truth. It is available on
+  cells that already carry your pixel, and that pairing is the point: *"this is where the
+  joint is"* and *"do not train on it here"* are two separate things worth recording.
+- **Reset** (`r`, or `Delete`) — retract **both** facts for each selected cell, back to
+  nothing authored. The only verb that spans both axes, which is why it is named for
+  starting over rather than for either of them.
 
 - **Absent** (`x`, or `Shift`+`X` for the whole recording) — mark the selected
   keypoint(s) **not on this animal**: an amputated leg, an ablated antenna. Unlike every
   other action it is not per *view* — an amputated joint is missing from all seven cameras
-  at once, which is exactly what separates it from Occluded. `x` marks the current frame;
+  at once, which is exactly what separates it from Hidden. `x` marks the current frame;
   **`Shift`+`X` applies it to every frame**, which is what almost every real declaration
   wants (an animal that arrives with a leg already missing). Per-frame exists for the case
   where it genuinely changes: a leg lost to autotomy part-way through a recording.
   The joint then draws as a dim grey ✕ with no bones, drops out of the 3D solve, and is
   excluded from the training export in *both* directions (it is neither ground truth nor
-  "occluded"). A header badge lists what is declared and says whether it covers the whole
+  hidden). A header badge lists what is declared and says whether it covers the whole
   recording or just this frame. Press `x` again or `Ctrl`/`Cmd`+`Z` to lift it — nothing
-  you labeled underneath is lost, it is only hidden while the declaration stands.
+  you labeled underneath is lost, it is only vetoed while the declaration stands.
 
-Everyday flows: click a point and press `Enter` to confirm one keypoint everywhere; `a`
-then `Enter` to confirm the whole frame; double-click a mislocated joint and press `r` to
-reset it across all views; Shift+drag a box around a few stray points and press `o` to
-occlude them; double-click an amputated joint and press `Shift`+`X` once for the whole
-recording.
+Everyday flows: click a point and press `Enter` to place one keypoint everywhere; `a`
+then `Enter` for the whole frame; double-click a mislocated joint and press `r` to
+reset it across all views; Shift+drag a box around the far-side joints and press `e` to hold
+them out of the loss; double-click an amputated joint and press `Shift`+`X` once for the
+whole recording.
 
-### Occluded vs Absent vs Unplaced
+### Hidden vs Absent vs Unplaced
 
-Three different reasons a keypoint has no pixel, and they must not be confused:
+Three different things, and they must not be confused. Note that only **Absent** removes a
+keypoint's *position*:
 
-| | means | scope | on export |
-|---|---|---|---|
-| **Occluded** (`o`) | it exists, but no usable view here | one (view, frame, point) | a positive "unplaceable" label |
-| **Absent** (`x` / `Shift`+`X`) | it is not on this animal | every view; this frame, or the whole recording | excluded from GT *and* from occluded |
-| **Unplaced** (`i`) | nobody has placed it yet | one (view, frame, point) | nothing (unlabeled) |
+| | means | scope | position | on export |
+|---|---|---|---|---|
+| **Hidden** (`e`) | do not include this cell in the training loss | one (view, frame, point) | unchanged — still drawn, still draggable | its own mask, beside the GT one |
+| **Absent** (`x` / `Shift`+`X`) | it is not on this animal | every view; this frame, or the whole recording | gone — no 2D, no 3D, no bones | excluded from GT *and* from hidden |
+| **Unplaced** (`i`) | nobody has placed it yet | one (view, frame, point) | the editor's guess, so you can grab it | nothing (unlabeled) |
 
-Because Absent can be scoped to a frame, it is worth being deliberate about which you
-mean: a joint that is merely *hidden* in a few frames is Occluded, and marking it Absent
-there discards training signal rather than contributing it. Absence is a claim about the
-animal; occlusion is a claim about the view.
+So **Absent is not a bulk Hidden**. Both keep a cell out of the loss, but Absent also
+deletes the keypoint from the reconstruction, in every view, and (for the IK body plan and
+bundle adjustment) for the whole recording. Declaring a joint absent because it is awkward to
+see in a few frames throws away its position too; marking an amputated joint hidden view by
+view leaves a phantom limb standing in every canvas, reconstructed from detector peaks that
+fire on whatever looks leg-like. Absence is a claim about the **animal**; Hidden is a claim
+about **what to train on**.
 
-Marking an amputated leg *occluded in every view* is the tempting shortcut and it is
-wrong twice: the leg still gets a 3D position (the other views reconstruct it from the
-detector's peaks, which fire on whatever looks leg-like), and the export teaches the
-detector that the joint exists but happens to be hidden in all seven cameras at once.
-
-When exactly one point is selected, the **point-status widget** shows that
-`(point, view)`'s state — **Predicted** / **Ground truth** / **Occluded** — and lets you
-set it directly.
+The **Hidden** flag is deliberately *only* that claim. It is not read by the 3D solve — a bad
+observation is down-weighted on its merits by the robust estimator, so there is nothing to
+exclude by hand — and it is not read by the display beyond drawing its own bar. That
+independence is what makes it safe to mark a whole frame at once (`a` then `e`): nothing on
+screen moves.
 
 ### The left/right check
 
@@ -299,12 +306,13 @@ To use the labels as training/eval data, export them to an `.npz`:
 deeperfly labels-export RESULT           # writes labels_gt.npz beside results.h5
 ```
 
-This writes the provenance-filtered ground-truth pixels + occluded mask in footage
-pixel space (reprojection-confirmed GT is excluded unless `--include-projection`), plus
-an `absent` (P,) mask of the keypoints that are not on this animal. Train by **masking**
-those channels — they should contribute no gradient. (Supervising them with an all-zero
-target heatmap is the stronger claim, "learn that nothing is here"; it needs a decode
-that can abstain and enough amputee animals to calibrate one.)
+This writes the ground-truth pixels in footage pixel space, plus two masks that are
+**separate axes, not filters already applied**: `occluded` (the **Hidden** flag — the cells
+you held out of the loss; the array keeps its old name) and `absent` (the keypoints that are
+not on this animal). Your loss mask is `gt_mask & ~occluded`, and absent channels should be
+**masked** — contributing no gradient. (Supervising them with an all-zero target heatmap is
+the stronger claim, "learn that nothing is here"; it needs a decode that can abstain and
+enough amputee animals to calibrate one.)
 
 To declare absence without opening the editor — across every clip of one animal at once,
 before any labeling — use
@@ -336,12 +344,15 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | Click / `Shift`+click / double-click | Select a point / add-remove / that keypoint in every view |
 | `Shift`+drag | Rubber-band box: add every enclosed point |
 | `a` (`Ctrl`/`Cmd`+`A`) / `v` / `Esc` | Select all / all in the current view / clear the selection |
-| `Enter` / `r` / `o` | Confirm / Reset / Occlude the selection |
+| `Enter` / `Backspace` | Place / clear the selection's ground-truth pixels |
+| `e` / `r` | Hidden (hold out of the training loss) / Reset both facts |
+| `x` / `Shift`+`X` | Absent, this frame / the whole recording |
 | `Ctrl`/`Cmd`+`Z` / `Ctrl`/`Cmd`+`Y` | Undo / redo |
 | `s` / `n` / `p` | Toggle skeleton / labels / 3D estimate |
+| `w` / `u` | Toggle the two checks: reprojection distance / under-labeled joints |
 | `m` / `Shift+M` / `c` | Toggle NMF skeleton / NMF mesh / 3D view |
 | `j` | Show / hide the labelled-frames list |
-| `Ctrl`/`Cmd`+`S` | Save labels |
+| `Ctrl`/`Cmd`+`S` | Save labels — every recording holding unsaved work |
 | `?` / `Esc` | Show shortcuts / close an overlay |
 
 ## Calibration landmarks

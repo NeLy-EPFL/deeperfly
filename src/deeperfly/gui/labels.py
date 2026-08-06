@@ -17,13 +17,30 @@ nothing for it to mean, and the model collapses to two facts per cell plus one f
 
     seeds(x, y)  -> where the instance's keypoint started (every cell, once created)
     gt(x, y)     -> the operator dragged/placed it here; overrides the seed
-    occluded     -> "a human cannot see this keypoint in this view"
+    hidden       -> "do not include this cell in the training loss"
 
-``gt`` and ``occluded`` are **orthogonal** -- a joint can be hand-placed *through* an
-occluder from the geometry of the other views, and recording both is exactly right.
-Occlusion no longer touches triangulation either: it used to mean "drop this view from
-the 3D solve", and the robust solve retired that job (a bad observation is down-weighted
-on its merits). What survives is a training signal nothing else can supply.
+**The hidden flag is its own binary axis, fully orthogonal to ``gt``.** It carries exactly
+one meaning -- *whether this cell is supervised* -- and it is the only per-cell thing in
+the schema that is neither a position nor derived from one. Orthogonal is meant literally:
+setting or clearing it never reads or writes ``gt``, ``seeds`` or the 3D, and nothing reads
+it to decide where a keypoint is drawn, whether it can be labeled, or what the solve sees.
+All four combinations are legal and each says something different:
+
+.. code-block:: text
+
+    gt, not hidden   the ordinary label -- a pixel, supervised
+    gt, hidden       a pixel the operator stands behind but withholds from the loss
+    no gt, hidden    nothing to supervise anyway; the flag records the intent
+    no gt, not hidden  unlabeled
+
+Its storage keeps the older name ``occluded``: through v8 the flag meant "a human cannot
+see this keypoint in this view", and it was read as an instruction -- first to drop the
+view from the 3D solve, later to suppress its detection on screen. Both jobs are gone (the
+robust solve down-weights a bad observation on its merits, and hiding a cell must not take
+away the position the operator needs in order to place it), leaving the loss switch, which
+is the one thing no geometry can supply. Only the meaning narrowed, so no stored bit
+changes and no file needs migrating; the group and the attribute stay ``occluded`` and the
+editor calls the flag what it now is -- **Hidden**.
 
 A non-GT cell contributes its **seed** to its point's 3D solve, precisely where the
 detections used to contribute -- so the solve, its Huber depth estimate for the one-GT
@@ -37,9 +54,9 @@ disk rather than needing a second migration of the one dataset that cannot be re
 
 **Absence (schema v3, per-frame in v4).** One more thing the operator can author is not a
 property of a *view* at all: a keypoint may not *exist on this animal* -- an amputated leg,
-an ablated antenna. That is categorically different from ``occluded`` ("it exists but I
-cannot place it from *this view*") and from ``unset`` ("nobody has looked yet"), and it is
-view-independent by construction. It *can* vary over time, though -- a leg lost to autotomy
+an ablated antenna. That is categorically different from ``hidden`` ("it is there, and I am
+holding this one cell out of the loss") and from ``unset`` ("nobody has looked yet"), and it
+is view-independent by construction. It *can* vary over time, though -- a leg lost to autotomy
 part-way through a recording -- so it is stored per ``(frame, point)``:
 
 .. code-block:: text
@@ -51,11 +68,14 @@ keeps it missing), which is why the editor offers a one-gesture "apply to the en
 recording" alongside the per-frame toggle, and why the on-disk form is **run-length spans**:
 a whole-recording declaration is a single row no matter how long the recording.
 
-A caution the schema deliberately does *not* enforce: absence and occlusion are opposites
-at export time -- an occluded cell is a positive "not visible from this view" training
-label, an absent one is excluded from supervision entirely. So marking a joint absent in
-the handful of frames where it is merely hidden discards real training signal instead of
-contributing it. Absence is a claim about the animal; occlusion is a claim about the view.
+A caution the schema deliberately does *not* enforce: absence is not a bulk ``hidden``.
+Both keep a cell out of the loss, but absence also destroys the keypoint's *position* --
+in every view, and for the structural consumers (the IK body plan, bundle adjustment) for
+the whole recording -- while ``hidden`` leaves the joint exactly where it is and withholds
+only the supervision. So declaring a joint absent in the handful of frames where it is
+merely awkward to see costs the position too, and hiding an amputated joint view by view
+leaves a phantom limb standing in every canvas. Absence is a claim about the animal;
+``hidden`` is a claim about what to train on.
 
 Absence acts as a **read-time veto** rather than a fourth exclusive cell value: the
 authored pixels and occlusions stay in memory untouched, and the derived masks every
@@ -94,7 +114,7 @@ prediction NaN pattern:
         xy          (S, 2) float64
     instance/                       (v8) frames carrying an annotation skeleton
         index       (J,)   int32
-    occluded/
+    occluded/                       the **hidden** flag -- the cells held out of the loss
         index       (M, 3) int32   [view, frame, point]
     reviewed/                       (added in v2; absent in a v1 file -> no frames reviewed)
         index       (K,)   int32   frame indices the operator marked reviewed
@@ -200,9 +220,10 @@ class Labels:
 
     The per-``(view, frame, point)`` arrays are dense ``(V, T, P)``-shaped (2D pixels
     carry a trailing 2). A GT pixel is *stored* iff ``gt`` is finite there, which is
-    exactly ``isfinite(gt)``; ``occluded`` marks views the operator flagged
-    unusable. ``reviewed`` is a separate per-*frame* ``(T,)`` flag (the operator's "I
-    have checked this frame"), independent of the point labels. ``absent`` is a
+    exactly ``isfinite(gt)``; ``occluded`` is the **hidden** flag -- the cells to hold out
+    of the training loss -- and it is an independent axis, not a third value of ``gt`` (see
+    the module docstring). ``reviewed`` is a separate per-*frame* ``(T,)`` flag (the
+    operator's "I have checked this frame"), independent of the point labels. ``absent`` is a
     per-``(frame, point)`` ``(T, P)`` flag -- "this keypoint is not on this animal" -- which
     is view-independent but *may* vary over time (a leg lost to autotomy part-way through).
 
@@ -217,11 +238,16 @@ class Labels:
     Because the veto is applied on read, declaring a point absent destroys nothing and
     un-declaring it restores every pixel and occlusion underneath byte for byte.
 
-    The invariant (``gt`` and ``occluded`` disjoint) is maintained by the mutators and
-    re-checked on load. ``dirty`` tracks unsaved changes.
+    There is no cross-invariant to maintain between ``gt`` and ``occluded``: all four
+    combinations are legal, so neither the mutators nor the loader may resolve one against
+    the other. ``dirty`` tracks unsaved changes.
     """
 
     gt: Float[np.ndarray, "V T P 2"]
+    #: The **hidden** flag ``(V, T, P)``: "hold this cell out of the training loss". Its own
+    #: axis -- it stores no position, gates no position, and is read by nothing but the
+    #: export and the marker that reports it. Named ``occluded`` for its storage group; see
+    #: the module docstring for what narrowed and why nothing had to migrate.
     occluded: Bool[np.ndarray, "V T P"]
     reviewed: Bool[np.ndarray, "T"]  # per-frame "operator has checked this frame"
     #: Per-frame "an annotation skeleton has been created here". Explicit rather than
@@ -303,10 +329,12 @@ class Labels:
 
     @property
     def occluded_effective(self) -> Bool[np.ndarray, "V T P"]:
-        """:attr:`occluded` with the absent points vetoed out.
+        """The **hidden** flag with the absent points vetoed out.
 
-        An absent point is not "occluded in every view" -- it is not there at all, so it
-        must not be exported as a positive "unplaceable from this view" label.
+        Absence already excludes the point from supervision everywhere, so a "hold this out
+        of the loss" mark under it has nothing left to hold out; reporting it anyway would
+        make an amputated joint look like 7 deliberate hold-outs in every export and every
+        count. The raw bit stays in :attr:`occluded` (un-declaring restores it).
         """
         return self.occluded & ~self._absent_bcast
 
@@ -317,7 +345,7 @@ class Labels:
 
     @property
     def any_labels(self) -> bool:
-        """Whether any GT pixel, occlusion or absence declaration has been authored."""
+        """Whether any GT pixel, hidden mark or absence declaration has been authored."""
         return bool(self.gt_authored.any() or self.occluded.any() or self.absent.any())
 
     # -- absence accessors ----------------------------------------------------
@@ -353,33 +381,38 @@ class Labels:
     def set_gt(self, view: int, frame: int, point: int, xy) -> None:
         """Create a GT pixel for ``point`` in ``view`` at ``frame``.
 
-        Leaves :attr:`occluded` alone: the two are **orthogonal**. "Here is where the
-        keypoint is" and "a human cannot see it in this view" are compatible claims, and
-        the useful case is common -- placing a joint through the body from the geometry of
-        the other views, while still recording that the pixels do not show it.
+        Writes the position and nothing else. In particular it does not read or clear the
+        **hidden** flag: whether a cell is supervised is a separate decision from where its
+        keypoint is, and a cell can legitimately carry a pixel the operator stands behind
+        and still be held out of the loss (see :meth:`set_occluded`).
         """
         self.gt[view, frame, point] = np.asarray(xy, dtype=float)
         self.dirty = True
 
     def clear_gt(self, view: int, frame: int, point: int) -> None:
-        """Drop just the GT pixel for ``point`` in ``view`` (occlusion untouched)."""
+        """Drop just the GT pixel for ``point`` in ``view`` (the hidden flag untouched)."""
         self.gt[view, frame, point] = np.nan
         self.dirty = True
 
     def set_occluded(self, view: int, frame: int, point: int, value: bool) -> None:
-        """Flag ``point`` as not visible to a human in ``view`` (or clear the flag).
+        """Set (or clear) the **hidden** flag on one cell: hold it out of the training loss.
 
-        Purely an annotation about the *image*, and orthogonal to GT (see :meth:`set_gt`):
-        it does not clear a pixel and it does not touch triangulation. It used to do both
-        -- it was "drop this view from the 3D solve" -- and the robust solve retired that
-        job: a bad observation is now down-weighted on its merits rather than by hand.
-        What survives is the training signal, which nothing else can supply.
+        The whole of what this writes is one bit. It does not clear a pixel, does not move a
+        keypoint, does not touch triangulation, and no consumer of a *position* reads it --
+        so it composes freely with :meth:`set_gt` in either order and all four combinations
+        mean what they say. Its independence is the point: the training loss is the one
+        thing about a cell that geometry cannot decide, so it needs a switch of its own.
         """
         self.occluded[view, frame, point] = bool(value)
         self.dirty = True
 
     def clear_view(self, view: int, frame: int, point: int) -> None:
-        """Reset one ``(view, frame, point)`` to ``unset`` (drop GT and occlusion)."""
+        """Reset one ``(view, frame, point)``: drop the GT pixel *and* the hidden flag.
+
+        The one verb that deliberately spans both axes, because "start over on this cell" is
+        a gesture the operator asks for by name (the editor's Reset). Every other mutator
+        touches exactly one of them.
+        """
         self.gt[view, frame, point] = np.nan
         self.occluded[view, frame, point] = False
         self.dirty = True
@@ -1008,12 +1041,10 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
 
     Validates the stored identity against ``identity`` (raising ``ValueError`` on a
     different recording/result) and normalizes the sparse lists: out-of-range or
-    non-finite GT rows are dropped, duplicate ``(view, frame, point)`` keys resolve
-    last-write-wins, and any ``(view, frame, point)`` present in both ``gt`` and
-    ``occluded`` keeps the GT (which carries an authored pixel) and drops the
-    occlusion -- so the on-disk invariants cannot desync the in-memory overlay. That tie
-    is resolved on the **raw** stored mask, deliberately ignoring the absence veto, so a
-    round trip through a declaration is idempotent.
+    non-finite GT rows are dropped and duplicate ``(view, frame, point)`` keys resolve
+    last-write-wins. A cell listed in **both** ``gt`` and ``occluded`` keeps both -- the
+    two are independent axes, so there is no tie to break, and a reader that dropped one
+    would silently re-supervise a pixel the operator withheld.
 
     ``reviewed`` is optional (a v1 file has none -> no frames reviewed) and so is
     ``absent`` (a v1/v2 file has none -> nothing absent). The quarantined
@@ -1161,10 +1192,10 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
             )
         for (v, t, pt), xy in zip(seed_index[keep], seed_xy[keep]):
             labels.seeds[v, t, pt] = xy
-    # Occluded rows: keep every in-range one. There is no disjointness tie to break any
-    # more -- occlusion is orthogonal to GT (see Labels.set_occluded), so a cell that is
-    # both hand-placed and marked not-visible is a legitimate, useful state rather than a
-    # corrupt one. Pre-v8 writers could not produce it; v8 readers must not discard it.
+    # Hidden rows: keep every in-range one. There is no disjointness tie to break -- the
+    # flag is its own axis (see Labels.set_occluded), so a cell that is both hand-placed and
+    # held out of the loss is a legitimate, useful state rather than a corrupt one. Pre-v8
+    # writers could not produce it; readers must not discard it.
     if occ_index.size:
         keep = _in_range(occ_index)
         for v, t, pt in occ_index[keep]:
@@ -1197,7 +1228,7 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
     n_void_occ = int((labels.occluded & labels._absent_bcast).sum())
     if n_void or n_void_occ:
         log.info(
-            "%s: %d GT row(s) and %d occlusion(s) quarantined by the absent declaration",
+            "%s: %d GT row(s) and %d hidden mark(s) quarantined by the absent declaration",
             p,
             n_void,
             n_void_occ,
@@ -1274,8 +1305,22 @@ def export_gt(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Dense ground-truth arrays for training/eval.
 
-    Returns ``(gt_xy (V,T,P,2), gt_mask (V,T,P) bool, occluded (V,T,P) bool)``. The GT
+    Returns ``(gt_xy (V,T,P,2), gt_mask (V,T,P) bool, hidden (V,T,P) bool)``. The GT
     is in **footage pixel space** -- the coordinate the operator clicked.
+
+    The third mask is the **hidden** flag, and it is returned *beside* ``gt_mask`` rather
+    than folded into it because the two answer different questions -- "is there a label
+    here?" and "should it be trained on?". A trainer's supervision mask is their conjunction:
+
+    .. code-block:: python
+
+        gt_xy, gt_mask, hidden = export_gt(labels)
+        supervise = gt_mask & ~hidden        # what the loss sees
+
+    Pre-multiplying would lose the distinction the flag exists to record: a cell whose pixel
+    is deliberately withheld would become indistinguishable from one nobody ever labeled,
+    and re-including it later (the flag is a decision, and decisions get revised) would need
+    the file re-read rather than one mask dropped.
 
     There is nothing to filter: a GT pixel is a pixel the operator created, and that is
     the only kind there is. A cell with *no* GT is not this function's business -- the
@@ -1290,10 +1335,10 @@ def export_gt(
     footage-space contract it consumes.
 
     Points declared absent are excluded from **both** returned masks: an amputated
-    keypoint is not ground truth (so it must not be supervised) and it is not occluded
-    either (so it must not be exported as a positive "unplaceable from this view" label,
-    which is what a naive all-views-occluded workaround would teach the detector). Ask
-    :func:`export_absent` for the declaration itself.
+    keypoint is not ground truth (so it must not be supervised), and a hold-out mark on a
+    cell that is already unsupervised is not a decision anyone made -- reporting it would
+    read as seven deliberate hold-outs per amputated joint. Ask :func:`export_absent` for
+    the declaration itself.
     """
     mask = labels.has_gt.copy()
     gt_xy = np.where(mask[..., None], labels.gt, np.nan)

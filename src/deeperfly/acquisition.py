@@ -559,8 +559,8 @@ def _far_mask(
     the camera's viewing axis, ``dot(x - c, unit(c - camera_position)) > 0``. This
     reproduces the ipsi/contra split with no left/right convention hardcoded (which
     a :class:`~deeperfly.skeleton.Skeleton` does not model), and it is the label the
-    operator needs: a far-side joint is the one they may have to call *occluded*
-    rather than place.
+    operator needs: a far-side joint is the one whose pixel they may have to infer from the
+    other views, and the one they may want held out of the training loss.
     """
     x = np.asarray(pts3d_frame, dtype=float)  # (P, 3)
     finite = np.isfinite(x).all(axis=-1)
@@ -938,11 +938,11 @@ def read_labeled_frames(labels_path: str | Path, *, identity: dict) -> dict | No
     """Which frames already carry human work, from the ``labels.h5`` sidecar.
 
     Read-only. Returns ``None`` when there is no sidecar (a first round). A frame
-    counts as done when *any* view carries a GT pixel or an occlusion flag, or the
+    counts as done when *any* view carries a GT pixel or a **hidden** mark, or the
     frame is marked reviewed -- the same rule the GUI's labeled-frames list uses
     (:meth:`~deeperfly.gui.state.EditorState.corrected_frames`), so the two lists
-    can never disagree. Note a frame where the operator authored only *occlusions*
-    is still done: the queue must not re-offer it.
+    can never disagree. Note a frame where the operator only marked cells hidden is still
+    done: deciding what not to train on is work, and the queue must not re-offer it.
 
     Raises
     ------

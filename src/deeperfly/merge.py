@@ -28,8 +28,9 @@ about where a keypoint is, and nothing in the data ranks one above the other, so
 a review queue rather than being resolved by a coin flip.
 
 Every piece of authored state in a ``labels.h5`` travels, not just the pixels: ``gt``,
-``occluded``, ``seeds``, ``instance``, ``reviewed`` and ``absent``. Two of those have rules
-worth stating here, because getting them wrong is silent:
+``occluded`` (the **hidden** flag -- "hold this cell out of the training loss"), ``seeds``,
+``instance``, ``reviewed`` and ``absent``. Two of those have rules worth stating here,
+because getting them wrong is silent:
 
 - **Seeds are additive, never overwritten.** A seed is where an instance's keypoint
   *started* -- evidence, not a claim -- so two sides cannot conflict over one. But
@@ -364,14 +365,13 @@ def merge_labels(
         elif decision.outcome == "ours":
             report.kept_from_dest += 1
 
-    # Occlusions: taken where the destination has no occlusion of its own.
+    # Hidden marks: taken where the destination has none of its own.
     #
-    # Deliberately NOT gated on the destination having a GT pixel. That gate predates v8,
-    # which made the two facts **orthogonal**: a joint can be hand-placed *through* an
-    # occluder from the geometry of the other views, and recording both is exactly right
-    # (see the labels module docstring). Under the old rule a source occlusion was silently
-    # discarded on every cell the destination had a pixel for -- losing a training signal
-    # nothing else can supply.
+    # Deliberately NOT gated on the destination having a GT pixel. The flag is its own axis
+    # ("hold this cell out of the training loss"), so it composes with any pixel rather than
+    # competing with one (see the labels module docstring). Under the old rule a source mark
+    # was silently discarded on every cell the destination had a pixel for -- which is exactly
+    # the pairing worth keeping, and one nothing else in the pipeline can reproduce.
     for v, t, p in zip(*np.nonzero(mapped.occluded)):
         if dest.occluded[v, t, p]:
             continue

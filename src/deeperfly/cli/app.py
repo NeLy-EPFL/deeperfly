@@ -298,15 +298,20 @@ def labels_export(
 ) -> None:
     """Export saved ground-truth labels (labels.h5) as a training/eval dataset (.npz).
 
-    Writes the GT pixels + occluded mask in footage pixel space
+    Writes the GT pixels + the hidden mask in footage pixel space
     (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), ``absent``
     (P,), plus ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui'
     first.
 
+    ``occluded`` is the editor's **Hidden** flag: "hold this cell out of the training loss".
+    It keeps its array name for compatibility, and it is a *separate* axis from ``gt_mask``,
+    not a filter already applied to it -- a cell can carry a pixel and be held out. Your loss
+    mask is ``gt_mask & ~occluded``.
+
     Keypoints declared **absent** (not on this animal -- an amputated leg) are excluded
     from *both* ``gt_mask`` and ``occluded``, and reported separately in ``absent``: such a
-    keypoint is not ground truth, and it is not "occluded in every view" either, so it must
-    not be supervised in either direction. Mask it in training.
+    keypoint is not ground truth, and a hold-out mark on something already unsupervised is
+    not a decision anyone made. Mask it in training.
     """
     _configure_logging(log_level.value)
     _cmd_labels_export(argparse.Namespace(path=path, output=output))
@@ -360,13 +365,13 @@ def labels_absent(
     """Mark keypoints as absent -- not on this animal -- in one or more labels.h5.
 
     For an amputated leg or an ablated antenna: the keypoint does not exist, which is
-    different from "occluded" (it exists but no camera can see it) and from "unlabeled".
-    The declaration is per keypoint and, by default, covers the whole recording -- one
-    command replaces marking every frame and every view by hand. Pass ``--frames`` for a
-    limb lost part-way through (``--frames 900:``).
+    different from **Hidden** (it exists and keeps its position; only the training loss
+    skips that cell) and from "unlabeled". The declaration is per keypoint and, by default,
+    covers the whole recording -- one command replaces marking every frame and every view by
+    hand. Pass ``--frames`` for a limb lost part-way through (``--frames 900:``).
 
     Downstream, an absent keypoint is dropped from the 3D solve, excluded from the
-    training export in *both* directions (neither ground truth nor occluded), and removed
+    training export in *both* directions (neither ground truth nor hidden), and removed
     from labeling-progress denominators.
 
     The editor has the same gesture (select a joint, press ``x``). Close any running

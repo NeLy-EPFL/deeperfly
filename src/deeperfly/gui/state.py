@@ -8,10 +8,12 @@ recomputed from the labels + the detector's predictions and cached per frame.
 
 The unit of annotation is an **instance**: one skeleton per frame, created from the
 detections and owning a position for every ``(view, point)`` thereafter. Per cell the
-operator authors two orthogonal facts (:class:`~deeperfly.gui.labels.Labels`): a GT pixel,
-and an "occluded" flag meaning *a human cannot see this keypoint in this view*. The second
-is a training signal only -- it does not move the joint and does not touch the solve, which
-is robust to a bad observation on its own.
+operator authors two facts on two independent axes
+(:class:`~deeperfly.gui.labels.Labels`): a GT pixel -- *where* the keypoint is -- and the
+**hidden** flag -- *whether this cell is included in the training loss*. Nothing in this
+module lets one decide the other: hiding a cell moves no joint, removes no position, gates
+no verb and changes no solve, and placing a pixel neither sets nor clears the flag. The
+editor draws the flag as its own mark and the export returns it as its own mask.
 
 A cell with no GT contributes its **seed** to its point's 3D, exactly where the detector's
 peak used to; the 3D is ``solve_point_3d(gt, seeds)``, and with a single GT view the pixel
@@ -33,7 +35,7 @@ fallback has to be skipped as well.
 The method names ``apply_2d_edit`` / ``apply_3d_edit`` / ``toggle_fixed`` /
 ``toggle_invisible`` / ``reset_*`` are kept as the wire-compatible surface the server
 dispatches to; under the new model ``toggle_fixed`` confirms/clears a GT pixel and
-``toggle_invisible`` toggles the occluded flag.
+``toggle_invisible`` toggles the hidden flag.
 """
 
 from __future__ import annotations
@@ -237,7 +239,7 @@ class EditorState:
         """Build a state for ``result``, with an empty overlay if none is given.
 
         Unlike the old corrections overlay, a fresh labels overlay seeds *nothing*:
-        a view the detector missed is *unobserved* (derived), not a stored occlusion,
+        a view the detector missed is *unobserved* (derived), not a stored hidden mark,
         so an untouched session carries no authored state. ``ann`` / ``tri`` are the
         annotation solve policy and shared triangulation params (from the run config
         beside ``results.h5``); both default to the packaged defaults.
@@ -357,11 +359,14 @@ class EditorState:
         return self.labels.has_gt[:, self._resolve_frame(frame)]
 
     def occluded_mask(self, frame: int | None = None) -> np.ndarray:
-        """``(V, P)`` boolean: which per-view points are occluded at ``frame``.
+        """``(V, P)`` boolean: which cells are **hidden** (held out of the loss) at ``frame``.
 
-        The *effective* mask: a point declared absent is not "occluded in every view",
-        it is not there at all, so it is vetoed out (the front-end draws it as a
-        tombstone, not as a rejected observation).
+        The *effective* mask: a point declared absent is unsupervised everywhere already, so
+        a hold-out mark under it is vetoed out -- the front-end draws that joint as a
+        tombstone, and stacking a second "not trained on" cue on it would say nothing.
+
+        This is the only channel the flag has to the display: it selects a mark drawn *over*
+        whatever marker the cell already has, and never the marker itself.
         """
         return self.labels.occluded_effective[:, self._resolve_frame(frame)]
 
@@ -385,10 +390,10 @@ class EditorState:
     def corrected_frames(self) -> list[dict]:
         """Every frame the operator has touched, with whether it is marked reviewed.
 
-        A frame is listed when any view carries a GT pixel or an occlusion flag for
-        some point (an authored human decision), *or* the frame has been marked
-        reviewed -- so ticking a frame reviewed keeps it in the list even if its point
-        labels are later reset. Returned sorted by frame, each
+        A frame is listed when any view carries a GT pixel or a **hidden** mark for
+        some point (either is an authored human decision, which is the question this list
+        asks), *or* the frame has been marked reviewed -- so ticking a frame reviewed keeps
+        it in the list even if its point labels are later reset. Returned sorted by frame, each
         ``{"frame": t, "reviewed": bool}`` -- what the GUI's frame list shows so the
         operator can jump back to frames they have worked on and tick off the ones
         they have finished checking.
@@ -427,19 +432,28 @@ class EditorState:
     def display_pts2d(self, frame: int | None = None) -> Float[np.ndarray, "V P 2"]:
         """The per-view 2D to draw for ``frame``: GT over the detector prediction.
 
-        A GT view shows its pixel; a plain view shows the prediction; an occluded
-        view (or one with neither) is ``NaN`` -- the front-end draws the reprojection
-        ghost there instead. A point declared absent is ``NaN`` in *every* view: the
-        detector still fires somewhere on an amputated limb (an argmax decode always
-        emits a peak), and showing that peak would invite the operator to confirm it.
+        A GT view shows its pixel; every other view shows the prediction, or ``NaN`` where
+        the detector fired nothing -- the front-end draws the reprojection ghost there
+        instead. A point declared absent is ``NaN`` in *every* view: the detector still
+        fires somewhere on an amputated limb (an argmax decode always emits a peak), and
+        showing that peak would invite the operator to confirm it.
+
+        The **hidden** flag is deliberately not consulted. It used to suppress the cell's
+        detection here, which made the flag a display switch as well as a training one, and
+        that cost the operator the position: hiding a cell -- or worse, hiding a whole frame
+        with ``a`` then ``e`` -- deleted the only pixel they had to drag, and a joint whose
+        3D was unsolvable then had no ghost to fall back on either, so it vanished from every
+        canvas with no handle left to select it back. A whole layer of placeholder seeds
+        exists because of that. Whether a cell is supervised says nothing about where its
+        keypoint is, so it no longer moves or removes one: :meth:`occluded_mask` carries the
+        flag to the front-end, which draws it as its own mark over the marker that is there.
         """
         t = self._resolve_frame(frame)
         gt = self.labels.gt[:, t]  # (V, P, 2)
         has = self.labels.has_gt[:, t]  # (V, P)
-        occ = self.labels.occluded_effective[:, t]  # (V, P)
         absent = self.labels.absent_at(t)[None, :]  # (1, P) -> broadcasts over views
         pred = self.detections[:, t]  # (V, P, 2)
-        shown = np.where(has[..., None], gt, np.where(~occ[..., None], pred, np.nan))
+        shown = np.where(has[..., None], gt, pred)
         return np.where(absent[..., None], np.nan, shown)
 
     def display_pts2d_refine(
@@ -449,8 +463,9 @@ class EditorState:
         view, with each GT view overridden by its authored pixel, or ``None``.
 
         GT views hold their pixel (they generally do not all agree with one 3D
-        point); every other view -- plain or occluded -- follows the reprojection. An
-        absent point has no 3D to reproject, so it stays ``NaN`` here too.
+        point); every other view follows the reprojection. An absent point has no 3D to
+        reproject, so it stays ``NaN`` here too. The **hidden** flag is not read: it decides
+        what the loss trains on, never where a joint is drawn.
         """
         proj = self.display_pts3d_projected(frame)
         if proj is None:
@@ -507,8 +522,8 @@ class EditorState:
         """Seed positions for cells with no observation of their own, so a GT can
         always be placed -- the layer that guarantees every joint stays draggable.
 
-        A cell with no GT and no usable detection (the operator marked it Projected, or
-        the detector never fired, or triangulation dropped the point) has no position of
+        A cell with no GT and no detection (the detector never fired, or triangulation
+        dropped the point) has no position of
         its *own*. It may still be drawn at its reprojection -- but only while the
         reprojection exists AND the operator is showing that overlay. Whenever it is not,
         the canvas draws nothing there: the operator has nothing to grab, hence no way to
@@ -547,13 +562,11 @@ class EditorState:
         disp = self.display_pts2d(t)  # (V, P, 2): GT over cleaned pred, NaN if absent
         proj = self.display_pts3d_projected(t) if self.has_3d else None
         disp_ok = np.isfinite(disp).all(axis=-1)  # (V, P)
-        # Every cell without a position of its own gets a seed. Note the whole-frame
-        # bulk-Projected case this has to survive: set every view of a joint Projected and
-        # the solve has nothing left to fit (below two usable views
-        # :func:`~deeperfly.gui.solve.solve_point_3d` returns NaN) and the run-cache
-        # fallback may be NaN too, so there is no reprojection to follow either -- the
-        # detection is suppressed, the ghost never appears, and without a seed the joint
-        # is gone from every canvas with no way back.
+        # Every cell without a position of its own gets a seed. This layer used to carry a
+        # second job -- a joint hidden in every view had its detection suppressed AND, being
+        # below two usable views, no 3D to reproject either, so the seed was the only thing
+        # left to grab. The hidden flag no longer touches a position, so that case cannot
+        # arise; what remains is the honest one, a cell the detector never fired for.
         need = ~disp_ok  # (V, P)
         out = np.full((n_views, n_points, 2), np.nan)
         if not need.any():
@@ -1206,16 +1219,17 @@ class EditorState:
     def toggle_invisible(
         self, view: int, point: int, frame: int | None = None
     ) -> bool | None:
-        """Toggle "a human cannot see ``point`` in ``view``" -- a training annotation.
+        """Toggle the **hidden** flag on one cell: hold it out of the training loss, or stop.
 
-        An occluded view contributes nothing to the 3D and follows the reprojection;
-        toggling re-solves the 3D from the remaining views. Setting it drops any GT for
-        that view. Returns the new occluded state, or ``None`` if the point is absent.
+        Writes one bit and nothing else. It leaves any GT pixel exactly where it is, leaves
+        the seed alone, and cannot change the derived 3D -- ``_point_obs`` never reads the
+        flag. Returns the new state, or ``None`` if the point is declared absent (there is
+        nothing to hold out of a loss it is already excluded from).
 
-        Deliberately **not** gated on a 3D solve. "I cannot place this from this view" is
-        a label, not a derived quantity, and on a 2D-only pass (exactly where a hand
-        labeling round happens) gating it would leave the operator with no way to reject
-        a view except the much stronger anatomical claim that the joint does not exist.
+        Deliberately **not** gated on a 3D solve. Which cells to train on is a decision, not
+        a derived quantity, and a hand-labeling round routinely runs before any triangulation
+        exists; gating it there would leave the operator no way to withhold a cell short of
+        the much stronger anatomical claim that the joint does not exist.
         """
         t = self._resolve_frame(frame)
         if self.absent_refusal(point, t):
@@ -1223,12 +1237,13 @@ class EditorState:
         self._record_undo(t, point, coalesce=False)
         now = not bool(self.labels.occluded[view, t, point])
         self.labels.set_occluded(view, t, point, now)
-        self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        # No re-derive and no NMF invalidation: both exist to follow a changed 3D pose, and
+        # this changes none. Dropping them is not just a saving -- keeping them would mean
+        # the flag *did* reach the derived pipeline, which is the coupling being removed.
         return now
 
     def reset_point(self, point: int, frame: int | None = None) -> None:
-        """Reset every view of ``point`` at ``frame`` to ``unset`` (drop GT + occlusion)."""
+        """Reset every view of ``point`` at ``frame``: drop the GT pixel + the hidden flag."""
         t = self._resolve_frame(frame)
         self._record_undo(t, point, coalesce=False)
         self.labels.clear_point(t, point)
@@ -1236,7 +1251,7 @@ class EditorState:
         self._invalidate_nmf(t)
 
     def reset_point_view(self, view: int, point: int, frame: int | None = None) -> None:
-        """Reset just ``view``'s label for ``point`` to ``unset`` (GT + occlusion)."""
+        """Reset just ``view``'s cell for ``point``: drop the GT pixel + the hidden flag."""
         t = self._resolve_frame(frame)
         self._record_undo(t, point, coalesce=False)
         self.labels.clear_view(view, t, point)
@@ -1529,11 +1544,12 @@ class EditorState:
           ``a`` then Enter, tens of thousands of times, on exactly the contralateral joints an
           ipsilateral-only detector leaves unseeded.
 
-        Cells that are already GT, declared absent, or marked not-visible are skipped too. The
-        last is deliberate: per cell, marking a hidden joint's position is legitimate (that is
-        what a drag does), but this verb is reachable via select-all, and sweeping every cell
-        the operator said they cannot see into "I placed this pixel" is a claim they did not
-        make. One undo step. Returns whether anything changed.
+        Cells that are already GT or declared absent are skipped too. A **hidden** cell is
+        not: the flag says which cells the loss uses, not which ones may be labeled, so
+        gating this verb on it would be the coupling in reverse -- and it would leave the
+        operator unable to record where a joint is in exactly the cells they have decided not
+        to train on, which is the pairing worth having. One undo step. Returns whether
+        anything changed.
         """
         t = self._resolve_frame(frame)
         saved_redo = list(self._redo)
@@ -1562,7 +1578,6 @@ class EditorState:
         for view, point in targets:
             if (
                 absent[point]
-                or self.labels.occluded[view, t, point]
                 or self.labels.has_gt[view, t, point]
                 or invented[view, point]
             ):
@@ -1589,8 +1604,8 @@ class EditorState:
     def reset_targets(self, targets, frame: int | None = None) -> None:
         """Reset many ``(view, point)`` cells at ``frame`` to ``unset`` in one undo step.
 
-        The batched counterpart of :meth:`reset_point_view`: it drops GT *and*
-        occlusion for every target and re-derives the frame's 3D once, so a
+        The batched counterpart of :meth:`reset_point_view`: it drops the GT pixel *and*
+        the hidden flag for every target and re-derives the frame's 3D once, so a
         multi-select "Reset" is a single undoable action. A no-op batch (empty, or
         every target already unset -- e.g. select-all then Reset on a fresh frame) does
         nothing at all: no undo entry, no cleared redo, nothing marked dirty (mirrors
@@ -1617,9 +1632,9 @@ class EditorState:
         """Delete the GT pixel at many ``(view, point)`` cells, leaving all else alone.
 
         The batched inverse of a drag, and deliberately **not** the same verb as
-        :meth:`reset_targets`, which also drops the exclusion. "I retract the pixel I
-        placed" and "I retract my claim that this view is unusable" are different
-        retractions; one key doing both silently would undo work the operator did not name.
+        :meth:`reset_targets`, which also drops the hidden flag. "I retract the pixel I
+        placed" and "I retract my decision not to train on this cell" are retractions on two
+        different axes; one key doing both would undo work the operator did not name.
         Cells with no GT are skipped, so a no-op batch records no undo step.
         """
         targets = list(targets)
@@ -1636,19 +1651,17 @@ class EditorState:
         self._invalidate_nmf(t)
 
     def toggle_exclude_targets(self, targets, frame: int | None = None) -> bool | None:
-        """Toggle "a human cannot see this keypoint in this view" over many cells.
+        """Toggle the **hidden** flag over many cells -- hold them out of the loss, or stop.
 
         A *toggle*, so one key both marks and un-marks: if every eligible target is already
         marked the batch clears, otherwise it marks. Returns the new state, or ``None`` when
         nothing was eligible (an empty batch, or every point declared absent).
 
-        Cells carrying GT are **included**. They used to be skipped, because storing the
-        flag cleared the pixel underneath it and a bulk toggle would have destroyed the
-        operator's own work. It no longer does -- the two are orthogonal -- and marking a
-        labeled cell is the case that matters most: a joint placed *through* the body from
-        the geometry of the views that can see it, recorded as both "here it is" and "the
-        pixels do not show it". That pairing is the training signal, and nothing else in the
-        pipeline can produce it.
+        Cells carrying GT are **included**, and this is the case that matters most: "this is
+        where the joint is, and do not train on it here" are two decisions, and a labeled
+        cell is exactly where the second one is worth making. Nothing about the pixels
+        changes -- a bulk toggle over the whole frame writes ``P * V`` bits and touches no
+        position, no seed and no 3D.
         """
         targets = list(targets)
         if not targets:
@@ -1663,21 +1676,20 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         for view, point in eligible:
             self.labels.set_occluded(view, t, point, now)
-        self._invalidate_nmf(t)
         return now
 
     def occlude_targets(self, targets, frame: int | None = None) -> None:
-        """Occlude many ``(view, point)`` cells at ``frame`` in one undo step.
+        """Set the **hidden** flag on many ``(view, point)`` cells in one undo step.
 
-        The batched counterpart of :meth:`toggle_invisible`, but a *set* not a toggle:
-        every target is flagged occluded (dropping any GT there), and the frame's 3D
-        re-derives once. Reversal is :meth:`reset_targets` / undo. Targets on a point
-        declared absent are dropped -- an amputated joint is not "occluded everywhere".
-        A no-op batch (empty, or every target already occluded) does nothing: no undo
-        entry, no cleared redo, nothing marked dirty (mirrors :meth:`confirm`).
+        The batched counterpart of :meth:`toggle_invisible`, but a *set* not a toggle. It
+        writes the flag and nothing else -- no GT is dropped and no 3D re-derives. Reversal
+        is :meth:`reset_targets` / undo. Targets on a point declared absent are dropped: it
+        is already unsupervised, so there is nothing to hold out. A no-op batch (empty, or
+        every target already hidden) does nothing: no undo entry, no cleared redo, nothing
+        marked dirty (mirrors :meth:`confirm`).
 
-        Like :meth:`toggle_invisible`, deliberately not gated on a 3D solve: occlusion is
-        an authored label and a hand-labeling pass often starts before any triangulation.
+        Like :meth:`toggle_invisible`, deliberately not gated on a 3D solve: which cells to
+        train on is a decision, and a hand-labeling pass often starts before triangulation.
         """
         targets = list(targets)
         if not targets:
@@ -1691,5 +1703,3 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         for view, point in targets:
             self.labels.set_occluded(view, t, point, True)
-        self._rederive_points(t, {point for _, point in targets})
-        self._invalidate_nmf(t)

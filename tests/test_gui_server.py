@@ -1023,23 +1023,28 @@ def test_ws_toggle_invisible_flips_mask_and_sets_dirty(client, result):
     assert reply["invisible"][other][point] is False
 
 
-def test_ws_occluded_cell_has_no_observation_but_keeps_its_reprojection(client, result):
-    """An occluded ("Projected") cell must be null in ``points`` yet finite in ``proj``.
+def test_ws_hidden_rides_its_own_mask_and_changes_no_position(client, result):
+    """The wire contract for the flag: ``invisible`` moves, ``points``/``proj`` do not.
 
-    That pair is the contract the editor's display precedence rests on: the view has no
-    usable observation (so the rejected detection is not drawn there and does not feed
-    the solve), and the reprojection of the re-solved 3D is what the joint falls back
-    to as its position in that view.
+    The payload used to answer ``null`` in ``points`` for a hidden cell -- the flag was
+    rendered by deleting the position -- so the front-end could not tell it from a cell the
+    detector missed, and the operator lost the pixel they needed to place the joint. The two
+    masks are now independent: ``invisible`` says "held out of the training loss" and nothing
+    in the geometry moves.
     """
     view, point = 1, 5
     with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "points", "frame": 0})
+        before = ws.receive_json()
         ws.send_json({"type": "occlude", "targets": [[view, point]], "frame": 0})
         reply = ws.receive_json()
     assert reply["invisible"][view][point] is True
-    assert reply["points"][view][point] is None  # no observation left in this view
-    assert reply["proj"][view][point] is not None  # ... but a reprojection to draw
+    assert before["invisible"][view][point] is False
+    assert reply["points"] == before["points"]  # not one drawn position changed
+    assert reply["proj"] == before["proj"]  # ... nor the 3D behind them
+    assert reply["points"][view][point] is not None  # the cell keeps its own pixel
     other = (view + 1) % result.n_views
-    assert reply["points"][other][point] is not None  # other views keep theirs
+    assert reply["invisible"][other][point] is False  # the mark is per cell
 
 
 def test_ws_edit_2d_is_local_to_its_view(client):
