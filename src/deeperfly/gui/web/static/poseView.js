@@ -16,18 +16,17 @@
 // space pans (so panning never deselects). Holding a modifier turns a click or a
 // rubber-band drag into a multi-select: Shift replaces the selection with what the
 // gesture picks, Ctrl/Cmd adds to it (Ctrl/Cmd+click toggles a single joint).
-// Right-click toggles a point's fixed flag. An occluded joint has no
-// observed pixel, so it draws as a derived (reprojected) point; dragging it is still
-// allowed; the occlusion mark is orthogonal to the pixel and is deliberately left standing.
+// Right-click toggles a point's fixed flag. A joint whose cell is Hidden (held out of the
+// training loss) is drawn exactly like any other -- same position, same source marker, same
+// bones, same hit-test -- with one bar struck through it (drawHidden); dragging it is allowed and
+// leaves the mark standing, because where a joint is and whether it is trained on are two facts.
 // Hovering a joint reports it via `onHover` so the app can emphasize the same point
 // across every view. The app stays in control of what a drag does to the 3D point.
 //
 // The view draws the point *sources* as independently toggled layers. GROUND TRUTH is the
 // EDITABLE layer (a filled palette disc under a bold lime ring): whenever it is shown a drag
 // authors GT. DETECTED is the detector's output (a filled disc, faded by confidence, under a
-// thin dark ring) wherever it is still usable -- a view the operator flagged occluded
-// ("Projected") has rejected its detection, so none is drawn there and the joint's position falls
-// through to its reprojection. There is ONE annotation skeleton: its joints are the operator's
+// thin dark ring) wherever the network fired. There is ONE annotation skeleton: its joints are the operator's
 // own pixels where they placed them, and derived positions everywhere else, so there is nothing
 // to merge it with. (A "COMBINED" toggle used to choose between that and drawing ground truth
 // and the detections as two separate skeletons; the instance owns every position now.)
@@ -82,9 +81,10 @@ const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
 //   ground truth (authored)  -> solid lime ring over a filled disc
 //   detector prediction      -> thin dark ring over a filled disc that fades with confidence
 //   derived (reprojected 3D) -> a hollow circle in the point's own limb palette
-//     colour, no fill: "computed, not observed". A view the operator occluded shows the
-//     same way -- occluding just deletes the observation, leaving the point derived, so
-//     there is nothing to distinguish it from a view the detector never fired in.
+//     colour, no fill: "computed, not observed".
+// The Hidden flag is not one of these: it says whether the cell enters the training loss, which is
+// orthogonal to where the keypoint came from, so it is drawn as a bar STRUCK THROUGH whichever of
+// the three markers the joint already has (see drawHidden) instead of replacing it.
 const FIXED_COLOR = "#7CFC00"; // ring on a ground-truth point (lime green)
 const SELECT_COLOR = "#3fd0ff"; // ring on a selected point (cyan; lime = ground truth)
 const MARQUEE_STROKE = "rgba(63,208,255,0.9)"; // Shift+drag rubber-band border (cyan, matches selection)
@@ -134,15 +134,53 @@ const ABSENT_ALPHA = 0.45;
 const ABSENT_COLOR = "#8a8f98";
 const ABSENT_MARK_PX = 4; // half-arm of the cross, screen px (constant under zoom)
 
-// The reprojection-distance warning (see drawReprojWarnings): when a joint's authored/detected
-// anchor sits farther than the (image-px) threshold from where the 3D reprojects it, flag it with
-// an amber->red ring on the anchor plus a connector to the reprojected point, so a disagreement
-// between the hand 2D label and the multi-view 3D pops for review. Amber at the threshold, ramping
-// to red at WARN_RED_MULT x it -- the eye lands on the worst joints first.
+// The "Hidden" mark (see drawHidden): this cell is held out of the training loss. It is the one
+// per-cell fact that is not a position and does not qualify one, so it gets a mark drawn ON TOP of
+// whatever marker the cell already has, rather than a marker style of its own -- the joint keeps
+// reading as ground truth / detected / derived, exactly as it should, with one extra thing said
+// about it. A single BAR through the joint, because the "excluded" idiom is a strike-through and
+// because a bar is the one shape the vocabulary has left: rings are sources (lime GT, dark
+// detected, hollow derived, cyan selected, amber warning), a cross is absent, a dashed ring is
+// unplaced, a dotted square is the NMF. Achromatic like the tombstone -- this is a statement about
+// the dataset, not about the animal -- and drawn as a dark casing under a light top pass so it
+// reads on a pale wing as well as on a dark background.
+const HIDDEN_COLOR = "#e6eaf0";
+const HIDDEN_CASING = "rgba(0,0,0,0.65)";
+const HIDDEN_BAR_PAD = 3.5; // how far the bar reaches past the marker radius, screen px
+
+// The reprojection-distance warning (see drawReprojWarnings): when the position a joint ASSERTS
+// in a view -- the operator's GT pixel, else whatever the annotation skeleton draws there (see
+// warnAnchor) -- sits farther than the (image-px) threshold from where the 3D reprojects it, flag
+// it with an amber->red ring on that anchor plus a connector to the reprojected point, so a
+// disagreement between the hand 2D label and the multi-view 3D pops for review. Amber at the
+// threshold, ramping to red at WARN_RED_MULT x it -- the eye lands on the worst joints first.
 const WARN_AMBER = "255,176,0"; // "r,g,b" at the threshold (a joint just over the line)
 const WARN_RED = "255,60,60"; // ... blended to this at/above WARN_RED_MULT x the threshold
 const WARN_RED_MULT = 2; // distance / threshold at which the cue reaches full red
 const WARN_RING_PAD = 5; // the warning ring's radius beyond the joint marker (screen px) -- clears the r+3 selection ring
+
+// The label-coverage check (see drawGtCoverage): flag a keypoint that carries ground truth in
+// FEWER than `coverMin` views of this frame. Two is the floor because two is what the geometry
+// needs -- one pixel fixes only a viewing ray -- and it is where the annotation solve hands the
+// joint over to the operator: with `n_gt >= min_gt_for_exclusive` (config default 2) GT alone
+// determines the 3D, while at one GT the depth still comes from the detections and at zero the
+// whole point does (see gui/solve.py solve_point_3d). So the cue reads "your labels do not own
+// this joint yet", which is a fact about the LABELS -- unlike the reprojection warning above,
+// which is about a disagreement. It needs no 3D at all, only >= 2 cameras to count over.
+//
+// Drawn as a ring OUTSIDE every other cue (the r+3 selection ring, the r+5 warning ring) so it
+// composes with all of them, and as a gauge rather than a flag: a dashed track for the whole
+// requirement plus a solid arc for the views already labeled, sweeping clockwise from 12
+// o'clock. One of two therefore reads as a half-swept ring -- the difference between "label
+// this in two more views" and "one more" is visible without counting anything. Violet because
+// every other cue owns a hue (lime GT, cyan selection, amber/red disagreement, mint model,
+// achromatic greys for the dataset marks) and this is not an error to fix but work outstanding.
+const COVER_RGB = "170,120,255";
+const COVER_CASING = "rgba(0,0,0,0.55)"; // dark under-pass, so it reads on a pale wing too
+const COVER_TRACK_ALPHA = 0.5; // the unmet part of the requirement: present, but quiet
+const COVER_RING_PAD = 8; // radius beyond the joint marker (screen px) -- outside the warning ring
+const COVER_WIDTH = 2;
+const COVER_DASH = [3, 3]; // the track's dash (screen px on/off); the gauge arc is solid
 
 /**
  * Blend two "r,g,b" strings, returning "r,g,b" at fraction t (0 = a, 1 = b).
@@ -183,7 +221,7 @@ export class PoseView {
     this.placeholder = null; // seed position per joint ABSENT from this view (no GT / detected / projected), a faint draggable ghost so a GT can still be placed; null elsewhere
     /** @type {boolean[] | null} */
     this.fixed = null;
-    /** @type {boolean[] | null} */
+    /** @type {boolean[] | null} per-point Hidden flag -- "held out of the training loss"; see drawHidden */
     this.invisible = null;
     /** @type {(number | null)[] | null} */
     this.conf = null; // per-point detector confidence, for the low-confidence fade
@@ -229,11 +267,21 @@ export class PoseView {
     // clearing it restores exactly what was shown. Off by default (all overlays drawn).
     this.overlaysHidden = false;
     // The reprojection-distance warning: a data-quality check independent of the layer toggles
-    // above (it reads the authored/detected anchor and the reprojection directly, whatever is
-    // shown). On by default, kept in sync with the `checked` checkbox + threshold input in
+    // above (it reads the joint's own asserted position and the reprojection directly, whatever
+    // is shown). On by default, kept in sync with the `checked` checkbox + threshold input in
     // index.html; the app restores an operator's persisted preference over these defaults.
     this.warnVisible = true;
     this.warnThreshold = 8; // image px: an anchor<->reprojection gap above this flags the joint
+    // The label-coverage check: how many views of this frame carry a GT pixel for each point,
+    // and the number below which that is flagged (see drawGtCoverage). The count is a fact about
+    // the FRAME, not about this view -- every view is handed the same array, because "label this
+    // joint somewhere else too" is the same request whichever camera you are looking at. Off by
+    // default: it is an audit pass ("what is still unlabeled here?"), not a live editing aid, and
+    // 38 rings on an untouched frame would drown the skeleton it is meant to describe.
+    /** @type {number[] | null} per-point count of views carrying GT this frame, or null */
+    this.gtViews = null;
+    this.coverVisible = false;
+    this.coverMin = 2;
     /** @type {number | null} */
     // Whether this frame carries an annotation skeleton. When it does, EVERY joint's
     // position comes from `pts` -- the instance owns them -- and `fixed` only decides
@@ -300,7 +348,31 @@ export class PoseView {
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     canvas.addEventListener("dblclick", (e) => this.onDblClick(e));
-    new ResizeObserver(() => this.layoutAndDraw()).observe(canvas);
+    // Stored, so a recording switch can actually stop it. An unstored observer cannot be
+    // disconnected: the old canvases could only be abandoned and hoped about, and one
+    // survives every switch, still calling layoutAndDraw on a detached element.
+    this.ro = new ResizeObserver(() => this.layoutAndDraw());
+    this.ro.observe(canvas);
+  }
+
+  /**
+   * Drop this view, for good.
+   *
+   * The listeners registered on the canvas above die with the element, which the caller
+   * detaches -- but the ResizeObserver, a mid-drag animation frame and an in-flight image
+   * decode all outlive it. The animation frame is the dangerous one: it would call
+   * `cb.onDragging` with THIS recording's (view, point) against the NEXT recording's
+   * session, which is an edit authored on the wrong animal.
+   */
+  destroy() {
+    this.ro.disconnect();
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.dragging = null;
+    this.pendingDrag = null;
+    this.loadToken++; // any frame still decoding resolves into a discarded token
   }
 
   // -- setup ------------------------------------------------------------------
@@ -430,13 +502,14 @@ export class PoseView {
    * @param {object} data
    * @param {Point[]} [data.points]
    * @param {boolean[] | null} [data.fixed]
-   * @param {boolean[] | null} [data.invisible]  per-point "obscured" mask, or null when not in 3D
+   * @param {boolean[] | null} [data.invisible]  per-point Hidden mask ("held out of the training loss"), or null
    * @param {(number | null)[] | null} [data.conf]  per-point detector confidence (low fades the fill)
    * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
    * @param {Point[] | null} [data.detected]  the raw detector prediction (the "detected" source), or null
    * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
    * @param {Point[] | null} [data.placeholder]  seed positions for joints with nothing else to grab in this view (the "Unplaced" ghosts), or null
    * @param {boolean[] | null} [data.absent]  per-point "not on this animal" (amputated); drawn as a tombstone, never draggable
+   * @param {number[] | null} [data.gtViews]  per-point count of views carrying GT this frame (the label-coverage check)
    */
   setFrameData(data) {
     if (data.instanceMode !== undefined) this.instanceMode = !!data.instanceMode;
@@ -456,12 +529,15 @@ export class PoseView {
     // `undefined` would still be correct; assigning it unconditionally is the guarantee.
     if (data.absent !== undefined) this.absent = data.absent;
     if (data.conf !== undefined) this.conf = data.conf;
+    // Derived from `fixed`, which rides every reply (the lean mid-drag stream included), so the
+    // gauge follows a drag that authors GT instead of lagging until it settles.
+    if (data.gtViews !== undefined) this.gtViews = data.gtViews;
     if (data.latent !== undefined) this.latent = data.latent;
     // The raw detections are static within a frame, so the mid-drag stream omits them
     // (undefined) and this view keeps the set from the last plain/navigation fetch.
     if (data.detected !== undefined) this.detected = data.detected;
     if (data.nmf !== undefined) this.nmf = data.nmf;
-    // Placeholder seeds depend on the frame's GT / occlusion / 3D state, so they ride
+    // Placeholder seeds depend on the frame's GT / detection / 3D state, so they ride
     // the verbose (settle / navigation) reply -- omitted (undefined) mid-drag, keep as-is.
     if (data.placeholder !== undefined) this.placeholder = data.placeholder;
     if (data.landmarks !== undefined) this.landmarks = data.landmarks;
@@ -532,6 +608,20 @@ export class PoseView {
     if (this.warnThreshold === px) return;
     this.warnThreshold = px;
     this.draw();
+  }
+
+  /** @param {boolean} visible  whether the label-coverage gauge is drawn on under-labeled joints */
+  setCoverVisible(visible) {
+    if (this.coverVisible === visible) return;
+    this.coverVisible = visible;
+    this.draw();
+  }
+
+  /** @param {number} n  a joint with GT in fewer than this many views gets the coverage gauge */
+  setCoverMin(n) {
+    if (this.coverMin === n) return;
+    this.coverMin = n;
+    if (this.coverVisible) this.draw();
   }
 
   /** @param {boolean} visible  whether the fitted NMF model is ghosted on top */
@@ -665,6 +755,14 @@ export class PoseView {
     // but is independent of the Projected overlay toggle -- the reprojection data is always here.
     // Tombstones last among the marker passes, so they are never hidden by a stale layer.
     this.drawAbsent();
+    // The Hidden strike-through, over every marker but under the reprojection warning: a joint can
+    // be both held out of the loss and disagreeing with the geometry, and the warning is the one
+    // that wants the eye first.
+    this.drawHidden();
+    // The label-coverage gauge, under the reprojection warning: a joint can be both short of its
+    // labels and disagreeing with the geometry, and the disagreement is the one that wants the eye
+    // first (it also sits on a smaller radius, so the two never overdraw each other).
+    if (this.coverVisible) this.drawGtCoverage();
     if (this.warnVisible && this.latent) this.drawReprojWarnings();
     // The Shift+drag selection rubber-band sits on top of everything (CSS px, like
     // the rest of draw()).
@@ -703,15 +801,13 @@ export class PoseView {
       : null;
   }
 
-  // The detector's USABLE prediction for joint `i` (the "detected" source), or null. A view the
-  // operator flagged occluded ("Projected") is an assertion that its pixel is not readable here:
-  // it is dropped from the 3D solve, so it is not a position source either. The joint then falls
-  // through to its reprojection -- the best estimate left for this view -- everywhere a position
-  // is resolved (nodeAt, anchorPos, grabCandidates). Without this, occluding a
-  // view left its rejected pixel drawn as the joint's position, contradicting the state it reports.
+  // The detector's prediction for joint `i` (the "detected" source), or null when it fired
+  // nothing here. The Hidden flag is NOT consulted: it says whether this cell is included in the
+  // training loss, and a cell you have decided not to train on is exactly a cell you may still
+  // need to see and drag. Suppressing the detection here used to be how Hidden was rendered, and
+  // it took the position with it -- see drawHidden for the mark that replaced it.
   /** @param {number} i @returns {Point | null} */
   detPos(i) {
-    if (this.invisible && this.invisible[i]) return null;
     return this.detected && i < this.detected.length ? this.detected[i] : null;
   }
 
@@ -724,16 +820,15 @@ export class PoseView {
   }
 
   // The reprojected position of joint `i` when it is actually DRAWN as the joint's position -- so
-  // the anchor and the hit-test only ever land on something the operator can see. That is either
-  // because the reprojection overlay is shown (its hollow ring is right there), or because the view
-  // has no usable observation (occluded) and the merged skeleton is therefore drawing the joint at
-  // its reprojection -- which it does whether or not that overlay is on (see nodeAt/drawSkeleton).
+  // the anchor and the hit-test only ever land on something the operator can see. That is when the
+  // reprojection overlay is shown and its hollow ring is right there. (It used to stand in for a
+  // Hidden cell too, back when Hidden suppressed the cell's own pixel; it no longer does, so the
+  // cell is drawn at its own position and there is nothing extra to substitute.)
   /** @param {number} i @returns {Point | null} */
   shownLatentPos(i) {
     const p = this.latentPos(i);
     if (!p) return null;
-    if (this.projectedVisible) return p;
-    return this.invisible && this.invisible[i] ? p : null;
+    return this.projectedVisible ? p : null;
   }
 
   // Calibration landmarks: a diamond plus its name, in one warm colour distinct from every
@@ -829,14 +924,13 @@ export class PoseView {
   // has nothing to draw here. GT wins over detected. While a joint is being dragged it is authored
   // as ground truth, so render it as GT under the cursor immediately -- even before the server sets
   // its GT flag and even if it had no pixel before (a spawn from a detected / projected seed).
-  // Below the GT pixel it folds in, as fallbacks, first the detector's usable
-  // point (an occluded view has none -- see detPos) and then the reprojected point, so the merged
-  // skeleton stays fully connected (no bone drops out just because one endpoint is only derived).
-  // The reprojection stands in either when its overlay is shown, or -- whatever that toggle says --
-  // when the view has no usable observation at all: an occluded ("Projected") cell HAS no position
-  // but the derived one, so that is where the joint is drawn. A "projected" node normally draws no
-  // filled disc (the overlay's hollow ring beneath it is its "derived, not observed" marker); with
-  // the overlay hidden it draws that ring itself -- see drawSkeleton.
+  // Below the GT pixel it folds in, as fallbacks, first the detector's point and then the
+  // reprojected point, so the merged skeleton stays fully connected (no bone drops out just because
+  // one endpoint is only derived). The reprojection stands in while its overlay is shown. A
+  // "projected" node normally draws no filled disc (the overlay's hollow ring beneath it is its
+  // "derived, not observed" marker); with the overlay hidden it draws that ring itself -- see
+  // drawSkeleton. The Hidden flag is not consulted anywhere in this chain: it selects a mark drawn
+  // over the node, never which node is chosen.
   /** @param {number} i @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null} */
   nodeAt(i) {
     // An absent joint is not on the animal, so it precedes every other source: it must never
@@ -866,9 +960,8 @@ export class PoseView {
       if (d) return { pos: d, src: "detected" };
     }
     {
-      const occluded = !!(this.invisible && this.invisible[i]);
       const p = this.latentPos(i);
-      if (p && (this.projectedVisible || occluded)) return { pos: p, src: "projected" };
+      if (p && this.projectedVisible) return { pos: p, src: "projected" };
       // Last resort: the Unplaced seed. Without this a joint whose only position is a placeholder
       // returned null here, drawSkeleton's `if (!na || !nb) continue` dropped every bone touching
       // it, and the operator was left hunting a lone unconnected dot among 38 -- reported from the
@@ -881,11 +974,11 @@ export class PoseView {
   }
 
   // The best drawn position of joint `i` across the *visible* layers, for anchoring the
-  // selection ring / label / hover emphasis -- so a selected or hovered joint stays marked
-  // even when it has no GT yet (only a detected or projected point). Precedence follows what
-  // the operator sees: GT, then the detector's usable point (none in an occluded view), then the
-  // reprojection wherever that is what the joint is drawn at (see shownLatentPos). Honours the drag
-  // override (a spawned GT tracks the cursor) so its ring/label follow immediately.
+  // selection ring / name label / hover emphasis / Hidden bar -- so a joint that is selected,
+  // hovered or held out of the loss stays marked even when it has no GT yet (only a detected or
+  // projected point). Precedence follows what the operator sees: GT, then the detector's point,
+  // then the reprojection wherever that is what the joint is drawn at (see shownLatentPos). Honours
+  // the drag override (a spawned GT tracks the cursor) so its ring/label follow immediately.
   /** @param {number} i @returns {Point | null} */
   anchorPos(i) {
     if (i === this.dragging && this.moved && this.pts[i]) return this.pts[i];
@@ -947,7 +1040,7 @@ export class PoseView {
       // A projected node is NOT an observed point, so it draws no filled disc: usually the
       // reprojection overlay's hollow ring sits right beneath it as its "derived, not observed"
       // marker, and drawJointOverlay carries its selection / hover / label. With that overlay
-      // hidden the node is still here (an occluded view's position IS its reprojection), so it
+      // hidden the node is still here (the instance owns a position for every cell), so it
       // draws the hollow ring itself -- same vocabulary, so the joint never becomes a bone that
       // ends in empty space.
       if (node.src === "placeholder") continue; // bones only; drawPlaceholders draws its marker
@@ -1054,14 +1147,38 @@ export class PoseView {
     }
   }
 
-  // The reprojection-distance warning pass: for each joint whose anchor -- the authored GT pixel,
-  // else the detector's raw prediction (NOT the projected fallback) -- sits farther than
-  // warnThreshold IMAGE px from its 3D reprojection, draw a connector from the anchor to the
+  // The position a joint ASSERTS in this view: what the reprojection warning is entitled to
+  // measure against the geometry. The operator's GT pixel wherever they placed one -- that is a
+  // claim, and a claim the multi-view 3D can contradict. Failing that, once the frame has an
+  // annotation skeleton, the instance's own drawn position: the reprojection under the default
+  // display (which agrees with the geometry by construction, so nothing is flagged) or the frozen
+  // seed under `s` (a claim of its own, and one worth flagging when it drifts). Before an instance
+  // exists the detections ARE the primary layer, so the detector's pixel is what the view asserts.
+  //
+  // Deliberately NOT the raw detection once the instance exists. By then the detector is a
+  // reference layer, and its disagreement with the geometry is a fact about the detector, not
+  // about the annotation: a contralateral keypoint -- a left leg seen by a right-side camera --
+  // is routinely 100+ px out (measured 125 px for `lh_femur_tibia` in `rh`), so anchoring there
+  // flagged the joint permanently in that view. The operator would then label it correctly in two
+  // views, watch every other view move onto the geometry, and find the warning still standing in
+  // a view they cannot fix -- a warning that cannot be cleared by doing the work it asks for.
+  // Where the detector's opinion IS what you want to see, the Detected overlay (`t`) draws it.
+  /** @param {number} i @returns {Point | null} */
+  warnAnchor(i) {
+    const g = this.gtPos(i);
+    if (g) return g;
+    if (this.instanceMode) return this.pts[i] || null;
+    return this.detPos(i);
+  }
+
+  // The reprojection-distance warning pass: for each joint whose asserted position (warnAnchor)
+  // sits farther than warnThreshold IMAGE px from its 3D reprojection, draw a connector to the
   // reprojected point and a ring on the anchor, coloured amber at the threshold and ramping to red
   // at WARN_RED_MULT x it. The gap is measured on the raw image-space coords (BEFORE toCanvas), so
-  // the threshold is resolution-meaningful and stable under zoom/pan. Occluded joints (the operator
-  // deliberately dropped the observation, so a mismatch is expected) and the actively-dragged joint
-  // (its anchor is pinned to the cursor, not the solve) are skipped. Purely visual: hit-testing is
+  // the threshold is resolution-meaningful and stable under zoom/pan. The actively-dragged joint is
+  // skipped (its anchor is pinned to the cursor, not the solve); a Hidden one is NOT, because a
+  // pixel that disagrees with the geometry is worth flagging whether or not the loss will use it,
+  // and holding a cell out of training is not a reason to stop checking it. Purely visual: hit-testing is
   // data-driven and never consults what is drawn, so this cannot disturb hover / selection / drag.
   // Absent joints are skipped: they have no 3D by construction, so a distance warning there
   // would be a permanent red flag against geometry that should not exist.
@@ -1075,10 +1192,9 @@ export class PoseView {
     const n = Math.min(this.pts.length, latent.length);
     for (let i = 0; i < n; i++) {
       if (i === this.dragging) continue; // don't fight the cursor mid-drag
-      if (this.invisible && this.invisible[i]) continue; // occluded: observation intentionally dropped
       const proj = latent[i];
       if (!proj) continue;
-      const anchor = this.gtPos(i) || this.detPos(i); // GT, else predicted; else nothing to check
+      const anchor = this.warnAnchor(i); // what this view claims; null = nothing to check
       if (!anchor) continue;
       const d = Math.hypot(anchor[0] - proj[0], anchor[1] - proj[1]); // IMAGE px
       if (d <= thr) continue;
@@ -1112,6 +1228,66 @@ export class PoseView {
     ctx.restore();
   }
 
+
+  // The label-coverage pass: for each joint carrying ground truth in fewer than `coverMin` views
+  // of this frame, draw a gauge ring -- a dashed track for the requirement, a solid arc for the
+  // views already labeled. A joint that HAS enough is drawn nothing at all, so the cue empties out
+  // as the frame gets labeled and the canvas goes quiet again; that is what makes it usable as a
+  // "what is left here?" pass rather than permanent decoration.
+  //
+  // The count is over the whole frame, so the ring appears in every view -- including the view you
+  // already labeled. That is deliberate: the joint's problem is not local to a camera, and the
+  // arc says how much of the requirement that camera's own label already met.
+  //
+  // Anchored at anchorPos(i), like the Hidden bar, so it lands on the joint however it is drawn.
+  // Absent joints are skipped: they are not on the animal, so there is no pixel to place and no 3D
+  // to support -- a coverage flag there would be a demand that can never be met. The Hidden flag is
+  // NOT consulted: it decides what the training loss reads, and a pixel you placed is a pixel you
+  // placed. Purely visual -- hit-testing never consults what is drawn, so hover / selection / drag
+  // are untouched.
+  drawGtCoverage() {
+    const counts = this.gtViews;
+    const need = this.coverMin;
+    if (!counts || !(need > 0)) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineCap = "butt"; // a butt cap keeps the arc's sweep honest at the ends
+    for (let i = 0; i < counts.length; i++) {
+      const have = Math.max(0, counts[i] | 0);
+      if (have >= need || this.isAbsent(i)) continue;
+      const p = this.anchorPos(i);
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const r = POINT_RADIUS_PX * (i === this.highlight ? HOVER_SCALE : 1) + COVER_RING_PAD;
+      // Two strokes per pass (a dark casing under a coloured top), mirroring drawHidden /
+      // drawReprojWarnings so every cue stays legible on any frame.
+      /** @type {[number[], number, number, string][]} */
+      const passes = [
+        // The track: the whole ring, dashed and quiet -- "this joint is short of its labels".
+        [COVER_DASH, 0, Math.PI * 2, `rgba(${COVER_RGB},${COVER_TRACK_ALPHA})`],
+      ];
+      if (have > 0) {
+        // The gauge: solid, full strength, sweeping clockwise from 12 o'clock over the fraction
+        // already labeled. Opaque on purpose -- it is the one part of the cue that carries a
+        // count, so it must not wash out against whatever is underneath.
+        const from = -Math.PI / 2;
+        passes.push([[], from, from + Math.PI * 2 * (have / need), `rgb(${COVER_RGB})`]);
+      }
+      for (const [dash, from, to, style] of passes) {
+        ctx.setLineDash(dash);
+        /** @type {[string, number][]} */
+        const strokes = [[COVER_CASING, COVER_WIDTH + 2], [style, COVER_WIDTH]];
+        for (const [color, width] of strokes) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, from, to);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
 
   // The reprojected 3D drawn as its own independent overlay: the full reprojected skeleton in the
   // limb palette -- hollow rings at every reprojected joint joined by thick, semi-transparent,
@@ -1199,6 +1375,45 @@ export class PoseView {
       ctx.moveTo(cx + r, cy - r);
       ctx.lineTo(cx - r, cy + r);
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // The "Hidden" pass: one bar struck through every joint whose cell is held out of the training
+  // loss. It draws over the marker the joint already has and changes nothing about it -- the
+  // position, the source ring, the bones and the hit-test are all exactly as they would be without
+  // the flag, which is the point: whether a cell is supervised is a separate fact from where its
+  // keypoint is, and the display now says both instead of conflating them.
+  //
+  // Anchored at anchorPos(i), the same position every other cross-cutting mark uses, so the bar
+  // lands on the joint however it is drawn (GT pixel, detected disc, derived ring, seed ghost).
+  // Deliberately not toggleable, for the reason the tombstone is not: it reports an authored
+  // decision, and a decision you cannot see is one you cannot check or revise. An absent joint is
+  // skipped -- the server already vetoes the flag there (occluded_effective), and a tombstone
+  // needs no second "not trained on" cue.
+  drawHidden() {
+    if (!this.invisible) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineCap = "round";
+    for (let i = 0; i < this.invisible.length; i++) {
+      if (!this.invisible[i] || this.isAbsent(i)) continue;
+      const p = this.anchorPos(i);
+      if (!p) continue;
+      const [cx, cy] = this.toCanvas(p[0], p[1]);
+      const r = POINT_RADIUS_PX * (i === this.highlight ? HOVER_SCALE : 1) + HIDDEN_BAR_PAD;
+      // Bottom-left to top-right: the prohibition-sign diagonal, and the one direction no other
+      // cue uses (the absent cross owns both diagonals at once, the leash points at the model).
+      /** @type {[string, number][]} */
+      const passes = [[HIDDEN_CASING, 4], [HIDDEN_COLOR, 2]];
+      for (const [style, width] of passes) {
+        ctx.strokeStyle = style;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(cx - r, cy + r);
+        ctx.lineTo(cx + r, cy - r);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -1320,7 +1535,7 @@ export class PoseView {
       const pe = this.pts[i];
       // Undetected in this view (no editable point) but triangulated elsewhere: there is
       // no disagreement to leash, but still mark where the estimate places the point --
-      // surfacing that occluded keypoint is the overlay's whole job for such points.
+      // surfacing that unobserved keypoint is the overlay's whole job for such points.
       if (!pe) {
         if (markUndetected) this.strokeLeash(shape, null, rx, ry, 3, `rgba(${rgb},0.95)`);
         continue;
@@ -1431,10 +1646,11 @@ export class PoseView {
 
   // The grabbable positions of joint `i`, for hit-testing. A drag on any of them authors ground
   // truth for that joint: its GT pixel (grabbing it MOVES the GT), its detected point (when the
-  // Detected layer is shown and the view has not been flagged occluded -- grabbing it SPAWNS a GT
-  // there), and its reprojected point wherever that is drawn as the joint's position (likewise a
-  // spawn seed; see shownLatentPos). So whatever the operator sees is grabbable, and every grab
-  // resolves to the same authoring gesture on the joint index.
+  // Detected layer is shown -- grabbing it SPAWNS a GT there), and its reprojected point wherever
+  // that is drawn as the joint's position (likewise a spawn seed; see shownLatentPos). So whatever
+  // the operator sees is grabbable, and every grab resolves to the same authoring gesture on the
+  // joint index. A Hidden cell is grabbable like any other: the flag withholds the cell from the
+  // loss, it does not withhold the joint from the operator.
   /** @param {number} i @returns {(Point | null)[]} */
   grabCandidates(i) {
     // An absent joint offers only its tombstone, so click- and rubber-band selection still find

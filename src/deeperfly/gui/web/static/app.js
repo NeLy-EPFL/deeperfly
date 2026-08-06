@@ -14,10 +14,11 @@
 //
 // Annotation is two steps: build a selection of (point, view) cells, then set a fact on it.
 // The facts are orthogonal and each has its own toggle, pressed when set: GT (Enter / Backspace
-// place and clear), Hidden ("a human cannot see it here", `e`, a training note that does not
-// move the joint or touch the 3D), and Absent ("not on this animal", `x`, one gesture covering
-// every frame and view). Reset (`r`) retracts them. The toggles ARE the readout -- two of them
-// can be pressed at once, which is a state no single status line could report.
+// place and clear) says WHERE the joint is; Hidden (`e`) says whether the cell is INCLUDED IN THE
+// TRAINING LOSS and nothing else -- it moves no joint, hides no marker, changes no 3D and blocks
+// no verb; and Absent (`x`, "not on this animal") covers every frame and view at once. Reset (`r`)
+// retracts them. The toggles ARE the readout -- two of them can be pressed at once, which is a
+// state no single status line could report.
 //
 //
 // Two layouts share the same PoseView instances. "grid" shows every camera in an
@@ -51,7 +52,7 @@
 // This .js is the source -- there is no build step. VS Code type-checks it via
 // `// @ts-check` and the JSDoc payload types in types.js.
 
-import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
+import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveAllCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -61,7 +62,27 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"labeled" | "suggest" | "marks" | "jobs" | "settings"} SidebarTab */
+/** @typedef {"recordings"|"labeled"|"suggest"|"instances"|"marks"|"jobs"|"settings"} TabId */
+
+// The side panel's tabs, in strip order -- one pane on screen at a time. Activating a tab
+// IS the lazy-load trigger, which is what keeps the three expensive panes free until asked
+// for: Recording opens every recording's labels.h5, Settings re-composes the project config
+// and parses two TOML documents per read, Jobs starts a two-second poll. The panes that
+// render from `meta` alone have nothing to run, so they are absent from `tabActivated`.
+const SIDEBAR_TABS = [
+  { id: "recordings", pane: "recording-pane" },
+  { id: "labeled", pane: "labeled-pane" },
+  { id: "suggest", pane: "suggest-pane" },
+  { id: "instances", pane: "instances-pane" },
+  { id: "marks", pane: "marks-pane" },
+  { id: "jobs", pane: "jobs-pane" },
+  { id: "settings", pane: "settings-pane" },
+];
+/** @type {TabId} */
+const SIDEBAR_DEFAULT_TAB = "labeled";
+const SIDEBAR_TAB_KEY = "deeperfly.sidebar.tab";
+const SIDEBAR_OPEN_KEY = "deeperfly.sidebar.open";
+const SIDEBAR_DEFAULT_OPEN = true;
 /** @typedef {import("./types.js").EditMode} EditMode */
 /** @typedef {"grid" | "focus"} Layout */
 /** @typedef {{ key: string, mod?: boolean, shift?: boolean, global?: boolean, hidden?: boolean, group?: string, label: string, desc: string, run: (e: KeyboardEvent) => void }} Binding */
@@ -78,6 +99,19 @@ const WARN_ON_KEY = "deeperfly.warn.enabled";
 const WARN_PX_KEY = "deeperfly.warn.threshold";
 const WARN_PX_MIN = 1;
 const WARN_PX_MAX = 200;
+
+// ... and for its sibling check, the label-coverage gauge (poseView.js drawGtCoverage): whether
+// it is shown, and how many GT views a keypoint must have before it stops being flagged. Both
+// persist for the same reason the warning's do -- they are the operator's standing audit
+// settings, not a per-frame choice. Off by default; `u` and the Show menu turn it on.
+const COVER_ON_KEY = "deeperfly.cover.enabled";
+const COVER_MIN_KEY = "deeperfly.cover.min";
+// Two is the geometric floor (one pixel fixes a viewing ray, not a point) and the annotation
+// solve's own bar -- `min_gt_for_exclusive`, config default 2, is where GT alone determines a
+// point's 3D. The ceiling is the camera count, applied from /api/meta at build time: asking for
+// more views than the rig has would flag every joint of every frame forever.
+const COVER_MIN_DEFAULT = 2;
+const COVER_MIN_FLOOR = 1;
 
 /**
  * @template {HTMLElement} T
@@ -230,9 +264,8 @@ class App {
   hoverCell = null;
   // The latest per-view ground-truth mask and "projected" mask (from the points payload),
   // so the status widget can report each selected joint's source. `projectedMask` marks a
-  // cell with no observed pixel here -- the operator occluded the view, or the detector
-  // never fired -- whose drawn position follows the 3D reprojection. Null until the first
-  // payload.
+  // cell with no observed pixel here -- the detector never fired -- whose drawn position
+  // follows the 3D reprojection. Null until the first payload.
   /** @type {boolean[][] | null} */
   fixedMask = null;
   /** @type {boolean[][] | null} */
@@ -270,11 +303,25 @@ class App {
   // (beforeunload) from nagging after the operator has already decided.
   closing = false;
   closeConfirmOpen = false;
-  // The pending recording switch: which slug, and whether its confirm modal is up. The
-  // server refuses to switch while labels are unsaved, so this prompt is the only path
-  // that can answer that refusal -- there is no beforeunload for an in-process swap.
-  switchConfirmOpen = false;
-  pendingSwitch = "";
+  //: The project's OTHER recordings holding unsaved labels (never the open one -- that is
+  //: `dirty`, which every edit reply refreshes). The server keeps every recording it has
+  //: opened, so switching loses nothing and unsaved work is a property of the *project*:
+  //: this is what the close prompt and the beforeunload guard read, and what the unsaved
+  //: cue counts. Kept as "the others" rather than the whole set because the whole set
+  //: would go one stale on every edit -- `dirty` moves per keystroke, this only on a
+  //: switch or a save.
+  /** @type {Set<string>} */
+  dirtyOthers = new Set();
+  //: Bumped by every recording rebuild, and checked after every `await` in the refresh*
+  //: methods -- there is no AbortController anywhere in this codebase. Without it, an
+  //: /api/points fetch issued against the OLD session resolves after the swap and
+  //: applyPoints' only defense (its frame guard) passes, because the rebuild navigates to
+  //: frame 0 and the stale reply is for frame 0.
+  epoch = 0;
+  //: The in-flight rebuild, or null. The server broadcasts the reload to every socket
+  //: INCLUDING the one that asked, so the switching tab enters twice.
+  /** @type {Promise<void> | null} */
+  rebuilding = null;
   // The corrected-frames side panel: the list (sorted, each with a reviewed flag),
   // whether the panel is open, the row elements keyed by frame (for the current-frame
   // highlight), and a debounce timer coalescing post-edit refreshes.
@@ -284,15 +331,23 @@ class App {
   /** @type {Map<number, HTMLTableRowElement>} */
   frameRows = new Map();
   correctedTimer = 0;
-  // The side panel's two tabs. "labeled" is the frames-with-GT list above; "suggest" is
-  // the ranked queue from `deeperfly labels-suggest` (a static sidecar, so it is fetched
-  // on load / on save / on tab activation, never per edit). `suggestions` is null until
-  // the first fetch resolves and stays null when no queue has been computed -- the tab
-  // then explains how to make one instead of looking broken. Which frames are DONE is
-  // not read from the sidecar but joined live from `correctedFrames` at render time, so a
-  // row flips the moment its frame is labeled, with no refetch.
-  /** @type {SidebarTab} */
-  sidebarTab = "labeled";
+  // The side panel's tabs. "labeled" is the frames-with-GT list; "suggest" is the ranked
+  // queue from `deeperfly labels-suggest` (a static sidecar, so it is fetched on load / on
+  // save / on tab activation, never per edit). `suggestions` is null until the first fetch
+  // resolves and stays null when no queue has been computed -- the pane then explains how
+  // to make one instead of looking broken. Which frames are DONE is not read from the
+  // sidecar but joined live from `correctedFrames` at render time, so a row flips the moment
+  // its frame is labeled, with no refetch.
+  /** @type {Map<TabId, {id: TabId, pane: string, tab: HTMLButtonElement, body: HTMLElement}>} */
+  tabs = new Map();
+  /** @type {TabId} which pane is showing. Persisted, and preserved across a recording
+   *  switch -- it is the operator's arrangement, not the recording's data. */
+  sidebarTab = SIDEBAR_DEFAULT_TAB;
+  //: Which list the up/down KEYS step. Normally the list tab on screen -- but from the
+  //: Settings or Jobs tab there is none, so it REMEMBERS the last one the operator used
+  //: rather than going dead, and the nav buttons' tooltips name whichever it is.
+  /** @type {"labeled" | "suggest"} */
+  navList = "labeled";
   /** @type {SuggestionsPayload | null} */
   suggestions = null;
   /** @type {Map<number, HTMLTableRowElement[]>} */
@@ -322,12 +377,23 @@ class App {
   reviewedBtn = el("reviewed-toggle");
   //: Whether the current frame is marked reviewed, mirrored from the payload.
   reviewed = false;
+  // Both live in the Skeleton popover, and exactly one of them is ever enabled: the server
+  // refuses Create on a frame that already has a skeleton and Reseed on one that does not.
+  /** @type {HTMLButtonElement} */
   skeletonCreateBtn = el("skeleton-create");
+  /** @type {HTMLButtonElement} */
+  reseedBtn = el("reseed");
   skeletonToggle = el("skeleton-toggle");
   skeletonMenu = el("skeleton-menu");
   skeletonMenuOpen = false;
   //: How a new skeleton is seeded. Server-side state; mirrored here for the switch.
   seedMode = "triangulate";
+  // How a point's 3D is derived once its GT views are exclusive. A camera cannot see
+  // distance along its own optical axis, so two GT views facing each other leave that one
+  // direction nearly free -- "on" lets the unlabeled views fix it (and only it), "off" is
+  // the older solve-from-my-pixels-alone. Server-side state, mirrored here for the switch.
+  //: "on" (the default) or "off": whether unlabeled views help fix the depth GT cannot.
+  solveStabilizers = "on";
   /** @type {HTMLInputElement} */
   labelsCheck = el("show-labels");
   /** @type {HTMLLabelElement} */
@@ -345,7 +411,7 @@ class App {
   /** @type {HTMLLabelElement} */
   /** @type {HTMLInputElement} */
   /** @type {HTMLDivElement} */
-  warnSection = el("warn-section");
+  checksSection = el("checks-section");
   /** @type {HTMLLabelElement} */
   warnWrap = el("warn-wrap");
   /** @type {HTMLInputElement} */
@@ -354,6 +420,14 @@ class App {
   warnThresholdWrap = el("warn-threshold-wrap");
   /** @type {HTMLInputElement} */
   warnThresholdInput = el("warn-threshold");
+  /** @type {HTMLLabelElement} */
+  coverWrap = el("cover-wrap");
+  /** @type {HTMLInputElement} */
+  coverCheck = el("show-cover");
+  /** @type {HTMLLabelElement} */
+  coverMinWrap = el("cover-min-wrap");
+  /** @type {HTMLInputElement} */
+  coverMinInput = el("cover-min");
   /** @type {HTMLDivElement} */
   referenceSection = el("reference-section");
   /** @type {HTMLLabelElement} */
@@ -381,7 +455,6 @@ class App {
   chirality = null;
   /** @type {Segmented} */
   /** @type {Segmented} */
-  sidebarTabs;
   /** @type {HTMLButtonElement} */
   actResetBtn = el("act-reset");
   /** @type {HTMLButtonElement} */
@@ -396,18 +469,14 @@ class App {
   showMenu = el("show-menu");
   showMenuOpen = false;
   /** @type {HTMLDivElement} */
-  recordingWrap = el("recording-wrap");
   /** @type {HTMLButtonElement} */
-  recordingToggle = el("recording-toggle");
   /** @type {HTMLDivElement} */
-  recordingMenu = el("recording-menu");
   /** @type {HTMLSpanElement} */
   recordingNameEl = el("recording-name");
   /** @type {HTMLDivElement} */
   recordingListEl = el("recording-list");
   /** @type {HTMLDivElement} */
   recordingEmptyEl = el("recording-empty");
-  recordingMenuOpen = false;
   //: The last /api/recordings payload, kept so a role change can re-render the rows
   //: (a read-only tab may not switch) without another round trip.
   /** @type {any} */
@@ -430,26 +499,35 @@ class App {
   closeBtn = el("close-editor");
   /** @type {HTMLSpanElement} */
   statusEl = el("status");
+  //: The closed panel's re-open handle on the right edge. Shown only while the panel is
+  //: hidden, so it and the panel's own ✕ are never on screen at the same time.
   /** @type {HTMLButtonElement} */
-  framesToggleBtn = el("frames-toggle");
+  sidebarRailBtn = el("sidebar-rail");
   /** @type {HTMLSpanElement} */
   framesCountEl = el("frames-count");
   /** @type {HTMLElement} */
   sidebarEl = el("sidebar");
   /** @type {HTMLButtonElement} */
   framesCollapseBtn = el("frames-collapse");
+  //: The Recording tab, hidden for a bare results.h5 session with no project to list.
   /** @type {HTMLButtonElement} */
-  framesPrevBtn = el("frames-prev");
-  /** @type {HTMLButtonElement} */
-  framesNextBtn = el("frames-next");
+  recordingsTab = el("tab-recordings");
+  /** @type {HTMLSpanElement} */
+  labeledCountEl = el("labeled-count");
+  /** @type {HTMLSpanElement} */
+  suggestTallyEl = el("suggest-tally");
+  /** @type {HTMLSpanElement} */
+  marksCountEl = el("marks-count");
+  /** @type {HTMLSpanElement} */
+  jobsCountEl = el("jobs-count");
+  /** @type {HTMLSpanElement} */
+  instanceStateEl = el("instance-state");
+  /** @type {HTMLDivElement} */
+  instancesList = el("instances-list");
   /** @type {HTMLTableSectionElement} */
   framesTbody = /** @type {HTMLTableElement} */ (el("frames-table")).tBodies[0];
   /** @type {HTMLDivElement} */
   framesEmptyEl = el("frames-empty");
-  /** @type {HTMLDivElement} */
-  sidebarTabsEl = el("sidebar-tabs");
-  /** @type {HTMLSpanElement} */
-  suggestCountEl = el("suggest-count");
   /** @type {HTMLDivElement} */
   labeledPane = el("labeled-pane");
   /** @type {HTMLDivElement} */
@@ -497,18 +575,10 @@ class App {
   closeDiscardBtn = el("close-discard");
   /** @type {HTMLButtonElement} */
   closeSaveBtn = el("close-save");
-  /** @type {HTMLDivElement} */
-  switchOverlay = el("switch-overlay");
-  /** @type {HTMLButtonElement} */
-  switchCancelBtn = el("switch-cancel");
-  /** @type {HTMLButtonElement} */
-  switchDiscardBtn = el("switch-discard");
-  /** @type {HTMLButtonElement} */
-  switchSaveBtn = el("switch-save");
-  /** @type {HTMLSpanElement} */
-  switchFromEl = el("switch-from");
-  /** @type {HTMLSpanElement} */
-  switchToEl = el("switch-to");
+  /** @type {HTMLSpanElement} the close prompt's list of recordings with unsaved labels */
+  closeListEl = el("close-list");
+  /** @type {HTMLButtonElement} the toolbar's unsaved-changes cue (hidden while clean) */
+  unsavedChip = el("unsaved");
   /** @type {HTMLDivElement} */
   stoppedOverlay = el("stopped-overlay");
   /** @type {HTMLDivElement} */
@@ -557,22 +627,34 @@ class App {
   async init() {
     this.meta = await fetchMeta();
     this.dirty = this.meta.dirty;
+    // A reload lands on a server that may already be holding OTHER recordings' unsaved
+    // labels (this page is not where they were made). Without this the fresh page would
+    // report itself clean and let the operator close the editor on them.
+    this.applyDirtyRecordings(this.meta.dirty_recordings);
     // Grid is the default (`layout` is initialised to it); focus stays a click / l away.
     this.bindings = this.buildBindings();
     this.buildControls();
+    this.buildSidebar();
     this.applyOsHints();
     this.buildViews();
     // Sync the (persisted) reprojection-warning state into the freshly-built views. With no saved
     // override this matches their constructor defaults, so the setters early-return -- no extra draw.
     this.applyWarn();
     this.applyWarnThreshold();
+    this.applyCover();
+    this.applyCoverMin();
     this.relayout();
     this.socket = new EditSocket(
       (p) => this.applyPoints(p, true),
       (r) => this.applyRole(r),
-      () => this.reloadForNewRecording(),
+      () => this.rebuildForNewRecording(),
     );
     await this.goToFrame(0);
+    this.renderInstance();
+    // Reseed starts disabled on a frame with no skeleton. applyPoints only re-syncs when
+    // `has_instance` CHANGES, and frame 0 usually has none -- so nothing there would have
+    // disabled it, and it would offer an act the server is about to refuse.
+    this.syncSkeletonMenu();
     this.updateSelected();
     this.updateDirty();
     await this.refreshCorrected(); // populate the list (any corrections loaded from disk)
@@ -580,7 +662,7 @@ class App {
     // Closing instantly when there is nothing to lose, prompting otherwise: the
     // browser shows its generic "leave site?" dialog only while edits are unsaved.
     window.addEventListener("beforeunload", (e) => {
-      if (this.dirty && !this.closing) {
+      if (this.projectDirty && !this.closing) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -612,30 +694,94 @@ class App {
 
   // -- construction -----------------------------------------------------------
 
-  buildControls() {
+  // Everything in the editor's chrome that is DERIVED from /api/meta: ranges, names, and
+  // which controls exist at all. Split out of `buildControls` so a recording switch can
+  // re-apply it WITHOUT re-running the one-time wiring -- which would double every
+  // listener (two edits per click on undo/GT/Absent) and append a second copy of every
+  // segmented switch, still wired to `this`. Every statement here must be idempotent.
+  applyMeta() {
     const last = Math.max(0, this.meta.n_frames - 1);
+    // `.max` before `.value`: a range input clamps its value to its max, so the other
+    // order silently pins a longer recording to the previous one's last frame.
     for (const input of [this.slider, this.number]) {
       input.min = "0";
       input.max = String(last);
       input.value = "0";
     }
     this.totalEl.textContent = `/ ${last}`;
-    this.slider.addEventListener("input", () => this.goToFrame(Number(this.slider.value)));
-    this.number.addEventListener("change", () => this.goToFrame(Number(this.number.value)));
 
     // A single camera has no arrangement to choose, so only the Grid/Focus segment is
     // hidden -- the Layout menu itself stays, since it also holds "Reset view", which one
-    // (still zoomable) camera can use too.
+    // (still zoomable) camera can use too. It also registers no `l` binding, so a session
+    // left in focus would be stuck there with no control that could get it out.
     const multiCam = this.meta.n_views > 1;
     this.layoutArrangeSection.style.display = multiCam ? "" : "none";
     this.layoutArrangeRow.style.display = multiCam ? "" : "none";
-    // With one camera there is no arrangement to choose, so the Cameras section collapses to
-    // "Fit every camera" and the rows above hide themselves.
+    if (!multiCam) {
+      this.layout = "grid";
+      this.focused = 0;
+    }
+    this.layoutSwitch.set(this.layout);
+
+    // Which layers can exist at all. `has_cameras` is absent on older servers, where its
+    // absence means "calibrated" -- the prior behavior.
+    this.uncalBanner.hidden = this.meta.has_cameras !== false;
+    this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
+    const warnAvailable = this.meta.has_3d;
+    this.warnWrap.style.display = warnAvailable ? "" : "none";
+    this.warnThresholdWrap.style.display = warnAvailable ? "" : "none";
+    // The coverage check counts labeled views, so it needs cameras to count over and nothing else
+    // -- no rig, no detections, no 3D. It is therefore available on a fresh uncalibrated project,
+    // where it is the only check there is, and unavailable on a single camera, where "two views"
+    // is a requirement no amount of labeling could ever meet. Its ceiling follows the rig.
+    const coverAvailable = this.meta.n_views > 1;
+    this.coverWrap.style.display = coverAvailable ? "" : "none";
+    this.coverMinWrap.style.display = coverAvailable ? "" : "none";
+    this.coverMinInput.max = String(this.coverCeiling);
+    this.coverMinInput.value = String(this.clampCoverMin());
+    // The section heading spans both checks, so it survives as long as either one does.
+    this.checksSection.style.display = warnAvailable || coverAvailable ? "" : "none";
+    this.referenceSection.style.display = this.meta.has_nmf ? "" : "none";
+    this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.sceneNmfWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.sceneMeshWrap.style.display = this.meta.has_nmf ? "" : "none";
+
+    // Server-mirrored editor settings: a fresh EditorState reverts both server-side, so
+    // the switches have to follow the reset fields rather than keep the old choice.
+    this.nongtSwitch.set(this.nongtDisplay);
+    this.seedSwitch.set(this.seedMode);
+    this.stabilizeSwitch.set(this.solveStabilizers);
+    // No rig means no triangulation to choose between: every view is an independent 2D
+    // canvas. Hidden rather than disabled, following the other geometry-dependent rows.
+    const noRig = this.meta.has_cameras === false;
+    el("stabilize-section").style.display = noRig ? "none" : "";
+    el("stabilize-row").style.display = noRig ? "none" : "";
+    // Pin the name readout to its widest possible value so hovering / selecting different
+    // joints never reflows the widget -- the widest value depends on the point names.
+    this.reserveStatusNameWidth();
+
+    // Which recording is open. This is the loudest stale-data bug a forgotten re-apply
+    // could produce, so it lives here rather than at any of its call sites.
+    this.recordingsTab.hidden = !this.meta.project_root;
+    this.recordingNameEl.textContent = this.meta.recording ?? "recording";
+    // A session with no project has no Recording tab to show. `applyMeta` runs before
+    // `buildSidebar` at boot (so `tabs` is still empty and the restore does its own check),
+    // but it also runs on every switch, where leaving the active tab pointing at a hidden
+    // chip would strand the panel on a blank pane.
+    if (this.recordingsTab.hidden && this.tabs.size && this.tabActive("recordings")) {
+      this.setSidebarTab(SIDEBAR_DEFAULT_TAB);
+    }
+  }
+
+  buildControls() {
+    this.slider.addEventListener("input", () => this.goToFrame(Number(this.slider.value)));
+    this.number.addEventListener("change", () => this.goToFrame(Number(this.number.value)));
+
     this.layoutSwitch = segmented(
       [["Grid", "grid"], ["Focus", "focus"]],
       (v) => this.setLayout(/** @type {Layout} */ (v))
     );
-    this.layoutSwitch.set(this.layout);
     el("layout-switch").append(this.layoutSwitch.root);
 
     // No state control here, deliberately. A cell does not HAVE a state you assign; it has
@@ -648,20 +794,9 @@ class App {
       this.toggleAbsentSelection(e.shiftKey ? "recording" : "frame"),
     );
 
-    // The side panel's tab strip, in place of a plain title: two lists that differ in
-    // both columns and ordering (labeled frames in time order; suggested frames in rank
-    // order), so they are separate tabs rather than one filtered list. Reuses the
-    // established `.segmented` component, so the strip needs no new visual language.
-    this.sidebarTabs = segmented(
-      [["Labeled", "labeled"], ["Suggested", "suggest"], ["Landmarks", "marks"], ["Jobs", "jobs"], ["Settings", "settings"]],
-      (v) => this.setSidebarTab(/** @type {SidebarTab} */ (v)),
-    );
-    this.sidebarTabsEl.append(this.sidebarTabs.root);
-    this.setSidebarTab(this.sidebarTab);
-    // Pin the name readout to its widest possible value so hovering / selecting different
-    // joints never reflows the widget (and thus never nudges the controls after it).
-    this.reserveStatusNameWidth();
-
+    // The side panel's tab strip is static markup wired in `buildSidebar`, not built here:
+    // its chips carry per-pane counts and one is hidden for a project-less session, neither
+    // of which the `.segmented` component does.
     this.hideAllCheck.addEventListener("change", () => this.applyHideAll());
     this._detectedTitle = this.detectedWrap.title;
     this.autoHideCheck.addEventListener("change", () => this.applyDetected());
@@ -672,15 +807,24 @@ class App {
       (v) => this.setNongtDisplay(v),
     );
     el("nongt-switch").append(this.nongtSwitch.root);
-    this.nongtSwitch.set(this.nongtDisplay);
     this.seedSwitch = segmented(
       [["Triangulated", "triangulate"], ["Each view's own", "copy"]],
       (v) => this.setSeedMode(v),
     );
     el("seed-switch").append(this.seedSwitch.root);
-    this.seedSwitch.set(this.seedMode);
-    this.skeletonCreateBtn.addEventListener("click", () => this.createInstance());
-    el("reseed").addEventListener("click", () => {
+    // How the 3D is derived once your labels are exclusive. A solve setting, not a display
+    // one, so it belongs beside the seeding mode rather than in Show: both answer "where do
+    // the numbers come from", and neither changes what is drawn on top of them.
+    this.stabilizeSwitch = segmented(
+      [["My pixels + other views", "on"], ["My pixels only", "off"]],
+      (v) => this.setSolveStabilizers(v),
+    );
+    el("stabilize-switch").append(this.stabilizeSwitch.root);
+    this.skeletonCreateBtn.addEventListener("click", () => {
+      this.createInstance();
+      this.closeSkeletonMenu();
+    });
+    this.reseedBtn.addEventListener("click", () => {
       this.reseedInstance();
       this.closeSkeletonMenu();
     });
@@ -694,18 +838,13 @@ class App {
     // `has_3d`: a calibrated recording whose triangulation stage has not run also has no
     // 3D, and that is a "run the pipeline" state, not an "uncalibrated project" one.
     // Older servers omit the field, so absence means "calibrated" (the prior behavior).
-    this.uncalBanner.hidden = this.meta.has_cameras !== false;
-    this.projectedWrap.style.display = this.meta.has_3d ? "" : "none";
     this.projectedCheck.addEventListener("change", () => this.applyProjected());
     // The "Unplaced" placeholder seeds are the guarantee that no joint is ever unreachable: a cell
     // with nothing else drawn still gets a faint ghost to drag into a GT label (the authored 2D
     // needs no prior 3D), so the layer is available with or without a 3D solve.
-    // The reprojection-distance warning flags joints whose GT/detected pixel is far from the 3D
-    // reprojection -- only meaningful with a 3D solve, so it shares the projected row's has_3d gate.
-    const warnAvailable = this.meta.has_3d;
-    this.warnSection.style.display = warnAvailable ? "" : "none";
-    this.warnWrap.style.display = warnAvailable ? "" : "none";
-    this.warnThresholdWrap.style.display = warnAvailable ? "" : "none";
+    // The reprojection-distance warning flags joints whose asserted pixel -- the operator's GT,
+    // else what the skeleton draws there (poseView.js ``warnAnchor``) -- is far from the 3D
+    // reprojection; only meaningful with a 3D solve, so it shares the projected row's has_3d gate.
     // Restore the persisted preference (the one persisted display setting) over the HTML defaults
     // (on, 8 px), so an operator's tolerance survives a reload. The initial fan-out into the views
     // happens after buildViews() in init().
@@ -720,15 +859,27 @@ class App {
       this.warnThresholdInput.value = String(this.clampWarnPx());
       this.applyWarnThreshold();
     });
+    // The label-coverage check: which keypoints you have not yet labeled in enough views of this
+    // frame. Restored from the same kind of persisted preference, but OFF unless the operator
+    // turned it on -- it answers "what is left here?", and an editor that opens with a ring on
+    // every joint has buried the skeleton under its own to-do list.
+    if (localStorage.getItem(COVER_ON_KEY) === "1") this.coverCheck.checked = true;
+    const savedMin = Number(localStorage.getItem(COVER_MIN_KEY));
+    if (Number.isFinite(savedMin) && savedMin > 0) {
+      this.coverMinInput.value = String(Math.round(savedMin));
+    }
+    this.coverCheck.addEventListener("change", () => this.applyCover());
+    this.coverMinInput.addEventListener("input", () => this.applyCoverMin());
+    this.coverMinInput.addEventListener("change", () => {
+      this.coverMinInput.value = String(this.clampCoverMin());
+      this.applyCoverMin();
+    });
     // The NMF overlay is the fitted inverse-kinematics model -- only when present. The
     // "Reference" section heading is hidden with it, so it never dangles over no rows.
-    this.referenceSection.style.display = this.meta.has_nmf ? "" : "none";
-    this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.nmfCheck.addEventListener("change", () => this.applyNmf());
     // The NMF mesh overlay (rendered on the client GPU) -- only when a fitted model
     // is present. The head/abdomen size is estimated from the data by the IK stage
     // (no operator knob), so the overlay just follows the model.
-    this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
     this.meshCheck.addEventListener("change", () => this.applyMesh());
 
     this.actResetBtn.addEventListener("click", () => this.resetSelection());
@@ -749,43 +900,17 @@ class App {
         this.closeShowMenu();
       }
     });
-    // The recording picker. Only a project session has siblings to switch between; a
-    // bare results.h5 hides the button rather than offering one that always refuses.
-    this.recordingWrap.style.display = this.meta.project_root ? "" : "none";
-    this.recordingNameEl.textContent = this.meta.recording ?? "recording";
-    this.recordingToggle.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.toggleRecordingMenu();
-    });
-    document.addEventListener("click", (e) => {
-      if (
-        this.recordingMenuOpen &&
-        !this.recordingWrap.contains(/** @type {Node} */ (e.target))
-      ) {
-        this.closeRecordingMenu();
-      }
-    });
-    this.switchCancelBtn.addEventListener("click", () => this.closeSwitchConfirm());
-    this.switchDiscardBtn.addEventListener("click", () =>
-      this.doSwitch(this.pendingSwitch, true)
-    );
-    this.switchSaveBtn.addEventListener("click", () => this.saveAndSwitch());
-    this.switchOverlay.addEventListener("click", (e) => {
-      if (e.target === this.switchOverlay) this.closeSwitchConfirm();
-    });
+    // The unsaved cue is a button, not a label: the operator's answer to "something is
+    // unsaved" is almost always "then save it", and the alternative -- reaching for the
+    // Save button two controls along -- makes the cue a thing you read past.
+    this.unsavedChip.addEventListener("click", () => this.save());
     this.resetViewBtn.addEventListener("click", () => this.resetView());
-    this.framesToggleBtn.addEventListener("click", () => this.toggleFrames());
-    this.framesCollapseBtn.addEventListener("click", () => this.closeFrames());
-    this.framesPrevBtn.addEventListener("click", () => this.jumpCorrected(-1));
-    this.framesNextBtn.addEventListener("click", () => this.jumpCorrected(1));
     this.camerasBtn.addEventListener("click", () => this.toggleScene());
     this.helpBtn.addEventListener("click", () => this.toggleHelp());
     this.helpClose.addEventListener("click", () => this.closeHelp());
     this.sceneClose.addEventListener("click", () => this.closeScene());
     this.initSceneDrag();
     // The 3D-view layer toggles; the NMF layers only exist when a model was fit.
-    this.sceneNmfWrap.style.display = this.meta.has_nmf ? "" : "none";
-    this.sceneMeshWrap.style.display = this.meta.has_nmf ? "" : "none";
     for (const c of [this.sceneAxesCheck, this.sceneCamerasCheck, this.scenePoseCheck, this.sceneNmfCheck, this.sceneMeshCheck]) {
       c.addEventListener("change", () => this.applySceneToggles());
     }
@@ -806,6 +931,8 @@ class App {
     this.closeOverlay.addEventListener("click", (e) => {
       if (e.target === this.closeOverlay) this.closeCloseConfirm();
     });
+    // Last: the segmented switches above must exist before applyMeta sets them.
+    this.applyMeta();
   }
 
   buildViews() {
@@ -917,6 +1044,7 @@ class App {
     this.readonlyBanner.hidden = !readOnly;
     this.updateViewRoles(); // re-apply per-view editability
     this.updateDirty(); // the Save button is disabled while read-only
+    this.syncSkeletonMenu(); // neither verb may author from a read-only tab
     this.renderFrameList(); // re-render so the reviewed checkboxes track editability
     // A demoted tab must not be able to switch the recording out from under the writer,
     // and a promoted one should stop saying it cannot.
@@ -949,7 +1077,13 @@ class App {
     // source layer. Detections are static within a frame, so this rides the navigation
     // fetch only -- the mid-drag edit stream stays lean (no `pred`), and each view keeps
     // the detections it already has.
-    this.applyPoints(await fetchPoints(this.frame, this.mode, true));
+    const epoch = this.epoch;
+    const payload = await fetchPoints(this.frame, this.mode, true);
+    // A recording switch landed while this was in flight: the reply describes the
+    // recording just closed, and the rebuild has already navigated to frame 0 -- which is
+    // exactly the frame this reply is for, so applyPoints' frame guard would let it past.
+    if (epoch !== this.epoch) return;
+    this.applyPoints(payload);
   }
 
   /** A one-line, self-dismissing status notice. Non-blocking on purpose: these are
@@ -994,18 +1128,21 @@ class App {
     // the status widget; they are meaningful whether or not the result carries 3D.
     this.fixedMask = p.fixed;
     // A cell with no observed pixel (null in `points`) follows the 3D reprojection -- the
-    // "projected" state. That covers both an operator-occluded view (`p.invisible`) and
-    // one the detector missed, since display_pts2d NaNs out both; the card's toggles read
-    // it off this so an undetected view reads as "Projected", not "Detected" (the
-    // occluded-only `p.invisible` mask still rides through to each view for the drag
-    // un-occlude, but is a strict subset here).
+    // "projected" state. That now means exactly one thing: the detector fired nothing there.
+    // The Hidden flag used to land in here too, because it NaN'd the cell's detection out
+    // server-side; it no longer touches a position, so the two masks are independent and each
+    // says only what it is named for.
     this.projectedMask = p.points.map((row) => row.map((pt) => pt == null));
+    // The Hidden flag: which cells are held out of the training loss. Read by the card's toggle
+    // and passed to every view, which strikes a bar through the joint (poseView drawHidden).
     if (p.invisible) this.excludedMask = p.invisible;
     if (p.has_instance != null && p.has_instance !== this.hasInstance) {
       this.hasInstance = p.has_instance;
+      // The Instance pane reports this frame's skeleton, so it follows the payload that
+      // decides whether there is one.
+      this.renderInstance();
       this.applyDetected(); // the auto-hide rule is derived from it, so re-resolve
-      // Disabled IS the "this frame already has one" indicator, so no separate dot is needed.
-      this.skeletonCreateBtn.disabled = this.hasInstance || this.readOnly;
+      this.syncSkeletonMenu();
     }
     // Absence rides every reply (it gates drawing), so assign unconditionally rather than
     // keeping a previous value the way `pred` / `placeholder` do.
@@ -1028,10 +1165,19 @@ class App {
     // `nmf` is omitted on mid-drag replies (the server skips the per-frame re-fit);
     // when absent, leave each view's model overlay as-is instead of clearing it.
     const hasNmf = "nmf" in p;
+    // How many views carry a GT pixel for each keypoint of this frame -- the label-coverage
+    // check's whole input, and a column sum of a mask the payload already carries. Computed here
+    // rather than asked of the server for exactly that reason: it is a view of data the client
+    // holds, so it costs no round trip, stays correct on the lean mid-drag stream, and adds
+    // nothing to the wire. Every view is handed the same array (see PoseView.gtViews).
+    const gtViews = (p.fixed[0] ?? []).map((_, i) =>
+      p.fixed.reduce((n, row) => n + (row[i] ? 1 : 0), 0),
+    );
     this.views.forEach((view, v) => {
       view.setFrameData({
         points: p.points[v],
         fixed: p.fixed[v],
+        gtViews,
         instanceMode: !!p.has_instance,
         invented: p.invented ? p.invented[v] : undefined,
         invisible: p.invisible[v],
@@ -1092,6 +1238,38 @@ class App {
     this.seedMode = value;
     this.seedSwitch.set(value);
     this.sendEdit({ type: "set_seed_mode", value, frame: this.frame, mode: this.mode });
+  }
+
+  /**
+   * Choose how a point's 3D is derived once its GT views are exclusive.
+   *
+   * Unlike the seeding mode this changes every point that is already solved, so the reply
+   * is a full re-derived frame -- which is the point: flip it and the joints whose GT pair
+   * has a poor baseline visibly move, which is the only direct read on what the unlabeled
+   * views were contributing.
+   *
+   * @param {string} value "on" (default) or "off"
+   */
+  setSolveStabilizers(value) {
+    this.solveStabilizers = value;
+    this.stabilizeSwitch.set(value);
+    this.sendEdit({
+      type: "set_solve_stabilizers",
+      value,
+      frame: this.frame,
+      mode: this.mode,
+    });
+  }
+
+  // Which of the Skeleton menu's two verbs is live. They are mutually exclusive by
+  // construction -- create_instance refuses a frame that already has a skeleton
+  // (state.py:693) and reseed_instance one that does not (state.py:735) -- so disabling each
+  // in the other's state is the honest rendering of that, and doubles as the readout for
+  // whether this frame has been started. `g` / Shift+G stay bound either way: the server
+  // flashes a notice, so the key never silently does nothing.
+  syncSkeletonMenu() {
+    this.skeletonCreateBtn.disabled = this.hasInstance || this.readOnly;
+    this.reseedBtn.disabled = !this.hasInstance || this.readOnly;
   }
 
   // Start this frame without authoring anything. Idempotent: with a skeleton already there the
@@ -1174,6 +1352,40 @@ class App {
     const px = this.clampWarnPx();
     localStorage.setItem(WARN_PX_KEY, String(px));
     this.views.forEach((view) => view.setWarnThreshold(px));
+  }
+
+  applyCover() {
+    // The checkbox is the operator's standing intent and persists as such; what is drawn also
+    // needs the check to be AVAILABLE. Unlike the reprojection warning -- inert without a 3D solve
+    // by construction (poseView.js drawReprojWarnings returns on a null `latent`) -- this one would
+    // happily flag all 38 joints of a single-camera session against a two-view requirement that
+    // session can never meet. So the availability gate is applied here, not left to the drawing.
+    const wanted = this.coverCheck.checked;
+    localStorage.setItem(COVER_ON_KEY, wanted ? "1" : "0");
+    const on = wanted && this.meta.n_views > 1;
+    this.views.forEach((view) => view.setCoverVisible(on));
+  }
+
+  // How many GT views a keypoint needs, clamped to what this rig could ever supply. Falls back to
+  // the last-applied value while the field is momentarily empty mid-edit (as clampWarnPx does), so
+  // a partial keystroke never silently re-flags the whole frame.
+  clampCoverMin() {
+    const n = Number(this.coverMinInput.value);
+    if (!Number.isFinite(n) || n <= 0) {
+      return this.views[0]?.coverMin ?? COVER_MIN_DEFAULT;
+    }
+    return Math.min(this.coverCeiling, Math.max(COVER_MIN_FLOOR, Math.round(n)));
+  }
+
+  //: The most GT views a keypoint of THIS rig could ever have -- the input's ceiling.
+  get coverCeiling() {
+    return Math.max(COVER_MIN_FLOOR, this.meta.n_views);
+  }
+
+  applyCoverMin() {
+    const n = this.clampCoverMin();
+    localStorage.setItem(COVER_MIN_KEY, String(n));
+    this.views.forEach((view) => view.setCoverMin(n));
   }
 
   applyNmf() {
@@ -1265,7 +1477,6 @@ class App {
 
   openShowMenu() {
     this.closeSkeletonMenu(); // only one popover open at a time
-    this.closeRecordingMenu();
     this.showMenu.hidden = false;
     this.showMenuOpen = true;
     this.showToggle.setAttribute("aria-expanded", "true");
@@ -1290,32 +1501,17 @@ class App {
   // is worth opening next. Fetched on open and never polled: the listing reads every
   // recording's labels.h5, which is cheap once and wasteful every two seconds.
 
-  openRecordingMenu() {
-    this.closeShowMenu(); // only one popover open at a time
-    this.closeSkeletonMenu();
-    this.recordingMenu.hidden = false;
-    this.recordingMenuOpen = true;
-    this.recordingToggle.setAttribute("aria-expanded", "true");
-    this.recordingToggle.classList.add("is-open");
-    this.refreshRecordings();
-  }
-
-  closeRecordingMenu() {
-    this.recordingMenu.hidden = true;
-    this.recordingMenuOpen = false;
-    this.recordingToggle.setAttribute("aria-expanded", "false");
-    this.recordingToggle.classList.remove("is-open");
-  }
-
-  toggleRecordingMenu() {
-    if (this.recordingMenuOpen) this.closeRecordingMenu();
-    else this.openRecordingMenu();
-  }
-
   /** Fetch the project's recordings and render them into the menu. */
   async refreshRecordings() {
+    const epoch = this.epoch;
     try {
-      this.recordings = await fetchRecordings();
+      const listing = await fetchRecordings();
+      if (epoch !== this.epoch) return; // it marks the previously-open recording active
+      this.recordings = listing;
+      // The authoritative answer to "where is the unsaved work" -- the server knows which
+      // sessions it is holding, and this listing is the only reply that carries the counts
+      // to go with them.
+      this.applyDirtyRecordings(listing.dirty_recordings);
     } catch (err) {
       // Leave whatever is already listed: a transient failure should not blank a menu
       // the operator is looking at.
@@ -1324,12 +1520,21 @@ class App {
       return;
     }
     this.renderRecordings(this.recordings);
+    // The listing may have named a recording this page had not heard of as unsaved (the
+    // edits were made before a reload, or in another tab), so the toolbar cue follows it.
+    this.updateDirty();
   }
 
+  // Patched in PLACE, keyed by slug -- never rebuilt from scratch. This runs on every visit
+  // to the tab, on a read-only role change, and on the far side of a recording switch, and a
+  // replaceChildren() at any of those makes the whole list blink out and come back under the
+  // operator who was just reading it (taking the scroll position with it). Selecting a
+  // recording is the worst case: the list is exactly what the click was aimed at, and the one
+  // thing that actually changed is which row is marked open.
   /** @param {any} payload  the /api/recordings body */
   renderRecordings(payload) {
-    this.recordingListEl.replaceChildren();
     if (!payload || payload.enabled === false) {
+      this.recordingListEl.replaceChildren();
       this.recordingEmptyEl.hidden = false;
       this.recordingEmptyEl.textContent =
         payload?.reason ?? "no project, so no other recordings to switch to";
@@ -1338,108 +1543,284 @@ class App {
     const rows = payload.recordings ?? [];
     this.recordingEmptyEl.hidden = rows.length > 0;
     if (!rows.length) this.recordingEmptyEl.textContent = "this project has no recordings";
-    for (const rec of rows) {
-      const btn = document.createElement("button");
+    const existing = new Map();
+    for (const node of this.recordingListEl.children) {
+      if (node instanceof HTMLElement && node.dataset.slug) existing.set(node.dataset.slug, node);
+    }
+    // `children` is live, so this is the standard keyed reconcile: put the row for entry `i`
+    // at index `i`, and everything below `i` is already settled.
+    const kids = this.recordingListEl.children;
+    rows.forEach((rec, i) => {
+      const row = this.recordingRow(existing.get(rec.slug), rec);
+      if (kids[i] !== row) this.recordingListEl.insertBefore(row, kids[i] ?? null);
+    });
+    // Whatever is left past the end of the listing is a recording that is no longer there.
+    while (kids.length > rows.length) this.recordingListEl.lastElementChild.remove();
+  }
+
+  /**
+   * One row of the recording list -- built on first sight of its slug, then updated in place.
+   * It carries NO click listener of its own: the list delegates (see buildSidebar), so a
+   * reused row cannot quietly accumulate a second one.
+   * @param {HTMLElement|undefined} row  the row already showing for this slug, if any
+   * @param {any} rec  one entry of the /api/recordings listing
+   * @returns {HTMLButtonElement}
+   */
+  recordingRow(row, rec) {
+    let btn = /** @type {HTMLButtonElement|undefined} */ (row);
+    if (!btn) {
+      btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "rec-row" + (rec.active ? " is-active" : "");
+      btn.dataset.slug = rec.slug; // the delegated handler's only input
       const name = document.createElement("span");
       name.className = "rec-name";
       name.textContent = rec.slug;
-      btn.append(name);
-      // A recording with no results.h5 has never been run: it opens as an uncalibrated
-      // 2D session, which is a different (and much emptier) editor. Say so before the
-      // click, not after.
-      if (!rec.has_results) {
-        const flag = document.createElement("span");
-        flag.className = "rec-flag";
-        flag.textContent = "2D only";
-        btn.append(flag);
-      }
+      // Every trailing span exists from the start and is written every time, so a row can be
+      // reused whatever its flags say -- an absent span would mean rebuilding it instead.
+      // `.rec-dirty` is the "unsaved labels live here" dot: the count in the toolbar says how
+      // many recordings, and this says which.
+      const dot = document.createElement("span");
+      dot.className = "rec-dirty";
+      dot.textContent = "●";
+      const flag = document.createElement("span");
+      flag.className = "rec-flag";
       const stats = document.createElement("span");
       stats.className = "rec-stats";
-      stats.textContent = rec.labeled_frames
-        ? `${rec.labeled_frames} labeled · ${rec.gt_points.toLocaleString()} pts`
-        : "unlabeled";
-      btn.append(stats);
-      const frames = rec.n_frames == null ? "?" : rec.n_frames.toLocaleString();
-      btn.title =
-        `${rec.slug} — ${frames} frames, ${rec.gt_points.toLocaleString()} ground-truth ` +
-        `points in ${rec.labeled_frames} frame(s), ${rec.reviewed_frames} reviewed, ` +
-        `${rec.occluded.toLocaleString()} hidden marks`;
-      if (rec.active) {
-        btn.disabled = true;
-        btn.title = `${btn.title}\n(open)`;
-      } else if (this.readOnly) {
-        // A read-only tab must not swap the recording out from under the writer.
-        btn.disabled = true;
-        btn.title = `${btn.title}\n(this tab is read-only — another browser is editing)`;
-      } else {
-        btn.addEventListener("click", () => this.requestSwitch(rec.slug));
-      }
-      this.recordingListEl.append(btn);
+      btn.append(name, dot, flag, stats);
     }
+    btn.className = "rec-row" + (rec.active ? " is-active" : "");
+    const dot = /** @type {HTMLElement} */ (btn.querySelector(".rec-dirty"));
+    dot.hidden = !rec.dirty;
+    // A recording with no results.h5 has never been run: it opens as an uncalibrated 2D
+    // session, which is a different (and much emptier) editor. Say so before the click, not
+    // after. `.rec-flag` has no author `display`, so `hidden` genuinely removes it.
+    const flag = /** @type {HTMLElement} */ (btn.querySelector(".rec-flag"));
+    flag.textContent = rec.has_results ? "" : "2D only";
+    flag.hidden = !!rec.has_results;
+    /** @type {HTMLElement} */ (btn.querySelector(".rec-stats")).textContent = rec.labeled_frames
+      ? `${rec.labeled_frames} labeled · ${rec.gt_points.toLocaleString()} pts`
+      : "unlabeled";
+    const frames = rec.n_frames == null ? "?" : rec.n_frames.toLocaleString();
+    let title =
+      `${rec.slug} — ${frames} frames, ${rec.gt_points.toLocaleString()} ground-truth ` +
+      `points in ${rec.labeled_frames} frame(s), ${rec.reviewed_frames} reviewed, ` +
+      `${rec.occluded.toLocaleString()} hidden marks`;
+    // Counts from a recording the editor is holding are its LIVE ones (the server serves the
+    // session, not the sidecar), so an unsaved row's numbers already include the work that
+    // has not reached disk -- which is exactly why the row has to say so.
+    if (rec.dirty) title += "\n(unsaved labels, kept in memory — Ctrl/Cmd+S saves them)";
+    // The open recording has nowhere to go, and a read-only tab must not swap the recording
+    // out from under the writer.
+    if (rec.active) title += "\n(open)";
+    else if (this.readOnly) title += "\n(this tab is read-only — another browser is editing)";
+    btn.disabled = Boolean(rec.active) || this.readOnly;
+    btn.title = title;
+    return btn;
   }
 
-  // Mirrors requestClose(): switching drops this recording's session -- unsaved labels,
-  // undo history and all -- so ask first, and make saving the default.
+  // No prompt, ever. The server keeps the recording being left -- its unsaved labels AND
+  // its undo history -- so switching costs nothing and loses nothing, and the operator can
+  // work across a project's recordings the way they work across its frames. The one moment
+  // unsaved work is actually at stake is closing the editor, and that is where it is asked
+  // about (requestClose).
   /** @param {string} slug */
   requestSwitch(slug) {
-    this.closeRecordingMenu();
-    if (!this.dirty) {
-      this.doSwitch(slug, false);
-      return;
-    }
-    this.pendingSwitch = slug;
-    this.switchFromEl.textContent = this.meta.recording ?? "this recording";
-    this.switchToEl.textContent = slug;
-    this.switchOverlay.hidden = false;
-    this.switchConfirmOpen = true;
+    this.doSwitch(slug, false);
   }
 
-  closeSwitchConfirm() {
-    this.switchOverlay.hidden = true;
-    this.switchConfirmOpen = false;
-  }
-
-  /** @param {string} slug @param {boolean} discard */
+  /**
+   * @param {string} slug
+   * @param {boolean} discard  throw away the CURRENT recording's unsaved labels on the way
+   *   out, instead of keeping them in memory. Nothing in the UI passes true; it is the
+   *   server's contract, kept reachable rather than pretended away.
+   */
   async doSwitch(slug, discard) {
-    this.closeSwitchConfirm();
     this.statusEl.textContent = `opening ${slug}…`;
+    let reply;
     try {
-      await openRecording(slug, discard);
+      reply = await openRecording(slug, discard);
     } catch (err) {
       // Nothing was swapped: the server builds the new session completely before it
       // rebinds anything, so a failure leaves this recording open and intact.
       this.statusEl.textContent = `could not open ${slug}: ${err.message || err}`;
       return;
     }
+    // Which recordings are unsaved changes as of this switch: the one just left joins the
+    // list if it was dirty. Taken from the reply rather than inferred, so the cue is right
+    // before the rebuild's own /api/meta lands.
+    this.applyDirtyRecordings(reply?.dirty_recordings, slug);
     // The server pushes the reload to every browser, this one included; doing it here
     // too covers a tab whose socket has dropped, and a second reload is a no-op.
-    this.reloadForNewRecording();
+    await this.rebuildForNewRecording();
+    // Said after the rebuild, or the rebuild's own status writes would bury it. A recording
+    // that came back from memory is the whole point of the registry, and it is also the one
+    // case where the editor is showing labels that are NOT what its labels.h5 says.
+    if (reply?.restored) this.flash(`${slug} — restored, with your unsaved edits`);
   }
 
-  async saveAndSwitch() {
-    const slug = this.pendingSwitch;
-    try {
-      await this.save();
-    } catch (_err) {
-      this.closeSwitchConfirm();
-      this.statusEl.textContent = "save failed — nothing was switched";
-      return;
+  // Everything the App holds that belongs to ONE recording. Anything missing here is the
+  // previous animal's data presented as this one's -- and the [view][point] masks are
+  // worse than misleading: a stale (view, point) whose view >= the new n_views makes
+  // updateStatusWidget throw, which takes the editor down.
+  //
+  // Deliberately NOT reset:
+  //   readOnly            the writer slot is per SOCKET and the socket survives the swap;
+  //                       resetting it would silently promote a reader to writer
+  //   closing             setting it would permanently disable the unsaved-changes guard
+  //                       for the NEW recording's edits
+  //   framesOpen          the operator's arrangement, not the recording's data
+  //   sidebarTab          likewise -- a switch keeps you on the pane you were working in
+  //   recordings          the PROJECT's listing, which a switch does not change; only which
+  //                       row is marked open does, and that is corrected in place below
+  //   editSeq / meshReq   bumped, never zeroed: zeroing risks an old reply matching again
+  resetRecordingState() {
+    this.frame = 0;
+    this.focused = 0; // else relayout hands replaceChildren an undefined cell
+    this.selection.clear();
+    this.selAnchor = null;
+    this.activeView = 0;
+    this.hoverCell = null;
+    this.fixedMask = null;
+    this.projectedMask = null;
+    this.absentMask = null;
+    this.absentRecording = []; // else the previous animal's amputations are announced
+    this.detectedMask = null;
+    this.excludedMask = null;
+    this.hasInstance = false;
+    this.chirality = null;
+    this.reviewed = false;
+    this.reviewedBtn.setAttribute("aria-pressed", "false");
+    this.reviewedBtn.classList.remove("is-on");
+    // The new session's undo stack is empty. The next payload will say so, but an enabled
+    // Undo in the meantime offers history belonging to the recording just closed.
+    this.undoBtn.disabled = true;
+    this.redoBtn.disabled = true;
+    this.seedMode = "triangulate"; // the new EditorState's server-side defaults
+    this.nongtDisplay = "reprojection";
+    this.solveStabilizers = "on";
+    this.correctedFrames = [];
+    this.frameRows.clear();
+    this.suggestions = null; // labels_suggest.json is per recording
+    this.syncSkeletonMenu(); // the new frame 0 has no skeleton until the payload says so
+    // The listing marks the OPEN recording active and disables its row, so it does have to be
+    // corrected here -- but by MOVING the mark, not by blanking the list. This runs mid-switch
+    // with the Recording pane very likely still on screen (it is where the click came from),
+    // and emptying it there is the one refresh the operator actually sees. `this.meta` is
+    // already the new recording at this point (rebuildForNewRecording fetches it first), and
+    // the counts are re-read when the tab next asks for them.
+    if (this.recordings?.recordings) {
+      for (const rec of this.recordings.recordings) rec.active = rec.slug === this.meta.recording;
+      this.renderRecordings(this.recordings);
     }
-    await this.doSwitch(slug, false);
+    this.addMod = false;
+    this.overViews = false;
+    document.body.classList.remove("adding");
   }
 
   // The open recording changed underneath this page (switched here, or in another tab).
-  // Everything the editor built at boot -- the canvases, the key bindings, the frame-URL
-  // cache token -- comes from /api/meta, which is fetched exactly once per page load, so
-  // a full page load is the only correct response to it changing.
-  reloadForNewRecording() {
-    // Deliberate: the labels were either saved or explicitly discarded a moment ago, so
-    // the browser's generic "Leave site?" dialog would only nag about a decision the
-    // operator has already made.
-    this.closing = true;
-    location.reload();
+  // Everything the editor built at boot came from /api/meta, so all of it is rebuilt --
+  // in place, with no page load.
+  //
+  // The SOCKET is deliberately kept. `/ws` reads `session` out of its enclosing scope on
+  // every message and the switch handler rebinds that variable, so the open socket
+  // already talks to the new session; reconnecting would re-run the writer-slot handshake
+  // and could turn this tab from writer to reader without telling anyone.
+  //
+  // `closing` is never set here either -- it permanently disables the beforeunload guard,
+  // and the NEW recording's edits still need protecting.
+  async rebuildForNewRecording() {
+    // The server broadcasts to every socket including the one that asked, so the
+    // switching tab arrives here twice: once from the push and once from doSwitch. A page
+    // load made the second call a no-op; an async rebuild does not.
+    if (this.rebuilding) return this.rebuilding;
+    this.rebuilding = (async () => {
+      try {
+        // 1 -- quiesce. Each of these would otherwise fire against the new recording
+        // carrying the old one's intent.
+        clearTimeout(this.correctedTimer);
+        clearTimeout(this.meshTimer);
+        clearTimeout(this.sceneMeshTimer);
+        this.stopJobsPolling();
+        this.epoch++; // invalidates every in-flight fetch
+        this.editSeq++;
+        this.meshReq++;
+        this.closeShowMenu();
+        this.closeSkeletonMenu();
+        this.closeHelp();
+        this.closeCloseConfirm();
+        this.armLandmark(-1); // fans out to the OLD views, and clears body.arming-landmark
+
+        // 2 -- tear the canvases down. buildViews APPENDS, so without this both rigs
+        // would be live: relayout re-attaches the old canvases and applyPoints indexes
+        // past the end of p.points and throws.
+        for (const view of this.views) view.destroy();
+        this.stageEl.replaceChildren();
+        this.stripEl.replaceChildren();
+        this.views = [];
+        this.cells = [];
+
+        // 3 -- new meta. This also re-stamps api.js's module-level cache token, which
+        // frameUrl reads at CALL time, so it must precede goToFrame or the new frames go
+        // out under the old recording's token and miss the cache in both directions.
+        this.meta = await fetchMeta();
+        this.dirty = this.meta.dirty;
+        // The recordings left behind with unsaved labels -- the state the whole switch is
+        // built on, and the reason the cue must survive the rebuild that blanks everything
+        // else belonging to one recording.
+        this.applyDirtyRecordings(this.meta.dirty_recordings);
+
+        // 4 + 5 -- per-recording state, then the meta-derived chrome. Never the wiring.
+        this.resetRecordingState();
+        this.applyMeta();
+        // `l`, `[`, `]`, `p`, `w`, `u`, `m`, Shift+M and `b` are meta-gated. onKey reads
+        // this.bindings at dispatch time, so reassigning is enough -- the keydown
+        // listener must NOT be re-added.
+        this.bindings = this.buildBindings();
+        this.applyOsHints();
+        this.helpBuilt = false; // the legend is built from this rig's limbs and points
+
+        // 6 -- rebuild the canvases, then fan out every display toggle: new PoseViews
+        // take their constructor defaults, which match the HTML at boot but not the
+        // operator's current checkboxes.
+        this.buildViews();
+        this.applyHideAll();
+        this.applyLabels();
+        this.applyDetected();
+        this.applyProjected();
+        this.applyWarn();
+        this.applyWarnThreshold();
+        this.applyCover();
+        this.applyCoverMin();
+        this.applyNmf();
+        this.applyMesh();
+        this.relayout();
+
+        // 7 -- re-seed the 3D scene in place; never `new Scene3D` on the same canvas.
+        if (this.scene) {
+          this.scene.setCameras(this.meta.cameras_3d);
+          this.scene.setSkeleton(this.meta.bones, this.meta.point_colors);
+          this.scene.setPoints3d(null);
+          this.scene.setNmf3d(null);
+        }
+        this.sceneMeshReady = false;
+
+        // 8 -- repaint. The lists are emptied before the fetch, so the old recording's
+        // frame numbers are never on screen under the new recording's name.
+        this.renderFrameList();
+        this.renderLandmarks();
+        this.renderInstance();
+        await this.goToFrame(0);
+        this.updateSelected();
+        this.updateDirty();
+        await this.refreshCorrected();
+        this.refreshSuggestions();
+        if (this.tabActive("recordings")) this.refreshRecordings();
+        this.statusEl.textContent = `opened ${this.meta.recording}`;
+      } finally {
+        this.rebuilding = null;
+      }
+    })();
+    return this.rebuilding;
   }
 
   // -- the "Layout" popover (arrangement + view reset) ------------------------
@@ -1456,7 +1837,6 @@ class App {
 
   openSkeletonMenu() {
     this.closeShowMenu();
-    this.closeRecordingMenu();
     this.skeletonMenu.hidden = false;
     this.skeletonMenuOpen = true;
     this.skeletonToggle.setAttribute("aria-expanded", "true");
@@ -1630,9 +2010,9 @@ class App {
   // state. The name field shows the single cell's "point · camera", the count for
   // several, or "—" for none. The active chip is the selection's shared state (nothing
   // lit when the cells disagree). Chips are live whenever something is selected; the
-  // "Projected" chip additionally needs 3D (occluding a view only means something when
-  // there is a solve to drop it from), and the "Detected" chip needs at least one selected
-  // cell the detector actually fired for (else there is no detection to fall back to).
+  // "Projected" chip additionally needs 3D (there is no reprojection to follow without one),
+  // and the "Detected" chip needs at least one selected cell the detector actually fired for
+  // (else there is no detection to fall back to).
   // The status readout is always one of a finite, enumerable set of strings --
   // "<point> · <camera>", "<n> points", or "—" -- and the name lists are fixed for the
   // session, so its worst-case pixel width is knowable up front. Measure it once (in the
@@ -1687,8 +2067,8 @@ class App {
     // The facts line: what IS true of this cell, not a state to assign. Reports the hovered
     // joint while hovering (the peek), else the selection's shared description, else how
     // many cells disagree.
-    // Verb availability. Create needs a visible proposal layer; Exclude is meaningless on a
-    // cell whose GT already overrides its detection, and on a joint that is not there.
+    // Verb availability. Hidden is available on any cell of a joint that is on the animal --
+    // including one that already carries GT, which is the pairing worth recording.
     const anyWithoutGt = this.selCells().some(([v, p]) => !(this.fixedMask && this.fixedMask[v][p]));
     const anyWithGt = this.selCells().some(([v, p]) => this.fixedMask && this.fixedMask[v][p]);
     // Each button reports its own fact by being pressed, which is what retired the text
@@ -1708,7 +2088,7 @@ class App {
     // rightmost button in the card must not be the one most often a no-op.
     this.actResetBtn.disabled =
       n === 0 || this.readOnly || !(anyWithGt || anyHidden);
-    // Labeled cells included: "placed through an occluder" is both facts at once.
+    // Labeled cells included: carrying a pixel is no reason to be unable to withhold it.
     this.excludeBtn.disabled = n === 0 || this.readOnly || allAbsent;
   }
 
@@ -1742,9 +2122,10 @@ class App {
     this.sendEdit({ type: "clear_gt_targets", targets, frame: this.frame, mode: this.mode });
   }
 
-  // Toggle "a human cannot see this keypoint in this view" over the selection. Orthogonal to
-  // ground truth (a joint placed through an occluder carries both) and inert in the solve --
-  // it is a training signal, and the one thing geometry cannot supply.
+  // Toggle "hold this cell out of the training loss" over the selection. Its own axis: it never
+  // reads or writes the GT pixel (a cell can carry both), and it is inert in the solve and in the
+  // display beyond its own strike-through mark -- which cells the loss uses is the one fact about a
+  // cell that geometry cannot supply, so it needs its own switch rather than a third GT state.
   toggleSelectionExclude() {
     const targets = this.selCells();
     if (!targets.length) return;
@@ -1810,14 +2191,10 @@ class App {
     this.sendEdit({ type: "toggle_fixed", view, point, frame: this.frame, mode: this.mode });
   }
 
-  /**
-   * @param {number} view
-   * @param {number} point
-   */
-  onToggleInvisible(view, point) {
-    if (!this.meta.has_3d) return;
-    this.sendEdit({ type: "toggle_invisible", view, point, frame: this.frame, mode: this.mode });
-  }
+  // (There is no per-cell `onToggleInvisible` handler: nothing in the canvas is bound to it, and
+  // the one it used to carry gated the flag on `has_3d` -- which EditorState.toggle_invisible
+  // explicitly refuses to do, because which cells to train on is decided in labeling rounds that
+  // run before any triangulation exists. `e` on the selection is the gesture.)
 
   // -- the verbs on the selection ---------------------------------------------
   //
@@ -1827,8 +2204,9 @@ class App {
   // `toggleSelectionExclude` live above, beside the readout that reports the facts.
 
 
-  // Reset the selection: clear each selected cell's authored label (ground truth or
-  // occlusion) back to unset, so it falls back to the detector prediction. One undo step.
+  // Reset the selection: retract both authored facts -- the ground-truth pixel and the Hidden
+  // flag -- so the cell falls back to nothing authored. The one verb that spans both axes, which
+  // is why it is named for starting over rather than for either of them. One undo step.
   resetSelection() {
     const targets = this.selCells();
     if (!targets.length) return;
@@ -1955,21 +2333,98 @@ class App {
     this.sendEdit({ type: "redo", frame: this.frame, mode: this.mode });
   }
 
+  // Save EVERY recording holding unsaved labels, not just the open one. Edits survive a
+  // recording switch, so "unsaved" is a project-wide state: a Save that wrote only this
+  // recording would leave the title starred and the cue lit, and send the operator hunting
+  // for which other recording still needed a click.
   async save() {
     if (this.readOnly) return; // read-only: the writer owns saving the shared state
-    const r = await saveCorrections();
-    this.dirty = r.dirty;
+    const targets = this.dirtySlugs().length;
+    const r = await saveAllCorrections();
+    this.dirty = !!r.dirty;
+    this.applyDirtyRecordings(r.dirty_recordings);
     this.updateDirty();
-    this.statusEl.textContent = "saved";
-    setTimeout(() => (this.statusEl.textContent = ""), 3000);
+    // A write that failed leaves that recording's work in memory only, so it is named and
+    // it THROWS: `saveAndShutdown` awaits this, and closing the editor on a sidecar that
+    // could not be written is the one outcome nothing else can undo.
+    if (r.failed?.length) {
+      const names = r.failed.map((f) => f.recording || "this recording").join(", ");
+      this.flash(`could not save ${names} — still unsaved`);
+      throw new Error(`could not save ${names}`);
+    }
+    this.flash(targets > 1 ? `saved ${targets} recordings` : "saved");
     // A save is when the sidecar's own view of "already labeled" could have moved, so
     // it is the one edit-side moment worth re-reading the queue's staleness for.
     this.refreshSuggestions();
+    // The listing's counts come from the saved sidecars for every recording but this one,
+    // so a save is when the other rows stop being behind.
+    if (this.tabActive("recordings")) this.refreshRecordings();
   }
 
+  /** Every recording with unsaved labels, the open one first when it is one of them.
+   * @returns {string[]} */
+  dirtySlugs() {
+    const here = this.meta?.recording;
+    const others = [...this.dirtyOthers].filter((s) => s !== here);
+    return this.dirty && here ? [here, ...others] : others;
+  }
+
+  //: Whether ANYTHING is unsaved, here or in another recording -- what the close prompt and
+  //: the beforeunload guard ask. `dirty` alone would let an operator close the editor on
+  //: another recording's hand work, which is the one thing switching freely must not cost.
+  get projectDirty() {
+    return this.dirty || this.dirtySlugs().length > 0;
+  }
+
+  /** Adopt a server-sent `dirty_recordings` list (meta, a save reply, a switch reply).
+   * @param {string[] | undefined} list
+   * @param {string} [active]  the open recording, when it is about to change (a switch
+   *   reply arrives before the rebuild has fetched the new meta)
+   */
+  applyDirtyRecordings(list, active) {
+    if (!Array.isArray(list)) return;
+    const here = active ?? this.meta?.recording;
+    // The open recording is tracked by `dirty` (refreshed by every edit reply); keeping it
+    // out of this set is what stops the two disagreeing for the moment between an edit and
+    // the next listing.
+    this.dirtyOthers = new Set(list.filter((slug) => slug && slug !== here));
+  }
+
+  // Every readout of "you have unsaved work": the browser tab's title, the Save button, the
+  // toolbar cue, and the dot on each affected row of the recording list. All of it is driven
+  // from the project-wide state, so nothing here can say "saved" while another recording's
+  // labels are still only in memory.
   updateDirty() {
-    document.title = `deeperfly gui — ${this.meta.results_path}${this.dirty ? " *" : ""}`;
-    this.saveBtn.disabled = !this.dirty || this.readOnly;
+    const slugs = this.dirtySlugs();
+    const dirty = this.projectDirty;
+    document.title = `deeperfly gui — ${this.meta.results_path}${dirty ? " *" : ""}`;
+    this.saveBtn.disabled = !dirty || this.readOnly;
+    this.saveBtn.classList.toggle("is-dirty", dirty && !this.readOnly);
+    this.unsavedChip.hidden = !dirty;
+    // Shown but inert in a read-only tab: the state is worth knowing there (the writer's
+    // work is what would be lost), and clicking it must not look like it did something.
+    this.unsavedChip.disabled = this.readOnly;
+    // The count is recordings, not edits: what the operator needs to know is whether the
+    // unsaved work is all in front of them or partly in a recording they have left.
+    this.unsavedChip.textContent =
+      slugs.length > 1 ? `● unsaved · ${slugs.length}` : "● unsaved";
+    this.unsavedChip.title = dirty
+      ? `Unsaved labels in ${slugs.length ? slugs.join(", ") : "this recording"}` +
+        " — click to save them (Ctrl/Cmd+S). They are kept in memory while you switch " +
+        "recordings, and only closing the editor can lose them."
+      : "";
+    // The list marks WHICH recordings, which is the half the count cannot carry. Patched in
+    // place (renderRecordings reconciles by slug), so this repaints no row it need not.
+    if (this.recordings?.recordings) {
+      const set = new Set(slugs);
+      let moved = false;
+      for (const rec of this.recordings.recordings) {
+        const next = set.has(rec.slug);
+        moved ||= Boolean(rec.dirty) !== next;
+        rec.dirty = next;
+      }
+      if (moved) this.renderRecordings(this.recordings);
+    }
   }
 
   // -- corrected-frames list --------------------------------------------------
@@ -1978,12 +2433,14 @@ class App {
   // (any sidecar loaded from disk) and, debounced, after each edit settles -- so the
   // list tracks every drag, obscure, and reset live.
   async refreshCorrected() {
+    const epoch = this.epoch;
     let frames;
     try {
       frames = (await fetchCorrected()).frames;
     } catch (_) {
       return; // a transient failure just leaves the list as it was
     }
+    if (epoch !== this.epoch) return; // these are the previous recording's frames
     this.correctedFrames = frames;
     this.renderFrameList();
     // The queue's "done" marks are joined from this very list, so re-render it here
@@ -2002,8 +2459,10 @@ class App {
   // and keep the current frame highlighted. Each row jumps to its frame on click.
   renderFrameList() {
     const n = this.correctedFrames.length;
-    this.framesCountEl.textContent = String(n);
-    this.framesCountEl.classList.toggle("is-zero", n === 0);
+    for (const badge of [this.framesCountEl, this.labeledCountEl]) {
+      badge.textContent = String(n);
+      badge.classList.toggle("is-zero", n === 0);
+    }
     this.framesEmptyEl.hidden = n > 0;
     this.frameRows.clear();
     const rows = this.correctedFrames.map(({ frame, reviewed }) => {
@@ -2118,10 +2577,12 @@ class App {
       for (const tr of trs) tr.classList.toggle("is-current", frame === this.frame);
     });
     if (!this.framesOpen) return;
-    // Only the VISIBLE tab is scrolled: scrolling a hidden pane is at best wasted and at
-    // worst a surprise jump the moment that tab is shown.
+    // Both lists are highlighted -- rows in the hidden pane keep their mark for when its tab
+    // comes back -- but only the pane on screen is SCROLLED. Scrolling a hidden pane is at
+    // best wasted and at worst a surprise jump the moment its tab is shown.
+    if (!this.tabActive(this.navList)) return;
     const active =
-      this.sidebarTab === "suggest"
+      this.navList === "suggest"
         ? this.suggestRows.get(this.frame)?.[0]
         : this.frameRows.get(this.frame);
     active?.scrollIntoView({ block: "nearest" });
@@ -2129,13 +2590,25 @@ class App {
 
   openFrames() {
     this.sidebarEl.hidden = false;
+    // The rail is the panel's absence made clickable, so the two are never both on screen.
+    this.sidebarRailBtn.hidden = true;
+    this.sidebarRailBtn.setAttribute("aria-expanded", "true");
     this.framesOpen = true;
+    localStorage.setItem(SIDEBAR_OPEN_KEY, "1");
+    this.syncTabEffects();
     this.updateActiveFrameRow(); // scroll the current frame into view now it is shown
   }
 
   closeFrames() {
     this.sidebarEl.hidden = true;
+    this.sidebarRailBtn.hidden = false;
+    this.sidebarRailBtn.setAttribute("aria-expanded", "false");
     this.framesOpen = false;
+    localStorage.setItem(SIDEBAR_OPEN_KEY, "0");
+    // Hiding the panel disarms too: an armed landmark whose pane is no longer on screen is
+    // the same silent-placement surprise as one whose tab was left behind.
+    this.armLandmark(-1);
+    this.syncTabEffects();
   }
 
   toggleFrames() {
@@ -2149,10 +2622,11 @@ class App {
   // order (see jumpSuggested) -- the ↑/↓ buttons and keys mean "step my list" either way.
   /** @param {number} dir  -1 for the previous entry, +1 for the next */
   jumpCorrected(dir) {
-    if (this.sidebarTab === "suggest") {
-      this.jumpSuggested(dir);
-      return;
-    }
+    this.stepList(this.navList, dir);
+  }
+
+  /** @param {number} dir  -1 for the previous labeled frame, +1 for the next */
+  jumpLabeled(dir) {
     const frames = this.correctedFrames.map((f) => f.frame);
     if (frames.length === 0) return;
     let target;
@@ -2350,6 +2824,10 @@ class App {
 
   renderLandmarks() {
     const marks = this.meta.landmarks || [];
+    // The chip's badge, so whether this project declares any landmarks at all is readable
+    // from whichever pane is showing.
+    this.marksCountEl.textContent = String(marks.length);
+    this.marksCountEl.classList.toggle("is-zero", marks.length === 0);
     this.marksList.replaceChildren();
     if (!marks.length) {
       this.marksEmpty.hidden = false;
@@ -2399,7 +2877,7 @@ class App {
     this.armedLandmark = index;
     this.views.forEach((view) => view.setArmedLandmark(index));
     document.body.classList.toggle("arming-landmark", index >= 0);
-    if (this.sidebarTab === "marks") this.renderLandmarks();
+    if (this.tabActive("marks")) this.renderLandmarks();
   }
 
   /** @param {number} view @param {number} landmark @param {number} x @param {number} y */
@@ -2418,7 +2896,7 @@ class App {
     // rather than refetching the whole payload for one number.
     const mark = (this.meta.landmarks || [])[landmark];
     if (mark) mark.observations += 1;
-    if (this.sidebarTab === "marks") this.renderLandmarks();
+    if (this.tabActive("marks")) this.renderLandmarks();
   }
 
   // -- pipeline jobs ---------------------------------------------------------
@@ -2446,6 +2924,7 @@ class App {
   }
 
   async refreshJobs() {
+    const epoch = this.epoch;
     let payload;
     try {
       payload = await fetchJobs();
@@ -2453,6 +2932,7 @@ class App {
       // A transient fetch failure must not blank a list the operator is reading.
       return;
     }
+    if (epoch !== this.epoch) return;
     if (!payload.enabled) {
       this.jobsActions.replaceChildren();
       this.jobsList.replaceChildren();
@@ -2494,6 +2974,11 @@ class App {
 
   /** @param {any[]} jobs */
   renderJobs(jobs) {
+    // Queued + running, on the Jobs chip, so work in flight is visible from whichever pane
+    // the operator is actually using -- which is the whole point of starting a job.
+    const busy = jobs.filter((j) => j.state === "queued" || j.state === "running").length;
+    this.jobsCountEl.hidden = busy === 0;
+    this.jobsCountEl.textContent = String(busy);
     this.jobsEmpty.hidden = jobs.length > 0;
     if (!jobs.length) {
       this.jobsEmpty.textContent = "No jobs yet — start one above.";
@@ -2554,12 +3039,14 @@ class App {
   }
 
   async refreshSuggestions() {
+    const epoch = this.epoch;
     let payload;
     try {
       payload = await fetchSuggestions();
     } catch (_) {
       return;
     }
+    if (epoch !== this.epoch) return; // the previous recording's queue
     this.suggestions = payload;
     this.renderSuggestList();
   }
@@ -2670,12 +3157,14 @@ class App {
     const s = this.suggestions;
     const stale = s?.stale;
     const hard = stale?.level === "hard";
-    this.suggestCountEl.hidden = !s?.present;
-    this.suggestCountEl.textContent = `${done} / ${total}`;
-    this.suggestCountEl.classList.toggle("is-zero", total === 0);
-    this.suggestCountEl.title = s?.present
-      ? `${done} of ${total} suggested frames labeled`
-      : "";
+    // One tally, on the Suggested tab. It used to be mirrored onto the toolbar's panel
+    // button; the rail that replaced that button is too narrow for "<done> / <total>", and a
+    // queue is worked from its own tab anyway.
+    const badge = this.suggestTallyEl;
+    badge.hidden = !s?.present;
+    badge.textContent = `${done} / ${total}`;
+    badge.classList.toggle("is-zero", total === 0);
+    badge.title = s?.present ? `${done} of ${total} suggested frames labeled` : "";
 
     const lines = [];
     for (const r of stale?.reasons ?? []) lines.push({ text: r, cls: stale?.level ?? "none" });
@@ -2732,38 +3221,179 @@ class App {
           : `No suggestions yet. Rank the frames most worth labeling next:\n${cmd}`;
   }
 
-  // Switch the side panel's tab: swap the panes, re-point the ↑/↓ nav, and (on the
-  // Suggested tab) re-read the sidecar, which may have been recomputed while the editor
-  // was open. Rendering is idempotent, so activating a tab is always safe.
-  /** @param {SidebarTab} tab */
-  setSidebarTab(tab) {
-    this.sidebarTab = tab;
-    this.sidebarTabs.set(tab);
-    this.labeledPane.hidden = tab !== "labeled";
-    this.suggestPane.hidden = tab !== "suggest";
-    this.jobsPane.hidden = tab !== "jobs";
-    this.marksPane.hidden = tab !== "marks";
-    this.settingsPane.hidden = tab !== "settings";
-    this.sidebarEl.classList.toggle("tab-suggest", tab === "suggest");
-    this.updateSidebarNavTitles();
-    if (tab === "suggest") this.refreshSuggestions();
-    // Poll only while the panel is actually visible: a background poll on a tab nobody is
-    // looking at is pure waste, and a long detection run would make it thousands of them.
-    if (tab === "jobs") this.startJobsPolling();
-    else this.stopJobsPolling();
-    if (tab === "marks") this.renderLandmarks();
-    if (tab === "settings") this.refreshSettings();
-    // Leaving the tab disarms. A click that silently placed a landmark because a panel
-    // was open three minutes ago would be a nasty surprise.
-    else this.armLandmark(-1);
-    this.updateActiveFrameRow();
+  // This frame's one annotation skeleton, as a readout. There is exactly one per frame
+  // and there cannot yet be more -- the labels format reserves an instance axis but
+  // refuses any row with instance != 0 -- so this does not pretend to be a list, and it
+  // carries no verbs: Create (g) and Reseed (Shift+G) stay on the frame row, where the
+  // muscle memory is and where they deliberately do not share a hotspot. What it adds
+  // that nothing else answers is how much of this frame is actually yours.
+  renderInstance() {
+    const V = this.meta.n_views;
+    const P = this.meta.n_points;
+    let placed = 0;
+    if (this.fixedMask) {
+      for (let v = 0; v < V; v++) {
+        for (let pt = 0; pt < P; pt++) if (this.fixedMask[v]?.[pt]) placed++;
+      }
+    }
+    this.instanceStateEl.textContent = this.hasInstance ? `${placed} / ${V * P}` : "none";
+    const seed =
+      this.seedMode === "copy" ? "each view's own detection" : "the triangulated detections";
+    const rows = this.hasInstance
+      ? [
+          ["Skeleton", "created for this frame"],
+          ["Your pixels", `${placed} of ${V * P} cells`],
+          ["Seeded from", seed],
+        ]
+      : [
+          ["Skeleton", "none yet — drag a joint, double-click one, or press g"],
+          ["A new one seeds from", seed],
+        ];
+    this.instancesList.replaceChildren(
+      ...rows.map(([k, v]) => {
+        const row = document.createElement("div");
+        row.className = "inst-row";
+        const key = document.createElement("span");
+        key.className = "inst-key";
+        key.textContent = k;
+        const val = document.createElement("span");
+        val.className = "inst-val";
+        val.textContent = v;
+        row.append(key, val);
+        return row;
+      }),
+    );
   }
 
-  // The ↑/↓ buttons' tooltips name whichever list they currently step.
-  updateSidebarNavTitles() {
-    const what = this.sidebarTab === "suggest" ? "suggested frame to label" : "labeled frame";
-    this.framesPrevBtn.title = `Previous ${what} (↑)`;
-    this.framesNextBtn.title = `Next ${what} (↓)`;
+  // -- the sidebar's tabs -----------------------------------------------------
+  //
+  // One pane on screen at a time behind a wrapping strip of chips. Two consequences drive
+  // everything below: activating a tab is the lazy-load trigger (a pane nobody opens costs
+  // nothing), and "leaving a tab" is a real event, which is where the landmark disarm and
+  // the jobs poll's stop belong.
+
+  // One-time: bind each tab, restore the persisted one, and wire the panel-level controls.
+  buildSidebar() {
+    for (const spec of SIDEBAR_TABS) {
+      const tab = /** @type {HTMLButtonElement} */ (el(`tab-${spec.id}`));
+      const body = el(spec.pane);
+      this.tabs.set(spec.id, { ...spec, tab, body });
+      tab.addEventListener("click", () => this.setSidebarTab(spec.id));
+    }
+    // A tab that no longer exists in the table, or one hidden for this session (Recording,
+    // with no project), would otherwise restore as a blank panel with nothing lit.
+    const stored = /** @type {TabId} */ (localStorage.getItem(SIDEBAR_TAB_KEY));
+    if (this.tabs.has(stored) && !this.tabs.get(stored).tab.hidden) this.sidebarTab = stored;
+    if (this.sidebarTab === "labeled" || this.sidebarTab === "suggest") {
+      this.navList = this.sidebarTab;
+    }
+    // Painted WITHOUT the side effects: the fetch and the poll are fired once, below.
+    this.paintTabs();
+    // One control per direction, each where the operator is already looking: the ✕ inside the
+    // panel closes it, the right-edge rail (which only exists while it is closed) opens it.
+    this.sidebarRailBtn.addEventListener("click", () => this.openFrames());
+    this.framesCollapseBtn.addEventListener("click", () => this.closeFrames());
+    // The recording rows are patched in place, so their click handler is delegated to the
+    // list once here rather than re-attached per row on every render (a re-render would
+    // otherwise stack a second listener on every row it reused).
+    this.recordingListEl.addEventListener("click", (ev) => {
+      const row = /** @type {HTMLElement} */ (ev.target)?.closest?.(".rec-row");
+      if (row instanceof HTMLButtonElement && !row.disabled && row.dataset.slug) {
+        this.requestSwitch(row.dataset.slug);
+      }
+    });
+    const open = localStorage.getItem(SIDEBAR_OPEN_KEY);
+    if (open === null ? SIDEBAR_DEFAULT_OPEN : open === "1") this.openFrames();
+    // Not closeFrames(): the panel is already hidden in the HTML, and the disarm it does has
+    // nothing to disarm before buildViews() runs. Only the rail has to be revealed -- the
+    // markup ships it hidden, since the panel ships open.
+    else {
+      this.sidebarRailBtn.hidden = false;
+      this.syncTabEffects();
+    }
+    // Fill whichever pane came up showing. Deferred to a microtask so the whole sidebar is
+    // painted first: refreshSettings and refreshRecordings are network round trips, and an
+    // exception in one must not abort the rest of the build.
+    queueMicrotask(() => this.tabActivated(this.sidebarTab));
+  }
+
+  /** @param {TabId} id  is this the pane on screen? */
+  tabActive(id) {
+    return this.sidebarTab === id;
+  }
+
+  /** The DOM half of a tab switch -- no fetching, no polling. */
+  paintTabs() {
+    for (const { id, tab, body } of this.tabs.values()) {
+      const active = id === this.sidebarTab;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      body.hidden = !active;
+    }
+  }
+
+  /** @param {TabId} id */
+  setSidebarTab(id) {
+    if (this.sidebarTab === id) return;
+    // Leaving Landmarks disarms. An armed landmark that outlives the operator's attention
+    // turns the next canvas click into a silent placement, and the pane that explains what
+    // is armed is no longer on screen to say so.
+    if (this.sidebarTab === "marks") this.armLandmark(-1);
+    this.sidebarTab = id;
+    this.paintTabs();
+    localStorage.setItem(SIDEBAR_TAB_KEY, id);
+    this.tabActivated(id);
+    this.syncTabEffects();
+  }
+
+  // What a pane needs in order to have anything in it. Activating a tab IS the fetch
+  // trigger, so an operator who never opens Settings never pays for /api/config.
+  //
+  // Called from two places, which is the whole reason it is a method: a tab the operator
+  // clicks, and the tab that is ALREADY showing at boot (the default, or the persisted
+  // one). Missing the second is invisible in the DOM -- the pane renders empty, which
+  // reads as "there is nothing to show".
+  /** @param {TabId} id */
+  tabActivated(id) {
+    if (id === "recordings") this.refreshRecordings();
+    if (id === "suggest") this.refreshSuggestions();
+    if (id === "marks") this.renderLandmarks();
+    if (id === "settings") this.refreshSettings();
+    // Showing a list makes it the one ↑/↓ step, and scrolls the current frame into it.
+    if (id === "labeled" || id === "suggest") {
+      this.setNavList(id);
+      this.updateActiveFrameRow();
+    }
+  }
+
+  // The one place that decides whether the jobs poll runs: its tab is showing AND the panel
+  // is open. That second half closes a real leak -- closing the panel on the Jobs tab used
+  // to leave it polling every two seconds behind a hidden aside, forever.
+  syncTabEffects() {
+    if (this.framesOpen && this.tabActive("jobs")) this.startJobsPolling();
+    else this.stopJobsPolling();
+  }
+
+  // Show a pane from the keyboard: open the panel if it is shut, then activate the tab.
+  /** @param {TabId} id */
+  revealTab(id) {
+    if (!this.framesOpen) this.openFrames();
+    this.setSidebarTab(id);
+  }
+
+  /** @param {"labeled"|"suggest"} list @param {number} dir */
+  stepList(list, dir) {
+    this.setNavList(list);
+    if (list === "suggest") this.jumpSuggested(dir);
+    else this.jumpLabeled(dir);
+  }
+
+  // Which list ↑/↓ step: normally the list tab on screen, and from Jobs or Settings the last
+  // list shown -- so the keys never go dead and never silently change meaning. Each list
+  // tab's own tooltip says that it is steppable; there are no ↑/↓ buttons to keep in sync.
+  /** @param {"labeled"|"suggest"} list */
+  setNavList(list) {
+    this.navList = list;
   }
 
   // Walk the queue in RANK order (not time order), skipping frames already done, so one
@@ -2784,14 +3414,20 @@ class App {
 
   // -- close / shutdown -------------------------------------------------------
 
-  // The Close button: stop the server outright when nothing is at stake, else
-  // ask whether to save the pending corrections first.
+  // The Close button: stop the server outright when nothing is at stake, else ask whether
+  // to save first. This is the ONLY prompt about unsaved labels the editor has -- a switch
+  // keeps the recording it leaves in memory, so closing the server is the single act that
+  // can lose hand work, and the question covers every recording at once.
   requestClose() {
-    if (this.dirty) this.openCloseConfirm();
+    if (this.projectDirty) this.openCloseConfirm();
     else this.shutdown();
   }
 
   openCloseConfirm() {
+    // Named, not counted: "unsaved labels" on its own reads as "in front of me", and after
+    // an afternoon of switching the operator's next click depends on knowing it is flyC.
+    const slugs = this.dirtySlugs();
+    this.closeListEl.textContent = slugs.length ? ` in ${slugs.join(", ")}` : "";
     this.closeOverlay.hidden = false;
     this.closeConfirmOpen = true;
   }
@@ -2801,14 +3437,14 @@ class App {
     this.closeConfirmOpen = false;
   }
 
-  // "Save & close": only stop the server once the save actually lands, so a
-  // failed write leaves the editor open with the corrections intact.
+  // "Save & close": only stop the server once every save actually lands, so a failed write
+  // leaves the editor open with the labels intact -- in whichever recording they belong to.
   async saveAndShutdown() {
     try {
       await this.save();
     } catch (_) {
       this.closeCloseConfirm();
-      this.statusEl.textContent = "save failed";
+      this.statusEl.textContent = "save failed — the editor is still open";
       return;
     }
     await this.shutdown();
@@ -2924,7 +3560,9 @@ class App {
   // Pull the frame's 3D pose (the cheap part) and repaint the skeletons at once.
   async refreshScenePoints() {
     if (!this.scene) return;
+    const epoch = this.epoch;
     const s = await fetchScene(this.frame);
+    if (epoch !== this.epoch) return; // a recording switch landed mid-flight
     if (s.frame !== this.frame) return; // a stale reply after a fast scrub
     this.scene.setPoints3d(s.points3d);
     this.scene.setNmf3d(s.nmf3d ?? null);
@@ -2975,9 +3613,10 @@ class App {
       // jump lives on PageUp/PageDn, NOT Alt+Arrow: Alt+Arrow is the browser's Back/Forward
       // and the matcher can't even represent it, so it would navigate away and lose unsaved
       // labels. Up/Down hop through the side panel's active list -- labeled frames, or the
-      // suggestion queue in rank order (mirroring the sidebar's ↑/↓ buttons);
-      // Home/End jump to the first/last frame. All are registered as real (non-global)
-      // bindings so `matches`->preventDefault suppresses the browser's own scroll/history
+      // suggestion queue in rank order. They are the only way to step a list now (the head's
+      // ↑/↓ pair is gone), so the frame row's tooltip and each list tab's own tooltip are
+      // what teach them; Home/End jump to the first/last frame. All are registered as real
+      // (non-global) bindings so `matches`->preventDefault suppresses the browser's scroll/history
       // default, while non-global lets the frame-number input keep native caret + stepping.
       { key: "ArrowLeft", label: "← / →", desc: "", run: (e) => this.step(e.shiftKey ? -10 : -1) },
       { key: "ArrowRight", hidden: true, label: "→", desc: "", run: (e) => this.step(e.shiftKey ? 10 : 1) },
@@ -3009,6 +3648,12 @@ class App {
       b.push({ key: "p", group: "show", label: "p", desc: "Reprojected skeleton (3D reprojection)", run: () => this.toggleCheck(this.projectedCheck, () => this.applyProjected()) });
       b.push({ key: "w", group: "show", label: "w", desc: "Reprojection-distance warning", run: () => this.toggleCheck(this.warnCheck, () => this.applyWarn()) });
     }
+    // Gated on the camera count, not on `has_3d`: counting labeled views needs neither a rig nor a
+    // solve, so this check is live on a fresh uncalibrated project -- but "two views" is
+    // unsatisfiable with one camera, so the key would only ever flag every joint.
+    if (multi) {
+      b.push({ key: "u", group: "show", label: "u", desc: "Under-labeled joints — a gauge on every keypoint you have not yet labeled in two views of this frame", run: () => this.toggleCheck(this.coverCheck, () => this.applyCover()) });
+    }
     if (this.meta.has_nmf) {
       b.push({ key: "m", group: "show", label: "m", desc: "NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
       b.push({ key: "M", group: "show", label: hint("M", ["shift"]), desc: "NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
@@ -3020,17 +3665,16 @@ class App {
     b.push({ key: "a", mod: true, hidden: true, label: hint("A", ["mod"]), desc: "", run: () => this.selectAll() });
     b.push({ key: "v", label: "v", desc: "Select every point in the view under the cursor", run: () => this.selectActiveView() });
     // Acting on the selection. Each key sets one orthogonal fact and each has a toggle in the
-    // card that shows whether it is set: Enter / Backspace place and clear the GT pixel, e marks
-    // "a human cannot see it here", x marks the joint absent from the animal, r retracts both of
-    // the per-cell facts. There used to be 1 / 2 / 3 setting one of three mutually exclusive
-    // "states", which is not the shape the data has.
-    // stay as hidden aliases so the older muscle memory -- and the Reset button's r -- keep working.
+    // card that shows whether it is set: Enter / Backspace place and clear the GT pixel, e holds
+    // the cell out of the training loss, x marks the joint absent from the animal, r retracts both
+    // of the per-cell facts. There used to be 1 / 2 / 3 setting one of three mutually exclusive
+    // "states", which is not the shape the data has: a cell can carry a pixel AND be held out.
     // Verbs, not states. A cell is not "set to Ground truth"; a GT pixel is created at the
-    // position already drawn, deleted, or a detection is excluded from triangulation.
+    // position already drawn, or deleted, and the loss switch is flipped independently.
     b.push({ key: "Enter", group: "edit", label: "⏎", desc: "Create ground truth for the selection, at the position shown", run: () => this.createSelectionGt() });
     b.push({ key: "Backspace", group: "edit", label: "⌫", desc: "Delete the selection's ground truth (the detection / reprojection shows through again)", run: () => this.deleteSelectionGt() });
     b.push({ key: "Delete", hidden: true, label: "Delete", desc: "", run: () => this.deleteSelectionGt() });
-    b.push({ key: "e", group: "edit", label: "e", desc: "Hidden (toggle) — mark the selection as not visible to a human in this view. A training signal only: it does not move the joint and does not affect triangulation", run: () => this.toggleSelectionExclude() });
+    b.push({ key: "e", group: "edit", label: "e", desc: "Hidden (toggle) — hold the selected cell(s) out of the training loss. Its own switch: it does not move the joint, hide its marker, or affect triangulation, and it leaves any pixel you placed standing", run: () => this.toggleSelectionExclude() });
     b.push({ key: "r", group: "edit", label: "r", desc: "Reset the selection — retract both the ground truth and the exclusion", run: () => this.resetSelection() });
     b.push({ key: "x", group: "edit", label: "x", desc: "Absent — this keypoint is not on this animal (amputated / ablated). This frame, every view; press again to un-mark", run: () => this.toggleAbsentSelection("frame") });
     // Uppercase key rather than `shift: true`: for a non-mod binding this keymap takes
@@ -3043,13 +3687,13 @@ class App {
     // hidden alias that still works.
     b.push({ key: "y", mod: true, group: "hist", hidden: IS_MAC, label: hint("Y", ["mod"]), desc: "Redo", run: () => this.redo() });
     b.push({ key: "z", mod: true, shift: true, group: "hist", hidden: !IS_MAC, label: hint("Z", ["mod", "shift"]), desc: "Redo", run: () => this.redo() });
-    b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels", run: () => this.save() });
+    b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels (every unsaved recording)", run: () => this.save() });
     b.push({ key: "c", group: "panel", label: "c", desc: "Show / hide the 3D scene", run: () => this.toggleScene() });
-    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — labeled frames + the suggested queue", run: () => this.toggleFrames() });
+    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — the recording, labeled frames, the suggested queue, landmarks, jobs and settings", run: () => this.toggleFrames() });
     // Only a project session has other recordings to browse, so the key is not
     // advertised in the help of a bare results.h5 session that could not honor it.
     if (this.meta.project_root) {
-      b.push({ key: "b", group: "panel", label: "b", desc: "Browse this project's recordings — and switch to another", run: () => this.toggleRecordingMenu() });
+      b.push({ key: "b", group: "panel", label: "b", desc: "Browse this project's recordings — and switch to another", run: () => this.revealTab("recordings") });
     }
     b.push({ key: "k", group: "panel", label: "k", desc: "Open the labeling guide (keypoint map, new tab)", run: () => this.openKeypoints() });
     b.push({ key: "?", group: "panel", label: "?", desc: "Toggle this help", run: () => this.toggleHelp() });
@@ -3186,6 +3830,12 @@ class App {
       `<i class="mk m-placeholder"></i>`,
       `<b>Invented</b> — faint and dashed: nothing in this frame can place this joint (the detector predicted it in no view, and there is no 3D to reproject), so its position is only a guess — a neighbouring joint, the centre of the view. It is drawn so you can find and drag it; it never feeds the 3D solve, and <kbd>Enter</kbd> skips it rather than recording a made-up pixel as yours. Drag it to where the joint really is.`,
     ])
+    // The one marker that annotates another rather than replacing it -- so it is the one whose
+    // legend row has to say what it leaves alone, not just what it adds.
+    markers.push([
+      `<i class="mk m-hidden"></i>`,
+      `<b>Hidden</b> — a bar struck through the joint: this <i>(keypoint, camera)</i> cell is <b>held out of the training loss</b>. Select and press <kbd>e</kbd>. It is its own switch, independent of everything else: the joint stays exactly where it was, keeps its own marker, keeps its bones, stays draggable, and the 3D does not move. Placing a pixel here is still worth doing — "this is where the joint is" and "do not train on it here" are two separate things to record.`,
+    ]);
     markers.push([
       `<i class="mk m-absent"></i>`,
       `<b>Absent</b> — this keypoint is not on this animal: an amputated leg, an ablated antenna. A claim about the <i>animal</i>, so one gesture covers every frame and every view. Select the joint and press <kbd>x</kbd>. It draws as a dim grey ✕ with no bones, contributes nothing to the 3D, and is excluded from the training export. Press <kbd>x</kbd> again, or <kbd>Ctrl+Z</kbd>, to un-mark it — nothing underneath is lost.`,
@@ -3194,7 +3844,7 @@ class App {
       .map(([m, d]) => `<div class="legend-row">${m}<span>${d}</span></div>`)
       .join("");
     const markerBlock = `<h3 class="legend-title">What a marker tells you</h3>`
-      + `<p class="legend-note">There is one annotation skeleton per frame. Each of its joints is either <b>yours</b> — a pixel you placed — or <b>derived</b> from the joints you have placed in other views. Separately, any joint can be marked <b>Hidden</b> (<kbd>e</kbd>): "a human cannot see it here". That is a note for training and nothing else — it does not move the joint and does not affect the 3D.</p>`
+      + `<p class="legend-note">There is one annotation skeleton per frame. Each of its joints is either <b>yours</b> — a pixel you placed — or <b>derived</b> from the joints you have placed in other views. That is <i>where</i> the joint is. On a separate axis, any cell can be marked <b>Hidden</b> (<kbd>e</kbd>) — <i>held out of the training loss</i> — and the two never interfere: a hidden cell is drawn, dragged and solved exactly as it would be without the mark, and a cell can carry your pixel and the mark at once.</p>`
       + `<div class="legend-rows">${markerRows}</div>`;
 
     // Read-only reference overlays (shown only when the result carries them). The projected
@@ -3247,20 +3897,22 @@ class App {
     };
     setTitle("undo", `Undo (${hint("Z", ["mod"])})`);
     setTitle("redo", `Redo (${IS_MAC ? hint("Z", ["mod", "shift"]) : hint("Y", ["mod"])})`);
-    setTitle("save", `Save the ground-truth labels (${hint("S", ["mod"])})`);
+    setTitle(
+      "save",
+      "Save the ground-truth labels of every recording holding unsaved work " +
+        `(${hint("S", ["mod"])})`
+    );
     // The frame row advertises the whole navigation ladder.
     const frameLabel = document.querySelector("#controls .frame-row label");
     if (frameLabel instanceof HTMLElement) {
       frameLabel.title =
         `Jump to a frame — ← / → step 1 · ${hint("←", ["shift"])} steps 10 · PgUp / PgDn jump 100 · ↑ / ↓ step the side panel's list · Home / End first / last`;
     }
-    // The sidebar's frame nav echoes its keys, naming whichever tab's list it steps.
-    this.updateSidebarNavTitles();
     // Overlay toggles: the "Show" button's summary and the NMF-mesh chip.
     const mesh = hint("M", ["shift"]);
     setTitle(
       "show-toggle",
-      `What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected${this.meta.has_3d ? " · p Reprojected 3D · w Reproj. warning" : ""}${this.meta.has_nmf ? " · m NMF skeleton · Shift+M NMF mesh" : ""} · l Grid/Focus · 0 Fit every camera)`,
+      `What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected${this.meta.has_3d ? " · p Reprojected 3D · w Reproj. warning" : ""}${this.meta.n_views > 1 ? " · u Under-labeled" : ""}${this.meta.has_nmf ? " · m NMF skeleton · Shift+M NMF mesh" : ""} · l Grid/Focus · 0 Fit every camera)`,
     );
     const meshChip = document.querySelector("#mesh-wrap kbd");
     if (meshChip) meshChip.textContent = mesh;
@@ -3271,7 +3923,7 @@ class App {
     // The selection status card's how-to, re-spelled for this OS and this model.
     setTitle(
       "point-status",
-      `The selected point(s). Each button is a state: GT (a pixel you placed), Hidden (a human cannot see it here), Absent (not on this animal) — pressed means it is set, and Reset retracts them. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, Esc clears.`,
+      `The selected point(s). Each button is a state: GT (a pixel you placed), Hidden (held out of the training loss), Absent (not on this animal) — pressed means it is set, and Reset retracts them. GT and Hidden are independent, so both can be pressed at once. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, Esc clears.`,
     );
   }
 
@@ -3304,22 +3956,19 @@ class App {
       if (this.showMenuOpen) {
         this.closeShowMenu();
             e.preventDefault();
-      } else if (this.recordingMenuOpen) {
-        this.closeRecordingMenu();
-        e.preventDefault();
       } else if (this.closeConfirmOpen) {
         this.closeCloseConfirm();
-        e.preventDefault();
-      } else if (this.switchConfirmOpen) {
-        // Backing out of "switch?" cancels the switch and keeps this recording open,
-        // which is the safe half of the choice.
-        this.closeSwitchConfirm();
         e.preventDefault();
       } else if (this.helpOpen) {
         this.closeHelp();
         e.preventDefault();
       } else if (this.sceneOpen) {
         this.closeScene();
+        e.preventDefault();
+      } else if (this.armedLandmark >= 0) {
+        // Escape is the way out of an armed landmark that needs no aim: the others are
+        // clicking its row again, leaving the Landmarks tab, and `j`.
+        this.armLandmark(-1);
         e.preventDefault();
       } else if (this.selection.size) {
         this.clearSelection();

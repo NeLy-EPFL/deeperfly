@@ -68,9 +68,10 @@ def _cmd_gui(args: argparse.Namespace) -> None:
         If no result is found, or the web stack fails to import (an incomplete
         install -- FastAPI + uvicorn are core dependencies).
     """
-    # A project directory resolves inside `serve` (it may hold several recordings, and a
-    # recording with no results.h5 opens uncalibrated); anything else is resolved here so
-    # a bad path fails before the server starts.
+    # A project directory resolves inside `serve` (it opens the first of its recordings,
+    # and one with no results.h5 opens uncalibrated); anything else is resolved here so
+    # a bad path fails before the server starts. `recording` is not a CLI option: which
+    # recording to open is a question the editor's own picker answers, live.
     from ..project import PROJECT_FILENAME
 
     target = Path(args.path)

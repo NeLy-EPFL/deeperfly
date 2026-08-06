@@ -211,26 +211,107 @@ It needs the skeleton's [`symmetries`](../reference/configuration.md#symmetries)
 packaged fly38 skeleton declares them; a skeleton that does not gets pairs inferred from
 its point names.
 
+### The reprojection check
+
+**Reproj. warning** (`w`, under **Checks**) flags a keypoint whose 2D disagrees with the
+multi-view 3D: an amber→red ring on the point plus a connector to where the 3D reprojects
+it — amber at the threshold (**Warn above**, 8 px by default), full red at twice it.
+
+What it measures is the position a view *claims*, which is what makes it actionable:
+
+- **A view you labeled** claims your pixel. Two labels can always be satisfied exactly by
+  some 3D point, so it takes a **third** disagreeing view to light up — and then the rings
+  sit on your own labels, which is the one error no other view can reveal.
+- **A view you have not labeled** is drawn *at* the reprojection, so it has nothing to
+  disagree with and is never flagged. Label a joint in two views and the other cameras move
+  onto the geometry, quietly. (Switch the unplaced joints to their **seeds** with `s` and the
+  check comes back — a frozen seed is a claim of its own.)
+- **Before the frame has a skeleton** the detections are what is on screen, so the
+  detector's pixel is what gets checked.
+
+It deliberately does **not** flag the *detector* for disagreeing with the geometry once you
+are annotating. A keypoint on the far side of the animal — a left-hind joint in a right-side
+camera — is routinely a hundred pixels out there, and no amount of labeling moves it: that
+is a red flag you could never clear. Turn the **Detected** layer on (`t`) when the detector's
+opinion is what you want to see.
+
+### The label-coverage check
+
+**Under-labeled** (`u`, under **Checks**) flags every keypoint you have labeled in fewer than
+**two** views of this frame. It draws a violet gauge ring outside the joint's own marker: a
+dashed track for the two labels it needs, and a solid arc for the ones it has. So *nothing
+labeled* reads as an empty dashed ring, *one of two* as a half-swept one, and a joint that has
+its two views is drawn nothing at all — the rings empty out as you work, which is what makes it
+usable as a "what is left here?" pass rather than permanent decoration.
+
+Off by default, and deliberately: a ring on all 38 joints of an untouched frame would bury the
+skeleton it is describing. Turn it on when you want the audit.
+
+Two is not an arbitrary bar. A single pixel fixes only a *viewing ray* — it says where the joint
+is on a line through the camera, not where it is in space — so until a second view lands, the
+joint's depth still comes from the detector rather than from you, and that is precisely where
+the annotation solve hands the point over: at
+[`min_gt_for_exclusive`](../reference/configuration.md#annotation) labeled views (2 by default) your pixels
+become authoritative for the whole point. Raise **Want at least** if you want redundancy beyond
+the minimum; it is capped at the number of cameras, since more than that could never be satisfied.
+
+Two labeled views is the floor, though, not always enough — and *which* two matters. A camera
+cannot see distance along its own optical axis, so two cameras that face each other leave that
+one direction nearly free: their viewing rays are almost the same line, and two nearly identical
+lines have no sharp crossing point. `rm` and `lm` of the standard rig are exactly opposed, and
+labeling only those two used to leave the joint hundreds of microns out and tens of pixels off in
+every view you had *not* labeled. By default the editor now lets the unlabeled views supply that
+one direction and nothing else, so your pixels still decide everything they have an opinion about
+— see **Skeleton ▸ Derive the 3D from**, which also offers the older *My pixels only* behavior.
+Flipping between the two is the quickest read on what the other views are contributing: the
+joints whose two labels have a poor baseline visibly move, and the rest do not budge. If a joint
+does move a lot, the real fix is a third label in a view that looks from a different direction —
+worth roughly 89× on the test rig.
+
+What it does and does not count:
+
+- **Your pixels, wherever they are.** The count is over the whole frame, so the ring shows in
+  every view — including the one you already labeled, whose own label is the arc you can see.
+  The joint's problem is not local to a camera.
+- **Hidden cells still count.** [Hidden](#hidden-vs-absent-vs-unplaced) decides what the
+  *training loss* reads; a pixel
+  you placed is a pixel you placed, and it constrains the 3D either way.
+- **Absent joints are never flagged.** They are not on the animal, so there is nothing to label —
+  a coverage flag there would be a demand you could never meet.
+
+Unlike the reprojection check it needs no rig, no detections and no 3D — only a second camera to
+count over. On a fresh uncalibrated project it is the only check there is, and "nothing labeled
+in two views yet" is exactly the state such a project is in.
+
 ### Undo / redo
 
 Every edit is undoable: `Ctrl`/`Cmd`+`Z` undoes, `Ctrl`/`Cmd`+`Y` (or
 `Ctrl`/`Cmd`+`Shift`+`Z`) redoes; the ↶ / ↷ buttons do the same. A whole drag — and a
-whole batched Confirm / Reset / Occlude — is a single undo step, and undo jumps back to
+whole batched GT / Hidden / Reset — is a single undo step, and undo jumps back to
 the frame the edit was on.
 
 ## Frame lists
 
-The **Labels** button (`j`) opens a retractable side panel holding two lists as tabs.
-Click a row in either to jump to that frame; `↑` / `↓` step through the **active** tab's
-list (wrapping at the ends), and the current frame stays highlighted as you scrub.
+A retractable side panel holds a strip of tabs showing one pane at a time, of which the
+first two are the frame lists below. (The rest — this frame's skeleton, the calibration
+landmarks, the pipeline jobs, the project's settings and its other recordings — belong to a
+project session.) Which tab you left it on is remembered, as is whether it was open.
+
+`j` toggles the whole panel. Otherwise the ✕ in its head closes it and the slim rail down
+the right edge — which is there only while it is closed — opens it again; the rail also
+carries the count of labeled frames, so that number stays visible with the panel shut.
+
+Click a row in either list to jump to that frame; `↑` / `↓` step through the list on
+screen, wrapping at the ends — from a tab that is not a list they keep stepping the last
+one you used. The current frame stays highlighted as you scrub.
 
 ### Labeled
 
 Every frame carrying a label, in time order, with a per-frame **Reviewed** tick box —
 your "I have finished checking this" flag, which persists with the labels and keeps the
 frame listed even if its point labels are later reset. The list updates live and includes
-labels loaded from a previous session; the button's blue badge shows the total even while
-collapsed.
+labels loaded from a previous session; the blue badge on the tab (and on the right-edge
+rail, when the panel is shut) shows the total from wherever you are.
 
 ### Suggested
 
@@ -293,12 +374,34 @@ stop following your edits (the editor says so once, on startup).
 
 ## Saving & exporting
 
-Edits live in memory until you save. **Save** (`Ctrl`/`Cmd`+`S`) writes the `labels.h5`
-sidecar; **Close** stops the server (it offers to save first if there are unsaved
-labels). The sidecar is stamped with the recording's fingerprint (skeleton, cameras,
-frame count, image sizes, footage) so it is refused if pointed at a different
-recording — but a re-run of the *same* recording (new detector weights, retuned
-triangulation) keeps your labels valid, since ground truth is absolute.
+Edits live in memory until you save, and **they live there for the whole project**:
+switching to another recording keeps the one you left open behind the scenes, with its
+unsaved labels and its undo history intact, so you can move between a project's
+recordings the way you move between one recording's frames. Nothing asks you to save on
+the way.
+
+While anything is unsaved the toolbar shows an amber **● unsaved** cue (with a count when
+more than one recording is involved), the Save button matches it, the browser tab's title
+gains a `*`, and every affected recording is dotted in the **Recording** pane's list. The
+cue is clickable: it does what Save does.
+
+**Save** (`Ctrl`/`Cmd`+`S`, or the cue) writes the `labels.h5` sidecar of *every* recording
+holding unsaved labels — not just the open one. **Close** stops the server and is the only
+act that can lose hand work, so it is the only thing that prompts: it names the recordings
+still unsaved and offers to save them all first. (Closing the browser tab gets the
+browser's own "leave site?" dialog for the same reason.)
+
+Each sidecar is stamped with its recording's fingerprint (skeleton, cameras, frame count,
+image sizes, footage) so it is refused if pointed at a different recording — but a re-run
+of the *same* recording (new detector weights, retuned triangulation) keeps your labels
+valid, since ground truth is absolute.
+
+Two consequences worth knowing:
+
+- A recording listed with unsaved labels shows its **live** counts, not its sidecar's — the
+  numbers already include what is only in memory. That is what the dot is telling you.
+- A **job** (the Jobs pane, or any `deeperfly` command) reads the files on disk. Save before
+  running one over labels you have just placed, in whichever recording they are in.
 
 To use the labels as training/eval data, export them to an `.npz`:
 

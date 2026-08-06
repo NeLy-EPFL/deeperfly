@@ -209,15 +209,6 @@ def gui(
             "one (e.g. <recording>/deeperfly_outputs)"
         ),
     ],
-    recording: Annotated[
-        str | None,
-        typer.Option(
-            "--recording",
-            help="which recording to open when PATH is a project (slug, id, or id "
-            "prefix). A project holding exactly one recording needs no --recording; "
-            "otherwise they are listed",
-        ),
-    ] = None,
     footage_dir: Annotated[
         str | None,
         typer.Option(
@@ -262,12 +253,15 @@ def gui(
     results.h5 (an older corrections.h5 is migrated on open). It runs headless and
     can be reached from another machine's browser (default-bound to localhost;
     tunnel with 'ssh -L' for remote use).
+
+    Point it at a PROJECT to get all of its recordings: the first one opens, and the
+    editor's recording picker (the toolbar button, or 'b') switches between them
+    without restarting.
     """
     _configure_logging(log_level.value)
     _cmd_gui(
         argparse.Namespace(
             path=path,
-            recording=recording,
             footage_dir=footage_dir,
             host=host,
             port=port,

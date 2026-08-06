@@ -9,6 +9,12 @@ per-view points so the canvases repaint (the same flow the old Qt window drove
 with signals). Corrections live only in memory until ``POST /api/save`` writes
 the ``corrections.h5`` sidecar.
 
+Unsaved work is **project-wide**, not per recording: :func:`create_app` keeps every
+session the operator has opened this run (see ``opened`` in the closure), so switching
+recordings costs nothing and loses nothing. ``POST /api/save`` writes the open
+recording, ``POST /api/save-all`` writes every recording still holding unsaved labels,
+and the only moment an operator has to be asked about it is closing the editor.
+
 All state mutations are serialized by a single :class:`asyncio.Lock`, and only
 one connected browser -- the "writer" -- may edit at a time. The session is one
 shared :class:`~deeperfly.gui.state.EditorState`, so two tabs editing at once
@@ -25,7 +31,8 @@ import asyncio
 import functools
 import hashlib
 import logging
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -110,13 +117,43 @@ def _session_version(session: Session) -> str:
 #: over-generous is a closed editor lingering for half a minute.
 _SWITCH_GRACE = 30.0
 
-#: Refusing to switch is the only thing standing between an operator and losing hand
-#: labels: the swap drops the outgoing session -- its labels and its whole undo history
-#: -- and no ``beforeunload`` fires for an in-process change.
-_UNSAVED_MSG = (
+#: Rebinding the rig drops the cache of derived 3D, which can hold a hand-placed depth
+#: the 2D labels cannot reproduce -- so, unlike a recording switch, selecting a
+#: calibration still has to refuse while there are unsaved labels.
+_UNSAVED_RIG_MSG = (
     "this recording has unsaved labels; save them first (POST /api/save), or pass "
     '"discard": true to abandon them'
 )
+
+#: How many *clean* recordings to keep open behind the active one. A retained session
+#: spares the operator re-reading every camera's video header, ``results.h5`` and
+#: ``labels.h5`` (a network share, in this lab) when they switch back -- but it also
+#: holds that recording's arrays, so the clean ones are an LRU cache and get pruned. A
+#: session with **unsaved labels is never pruned**: it is the only copy of hand work.
+_SESSION_KEEP = 3
+
+
+def _live_label_stats(session: Session) -> dict:
+    """The label counts of an *open* session, as :func:`~deeperfly.project.label_stats`
+    would report them once saved.
+
+    A recording held open with unsaved labels would otherwise be listed from its
+    on-disk sidecar -- "unlabeled" next to an hour of work that has not reached disk
+    yet. The four counts must mean exactly what the disk ones mean, so each is the
+    in-memory twin of the group ``label_stats`` counts rows of: the vetoed masks
+    (:attr:`~deeperfly.gui.labels.Labels.has_gt`,
+    :attr:`~deeperfly.gui.labels.Labels.occluded_effective`), because an absent point's
+    labels are quarantined out of ``gt/index`` on the way out.
+    """
+    labels = session.state.labels
+    has_gt = np.asarray(labels.has_gt)
+    return {
+        "gt_points": int(has_gt.sum()),
+        "occluded": int(np.asarray(labels.occluded_effective).sum()),
+        # Frames carrying human work, in any view -- the frame axis is the middle one.
+        "labeled_frames": int(has_gt.any(axis=(0, 2)).sum()),
+        "reviewed_frames": int(np.asarray(labels.reviewed).sum()),
+    }
 
 
 def _open_for_switch(root: Path, slug: str) -> tuple[Session, str]:
@@ -137,16 +174,33 @@ def _open_for_switch(root: Path, slug: str) -> tuple[Session, str]:
     return session, _session_version(session)
 
 
-def _recording_rows(project, active: str | None) -> list[dict]:
+def _recording_rows(
+    project, active: str | None, open_sessions: dict[str, Session] | None = None
+) -> list[dict]:
     """One JSON-safe row per recording of ``project``, in index order.
 
     :meth:`~deeperfly.project.Project.status` rows carry a ``RecordingEntry`` dataclass
     and ``Path``s, which FastAPI's encoder cannot serialize. Naming the fields here makes
     the payload a contract rather than a dump of whatever ``status()`` happens to return.
+
+    ``open_sessions`` (``slug -> Session``) are the recordings the editor is holding in
+    memory. Their counts come from the live session and their ``dirty`` flag says whether
+    it has unsaved labels -- so the list reports what the operator has *done*, not what
+    has reached disk. Without that, the recording they just labeled 40 frames in and
+    switched away from would sit in the list saying "unlabeled".
     """
     rows = []
     for row in project.status():
         entry = row["entry"]
+        live = (open_sessions or {}).get(entry.slug)
+        counts = {
+            "gt_points": int(row["gt_points"]),
+            "occluded": int(row["occluded"]),
+            "labeled_frames": int(row["labeled_frames"]),
+            "reviewed_frames": int(row["reviewed_frames"]),
+        }
+        if live is not None:
+            counts = _live_label_stats(live)
         rows.append(
             {
                 "slug": entry.slug,
@@ -155,13 +209,15 @@ def _recording_rows(project, active: str | None) -> list[dict]:
                 "n_frames": entry.n_frames,
                 "fps": entry.fps,
                 "active": entry.slug == active,
+                # Held in memory by this editor, and whether it has unsaved labels. The
+                # front-end marks the dirty ones -- the operator has to be able to see
+                # where their unsaved work is without opening each recording to check.
+                "open": live is not None,
+                "dirty": bool(live is not None and live.state.dirty),
                 "has_results": bool(row["has_results"]),
                 "has_labels": bool(row["has_labels"]),
                 "outputs_missing": bool(row["outputs_missing"]),
-                "gt_points": int(row["gt_points"]),
-                "occluded": int(row["occluded"]),
-                "labeled_frames": int(row["labeled_frames"]),
-                "reviewed_frames": int(row["reviewed_frames"]),
+                **counts,
             }
         )
     return rows
@@ -200,6 +256,21 @@ def create_app(
     # token the page stamps into its URLs identical to the one the frame handler
     # validates against.
     cache_v = _session_version(session)
+    # Every recording opened this run: `slug -> (session, its cache token)`, least-recently
+    # used first, the open one always last. This is what makes unsaved labels project-wide:
+    # the swap used to DROP the outgoing session -- labels and undo history together -- so it
+    # had to be refused while dirty, and the operator was prompted on every switch. Keeping
+    # the session means a switch loses nothing, costs no I/O on the way back, and the only
+    # question left is at close time. The token rides along in the same tuple so a session and
+    # its cache stamp can never be paired up wrongly (see `_open_for_switch`).
+    #
+    # Bounded, but only over the sessions it is safe to bound: `_prune_sessions` drops
+    # least-recently-used CLEAN ones past `_SESSION_KEEP` and never touches a session with
+    # unsaved labels. A bare results.h5 has no slug and no project to switch within, so the
+    # registry stays empty and every path below falls back to the single `session`.
+    opened: OrderedDict[str, tuple[Session, str]] = OrderedDict()
+    if session.recording_slug is not None:
+        opened[session.recording_slug] = (session, cache_v)
     # Open `/ws` sockets (one per browser tab), the single "writer" allowed to edit
     # the shared session, and the timer that -- once the last socket closes -- stops
     # the server after the grace period (cancelled on reconnect).
@@ -212,6 +283,41 @@ def create_app(
     # than a race between two half-built sessions.
     switching: asyncio.TimerHandle | None = None
     switch_busy = False
+
+    def _dirty_slugs() -> list[str]:
+        """Every recording of this project holding unsaved labels, oldest use first.
+
+        Empty for a bare ``results.h5`` -- it has no slug to name and no project to be
+        dirty *within*, so ``dirty`` on the meta payload is the whole story there.
+        """
+        return [slug for slug, (sess, _) in opened.items() if sess.state.dirty]
+
+    def _project_dirty() -> bool:
+        """Whether anything anywhere is unsaved -- the one flag the close prompt reads."""
+        return bool(session.state.dirty or _dirty_slugs())
+
+    def _prune_sessions() -> None:
+        """Forget the least-recently-used *clean* recordings past :data:`_SESSION_KEEP`.
+
+        The registry exists to make switching free; it must not become a way to run out
+        of memory on a 26-recording project. A clean session can always be rebuilt from
+        disk, so it is a cache. A dirty one cannot -- it is the operator's only copy --
+        so it is skipped here however old it is, which is the whole point of keeping it.
+
+        The evicted session is *dropped*, not closed: ``FrameSource.close()`` clears the
+        decoded-frame cache that a threadpool frame handler pops from outside its ``try``,
+        and a handler that snapshotted this session just before the swap may still be in
+        it. Nothing leaks -- the readers hold no OS handle, and the last reference going
+        away reclaims the arrays, the cache and the undo stacks.
+        """
+        clean = [
+            slug
+            for slug, (sess, _) in opened.items()
+            if not sess.state.dirty and slug != session.recording_slug
+        ]
+        for slug in clean[: max(0, len(clean) - _SESSION_KEEP)]:
+            opened.pop(slug, None)
+            log.debug("dropped the cached session for %s", slug)
 
     def _role_msg(ws: WebSocket) -> dict:
         """The role handshake for a browser: may it edit (writer) or is it read-only?"""
@@ -325,7 +431,7 @@ def create_app(
         # PREVIOUS recording's token onto the new recording's pictures, which is exactly
         # the collision `_session_version` exists to prevent.
         response.headers["Cache-Control"] = "no-store"
-        return _meta_payload(session, cache_v)
+        return _meta_payload(session, cache_v, dirty_recordings=_dirty_slugs())
 
     @app.get("/api/schema")
     def schema(section: str | None = None) -> dict:
@@ -598,22 +704,36 @@ def create_app(
             "project_root": str(project.root),
             "active": s.recording_slug,
             "dirty": bool(s.state.dirty),
-            "recordings": _recording_rows(project, s.recording_slug),
+            # Unsaved work is project-wide (the editor keeps every recording it has
+            # opened), so "is anything unsaved" is a different question from "is THIS
+            # recording unsaved" -- and it is the one the close prompt asks.
+            "project_dirty": _project_dirty(),
+            "dirty_recordings": _dirty_slugs(),
+            "recordings": _recording_rows(
+                project,
+                s.recording_slug,
+                {slug: sess for slug, (sess, _) in opened.items()},
+            ),
         }
 
     @app.post("/api/recordings/open")
     async def open_recording(payload: dict) -> dict:
         """Switch the editor to another recording of this project, in place.
 
-        ``{"recording": "<slug>", "discard": false}``. Refused with 409 while labels are
-        unsaved unless ``discard`` is set: the swap drops the outgoing session -- its
-        labels and its whole undo history -- and no ``beforeunload`` fires for an
-        in-process change, so this refusal is the only thing standing between a careless
-        click and lost hand work. The front-end asks first, with the same three-way
-        prompt as Close, and saves through ``/api/save``.
+        ``{"recording": "<slug>", "discard": false}``. **Never refused for unsaved
+        labels.** The outgoing session is kept in ``opened``, so its labels and its undo
+        history are still there when the operator comes back -- unsaved work spans the
+        project, and the editor asks about it once, at close time. Passing
+        ``discard: true`` is how a caller says the opposite: throw the outgoing
+        recording's unsaved labels away now (it is dropped from the registry).
 
-        The new session is built completely, in a worker thread, *before* anything is
-        rebound -- so a recording that cannot be opened leaves the current one untouched.
+        Reopening a recording still held in the registry rebinds it *without touching
+        disk* -- no video headers, no ``results.h5``, no IK model, and the operator's
+        selected calibration and undo stack exactly as they left them.
+
+        A recording not in the registry is built completely, in a worker thread, *before*
+        anything is rebound -- so one that cannot be opened leaves the current one
+        untouched.
         """
         nonlocal session, cache_v, switch_busy
         if session.project_root is None:
@@ -628,8 +748,6 @@ def create_app(
         if slug == session.recording_slug:
             return {"switched": False, "recording": slug, "reason": "already open"}
         discard = bool(payload.get("discard"))
-        if session.state.dirty and not discard:
-            raise HTTPException(409, _UNSAVED_MSG)
         if switch_busy:
             raise HTTPException(409, "a recording switch is already under way")
 
@@ -645,40 +763,75 @@ def create_app(
             # Opened before the build: a tab that closes while we are still reading the
             # new recording's videos must not be mistaken for the last tab going away.
             _begin_switch()
-            try:
-                new_session, new_v = await asyncio.to_thread(
-                    _open_for_switch, root, slug
-                )
-            except SystemExit as exc:
-                # `open_target` is written for the CLI and reports "this cannot be
-                # opened" by exiting. SystemExit is a BaseException, so it would sail
-                # straight past `except Exception` and out of the request handler.
-                raise HTTPException(409, f"could not open {slug!r}: {exc}") from None
-            except Exception as exc:
-                log.exception("could not open recording %s", slug)
-                raise HTTPException(409, f"could not open {slug!r}: {exc}") from None
+            restored = slug in opened
+            if restored:
+                new_session, new_v = opened[slug]
+            else:
+                try:
+                    new_session, new_v = await asyncio.to_thread(
+                        _open_for_switch, root, slug
+                    )
+                except SystemExit as exc:
+                    # `open_target` is written for the CLI and reports "this cannot be
+                    # opened" by exiting. SystemExit is a BaseException, so it would sail
+                    # straight past `except Exception` and out of the request handler.
+                    raise HTTPException(
+                        409, f"could not open {slug!r}: {exc}"
+                    ) from None
+                except Exception as exc:
+                    log.exception("could not open recording %s", slug)
+                    raise HTTPException(
+                        409, f"could not open {slug!r}: {exc}"
+                    ) from None
 
             async with lock:
-                # Re-checked INSIDE the lock: building the new session took real I/O, and
-                # an edit that landed in that window would be discarded by the rebind
-                # below without ever having been offered to the operator.
-                if session.state.dirty and not discard:
-                    raise HTTPException(409, _UNSAVED_MSG)
+                outgoing, outgoing_v = session, cache_v
                 session = new_session
+                if not restored:
+                    new_v = _session_version(session)
                 cache_v = new_v
+                # Keyed by slug, so a reopen MOVES the entry to the end rather than
+                # duplicating it -- and the outgoing session goes back in under the token
+                # it was serving with, not a freshly computed one.
+                if outgoing.recording_slug is not None:
+                    if discard:
+                        opened.pop(outgoing.recording_slug, None)
+                    else:
+                        opened[outgoing.recording_slug] = (outgoing, outgoing_v)
+                opened.pop(slug, None)
+                opened[slug] = (session, new_v)
+                _prune_sessions()
                 mesh_cache.clear()
-            # The outgoing session is deliberately NOT closed. `FrameSource.close()`
-            # clears the decoded-frame LRU that `FrameSource.frame` pops from outside its
-            # try block, so closing it here -- while every tab is mid-reload and still
-            # requesting frames -- can raise KeyError in a threadpool handler. Nothing
-            # leaks: the readers hold no OS handle, and dropping the last reference
-            # reclaims the cache, the state and the undo stacks.
+                # The frames of a recording nobody is looking at are the largest thing a
+                # retained session holds, and the cheapest thing to rebuild: the browser
+                # refetches them on the way back, from readers that stayed open. The
+                # session itself -- labels, undo history, derived 3D -- is what is kept.
+                if outgoing is not session:
+                    outgoing.source.release_cache()
+            # A session dropped here (pruned, or discarded) is deliberately NOT closed:
+            # `FrameSource.close()` clears the decoded-frame LRU that `FrameSource.frame`
+            # reads outside its try block, and a threadpool handler that snapshotted the
+            # outgoing session just before the swap may still be inside it. Nothing leaks
+            # -- the readers hold no OS handle, and the last reference going away reclaims
+            # the arrays, the cache and the undo stacks.
             _begin_switch()  # restart the window: the reloads begin now
             await _broadcast(
                 {"type": "reload", "reason": "recording", "recording": slug}
             )
-            log.info("editor switched to recording %s", slug)
-            return {"switched": True, "recording": slug, "cache_v": new_v}
+            log.info(
+                "editor switched to recording %s (%s)",
+                slug,
+                "restored from memory" if restored else "opened from disk",
+            )
+            return {
+                "switched": True,
+                "recording": slug,
+                "cache_v": new_v,
+                # Whether this recording came back from memory (with its unsaved labels
+                # and its undo history) or was read from disk. The front-end says so.
+                "restored": restored,
+                "dirty_recordings": _dirty_slugs(),
+            }
         finally:
             switch_busy = False
 
@@ -743,39 +896,93 @@ def create_app(
             raise HTTPException(404, f"no job {job_id}")
         return {"cancelled": jobs.cancel(job_id)}
 
+    def _write_session(s: Session) -> None:
+        """Write one session's labels sidecar (and mirror its absence declaration).
+
+        Takes the session explicitly rather than reading `session`: it is called for
+        recordings that are *not* the open one (``/api/save-all``), and the failure it
+        must be incapable of is writing one recording's labels to another's path. The
+        caller holds the mutation lock.
+        """
+        save_labels(
+            s.labels_path,
+            s.state.labels,
+            identity=s.identity,
+            subject_id=s.state.labels.subject_id,
+            # Passed back explicitly: save_labels rewrites the whole file, so omitting
+            # them would drop the landmarks group the solve reads.
+            landmarks=s.state.landmarks,
+        )
+        # Mirror the absence declaration into results.h5's `animal/` group. That is the
+        # seam the pipeline and every results.h5-only consumer read, so a fact authored
+        # here reaches a re-run (and the render path) without anyone parsing labels.h5.
+        # An in-place patch, so no stage output is touched.
+        try:
+            from ..results import StageStore
+
+            StageStore(Path(s.results_path)).write_animal(
+                absent=s.state.labels.absent_all_frames(),
+                subject_id=s.state.labels.subject_id,
+            )
+        except Exception:  # a read-only results.h5 must not fail the label save
+            log.exception("could not mirror the absence declaration into results.h5")
+
     @app.post("/api/save")
     async def save() -> dict:
+        """Write the OPEN recording's labels. See ``/api/save-all`` for the rest."""
         async with lock:
             # One snapshot for the whole save. A recording switch takes this same lock,
             # so it cannot interleave -- but reading `session` seven times would make
             # that a property of the lock rather than of this function, and the failure
             # it prevents is writing the NEW recording's labels to the OLD one's path.
             s = session
-            save_labels(
-                s.labels_path,
-                s.state.labels,
-                identity=s.identity,
-                subject_id=s.state.labels.subject_id,
-                # Passed back explicitly: save_labels rewrites the whole file, so omitting
-                # them would drop the landmarks group the solve reads.
-                landmarks=s.state.landmarks,
-            )
-            # Mirror the absence declaration into results.h5's `animal/` group. That is the
-            # seam the pipeline and every results.h5-only consumer read, so a fact authored
-            # here reaches a re-run (and the render path) without anyone parsing labels.h5.
-            # An in-place patch, so no stage output is touched.
-            try:
-                from ..results import StageStore
+            _write_session(s)
+            return {
+                "dirty": s.state.dirty,
+                "project_dirty": _project_dirty(),
+                "dirty_recordings": _dirty_slugs(),
+            }
 
-                StageStore(Path(s.results_path)).write_animal(
-                    absent=s.state.labels.absent_all_frames(),
-                    subject_id=s.state.labels.subject_id,
-                )
-            except Exception:  # a read-only results.h5 must not fail the label save
-                log.exception(
-                    "could not mirror the absence declaration into results.h5"
-                )
-            return {"dirty": s.state.dirty}
+    @app.post("/api/save-all")
+    async def save_all() -> dict:
+        """Write every recording still holding unsaved labels -- the editor's Save.
+
+        Unsaved work spans the project (the editor keeps every recording it has opened),
+        so "save" means all of it: saving only the open recording would leave the title
+        bar starred and the operator hunting for which other one still needs a click.
+
+        A write that fails is *reported*, not raised: the saves that did land must not be
+        undone by one unwritable sidecar, and the front-end needs to know it may not
+        close. ``failed`` empty and ``project_dirty`` false is the only "everything is on
+        disk" answer.
+        """
+        saved: list[str] = []
+        failed: list[dict] = []
+        async with lock:
+            # A snapshot of the registry: `_write_session` releases nothing, but the list
+            # is what makes the set of recordings saved here independent of anything that
+            # runs later in this handler.
+            targets = [
+                (slug, sess) for slug, (sess, _) in opened.items() if sess.state.dirty
+            ]
+            if not targets and session.state.dirty:
+                # A bare results.h5 -- no slug, no registry entry, still savable.
+                targets = [(session.recording_slug or "", session)]
+            for slug, sess in targets:
+                try:
+                    _write_session(sess)
+                except Exception as exc:  # noqa: BLE001 -- reported, per the docstring
+                    log.exception("could not save the labels of %s", slug or "session")
+                    failed.append({"recording": slug, "error": str(exc)})
+                else:
+                    saved.append(slug)
+            return {
+                "saved": saved,
+                "failed": failed,
+                "dirty": session.state.dirty,
+                "project_dirty": _project_dirty(),
+                "dirty_recordings": _dirty_slugs(),
+            }
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict:
@@ -1027,11 +1234,22 @@ def _limb_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
     return out
 
 
-def _meta_payload(session: Session, cache_v: str | None = None) -> dict:
+def _meta_payload(
+    session: Session,
+    cache_v: str | None = None,
+    *,
+    dirty_recordings: "Sequence[str]" = (),
+) -> dict:
     """The one-time metadata the front-end needs to lay out and draw the editor.
 
     ``cache_v`` is the recording token the server will validate frame URLs against;
     it is passed in (rather than recomputed) so the two can never disagree.
+
+    ``dirty_recordings`` names every recording the editor holds with unsaved labels --
+    this one included when it is one of them. The front-end needs it on the very first
+    payload of a page load or a switch: the beforeunload guard and the close prompt are
+    project-wide, and a page that had only this recording's ``dirty`` would let an
+    operator close the editor on another recording's unsaved work.
     """
     s = session.state
     skel = s.result.skeleton
@@ -1073,6 +1291,8 @@ def _meta_payload(session: Session, cache_v: str | None = None) -> dict:
         "cameras_3d": _cameras_3d(session),
         "cameras_proj": _cameras_proj(session),
         "dirty": bool(s.dirty),
+        "dirty_recordings": list(dirty_recordings),
+        "project_dirty": bool(s.dirty or dirty_recordings),
     }
 
 

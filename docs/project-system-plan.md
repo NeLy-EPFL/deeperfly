@@ -1209,7 +1209,7 @@ of them driving a real headless chromium. Sixteen commits.
 | **0** Calibration artifact | **done** | `calibration.toml` (v1) + guards + quality; `CameraGroup.from_calibration`/`to_calibration`; `[cameras].calibration`; every BA run emits one; `deeperfly calibration show/export` |
 | **1a** Project layer | **done** | `project.py`; content-derived ids; adoption by symlink; `deeperfly project new/add/ls/status/rm`; `~/fly-pose-data` adopted as the acceptance test |
 | **1b** Rig + profiles | **done** | `rig.toml`, `profiles/`, `deeperfly project rig` / `project config` — composition by concatenating disjoint fragments |
-| **2** Uncalibrated editing | **done** | `PoseResult.uncalibrated`; `has_cameras`; `deeperfly gui <project> [--recording]`; the banner; browser tests |
+| **2** Uncalibrated editing | **done** | `PoseResult.uncalibrated`; `has_cameras`; `deeperfly gui <project>` (opens the first recording; the picker switches); the banner; browser tests |
 | **3** Calibration from labels | **done** | `landmarks.py`; `labels.h5` **v6**; `calibration_solve.py`; `deeperfly calibrate` + readiness meter; **in-GUI landmark placement** |
 | **4** GUI-first config | **done** | `config_schema.py`; `deeperfly config show/set`; `GET /api/schema` + `/api/config`; a **generated Settings panel**; **skeleton migrations** + `deeperfly project skeleton` |
 | **5a** Jobs | **done** | `jobs.py` (subprocess queue, allow-listed kinds); `/api/jobs`; a Jobs panel; `python -m deeperfly` |

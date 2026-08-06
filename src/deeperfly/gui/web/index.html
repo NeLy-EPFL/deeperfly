@@ -50,25 +50,39 @@
             <label title="Jump to a frame — drag the slider or use ← / → (Shift for ±10)">Frame <input id="frame-slider" type="range" /></label>
             <input id="frame-number" type="number" title="Current frame — type a number to jump there" />
             <span id="frame-total"></span>
-            <!-- Starting a frame lives on the FRAME row, because that is its scope, and it is
-                 the second thing done on every one of thousands of frames. The caption never
-                 flips to "Reseed": a muscle-memory click on a button whose action changed would
-                 land on the one that rewrites every seed and moves every unplaced joint in every
-                 view. Create is harmless; reseed is not; they do not share a hotspot. The
-                 primary disables once the frame has a skeleton, which doubles as the "does this
-                 frame have one" readout. -->
             <!-- A <button aria-pressed>, not a checkbox: `onKey`'s typing guard disables every
                  non-global binding while an <input> has focus, and nothing blurs it, so a mouse
                  click on a checkbox here would silently freeze the keyboard until the operator
                  clicked back onto a canvas. -->
             <button id="reviewed-toggle" aria-pressed="false" title="Reviewed — mark this frame as checked, and keep it in the labeled list even if its labels are later reset. A record of your attention, not of the pose (d)">&#10003; Reviewed</button>
+            <!-- The skeleton group lives on the FRAME row because that is its scope. It is one
+                 popover, not a split button: Create and Reseed used to need separate hotspots
+                 (a muscle-memory click must never land on the one that rewrites every seed),
+                 and inside a menu that has to be opened deliberately they get that for free --
+                 plus the guarantee that only ever ONE of them is live. The server refuses each
+                 as a no-op in the other's state (state.py:693, state.py:735), so `g` alone is
+                 the fast path for starting a frame and each row here disables when it would do
+                 nothing, which doubles as the "does this frame have a skeleton" readout. -->
             <div class="ctl-group popover-wrap" id="skeleton-wrap">
-              <button id="skeleton-create" title="Create the annotation skeleton for this frame, seeded from the detections. Dragging a point or pressing Enter does this implicitly; this is the deliberate way, and it authors nothing (g)">&#10022; Skeleton</button>
-              <button id="skeleton-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="How a new skeleton is seeded, and re-seeding this frame">&#9662;</button>
+              <button id="skeleton-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="This frame's annotation skeleton — how a new one is seeded, how its 3D is derived, creating one, and re-seeding this frame">&#10022; Skeleton <span class="caret">▾</span></button>
               <div id="skeleton-menu" class="popover-menu" role="menu" hidden>
                 <div class="pm-section">Seed a new skeleton from</div>
                 <div class="pm-row"><div id="seed-switch" class="segmented"></div></div>
+                <!-- How a point's 3D is derived once you have labeled enough views. A camera
+                     says nothing about distance along its own optical axis, so two cameras
+                     that face each other (rm and lm are exactly opposed) leave that distance
+                     almost free: labeling only those two used to put the joint hundreds of
+                     microns out and tens of pixels off in every view you did NOT label. The
+                     default now lets the unlabeled views fix that one direction and nothing
+                     else -- your pixels still decide everything they have an opinion about.
+                     "My pixels only" is the older behavior, kept because seeing the solve
+                     with nothing but your own labels in it is a legitimate thing to ask for,
+                     and because flipping between the two is the honest way to see what the
+                     other views are contributing. -->
+                <div class="pm-section" id="stabilize-section">Derive the 3D from</div>
+                <div class="pm-row" id="stabilize-row"><div id="stabilize-switch" class="segmented"></div></div>
                 <div class="pm-section">This frame</div>
+                <button type="button" id="skeleton-create" class="pm-btn" title="Create the annotation skeleton for this frame, seeded from the detections. Dragging a point or pressing Enter does this implicitly; this is the deliberate way, and it authors nothing. Disabled once the frame has one (g)">Create the skeleton <kbd>g</kbd></button>
                 <button type="button" id="reseed" class="pm-btn" title="Lay this frame's seeds down again from the detections, keeping every ground-truth pixel you have placed. Seeds are frozen when the skeleton is created so a detector re-run cannot move your evidence under you; this is how you pick up better detections on purpose (Shift+G)">Reseed this frame <kbd>&#8679;G</kbd></button>
               </div>
             </div>
@@ -86,7 +100,7 @@
                  discoverable one. The rows keep their ids (show-*, *-wrap) so app.js binds
                  them unchanged and still display:none's the 3D/NMF rows when absent. -->
             <div class="ctl-group popover-wrap" id="show-wrap">
-              <button id="show-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected · p Reprojected 3D · w Reproj. warning · m NMF skeleton · Shift+M NMF mesh)">Show <span class="caret">▾</span></button>
+              <button id="show-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected · p Reprojected 3D · w Reproj. warning · u Under-labeled · m NMF skeleton · Shift+M NMF mesh)">Show <span class="caret">▾</span></button>
               <div id="show-menu" class="popover-menu" role="menu" hidden>
                 <label class="pm-master" title="Hide every overlay at once for an unobstructed look at the raw frames — press again to restore them exactly as they were. A quick, non-destructive peek: each layer's own toggle is left untouched (h)."><input id="show-hide-all" type="checkbox" /> <span class="pm-name">Hide all overlays</span> <kbd>h</kbd></label>
                 <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> <span class="pm-name">Names</span> <kbd>n</kbd></label>
@@ -101,9 +115,15 @@
                 <label id="detected-wrap" title="Show the detector's own output -- what the 2D network said, before triangulation cleaned it (a filled disc that fades with confidence, under a thin dark ring). It is what the annotation skeleton was seeded from; a read-only reference (t)"><input id="show-detected" type="checkbox" checked /><span class="mk mk-inline m-pred"></span> <span class="pm-name">Detected</span> <kbd>t</kbd></label>
                 <label id="detected-autohide-wrap" class="pm-subrow" title="Once a frame has an annotation skeleton the detections have done their job -- they seeded it -- and drawing both doubles every joint. This hides them automatically while a skeleton exists; the checkbox above stays your standing intent, and t brings them back for a look."><input id="detected-autohide" type="checkbox" checked /> <span class="pm-name">hide once a skeleton exists</span></label>
                 <label id="projected-wrap" title="Show the reprojection of the derived 3D as its own overlay: hollow rings joined by thick, dashed, semi-transparent limb-palette edges, marking where the multi-view 3D places each joint. The guide you label against. On by default (p)"><input id="show-projected" type="checkbox" checked /><span class="mk mk-inline m-proj"></span> <span class="pm-name">Reprojected 3D</span> <kbd>p</kbd></label>
-                <div class="pm-section" id="warn-section">Checks</div>
-                <label id="warn-wrap" title="Flag a keypoint when its ground-truth pixel (or the detector's, if you haven't labelled it) sits farther than the threshold from where the 3D reprojects it — an amber→red ring on the point plus a connector to the reprojection. A quick way to spot where the 2D label and the multi-view 3D disagree. Toggle with w."><input id="show-warn" type="checkbox" checked /><span class="mk mk-inline m-warn"></span> <span class="pm-name">Reproj. warning</span> <kbd>w</kbd></label>
+                <!-- Both checks live here: one about a disagreement (the reprojection warning),
+                     one about work outstanding (label coverage). They have separate availability
+                     gates -- the first needs a 3D solve, the second only a second camera -- so the
+                     heading is shown when EITHER survives. -->
+                <div class="pm-section" id="checks-section">Checks</div>
+                <label id="warn-wrap" title="Flag a keypoint when the position it claims in a view — your ground-truth pixel, or, before the frame has a skeleton, the detector's — sits farther than the threshold from where the 3D reprojects it: an amber→red ring on the point plus a connector to the reprojection. It catches labels that disagree with each other across views. A joint you have NOT placed is drawn on the reprojection, so it has nothing to disagree with and is never flagged — unless you are showing seeds (s), which can drift from the geometry. Toggle with w."><input id="show-warn" type="checkbox" checked /><span class="mk mk-inline m-warn"></span> <span class="pm-name">Reproj. warning</span> <kbd>w</kbd></label>
                 <label id="warn-threshold-wrap" class="pm-subrow" title="Distance in image pixels above which a keypoint's label-to-reprojection gap is flagged."><span class="pm-subrow-label">Warn above</span> <input id="warn-threshold" type="number" min="1" max="200" step="1" value="8" /> <span class="pm-subrow-unit">px</span></label>
+                <label id="cover-wrap" title="Flag a keypoint you have labeled in fewer than two views of this frame: a violet gauge ring around the joint — a dashed track for the two labels it needs, and a solid arc for the ones it has, so nothing labeled reads as an empty ring and one of two as a half-swept one. Two is the floor because two is what the geometry needs — a single pixel fixes only a viewing ray, and until the second one lands the joint's depth still comes from the detector rather than from you. It counts YOUR pixels, whether or not the cell is Hidden (that flag only decides what the training loss reads); a joint marked Absent is never flagged, having nothing to label. Off by default — it is the pass for &quot;what is still missing here&quot;. Toggle with u."><input id="show-cover" type="checkbox" /><span class="mk mk-inline m-cover"></span> <span class="pm-name">Under-labeled</span> <kbd>u</kbd></label>
+                <label id="cover-min-wrap" class="pm-subrow" title="How many views must carry a ground-truth pixel before a keypoint counts as labeled. Two is the minimum any 3D point needs; raise it to demand redundancy."><span class="pm-subrow-label">Want at least</span> <input id="cover-min" type="number" min="1" max="99" step="1" value="2" /> <span class="pm-subrow-unit">views</span></label>
                 <div class="pm-section" id="reference-section">Model</div>
                 <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> <span class="pm-name">NMF skeleton</span> <kbd>m</kbd></label>
                 <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">NMF mesh</span> <kbd>⇧M</kbd></label>
@@ -112,19 +132,19 @@
                 <button type="button" id="reset-view" class="pm-btn" title="Reset zoom &amp; pan on every camera back to the tight fit (0)">Fit every camera <kbd>0</kbd></button>
               </div>
             </div>
-            <div class="ctl-group annot-card" id="point-status" title="The selected point(s). A cell is not SET to a state -- it either carries a ground-truth pixel you created or it does not, and its detection is either excluded from triangulation or it is not. The line here reports which; the buttons are the verbs. Enter creates ground truth at the position already shown (from whichever proposal layers are visible), Backspace deletes it, e excludes the detection from triangulation, r retracts both. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear.">
+            <div class="ctl-group annot-card" id="point-status" title="The selected point(s). A cell is not SET to a state -- it either carries a ground-truth pixel you created or it does not, and it is either held out of the training loss or it is not. Those are two independent facts and both buttons can be pressed at once. Enter creates ground truth at the position already shown, Backspace deletes it, e holds the cell out of the training loss, r retracts both. Select with click / Ctrl+click (add) / double-click / Shift+drag (new set) / Ctrl+drag (add); a = all, v = this view, click the background or Esc to clear.">
               <span id="point-status-name" class="point-status-name">&mdash;</span>
               <!-- One control per fact, each showing its own state, because the facts are what
-                   a cell has: a ground-truth pixel, a "cannot see it here" mark, a "not on this
-                   animal" declaration. Place and Clear were two buttons for one mutually
-                   exclusive pair, and a separate text readout for what the buttons could show
-                   themselves. -->
+                   a cell has: a ground-truth pixel, a "held out of the training loss" mark, a
+                   "not on this animal" declaration. Place and Clear were two buttons for one
+                   mutually exclusive pair, and a separate text readout for what the buttons
+                   could show themselves. -->
               <button id="act-gt" aria-pressed="false" title="Ground truth — place a pixel for the selection at the position already drawn there, or clear it again. Pressed means the selection carries your pixel; the joint then follows the position derived for it instead. Dragging a point places it too (Enter places, Backspace clears)" disabled>&#9678; GT</button>
-              <button id="act-exclude" aria-pressed="false" title="Hidden -- mark the selection as not visible to a human in this view, or clear the mark (toggle). Purely an annotation about the IMAGE: it does not move the joint and it does not affect triangulation, which is robust to a bad observation on its own. It is a training signal, and the one thing nothing else can supply. Orthogonal to ground truth, so a joint placed THROUGH an occluder can carry both (e)" disabled>&#128065; Hidden</button>
-              <!-- Absent is deliberately not one of the verbs above: those all concern one
-                   view's observation of a joint, while Absent says the joint is not on the
-                   animal at all -- view-independent, and usually recording-wide. -->
-              <button id="act-absent" class="act-absent" aria-pressed="false" title="Absent -- this keypoint is not on this animal (an amputated leg, an ablated antenna). Applies to EVERY frame and EVERY view at once, because it is one fact about the animal, not an observation. Different from an excluded detection (&quot;it exists but I cannot place it from this view&quot;) and from Unplaced (&quot;nobody has placed it yet&quot;). An absent joint draws as a dim grey X with no bones, contributes nothing to the 3D solve, and is excluded from the training export. Press again or Ctrl+Z to un-mark; nothing labeled underneath is lost (x)" disabled>&#10007; Absent</button>
+              <button id="act-exclude" aria-pressed="false" title="Hidden -- hold the selected cell(s) OUT OF THE TRAINING LOSS, or put them back (toggle). This is its own binary flag and nothing else: the joint does not move, keeps its marker and its bones, stays draggable, and the 3D is unaffected. It is fully independent of ground truth, so a cell can carry your pixel and this mark at once -- 'here is where the joint is' and 'do not train on it here' are two separate things to record. Marked cells show a bar struck through the joint (e)" disabled>&#128065; Hidden</button>
+              <!-- Absent is deliberately not one of the verbs above: those concern one cell of
+                   one view, while Absent says the joint is not on the animal at all --
+                   view-independent, and usually recording-wide. -->
+              <button id="act-absent" class="act-absent" aria-pressed="false" title="Absent -- this keypoint is not on this animal (an amputated leg, an ablated antenna). Applies to EVERY frame and EVERY view at once, because it is one fact about the animal, not an observation. Different from Hidden (&quot;the joint is there; just do not train on this cell&quot;), which leaves the position standing. An absent joint draws as a dim grey X with no bones, contributes nothing to the 3D solve, and is excluded from the training export. Press again or Ctrl+Z to un-mark; nothing labeled underneath is lost (x)" disabled>&#10007; Absent</button>
               <!-- Reset is rightmost of the card on purpose: it is the only one of these that
                    retracts more than one fact, and it sits next to Undo rather than next to the
                    constructive verbs. -->
@@ -135,26 +155,10 @@
               <button id="redo" title="Redo (Ctrl/Cmd+Y)" disabled>↷</button>
             </div>
             <span class="spacer"></span>
-            <!-- Which recording is open, and how to open another. A session-level fact,
-                 so it sits with the session utilities rather than with the panels -- and
-                 the button IS the readout: before this, the open recording's name lived
-                 only in the browser tab's title, where a tab truncates it. The menu
-                 carries each recording's label counts, because "which is worth opening
-                 next" is the question actually being asked. Hidden for a bare
-                 results.h5, which has no siblings to switch to. -->
-            <div class="ctl-group popover-wrap" id="recording-wrap">
-              <button id="recording-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="Which recording is open — and switch to another in this project, without restarting the editor (b)"><span id="recording-name">recording</span> <span class="caret">▾</span></button>
-              <div id="recording-menu" class="popover-menu" role="menu" hidden>
-                <div class="pm-section" id="recording-heading">Recordings</div>
-                <div id="recording-list" class="rec-list"></div>
-                <div id="recording-empty" class="frames-empty" hidden></div>
-              </div>
-            </div>
             <div class="ctl-group">
-              <!-- One button for the whole side panel, carrying a badge per tab: the
-                   number of frames labeled, and (only once a suggestion queue exists)
-                   how many of its frames are done. -->
-              <button id="frames-toggle" title="Show / hide the side panel — the frames you have labeled, and the suggested queue of frames to label next (j)">Labels <span id="frames-count" class="count-badge">0</span><span id="suggest-count" class="count-badge is-suggest" hidden>0</span></button>
+              <!-- No side-panel button here: the panel's own ✕ closes it and the right-edge
+                   rail (#sidebar-rail) opens it, so the control is at the edge the panel
+                   comes from rather than a third place that also means "panel". -->
               <button id="cameras" title="Show the 3D scene — cameras, 3D pose, NMF skeleton + mesh (c)">3D scene</button>
               <button id="help" title="Help — the labeling guide, keypoint colours, and keyboard shortcuts (?)">Help</button>
             </div>
@@ -165,82 +169,181 @@
                    so the operator lands on the joint instead of hunting for it. -->
               <button id="chirality-badge" class="absent-badge is-warning" hidden></button>
               <span id="status" role="status" aria-live="polite"></span>
-              <button id="save" title="Save the ground-truth labels (Ctrl/Cmd+S)">Save</button>
+              <!-- The unsaved-changes cue. Hidden while everything is on disk, so its mere
+                   presence is the signal; it counts RECORDINGS, because edits are kept in
+                   memory across a recording switch and the operator's real question is
+                   whether any of their work is in a recording they have left. A button, not
+                   a label: the answer to it is "then save it". -->
+              <button id="unsaved" class="unsaved-chip" hidden></button>
+              <button id="save" title="Save the ground-truth labels of every recording holding unsaved work (Ctrl/Cmd+S)">Save</button>
               <button id="close-editor" title="Stop the server and close the editor">Close</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- A retractable side panel holding the two frame lists, as tabs (the editor has
-           one aside and the camera grid is the scarce resource, so a second panel would
-           cost width permanently). "Labeled" lists every frame that carries a
-           ground-truth label, in time order. "Suggested" is the ranked queue written by
-           `deeperfly labels-suggest` -- which frames to correct NEXT, worst multi-view
-           disagreement first -- in rank order, with its own columns; two different sets
-           in two different orders, which is why they are tabs and not one filtered list.
-           Click a row in either to jump to that frame; the ↑/↓ buttons (and keys) step
-           through the ACTIVE tab's list. Toggled by the "Labels" button (j). -->
+      <!-- The side panel: ONE pane at a time behind a strip of tabs. The editor has a single
+           aside and the camera grid is the scarce resource, so every pane gets the full
+           column instead of a share of it -- and "leaving a tab" is a real event again,
+           which is what disarms a landmark and stops the jobs poll.
+           The strip WRAPS rather than scrolls: seven names in a 240-340px column need two
+           rows, and a tab you cannot see is a panel nobody finds. Each tab carries its own
+           count, so the numbers stay readable from whichever pane is open.
+           Tab order is the order of the working day -- which recording, what you have
+           labeled, what to label next, this frame's skeleton, the calibration landmarks, the
+           jobs you can run, the project's settings. Activating a tab IS the lazy-load
+           trigger, so the three panes that cost real work to fill cost nothing until asked
+           for: Recording opens every recording's labels.h5 (server.py:583-584), Settings
+           re-composes the project config on every read (server.py:496-543), Jobs polls every
+           two seconds. Which tab is active persists across reloads AND across a recording
+           switch: it is the operator's arrangement, not the recording's data. `j` toggles the
+           whole panel and the right-edge rail re-opens it; ↑/↓ step whichever frame list is
+           showing (and remember it while you are on another tab).
+           The head is the tab strip itself plus the ✕ -- there is no title bar over it. A
+           column this narrow cannot spare 33px to be told it is a panel, and the lit tab
+           already names what is in it. -->
       <aside id="sidebar" hidden>
+        <!-- Real `role="tab"` tabs, but deliberately NO roving tabindex: the ARIA pattern
+             wants the arrow keys to move between tabs, and ↑/↓ already step the frame list
+             while ←/→ step frames. Every tab stays reachable with Tab instead, which costs
+             a keyboard operator here nothing they would have used. -->
         <div class="sidebar-head">
-          <div id="sidebar-tabs" class="sidebar-title"></div>
-          <span class="sidebar-nav">
-            <button id="frames-prev" class="icon-btn" title="Jump to the previous corrected frame">↑</button>
-            <button id="frames-next" class="icon-btn" title="Jump to the next corrected frame">↓</button>
-          </span>
+          <div id="sidebar-tabs" class="sidebar-tabs" role="tablist" aria-label="Side panel">
+            <button type="button" class="side-tab" id="tab-recordings" role="tab" hidden
+                    aria-selected="false" aria-controls="recording-pane"
+                    title="This project's recordings — switch to another without restarting the editor and without saving first; your edits are kept in memory and marked ● (b)">Recording</button>
+            <button type="button" class="side-tab" id="tab-labeled" role="tab"
+                    aria-selected="true" aria-controls="labeled-pane"
+                    title="Every frame carrying a ground-truth label, in time order. ↑ / ↓ step it">Labeled <span id="labeled-count" class="count-badge">0</span></button>
+            <button type="button" class="side-tab" id="tab-suggest" role="tab"
+                    aria-selected="false" aria-controls="suggest-pane"
+                    title="The ranked queue from `deeperfly labels-suggest` — which frames to correct next, worst multi-view disagreement first. ↑ / ↓ step it in rank order">Suggested <span id="suggest-tally" class="count-badge is-suggest" hidden>0</span></button>
+            <button type="button" class="side-tab" id="tab-instances" role="tab"
+                    aria-selected="false" aria-controls="instances-pane"
+                    title="This frame's annotation skeleton — whether it exists, and how much of it is yours">Instance</button>
+            <button type="button" class="side-tab" id="tab-marks" role="tab"
+                    aria-selected="false" aria-controls="marks-pane"
+                    title="Calibration landmarks — static points that make a from-scratch camera rig solvable">Landmarks <span id="marks-count" class="count-badge">0</span></button>
+            <button type="button" class="side-tab" id="tab-jobs" role="tab"
+                    aria-selected="false" aria-controls="jobs-pane"
+                    title="Pipeline jobs — run one of the CLI commands and watch its log. Polls every two seconds while this tab is showing">Jobs <span id="jobs-count" class="count-badge" hidden>0</span></button>
+            <button type="button" class="side-tab" id="tab-settings" role="tab"
+                    aria-selected="false" aria-controls="settings-pane"
+                    title="Project settings, derived from the pipeline's own parameter dataclasses">Settings</button>
+          </div>
           <button id="frames-collapse" class="icon-btn" aria-label="Hide" title="Hide the panel (j)">✕</button>
         </div>
-        <div class="sidebar-body" id="labeled-pane">
-          <table id="frames-table" class="frames-table">
-            <thead><tr><th>Frame</th><th class="reviewed-col" title="Tick once you have finished reviewing a frame">Reviewed</th></tr></thead>
-            <tbody></tbody>
-          </table>
-          <div id="frames-empty" class="frames-empty">No labels yet — frames you annotate will be listed here.</div>
-        </div>
-        <!-- The suggestion queue. The status strip carries the two facts most likely to
-             mislead a reader of the list -- how stale the queue is, and any caveat about
-             how it was scored -- so they are on screen, not only in the CLI log. -->
-        <div class="sidebar-body" id="suggest-pane" hidden>
-          <div id="suggest-status" class="sidebar-status" hidden></div>
-          <table id="suggest-table" class="frames-table suggest-table">
-            <thead><tr>
-              <th class="rank-col" title="Rank in the queue — 1 is the frame most worth your time">#</th>
-              <th>Frame</th>
-              <th class="t-col" title="Time into the recording, in seconds">t (s)</th>
-              <th class="score-col" title="Multi-view disagreement of the detector's own 2D: how far each view's prediction sits from the reprojection of the triangulated joint, averaged over the worst joints. Ranks WITHIN this recording only — the absolute level tracks how many cells the detector fired, so it is not comparable between recordings.">Score</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-          <div id="suggest-empty" class="frames-empty"></div>
-        </div>
-        <!-- Pipeline jobs. Each row IS a CLI command, shown verbatim so a GUI action that
-             fails is reproducible in a terminal without reverse-engineering what the GUI
-             did. There is no percentage: these commands emit human log lines, and a
-             number synthesized from those would be a fiction with a spinner attached, so
-             the last log line is what is shown instead. -->
-        <!-- Calibration landmarks. Non-skeleton points that make a from-scratch rig
-             solvable: a STATIC one (a coverslip scratch, the tether tip) is three unknowns
-             however many frames observe it, while a keypoint is three unknowns PER FRAME
-             because the animal moved. Arm one, then click it into place in each view. -->
-        <div class="sidebar-body" id="marks-pane" hidden>
-          <div id="marks-list" class="marks-list"></div>
-          <div id="marks-empty" class="frames-empty"></div>
-        </div>
-        <!-- Project settings. Every field, its default, its type and its documentation
-             are DERIVED from the *Params dataclasses (GET /api/schema), so this panel cannot
-             drift from the code and a new option appears here with nothing to update. Writes
-             go to the project's profile, which holds only what differs from the defaults --
-             so "reset" genuinely removes the key. -->
-        <div class="sidebar-body" id="settings-pane" hidden>
-          <div id="settings-list" class="settings-list"></div>
-          <div id="settings-empty" class="frames-empty"></div>
-        </div>
-        <div class="sidebar-body" id="jobs-pane" hidden>
-          <div id="jobs-actions" class="jobs-actions"></div>
-          <div id="jobs-list" class="jobs-list"></div>
-          <div id="jobs-empty" class="frames-empty"></div>
+
+        <div id="sidebar-panes" class="sidebar-panes">
+
+          <!-- Which recording is open, and the project's others with the counts that decide
+               which is worth opening next. The pane names the open slug at the top: with one
+               tab showing at a time this is the only place outside the browser tab's title
+               that says which animal you are labeling. -->
+          <div class="sidebar-body" id="recording-pane" role="tabpanel" aria-labelledby="tab-recordings" hidden>
+            <div class="pane-head">Open <span id="recording-name" class="pane-value">recording</span></div>
+            <div id="recording-list" class="rec-list"></div>
+            <div id="recording-empty" class="frames-empty" hidden></div>
+          </div>
+
+          <!-- Every frame carrying a ground-truth label, in time order. -->
+          <div class="sidebar-body" id="labeled-pane" role="tabpanel" aria-labelledby="tab-labeled">
+            <table id="frames-table" class="frames-table">
+              <thead><tr><th>Frame</th><th class="reviewed-col" title="Tick once you have finished reviewing a frame">Reviewed</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div id="frames-empty" class="frames-empty">No labels yet — frames you annotate will be listed here.</div>
+          </div>
+
+          <!-- The ranked queue written by `deeperfly labels-suggest`: which frames to
+               correct NEXT, worst multi-view disagreement first, in rank order. A different
+               set in a different order from the list above, which is why it is its own tab
+               with its own columns rather than a filter on that one. The status strip carries
+               the two facts most likely to mislead a reader -- how stale the queue is, and
+               any caveat about how it was scored. -->
+          <div class="sidebar-body" id="suggest-pane" role="tabpanel" aria-labelledby="tab-suggest" hidden>
+            <div id="suggest-status" class="sidebar-status" hidden></div>
+            <table id="suggest-table" class="frames-table suggest-table">
+              <thead><tr>
+                <th class="rank-col" title="Rank in the queue — 1 is the frame most worth your time">#</th>
+                <th>Frame</th>
+                <th class="t-col" title="Time into the recording, in seconds">t (s)</th>
+                <th class="score-col" title="Multi-view disagreement of the detector's own 2D: how far each view's prediction sits from the reprojection of the triangulated joint, averaged over the worst joints. Ranks WITHIN this recording only — the absolute level tracks how many cells the detector fired, so it is not comparable between recordings.">Score</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+            <div id="suggest-empty" class="frames-empty"></div>
+          </div>
+
+          <!-- This frame's annotation skeleton. One per frame is all the format can carry:
+               the labels COO index reserves an instance axis (labels.py:171-180) but the
+               loader REFUSES any row with instance != 0, and EditorState keeps a single
+               per-frame bool (state.py:115). So this reports; it does not list, and it
+               carries no verbs -- Create and Reseed stay on the frame row, where the muscle
+               memory is and where they deliberately do not share a hotspot (index.html:53-59). -->
+          <div class="sidebar-body" id="instances-pane" role="tabpanel" aria-labelledby="tab-instances" hidden>
+            <!-- "Skeleton", not "Your pixels": the value is a cell tally once one exists but
+                 reads "none" before that, and "your pixels: none" says the wrong thing about
+                 a frame nobody has started. -->
+            <div class="pane-head">Skeleton <span id="instance-state" class="pane-value">—</span></div>
+            <div id="instances-list" class="inst-list"></div>
+          </div>
+
+          <!-- Calibration landmarks. Non-skeleton points that make a from-scratch rig
+               solvable: a STATIC one (a coverslip scratch, the tether tip) is three unknowns
+               however many frames observe it, while a keypoint is three unknowns PER FRAME
+               because the animal moved. Arm one, then click it into place in each view --
+               and LEAVING this tab disarms, so an armed landmark cannot outlive the operator's
+               attention and turn the next canvas click into a silent placement. -->
+          <div class="sidebar-body" id="marks-pane" role="tabpanel" aria-labelledby="tab-marks" hidden>
+            <div id="marks-list" class="marks-list"></div>
+            <div id="marks-empty" class="frames-empty"></div>
+          </div>
+
+          <!-- Pipeline jobs. Each row IS a CLI command, shown verbatim so a GUI action that
+               fails is reproducible in a terminal without reverse-engineering what the GUI
+               did. There is no percentage: these commands emit human log lines, and a number
+               synthesized from those would be a fiction with a spinner attached, so the last
+               log line is shown instead. The two-second poll runs only while this tab is the
+               one showing -- otherwise an idle editor makes 1800 requests an hour. -->
+          <div class="sidebar-body" id="jobs-pane" role="tabpanel" aria-labelledby="tab-jobs" hidden>
+            <div id="jobs-actions" class="jobs-actions"></div>
+            <div id="jobs-list" class="jobs-list"></div>
+            <div id="jobs-empty" class="frames-empty"></div>
+          </div>
+
+          <!-- Project settings. Every field, its default, its type and its documentation are
+               DERIVED from the *Params dataclasses (GET /api/schema), so this panel cannot
+               drift from the code and a new option appears here with nothing to update.
+               Writes go to the project's profile, which holds only what differs from the
+               defaults -- so "reset" genuinely removes the key. Read on activation only: each
+               read is a Project.load + compose_config + two TOML parses (server.py:496-543),
+               and it re-reads after every knob write. -->
+          <div class="sidebar-body" id="settings-pane" role="tabpanel" aria-labelledby="tab-settings" hidden>
+            <div id="settings-list" class="settings-list"></div>
+            <div id="settings-empty" class="frames-empty"></div>
+          </div>
+
         </div>
       </aside>
+
+      <!-- The closed panel's way back. The panel is the one piece of chrome an operator shuts
+           to get camera pixels back, so it needs a re-open affordance that is impossible to
+           miss -- and it belongs at the edge the panel slides out from, not as a third button
+           on a toolbar that already has the ✕ inside the panel and the `j` key.
+           A flex SIBLING of the aside, not a floating overlay: 32px of column costs less than
+           a handle hovering over the rightmost camera, where every click is a keypoint
+           placement. It carries the one number worth seeing while the panel is shut -- how
+           many frames are labeled. The retired toolbar button also carried the suggestion
+           tally, which does NOT come along: "<done> / <total>" does not fit a rail this
+           narrow, and it is on the Suggested tab, which is where a queue is worked. -->
+      <button id="sidebar-rail" class="sidebar-rail" hidden
+              aria-controls="sidebar" aria-expanded="false"
+              title="Show the side panel — labeled frames, the suggested queue, this frame's skeleton, the calibration landmarks, jobs, settings, and the project's other recordings (j)">
+        <span class="rail-caret" aria-hidden="true">‹</span>
+        <span id="frames-count" class="count-badge is-rail" title="Frames carrying a ground-truth label">0</span>
+        <span class="rail-label">Panels</span>
+      </button>
     </div>
 
     <!-- Live "adding to selection" affordance: a floating pill shown (via body.adding)
@@ -249,31 +352,19 @@
          key glyph is filled in OS-correctly by app.js (applyOsHints). -->
     <div id="add-hint" class="add-hint" aria-hidden="true"><kbd id="add-hint-key">Ctrl</kbd> <span>Add to selection</span></div>
 
+    <!-- The editor's ONE prompt about unsaved labels. Switching recordings keeps the
+         recording it leaves in memory -- labels and undo history both -- so stopping the
+         server is the single act that can lose hand work, and this question covers every
+         recording at once. #close-list names them: after an afternoon of switching, "you
+         have unsaved labels" without a name sends the operator looking. -->
     <div id="close-overlay" class="overlay" hidden>
       <div class="modal">
         <div class="modal-head"><span>Unsaved changes</span></div>
-        <div class="modal-body">You have unsaved labels. Save them before closing the editor?</div>
+        <div class="modal-body">You have unsaved labels<span id="close-list"></span>. Save them before closing the editor?</div>
         <div class="modal-actions">
           <button id="close-cancel">Cancel</button>
           <button id="close-discard" class="danger">Close without saving</button>
           <button id="close-save" class="primary">Save &amp; close</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Switching recordings drops this session -- its labels AND its undo history --
-         and no beforeunload fires for an in-process swap, so this is the only thing
-         between a careless click and lost hand work. Same three-way shape as Close, same
-         default (save), and it names both recordings because the operator is about to
-         stop looking at one of them. -->
-    <div id="switch-overlay" class="overlay" hidden>
-      <div class="modal">
-        <div class="modal-head"><span>Unsaved changes</span></div>
-        <div class="modal-body">You have unsaved labels in <span id="switch-from"></span>. Save them before opening <span id="switch-to"></span>?</div>
-        <div class="modal-actions">
-          <button id="switch-cancel">Cancel</button>
-          <button id="switch-discard" class="danger">Switch without saving</button>
-          <button id="switch-save" class="primary">Save &amp; switch</button>
         </div>
       </div>
     </div>

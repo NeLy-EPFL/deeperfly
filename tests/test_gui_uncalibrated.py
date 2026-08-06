@@ -251,19 +251,27 @@ def test_opening_backfills_the_frame_count_into_the_index(tmp_path):
     assert Project.load(project.root).recording(entry.id).n_frames == 5
 
 
-def test_a_project_with_several_recordings_needs_a_named_one(tmp_path):
+def test_a_project_with_several_recordings_opens_the_first(tmp_path):
+    """Naming one is not required, and used to be.
+
+    It was mandatory while opening a project meant committing to one recording for the
+    life of the server -- picking silently would have been picking *for* the operator.
+    The editor now switches recordings in place, so the starting one is arbitrary and
+    the choice belongs to the picker, not to the command line.
+    """
     pytest.importorskip("av")
     from deeperfly.gui import open_target
 
-    project, _ = _fresh_project(tmp_path)
+    project, entry = _fresh_project(tmp_path)
     second = tmp_path / "other"
     second.mkdir()
     for cam in VIEWS:
         (second / f"{cam}.mp4").write_bytes(b"\0" * 4321)
     project.add_recording(second)
+    assert len(project.recordings) == 2
 
-    with pytest.raises(SystemExit, match="--recording"):
-        open_target(project.root)
+    session = open_target(project.root)
+    assert session.recording_slug == entry.slug == project.recordings[0].slug
 
 
 def test_a_named_recording_opens(tmp_path):

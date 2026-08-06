@@ -106,10 +106,22 @@ export async function openRecording(recording, discard) {
   return res.json();
 }
 
-/** @returns {Promise<{ dirty: boolean }>} */
-export async function saveCorrections() {
-  const r = await fetch("/api/save", { method: "POST" });
-  if (!r.ok) throw new Error(`POST /api/save -> ${r.status}`);
+/**
+ * Write every recording holding unsaved labels -- what the editor's Save does.
+ *
+ * Unsaved work spans the project: the server keeps every recording the operator has
+ * opened, so a switch loses nothing and "save" means all of it. There is deliberately no
+ * wrapper for `POST /api/save` (the open recording alone) -- the editor has one Save,
+ * because a per-recording one would leave the title starred with no button that clears it.
+ *
+ * `failed` is per recording and non-fatal to the others, so a caller that is about to
+ * close must check it rather than trusting the 200.
+ * @returns {Promise<{ saved: string[], failed: {recording: string, error: string}[],
+ *   dirty: boolean, project_dirty: boolean, dirty_recordings: string[] }>}
+ */
+export async function saveAllCorrections() {
+  const r = await fetch("/api/save-all", { method: "POST" });
+  if (!r.ok) throw new Error(`POST /api/save-all -> ${r.status}`);
   return r.json();
 }
 

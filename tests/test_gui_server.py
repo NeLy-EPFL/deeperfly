@@ -918,27 +918,114 @@ def test_session_defaults_the_suggestions_path_beside_the_labels(session):
 # exists to prevent. Cheap insurance for a purely additive DOM change.
 
 
-def test_suggest_panel_ids_agree_across_the_assets(client):
+def test_the_sidebar_ids_agree_across_the_assets(client):
+    """Every id the sidebar's JS binds exists in the HTML it is served with.
+
+    ``el()`` throws on a missing id, and it runs during field initialization -- so an id
+    renamed in one file and not the other is a blank editor at boot, not a missing
+    button. This is the cheapest guard there is against that, which is why it grew with
+    the tab strip rather than shrinking to match it.
+    """
     html = client.get("/").text
     js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text
-    for element_id in (
-        "sidebar-tabs",
-        "suggest-count",
+    tabs = (
+        "recordings",
+        "labeled",
+        "suggest",
+        "instances",
+        "marks",
+        "jobs",
+        "settings",
+    )
+    # The tab ids are reached through a template literal (``el(`tab-${id}`)``), so a
+    # literal-string search cannot see them. What holds them together is SIDEBAR_TABS -- an
+    # id in that table with no element is the same blank editor, so the table is what this
+    # half checks.
+    for name in tabs:
+        assert f'id="tab-{name}"' in html, f"tab-{name} missing from index.html"
+        assert f'id: "{name}"' in js, f"{name} missing from SIDEBAR_TABS"
+    for pane in (
+        "recording-pane",
         "labeled-pane",
         "suggest-pane",
+        "instances-pane",
+        "marks-pane",
+        "jobs-pane",
+        "settings-pane",
+    ):
+        assert f'id="{pane}"' in html, f"{pane} missing from index.html"
+        assert f'pane: "{pane}"' in js, f"{pane} missing from SIDEBAR_TABS"
+
+    # Not bound in JS -- the strip and the pane stack are addressed only from CSS and from
+    # the structural browser test, so they are checked for presence, not for a binding.
+    assert 'id="sidebar-tabs"' in html
+    assert 'id="sidebar-panes"' in html
+
+    ids = [
+        "recording-name",
+        "labeled-count",
+        "suggest-tally",
         "suggest-status",
         "suggest-table",
         "suggest-empty",
-    ):
+        "instance-state",
+        "instances-list",
+        # The panel's two directions: the ✕ inside it closes, the right-edge rail opens. The
+        # rail is the ONLY click that re-opens it now that the toolbar button is gone, so a
+        # renamed id here is a panel that can never be brought back except with `j`.
+        "sidebar-rail",
+        "frames-collapse",
+    ]
+    for element_id in ids:
         assert f'id="{element_id}"' in html, f"{element_id} missing from index.html"
         assert f'el("{element_id}")' in js, f"{element_id} not bound in app.js"
-    # The two lists share the table styling; the queue adds its own row states + chips.
-    for cls in ("suggest-table", "kind-chip", "sidebar-status", "suggest-why"):
+    # The two lists share the table styling; the queue adds its own row states + chips, and
+    # the tabbed layout adds the strip, the pane stack and a pane's readout line.
+    for cls in (
+        "suggest-table",
+        "kind-chip",
+        "sidebar-status",
+        "suggest-why",
+        "sidebar-tabs",
+        "side-tab",
+        "sidebar-panes",
+        "sidebar-rail",
+        "rail-label",
+        "pane-head",
+        "pane-value",
+        "inst-row",
+    ):
         assert f".{cls}" in css, f"{cls} unstyled"
+    # A hidden tab must actually leave the strip: `.side-tab` sets `display: inline-flex`,
+    # which outranks the UA's `[hidden] { display: none }`, so the author rule is load-
+    # bearing for a session with no project to list. The rail needs the same rule for the
+    # same reason -- it is `display: flex`, and it is hidden whenever the panel is open.
+    assert ".side-tab[hidden]" in css
+    assert ".sidebar-rail[hidden]" in css
+    # The rail carries the two badges the retired toolbar button had, narrowed to fit 26px.
+    assert ".count-badge.is-rail" in css
     # The queue is fetched from the route these tests cover, and the panel is a reader.
     assert "fetchSuggestions" in js
     assert "/api/suggestions" in client.get("/static/api.js").text
+    # Retired chrome: the stacked sections, the toolbar's recording picker, the toolbar's
+    # panel button, the panel's title bar, and its single ↑/↓ pair (the keys stayed).
+    for gone in (
+        "sidebar-sections",
+        "side-sec",
+        "sec-toggle",
+        "recording-wrap",
+        "frames-toggle",
+        "sidebar-title",
+        "sidebar-nav",
+        "frames-prev",
+        "frames-next",
+        # The queue tally was mirrored onto the retired toolbar button; the rail that
+        # replaced it is too narrow for "<done> / <total>", so only #suggest-tally is left.
+        "suggest-count",
+    ):
+        assert gone not in html and gone not in js, f"{gone} still referenced"
+        assert gone not in css, f"{gone} still styled"
 
 
 # -- edits over the websocket -------------------------------------------------

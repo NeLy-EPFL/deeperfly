@@ -153,7 +153,10 @@ class FrameSource:
         key = (name, idx)
         cached = self._cache.get(key)
         if cached is not None:
-            self._cache.move_to_end(key)
+            try:
+                self._cache.move_to_end(key)
+            except KeyError:  # released between the get and here -- see release_cache
+                pass
             return cached
         try:
             frame = np.asarray(self._readers[name][idx])
@@ -162,8 +165,25 @@ class FrameSource:
             return None
         self._cache[key] = frame
         if len(self._cache) > self._cache_size:
-            self._cache.popitem(last=False)
+            try:
+                self._cache.popitem(last=False)
+            except KeyError:  # released between the check and here -- see release_cache
+                pass
         return frame
+
+    def release_cache(self) -> None:
+        """Drop the decoded frames, keeping the readers open.
+
+        For a session the editor keeps but is no longer showing (the recording the
+        operator switched away from, held for its unsaved labels): the decoded frames are
+        by far the largest thing it owns -- up to ``cache_size`` full-resolution RGB frames
+        -- and they are pure cache, refilled by the browser on the way back. What actually
+        made the switch slow, opening every reader, is what stays.
+
+        Called while another thread may be inside :meth:`frame` on this source, which is
+        why that method tolerates its key vanishing between two statements.
+        """
+        self._cache.clear()
 
     def close(self) -> None:
         """Close every open reader and drop the cache."""

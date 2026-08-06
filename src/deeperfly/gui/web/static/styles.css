@@ -202,6 +202,16 @@ body {
   display: none;
 }
 
+/* The Skeleton group is LAST on the frame row and the slider eats the slack, so its button
+   sits hard against the right edge -- and a left-anchored menu then opens off the viewport,
+   worst of all with the side panel closed, which is exactly when the row is widest. Anchored
+   to the button's right edge instead. (`#show-menu` keeps `left: 0`: its button is the
+   leftmost thing on the toolbar.) */
+#skeleton-menu {
+  left: auto;
+  right: 0;
+}
+
 /* id-scoped so these beat the shared `#controls label` inline-flex rule. */
 #show-menu label {
   display: flex;
@@ -287,7 +297,10 @@ body {
   text-align: left;
 }
 
-.popover-menu .pm-btn:hover {
+/* `:not(:disabled)` is load-bearing: Create / Reseed sit next to each other in the Skeleton
+   menu and exactly one of them is ever live, so a hover highlight on the dead one would
+   invite the click the server is about to refuse. */
+.popover-menu .pm-btn:hover:not(:disabled) {
   background: #3a3a3a;
 }
 
@@ -453,6 +466,16 @@ body {
   border: 2px solid rgb(255, 176, 0);
 }
 
+/* The label-coverage gauge: a violet ring whose swept part is opaque and whose unmet part is
+   faint -- the top+right quadrants bright, so the swatch reads as the canvas draws one of two
+   (poseView.js drawGtCoverage, a solid arc clockwise from 12 o'clock over a dashed track). */
+.mk.m-cover {
+  background: transparent;
+  border: 2px solid rgba(170, 120, 255, 0.5);
+  border-top-color: rgb(170, 120, 255);
+  border-right-color: rgb(170, 120, 255);
+}
+
 .mk.m-placeholder {
   background: transparent; /* faint dashed hollow ring: the "Unplaced" seed ghost */
   border: 1.5px dashed #888;
@@ -481,6 +504,24 @@ body {
 }
 
 .mk.m-absent::after {
+  transform: rotate(-45deg);
+}
+
+/* The "Hidden" mark: a bar struck through a marker that is otherwise unchanged, which is exactly
+   how the canvas draws it (poseView.js drawHidden). The swatch keeps the detected disc underneath
+   so the legend shows what the flag does -- it annotates a marker, it does not replace one. */
+.mk.m-hidden {
+  background: #888;
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  position: relative;
+}
+
+.mk.m-hidden::after {
+  content: "";
+  position: absolute;
+  inset: 50% -3px auto -3px;
+  border-top: 2px solid #e6eaf0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65);
   transform: rotate(-45deg);
 }
 
@@ -531,12 +572,11 @@ body {
 /* The annotation control reads as one unit -- and, as the primary control, gets the
    toolbar's one anchor of chrome (a small raised card) so the operator's eye lands on
    the thing they actually use. It holds a "<point> · <camera>" (or count) readout, the
-   3-way state switch (Ground truth / Detected / Projected), then a Reset. The chip row is
-   both the readout and the setter -- clicking a chip applies that state to the whole
-   selection -- and its active chip is colour-coded (Ground truth lime, Projected violet,
-   Detected the default blue) so the state reads at a glance. A projected point draws on
-   the canvas as a plain derived point (no observation in that view -- occluded or
-   undetected), so this control is where its state stays legible. */
+   per-fact toggles (GT / Hidden / Absent), then a Reset. Each toggle is both the readout and
+   the setter -- pressed means the fact is set, clicking applies it to the whole selection --
+   and GT and Hidden can be pressed at the same time, since they are independent axes rather
+   than states of one switch. A derived point draws on the canvas as a plain hollow ring (the
+   detector fired nothing in that view), so this control is where its state stays legible. */
 .annot-card {
   padding: 3px 8px;
   background: rgba(255, 255, 255, 0.035);
@@ -622,7 +662,8 @@ button:disabled {
   cursor: default;
 }
 
-/* A small count chip on the "Corrections" toggle button (number of corrected frames). */
+/* A small count chip: labeled frames (on the Labeled tab and the re-open rail), and the
+   suggestion queue's done/total tally (on the Suggested tab). */
 .count-badge {
   display: inline-block;
   min-width: 18px;
@@ -635,6 +676,9 @@ button:disabled {
   line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  /* The suggestion tally reads "<done> / <total>", which must never break across lines --
+     it rides a tab in a 240-340px column, and its tab has no width to spare. */
+  white-space: nowrap;
 }
 
 .count-badge.is-zero {
@@ -661,12 +705,22 @@ button:disabled {
   color: #aaa;
 }
 
+/* The labeled-frames badge on the re-open rail, narrowed to fit its column: the default chip
+   is 28px wide with its padding alone, which is nearly the whole rail. */
+.count-badge.is-rail {
+  margin: 0;
+  min-width: 0;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 14px;
+}
+
 /* The retractable frame-list side panel (right edge, full height), holding the Labeled
    and Suggested tabs. The Suggested tab widens it: its rows carry a rank, a time and a
    score plus a one-line reason, and squeezing that into the labeled list's width would
    turn every reason into an ellipsis. The camera grid reflows to whatever is left. */
 #sidebar {
-  flex: 0 0 clamp(180px, 16vw, 260px);
+  flex: 0 0 clamp(240px, 20vw, 340px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -674,38 +728,146 @@ button:disabled {
   border-left: 1px solid var(--border);
 }
 
-#sidebar.tab-suggest {
-  flex-basis: clamp(240px, 22vw, 340px);
-}
-
 #sidebar[hidden] {
   display: none;
 }
 
+/* The panel's head IS the tab strip, plus the ✕ that closes the panel. There is no title
+   bar over it: a 240-340px column cannot spare a 33px band to be told it is a panel, and
+   the selected tab already names what is in it. `align-items: flex-start` so the ✕ stays on
+   the strip's FIRST row when the tabs wrap onto a second. */
 .sidebar-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
-  padding: 8px 10px;
-  background: #333;
+  padding: 5px 8px 0;
+  background: #303030;
   border-bottom: 1px solid var(--border);
-  font-weight: 600;
 }
 
-/* The panel's heading slot. It holds the Labeled / Suggested tab strip rather than a
-   title -- two lists in two different orders, so a tab strip and not a filter. */
-.sidebar-title {
+/* The tab strip. It WRAPS rather than scrolls: seven names do not fit one 240-340px row,
+   and a horizontal scroller hides whichever tabs fell off the end -- which are then the
+   panels nobody finds. Two short rows cost ~24px of column height and hide nothing. */
+.sidebar-tabs {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2px;
 }
 
-.sidebar-title .segmented .seg-btn {
-  padding: 2px 8px;
-  font-weight: 500;
-}
-
-.sidebar-nav {
+/* Tabs, not chips: transparent, borderless, and marked by an underline in the selection
+   colour. A row of bordered, rounded, individually-filled boxes reads as seven buttons that
+   each DO something -- and one of them looking pressed is a weak way to say "you are here".
+   The underline sits on the head's own bottom border, which is the strip's baseline. */
+.side-tab {
   display: inline-flex;
-  gap: 2px;
+  align-items: center;
+  padding: 4px 7px 5px;
+  margin-bottom: -1px; /* laps the head's border, so the underline replaces it */
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: #98a4b0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.side-tab:not(.is-active):hover {
+  color: var(--fg);
+  border-bottom-color: #555;
+}
+
+.side-tab.is-active {
+  color: #fff;
+  font-weight: 600;
+  border-bottom-color: #4a90d9;
+}
+
+/* `.side-tab` sets `display: inline-flex` as an author rule, which outranks the browser's
+   `[hidden] { display: none }` -- without this the Recording tab would stay on the strip
+   for a bare results.h5 session that has no project to list. (The same trap `.count-badge`
+   needed the rule at C:648 for.) */
+.side-tab[hidden] {
+  display: none;
+}
+
+/* The closed panel's re-open handle: a slim full-height rail at the right edge, so the way
+   back is at the edge the panel comes from. A flex sibling of the aside rather than an
+   overlay -- 32px of column costs less than a handle floating over the rightmost camera,
+   where a stray click would place a keypoint. The width is what the labeled-frames badge
+   needs, which is also why the suggestion tally is not on it (see the markup). */
+.sidebar-rail {
+  flex: 0 0 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: #303030;
+  color: #98a4b0;
+  cursor: pointer;
+}
+
+.sidebar-rail:hover {
+  background: #3a3a3a;
+  color: var(--fg);
+}
+
+.sidebar-rail[hidden] {
+  display: none;
+}
+
+.rail-caret {
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* Reads top-to-bottom, which is the only way a word fits a 32px column. */
+.rail-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* The pane stack. Exactly one pane is shown, and it takes the whole remaining column --
+   which also makes it the scrollport `.frames-table th`'s `position: sticky` pins to. */
+.sidebar-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A pane's own readout line: the open recording's slug, this frame's GT-cell tally. The
+   tab already carries the pane's NAME, so this carries only what the tab cannot.
+   Ellipsised rather than wrapped, so it stays one line high. */
+.pane-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #2f2f2f;
+  border-bottom: 1px solid var(--border);
+  color: #9aa7b4;
+  font-size: 11px;
+}
+
+.pane-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .sidebar-body {
@@ -713,6 +875,18 @@ button:disabled {
   min-height: 0;
   overflow-y: auto;
 }
+
+/* `.sidebar-body` is a flex child with no `display` of its own, so the UA `[hidden]` rule
+   would work -- this is here because every other collapsible surface in this file needed
+   the author rule (.count-badge C:648, .popover-menu C:201) and the next edit to add a
+   `display` here would break the pane swap silently. */
+.sidebar-body[hidden] { display: none; }
+
+/* The Instance readout: label/value pairs, no verbs. */
+.inst-list { padding: 6px 10px 10px; }
+.inst-row { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; }
+.inst-row .inst-key { color: #8a97a4; flex: none; }
+.inst-row .inst-val { margin-left: auto; text-align: right; }
 
 .frames-table {
   width: 100%;
@@ -1268,6 +1442,41 @@ body.read-only #redo {
   background: rgba(217, 161, 59, 0.28);
 }
 
+/* The unsaved-changes cue, next to Save. Wears the badge shape (so it reads as state, not
+   as a fourth toolbar action) in the same amber the chirality warning uses for "you should
+   look at this", and it is a button because the answer to it is Save. Hidden entirely while
+   everything is on disk: a permanently visible "saved / unsaved" indicator is a thing the
+   eye stops reading, and this one has to be noticed the moment it appears. */
+.unsaved-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.1em 0.55em;
+  border: 1px solid #d9a13b;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.85em;
+  color: #f0c674;
+  background: rgba(217, 161, 59, 0.16);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.unsaved-chip:hover:not(:disabled) { background: rgba(217, 161, 59, 0.3); }
+.unsaved-chip:disabled { cursor: default; } /* read-only tab: still worth reading */
+.unsaved-chip[hidden] { display: none; }
+
+/* Save, while anything is unsaved. The same amber as the cue, so the pair reads as one
+   statement -- "there is unsaved work; this is the button" -- and a disabled Save (nothing
+   to write) keeps the plain toolbar look. */
+#save.is-dirty {
+  border-color: #d9a13b;
+  color: #f0c674;
+  background: rgba(217, 161, 59, 0.16);
+}
+
+#save.is-dirty:hover { background: rgba(217, 161, 59, 0.3); }
+
 /* Uncalibrated notice — the recording has no solved camera rig, so every view is an
    independent 2D canvas. Mirrors .readonly-banner's placement but reads as information
    rather than a warning: labelling uncalibrated is a normal, expected phase of a
@@ -1443,24 +1652,9 @@ body.arming-landmark canvas { cursor: crosshair !important; }
 }
 
 /* -- the recording picker ---------------------------------------------------
-   A popover on the toolbar's right-hand utilities, so unlike the left-anchored
-   Show/Skeleton menus it is anchored to its button's RIGHT edge -- the default
-   would run off the viewport. Rows are buttons, never a <select> or a filter
-   <input>: `onKey`'s typing guard kills every non-global shortcut while an
-   input holds focus, and nothing in the toolbar blurs it. */
-#recording-menu {
-  left: auto;
-  right: 0;
-  min-width: 320px;
-}
-#recording-toggle #recording-name {
-  display: inline-block;
-  max-width: 22ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
+   The Recording pane's list of the project's recordings. Rows are buttons,
+   never a <select> or a filter <input>: `onKey`'s typing guard kills every
+   non-global shortcut while an input holds focus, and nothing here blurs it. */
 .rec-list {
   display: flex;
   flex-direction: column;
@@ -1468,6 +1662,7 @@ body.arming-landmark canvas { cursor: crosshair !important; }
 }
 .rec-row {
   display: flex;
+  flex-wrap: wrap; /* the stats drop below the name at the narrow end */
   align-items: baseline;
   gap: 8px;
   width: 100%;
@@ -1495,4 +1690,12 @@ body.arming-landmark canvas { cursor: crosshair !important; }
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #d7a03a;
+}
+/* "Unsaved labels live in this recording." The same amber as the toolbar cue, because it is
+   the same fact seen from the other end: the chip says how many recordings, the dots say
+   which. No author `display`, so `hidden` genuinely removes it. */
+.rec-dirty {
+  font-size: 9px;
+  line-height: 1;
+  color: #f0c674;
 }

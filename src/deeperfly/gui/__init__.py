@@ -488,13 +488,21 @@ def open_target(
             f"'deeperfly project add {target} <recording>'"
         )
     if recording is None:
-        if len(project.recordings) > 1:
-            listing = "\n".join(f"  {e.slug:<40} {e.id}" for e in project.recordings)
-            raise SystemExit(
-                f"project {project.name!r} holds {len(project.recordings)} recordings; "
-                f"name one with --recording:\n{listing}"
-            )
+        # Open the first one. Naming a recording used to be mandatory here, because
+        # opening a project meant committing to one for the life of the server -- so
+        # picking silently would have been picking FOR the operator. The editor can now
+        # switch recordings in place (its toolbar picker, `b`), which makes the starting
+        # one arbitrary and the question not worth asking: `deeperfly gui <project>`
+        # opens, and the picker is where the choice is actually made.
         entry = project.recordings[0]
+        if len(project.recordings) > 1:
+            log.info(
+                "project %r holds %d recordings; opening %r -- switch with the "
+                "editor's recording picker (b)",
+                project.name,
+                len(project.recordings),
+                entry.slug,
+            )
     else:
         try:
             entry = project.recording(recording)

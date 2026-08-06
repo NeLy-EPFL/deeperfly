@@ -8,9 +8,11 @@ Two things here are load-bearing and neither is visible in a happy-path click:
 
 - the **cache token** must move with the recording, or the browser goes on painting the
   previous fly out of its own cache for an hour (frames are served ``immutable``);
-- an unsaved label must **block** the swap, because the swap drops the outgoing session
-  -- labels and undo history together -- and no ``beforeunload`` fires for an in-process
-  change.
+- an unsaved label must **survive** the swap. The editor keeps every recording it has
+  opened (``opened`` in :func:`~deeperfly.gui.server.create_app`), so unsaved work is
+  project-wide: switching is free, ``POST /api/save-all`` is what writes it, and the
+  only prompt left is at close time. A switch that quietly dropped the outgoing
+  session's labels would be unrecoverable and completely silent.
 
 The front-end half is covered in ``test_gui_browser.py``.
 """
@@ -39,7 +41,9 @@ CAMERAS = ("rh", "rm", "rf", "f", "lf", "lm", "lh")
 SIZES = {name: (HEIGHT, WIDTH) for name in CAMERAS}
 
 
-def _make_recording(root, cameras, fly, *, seed, n_frames, gt_cells=0, reviewed=0):
+def _make_recording(
+    root, cameras, fly, *, seed, n_frames, gt_cells=0, reviewed=0, names=CAMERAS
+):
     """A recording with byte-only footage and a real ``results.h5``.
 
     The footage bytes differ per recording (via ``seed``) because
@@ -47,26 +51,32 @@ def _make_recording(root, cameras, fly, *, seed, n_frames, gt_cells=0, reviewed=
     recordings would be de-duplicated into one project entry, and there would be nothing
     to switch between. The bytes are not decodable video, so ``/api/frame`` 404s here --
     which is fine: what is under test is which *session* the server holds, not pixels.
+
+    ``names`` is the recording's own camera list, and ``cameras`` must be the matching rig.
+    It defaults to the whole set, but a project really does hold recordings filmed on
+    different rigs -- a view added, a camera that failed that day -- so anything that
+    outlives a switch has to survive the camera list changing under it.
     """
     root.mkdir(parents=True, exist_ok=True)
-    for i, camera in enumerate(CAMERAS):
+    names = tuple(names)
+    for i, camera in enumerate(names):
         (root / f"camera_{camera}.mp4").write_bytes(b"\0" * (1000 + 7 * i + seed))
     outputs = root / "deeperfly_outputs"
     outputs.mkdir(exist_ok=True)
     rng = np.random.default_rng(seed)
-    pts2d = rng.uniform(0, 100, size=(len(CAMERAS), n_frames, 38, 2))
+    pts2d = rng.uniform(0, 100, size=(len(names), n_frames, 38, 2))
     StageStore(outputs / "results.h5").write_pose2d(
         cameras=cameras,
         skeleton=fly,
         pts2d=pts2d,
         conf=np.ones(pts2d.shape[:3]),
-        image_sizes=SIZES,
-        footage={c: [root / f"camera_{c}.mp4"] for c in CAMERAS},
+        image_sizes={name: (HEIGHT, WIDTH) for name in names},
+        footage={c: [root / f"camera_{c}.mp4"] for c in names},
     )
     if gt_cells or reviewed:
-        labels = Labels.empty(len(CAMERAS), n_frames, 38)
+        labels = Labels.empty(len(names), n_frames, 38)
         for i in range(gt_cells):
-            labels.set_gt(i % len(CAMERAS), i % n_frames, i % 38, (1.0 * i, 2.0 * i))
+            labels.set_gt(i % len(names), i % n_frames, i % 38, (1.0 * i, 2.0 * i))
         for t in range(reviewed):
             labels.set_reviewed(t, True)
         save_labels(
@@ -74,7 +84,7 @@ def _make_recording(root, cameras, fly, *, seed, n_frames, gt_cells=0, reviewed=
             labels,
             identity=labels_identity(
                 point_names=list(fly.point_names),
-                camera_names=list(CAMERAS),
+                camera_names=list(names),
                 n_frames=n_frames,
             ),
         )
@@ -232,40 +242,194 @@ def test_the_mesh_overlay_is_never_served_from_the_previous_recording(
     assert second.content != first.content, "served the previous recording's overlay"
 
 
-# -- refusals ------------------------------------------------------------------
+# -- unsaved labels across a switch --------------------------------------------
 
 
-def test_a_switch_is_refused_while_labels_are_unsaved(client):
-    """The one way this editor could destroy hand work without saying so.
-
-    The swap drops the outgoing session -- labels and undo history together -- and an
-    in-process change fires no ``beforeunload``, so the refusal is the whole guard.
-    """
+def _edit(client, *, view=0, point=3, x=12.0, y=34.0, frame=1):
+    """Author one 2D ground-truth pixel over the socket (the session goes dirty)."""
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
             {
                 "type": "edit_2d",
-                "view": 0,
-                "point": 3,
-                "x": 12.0,
-                "y": 34.0,
-                "frame": 1,
+                "view": view,
+                "point": point,
+                "x": x,
+                "y": y,
+                "frame": frame,
                 "mode": "edit_2d",
             }
         )
-        ws.receive_json()
+        return ws.receive_json()
+
+
+def test_a_switch_keeps_the_unsaved_labels_of_the_recording_it_leaves(client):
+    """The whole feature. Switching used to be refused while dirty, because the swap
+    dropped the outgoing session; now the session is kept, so the operator can work
+    across a project's recordings the way they work across its frames.
+
+    Asserted on the *pixel*, not just on the dirty flag: a retained flag over a rebuilt
+    session would be a worse bug than the refusal it replaced.
+    """
+    reply = _edit(client)
+    # `fixed` is the wire name for "this cell carries a GT pixel" (see _points_payload).
+    assert reply["fixed"][0][3] is True
+    assert reply["points"][0][3] == [12.0, 34.0]
     assert client.get("/api/meta").json()["dirty"] is True
 
-    refused = client.post("/api/recordings/open", json={"recording": "flyB"})
-    assert refused.status_code == 409
-    assert "unsaved" in refused.json()["detail"]
-    assert client.get("/api/meta").json()["recording"] == "flyA", "swapped anyway"
+    switched = client.post("/api/recordings/open", json={"recording": "flyB"})
+    assert switched.status_code == 200, "refused a switch it no longer has to refuse"
+    body = switched.json()
+    assert body["restored"] is False, "flyB was never open; it came from disk"
+    assert body["dirty_recordings"] == ["flyA"]
+    meta = client.get("/api/meta").json()
+    assert meta["recording"] == "flyB"
+    assert meta["dirty"] is False, "flyA's edit leaked into flyB"
+    # The project is unsaved even though the open recording is not -- the distinction the
+    # close prompt and the beforeunload guard are built on.
+    assert meta["project_dirty"] is True
+    assert meta["dirty_recordings"] == ["flyA"]
 
-    forced = client.post(
-        "/api/recordings/open", json={"recording": "flyB", "discard": True}
+    back = client.post("/api/recordings/open", json={"recording": "flyA"}).json()
+    assert back["restored"] is True, "flyA was reopened from disk, not restored"
+    assert client.get("/api/meta").json()["dirty"] is True
+    pts = client.get("/api/points/1").json()
+    assert pts["fixed"][0][3] is True, "the unsaved label did not survive"
+    assert pts["points"][0][3] == [12.0, 34.0], "the label survived but moved"
+
+
+def test_a_restored_recording_is_not_read_from_disk_again(client, monkeypatch):
+    """Reopening a held recording must not re-run ``open_target``.
+
+    Not an optimization detail: opening reads every camera's video header, ``results.h5``
+    and ``labels.h5`` (a network share, in this lab) and would rebuild the state from the
+    *sidecar* -- which is precisely how the unsaved labels would vanish while every other
+    assertion still passed.
+    """
+    opens = []
+    real = server._open_for_switch
+
+    def counted(root, slug):
+        opens.append(slug)
+        return real(root, slug)
+
+    monkeypatch.setattr(server, "_open_for_switch", counted)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    client.post("/api/recordings/open", json={"recording": "flyA"})
+    assert opens == ["flyB"], "flyA was opened again instead of restored"
+
+
+def test_the_recording_left_keeps_its_labels_but_not_its_pictures(two_recordings):
+    """A retained session holds the operator's work, not a pile of decoded frames.
+
+    ``cache_size`` full-resolution frames per held recording is what would make keeping
+    them a way to run out of memory; they are also the one part that costs nothing to
+    rebuild (the browser refetches, from readers that stayed open). Reaches into the
+    private LRU because this fixture's footage is bytes, not decodable video -- there is no
+    way to fill the cache through ``/api/frame`` here, and the property under test is a
+    memory one.
+    """
+    session = open_target(two_recordings.root, recording="flyA")
+    client = TestClient(create_app(session))
+    session.source._cache[("rh", 0)] = np.zeros((4, 4, 3), np.uint8)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    assert session.source._cache == {}, (
+        "kept the frames of a recording nobody is showing"
     )
-    assert forced.status_code == 200
-    assert client.get("/api/meta").json()["recording"] == "flyB"
+    # The session behind those frames is untouched -- flyA's five saved GT cells included.
+    assert int(session.state.labels.has_gt.sum()) == 5, "released more than the cache"
+
+
+def test_discard_abandons_the_unsaved_labels_of_the_recording_left(client):
+    """``discard: true`` is the caller saying "do not keep this one".
+
+    The flag used to mean "swap anyway despite the refusal"; with nothing left to refuse
+    it means the same thing it always did to the operator -- throw this recording's
+    unsaved work away -- and it is the only way to do so.
+    """
+    _edit(client)
+    client.post("/api/recordings/open", json={"recording": "flyB", "discard": True})
+    meta = client.get("/api/meta").json()
+    assert meta["project_dirty"] is False
+    assert meta["dirty_recordings"] == []
+
+    back = client.post("/api/recordings/open", json={"recording": "flyA"}).json()
+    assert back["restored"] is False, "the discarded session was kept after all"
+    assert client.get("/api/meta").json()["dirty"] is False
+    pts = client.get("/api/points/1").json()
+    assert pts["fixed"][0][3] is False, "a discarded label came back"
+
+
+def test_a_clean_recording_is_pruned_but_an_unsaved_one_never_is(client, monkeypatch):
+    """The registry is a cache for clean recordings and a store for dirty ones.
+
+    With the keep-count at zero every clean session is droppable, so the two halves are
+    visible in one run: flyA comes back from disk when it was saved, and from memory when
+    it was not.
+    """
+    monkeypatch.setattr(server, "_SESSION_KEEP", 0)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    assert (
+        client.post("/api/recordings/open", json={"recording": "flyA"}).json()[
+            "restored"
+        ]
+        is False
+    ), "a clean session was kept even with _SESSION_KEEP = 0"
+
+    _edit(client)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    assert (
+        client.post("/api/recordings/open", json={"recording": "flyA"}).json()[
+            "restored"
+        ]
+        is True
+    ), "pruned a session holding the operator's only copy of their labels"
+
+
+def test_save_all_writes_every_recording_holding_unsaved_labels(client, two_recordings):
+    """The editor's Save. Unsaved work spans the project, so saving only the open
+    recording would leave the title starred and the operator hunting for which other one
+    still needed a click."""
+    _edit(client, frame=1)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    _edit(client, frame=2, x=7.0, y=8.0)
+    assert set(client.get("/api/meta").json()["dirty_recordings"]) == {"flyA", "flyB"}
+
+    body = client.post("/api/save-all").json()
+    assert set(body["saved"]) == {"flyA", "flyB"}
+    assert body["failed"] == []
+    assert body["project_dirty"] is False and body["dirty_recordings"] == []
+    # On disk, in each recording's own sidecar. The failure this must be incapable of is
+    # writing one recording's labels to the other's path, which the counts would show:
+    # flyA had 5 saved cells and gained one, flyB had none.
+    from deeperfly.project import label_stats
+
+    counts = {
+        slug: label_stats(two_recordings.labels_path(two_recordings.recording(slug)))
+        for slug in ("flyA", "flyB")
+    }
+    assert counts["flyA"]["gt_points"] == 6
+    assert counts["flyB"]["gt_points"] == 1
+
+
+def test_the_listing_marks_which_recordings_are_unsaved(client):
+    """The cue's other half: the count in the toolbar says how many, the list says which.
+
+    A held recording is also *counted* live -- listing it from its on-disk sidecar would
+    say "unlabeled" next to work the operator has just done.
+    """
+    _edit(client, frame=4, point=9)
+    client.post("/api/recordings/open", json={"recording": "flyB"})
+    body = client.get("/api/recordings").json()
+    rows = {r["slug"]: r for r in body["recordings"]}
+    assert rows["flyA"]["dirty"] is True and rows["flyA"]["open"] is True
+    assert rows["flyB"]["dirty"] is False and rows["flyB"]["open"] is True
+    assert body["dirty_recordings"] == ["flyA"]
+    assert body["project_dirty"] is True
+    # flyA's sidecar holds 5 GT cells; the sixth is the unsaved one.
+    assert rows["flyA"]["gt_points"] == 6, "the row was read from disk, not the session"
+
+
+# -- refusals ------------------------------------------------------------------
 
 
 def test_an_unknown_recording_is_refused_and_leaves_the_session_alone(client):
@@ -397,7 +561,7 @@ def test_a_reload_storm_does_not_stop_the_server_mid_switch(two_recordings):
 # -- the front-end contract (no browser) ---------------------------------------
 
 
-def test_the_picker_ids_agree_across_the_assets(client):
+def test_the_switcher_ids_agree_across_the_assets(client):
     """Every id the picker's JS binds exists in the HTML it is served with.
 
     ``el()`` throws on a missing id, which takes the whole editor down at boot -- so a
@@ -411,23 +575,41 @@ def test_the_picker_ids_agree_across_the_assets(client):
     css = (_WEB_DIR / "static" / "styles.css").read_text()
 
     for ident in (
-        "recording-wrap",
-        "recording-toggle",
-        "recording-menu",
         "recording-name",
         "recording-list",
         "recording-empty",
-        "switch-overlay",
-        "switch-cancel",
-        "switch-discard",
-        "switch-save",
-        "switch-from",
-        "switch-to",
+        # The unsaved-changes cue and the close prompt's list of which recordings are
+        # unsaved: what replaced the switch prompt, now that a switch cannot lose an edit.
+        "unsaved",
+        "close-list",
     ):
         assert f'id="{ident}"' in page, f"{ident} missing from the page"
         assert f'el("{ident}")' in app_js, f"{ident} not bound in app.js"
-    for cls in ("rec-list", "rec-row", "rec-name", "rec-stats", "rec-flag"):
+    # The picker lives in the sidebar now, on its own tab -- reached through SIDEBAR_TABS
+    # rather than a literal el() call, except for the tab itself (hidden when there is no
+    # project to list).
+    for ident in ("tab-recordings", "recording-pane"):
+        assert f'id="{ident}"' in page, f"{ident} missing from the page"
+    assert 'el("tab-recordings")' in app_js
+    for cls in (
+        "rec-list",
+        "rec-row",
+        "rec-name",
+        "rec-stats",
+        "rec-flag",
+        "rec-dirty",
+        "unsaved-chip",
+    ):
         assert f".{cls}" in css, f"{cls} has no style"
+    # The cue is a dot with no author `display`, so an unstyled `.rec-dirty` would show on
+    # every row: the class has to exist AND the row has to hide it.
+    assert 'querySelector(".rec-dirty")' in app_js
+    assert "/api/save-all" in api_js and "saveAllCorrections" in app_js
+    # The rows are patched in place, not rebuilt, so the click is delegated to the list and
+    # each row carries its slug in a data attribute -- that pair IS the wiring. A row built
+    # without `dataset.slug` would render fine and do nothing when clicked.
+    assert "dataset.slug" in app_js, "the delegated row click has nothing to read"
+    assert 'closest?.(".rec-row")' in app_js, "the row click is no longer delegated"
     assert "/api/recordings" in api_js
     assert "openRecording" in api_js and "openRecording" in app_js
     # The socket must branch on the new message type; without it the push falls through
