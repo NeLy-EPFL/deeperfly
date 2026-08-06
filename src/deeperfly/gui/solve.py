@@ -1,13 +1,27 @@
 """Deriving one keypoint's 3D from its per-view labels + predictions.
 
 The editor's central operation: given, for one ``(frame, point)``, the operator's
-GT pixels, the detector's predictions, and which views are occluded, produce the 3D
-point. This is where the "2D is the source, 3D is derived" philosophy lives, and
-where the configurable :class:`~deeperfly.config.AnnotationParams` solve policy is
-applied. Two entry points:
+GT pixels and the evidence behind every other view, produce the 3D point. This is where
+the "2D is the source, 3D is derived" philosophy lives, and where the configurable
+:class:`~deeperfly.config.AnnotationParams` solve policy is applied. Nothing here reads
+the editor's **hidden** flag -- that decides which cells a training loss uses, and the
+geometry has no opinion on it. Two entry points:
 
-- :func:`solve_point_3d` -- the pure recompute (mass-confirm, occlude, navigation).
+- :func:`solve_point_3d` -- the pure recompute (mass-confirm, navigation).
   Below two usable views it returns ``NaN`` (no fallback).
+
+The ``gt_wins`` policy is built on one idea applied twice: **GT decides everything it has
+an opinion about, and the remaining views supply only what it cannot determine.** A camera
+fixes where a point sits across its optical axis and says nothing about distance along it,
+so GT views leave a direction (or several) free, and that free part is where the
+detections still belong. With one GT view the free part is the whole viewing ray, and
+:func:`solve_depth_on_ray` refits a depth along it; with two or more it is whichever
+direction the GT pair is worst at -- catastrophically so for two cameras that face each
+other, whose viewing rays are nearly the same line -- and
+:func:`solve_point_3d_stabilized` refits that. Neither needs to *ask* whether the geometry
+is degenerate: weighting each observation by its own precision makes the answer come out
+right at every angle, because along a direction the GT cannot see its weight is
+identically zero however large it is.
 - :func:`solve_point_3d_drag` -- the interactive drag solve. It treats the dragged
   view as a fresh GT constraint and, below two usable views, back-projects the
   cursor and slides the prior 3D onto that ray so the point lands under the mouse.
@@ -27,7 +41,12 @@ from ..config import AnnotationParams, TriangulationParams
 from ..geometry import closest_point_on_ray, undistort_one
 from ..triangulation import triangulate, triangulate_ransac
 
-__all__ = ["solve_point_3d", "solve_point_3d_drag", "solve_depth_on_ray"]
+__all__ = [
+    "solve_point_3d",
+    "solve_point_3d_drag",
+    "solve_depth_on_ray",
+    "solve_point_3d_stabilized",
+]
 
 
 # -- low-level triangulation over one point -----------------------------------
@@ -176,6 +195,32 @@ def _reproj_err(cameras, x, usable, pred_obs):
     return np.linalg.norm(proj[usable] - pred_obs[usable], axis=-1)
 
 
+#: Central-difference step for :func:`_proj_and_jac`, in mm. The fly spans ~1.5 mm at
+#: ~200 px/mm, so 1e-4 mm is ~0.02 px -- far above float64 cancellation and far below any
+#: curvature in the projection. Checked against 1e-5: agreement to 2e-11 relative.
+_JAC_H = 1e-4
+
+#: ``(7, 3)`` offsets: the point itself, then ``+h`` and ``-h`` along each axis. Stacking
+#: them means one projection call per iteration at one fixed ``(7, 1, 3)`` shape, so the
+#: jitted projector specializes exactly once (see the module docstring on shapes).
+_FD_OFFSETS = np.concatenate(
+    [np.zeros((1, 3)), _JAC_H * np.eye(3), -_JAC_H * np.eye(3)]
+)
+
+
+def _proj_and_jac(cameras, x):
+    """``(proj (V, 2), J (V, 2, 3))`` at ``x``: where it lands, and px per mm.
+
+    ``J`` is ``d(project)/dx`` by central differences on the batch projector -- exact
+    through distortion, because it differentiates the real projection rather than a
+    pinhole approximation of it.
+    """
+    pts = (np.asarray(x, dtype=float)[None, :] + _FD_OFFSETS)[:, None, :]  # (7, 1, 3)
+    p = np.asarray(cameras.project(pts), dtype=float)[:, :, 0]  # (V, 7, 2)
+    jac = (p[:, 1:4] - p[:, 4:7]) / (2 * _JAC_H)  # (V, 3, 2), indexed [v, axis, comp]
+    return p[:, 0], np.swapaxes(jac, 1, 2)
+
+
 def solve_depth_on_ray(
     cameras,
     gt_view: int,
@@ -242,6 +287,130 @@ def solve_depth_on_ray(
     return x if np.all(np.isfinite(x)) else None
 
 
+# -- two or more GT: a direction, not a whole point -----------------------------
+
+
+def solve_point_3d_stabilized(
+    cameras,
+    x0: np.ndarray,
+    gt_obs: np.ndarray,
+    stab_obs: np.ndarray,
+    ann: AnnotationParams,
+    tri: TriangulationParams,
+    *,
+    max_iter: int = 12,
+) -> np.ndarray:
+    """Two or more GT views, with the rest supplying only what the GT cannot see.
+
+    Two GT views do **not** determine a point equally well in every direction, and
+    solving from them alone silently accepts whatever they are worst at. A camera fixes
+    where a point sits *across* its optical axis and says nothing about distance *along*
+    it: each view's ``J_v^T J_v`` is rank 2, with its own optical axis as the null
+    direction. Two views facing each other therefore share that null direction -- for the
+    standard rig's ``rm``/``lm`` pair, exactly: ``sum_v J_v^T J_v`` has eigenvalues
+    ``[0, 8.7e4, 8.7e4]`` px^2/mm^2 and the zero one points along the shared axis. The
+    two clicks are emphatic about four of the five things they could say and mute about
+    the fifth, so a GT-only solve lets 0.5 px of click noise become 255 um mean / 372 um
+    p90 of depth error, and the point lands 37 px off in the unlabelled views.
+
+    So this does not choose between the operator and the detector; it weights each by how
+    precise it is and lets the geometry decide who has a say in which direction::
+
+        x_hat = argmin_x  sum_{v in GT}  |pi_v(x) - g_v|^2      / sigma_gt^2
+                        + sum_{v in stab} rho_c(|pi_v(x) - s_v|) / sigma_stab^2
+
+    That needs no conditioning test, no eigendecomposition and no threshold, because the
+    arithmetic already does it. The GT's information in direction ``u`` is
+    ``u^T H u / sigma_gt^2``: *exactly zero* along two anti-parallel rays' shared axis, so
+    the stabilizers own that direction outright; and larger than theirs by
+    ``(sigma_stab / sigma_gt)^2`` -- about 900x -- everywhere else, so they cannot budge
+    it. Measured consequences of having no threshold: the correction grows smoothly with
+    the geometry (0.1 um of motion at 90 degrees, 2.6 um at 165, 161 um at 180) with
+    nothing for the operator to feel, and a well-conditioned pair is a genuine no-op
+    (3.3 um and 0.30 px of GT residual, both unchanged).
+
+    It also generalizes rather than special-cases: with one GT view ``H`` is rank 2 and
+    free along the viewing ray, which is :func:`solve_depth_on_ray` (reproduced to 0.4 um
+    mean / 1.6 um max); with three or more GT views ``H`` is full rank and large, and the
+    stabilizers measurably cannot move the answer at all.
+
+    ``rho_c`` is Huber at ``c = tri.ransac_threshold``, the same transition
+    :func:`solve_depth_on_ray` uses and for the same measured reason -- a hard consensus
+    throws away the information that separates "every view mildly wrong" from "two views
+    lucky". Without it one 80 px stabilizer costs a weighted DLT most of its benefit
+    (29 -> 69 um); with it the cost is 29 -> 32 um. ``sigma_stab`` reuses that same
+    ``ransac_threshold`` as the detector's pixel scale, so the only new number is
+    ``ann.gt_sigma_px``.
+
+    Deterministic: a fixed iteration count with no convergence tolerance that could
+    terminate differently, so re-deriving the same labels twice gives the same bits --
+    which the derived-3D cache and the undo history require.
+
+    Parameters
+    ----------
+    cameras
+        The camera rig.
+    x0
+        ``(3,)`` the GT-only solution. It is the anchor and the start, so the answer
+        degrades to today's behavior rather than to something unrelated.
+    gt_obs
+        ``(V, 2)`` GT pixels, ``NaN`` where the operator authored none. Distorted (raw)
+        pixels: this path differentiates the real projection, so it never wants the
+        linearized ``_undistort``.
+    stab_obs
+        ``(V, 2)`` the *independent* evidence that may fix the unconstrained direction --
+        see :meth:`~deeperfly.gui.state.EditorState._point_obs` for why that is the
+        detections rather than the instance's seeds.
+    ann, tri
+        ``ann.gt_sigma_px`` is the click precision; ``tri.ransac_threshold`` is both the
+        Huber transition and the stabilizers' pixel scale.
+
+    Returns
+    -------
+    np.ndarray
+        The ``(3,)`` 3D point; ``x0`` unchanged when there is no usable stabilizer.
+    """
+    gt_obs = np.asarray(gt_obs, dtype=float)
+    stab_obs = np.asarray(stab_obs, dtype=float)
+    x = np.asarray(x0, dtype=float)
+    gt_views = np.nonzero(np.isfinite(gt_obs).all(axis=-1))[0]
+    stab_views = np.nonzero(np.isfinite(stab_obs).all(axis=-1))[0]
+    if gt_views.size == 0 or stab_views.size == 0 or not np.all(np.isfinite(x)):
+        return x
+
+    c = float(tri.ransac_threshold)
+    sigma_gt = max(float(ann.gt_sigma_px), 1e-6)
+    w_gt = 1.0 / sigma_gt**2
+    w_stab = 1.0 / max(c, 1e-6) ** 2
+    eye = np.eye(3)
+
+    for _ in range(max_iter):
+        proj, jac = _proj_and_jac(cameras, x)
+        r_gt = proj[gt_views] - gt_obs[gt_views]
+        j_gt = jac[gt_views]
+        normal = w_gt * np.einsum("vij,vik->jk", j_gt, j_gt)
+        grad = w_gt * np.einsum("vij,vi->j", j_gt, r_gt)
+        r_stab = proj[stab_views] - stab_obs[stab_views]
+        j_stab = jac[stab_views]
+        err = np.linalg.norm(r_stab, axis=-1)
+        # Huber IRLS: a stabilizer that agrees keeps its full vote, one that is grossly
+        # wrong keeps c/|r| of it -- down-weighted on its merits, never rejected.
+        wt = w_stab * np.where(err <= c, 1.0, c / np.maximum(err, 1e-12))
+        normal += np.einsum("v,vij,vik->jk", wt, j_stab, j_stab)
+        grad += np.einsum("v,vij,vi->j", wt, j_stab, r_stab)
+        # Rank deficiency is real here (one GT view plus one stabilizer is 4 equations
+        # whose normal matrix can still be singular), and the ridge is scaled to the
+        # matrix so it regularizes that case without biasing a healthy solve.
+        ridge = 1e-12 * max(float(np.trace(normal)), 1e-30)
+        step = -np.linalg.solve(normal + ridge * eye, grad)
+        if not np.all(np.isfinite(step)):
+            return np.asarray(x0, dtype=float)
+        x = x + step
+        if np.max(np.abs(step)) <= 1e-12:
+            break
+    return x if np.all(np.isfinite(x)) else np.asarray(x0, dtype=float)
+
+
 # -- the two entry points -----------------------------------------------------
 
 
@@ -252,6 +421,7 @@ def solve_point_3d(
     conf: np.ndarray | None,
     ann: AnnotationParams,
     tri: TriangulationParams,
+    stab_obs: np.ndarray | None = None,
 ) -> np.ndarray:
     """Recompute one point's 3D from its per-view labels + predictions.
 
@@ -262,12 +432,19 @@ def solve_point_3d(
     gt_obs
         ``(V, 2)`` GT pixels, ``NaN`` where the operator authored no GT.
     pred_obs
-        ``(V, 2)`` detector predictions, ``NaN`` where absent **or occluded** (the
-        caller NaNs out occluded/absent views; occluded views must be NaN in both).
+        ``(V, 2)`` the non-GT evidence (the instance's seeds, else the detections),
+        ``NaN`` in a view that has none and in every view of an absent point -- the
+        caller applies those vetoes (:meth:`EditorState._point_obs`).
     conf
         ``(V,)`` detector confidence, or ``None``.
     ann, tri
         The annotation solve policy and the shared triangulation method/thresholds.
+    stab_obs
+        ``(V, 2)`` the *independent* evidence for the ``gt_wins`` paths that fill in what
+        the GT cannot determine -- the detections, which is not the same array as
+        ``pred_obs`` once a frame has a ``seed_mode="triangulate"`` instance (see
+        :meth:`EditorState._point_obs`). ``None`` falls back to ``pred_obs``, which keeps
+        every existing caller and test working.
 
     Returns
     -------
@@ -276,6 +453,7 @@ def solve_point_3d(
     """
     gt_obs = np.asarray(gt_obs, dtype=float)
     pred_obs = np.asarray(pred_obs, dtype=float)
+    gt_raw, pred_raw = gt_obs, pred_obs  # the nonlinear paths want the real pixels
     if ann.undistort_before_solve:
         gt_obs = _undistort(cameras, gt_obs)
         pred_obs = _undistort(cameras, pred_obs)
@@ -283,22 +461,36 @@ def solve_point_3d(
     pred_mask = np.isfinite(pred_obs).all(axis=-1) & ~gt_mask  # GT overrides per view
     n_gt = int(gt_mask.sum())
     policy = ann.solve_policy
+    # The GT views' own pixels are the authored truth, never a stabilizer for it.
+    stab_raw = pred_raw if stab_obs is None else np.asarray(stab_obs, dtype=float)
+    stab_raw = np.where(gt_mask[:, None], np.nan, stab_raw)
+    if not np.isfinite(stab_raw).all(axis=-1).any():
+        # No independent observation anywhere for this point -- an all-contralateral
+        # keypoint the detector never predicts. Fall back to the seeds, which is what
+        # this path used before there was a distinction, rather than to no evidence.
+        stab_raw = np.where(gt_mask[:, None], np.nan, pred_raw)
 
     if policy == "gt_wins":
-        if n_gt >= ann.min_gt_for_exclusive and not ann.gt_wins_keep_stabilizers:
-            obs = np.where(gt_mask[:, None], gt_obs, np.nan)
-            return _dlt(cameras, obs)  # GT alone
+        if n_gt >= ann.min_gt_for_exclusive:
+            x0 = _dlt(cameras, np.where(gt_mask[:, None], gt_obs, np.nan))
+            if not ann.gt_wins_keep_stabilizers:
+                return x0  # GT alone: whatever the GT pair is worst at, it is worst at
+            # Two GT views are mute about depth along a shared optical axis; the other
+            # views are not, so they fill in that direction and nothing else.
+            return solve_point_3d_stabilized(cameras, x0, gt_raw, stab_raw, ann, tri)
         if n_gt == 1:
             # One GT fixes the viewing ray, so what is left is a *depth*, and a depth can
             # be found by consensus rather than by averaging. This is the branch a plain
             # weighted DLT made non-robust: with a single GT the depth comes entirely from
             # the detections, so one bad peak carried 1/(V-1) of the answer -- and placing
             # a first GT would *remove* the RANSAC the zero-GT branch below enjoys.
+            # It takes ``stab_raw`` for the same reason the two-GT branch does: a depth
+            # read off reprojected seeds is the depth those seeds were made from.
             x = solve_depth_on_ray(
                 cameras,
                 int(np.nonzero(gt_mask)[0][0]),
-                gt_obs[gt_mask][0],
-                pred_obs,
+                gt_raw[gt_mask][0],
+                stab_raw,
                 tri,
             )
             if x is not None:

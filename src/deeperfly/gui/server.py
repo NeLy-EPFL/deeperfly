@@ -1589,6 +1589,23 @@ def _handle_edit(session: Session, msg: dict) -> dict:
             notice = f"unknown seeding mode {want!r}"
         else:
             s.seed_mode = want
+    elif typ == "set_solve_stabilizers":
+        # How a point's 3D is derived once its GT views are exclusive: with the unlabelled
+        # views filling the direction two GT views cannot see (the default), or from the GT
+        # views alone (the older behavior). A session preference like the two above, and it
+        # authors no label, so it records no undo step -- but it does change every derived
+        # 3D, so the reply must carry a re-solved frame.
+        want = str(msg.get("value", "on"))
+        if want not in ("on", "off"):
+            notice = f"unknown 3D derivation mode {want!r}"
+        else:
+            s.set_solve_stabilizers(want == "on")
+            notice = (
+                "3D derived from your pixels alone"
+                if want == "off"
+                else "3D derived from your pixels, with the other views fixing the depth "
+                "they cannot"
+            )
     elif typ == "create_instance":
         # Starting a frame deliberately, without authoring anything. The drag paths and the
         # bulk Place both create one implicitly, using the same session seed mode.

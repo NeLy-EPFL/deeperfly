@@ -972,6 +972,37 @@ def test_ws_edit_3d_updates_all_views_and_sets_dirty(client, result):
     assert not np.allclose(reply["points"][other][point], base[other][point])
 
 
+def test_ws_set_solve_stabilizers_switches_the_derivation(client, result):
+    """The GUI control for the older solve-from-my-pixels-alone behavior.
+
+    It authors no label, so it must not set ``dirty``, and it must come back with a
+    re-derived frame -- a switch whose reply still showed the previous 3D would read as
+    having done nothing.
+    """
+
+    def msg(value):
+        return {
+            "type": "set_solve_stabilizers",
+            "value": value,
+            "frame": 0,
+            "mode": "edit_3d",
+        }
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(msg("off"))
+        off = ws.receive_json()
+        ws.send_json(msg("on"))
+        on = ws.receive_json()
+        ws.send_json(msg("sideways"))
+        bad = ws.receive_json()
+
+    assert off["dirty"] is False and on["dirty"] is False
+    assert "alone" in (off.get("notice") or "")
+    assert "unknown" in (bad.get("notice") or "")
+    assert np.isfinite(np.asarray(off["points"], dtype=float)).any()
+    assert np.isfinite(np.asarray(on["points"], dtype=float)).any()
+
+
 def test_ws_toggle_invisible_flips_mask_and_sets_dirty(client, result):
     view, point = 1, 5
     with client.websocket_connect("/ws") as ws:

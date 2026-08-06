@@ -133,7 +133,10 @@ Let `G` = views with a GT pixel, `P` = views with a usable prediction (finite `p
 occluded); occluded views are excluded entirely. **No policy may ever discard a GT observation.**
 
 - **`gt_wins` (default):**
-  - `|G| ≥ min_gt_for_exclusive` → triangulate from **GT only** via the configured method.
+  - `|G| ≥ min_gt_for_exclusive` → GT is **authoritative**, and the remaining views supply only the
+    direction it cannot determine (`solve_point_3d_stabilized`; §3.2's degenerate-geometry review
+    below, now resolved). Set `gt_wins_keep_stabilizers = false` for the original GT-only
+    triangulation.
   - `1 ≤ |G| < min_gt_for_exclusive` → **weighted DLT**: GT rows carry `gt_weight` ≫ prediction
     rows so the GT views define the point and predictions only stabilise depth. **[review]** This
     *requires* a weight — an unweighted `triangulate()` cannot "lock" a single GT (it is just two
@@ -155,10 +158,38 @@ occluded); occluded views are excluded entirely. **No policy may ever discard a 
   is only down-weighted, not rejected; gate prediction rows through a reprojection sanity check
   before blending.
 
-**[review] Degenerate geometry:** `gt_wins` with `|G| ≥ min` throws away prediction views even
-when the GT views have a short baseline / near-collinear rays (unstable depth). Either keep
-predictions as low-weight depth stabilisers, or warn when the GT triangulation angle is small so
-the operator adds a third view.
+**[review → RESOLVED] Degenerate geometry:** `gt_wins` with `|G| ≥ min` threw away prediction views
+even when the GT views had near-collinear rays. Measured on the 7-camera fixture, which contains an
+exactly anti-parallel pair (`rm` at −90°, `lm` at +90°): `Σ_v J_vᵀJ_v` over those two views has
+eigenvalues `[0, 8.68e4, 8.68e4]` px²/mm² — each view's own contribution is rank 2 with its optical
+axis as null direction, and opposed views *share* it. 0.5 px of click noise therefore became 255 µm
+mean / 372 µm p90 (p99 1.51 mm) of 3D error versus 5.3 µm p90 at a 90° pair, and the joint landed
+37 px mean / 53 px p90 off in the five unlabeled views. Error scales as `1/sin(angle)`; 3 of the 21
+GT pairs sit at ≥165°, and ≥96% of the squared error lies along the single weakest direction there
+(only 40% at 90°, where the correction is correspondingly vacuous).
+
+**Resolution: both halves of the suggestion, the first as the default.** `gt_wins_keep_stabilizers`
+now defaults `true` and selects `solve_point_3d_stabilized` — a Huber-robust MAP refit anchored on
+the GT-only answer, weighting GT by `1/gt_sigma_px²` and the stabilizers by
+`1/ransac_threshold²`. It needs no conditioning test: along a direction the GT cannot see its
+weight is identically zero however large, and elsewhere it exceeds the stabilizers by ~900×. So
+there is no threshold to flip and no discontinuity — the correction grows smoothly with the
+geometry (0.1 µm of motion at 90°, 2.6 µm at 165°, 161 µm at 180°). Measured: 382 → 30 µm at the
+anti-parallel pair for +0.13 px of GT reprojection (0.29 → 0.43 px, against the 8 px reprojection
+warning threshold), 33 µm with one +80 px outlier stabilizer where a plain weighted DLT gives 69,
+and an exact no-op at 90°/30° and at `|G| ≥ 3`. It reproduces `solve_depth_on_ray` at `|G| = 1` to
+0.4 µm mean, so the two cases are one estimator rather than two branches.
+
+Two caveats the measurements make explicit. (1) The stabilizers must be the **detections**, not the
+instance seeds: under the default `seed_mode="triangulate"` every seed is a reprojection of the
+current 3D, so the unlabeled views would agree perfectly by construction and re-impose the depth
+being corrected — measured no better than using no evidence at all. `_point_obs` returns a separate
+array for the job. (2) No estimator can recover a depth when *every* non-GT view is coherently
+wrong along the blind direction; a GT-consistency gate was built and measured and does not help,
+because a bias aligned with that direction is invisible to any test that is silent there. The
+warn-the-operator half of the original suggestion is therefore still worth doing: a third GT view
+in a complementary direction is worth ~89× (248 → 2.8 µm), and ranking candidate views by
+`λ_min(H + J_vᵀJ_v)` picks the best one (Spearman +0.90 against measured improvement).
 
 ### 3.3 Two distinct solve entry points — **[review]** (the single-helper idea was wrong)
 
@@ -687,8 +718,13 @@ New pieces with no existing scaffold: **undo/redo**, **multi-select/box-select/m
 
 1. **`equal_weight` GT protection:** implement GT-as-permanent-inlier, or ship `equal_weight` as
    "unsafe for GT, warns when GT dropped"? (§3.2)
-2. **`gt_wins |G|≥min` depth stability:** GT-only vs keep low-weight prediction stabilisers under
-   degenerate geometry? (§3.2)
+2. ~~**`gt_wins |G|≥min` depth stability:** GT-only vs keep low-weight prediction stabilisers under
+   degenerate geometry?~~ **DECIDED** — neither, quite: a Huber-robust σ-weighted refit anchored on
+   the GT-only answer, on by default, with the GT-only path kept behind
+   `gt_wins_keep_stabilizers = false` and a **Skeleton ▸ Derive the 3D from** switch. A *low-weight*
+   stabiliser was measured to be the wrong shape of answer — no fixed weight is scale-free (the best
+   one moves 10× with the noise regime, and at 30° a weight of 10 is 3.4× worse than GT-only) and a
+   linear weighted DLT is not robust (one outlier costs it most of its gain). (§3.2)
 3. **Confirm default scope:** keep `confirm_default="all"` at *frame* scope (densifies the
    sidecar), or narrow the default scope to selection/joint and reserve frame-confirm for an
    explicit action? (§4.5)

@@ -6,9 +6,11 @@ import numpy as np
 
 from deeperfly.config import AnnotationParams, TriangulationParams
 from deeperfly.gui.solve import (
+    _dlt,
     solve_depth_on_ray,
     solve_point_3d,
     solve_point_3d_drag,
+    solve_point_3d_stabilized,
 )
 
 FRAME, POINT = 0, 5
@@ -57,6 +59,157 @@ def test_gt_wins_two_gt_views_solve_from_gt_alone(result):
         tri,
     )
     assert np.allclose(x, true, atol=1e-6)
+
+
+# -- two GT views: the stabilized solve ---------------------------------------
+#
+# Two GT views do not determine a point equally well in every direction: a camera says
+# nothing about distance along its own optical axis, so two cameras that face each other
+# leave that distance almost free. The rig's `rm` (-90 deg) and `lm` (+90 deg) are exactly
+# anti-parallel, which is what these tests use. The bar is the same one the one-GT depth
+# solve is held to: fix the free direction, keep the operator's pixels, ignore an outlier,
+# and do nothing where the geometry is already good.
+
+RM, LM, FRONT = 1, 5, 3  # AZIMUTHS_DEG = [-120, -90, -45, 0, 45, 90, 120]
+
+
+def _perturbed(result, gt_views, rng, sigma_gt=0.5, sigma_pred=3.0):
+    """GT with click noise, predictions with detector noise."""
+    exact = result.pts2d[:, FRAME, POINT].astype(float)
+    gt = np.full_like(exact, np.nan)
+    pred = np.full_like(exact, np.nan)
+    for v in range(exact.shape[0]):
+        if v in gt_views:
+            gt[v] = exact[v] + rng.normal(0, sigma_gt, 2)
+        else:
+            pred[v] = exact[v] + rng.normal(0, sigma_pred, 2)
+    return gt, pred
+
+
+def _err(result, gt, pred, ann, tri):
+    """Distance from the solved point to the true 3D, in mm."""
+    x = solve_point_3d(result.cameras, gt, pred, None, ann, tri)
+    return float(np.linalg.norm(x - result.pts3d[FRAME, POINT]))
+
+
+def _gt_resid(result, gt, pred, ann, tri, gt_views):
+    """Mean distance from the solved point's reprojection to the operator's own pixels."""
+    x = solve_point_3d(result.cameras, gt, pred, None, ann, tri)
+    proj = np.asarray(result.cameras.project(x[None, None, :]), dtype=float)
+    proj = proj[:, 0, 0]
+    return float(np.mean([np.linalg.norm(proj[v] - gt[v]) for v in gt_views]))
+
+
+def test_two_gt_on_facing_cameras_is_rescued_by_the_other_views(result):
+    """The complaint this solve exists for: two anti-parallel GT views leave depth free."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    alone = AnnotationParams(gt_wins_keep_stabilizers=False)
+    rng = np.random.default_rng(0)
+    err_alone, err_stab = [], []
+    for _ in range(40):
+        gt, pred = _perturbed(result, (RM, LM), rng)
+        err_alone.append(_err(result, gt, pred, alone, tri))
+        err_stab.append(_err(result, gt, pred, ann, tri))
+    # The GT-only answer is dominated by the unconstrained direction; the stabilized one
+    # is not. The measured ratio on this rig is ~30x; assert an order of magnitude.
+    assert np.mean(err_stab) < np.mean(err_alone) / 10.0
+
+
+def test_the_stabilized_solve_keeps_the_operators_pixels(result):
+    """Fixing the free direction may not walk the point off the clicked pixels.
+
+    Two GT views are four equations in three unknowns, so even the GT-only solve does not
+    reproject exactly onto both clicks -- that residual is the floor. The stabilized solve
+    must stay near it, and far below the reprojection warning's 8 px threshold.
+    """
+    tri, ann = TriangulationParams(), AnnotationParams()
+    alone = AnnotationParams(gt_wins_keep_stabilizers=False)
+    rng = np.random.default_rng(1)
+    floor, got = [], []
+    for _ in range(40):
+        gt, pred = _perturbed(result, (RM, LM), rng)
+        floor.append(_gt_resid(result, gt, pred, alone, tri, (RM, LM)))
+        got.append(_gt_resid(result, gt, pred, ann, tri, (RM, LM)))
+    assert np.mean(got) < np.mean(floor) + 0.5
+    # poseView.js warnThreshold is 8 px: no new rings on the operator's own labels.
+    assert np.mean(got) < 8.0
+
+
+def test_the_stabilized_solve_ignores_an_outlier_stabilizer(result):
+    """One grossly wrong prediction is down-weighted, not averaged in."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    rng = np.random.default_rng(2)
+    clean, spoiled = [], []
+    for _ in range(40):
+        gt, pred = _perturbed(result, (RM, LM), rng)
+        bad = np.array(pred, copy=True)
+        bad[0] = bad[0] + np.array([160.0, 0.0])
+        clean.append(_err(result, gt, pred, ann, tri))
+        spoiled.append(_err(result, gt, bad, ann, tri))
+    assert np.mean(spoiled) < 2.0 * np.mean(clean)
+
+
+def test_the_stabilized_solve_is_a_no_op_on_good_geometry(result):
+    """Where the GT pair already determines the point, the predictions must not move it."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    alone = AnnotationParams(gt_wins_keep_stabilizers=False)
+    rng = np.random.default_rng(3)
+    err_alone, err_stab = [], []
+    for _ in range(40):
+        gt, pred = _perturbed(result, (RM, FRONT), rng)  # 90 degrees apart
+        err_alone.append(_err(result, gt, pred, alone, tri))
+        err_stab.append(_err(result, gt, pred, ann, tri))
+    assert np.mean(err_stab) <= 1.15 * np.mean(err_alone)
+
+
+def test_three_gt_views_leave_nothing_for_the_stabilizers_to_do(result):
+    """The estimator stops using predictions on its own, with no branch to say so."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    alone = AnnotationParams(gt_wins_keep_stabilizers=False)
+    rng = np.random.default_rng(4)
+    gaps = []
+    for _ in range(20):
+        gt, pred = _perturbed(result, (RM, LM, FRONT), rng)
+        a = solve_point_3d(result.cameras, gt, pred, None, alone, tri)
+        b = solve_point_3d(result.cameras, gt, pred, None, ann, tri)
+        gaps.append(np.linalg.norm(a - b))
+    assert max(gaps) < 5e-3  # mm
+
+
+def test_the_stabilized_solve_is_deterministic(result):
+    """Bit-for-bit re-derivation: the derived-3D cache and undo history require it."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    rng = np.random.default_rng(5)
+    gt, pred = _perturbed(result, (RM, LM), rng)
+    a = solve_point_3d(result.cameras, gt, pred, None, ann, tri)
+    b = solve_point_3d(result.cameras, gt, pred, None, ann, tri)
+    assert np.array_equal(a, b)
+
+
+def test_the_stabilized_solve_returns_the_anchor_with_no_stabilizers(result):
+    """No usable prediction: the GT-only answer, unchanged."""
+    tri, ann = TriangulationParams(), AnnotationParams()
+    gt = _obs(result, [RM, LM])
+    x0 = _dlt(result.cameras, gt)
+    nan = _nan(result.n_views)
+    x = solve_point_3d_stabilized(result.cameras, x0, gt, nan, ann, tri)
+    assert np.array_equal(x, x0)
+
+
+def test_a_separate_stabilizer_array_overrides_the_seeds(result):
+    """``stab_obs`` is what fixes the free direction, not ``pred_obs``.
+
+    The default seeds are reprojections of the current 3D, so the solve must be able to
+    take a different, independent array for the job -- see ``EditorState._point_obs``.
+    """
+    tri, ann = TriangulationParams(), AnnotationParams()
+    true = result.pts3d[FRAME, POINT]
+    rng = np.random.default_rng(6)
+    gt, pred = _perturbed(result, (RM, LM), rng)
+    junk = np.where(np.isfinite(pred), pred + 300.0, np.nan)  # a wrong "seed" array
+    with_stab = solve_point_3d(result.cameras, gt, junk, None, ann, tri, pred)
+    without = solve_point_3d(result.cameras, gt, junk, None, ann, tri)
+    assert np.linalg.norm(with_stab - true) < np.linalg.norm(without - true)
 
 
 def test_gt_wins_single_gt_plus_predictions_fills(result):

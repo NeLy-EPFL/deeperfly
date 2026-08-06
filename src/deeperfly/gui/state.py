@@ -39,7 +39,7 @@ dispatches to; under the new model ``toggle_fixed`` confirms/clears a GT pixel a
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 import numpy as np
@@ -801,8 +801,33 @@ class EditorState:
 
     # -- derived 3D (the "cache") ---------------------------------------------
 
+    def set_solve_stabilizers(self, on: bool) -> None:
+        """Whether the unlabelled views still help once the GT views are exclusive.
+
+        On (the default) is :func:`~deeperfly.gui.solve.solve_point_3d_stabilized`: the GT
+        decides everything it has an opinion about and the other views supply only what it
+        cannot -- which matters because two cameras that face each other say almost nothing
+        about the distance between them. Off is the older behavior, triangulating from the
+        GT views alone. Offered as a switch because "solve from my pixels and nothing else"
+        is a legitimate thing to want to see, and because it is the honest way to show what
+        the stabilizers are contributing: flip it and watch the point move.
+
+        Unlike :meth:`set_provisional` this drops the derived 3D but **keeps the undo
+        history**. A rig swap invalidates the snapshots because the geometry they were taken
+        against is gone; changing the estimator does not -- every snapshot is label state,
+        and label state re-solves correctly under either setting. The one thing that does
+        not survive is a depth that lives only in the cache (a drag with fewer than two
+        usable views stores a ray-slide, see :meth:`_settle_point3d`), which is re-derived
+        rather than restored -- and re-deriving it is what the operator asked for.
+        """
+        if bool(on) == bool(self.ann.gt_wins_keep_stabilizers):
+            return
+        self.ann = replace(self.ann, gt_wins_keep_stabilizers=bool(on))
+        self._pts3d_cache.clear()
+        self._nmf_cache.clear()
+
     def _point_obs(self, t: int, point: int):
-        """``(gt_obs (V,2), pred_obs (V,2), conf (V,)|None)`` for one point at ``t``.
+        """``(gt_obs, pred_obs, conf, stab_obs)`` for one point at ``t``.
 
         The second array is the **instance's evidence**: its seed positions once an
         annotation skeleton exists in this frame, else the detections. That substitution is
@@ -811,28 +836,45 @@ class EditorState:
         Huber depth for the one-GT case, the caching, the undo history) is untouched.
 
         GT overrides the evidence in its own view, so ``pred_obs`` NaNs out every view that
-        carries GT. Occlusion does **not** gate it: a cell marked "a human cannot see this
-        here" still contributes, because the flag is a statement about the image rather than
-        an instruction to the solve (see :meth:`Labels.set_occluded`). A bad observation is
-        down-weighted on its merits by the robust estimator instead, which is what let the
-        hand-exclusion go.
+        carries GT. The **hidden** flag does not appear here at all, and that is the whole of
+        its relationship with the solve: it says which cells the *training loss* uses, which
+        is not a question 3D geometry can be asked. A bad observation is down-weighted on its
+        merits by the robust estimator instead, which is what let the hand-exclusion go.
 
         A point declared absent contributes nothing from any view: ``gt_obs`` is already
         vetoed via ``has_gt``, and the evidence -- a detector peak exists on an amputated
         limb because an argmax decode always emits one -- is dropped rather than
         triangulated into a phantom joint. Absence is a claim about the *animal*, and it is
         the one veto the solve still honors.
+
+        The fourth array is the **independent** evidence: the raw detections, never the
+        seeds. The ``gt_wins`` policy uses the non-GT views to supply the one thing the GT
+        views cannot -- the depth along a direction they are mute about -- and for that job
+        the seeds are not evidence at all. Under the default ``seed_mode="triangulate"``
+        every seed *is* ``display_pts3d_projected``, the reprojection of the current 3D, so
+        the five unlabelled views hold one number rather than five observations: they agree
+        with each other perfectly because they are five pictures of the same guess. Feeding
+        them back re-imposes the depth the operator's clicks were correcting, with
+        five-fold confidence and nothing for a robust estimator to notice, which is exactly
+        the case it cannot recover from (measured: no better than using no evidence at
+        all). A detection is a genuine second opinion, so that is what fills the free
+        direction; where a point has no detection in any view the solve falls back to the
+        seeds rather than to nothing (:func:`~deeperfly.gui.solve.solve_point_3d`).
         """
         absent = bool(self.labels.absent_at(t)[point])
         has = self.labels.has_gt[:, t, point]  # (V,)
         gt_obs = np.where(has[:, None], self.labels.gt[:, t, point], np.nan)
         pred = self._evidence(t)[:, point].astype(float)  # (V, 2)
         pred_ok = np.isfinite(pred).all(axis=-1) & ~has
+        stab = np.asarray(self.detections[:, t, point], dtype=float)  # (V, 2)
+        stab_ok = np.isfinite(stab).all(axis=-1) & ~has
         if absent:
             pred_ok = np.zeros_like(pred_ok)
+            stab_ok = np.zeros_like(stab_ok)
         pred_obs = np.where(pred_ok[:, None], pred, np.nan)
+        stab_obs = np.where(stab_ok[:, None], stab, np.nan)
         conf = None if self.result.conf is None else self.result.conf[:, t, point]
-        return gt_obs, pred_obs, conf
+        return gt_obs, pred_obs, conf, stab_obs
 
     def _solve_point(self, t: int, point: int) -> np.ndarray:
         """Derive one point's 3D from its labels + predictions (run-cache fallback).
@@ -852,9 +894,9 @@ class EditorState:
             # path not already gated by `pts3d is None` upstream, because `_ensure_pts3d`
             # can be reached from a placeholder seed computation.
             return np.full(3, np.nan)
-        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        gt_obs, pred_obs, conf, stab_obs = self._point_obs(t, point)
         x = solve_point_3d(
-            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
+            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri, stab_obs
         )
         if not np.all(np.isfinite(x)) and self.result.pts3d is not None:
             x = np.asarray(self.result.pts3d[t, point], dtype=float)
@@ -1081,7 +1123,7 @@ class EditorState:
         self._record_undo(t, point, coalesce=True)
         self._ensure_instance(t)
         prior = self._ensure_pts3d(t)[point].copy()
-        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        gt_obs, pred_obs, conf, _ = self._point_obs(t, point)
         x_new = solve_point_3d_drag(
             self.result.cameras, gt_obs, pred_obs, conf, view, xy, prior, self.ann
         )
@@ -1121,9 +1163,9 @@ class EditorState:
         """
         if self.result.cameras is None:
             return dragged
-        gt_obs, pred_obs, conf = self._point_obs(t, point)
+        gt_obs, pred_obs, conf, stab_obs = self._point_obs(t, point)
         settled = solve_point_3d(
-            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri
+            self.result.cameras, gt_obs, pred_obs, conf, self.ann, self.tri, stab_obs
         )
         return settled if np.all(np.isfinite(settled)) else dragged
 

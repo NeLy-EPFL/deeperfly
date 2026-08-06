@@ -689,13 +689,47 @@ def test_a_joint_with_no_evidence_gets_no_seed_but_is_still_drawn(result):
     assert state.has_instance(0)  # the instance exists even with nothing to seed it
 
     assert np.isnan(state.labels.seeds[:, 0, p_gone]).all()  # no invented evidence
-    _, evidence, _ = state._point_obs(0, p_gone)
+    _, evidence, _, stab = state._point_obs(0, p_gone)
     assert not np.isfinite(evidence).any(), "invented pixels reached the solve"
+    assert not np.isfinite(stab).any(), "invented pixels reached the stabilizer"
     assert np.isfinite(
         state.display_instance_pts2d(0)[:, p_gone]
     ).all()  # still grabbable
     # every other joint does have evidence, so it is seeded
     assert np.isfinite(state.labels.seeds[:, 0, 5]).all()
+
+
+def test_the_stabilizer_switch_re_derives_but_keeps_the_undo_history(result):
+    """Flipping how the 3D is derived must re-solve every point, and lose no label history.
+
+    A rig swap drops the undo stack because the geometry its snapshots were taken against is
+    gone. Changing the estimator does not: every snapshot is label state, and label state
+    re-solves correctly either way -- so the operator can flip the switch to see what the
+    unlabeled views are contributing without paying for it in lost undo.
+    """
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    assert state.ann.gt_wins_keep_stabilizers is True  # the new default
+    xy = state.display_pts2d_refine(f)[1, p] + np.array([6.0, -4.0])
+    state.apply_3d_edit(1, p, xy, f, fix=True)
+    xy2 = state.display_pts2d_refine(f)[5, p] + np.array([-5.0, 3.0])
+    state.apply_3d_edit(5, p, xy2, f, fix=True)  # views 1 and 5 are rm and lm: opposed
+    assert state.can_undo
+
+    state.set_solve_stabilizers(False)
+    assert state.ann.gt_wins_keep_stabilizers is False
+    # Every derived 3D dropped, so the next read re-solves under the new setting.
+    assert not state._pts3d_cache
+    assert state.can_undo, "changing the estimator must not discard label history"
+    assert np.isfinite(state.display_pts3d(f)[p]).all()
+
+    state.set_solve_stabilizers(True)  # and back, idempotently
+    assert state.ann.gt_wins_keep_stabilizers is True
+    state.set_solve_stabilizers(True)  # a no-op must not clear anything
+    state.display_pts3d(f)
+    assert state._pts3d_cache
+    state.set_solve_stabilizers(True)
+    assert state._pts3d_cache
 
 
 def test_the_session_seed_mode_reaches_the_implicit_door(result):
@@ -863,34 +897,54 @@ def test_the_solve_reads_the_instance_seeds_once_one_exists(result):
     """The one substitution the instance model makes: seeds take the detections' job."""
     f, p = 0, 5
     state = EditorState.from_result(result)
-    _, before, _ = state._point_obs(f, p)
+    _, before, _, _ = state._point_obs(f, p)
     np.testing.assert_allclose(before, state.detections[:, f, p], equal_nan=True)
 
     assert state.create_instance(f) is True
-    _, after, _ = state._point_obs(f, p)
+    _, after, _, _ = state._point_obs(f, p)
     np.testing.assert_allclose(after, state.labels.seeds[:, f, p], equal_nan=True)
 
 
+def test_the_stabilizer_stays_on_the_detections_when_the_seeds_take_over(result):
+    """The seeds are the *display* evidence; only detections may fix an unseen depth.
+
+    Under ``seed_mode="triangulate"`` a seed is the reprojection of the current 3D, so the
+    unlabelled views would agree with each other perfectly by construction and re-impose
+    the depth the operator is correcting. The fourth array therefore keeps pointing at the
+    detections after an instance exists, which is what makes the two-GT stabilized solve a
+    second opinion rather than an echo.
+    """
+    f, p = 0, 5
+    state = EditorState.from_result(result)
+    assert state.create_instance(f) is True
+    _, pred_obs, _, stab_obs = state._point_obs(f, p)
+    np.testing.assert_allclose(pred_obs, state.labels.seeds[:, f, p], equal_nan=True)
+    np.testing.assert_allclose(stab_obs, state.detections[:, f, p], equal_nan=True)
+
+
 def test_gt_takes_over_from_the_seeds_one_view_at_a_time(result):
-    """First GT overrides its own view; at two GT the evidence is not consulted at all."""
+    """First GT overrides its own view; at two GT the evidence only fills what GT cannot."""
     f, p = 0, 5
     state = EditorState.from_result(result)
     state.create_instance(f)
 
     xy0 = state.display_pts2d_refine(f)[0, p] + np.array([7.0, -5.0])
     state.apply_3d_edit(0, p, xy0, f, fix=True)
-    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    gt_obs, pred_obs, _, stab_obs = state._point_obs(f, p)
     assert np.isfinite(gt_obs[0]).all()  # GT here
     assert not np.isfinite(pred_obs[0]).all()  # so the seed is not used in this view
+    assert not np.isfinite(stab_obs[0]).all()  # nor its detection
     assert (
         np.isfinite(pred_obs[1:]).all(axis=-1).any()
     )  # the rest still carry the depth
 
     xy1 = state.display_pts2d_refine(f)[3, p] + np.array([-6.0, 4.0])
     state.apply_3d_edit(3, p, xy1, f, fix=True)
-    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    gt_obs, pred_obs, _, stab_obs = state._point_obs(f, p)
     assert int(np.isfinite(gt_obs).all(axis=-1).sum()) == 2
     assert np.isfinite(pred_obs).all(axis=-1).sum() == state.n_views - 2
+    # Still consulted at two GT -- for the one direction the two clicks are mute about.
+    assert np.isfinite(stab_obs).all(axis=-1).sum() == state.n_views - 2
 
 
 def test_absence_is_never_softened(result):
@@ -898,9 +952,98 @@ def test_absence_is_never_softened(result):
     f, p = 0, 5
     state = EditorState.from_result(result)
     state.set_absent([p], True, f)
-    gt_obs, pred_obs, _ = state._point_obs(f, p)
+    gt_obs, pred_obs, _, stab_obs = state._point_obs(f, p)
     assert not np.isfinite(pred_obs).any()  # no fallback, unlike an exclusion
+    assert not np.isfinite(stab_obs).any()  # absence vetoes the stabilizer too
     assert np.isnan(state.display_pts3d(f)[p]).all()
+
+
+# -- the reprojection-distance warning ----------------------------------------
+#
+# Drawn on the canvas, so what is asserted here is the *data* side of it: the gap the
+# front-end measures, mirrored from poseView.js (`warnAnchor` + `drawReprojWarnings`).
+# The JS rule itself is pinned in test_gui_browser.py.
+
+
+def _warned(state, frame, *, threshold=8.0):
+    """``(V, P)`` bool: which cells the canvas flags with the reprojection warning.
+
+    Mirrors the front-end: the image-px gap between the position a cell *asserts* -- the GT
+    pixel, else the instance's own drawn position, else (before the frame has a skeleton)
+    the detection -- and the reprojection of the derived 3D. The Hidden flag is not consulted
+    on either side: a pixel that disagrees with the geometry is worth flagging whether or not
+    the loss will use it.
+    """
+    proj = state.display_pts3d_projected(frame)
+    if proj is None:
+        return np.zeros((state.n_views, state.n_points), dtype=bool)
+    shown = state.display_instance_pts2d(frame)
+    if shown is None:
+        shown = state.display_pts2d(frame)  # no skeleton yet: GT over the detection
+    with np.errstate(invalid="ignore"):
+        gap = np.linalg.norm(np.asarray(shown) - np.asarray(proj), axis=-1)
+        return np.isfinite(gap) & (gap > threshold)
+
+
+def test_labeling_two_views_clears_the_warning_in_the_views_it_derives(result):
+    """The multiview payoff, as the check sees it: label two views, the rest go quiet.
+
+    Reported from a real session (AN07B017_260414_Fly4_005): ``lh_femur_tibia`` was flagged
+    in the ``rh`` view, the operator labeled it in ``lm`` and ``lh``, every other view moved
+    onto the geometry -- and the flag in ``rh`` stayed. It was anchored on the *raw detection*
+    there, which for a left-hind joint seen by a right-side camera was 125 px out and is not
+    something labeling can move: a warning that could not be cleared by doing the work it
+    asked for. Once a frame has a skeleton, a view the operator has not labeled draws the
+    joint AT its reprojection, so it has nothing to disagree with.
+    """
+    p, contra = 5, 0  # view 0 stands in for the camera on the far side of the animal
+    result.pts2d[contra, :, p] += (
+        120.0  # ... whose detection of this joint is 120 px out
+    )
+    state = EditorState.from_result(result, raw_pts2d=result.pts2d.copy())
+
+    # Before anything is authored the detections ARE the primary layer, so the far view's
+    # disagreement with the geometry is exactly what the check is for. It fires.
+    assert _warned(state, 0)[contra, p]
+
+    # The operator labels two other views, on the joint (their detections are exact here).
+    det = state.detections[:, 0, p]
+    for v in (3, 4):
+        state.apply_3d_edit(v, p, det[v], frame=0, fix=True)
+
+    proj = state.display_pts3d_projected(0)
+    shown = state.display_instance_pts2d(0)
+    assert np.allclose(
+        shown[contra, p], proj[contra, p]
+    )  # derived: drawn on the geometry
+    assert (
+        np.linalg.norm(det[contra] - proj[contra, p]) > 100
+    )  # the detection is still out
+    assert not _warned(state, 0)[contra, p]  # ... and no longer what the check reads
+    assert not _warned(state, 0)[
+        :, p
+    ].any()  # the two labels agree, so nothing is flagged
+
+
+def test_two_labels_that_disagree_flag_themselves(result):
+    """The check keeps the case it exists for: the operator's own pixels contradicting.
+
+    With the anchor on the drawn position it is *labels vs labels* that lights up -- which is
+    the actionable signal, and the one thing the derived views cannot show. Three GT views are
+    needed for it: two can always be satisfied exactly by some 3D point.
+    """
+    p = 5
+    state = EditorState.from_result(result, raw_pts2d=result.pts2d.copy())
+    det = state.detections[:, 0, p]
+    state.apply_3d_edit(1, p, det[1], frame=0, fix=True)
+    state.apply_3d_edit(2, p, det[2], frame=0, fix=True)
+    state.apply_3d_edit(3, p, det[3] + np.array([60.0, 40.0]), frame=0, fix=True)
+
+    warned = _warned(state, 0)[:, p]
+    assert warned.any()  # the three GT views cannot all be right
+    assert warned[
+        state.gt_mask(0)[:, p]
+    ].any()  # ... and it is the GT views that say so
 
 
 # -- an edit never moves a point it did not target ----------------------------

@@ -260,11 +260,15 @@ class AnnotationParams:
 
     ``solve_policy`` selects how GT and predictions combine in the live 3D solve:
 
-    - ``"gt_wins"`` (default) -- once a point has ``>= min_gt_for_exclusive`` GT
-      views, solve from GT alone; with one GT view, GT is a hard constraint
-      (weighted ``gt_weight`` above the predictions that fill the other views);
-      with no GT, use the configured ``[triangulation]`` method (so it matches the
-      run). No policy ever discards a GT observation.
+    - ``"gt_wins"`` (default) -- GT is authoritative wherever it has an opinion, and
+      the remaining evidence supplies only what GT cannot determine. With one GT view
+      that is a *depth* along the GT's viewing ray
+      (:func:`~deeperfly.gui.solve.solve_depth_on_ray`); with
+      ``>= min_gt_for_exclusive`` GT views it is the ill-conditioned direction of the
+      GT pair (:func:`~deeperfly.gui.solve.solve_point_3d_stabilized`, controlled by
+      ``gt_wins_keep_stabilizers``); with no GT, use the configured
+      ``[triangulation]`` method (so it matches the run). No policy ever discards a GT
+      observation.
     - ``"equal_weight"`` -- per view use GT if present else the prediction, feed all
       to the configured method. ``equal_weight_protect_gt`` (default true) forces GT
       views to stay inliers so a prediction consensus cannot vote a human label out.
@@ -277,9 +281,25 @@ class AnnotationParams:
     undistorts GT/prediction pixels before the linear DLT so a placed GT reprojects
     onto itself -- off by default because the batch pipeline does not undistort, so
     enabling it improves GT accuracy at the cost of a zero-GT re-solve no longer
-    matching the run's cached 3D exactly. ``gt_wins_keep_stabilizers`` keeps
-    predictions as low-weight depth stabilisers even once GT is exclusive (guards
-    degenerate GT-view geometry).
+    matching the run's cached 3D exactly (the nonlinear ``gt_wins`` paths are
+    distortion-exact either way and ignore the flag).
+
+    ``gt_wins_keep_stabilizers`` (**on by default**) keeps the remaining views in the
+    solve once GT is exclusive, because two GT views do not determine a 3D point
+    equally well in every direction. Two cameras facing each other -- ``rm`` and ``lm``
+    of the standard rig are exactly anti-parallel -- have viewing rays that are nearly
+    the same line, so the depth along that line is barely constrained: measured on the
+    test rig, 0.5 px of click noise becomes 255 um mean / 372 um p90 of 3D error
+    (p90 5.3 um at a 90-degree pair, a 70x penalty) and the point lands 37 px off in
+    the views the operator did not label. Turning this off restores the older behavior
+    of triangulating from the GT views alone.
+
+    ``gt_sigma_px`` is the operator's click precision in pixels and is the *only*
+    parameter of that stabilized solve: together with the detector's pixel scale
+    (``[triangulation].ransac_threshold``, reused rather than duplicated) it sets how
+    much more a click is trusted than a prediction. It replaces the unitless
+    ``gt_weight`` in this path deliberately -- the best fixed weight was measured to
+    move by 10x with the noise regime, while a ratio of measurable sigmas does not.
     """
 
     solve_policy: str = "gt_wins"
@@ -288,7 +308,8 @@ class AnnotationParams:
     prediction_weight: str | float = "uniform"
     undistort_before_solve: bool = False
     equal_weight_protect_gt: bool = True
-    gt_wins_keep_stabilizers: bool = False
+    gt_wins_keep_stabilizers: bool = True
+    gt_sigma_px: float = 0.5
 
 
 @dataclass(frozen=True)
