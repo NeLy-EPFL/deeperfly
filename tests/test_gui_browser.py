@@ -419,6 +419,19 @@ def test_hidden_draws_a_mark_and_nothing_else_moves(page_and_errors):
     """
     page, errors = page_and_errors
     probe = lambda: page.evaluate(_CANVAS_PROBE)  # noqa: E731
+    # Spend the session's FIRST edit on something that draws nothing, so the comparison
+    # below is not measuring one. Whatever edits first also raises the unsaved-changes chip,
+    # and at this fixture's 800px width that chip wraps .toolbar-row onto a second line and
+    # shrinks every canvas by ~16px -- so `before` and `after` would be read off two
+    # differently-sized canvases and differ no matter what Hidden did. Reviewed is the ideal
+    # sacrifice: it dirties the session and puts nothing on the canvas. (Wide enough to fit
+    # one line, >=1024px, there is no wrap and no confound; the fixture is simply narrower.)
+    page.keyboard.press("d")
+    page.wait_for_timeout(900)
+    assert not page.evaluate("() => document.getElementById('unsaved').hidden"), (
+        "the unsaved chip never appeared, so it is no longer what reflows the toolbar -- "
+        "re-derive what this warm-up is protecting against before deleting it"
+    )
     page.keyboard.press("a")  # select every point in every view
     page.wait_for_timeout(400)
     before = probe()
