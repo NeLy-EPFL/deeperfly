@@ -93,6 +93,50 @@ def test_frame_unknown_camera_404(client):
     assert client.get("/api/frame/nope/0").status_code == 404
 
 
+def test_a_frame_served_twice_is_encoded_once(client, result, monkeypatch):
+    """The second request for a frame answers from the encoded cache.
+
+    The browser's own ``immutable`` cache means one tab rarely asks twice, so what this
+    protects is everything else asking for the same picture: a reload, a second tab, the
+    read-only viewers watching along. Each of those otherwise pays the decode again.
+    """
+    cam = result.cameras.names[0]
+    decodes = 0
+    inner = FrameSource.frame
+
+    def counted(self, name, idx):
+        nonlocal decodes
+        decodes += 1
+        return inner(self, name, idx)
+
+    monkeypatch.setattr(FrameSource, "frame", counted)
+    first = client.get(f"/api/frame/{cam}/3")
+    second = client.get(f"/api/frame/{cam}/3")
+    assert first.content == second.content
+    assert decodes == 1, f"re-decoded a frame already encoded ({decodes} decodes)"
+    # A different frame is a different picture, so it must not be served from that entry.
+    client.get(f"/api/frame/{cam}/4")
+    assert decodes == 2
+
+
+def test_encoded_frame_cache_evicts_by_bytes():
+    """Budgeted in bytes, because a frame is 3 MiB of RGB or 1 MiB of gray.
+
+    A count-based bound would mean something different for every rig, and the one number
+    that matters -- how much memory the cache may hold -- would not be the one set.
+    """
+    cache = server._EncodedFrames(budget=100)
+    cache.put(("tok", "a", 0), b"x" * 40)
+    cache.put(("tok", "a", 1), b"y" * 40)
+    assert cache.get(("tok", "a", 0)) is not None  # 80 bytes: both still fit
+    # ...and reading frame 0 made it the most recent, so the third entry (120 bytes, over
+    # budget) evicts frame 1 and nothing else: eviction is by bytes, in use order.
+    cache.put(("tok", "a", 2), b"z" * 40)
+    assert cache.get(("tok", "a", 1)) is None
+    assert cache.get(("tok", "a", 0)) is not None
+    assert cache.get(("tok", "a", 2)) is not None
+
+
 def test_frames_are_only_cacheable_when_stamped_for_this_recording(client, result):
     """Two recordings served on the same port must not share cached frames.
 

@@ -480,21 +480,36 @@ def create_app(
         enter the cache at all -- see :func:`_session_version`."""
         return "max-age=3600, immutable" if v == cache_v else "no-store"
 
+    # The encoded frames already served, so a reload or a second tab does not re-decode
+    # them (see `_EncodedFrames`). Bounded by bytes and keyed by the recording token, so
+    # unlike `mesh_cache` a switch has nothing to clear: the entries a switch would drop
+    # are exactly the ones that make switching back fast.
+    encoded_frames = _EncodedFrames()
+
     @app.get("/api/frame/{camera}/{t}")
     def frame(camera: str, t: int, v: str | None = None) -> Response:
         # One atomic read of the session per request. These are `def` handlers, so
         # Starlette runs them in a threadpool where `lock` cannot exclude them, and a
         # recording switch landing between two reads would split one response across two
         # recordings. Every handler below takes the same snapshot.
-        s = session
-        img = s.source.frame(camera, t)
-        if img is None:
-            raise HTTPException(404, f"no frame for {camera!r} at {t}")
-        ok, buf = cv2.imencode(".jpg", _to_bgr(img))
-        if not ok:  # pragma: no cover -- encoder failure is not expected
-            raise HTTPException(500, "frame encoding failed")
+        s, token = session, cache_v
+        key = (token, camera, t)
+        data = encoded_frames.get(key)
+        if data is None:
+            img = s.source.frame(camera, t)
+            if img is None:
+                raise HTTPException(404, f"no frame for {camera!r} at {t}")
+            # Monochrome footage arrives as `(H, W)` and encodes to a one-channel JPEG:
+            # a quarter of the CPU, because `_to_bgr` has no channels to reverse and the
+            # encoder has one plane instead of three. Barely fewer bytes, though -- JPEG
+            # already subsamples this footage's flat chroma away.
+            ok, buf = cv2.imencode(".jpg", _to_bgr(img))
+            if not ok:  # pragma: no cover -- encoder failure is not expected
+                raise HTTPException(500, "frame encoding failed")
+            data = buf.tobytes()
+            encoded_frames.put(key, data)
         return Response(
-            content=buf.tobytes(),
+            content=data,
             media_type="image/jpeg",
             headers={"Cache-Control": _image_cache_control(v)},
         )
@@ -2396,6 +2411,52 @@ def _xy(msg: dict) -> tuple[float, float]:
 def _clamp_frame(session: Session, t: int) -> int:
     """Keep ``t`` inside ``[0, n_frames)`` (defensive against stray indices)."""
     return max(0, min(int(t), session.n_frames - 1))
+
+
+class _EncodedFrames:
+    """A byte-budgeted LRU of encoded frame JPEGs, keyed ``(recording, camera, frame)``.
+
+    The browser is the first line of defense and by far the best one: a frame URL stamped
+    with this session's token is served ``immutable``, so scrubbing back to a frame *this
+    tab* has already shown never reaches the server at all. This is the second line -- a
+    reload, a second tab, the read-only viewers watching along -- each of which would
+    otherwise pay the decode again for a picture already produced.
+
+    Holding the *encoded* frame is what makes it affordable: ~250 KiB against 1.1 MiB for
+    the same 1984x512 monochrome frame decoded (3.3 MiB in color), so a given budget covers
+    roughly four times the frames the decoded cache behind it can.
+
+    Keyed by the recording token for the same reason ``mesh_cache`` is: ``/api/frame/f/1506``
+    names a different picture in every recording, and this cache sits inside the HTTP cache
+    that token protects.
+
+    The handlers run in a threadpool, so every access takes the lock -- an ``OrderedDict``
+    survives concurrent readers but not a ``move_to_end`` racing an eviction.
+    """
+
+    def __init__(self, budget: int = 64 * 1024 * 1024) -> None:
+        self._items: OrderedDict[tuple[str, str, int], bytes] = OrderedDict()
+        self._budget = budget
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple[str, str, int]) -> bytes | None:
+        """The cached JPEG for ``key``, or ``None``; a hit becomes the most recent entry."""
+        with self._lock:
+            data = self._items.get(key)
+            if data is not None:
+                self._items.move_to_end(key)
+            return data
+
+    def put(self, key: tuple[str, str, int], data: bytes) -> None:
+        """Cache ``data``, evicting the least recently used until inside the budget."""
+        with self._lock:
+            if key in self._items:
+                self._bytes -= len(self._items.pop(key))
+            self._items[key] = data
+            self._bytes += len(data)
+            while self._bytes > self._budget and self._items:
+                self._bytes -= len(self._items.popitem(last=False)[1])
 
 
 def _to_bgr(img: np.ndarray) -> np.ndarray:
