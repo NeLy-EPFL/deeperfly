@@ -309,13 +309,78 @@ def test_out_channel_must_fit_model():
         _config(_one_pathway(), _ps("rh", "rh_p", rf_thorax_coxa=19))
 
 
-def test_pathway_without_point_sources_rejected():
-    # A pathway named by no [pose2d.output_points] entry maps nothing -> error.
-    with pytest.raises(ValueError, match="no \\[pose2d.output_points\\] entries"):
+def test_unmapped_pathway_not_named_after_a_view_is_rejected():
+    """An unmapped pathway falls back to "channel i -> point i of my own view", so a
+    pathway whose name is not a view has no view to default INTO."""
+    with pytest.raises(ValueError, match="unknown view 'idle'"):
         _config(
             _one_pathway(name="rh_p") + _one_pathway(name="idle", source="s1"),
             _ps("rh", "rh_p", rf_thorax_coxa=0),
         )
+
+
+def test_unmapped_pathway_of_a_partial_channel_model_is_rejected():
+    """The identity default is only meaningful for a detector that predicts EVERY point.
+
+    The shipped 19-channel detector emits one side of the animal, so which points its
+    channels mean differs per view and there is no identity to fall back on. The refusal
+    names both counts rather than saying the table is missing, because the missing table
+    is the symptom and the channel count is the reason.
+    """
+    with pytest.raises(ValueError, match="19 channels for a 38-point skeleton"):
+        _config(_one_pathway(name="rh"), {})
+
+
+def test_a_dense_pathway_needs_no_output_points_table():
+    """channel i -> point i of the pathway's own view, with no table written at all.
+
+    This is what lets a dense config drop 38 x V lines of identity mapping. The check that
+    the model's channels really ARE this skeleton's, in this order, cannot happen here --
+    the plan is parsed torch-free, before any weights are read -- so it lives in
+    `stream.load_models` and runs on every load.
+    """
+    dense = [
+        {
+            "name": "m",
+            "class": "hrnet",
+            "input_size": [256, 512],
+            "n_out_channels": 38,
+            "weights": "unused.pt",
+        }
+    ]
+    plan = _config(_one_pathway(name="rh"), {}, models=dense)
+    (pathway,) = plan.pathways
+    mapping = pathway.mapping
+    assert mapping.shape == (38, 3)
+    rh = plan.view_names.index("rh")
+    # (channel, view, point) == (i, rh, i) for every i, and NOTHING lands in another view.
+    assert np.array_equal(mapping[:, 0], np.arange(38))
+    assert np.array_equal(mapping[:, 2], np.arange(38))
+    assert set(mapping[:, 1].tolist()) == {rh}
+
+
+def test_an_explicit_table_and_the_identity_default_agree_for_a_dense_pathway():
+    """The default is not a different mapping, it is the same one unwritten.
+
+    Written out because the whole argument for deleting the generated table is that it
+    carried no information; if these two disagreed, it carried some.
+    """
+    dense = [
+        {
+            "name": "m",
+            "class": "hrnet",
+            "input_size": [256, 512],
+            "n_out_channels": 38,
+            "weights": "unused.pt",
+        }
+    ]
+    names = list(Config.default().data["skeleton"]["point_names"])
+    explicit = {
+        "rh": {n: {"pathway": "rh", "out_channel": i} for i, n in enumerate(names)}
+    }
+    a = _config(_one_pathway(name="rh"), explicit, models=dense).pathways[0].mapping
+    b = _config(_one_pathway(name="rh"), {}, models=dense).pathways[0].mapping
+    assert np.array_equal(a, b)
 
 
 def _model(**over):

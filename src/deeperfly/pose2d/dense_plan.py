@@ -121,7 +121,6 @@ def dense_pose2d(
 
     preprocessors = []
     pathways = []
-    output_points: dict[str, dict[str, dict[str, Any]]] = {}
     for view in views:
         box = crops.get(view)
         prep_name = None
@@ -142,12 +141,12 @@ def dense_pose2d(
         if prep_name:
             pw["preprocessor"] = prep_name
         pathways.append(pw)
-        # channel i -> point i of this view. One pathway, no mirrored twin, so there is
-        # no left/right decision to get wrong here -- the detector already made it.
-        output_points[view] = {
-            name: {"pathway": view, "out_channel": i}
-            for i, name in enumerate(point_names)
-        }
+        # No [pose2d.output_points] table. Channel i -> point i of the view a pathway is
+        # named after is what the plan DEFAULTS to (see
+        # `deeperfly.pose2d.pathways._identity_triples`), so writing it out would be
+        # 38 x V lines of the identity -- and the check that used to justify generating
+        # them now runs on every load instead, where it also catches a hand-edited config
+        # and a swapped weights file.
 
     return {
         "precision": precision,
@@ -174,7 +173,7 @@ def dense_pose2d(
             }
         ],
         "pathways": pathways,
-        "output_points": output_points,
+        "n_out_channels": len(point_names),
     }
 
 
@@ -201,9 +200,16 @@ def pose2d_toml(plan: dict[str, Any]) -> str:
         "#",
         "# The 19-channel default runs each side camera twice (once mirrored) and leaves",
         "# the far side of every view NaN. This detector emits all",
-        f"# {len(plan['output_points'][next(iter(plan['output_points']))])} channels per",
+        f"# {plan['n_out_channels']} channels per",
         "# view, so a contralateral point arrives as a prediction to correct rather than",
         "# as a gap to author from nothing.",
+        "#",
+        "# There is deliberately no [pose2d.output_points] table: with one pathway per",
+        "# camera and every point predicted, the mapping IS channel i -> point i of that",
+        "# pathway's view, which is what the plan assumes when no table names a pathway.",
+        "# The 38 x V lines it would take carry no information, and a transposition in any",
+        "# one of them would be a wrong limb rather than a crash. That the model's channels",
+        "# really are this skeleton's, in this order, is checked when the weights load.",
         "# ===========================================================================",
         "[pose2d]",
     ]
@@ -236,12 +242,6 @@ def pose2d_toml(plan: dict[str, Any]) -> str:
             lines.append(f"{k} = {_fmt(v)}")
         lines.append("")
 
-    for view, table in plan["output_points"].items():
-        lines.append(f"[pose2d.output_points.{view}]")
-        width = max(len(n) for n in table)
-        for name, entry in table.items():
-            lines.append(f"{name:<{width}} = {_fmt(entry)}")
-        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 

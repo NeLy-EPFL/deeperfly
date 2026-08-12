@@ -179,6 +179,10 @@ class DetectionPlan:
         ``name -> ModelSpec``.
     pathways
         The pathways, in config order.
+    point_names
+        The skeleton's point names, in order -- the meaning of the ``P`` axis. Carried so
+        `deeperfly.pose2d.stream.load_models` can hold a model's own recorded channel
+        names against them without re-reading the config.
     """
 
     view_names: list[str]
@@ -187,6 +191,7 @@ class DetectionPlan:
     preprocessors: dict[str, FrameTransform]
     models: dict[str, ModelSpec]
     pathways: list[Pathway]
+    point_names: tuple[str, ...] = ()
 
     @property
     def n_views(self) -> int:
@@ -270,6 +275,7 @@ class DetectionPlan:
         return cls(
             view_names=view_names,
             n_points=skeleton.n_points,
+            point_names=tuple(skeleton.point_names),
             sources=sources,
             preprocessors=preprocessors,
             models=models,
@@ -484,10 +490,8 @@ def _parse_output_points(
     ``(out_channel, view, point)`` triples; every pathway must be named at least
     once.
     """
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError("the detection plan is missing [pose2d.output_points.<view>]")
     triples: dict[str, list[tuple[int, int, int]]] = {n: [] for n in pathway_models}
-    for view, table in raw.items():
+    for view, table in (raw or {}).items():
         v = _resolve_view(view, view_names, f"[pose2d.output_points.{view}]")
         if not isinstance(table, dict):
             raise ValueError(
@@ -520,12 +524,61 @@ def _parse_output_points(
     out: dict[str, np.ndarray] = {}
     for name, t in triples.items():
         if not t:
-            raise ValueError(
-                f"pathway {name!r} has no [pose2d.output_points] entries; "
-                "it maps no points"
+            t = _identity_triples(
+                name,
+                pathway_models=pathway_models,
+                models=models,
+                view_names=view_names,
+                n_points=len(point_index),
             )
         out[name] = np.asarray(t, dtype=np.int64).reshape(-1, 3)
     return out
+
+
+def _identity_triples(
+    pw_name: str,
+    *,
+    pathway_models: dict[str, str],
+    models: dict[str, ModelSpec],
+    view_names: list[str],
+    n_points: int,
+) -> list[tuple[int, int, int]]:
+    """The default mapping for a pathway no ``[pose2d.output_points]`` table names.
+
+    **Channel ``i`` -> point ``i`` of the view the pathway is named after.** This is what a
+    DENSE detector always means -- one that emits every tracked point for the view it was
+    given -- and writing it out is 38 x V lines carrying no information, in which a single
+    transposition is a wrong limb rather than a crash. So a config for such a detector
+    declares no mapping at all.
+
+    The mapping stays REQUIRED for anything that is not dense, and the gate is the channel
+    count: the shipped 19-channel detector emits one side of the animal, so which points
+    its channels mean genuinely differs per view (and its front camera runs twice,
+    mirrored). There is no identity to fall back on and asking for the table is right.
+
+    Two things this cannot check, and one of them is checked elsewhere:
+
+    * That the model's channels are IN the skeleton's order rather than merely as numerous.
+      Nothing here can: the plan is parsed torch-free, before any weights are read. The
+      loaded module carries its own ``point_names``, and
+      :func:`deeperfly.pose2d.stream.load_models` compares them against the skeleton on
+      every run -- which also catches a hand-edited config and a swapped weights file,
+      neither of which a config generator ever sees.
+    * A typo that leaves a pathway unmapped by accident. Before this, an unnamed pathway
+      was an error; now a dense one silently gets the identity. The channel-count gate and
+      the load-time name check are what make that trade acceptable.
+    """
+    where = f"pathway {pw_name!r} has no [pose2d.output_points] entry"
+    view = _resolve_view(pw_name, view_names, where)
+    n_out = models[pathway_models[pw_name]].n_out_channels
+    if n_out != n_points:
+        raise ValueError(
+            f"{where}, so it would default to channel i -> point i of view {pw_name!r} -- "
+            f"but its model emits {n_out} channels for a {n_points}-point skeleton. Only a "
+            "detector that predicts every point can take the default; give this pathway an "
+            "explicit [pose2d.output_points.<view>] table."
+        )
+    return [(i, view, i) for i in range(n_points)]
 
 
 def _parse_pathways(

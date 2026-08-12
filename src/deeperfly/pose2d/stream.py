@@ -63,7 +63,50 @@ def load_models(plan) -> dict:
     """
     from .models import load_model
 
-    return {name: load_model(spec) for name, spec in plan.models.items()}
+    loaded = {name: load_model(spec) for name, spec in plan.models.items()}
+    for name, model in loaded.items():
+        _check_channel_names(name, model, plan)
+    return loaded
+
+
+def _check_channel_names(name: str, model, plan) -> None:
+    """Refuse a model whose recorded channel order is not this config's skeleton.
+
+    A dense detector's channels ARE a skeleton, and a count check cannot tell two
+    skeletons apart: ``fly38`` and ``fly38b`` are both 38 points, share 32 of them, and
+    are in a different order, so routing one through the other's config attaches six
+    points to the wrong joints and shifts the rest -- a wrong limb, not a crash.
+
+    This runs on EVERY run, which is the point. The same comparison exists in
+    ``deeperfly dense-config``, but a generator only ever sees the moment it writes the
+    file; it cannot see a ``weights`` path later repointed at a different checkpoint, a
+    ``[skeleton]`` swapped underneath, or a mapping line edited by hand. Those are exactly
+    the cases where the channel order silently stops meaning what the config says.
+
+    Only checkpoints that RECORD their channel names can be checked. The shipped
+    19-channel hourglass does not carry any -- its channels are one side of the animal and
+    mean different points in different views, which is why such a config declares an
+    explicit ``[pose2d.output_points]`` table instead of relying on the identity default.
+    """
+    names = list(getattr(model.module, "point_names", None) or [])
+    if not names or not plan.point_names:
+        return
+    skeleton = list(plan.point_names)
+    if names == skeleton:
+        return
+    extra = [n for n in names if n not in skeleton]
+    gone = [n for n in skeleton if n not in names]
+    raise SystemExit(
+        f"model {name!r} was trained on a different channel set from this config's "
+        f"skeleton, so its channels would attach points to the wrong joints.\n"
+        f"  config skeleton : {len(skeleton)} points\n"
+        f"  model           : {len(names)} points\n"
+        f"  only in model   : {extra or 'none (the ORDER differs)'}\n"
+        f"  only in config  : {gone or 'none (the ORDER differs)'}\n"
+        f"Stamp the matching skeleton into the config "
+        f"(`deeperfly dense-config --skeleton <skeleton.toml>`) or point 'weights' at a "
+        f"checkpoint trained on this one."
+    )
 
 
 # -- frame-rate resolution ---------------------------------------------------

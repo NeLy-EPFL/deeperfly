@@ -405,3 +405,72 @@ def test_detect_single_frame_matches_sequence(model):
     seq_pts, seq_conf = inference.detect_sequence(plan, models, windows)
     np.testing.assert_allclose(pts, seq_pts[:, 0], atol=1e-5, equal_nan=True)
     np.testing.assert_allclose(conf, seq_conf[:, 0], atol=1e-5)
+
+
+# -- the channel-order gate, at LOAD time -------------------------------------
+
+
+def _plan_with_points(names):
+    import types
+
+    return types.SimpleNamespace(point_names=tuple(names))
+
+
+def _model_with_points(names):
+    import types
+
+    return types.SimpleNamespace(module=types.SimpleNamespace(point_names=list(names)))
+
+
+def test_load_refuses_a_model_trained_on_another_skeleton():
+    """A dense detector's channels ARE a skeleton, and a COUNT check cannot compare two.
+
+    `fly38` and `fly38b` are both 38 points and share 32 of them in a different order, so
+    routing one through the other's config attaches six points to the wrong joints and
+    shifts the rest. `deeperfly dense-config` compares them when it writes a config, but a
+    generator never sees a `weights` path later repointed, a `[skeleton]` swapped
+    underneath, or a hand-edited mapping -- so the comparison has to happen on every load.
+    """
+    from deeperfly.pose2d.stream import _check_channel_names
+
+    fly38 = list(Config.default().data["skeleton"]["point_names"])
+    fly38b = [n for n in fly38 if "abdomen" not in n] + [
+        "neck",
+        "abdomen0",
+        "abdomen1",
+        "abdomen2",
+        "abdomen3",
+        "abdomen4",
+    ]
+    with pytest.raises(SystemExit, match="different channel set"):
+        _check_channel_names(
+            "dense", _model_with_points(fly38b), _plan_with_points(fly38)
+        )
+
+
+def test_load_refuses_the_same_points_in_a_different_order():
+    """The order is the mapping. Two configs with identical point SETS still disagree."""
+    from deeperfly.pose2d.stream import _check_channel_names
+
+    names = list(Config.default().data["skeleton"]["point_names"])
+    swapped = names[:]
+    swapped[0], swapped[5] = swapped[5], swapped[0]
+    with pytest.raises(SystemExit, match="the ORDER differs"):
+        _check_channel_names(
+            "dense", _model_with_points(swapped), _plan_with_points(names)
+        )
+
+
+def test_load_accepts_the_matching_skeleton_and_ignores_a_model_without_names():
+    """The hourglass records no point names -- its channels are one side of the animal and
+    mean different points in different views, which is why such a config declares an
+    explicit table instead of taking the identity default. Nothing to compare, so no
+    refusal."""
+    import types
+
+    from deeperfly.pose2d.stream import _check_channel_names
+
+    names = list(Config.default().data["skeleton"]["point_names"])
+    _check_channel_names("dense", _model_with_points(names), _plan_with_points(names))
+    nameless = types.SimpleNamespace(module=types.SimpleNamespace())
+    _check_channel_names("hourglass", nameless, _plan_with_points(names))
