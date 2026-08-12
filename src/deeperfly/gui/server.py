@@ -1280,18 +1280,21 @@ def create_app(
                 opened[slug] = (session, new_v)
                 _prune_sessions()
                 mesh_cache.clear()
-                # The frames of a recording nobody is looking at are the largest thing a
-                # retained session holds, and the cheapest thing to rebuild: the browser
-                # refetches them on the way back, from readers that stayed open. The
-                # session itself -- labels, undo history, derived 3D -- is what is kept.
+                # The pictures of a recording nobody is looking at are the largest thing a
+                # retained session holds -- the decoded frames, and the reference frames an
+                # open decoder keeps per camera -- and the cheapest thing to rebuild: the
+                # browser refetches them on the way back, through cursors reopened on
+                # demand from readers that stayed. The session itself -- labels, undo
+                # history, derived 3D -- is what is kept.
                 if outgoing is not session:
                     outgoing.source.release_cache()
             # A session dropped here (pruned, or discarded) is deliberately NOT closed:
             # `FrameSource.close()` clears the decoded-frame LRU that `FrameSource.frame`
             # reads outside its try block, and a threadpool handler that snapshotted the
-            # outgoing session just before the swap may still be inside it. Nothing leaks
-            # -- the readers hold no OS handle, and the last reference going away reclaims
-            # the arrays, the cache and the undo stacks.
+            # outgoing session just before the swap may still be inside it. Nothing leaks:
+            # the readers hold no OS handle, the cursors that do hold one were just
+            # released above (and close only once a read in flight has left), and the last
+            # reference going away reclaims the arrays, the cache and the undo stacks.
             _begin_switch()  # restart the window: the reloads begin now
             await _broadcast(
                 {"type": "reload", "reason": "recording", "recording": slug}

@@ -321,12 +321,12 @@ def test_a_restored_recording_is_not_read_from_disk_again(client, monkeypatch):
 def test_the_recording_left_keeps_its_labels_but_not_its_pictures(two_recordings):
     """A retained session holds the operator's work, not a pile of decoded frames.
 
-    ``cache_size`` full-resolution frames per held recording is what would make keeping
-    them a way to run out of memory; they are also the one part that costs nothing to
-    rebuild (the browser refetches, from readers that stayed open). Reaches into the
-    private LRU because this fixture's footage is bytes, not decodable video -- there is no
-    way to fill the cache through ``/api/frame`` here, and the property under test is a
-    memory one.
+    A ``cache_bytes`` budget of decoded frames per held recording -- plus the decoder each
+    open cursor keeps alive -- is what would make keeping them a way to run out of memory;
+    they are also the one part that costs nothing to rebuild (the browser refetches, through
+    cursors reopened from readers that stayed). Reaches into the private LRU because this
+    fixture's footage is bytes, not decodable video -- there is no way to fill the cache
+    through ``/api/frame`` here, and the property under test is a memory one.
     """
     session = open_target(two_recordings.root, recording="flyA")
     client = TestClient(create_app(session))
@@ -337,6 +337,37 @@ def test_the_recording_left_keeps_its_labels_but_not_its_pictures(two_recordings
     )
     # The session behind those frames is untouched -- flyA's five saved GT cells included.
     assert int(session.state.labels.has_gt.sum()) == 5, "released more than the cache"
+
+
+def test_releasing_the_pictures_closes_the_decoders_and_reopens_on_demand(tmp_path):
+    """An open decoder is part of what a retained recording costs, so it goes too.
+
+    Reads run through one open cursor per camera, which is what makes stepping cheap -- and
+    what FFmpeg keeps alive per stream (reference frames, thread buffers) is megabytes per
+    camera, held for every recording the editor is keeping. So a switch away drops them, and
+    a request arriving afterwards (the browser still finishing the old frames, or the
+    operator switching back) simply opens a new one.
+
+    Needs real footage: this is the one property the byte-fixture recordings cannot show.
+    """
+    from deeperfly import io
+
+    path = tmp_path / "cam.mp4"
+    with io.VideoWriter(path, fps=10) as writer:
+        writer.write_frames(np.full((8, 32, 32, 3), 90, np.uint8))
+    source = FrameSource({"cam": [path]})
+
+    assert source.frame("cam", 2) is not None
+    (cursor,) = source._cursors.values()
+
+    source.release_cache()
+    assert source._cursors == {}, "kept a decoder for a recording nobody is showing"
+    with pytest.raises(ValueError, match="closed"):
+        cursor.frame(2)  # the one that was released really is shut, not just forgotten
+
+    assert source.frame("cam", 3) is not None, "a later request must reopen a cursor"
+    assert set(source._cursors) == {"cam"}
+    source.close()
 
 
 def test_discard_abandons_the_unsaved_labels_of_the_recording_left(client):

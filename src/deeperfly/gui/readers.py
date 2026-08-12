@@ -4,14 +4,17 @@ The footage paths recorded in ``results.h5`` (:meth:`StageStore.read_footage`)
 are tried in order -- resolved-absolute, then relative to the ``results.h5``
 directory, then a user-supplied directory (by file name) -- so a result moved or
 copied still finds its videos. :class:`FrameSource` opens one
-:class:`~deeperfly.io.base.FrameReader` per camera and caches recently decoded
-frames; a camera whose footage cannot be found yields a black frame sized from
-the recorded ``image_sizes`` so the skeleton overlay still draws.
+:class:`~deeperfly.io.base.FrameReader` per camera, reads through one open
+:class:`~deeperfly.io.base.FrameCursor` each (so a step to the next frame costs a decode
+rather than a re-open and a seek), and caches the last few decoded frames; a camera whose
+footage cannot be found yields a black frame sized from the recorded ``image_sizes`` so
+the skeleton overlay still draws.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -88,11 +91,45 @@ def resolve_footage(
 
 
 class FrameSource:
-    """Per-camera frame decoding with a small LRU cache.
+    """Per-camera frame decoding, one open cursor each, behind a frame cache.
 
     Cameras absent from ``files_by_camera`` (footage not found) still answer
     :meth:`frame` with a black image of the recorded size, so the viewer can
     show the skeleton on a blank background instead of failing.
+
+    Reads go through a per-camera :class:`~deeperfly.io.FrameCursor`, which keeps that
+    camera's decoder open between frames. Measured on eight 1984x512 cameras served at
+    once (decode plus JPEG encode, so a whole navigation): stepping to the next frame
+    costs ~5 ms, against ~450 ms if each read re-opened and re-seeked the file. The
+    cursors are opened on first use and dropped by :meth:`release_cache`, so a session
+    nobody is looking at holds no decoder.
+
+    Parameters
+    ----------
+    files_by_camera
+        Resolved footage per camera (see :func:`resolve_footage`).
+    image_sizes
+        Recorded ``(height, width)`` per camera, used to synthesize a blank frame for a
+        camera whose footage is missing.
+    cache_bytes
+        Memory budget for decoded frames, across all cameras. Budgeted in **bytes**, not
+        frames, because a frame is 3 MiB of RGB or 1 MiB of gray depending on the footage
+        and a frame count would mean something different for each.
+
+        This is what makes stepping *backward* cheap. A video codec can only walk forward:
+        going back one frame means seeking to the keyframe before it and decoding forward
+        again -- some 200 frames on this footage, ~370 ms for the rig -- whereas the frames
+        just behind the operator are ones this cache was handed moments ago, and answering
+        from it costs ~2 ms. So the depth of free backward stepping is this budget divided
+        by the rig's frame size: ~8 frames for eight monochrome 1984x512 cameras.
+    gray_ok
+        Whether monochrome footage may be handed back as ``(H, W)`` rather than three
+        identical channels -- true by default because every consumer here branches on
+        ``ndim``. It cuts the per-frame cost of serving a picture by about three quarters
+        (0.8 ms against 3.2 ms: a 3 MB channel-reversing copy that disappears entirely,
+        plus a one-channel JPEG) and, more importantly, thirds the size of a cached frame,
+        which is what turns ~3 frames of free backward stepping into ~8. It saves almost
+        no *bytes* on the wire -- JPEG already subsamples the flat chroma to nothing.
     """
 
     def __init__(
@@ -100,7 +137,8 @@ class FrameSource:
         files_by_camera: dict[str, list[Path]],
         image_sizes: dict[str, tuple[int, int]] | None = None,
         *,
-        cache_size: int = 64,
+        cache_bytes: int = 64 * 1024 * 1024,
+        gray_ok: bool = True,
     ):
         self._readers: dict[str, io.FrameReader] = {}
         self._counts: dict[str, int | None] = {}
@@ -117,7 +155,18 @@ class FrameSource:
             self._counts[name] = reader.count()
         self._image_sizes = dict(image_sizes or {})
         self._cache: OrderedDict[tuple[str, int], np.ndarray] = OrderedDict()
-        self._cache_size = cache_size
+        self._cache_budget = cache_bytes
+        self._cache_bytes = 0
+        # The frame handlers run in a threadpool, so the cache and its running byte total
+        # are shared mutable state. The lock covers only the bookkeeping -- never a decode
+        # -- so the cameras of one navigation still decode in parallel.
+        self._cache_lock = threading.Lock()
+        self._gray_ok = gray_ok
+        # Opened lazily, one per camera. Guarded because the frame handlers run in a
+        # threadpool: without the lock two concurrent first requests for one camera would
+        # each open a container and one would be dropped on the floor, still open.
+        self._cursors: dict[str, io.FrameCursor] = {}
+        self._cursor_lock = threading.Lock()
 
     @property
     def cameras(self) -> list[str]:
@@ -138,11 +187,42 @@ class FrameSource:
         counts = [c for c in self._counts.values() if c is not None]
         return min(counts) if counts else None
 
+    def _cursor(self, name: str) -> io.FrameCursor | None:
+        """Camera ``name``'s open cursor, opening one on first use.
+
+        Lazy so that a source serving blank frames (or one nobody fetches from) opens
+        nothing at all, and so a cursor dropped by :meth:`release_cache` simply comes
+        back the next time that camera is asked for.
+        """
+        cursor = self._cursors.get(name)
+        if cursor is not None:
+            return cursor
+        with self._cursor_lock:
+            cursor = self._cursors.get(name)  # another thread may have just opened it
+            if cursor is None:
+                reader = self._readers.get(name)
+                if reader is None:
+                    return None
+                cursor = reader.cursor(gray_ok=self._gray_ok)
+                self._cursors[name] = cursor
+            return cursor
+
+    def _drop_cursor(self, name: str, cursor: io.FrameCursor) -> None:
+        """Forget and close ``cursor`` -- unless it has already been replaced."""
+        with self._cursor_lock:
+            if self._cursors.get(name) is cursor:
+                del self._cursors[name]
+        try:
+            cursor.close()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("closing cursor for %s failed: %s", name, exc)
+
     def frame(self, name: str, idx: int) -> np.ndarray | None:
         """Decode camera ``name``'s frame ``idx`` (cached); blank if no footage.
 
-        Returns ``None`` only when the camera has neither footage nor a recorded
-        image size to synthesize a blank frame from.
+        ``(H, W, 3)`` RGB, or ``(H, W)`` for monochrome footage unless the source was
+        built with ``gray_ok=False``. Returns ``None`` only when the camera has neither
+        footage nor a recorded image size to synthesize a blank frame from.
         """
         if name not in self._readers:
             size = self._image_sizes.get(name)
@@ -151,46 +231,73 @@ class FrameSource:
             height, width = size
             return np.zeros((int(height), int(width), 3), dtype=np.uint8)
         key = (name, idx)
-        cached = self._cache.get(key)
-        if cached is not None:
-            try:
+        with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached is not None:
                 self._cache.move_to_end(key)
-            except KeyError:  # released between the get and here -- see release_cache
-                pass
-            return cached
-        try:
-            frame = np.asarray(self._readers[name][idx])
-        except Exception as exc:  # noqa: BLE001 -- a bad frame shouldn't crash the UI
-            log.warning("could not read %s frame %d: %s", name, idx, exc)
-            return None
-        self._cache[key] = frame
-        if len(self._cache) > self._cache_size:
+                return cached
+        frame = None
+        cursor = self._cursor(name)
+        if cursor is not None:
             try:
-                self._cache.popitem(last=False)
-            except KeyError:  # released between the check and here -- see release_cache
-                pass
+                frame = np.asarray(cursor.frame(idx))
+            except Exception as exc:  # noqa: BLE001 -- fall back to a stateless read
+                # A cursor can fail where the reader will not: `release_cache` closed its
+                # container while this request was in flight (a recording switch), or a
+                # seek went wrong on this particular file. Drop it -- the next request
+                # opens a fresh one -- and answer from the reader, so the operator gets one
+                # slow frame instead of a hole in the viewer.
+                log.debug("cursor read of %s frame %d failed: %s", name, idx, exc)
+                self._drop_cursor(name, cursor)
+        if frame is None:
+            try:
+                frame = np.asarray(self._readers[name][idx])
+            except Exception as exc:  # noqa: BLE001 -- a bad frame shouldn't crash the UI
+                log.warning("could not read %s frame %d: %s", name, idx, exc)
+                return None
+        with self._cache_lock:
+            if key not in self._cache:  # a concurrent request for the same frame won
+                self._cache[key] = frame
+                self._cache_bytes += frame.nbytes
+            while self._cache_bytes > self._cache_budget and self._cache:
+                self._cache_bytes -= self._cache.popitem(last=False)[1].nbytes
         return frame
 
     def release_cache(self) -> None:
-        """Drop the decoded frames, keeping the readers open.
+        """Drop the decoded frames and close the cursors, keeping the readers.
 
         For a session the editor keeps but is no longer showing (the recording the
-        operator switched away from, held for its unsaved labels): the decoded frames are
-        by far the largest thing it owns -- up to ``cache_size`` full-resolution RGB frames
-        -- and they are pure cache, refilled by the browser on the way back. What actually
-        made the switch slow, opening every reader, is what stays.
+        operator switched away from, held for its unsaved labels). Both are pure cache,
+        refilled on the way back, and both are what makes a retained session large: the
+        decoded frames directly, and an open decoder through the reference frames and
+        thread buffers FFmpeg keeps per stream -- a handful of megabytes per camera, held
+        for every retained recording, for a picture nobody is looking at.
 
-        Called while another thread may be inside :meth:`frame` on this source, which is
-        why that method tolerates its key vanishing between two statements.
+        The readers themselves stay: they hold no decoder and no OS handle, and are the
+        part that took real time to resolve.
+
+        Called while another thread may be inside :meth:`frame` on this source, which is why
+        closing a cursor waits for a read in flight rather than freeing the container
+        underneath it. A frame decoded by such a read lands in the cleared cache afterwards,
+        which is harmless -- it is one picture, and the next release drops it.
         """
-        self._cache.clear()
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_bytes = 0
+        with self._cursor_lock:
+            cursors, self._cursors = self._cursors, {}
+        for name, cursor in cursors.items():
+            try:
+                cursor.close()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("closing cursor for %s failed: %s", name, exc)
 
     def close(self) -> None:
-        """Close every open reader and drop the cache."""
+        """Close every open cursor and reader, and drop the cache."""
+        self.release_cache()
         for reader in self._readers.values():
             try:
                 reader.close()
             except Exception as exc:  # noqa: BLE001
                 log.debug("closing reader failed: %s", exc)
         self._readers.clear()
-        self._cache.clear()
