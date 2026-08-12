@@ -189,6 +189,174 @@ def test_reader_is_a_context_manager(tmp_path):
         assert reader[:].shape[0] == frames.shape[0]
 
 
+# -- single-frame reads: seek, don't walk ------------------------------------
+#
+# `reader[i]` used to decode every frame from the start of the file and discard the ones
+# before `i` -- `continue` in the consumer loop skips the array conversion, not the decode
+# -- so it cost O(i): 472 ms for frame 2999 of a 3000-frame clip against 12 ms for the seek
+# that finds it. The viewer reads exactly this way, one frame per camera, which is why it
+# got slower the further into a recording the operator worked. These pin the seek as the
+# path taken, and the walk as the fallback that is still there.
+
+
+def test_single_index_seeks_rather_than_walking(tmp_path, monkeypatch):
+    # With the walk sabotaged, every single-index read must still answer -- proving none of
+    # them goes near it.
+    frames = _indexed_clip(12, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    reader = io.VideoReader(path)
+    full = reader[:]
+
+    def walked(*a, **k):
+        pytest.fail("a single index walked the file instead of seeking")
+
+    monkeypatch.setattr(io.VideoReader, "_decode_range", walked)
+    for i in range(len(full)):
+        np.testing.assert_allclose(reader[i].mean(), full[i].mean(), atol=3)
+
+
+def test_single_index_falls_back_to_the_walk(tmp_path, monkeypatch):
+    # A container that cannot seek (or carries no timestamps) still reads: the walk is slow,
+    # not wrong, and losing it would turn a slow viewer into a broken one.
+    frames = _indexed_clip(8, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    reader = io.VideoReader(path)
+    expected = reader[5]
+
+    def no_seeking(*a, **k):
+        raise ValueError("cannot seek this container")
+
+    monkeypatch.setattr(io.VideoReader, "_decode_indices", no_seeking)
+    np.testing.assert_allclose(reader[5].mean(), expected.mean(), atol=3)
+
+
+# -- cursors: the decoder held open between reads ----------------------------
+
+
+def _mono_clip(n=12, h=32, w=32):
+    """A clip with no color: equal RGB channels, so both chroma planes sit at 128."""
+    vals = (np.arange(n) * 15 + 20).clip(0, 255)
+    return np.broadcast_to(vals[:, None, None, None], (n, h, w, 3)).astype(np.uint8)
+
+
+def _color_clip(n=12, h=32, w=32, *, gray_first=False):
+    """A clip that really is colored -- optionally with a gray first frame."""
+    frames = np.zeros((n, h, w, 3), np.uint8)
+    frames[:, :, :, 0] = 200
+    frames[:, :, :, 2] = 40
+    if gray_first:
+        frames[0] = 90
+    return frames
+
+
+def test_cursor_matches_indexing_in_any_order(tmp_path):
+    # The cursor is an optimization, so its frames must be the reader's frames -- including
+    # after a jump backwards, which is where it has to abandon its generator and re-seek.
+    frames = _indexed_clip(12, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    reader = io.VideoReader(path)
+    full = reader[:]
+    cursor = reader.cursor()
+    try:
+        for i in [0, 1, 2, 7, 8, 3, 11, 10, 9, 4, 4]:
+            np.testing.assert_allclose(cursor.frame(i).mean(), full[i].mean(), atol=3)
+    finally:
+        cursor.close()
+
+
+def test_cursor_steps_forward_without_seeking(tmp_path):
+    # The whole point: a step to the NEXT frame continues the live generator, so a run of
+    # forward steps costs one seek in total. Counting `_seek_to` counts seeks -- it is the
+    # only place the cursor issues one.
+    frames = _indexed_clip(10, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    cursor = io.VideoReader(path).cursor()
+    seeks = 0
+    inner = type(cursor)._seek_to
+
+    def counted(self, idx):
+        nonlocal seeks
+        seeks += 1
+        return inner(self, idx)
+
+    try:
+        type(cursor)._seek_to = counted  # type: ignore[method-assign]
+        for i in range(2, 9):
+            cursor.frame(i)
+        assert seeks == 1, f"stepping forward re-seeked {seeks} times"
+        # Backwards: a codec can only walk forward, so this one has to re-seek.
+        cursor.frame(4)
+        assert seeks == 2
+    finally:
+        type(cursor)._seek_to = inner  # type: ignore[method-assign]
+        cursor.close()
+
+
+def test_cursor_gives_gray_only_for_pictures_with_no_color(tmp_path):
+    # Monochrome footage (every fly rig) is stored as planar YUV with flat chroma. Taking it
+    # as one channel skips the channel-reversing copy, three quarters of the cost of serving
+    # a frame, and two thirds of what caching one costs -- but only where there is no color.
+    mono = io.VideoReader(_write_clip(tmp_path, _mono_clip(), name="mono.mp4"))
+    color = io.VideoReader(_write_clip(tmp_path, _color_clip(), name="color.mp4"))
+    for reader, ndim in ((mono, 2), (color, 3)):
+        cursor = reader.cursor(gray_ok=True)
+        try:
+            assert cursor.frame(0).ndim == ndim
+            assert cursor.frame(5).ndim == ndim
+        finally:
+            cursor.close()
+
+
+def test_cursor_decides_color_per_frame_not_per_file(tmp_path):
+    # The trap that rules out remembering one verdict per camera: a color video whose FIRST
+    # frame is uniformly gray has flat chroma there and color everywhere after it. A cached
+    # verdict would serve the rest of that recording stripped of its color.
+    path = _write_clip(tmp_path, _color_clip(gray_first=True), name="latecolor.mp4")
+    cursor = io.VideoReader(path).cursor(gray_ok=True)
+    try:
+        assert cursor.frame(0).ndim == 2, "a gray frame should be taken as gray"
+        assert cursor.frame(6).ndim == 3, "the color after it must survive"
+    finally:
+        cursor.close()
+
+
+def test_cursor_keeps_rgb_unless_gray_is_allowed(tmp_path):
+    # `gray_ok` is permission, and the default is no: the batch decode paths promise
+    # (T, H, W, 3) and the detector relies on three channels.
+    path = _write_clip(tmp_path, _mono_clip(), name="mono2.mp4")
+    cursor = io.VideoReader(path).cursor()
+    try:
+        assert cursor.frame(3).shape[-1] == 3
+    finally:
+        cursor.close()
+
+
+def test_cursor_close_is_idempotent_and_final(tmp_path):
+    # `FrameSource.release_cache` closes cursors for a recording nobody is showing, possibly
+    # twice and possibly while a request is arriving; neither may crash the server.
+    path = _write_clip(tmp_path, _indexed_clip(6, 32, 32), name="c.mp4")
+    cursor = io.VideoReader(path).cursor()
+    cursor.frame(1)
+    cursor.close()
+    cursor.close()
+    with pytest.raises(ValueError, match="closed"):
+        cursor.frame(1)
+
+
+def test_image_sequence_cursor_delegates(tmp_path):
+    # Every source has a cursor so callers need not know which kind they hold; an image
+    # sequence has no decoder to keep open, so its cursor is the reader.
+    frames = _indexed_clip(6, 16, 16)
+    _write_images(tmp_path, frames, ext="png")
+    reader = io.open_reader(tmp_path)
+    cursor = reader.cursor(gray_ok=True)
+    try:
+        assert isinstance(cursor, io.FrameCursor)
+        np.testing.assert_array_equal(cursor.frame(4), frames[4])
+    finally:
+        cursor.close()
+
+
 # -- image-sequence reading --------------------------------------------------
 
 

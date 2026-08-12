@@ -3,6 +3,8 @@
 PyAV is the sole video backend: it links FFmpeg directly and its wheel bundles
 FFmpeg, so no system install is needed. :class:`VideoReader` decodes a file to
 ``(T, H, W, 3)`` uint8 RGB NumPy (frame-accurate, with seeking for random access);
+:class:`VideoCursor` is its stateful counterpart for a caller reading single frames in
+an unpredictable order (a viewer), keeping the container and decoder open between reads;
 :class:`VideoWriter` encodes frames to H.264 (libx264), one frame, one block, or a
 whole array at a time, so a long clip never has to be held in memory at once. ``av``
 is imported lazily so importing this module stays cheap.
@@ -11,6 +13,8 @@ is imported lazily so importing this module stays cheap.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -19,17 +23,98 @@ from typing import Any
 import numpy as np
 from jaxtyping import Float
 
-from .base import FrameReader, to_numpy
+from .base import FrameCursor, FrameReader, to_numpy
 
 log = logging.getLogger("deeperfly.io")
+
+# The neutral chroma value: in planar YUV, a picture with no color has both chroma
+# planes pinned here.
+_NEUTRAL_CHROMA = 128
+
+
+def _cursor_thread_count() -> int:
+    """Decode threads per stream for a cursor: a fraction of the host's cores.
+
+    ``thread_type = "AUTO"`` alone lets FFmpeg size the pool from the core count, which is
+    right for one stream and wrong for a rig: each of eight cameras then spawns a pool that
+    large and the eight concurrent decodes of one navigation oversubscribe the machine.
+    Measured on a 32-core host, eight cameras served at once, median wall time for a jump
+    (which is a walk forward from a keyframe, the work that dominates):
+
+    ==================  ========
+    threads per stream  jump
+    ==================  ========
+    uncapped (AUTO)     395 ms
+    2                   358 ms
+    8                   192 ms
+    16                  201 ms
+    ==================  ========
+
+    So there is a broad optimum near ``cores / 4`` -- enough frame-threading depth to keep
+    a single walk moving, few enough that eight of them do not thrash -- and it degrades in
+    both directions. A floor of 2 keeps a small host from serializing each walk, which is
+    the worst case of all (one thread measured 213 ms for a *single* camera's back-step).
+    """
+    return max(2, (os.cpu_count() or 4) // 4)
+
+
+def _carries_no_color(frame) -> bool:
+    """Whether a planar-YUV frame's chroma is flat, i.e. the picture is really gray.
+
+    Monochrome footage -- every fly rig here -- is still stored as planar YUV with both
+    chroma planes pinned at :data:`_NEUTRAL_CHROMA`. Spotting that lets a caller take the
+    frame as one channel instead of three, which skips the YUV->RGB conversion, skips the
+    channel-reversing copy an encoder wants, and cuts the JPEG it produces to a third of
+    the CPU.
+
+    Decided per **frame** and never remembered per file: a color video whose first frame
+    happens to be black or uniformly gray has flat chroma *there* and color everywhere
+    after it, so a cached verdict would serve the rest of that video stripped of its
+    color. The test costs ~0.025 ms on a 1984x512 frame, far less than the copy it saves.
+
+    Returns ``False`` for anything that is not 3-plane planar YUV (packed RGB, NV12,
+    already-gray), which is the conservative answer: the caller then decodes as usual.
+    """
+    planes = list(frame.planes)
+    if len(planes) < 3:
+        return False
+    for plane in planes[1:3]:
+        # A plane's buffer is padded out to `line_size`; only the first `width` bytes of
+        # each row are picture and the padding holds arbitrary values, so testing the raw
+        # buffer would report color that isn't there.
+        data = np.frombuffer(plane, dtype=np.uint8)
+        if data.size < plane.height * plane.line_size or plane.width == 0:
+            return False
+        rows = data.reshape(plane.height, plane.line_size)[:, : plane.width]
+        if rows.min() != _NEUTRAL_CHROMA or rows.max() != _NEUTRAL_CHROMA:
+            return False
+    return True
+
+
+def _frame_array(frame, *, gray_ok: bool) -> np.ndarray:
+    """A decoded PyAV frame as ``(H, W, 3)`` RGB, or ``(H, W)`` when it has no color.
+
+    Only ever collapses to one channel when the caller passed ``gray_ok`` -- the batch
+    decode paths promise ``(T, H, W, 3)`` and the detector relies on it.
+    """
+    if not gray_ok:
+        return frame.to_ndarray(format="rgb24")
+    if frame.format.name.startswith("gray") or _carries_no_color(frame):
+        return frame.to_ndarray(format="gray")
+    return frame.to_ndarray(format="rgb24")
 
 
 class VideoReader(FrameReader):
     """Frame-accurate decode of a single video file via PyAV.
 
-    Sequential reads walk the file forward; indexing with a list seeks per target
-    frame (keyframe + decode forward). ``count`` / ``fps`` read container metadata
-    -- both cheap, no full pixel decode.
+    Sequential reads walk the file forward; indexing with a single index or a list
+    seeks per target frame (keyframe + decode forward). ``count`` / ``fps`` read
+    container metadata -- both cheap, no full pixel decode.
+
+    Every method here opens and closes the file, which keeps the reader itself cheap to
+    hold and safe to hand between processes. A caller reading single frames repeatedly
+    should take a :class:`VideoCursor` from :meth:`cursor` instead, which keeps the
+    container open across reads.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -96,9 +181,37 @@ class VideoReader(FrameReader):
                 f"pyav could not seek to frame {exc} of {str(self.path)!r}"
             ) from None
 
+    def _decode_one(self, idx: int) -> np.ndarray:
+        """One frame, by seeking to its keyframe, falling back to a forward walk.
+
+        The walk (:meth:`_decode_range`) decodes every frame from the start of the file
+        and throws away the ones before ``idx`` -- ``continue`` in the consumer loop skips
+        the array conversion, not the decode -- so it costs O(``idx``), growing with the
+        index, which is why a viewer of a long recording got slower the further in the
+        operator worked. Seeking costs O(GOP) instead: for a viewer reading eight cameras
+        of 3000-frame footage, a median navigation went from 2664 ms to 245 ms.
+
+        The walk stays as the fallback, for a container that cannot seek or carries no
+        timestamps, and for a negative index -- unsupported either way, but this keeps the
+        error the one callers have always seen. The two paths were verified byte-identical
+        across recordings, cameras and indices, including frame 0, both sides of a GOP
+        boundary, and the last frame.
+        """
+        if idx >= 0:
+            try:
+                return self._decode_indices([idx])[0]
+            except Exception as exc:  # noqa: BLE001 -- unseekable container / no PTS
+                log.debug(
+                    "could not seek to frame %d of %s (%s); walking instead",
+                    idx,
+                    self.path.name,
+                    exc,
+                )
+        return self._decode_range(idx, idx + 1, 1)[0]
+
     def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
         if isinstance(key, int):
-            out = self._decode_range(key, key + 1, 1)[0]
+            out = self._decode_one(int(key))
         elif isinstance(key, list):
             idx = [int(i) for i in key]
             if not idx:
@@ -175,6 +288,178 @@ class VideoReader(FrameReader):
         except Exception:  # unreadable / unsupported container -> unknown
             return None
         return float(rate) if rate else None
+
+    def cursor(self, *, gray_ok: bool = False) -> FrameCursor:
+        """A :class:`VideoCursor` over this file, with the decoder held open.
+
+        Falls back to the stateless base cursor if the container cannot be opened or
+        carries no usable timestamps -- so a caller always gets something that works.
+        """
+        try:
+            return VideoCursor(self.path, gray_ok=gray_ok)
+        except Exception as exc:  # noqa: BLE001 -- unreadable / no PTS mapping
+            log.debug(
+                "no persistent cursor for %s (%s); using stateless reads",
+                self.path.name,
+                exc,
+            )
+            return FrameCursor(self)
+
+
+class VideoCursor(FrameCursor):
+    """Random access to one video file with the decoder held open between reads.
+
+    :meth:`VideoReader.__getitem__` answers each frame from a freshly opened container: it
+    re-parses the header, seeks, decodes one picture and throws the decoder away. A viewer
+    reads one frame per camera at a time, so it pays that setup on every frame -- and
+    worse, it re-walks from the keyframe every time, even when the frame it wants is the
+    one the decoder was about to produce anyway. This class keeps the container, the stream
+    and the live decode generator, so:
+
+    - stepping to the **next** frame is one ``next()`` on that generator -- no seek, no
+      open, no re-walk;
+    - a jump anywhere else is a seek on a container that is already open.
+
+    Measured on 1984x512 100 fps footage, all eight cameras served at once, decode plus
+    JPEG encode, median over jumps spread across the GOP:
+
+    ==========================  ========  =============
+    per navigation              jump      step forward
+    ==========================  ========  =============
+    walk from frame 0           2664 ms   2224 ms
+    seek, re-open every read     245 ms    452 ms
+    cursor held open             195 ms      5 ms
+    ==========================  ========  =============
+
+    A jump still has to decode forward from a keyframe -- some 125 frames on average here,
+    which is the whole of that remaining 195 ms and is a property of how the footage was
+    encoded, not of this code. A step forward decodes exactly one frame.
+
+    An ``av`` container cannot be decoded from two threads at once, so every read takes
+    :attr:`_lock`. One cursor per camera means the eight views of a navigation still decode
+    in parallel; two requests for the *same* camera serialize, which is what a prefetch
+    landing on top of a navigation does.
+
+    Parameters
+    ----------
+    path
+        The video file.
+    gray_ok
+        Whether single-channel frames may be returned for pictures with no color
+        (see :meth:`FrameReader.cursor`).
+    thread_count
+        Decode threads for this stream; ``None`` takes :func:`_cursor_thread_count` (which
+        explains why a viewer caps it at all) and ``0`` leaves FFmpeg's own choice.
+
+    Raises
+    ------
+    ValueError
+        If the stream carries no frame rate or time base, so frame indices cannot be
+        mapped to timestamps to seek with.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
+    ) -> None:
+        import av
+
+        if thread_count is None:
+            thread_count = _cursor_thread_count()
+        self.path = Path(path)
+        self._gray_ok = gray_ok
+        # Held for the whole of every read, so `close` can never free the container out
+        # from under a decode in flight -- it waits for the reader to leave instead.
+        self._lock = threading.Lock()
+        self._container: Any = av.open(str(self.path))
+        try:
+            stream = self._container.streams.video[0]
+            stream.thread_type = "AUTO"
+            if thread_count:
+                # Must happen before the first decode, while the codec is still unopened.
+                try:
+                    stream.codec_context.thread_count = thread_count
+                except Exception as exc:  # noqa: BLE001 -- some codecs refuse
+                    log.debug("could not cap decode threads for %s: %s", path, exc)
+            rate = stream.average_rate or stream.guessed_rate
+            if not rate or stream.time_base is None:
+                raise ValueError(f"{self.path.name!r} has no frame rate to index by")
+            self._stream = stream
+            self._rate = rate
+            self._time_base = stream.time_base
+        except Exception:
+            self._container.close()
+            self._container = None
+            raise
+        # The live decode generator and the index it will yield next -- the pair that
+        # makes a step forward free. `None` / `-1` means "nothing to continue from".
+        self._gen: Iterator[Any] | None = None
+        self._next = -1
+
+    def _index_of(self, frame) -> int:
+        """The frame's own index, recovered from its presentation timestamp."""
+        if frame.pts is None:
+            raise ValueError(f"{self.path.name!r} has frames with no timestamp")
+        return int(round(float(frame.pts * self._time_base * self._rate)))
+
+    def _seek_to(self, idx: int):
+        """Seek to ``idx``'s keyframe and decode forward to it, leaving the gen live."""
+        if idx < 0:
+            raise IndexError(f"frame index {idx} is negative")
+        self._gen = None
+        ts = int(idx / self._rate / self._time_base)
+        self._container.seek(ts, stream=self._stream, backward=True, any_frame=False)
+        gen = self._container.decode(self._stream)
+        for frame in gen:
+            got = self._index_of(frame)
+            if got >= idx:
+                # Keep the generator: the next frame is very often the one asked for next.
+                self._gen, self._next = gen, got + 1
+                return frame
+        raise ValueError(f"could not seek to frame {idx} of {str(self.path)!r}")
+
+    def frame(self, idx: int) -> np.ndarray:
+        with self._lock:
+            if self._container is None:
+                raise ValueError(f"cursor over {self.path.name!r} is closed")
+            if self._gen is not None and self._next == idx:
+                frame = self._continue(idx)
+                if frame is not None:
+                    return _frame_array(frame, gray_ok=self._gray_ok)
+            return _frame_array(self._seek_to(idx), gray_ok=self._gray_ok)
+
+    def _continue(self, idx: int):
+        """The next frame off the live generator if it really is ``idx``, else ``None``.
+
+        ``None`` means the caller should seek: the stream ended, or the decoder handed
+        back a different index than the walk predicted (a dropped or repeated frame). The
+        index is re-derived from the timestamp rather than counted, so a stream that skips
+        can never make this hand back a picture from the wrong moment.
+        """
+        try:
+            frame = next(self._gen)  # type: ignore[arg-type]
+        except StopIteration:
+            self._gen = None
+            return None
+        if self._index_of(frame) != idx:
+            self._gen = None
+            return None
+        self._next = idx + 1
+        return frame
+
+    def close(self) -> None:
+        """Close the container (idempotent), waiting for any read in flight to finish."""
+        with self._lock:
+            self._gen = None
+            if self._container is not None:
+                try:
+                    self._container.close()
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("closing cursor over %s failed: %s", self.path, exc)
+                self._container = None
 
 
 class VideoWriter:

@@ -32,13 +32,14 @@ from pathlib import Path
 from .base import (
     IMAGE_EXTS,
     VIDEO_EXTS,
+    FrameCursor,
     FrameReader,
     is_video_file,
     to_numpy,
     to_torch,
 )
 from .images import ImageSequenceReader, list_image_files
-from .video import VideoReader, VideoWriter
+from .video import VideoCursor, VideoReader, VideoWriter
 
 
 def open_reader(
@@ -95,7 +96,9 @@ def open_reader(
 
 
 __all__ = [
+    "FrameCursor",
     "FrameReader",
+    "VideoCursor",
     "VideoReader",
     "VideoWriter",
     "ImageSequenceReader",

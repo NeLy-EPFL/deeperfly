@@ -5,7 +5,10 @@ footage -- a video file (:class:`~deeperfly.io.video.VideoReader`, PyAV) or an
 image sequence (:class:`~deeperfly.io.images.ImageSequenceReader`, OpenCV).
 :func:`~deeperfly.io.open_reader` resolves a source to the right subclass **once**;
 callers then index (``reader[:]``, ``reader[i]``, ``reader[[0,3,5]]``) or stream
-(``stream_frames`` / ``stream_blocks``) against that object.
+(``stream_frames`` / ``stream_blocks``) against that object. A caller that instead
+reads single frames in an unpredictable order -- the viewer -- takes a
+:class:`FrameCursor` from :meth:`FrameReader.cursor`, which keeps the decoder open
+between reads.
 
 :func:`to_numpy` / :func:`to_torch` adapt decoded frames for callers that want a
 NumPy array or a torch tensor. :data:`VIDEO_EXTS` / :data:`IMAGE_EXTS` and
@@ -112,6 +115,27 @@ class FrameReader(ABC):
     def close(self) -> None:
         """Release any resources held by the reader (no-op by default)."""
 
+    def cursor(self, *, gray_ok: bool = False) -> FrameCursor:
+        """A stateful random-access cursor over this source.
+
+        The base implementation delegates every read to ``self[idx]``, which is correct
+        for any source; :class:`~deeperfly.io.video.VideoCursor` overrides it to keep the
+        decoder alive between reads.
+
+        Parameters
+        ----------
+        gray_ok
+            Permission, not a promise: the caller accepts single-channel ``(H, W)``
+            frames for pictures that carry no color, and a cursor that can tell cheaply
+            may return them. A cursor with no cheap way to know returns RGB as always.
+
+        Returns
+        -------
+        FrameCursor
+            A cursor the caller owns and should :meth:`~FrameCursor.close`.
+        """
+        return FrameCursor(self)
+
     @abstractmethod
     def __getitem__(self, key: int | list[int] | slice) -> Float[np.ndarray, "..."]:
         """Decode frames into a NumPy array.
@@ -186,3 +210,38 @@ class FrameReader(ABC):
         returns ``None``; :class:`~deeperfly.io.video.VideoReader` overrides it.
         """
         return None
+
+
+class FrameCursor:
+    """One frame at a time from one source, holding what makes the next read cheap.
+
+    Indexing a reader is *stateless*: it opens the source, decodes, and lets go again.
+    That is the right trade for a batch pass, which reads each frame once and walks
+    forward. A viewer is the opposite -- it reads one frame per camera, in an order the
+    operator chooses, and pays that setup on every single frame. A cursor is the stateful
+    counterpart: open it once, ask it for frames in any order, close it when the source is
+    no longer being shown.
+
+    This base implementation just delegates to the reader, so *every* source has a cursor
+    and a caller never has to know which kind it is holding.
+    :class:`~deeperfly.io.video.VideoCursor` is the one that actually holds a decoder open.
+
+    Cursors are single-source and may be shared across threads only if the subclass says
+    so (:class:`~deeperfly.io.video.VideoCursor` locks; this one inherits whatever
+    ``reader[idx]`` guarantees).
+    """
+
+    def __init__(self, reader: FrameReader) -> None:
+        self._reader = reader
+
+    def frame(self, idx: int) -> np.ndarray:
+        """Frame ``idx`` as ``(H, W, 3)`` uint8 RGB, or ``(H, W)`` if it has no color.
+
+        A 2-D result is only ever returned when the cursor was opened with ``gray_ok``
+        (see :meth:`FrameReader.cursor`), so callers that did not ask for it can treat
+        the result as RGB.
+        """
+        return self._reader[idx]
+
+    def close(self) -> None:
+        """Release anything the cursor holds open (no-op by default)."""
