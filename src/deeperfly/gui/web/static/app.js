@@ -115,6 +115,12 @@ const COVER_MIN_KEY = "deeperfly.cover.min";
 const COVER_MIN_DEFAULT = 2;
 const COVER_MIN_FLOOR = 1;
 
+// How long after a navigation the editor warms the frame it expects to be asked for next
+// (see `schedulePrefetch`). Long enough that a run of held-down arrow keys does not fire a
+// prefetch per keystroke -- each one supersedes the last -- and short enough that a
+// deliberate step has its successor waiting before the operator asks for it.
+const PREFETCH_DELAY_MS = 150;
+
 /**
  * @template {HTMLElement} T
  * @param {string} id
@@ -333,6 +339,13 @@ class App {
   /** @type {Map<number, HTMLTableRowElement>} */
   frameRows = new Map();
   correctedTimer = 0;
+  // The frame warm-up (see `schedulePrefetch`): the pending timer, and the images being
+  // warmed. The images are held only so a garbage collector cannot cancel a load that
+  // nothing else references yet; each pass replaces the previous array, so at most the
+  // last warm-up's worth is pinned.
+  prefetchTimer = 0;
+  /** @type {HTMLImageElement[]} */
+  prefetchImgs = [];
   // The side panel's tabs. "labeled" is the frames-with-GT list; "suggest" is the ranked
   // queue from `deeperfly labels-suggest` (a static sidecar, so it is fetched on load / on
   // save / on tab activation, never per edit). `suggestions` is null until the first fetch
@@ -1055,8 +1068,14 @@ class App {
 
   // -- frame navigation -------------------------------------------------------
 
-  /** @param {number} t */
-  async goToFrame(t) {
+  /**
+   * @param {number} t
+   * @param {NavHint} [hint]  what the caller expects to be asked for next, so the frames
+   *   can be warmed while the operator looks at this one. Omitted by navigations with no
+   *   next frame to guess (a slider scrub, a click on a list row): those are either
+   *   already saturating the connection or are a one-off jump.
+   */
+  async goToFrame(t, hint) {
     const last = Math.max(0, this.meta.n_frames - 1);
     t = Math.max(0, Math.min(Math.round(t), last));
     this.frame = t;
@@ -1066,12 +1085,49 @@ class App {
     this.meta.camera_names.forEach((name, v) => {
       this.views[v].loadFrame(frameUrl(name, t));
     });
+    this.schedulePrefetch(hint);
     this.scheduleMeshRefresh();
     await this.refreshPoints();
     if (this.sceneOpen) {
       this.refreshScenePoints(); // snappy skeleton scrub
       this.scheduleSceneMesh(); // mesh catches up once the scrub settles
     }
+  }
+
+  // Warm the frames the operator is about to ask for, in every view, once this navigation
+  // has settled. A frame URL stamped with the session token is served `immutable`, so a
+  // warmed frame is a memory-cache hit when `loadFrame` asks for it -- no second request,
+  // no decode, nothing to invalidate. Stepping is where this pays: the server answers a
+  // step-forward for a whole rig in ~5 ms (each camera's decoder is already sitting on that
+  // frame), so the picture is decoded and cached well before the keystroke that wants it.
+  //
+  // Deliberately narrow. Only a caller that knows what comes next passes a hint, so a
+  // slider scrub -- already one request per camera per pointer move, in flight -- adds
+  // nothing to the queue. The timer coalesces a run of keystrokes into one warm-up, and
+  // the epoch check keeps a recording switch from warming the previous animal's frames.
+  /** @param {NavHint} [hint] */
+  schedulePrefetch(hint) {
+    clearTimeout(this.prefetchTimer);
+    if (!hint) return;
+    const last = Math.max(0, this.meta.n_frames - 1);
+    /** @type {number[]} */
+    const targets = [];
+    for (const t of [hint.step ? this.frame + hint.step : null, hint.then ?? null]) {
+      if (t != null && t >= 0 && t <= last && t !== this.frame && !targets.includes(t))
+        targets.push(t);
+    }
+    if (targets.length === 0) return;
+    const epoch = this.epoch;
+    this.prefetchTimer = setTimeout(() => {
+      if (epoch !== this.epoch) return;
+      this.prefetchImgs = targets.flatMap((t) =>
+        this.meta.camera_names.map((name) => {
+          const img = new Image();
+          img.src = frameUrl(name, t);
+          return img;
+        }),
+      );
+    }, PREFETCH_DELAY_MS);
   }
 
   async refreshPoints() {
@@ -1718,6 +1774,10 @@ class App {
     // state -- the fix/free matrix above all, which is keyed by camera name -- has to be
     // dropped here with everything else. See BundleAdjustPanel.forget.
     this.baPanel?.forget();
+    // A warm-up aimed at the recording just closed. Its callback would bail on the epoch
+    // anyway; this also lets go of the previous animal's decoded pictures right away.
+    clearTimeout(this.prefetchTimer);
+    this.prefetchImgs = [];
     this.addMod = false;
     this.overViews = false;
     document.body.classList.remove("adding");
@@ -2636,18 +2696,36 @@ class App {
     this.stepList(this.navList, dir);
   }
 
+  /** The labeled frame `dir` away from `from` (wrapping at the ends), or null if none.
+   *
+   * Split out of `jumpLabeled` so the prefetch hint can ask the very same question a
+   * second time -- "and where would the next press land?" -- rather than reimplementing
+   * the wrap. A hint that guessed differently from the jump would warm the wrong picture
+   * and pay for it twice, so the two answers have to come from one place.
+   * @param {number} from
+   * @param {number} dir
+   * @returns {number | null}
+   */
+  nextLabeled(from, dir) {
+    const frames = this.correctedFrames.map((f) => f.frame); // ascending, in time order
+    if (frames.length === 0) return null;
+    if (dir > 0) return frames.find((f) => f > from) ?? frames[0]; // wrap to the first
+    const earlier = frames.filter((f) => f < from);
+    return earlier.length ? earlier[earlier.length - 1] : frames[frames.length - 1];
+  }
+
   /** @param {number} dir  -1 for the previous labeled frame, +1 for the next */
   jumpLabeled(dir) {
-    const frames = this.correctedFrames.map((f) => f.frame);
-    if (frames.length === 0) return;
-    let target;
-    if (dir > 0) {
-      target = frames.find((f) => f > this.frame) ?? frames[0]; // wrap to the first
-    } else {
-      const earlier = frames.filter((f) => f < this.frame);
-      target = earlier.length ? earlier[earlier.length - 1] : frames[frames.length - 1];
-    }
-    this.goToFrame(target);
+    const target = this.nextLabeled(this.frame, dir);
+    if (target == null) return;
+    // Walking this list one keypress at a time is the primary annotation loop, and unlike a
+    // scrubber drag it is entirely predictable -- so warm where the next press goes. Worth
+    // hinting precisely here because a labeled frame is nowhere near the one on screen: it
+    // costs a full seek and GOP walk (~250 ms for a rig on 1984x512 footage), against ~3 ms
+    // once the browser holds it. Skipped when the list has a single entry, where the wrap
+    // would name the frame already on screen.
+    const after = this.nextLabeled(target, dir);
+    this.goToFrame(target, after != null && after !== target ? { then: after } : undefined);
   }
 
   // -- suggested-frames list --------------------------------------------------
@@ -3445,7 +3523,11 @@ class App {
     const at = walk.findIndex((s) => s.frame === this.frame);
     // Not on a queue frame: enter the queue at its top (or bottom, stepping backwards).
     const next = at < 0 ? (dir > 0 ? 0 : walk.length - 1) : (at + dir + walk.length) % walk.length;
-    this.goToFrame(walk[next].frame);
+    // The queue knows exactly where the same keystroke goes next, and its entries are
+    // scattered through the recording -- each one a jump the decoder has to seek for, so
+    // warming it is worth more here than for a step.
+    const after = walk[(next + dir + walk.length) % walk.length];
+    this.goToFrame(walk[next].frame, { then: after.frame });
   }
 
   // -- close / shutdown -------------------------------------------------------
@@ -3974,7 +4056,8 @@ class App {
 
   /** @param {number} d */
   step(d) {
-    this.goToFrame(this.frame + d);
+    // An operator who stepped by `d` almost always steps by `d` again, so warm that one.
+    this.goToFrame(this.frame + d, { step: d });
   }
 
   /** @param {number} d  switch to the focus layout and move the focus by d cameras */

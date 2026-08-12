@@ -348,6 +348,63 @@ def test_l_toggles_the_camera_layout(page_and_errors):
     assert not errors, "JS errors pressing l:\n  " + "\n  ".join(errors)
 
 
+def _frames_asked_for(page):
+    """Collect the frame index of every ``/api/frame`` request the page makes."""
+    asked: list[int] = []
+
+    def note(request):
+        if "/api/frame/" in request.url:
+            tail = request.url.split("/api/frame/")[1].split("?")[0]
+            asked.append(int(tail.split("/")[1]))
+
+    page.on("request", note)
+    return asked
+
+
+def test_stepping_warms_the_frame_the_next_keystroke_will_want(page_and_errors):
+    """An arrow key warms the frame the same key would ask for next, in every view.
+
+    This is the client half of making a labeling pass feel immediate: a stamped frame URL is
+    served ``immutable``, so a warmed frame is a memory-cache hit when the operator actually
+    steps, and the server answers a step-forward in a few ms because that camera's decoder is
+    already sitting on the frame. Nothing here is observable in the DOM -- the evidence is
+    which frames the page asked for -- so it is asserted on the requests.
+    """
+    page, errors = page_and_errors
+    asked = _frames_asked_for(page)
+    n_views = int(page.evaluate("document.querySelectorAll('#views canvas').length"))
+    assert n_views > 1, "expected a multi-camera rig"
+
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(600)  # past PREFETCH_DELAY_MS, with room for the round trip
+    assert asked.count(1) == n_views, f"the step did not load every view: {asked}"
+    assert asked.count(2) == n_views, f"frame 2 was not warmed in every view: {asked}"
+    assert not errors, "JS errors stepping:\n  " + "\n  ".join(errors)
+
+
+def test_the_warm_up_never_asks_for_a_frame_outside_the_recording(page_and_errors):
+    """A warm-up past either end would be a 404 -- and Chrome logs those as console errors.
+
+    Which makes this suite's blanket "no console errors" the assertion that catches it: the
+    clamp lives in `schedulePrefetch`, and without it stepping at the ends of a recording
+    would spray one failed request per camera every time.
+    """
+    page, errors = page_and_errors
+    asked = _frames_asked_for(page)
+    last = int(page.evaluate("Number(document.getElementById('frame-slider').max)"))
+
+    page.keyboard.press("ArrowLeft")  # at frame 0 already: nothing before it
+    page.wait_for_timeout(400)
+    page.keyboard.press("End")  # the last frame: nothing after it
+    page.wait_for_timeout(400)
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(600)
+
+    outside = sorted({t for t in asked if t < 0 or t > last})
+    assert not outside, f"asked for frames outside 0..{last}: {outside}"
+    assert not errors, "JS errors stepping at the ends:\n  " + "\n  ".join(errors)
+
+
 def test_the_verb_toggles_report_their_own_state(page_and_errors):
     """Enter / e / Backspace through the socket, read back off the buttons.
 

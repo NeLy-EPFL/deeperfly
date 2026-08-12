@@ -21,6 +21,19 @@
  */
 
 /**
+ * What a navigation expects to be asked for next, so `App.schedulePrefetch` can warm
+ * those frames in every view while the operator looks at the current one. Purely a
+ * performance hint -- an absent or wrong one costs nothing but the miss.
+ *
+ * `step` is a signed frame delta to repeat (the arrow keys: the operator stepping +1 will
+ * very likely step +1 again). `then` is an explicit frame index (the suggestion queue
+ * knows exactly which frame its next entry is).
+ * @typedef {object} NavHint
+ * @property {number} [step]
+ * @property {number} [then]
+ */
+
+/**
  * A world-frame 3D point `[x, y, z]`, or null when not triangulated.
  * @typedef {[number, number, number] | null} Point3
  */
