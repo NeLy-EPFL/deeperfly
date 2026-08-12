@@ -100,18 +100,47 @@ def _load_hrnet(spec: "ModelSpec"):
     return hrnet.load_hrnet(spec.weights, mean=spec.mean, **spec.kwargs)
 
 
-#: ``class`` name -> loader(weights, **kwargs) -> torch module. New detector
-#: architectures register here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
+def _load_mvt(spec: "ModelSpec"):
+    """Load the multiview transformer (see :mod:`deeperfly.pose2d.mvt`).
+
+    Like the dense HRNet there is no auto-provisioned cache yet, so ``weights`` must name
+    an exported artifact -- and it must be an *exported* one: a raw Lightning ``.ckpt``
+    carries no point names, so nothing could check the channel order it is about to be
+    routed through. ``spec.mean`` and ``spec.precision`` are passed through to be REFUSED
+    unless they are 0.0 and float32.
+    """
+    from . import mvt
+
+    if not spec.weights:
+        raise SystemExit(
+            "a multiview-transformer model needs an explicit 'weights' path in its "
+            "[[pose2d.models]] table, pointing at an artifact written by dfpose's "
+            "scripts/export_mvt_weights.py"
+        )
+    return mvt.load_mvt(
+        spec.weights, mean=spec.mean, precision=spec.precision, **spec.kwargs
+    )
+
+
+#: ``class`` name -> loader(spec) -> torch module. New detector architectures register
+#: here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
 #:
 #: ``"hrnet"`` is the DENSE-38 detector: every tracked point in every view, so a camera
 #: needs one pathway rather than a pathway and a mirrored twin, and a contralateral
 #: point gets a prediction instead of a ``NaN``. Its heatmap is padded and its decode is
 #: its own, so it also owns ``predict_points`` -- see :class:`LoadedModel`.
+#:
+#: ``"mvt"`` is the MULTIVIEW transformer: also 38 channels in every view, but the views
+#: of a frame are encoded TOGETHER, so a joint only one camera can see informs the ones
+#: that cannot. It is the first class here that is not a per-view function, and it owns
+#: its input preparation as well as its decode.
 MODEL_CLASSES = {
     "hourglass": _load_hourglass,
     "deepfly2d": _load_hourglass,
     "hrnet": _load_hrnet,
     "hrnet_timm": _load_hrnet,
+    "mvt": _load_mvt,
+    "multiview_transformer": _load_mvt,
 }
 
 
@@ -136,6 +165,29 @@ class LoadedModel:
     def n_out_channels(self) -> int:
         return self.spec.n_out_channels
 
+    @property
+    def peak_convention(self) -> str:
+        """How this model's normalized peaks map back through a resize.
+
+        ``"half-pixel"`` (the default, and what the hourglass and the dense HRNet want) is
+        ``x' = (x + 0.5) * s - 0.5``, the geometrically correct inverse of a cv2/torch
+        resize to a target size, and the convention dfpose's exporter wrote their labels
+        with. A model trained on labels written as a pure scale declares ``"pure-scale"``
+        instead -- the difference is ``0.5 * (source_w / model_w - 1)``, about half a
+        footage pixel on this rig, which is a uniform skeleton shift and not noise.
+        """
+        return str(getattr(self.module, "peak_convention", "half-pixel"))
+
+    def _impl(self):
+        """The module implementing this model's own prepare/forward/decode, or None.
+
+        A class whose input preparation or readout is its own attaches itself here at load
+        time. The older ``owns_decode`` flag below predates this and means "the dense
+        HRNet"; it is left alone rather than migrated, because the dense path is in
+        production and a mechanical refactor of it buys nothing.
+        """
+        return getattr(self.module, "impl", None)
+
     def prepare(self, frames):
         """``(..., H, W, 3)`` frame(s) -> ``(..., 3, H_out, W_out)`` normalized model input.
 
@@ -148,6 +200,19 @@ class LoadedModel:
         import torch.nn.functional as F
 
         from .inference import _to_torch_image
+
+        impl = self._impl()
+        if impl is not None and getattr(self.module, "owns_prepare", False):
+            # The model reproduces its own training pipeline. The shared path below is a
+            # resize kernel and a scalar mean; a model trained through a different kernel
+            # cannot be served by "an equivalent" one -- see mvt.prepare_images.
+            return impl.prepare_images(
+                frames,
+                self.input_size,
+                self.module.norm_mean,
+                self.module.norm_std,
+                next(self.module.parameters()).device,
+            )
 
         img = _to_torch_image(frames)
         img = img.float() / 255.0 if not torch.is_floating_point(img) else img.float()
@@ -182,6 +247,11 @@ class LoadedModel:
         """
         from . import detector
 
+        impl = self._impl()
+        if impl is not None:
+            return impl.predict_points(
+                self.module, inputs, method=method, radius=radius
+            )
         if getattr(self.module, "owns_decode", False):
             from . import hrnet
 
@@ -196,6 +266,9 @@ class LoadedModel:
         """Final-stack heatmaps ``(B, V, C_out, H_out, W_out)`` (host NumPy) for the candidate path."""
         from . import detector
 
+        impl = self._impl()
+        if impl is not None:
+            return impl.predict_heatmaps(self.module, inputs)
         if getattr(self.module, "owns_decode", False):
             from . import hrnet
 

@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 
 from ..pose2d.dense_plan import (
+    DEFAULT_BATCH,
     checkpoint_points,
     crops_from_plan,
     dense_pose2d,
@@ -42,6 +43,16 @@ def _parse_crop(spec: str) -> tuple[str, tuple[int, int, int, int]]:
     if not view or len(parts) != 4:
         raise SystemExit(f"--crop wants view=x,y,w,h; got {spec!r}")
     return view, tuple(int(p) for p in parts)  # type: ignore[return-value]
+
+
+#: ``--detector`` -> (registry class, the name the model gets in the config). Both are
+#: dense-38 plans and differ only in what computes the channels: ``hrnet`` predicts each
+#: view alone, ``mvt`` encodes a frame's views together so a joint one camera cannot see
+#: still gets a prediction from the ones that can.
+_DETECTORS: dict[str, tuple[str, str]] = {
+    "hrnet": ("hrnet", "dense38"),
+    "mvt": ("mvt", "dense38mv"),
+}
 
 
 def _cmd_dense_config(args: argparse.Namespace) -> None:
@@ -86,6 +97,16 @@ def _cmd_dense_config(args: argparse.Namespace) -> None:
         view, box = _parse_crop(spec)
         crops[view] = box
 
+    detector = str(getattr(args, "detector", None) or "hrnet")
+    if detector not in _DETECTORS:
+        raise SystemExit(
+            f"unknown detector {detector!r}; expected one of {sorted(_DETECTORS)}"
+        )
+    model_class, model_name = _DETECTORS[detector]
+    batch = args.batch_size
+    if batch is None:
+        batch = DEFAULT_BATCH.get(model_class, 16)
+
     plan = dense_pose2d(
         views=views,
         point_names=point_names,
@@ -93,7 +114,9 @@ def _cmd_dense_config(args: argparse.Namespace) -> None:
         sources=sources,
         crops=crops,
         precision=args.precision,
-        batch_size=args.batch_size,
+        batch_size=batch,
+        model_class=model_class,
+        model_name=model_name,
     )
     out_text = replace_pose2d_section(text, pose2d_toml(plan))
 

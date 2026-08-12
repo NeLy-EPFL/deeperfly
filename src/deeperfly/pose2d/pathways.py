@@ -88,6 +88,7 @@ def normalized_peaks_to_original_pixels(
     transform: FrameTransform,
     model_input_hw: tuple[int, int],
     source_size: tuple[int, int],
+    peak_convention: str = "half-pixel",
 ) -> Float[np.ndarray, "*lead 2"]:
     """Map model peaks (normalized ``[0, 1]``) back into the source/view frame.
 
@@ -106,6 +107,14 @@ def normalized_peaks_to_original_pixels(
         The model input ``(height, width)``.
     source_size
         The raw source frame ``(height, width)`` the preprocessor is anchored on.
+    peak_convention
+        How to undo the model's resize. ``"half-pixel"`` uses
+        ``x' = (x + 0.5) * s - 0.5``, the correct inverse of a cv2/torch resize and what
+        every detector trained on dfpose-written labels needs. ``"pure-scale"`` omits the
+        half-pixel term, for a model whose labels were written as ``x * s`` -- the
+        multiview transformer, whose labels came from Lightning Pose. The two differ by
+        ``0.5 * (source/model - 1)``, roughly half a footage pixel here: small, uniform,
+        and indistinguishable by eye from a calibration error.
 
     Returns
     -------
@@ -115,10 +124,21 @@ def normalized_peaks_to_original_pixels(
     h_in, w_in = model_input_hw
     model_px = np.asarray(points_norm, dtype=float) * np.array([w_in, h_in])
     prep_size = transform.output_size(source_size)  # (H', W') after the preprocessor
-    # The model's own resize (preprocessed frame -> input), as a transform so we
-    # can invert its pixel map; the image resize itself lives in the model.
-    resize = FrameTransform((Resize(width=w_in, height=h_in),))
-    prep_px = resize.unmap_points(model_px, prep_size)
+    if peak_convention == "pure-scale":
+        # A pure scale, no half-pixel term: the model's labels were written this way, so
+        # this is the map that puts its predictions back where its targets were. See the
+        # `peak_convention` docstring on LoadedModel for why a model gets to say.
+        prep_px = model_px * np.array([prep_size[1] / w_in, prep_size[0] / h_in])
+    elif peak_convention == "half-pixel":
+        # The model's own resize (preprocessed frame -> input), as a transform so we
+        # can invert its pixel map; the image resize itself lives in the model.
+        resize = FrameTransform((Resize(width=w_in, height=h_in),))
+        prep_px = resize.unmap_points(model_px, prep_size)
+    else:
+        raise ValueError(
+            f"unknown peak convention {peak_convention!r}; "
+            "expected 'half-pixel' or 'pure-scale'"
+        )
     return transform.unmap_points(prep_px, source_size)
 
 

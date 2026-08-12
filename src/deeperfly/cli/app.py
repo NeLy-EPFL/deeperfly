@@ -87,8 +87,23 @@ def dense_config(
         Path, typer.Argument(help="the recording's config.toml to rewrite")
     ],
     weights: Annotated[
-        Path, typer.Option("--weights", "-w", help="dense-38 checkpoint (.pt)")
+        Path,
+        typer.Option(
+            "--weights",
+            "-w",
+            help="dense-38 weights: a dfpose checkpoint (.pt) for --detector hrnet, or "
+            "an exported artifact for --detector mvt",
+        ),
     ],
+    detector: Annotated[
+        str,
+        typer.Option(
+            "--detector",
+            help="which dense detector: 'hrnet' (each view predicted alone) or 'mvt' "
+            "(the views of a frame encoded together, so a contralateral joint is "
+            "informed by the cameras that can see it)",
+        ),
+    ] = "hrnet",
     output: Annotated[
         Path | None,
         typer.Option("--output", "-o", help="write here instead of in place"),
@@ -112,7 +127,14 @@ def dense_config(
     precision: Annotated[
         str, typer.Option("--precision", help="float32 / float16 / bfloat16")
     ] = "float16",
-    batch_size: Annotated[int, typer.Option("--batch-size")] = 16,
+    batch_size: Annotated[
+        int | None,
+        typer.Option(
+            "--batch-size",
+            help="forward batch; defaults per detector, because the unit differs (an "
+            "hrnet item is one image, an mvt item is one whole moment)",
+        ),
+    ] = None,
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="replace an existing --output")
     ] = False,
@@ -124,6 +146,7 @@ def dense_config(
         argparse.Namespace(
             config=config,
             weights=weights,
+            detector=detector,
             output=output,
             crop_plan=crop_plan,
             crop=crop,

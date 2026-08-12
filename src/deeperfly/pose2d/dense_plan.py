@@ -38,6 +38,15 @@ log = logging.getLogger("deeperfly")
 #: The dense model's input ``(height, width)``.
 INPUT_HW: tuple[int, int] = (256, 512)
 
+#: Model classes that must run in float32 and say so in their own table.
+_FLOAT32_CLASSES: frozenset[str] = frozenset({"mvt", "multiview_transformer"})
+
+#: A ``[pose2d].batch_size`` for each dense class, because the unit differs. For the
+#: per-view HRNet an item is one image; for the multiview transformer an item is one
+#: MOMENT -- 8 images, and a decode that upsamples 38 channels per view to the full input
+#: size. 16 moments would be 128 images and several GB of transient heatmap.
+DEFAULT_BATCH: dict[str, int] = {"hrnet": 16, "mvt": 2}
+
 
 def crops_from_plan(
     plan_path: str | Path,
@@ -61,7 +70,13 @@ def crops_from_plan(
 
 
 def checkpoint_points(ckpt: str | Path) -> list[str]:
-    """The channel order a checkpoint was trained in, by point name."""
+    """The channel order a checkpoint was trained in, by point name.
+
+    Works for both dense classes because both record it at the top level: a dfpose
+    ``.pt`` writes ``point_names`` directly, and an exported multiview-transformer
+    artifact carries the same key (which is most of why the export step exists -- a raw
+    Lightning checkpoint has no channel names, so nothing could be verified).
+    """
     import torch
 
     ck = torch.load(ckpt, map_location="cpu", weights_only=False)
@@ -84,10 +99,20 @@ def dense_pose2d(
     precision: str = "float16",
     batch_size: int = 16,
     decode_buffer: int = 4,
+    model_class: str = "hrnet",
+    model_name: str = "dense38",
 ) -> dict[str, Any]:
     """The whole ``[pose2d]`` table for a dense detector: models, pathways, mappings.
 
     ``sources`` maps a view to the ``[[sources]]`` name that carries its footage.
+
+    The plan is the SAME SHAPE for both dense classes -- one pathway per camera, channel
+    ``i`` -> point ``i``, no mirrored twins -- so ``model_class`` selects between them
+    rather than forking this function. That is not a coincidence: the multiview
+    transformer needs its views grouped by frame, and
+    :func:`~deeperfly.pose2d.inference.detect_sequence` already batches one model's
+    pathways that way. What changes between the two is which channels come out of a shared
+    computation, not the plan.
     """
     crops = crops or {}
     missing = [v for v in views if v not in sources]
@@ -109,7 +134,11 @@ def dense_pose2d(
                     "ops": [{"op": "crop", "x": x, "y": y, "width": w, "height": h}],
                 }
             )
-        pw: dict[str, Any] = {"name": view, "source": sources[view], "model": "dense38"}
+        pw: dict[str, Any] = {
+            "name": view,
+            "source": sources[view],
+            "model": model_name,
+        }
         if prep_name:
             pw["preprocessor"] = prep_name
         pathways.append(pw)
@@ -127,15 +156,21 @@ def dense_pose2d(
         "preprocessors": preprocessors,
         "models": [
             {
-                "name": "dense38",
-                "class": "hrnet",
+                "name": model_name,
+                "class": model_class,
                 "weights": str(weights),
                 "input_size": list(INPUT_HW),
-                # 0.0 and not DeepFly2D's 0.22: this network carries its own mean/std in
-                # the checkpoint and applies them itself. `load_hrnet` refuses anything
-                # else rather than shifting every input by a quarter of its range.
+                # 0.0 and not DeepFly2D's 0.22: both dense networks carry their own
+                # normalization with the weights and apply it themselves. Their loaders
+                # refuse anything else rather than shifting every input by a quarter of
+                # its range.
                 "mean": 0.0,
                 "n_out_channels": len(point_names),
+                # Written explicitly for the multiview transformer rather than inherited:
+                # it runs in float32, and a model table that inherited [pose2d].precision
+                # would say float16 while the model quietly ignored it. `load_mvt` refuses
+                # anything but float32, so the config has to be honest about what runs.
+                **({"precision": "float32"} if model_class in _FLOAT32_CLASSES else {}),
             }
         ],
         "pathways": pathways,

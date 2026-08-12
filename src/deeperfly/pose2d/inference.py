@@ -382,7 +382,14 @@ def detect_sequence(
         for pw_idx, pw in enumerate(pathways):
             pn, cc = results[t][pw_idx]
             raw_xy = normalized_peaks_to_original_pixels(
-                pn, pw.transform, models[pw.model].input_size, source_sizes[pw.source]
+                pn,
+                pw.transform,
+                models[pw.model].input_size,
+                source_sizes[pw.source],
+                # getattr, not an attribute access: `models` is duck-typed here (a
+                # caller may pass a stub), and the default is the behaviour every model
+                # had before the multiview transformer needed to differ.
+                getattr(models[pw.model], "peak_convention", "half-pixel"),
             )
             route_channels_to_points_in_views(
                 raw_xy, cc, pw.mapping, out_pts[:, t], out_conf[:, t]
@@ -505,13 +512,21 @@ def detect_candidates_sequence(
                 pw = pathways[pw_idx]
                 src_size = source_sizes[pw.source]
                 raw_pn = normalized_peaks_to_original_pixels(
-                    pn[local], pw.transform, model.input_size, src_size
+                    pn[local],
+                    pw.transform,
+                    model.input_size,
+                    src_size,
+                    getattr(model, "peak_convention", "half-pixel"),
                 )
                 route_channels_to_points_in_views(
                     raw_pn, c[local], pw.mapping, pts[:, t], conf[:, t]
                 )
                 raw_cxy = normalized_peaks_to_original_pixels(
-                    cxy[local], pw.transform, model.input_size, src_size
+                    cxy[local],
+                    pw.transform,
+                    model.input_size,
+                    src_size,
+                    getattr(model, "peak_convention", "half-pixel"),
                 )
                 route_channels_to_points_in_views(
                     raw_cxy, csc[local], pw.mapping, cand_xy[:, t], cand_score[:, t]
