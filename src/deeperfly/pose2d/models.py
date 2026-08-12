@@ -68,25 +68,50 @@ class ModelSpec:
     kwargs: dict = field(default_factory=dict)
 
 
-def _load_hourglass(weights: str | None, **kwargs):
+def _load_hourglass(spec: "ModelSpec"):
     """Load the DeepFly2D stacked-hourglass detector from a ``.pth`` (or the cache)."""
     from . import detector
     from .download import download_torch_weights
 
+    weights = spec.weights
     if weights is not None and not Path(weights).exists():
         raise SystemExit(
             f"no detector checkpoint at {weights}. Remove the model's 'weights' "
             "to use the auto-provisioned cache, or point it at a valid .pth."
         )
     path = weights or download_torch_weights()
-    return detector.load_detector(path, **kwargs)
+    return detector.load_detector(path, **spec.kwargs)
+
+
+def _load_hrnet(spec: "ModelSpec"):
+    """Load the dense-38 HRNet detector (see :mod:`deeperfly.pose2d.hrnet`).
+
+    Unlike the hourglass there is no auto-provisioned cache: this network is trained
+    per-project, so its ``weights`` path is required. ``spec.mean`` is passed through
+    to be REFUSED unless it is 0.0 -- the checkpoint carries its own normalization.
+    """
+    from . import hrnet
+
+    if not spec.weights:
+        raise SystemExit(
+            "a dense-38 hrnet model needs an explicit 'weights' path in its "
+            "[[pose2d.models]] table -- there is no auto-provisioned cache for it"
+        )
+    return hrnet.load_hrnet(spec.weights, mean=spec.mean, **spec.kwargs)
 
 
 #: ``class`` name -> loader(weights, **kwargs) -> torch module. New detector
 #: architectures register here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
+#:
+#: ``"hrnet"`` is the DENSE-38 detector: every tracked point in every view, so a camera
+#: needs one pathway rather than a pathway and a mirrored twin, and a contralateral
+#: point gets a prediction instead of a ``NaN``. Its heatmap is padded and its decode is
+#: its own, so it also owns ``predict_points`` -- see :class:`LoadedModel`.
 MODEL_CLASSES = {
     "hourglass": _load_hourglass,
     "deepfly2d": _load_hourglass,
+    "hrnet": _load_hrnet,
+    "hrnet_timm": _load_hrnet,
 }
 
 
@@ -147,9 +172,22 @@ class LoadedModel:
 
         Returns normalized ``(B, V, C_out, 2)`` peaks and ``(B, V, C_out)`` conf (plain 4D
         ``(N, 3, H, W)`` input gives ``(N, C_out, 2)`` / ``(N, C_out)``).
+
+        A model whose heatmap does not span its input -- the dense-38 HRNet pads the
+        field by 25% a side so an off-frame joint still has a cell -- cannot use the
+        shared decode, whose normalization assumes it does. Such a module declares
+        ``owns_decode`` and is asked for the points itself. The returned coordinates are
+        still input-normalized, so a pathway inverts them exactly as before; they may
+        fall outside ``[0, 1]``, which is an off-frame joint and not an error.
         """
         from . import detector
 
+        if getattr(self.module, "owns_decode", False):
+            from . import hrnet
+
+            return hrnet.predict_points(
+                self.module, inputs, method=method, radius=radius
+            )
         return detector.predict_points(
             self.module, inputs, method=method, radius=radius
         )
@@ -158,6 +196,10 @@ class LoadedModel:
         """Final-stack heatmaps ``(B, V, C_out, H_out, W_out)`` (host NumPy) for the candidate path."""
         from . import detector
 
+        if getattr(self.module, "owns_decode", False):
+            from . import hrnet
+
+            return hrnet.predict_heatmaps(self.module, inputs)
         return detector.predict_heatmaps(self.module, inputs)
 
     def set_precision(self, precision: str) -> None:
@@ -194,7 +236,7 @@ def load_model(spec: ModelSpec) -> LoadedModel:
             f"unknown model class {spec.cls!r} for model {spec.name!r}; "
             f"known classes: {sorted(MODEL_CLASSES)}"
         )
-    module = loader(spec.weights, **spec.kwargs)
+    module = loader(spec)
     num_classes = getattr(module, "num_classes", None)
     if num_classes is not None and int(num_classes) != int(spec.n_out_channels):
         raise ValueError(

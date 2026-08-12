@@ -38,6 +38,11 @@ dependencies = [
     # auto-uses Metal (MPS) on Apple Silicon -- so no extra is needed for either.
     "torch>=2.2",
     "torchvision>=0.17",
+    # Backbones for the dense-38 detector (deeperfly.pose2d.hrnet): a 38-channel HRNet
+    # that predicts every tracked point in every view, so a camera needs one pathway
+    # instead of a pathway and a mirrored twin. Tiny next to torch, and imported lazily
+    # -- a run that only uses the shipped hourglass never touches it.
+    "timm>=1.0",
     "jaxtyping>=0.3.10",
     "numpy>=2.4.6",
     "scipy>=1.14",
