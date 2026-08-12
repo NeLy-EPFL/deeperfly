@@ -464,10 +464,6 @@ class App {
   excludeBtn = el("act-exclude");
   absentBtn = el("act-absent");
   absentBadge = el("absent-badge");
-  /** @type {HTMLButtonElement} */
-  chiralityBadge = el("chirality-badge");
-  /** @type {import("./types.js").Chirality | null} */
-  chirality = null;
   /** @type {Segmented} */
   /** @type {Segmented} */
   /** @type {HTMLButtonElement} */
@@ -898,9 +894,6 @@ class App {
     this.meshCheck.addEventListener("change", () => this.applyMesh());
 
     this.actResetBtn.addEventListener("click", () => this.resetSelection());
-    this.chiralityBadge.addEventListener("click", () =>
-      this.selectChiralitySuspect()
-    );
     this.undoBtn.addEventListener("click", () => this.undo());
     this.redoBtn.addEventListener("click", () => this.redo());
     // The "Show" overlay-toggle popover: the button opens/closes it; a click anywhere
@@ -1213,13 +1206,6 @@ class App {
     // navigation fetch carries `pred`; on the mid-drag edit stream (no `pred`) the
     // detections are unchanged within the frame, so keep the mask we already have.
     if (p.pred) this.detectedMask = p.pred.map((row) => row.map((pt) => pt != null));
-    // The left/right verdict rides the settle/plain reply only (it needs the frame's
-    // derived 3D); when absent, keep the one we have rather than flashing the warning off
-    // and on through a drag.
-    if ("chirality" in p) {
-      this.chirality = p.chirality ?? null;
-      this.updateChiralityBadge();
-    }
     // `nmf` is omitted on mid-drag replies (the server skips the per-frame re-fit);
     // when absent, leave each view's model overlay as-is instead of clearing it.
     const hasNmf = "nmf" in p;
@@ -1745,7 +1731,6 @@ class App {
     this.detectedMask = null;
     this.excludedMask = null;
     this.hasInstance = false;
-    this.chirality = null;
     this.reviewed = false;
     this.reviewedBtn.setAttribute("aria-pressed", "false");
     this.reviewedBtn.classList.remove("is-on");
@@ -2346,52 +2331,6 @@ class App {
       `Not on this animal, every view${allWhole ? ", every frame" : ` (frame ${this.frame})`}: ` +
       `${names.join(", ")}. Select a joint and press x (this frame) or Shift+X ` +
       `(whole recording) to change this.`;
-  }
-
-  // The left/right-swap warning. Shown only when the frame's derived 3D puts a symmetry
-  // pair on the wrong side of the body -- the one labeling error that costs nothing in any
-  // metric, because both pixels sit on a real joint and only the identity is wrong.
-  //
-  // Silent when the check could not run (no 3D, too few co-visible pairs, a collapsed
-  // axis). That is deliberate: a badge that appeared to say "checked, all clear" whenever
-  // it was actually saying "could not tell" would be worse than no badge. The reason is
-  // still carried in the payload for anyone debugging.
-  updateChiralityBadge() {
-    const c = this.chirality;
-    const swapped = c && c.decided ? c.swapped : [];
-    if (!swapped || !swapped.length) {
-      this.chiralityBadge.hidden = true;
-      return;
-    }
-    const worst = swapped[0];
-    const more = swapped.length - 1;
-    this.chiralityBadge.hidden = false;
-    this.chiralityBadge.textContent =
-      `⇄ left/right? ${worst.names.join(" ↔ ")}` + (more ? ` +${more}` : "");
-    this.chiralityBadge.title =
-      `${swapped.length} symmetry pair${swapped.length > 1 ? "s" : ""} sit on the wrong ` +
-      `side of the body in this frame's 3D:\n` +
-      swapped
-        .map((s) => `  ${s.names.join(" ↔ ")}  (${s.relative_margin}x the typical spread)`)
-        .join("\n") +
-      `\n\nClick to select the worst pair in every view. Judged on the derived 3D over ` +
-      `${c.n_pairs} co-visible pairs; if the labels are right, the pair is genuinely ` +
-      `crossed and this is expected.`;
-  }
-
-  // Clicking the warning selects the offending pair in every view, so the operator lands
-  // on the joints instead of reading two names and then hunting for them.
-  selectChiralitySuspect() {
-    const swapped = this.chirality?.swapped ?? [];
-    if (!swapped.length) return;
-    this.selection.clear();
-    for (const point of swapped[0].points) {
-      for (let v = 0; v < this.meta.n_views; v++) {
-        this.selection.add(this.selKey(v, point));
-      }
-    }
-    this.selAnchor = { view: this.activeView, point: swapped[0].points[0] };
-    this.updateSelected();
   }
 
   // -- undo / redo ------------------------------------------------------------

@@ -907,7 +907,7 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.create_dataset("bones", data=s.bones)
     # Additive, and read back with a default: a results.h5 written before symmetry
     # existed has no such dataset and loads as a skeleton with no pairs. That only
-    # disables the pair-driven features for that file (the editor's chirality check falls
+    # disables the pair-driven features for that file (`deeperfly.chirality` falls
     # back to name inference), so no format version bump is needed.
     g.create_dataset("symmetries", data=np.asarray(s.symmetries).reshape(-1, 2))
     pal = g.create_group("palette")

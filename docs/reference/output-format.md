@@ -86,8 +86,8 @@ limb → hex color.
 
 `symmetries` is additive and **did not bump the format version**: a file written before
 it existed simply has no such dataset and loads as a skeleton with no declared pairs, so
-the editor's left/right check falls back to inferring pairs from the point names rather
-than refusing to open the file.
+a pair-driven consumer falls back to inferring pairs from the point names rather than
+refusing to open the file.
 
 Which groups are present depends on which stages ran. A group exists only once its
 stage completed; only the stages that were enabled (and whose inputs were

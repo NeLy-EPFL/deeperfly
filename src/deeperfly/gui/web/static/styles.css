@@ -1425,25 +1425,8 @@ body.read-only #redo {
   display: none;
 }
 
-/* The left/right-swap warning wears the badge shape but an alarm colour, and is a button
-   because it is actionable: it selects the pair it is complaining about. Amber rather than
-   red -- a swap candidate is a strong suspicion from geometry, not a proven error, and the
-   operator is the one who decides. */
-.absent-badge.is-warning {
-  border-color: #d9a13b;
-  color: #f0c674;
-  background: rgba(217, 161, 59, 0.16);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.85em;
-}
-
-.absent-badge.is-warning:hover {
-  background: rgba(217, 161, 59, 0.28);
-}
-
 /* The unsaved-changes cue, next to Save. Wears the badge shape (so it reads as state, not
-   as a fourth toolbar action) in the same amber the chirality warning uses for "you should
+   as a fourth toolbar action) in the amber the editor keeps for "you should
    look at this", and it is a button because the answer to it is Save. Hidden entirely while
    everything is on disk: a permanently visible "saved / unsaved" indicator is a thing the
    eye stops reading, and this one has to be noticed the moment it appears. */

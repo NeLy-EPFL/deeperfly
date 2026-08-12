@@ -83,7 +83,7 @@ point_names = [
 #     instead of a left/right-swapped reconstruction that still looks plausible.
 #   * flip augmentation for the trainer (`deeperfly.training.mirror`). Mirroring an image
 #     without permuting the channels trains every left channel on a right joint.
-#   * the editor's chirality check, which flags hand labels whose sides look swapped.
+#   * `deeperfly.chirality`, the offline check for labels whose sides look swapped.
 #
 # Omitting the list is legal and switches all three off -- right for an asymmetric subject,
 # wrong for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
