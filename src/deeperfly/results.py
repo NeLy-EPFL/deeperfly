@@ -25,6 +25,16 @@ be re-run later from pristine upstream outputs:
         points               (V, T, P, 2) cleaned 2D (outlier-rejecting methods)
         points3d             (T, P, 3)
         reproj_error         (V, T, P)
+    eks/
+        points               (V, T, P, 2) the smoothed trajectory, reprojected
+        points3d             (T, P, 3) the smoothed 3D
+        reproj_error         (V, T, P) against the pose2d observations
+        posterior_var        (T, P) the smoother's posterior variance
+        smooth_param         (P,) the fitted per-keypoint process-noise scale
+    postprocess/
+        points               (V, T, P, 2) 2D after the correction chain
+        points3d             (T, P, 3) 3D after the correction chain
+        reproj_error         (V, T, P) against the pose2d observations
     inverse_kinematics/
         angles               (T, D) fitted joint angles (radians)
         angle_names          (D,) the angle names, in column order
@@ -33,7 +43,8 @@ be re-run later from pristine upstream outputs:
 
 :class:`StageStore` is the per-stage read/write access used by the staged run;
 :class:`PoseResult` is the assembled in-memory view (the *best* points present:
-triangulation over pictorial over pose2d, BA cameras over the config rig). The
+postprocess over eks over triangulation over pictorial over pose2d, BA
+cameras over the config rig). The
 HDF5 file fully reconstructs the cameras and skeleton, so results are portable
 without the original config files.
 
@@ -94,6 +105,8 @@ _STAGE_MARKER = {
     "bundle_adjustment": "bundle_adjustment/cameras",
     "pictorial_structures": "pictorial_structures/points",
     "triangulation": "triangulation/points3d",
+    "eks": "eks/points3d",
+    "postprocess": "postprocess/points3d",
     "inverse_kinematics": "inverse_kinematics/angles",
 }
 
@@ -295,9 +308,10 @@ class PoseResult:
         """Read the assembled :class:`PoseResult` back from an HDF5 file.
 
         Assembly prefers the most-derived data present: ``pts2d`` from
-        triangulation, else pictorial_structures, else pose2d; ``pts3d`` /
-        ``reproj_error`` from triangulation, else pictorial_structures; cameras
-        from bundle_adjustment, else the pose2d config rig.
+        postprocess, else eks, else triangulation, else pictorial_structures,
+        else pose2d; ``pts3d`` / ``reproj_error`` from the same order (minus
+        pose2d, which has no 3D); cameras from bundle_adjustment, else the pose2d
+        config rig.
 
         Parameters
         ----------
@@ -330,7 +344,16 @@ class PoseResult:
             )
             cameras = _read_cameras(cameras_group)  # type: ignore[arg-type]
             pts2d = pts3d = reproj = None
-            for stage in ("triangulation", "pictorial_structures", "pose2d"):
+            # Most-derived first: the correction chain supersedes the smoother's
+            # output, which supersedes the triangulation it was seeded from, which
+            # supersedes the raw detections.
+            for stage in (
+                "postprocess",
+                "eks",
+                "triangulation",
+                "pictorial_structures",
+                "pose2d",
+            ):
                 if pts2d is None and f"{stage}/points" in f:
                     pts2d = f[f"{stage}/points"][()]  # type: ignore[index]
                 if pts3d is None and f"{stage}/points3d" in f:
@@ -540,8 +563,35 @@ class StageStore:
                 meta=meta,
             )
 
-    def write_points(self, stage: str, *, pts2d, pts3d, reproj_error) -> None:
-        """Replace ``stage``'s points group (pictorial_structures / triangulation)."""
+    def write_points(
+        self,
+        stage: str,
+        *,
+        pts2d,
+        pts3d,
+        reproj_error,
+        extra: dict | None = None,
+        meta: dict | None = None,
+    ) -> None:
+        """Replace a points group (pictorial_structures / triangulation / eks /
+        postprocess).
+
+        Parameters
+        ----------
+        stage
+            The stage whose group is replaced. Must be a :data:`STAGES` name, or
+            :meth:`truncate_from` will not know to drop it.
+        pts2d, pts3d, reproj_error
+            The stage's arrays; a ``None`` is simply not written.
+        extra
+            Further named float datasets to store alongside them -- what a stage
+            measured that does not fit the three-array shape (the smoother's
+            posterior variance, for instance). Read back with
+            :meth:`read_point_extra`.
+        meta
+            Small free-form metadata for the group's ``attrs``, JSON-encoded. The
+            three-array stages record no provenance without it.
+        """
         with h5py.File(self.path, "a") as f:
             if stage in f:
                 del f[stage]
@@ -550,9 +600,12 @@ class StageStore:
                 ("points", pts2d),
                 ("points3d", pts3d),
                 ("reproj_error", reproj_error),
+                *sorted((extra or {}).items()),
             ):
                 if arr is not None:
                     g.create_dataset(name, data=np.asarray(arr, dtype=float))
+            if meta:
+                g.attrs["meta"] = json.dumps(meta, default=str)
 
     def write_ik(
         self,
@@ -720,6 +773,20 @@ class StageStore:
                 g[name][()] if name in g else None  # type: ignore[index, operator]
                 for name in ("points", "points3d", "reproj_error")
             )
+
+    def read_point_extra(self, stage: str, name: str) -> np.ndarray | None:
+        """One of a points stage's :meth:`write_points` ``extra`` datasets, or ``None``."""
+        with self._open() as f:
+            if f is None or f"{stage}/{name}" not in f:
+                return None
+            return f[f"{stage}/{name}"][()]  # type: ignore[index, return-value]
+
+    def read_point_meta(self, stage: str) -> dict:
+        """A points stage's :meth:`write_points` ``meta``, ``{}`` when absent."""
+        with self._open() as f:
+            if f is None or stage not in f or "meta" not in f[stage].attrs:
+                return {}
+            return json.loads(f[stage].attrs["meta"])  # type: ignore[arg-type]
 
     def read_candidates(self) -> "Candidates | None":
         """The cached top-K candidate peaks, or ``None`` if not stored."""

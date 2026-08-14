@@ -14,7 +14,13 @@ The pure array functions live in :mod:`deeperfly.pipeline.core` (re-exported her
 On top of those, the *staged* run (shared by the CLI and a library caller):
 
 - :mod:`deeperfly.pipeline.stages` -- the per-stage wrappers (``stage_pose2d``,
-  ``stage_bundle_adjustment``, ...) and the stage-input selectors.
+  ``stage_bundle_adjustment``, ...) and the stage-input selectors. ``stage_eks``
+  post-processes the pose with the ensemble Kalman smoother
+  (:mod:`deeperfly.eks`); its array-level entry point is
+  :func:`deeperfly.eks.smooth`, which a caller of :func:`run_from_points2d` can
+  apply to that function's own output. ``stage_postprocess`` then applies the
+  ``[postprocess].ops`` chain -- the corrections that come from knowing the animal
+  rather than the pixels (see :mod:`deeperfly.postprocess`).
 - :mod:`deeperfly.pipeline.fingerprint` -- the per-stage config fingerprints
   that decide when a cached stage output can be reused.
 - :func:`run_recording` -- run a single recording's enabled stages against an output
@@ -41,8 +47,10 @@ from .stages import (
     render_videos,
     source_view_frames,
     stage_bundle_adjustment,
+    stage_eks,
     stage_pictorial_structures,
     stage_pose2d,
+    stage_postprocess,
     stage_triangulation,
 )
 
@@ -58,6 +66,8 @@ __all__ = [
     "stage_bundle_adjustment",
     "stage_pictorial_structures",
     "stage_triangulation",
+    "stage_eks",
+    "stage_postprocess",
     "assemble_result",
     "source_view_frames",
     "render_videos",

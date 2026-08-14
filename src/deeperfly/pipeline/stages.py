@@ -228,44 +228,6 @@ def _resolve_bundle_adjustment_points(
         ) from None
 
 
-def _resolve_constant_points(names: list[str] | None, skeleton) -> list[int] | None:
-    """``[inverse_kinematics].constant_points`` names -> skeleton indices.
-
-    Empty/omitted passes through as ``None`` (the feature is off). Otherwise each
-    name is resolved against ``skeleton.point_names``.
-
-    Raises
-    ------
-    ValueError
-        If a name is not one of the skeleton's points.
-    """
-    if not names:
-        return None
-    index = {name: i for i, name in enumerate(skeleton.point_names)}
-    try:
-        return [index[name] for name in names]
-    except KeyError as e:
-        raise ValueError(
-            f"[inverse_kinematics].constant_points references unknown "
-            f"skeleton point {e.args[0]!r}"
-        ) from None
-
-
-def _pin_constant_points(pts3d: np.ndarray, cols: list[int]) -> np.ndarray:
-    """Replace the ``cols`` of ``pts3d`` ``(T, P, 3)`` with their temporal median.
-
-    Points declared constant over the recording (a tethered fly's fixed joints) are
-    collapsed to their ``nanmedian`` over time, broadcast back over all frames -- so
-    the fit sees a steady position and occluded (NaN) frames are filled in. A column
-    that is never observed stays all-NaN. Returns a copy; the input is not mutated.
-    """
-    pts3d = np.array(pts3d, dtype=float)
-    with warnings.catch_warnings():  # a never-observed column -> all-NaN (expected)
-        warnings.simplefilter("ignore", RuntimeWarning)
-        pts3d[:, cols, :] = np.nanmedian(pts3d[:, cols, :], axis=0)
-    return pts3d
-
-
 def stage_bundle_adjustment(
     config: Config,
     cameras: CameraGroup,
@@ -475,6 +437,284 @@ def stage_triangulation(
     return pts2d, pts3d, reproj
 
 
+def stage_eks(
+    config: Config,
+    cameras: CameraGroup,
+    pts2d,
+    conf=None,
+    *,
+    init3d=None,
+    absent=None,
+    members: "list[tuple[np.ndarray, np.ndarray | None]] | None" = None,
+):
+    """Smooth the pose with the ensemble Kalman smoother (see :mod:`deeperfly.eks`).
+
+    Unlike triangulation, which solves each frame independently, this fits one 3D
+    trajectory per keypoint jointly against every view's pixels over the whole
+    recording. Its 2D output is that trajectory reprojected, so a view whose
+    detection blew up is pulled back onto the animal instead of dragging the 3D
+    point off it.
+
+    Parameters
+    ----------
+    config
+        The run config (the ``[eks]`` options).
+    cameras
+        The rig -- its projection *is* the smoother's observation model.
+    pts2d, conf
+        The 2D observations ``(V, T, P, 2)`` and confidences ``(V, T, P)`` this
+        run's detector produced (see :func:`select_pts2d`).
+    init3d
+        The 3D the filter starts from and the inflation linearizes about --
+        triangulation's output when that stage ran (see :func:`select_eks_init`).
+        ``None`` falls back to a plain DLT triangulation inside the smoother.
+    absent
+        The operator's declaration of which keypoints are not on this animal.
+    members
+        Extra ensemble members as ``(pts2d, conf)`` pairs from other detectors'
+        result files, already aligned to this recording's views and frames.
+
+    Returns
+    -------
+    pts2d, pts3d, reproj_error : np.ndarray
+        The reprojected 2D, the smoothed 3D, and the residual.
+    result : deeperfly.eks.EksResult
+        The full result, whose posterior variance and fitted smoothing parameters
+        the caller persists alongside the arrays.
+    """
+    from ..eks import smooth
+    from ..triangulation import reprojection_error
+    from .core import apply_absent
+
+    opts = config.eks
+    pts2d, conf = apply_absent(pts2d, conf, absent)
+    stack2d = [np.asarray(pts2d, dtype=float)]
+    stackconf = [
+        np.ones(stack2d[0].shape[:3]) if conf is None else np.asarray(conf, dtype=float)
+    ]
+    for i, (member2d, member_conf) in enumerate(members or []):
+        member2d, member_conf = apply_absent(member2d, member_conf, absent)
+        member2d = np.asarray(member2d, dtype=float)
+        if member2d.shape != stack2d[0].shape:
+            raise ValueError(
+                f"[eks].ensemble member {i} has 2D of shape {member2d.shape}, but this "
+                f"recording's is {stack2d[0].shape}; an ensemble member must be the same "
+                "detector plan over the same views and frames"
+            )
+        stack2d.append(member2d)
+        stackconf.append(
+            np.ones(member2d.shape[:3])
+            if member_conf is None
+            else np.asarray(member_conf, dtype=float)
+        )
+
+    v, t = stack2d[0].shape[:2]
+    log.info(
+        "eks: smoothing %d frames x %d views with %d ensemble member(s)%s",
+        t,
+        v,
+        len(stack2d),
+        "" if opts.inflate_vars else " (variance inflation off)",
+    )
+    if len(stack2d) == 1:
+        log.info(
+            "eks: single ensemble member -- the observation noise is 1/confidence, a "
+            "prior rather than a measured spread; the geometric smoother and the "
+            "variance inflation are unaffected (they need views, not models)"
+        )
+    result = smooth(
+        cameras,
+        np.stack(stack2d),
+        np.stack(stackconf),
+        init3d=init3d,
+        smooth_param=opts.smooth_param,
+        avg_mode=opts.avg_mode,
+        var_mode=opts.var_mode,
+        inflate_vars=opts.inflate_vars,
+        inflate_threshold=opts.inflate_threshold,
+        inflate_factor=opts.inflate_factor,
+        fit_frames=opts.fit_frames,
+        fit_iterations=opts.fit_iterations,
+        fill_unobserved=opts.fill_unobserved,
+    )
+    # Measured against the *observations*, not against the stage's own 2D: the latter
+    # is the reprojection of `pts3d` by construction, so it would be identically zero.
+    # This column therefore reads "how far the smoother moved from the raw detection",
+    # which is the number worth looking at.
+    reproj = reprojection_error(cameras, result.pts3d, stack2d[0])
+    moved = np.linalg.norm(result.pts2d - stack2d[0], axis=-1)
+    log.info(
+        "eks: 2D correction median %.2f px  p90 %.2f  max %.2f",
+        np.nanmedian(moved),
+        np.nanpercentile(moved, 90) if np.isfinite(moved).any() else np.nan,
+        np.nanmax(moved) if np.isfinite(moved).any() else np.nan,
+    )
+    return result.pts2d, result.pts3d, reproj, result
+
+
+def stage_postprocess(
+    config: Config,
+    cameras: CameraGroup,
+    skeleton: Skeleton | None,
+    pts2d,
+    pts3d,
+    *,
+    obs2d=None,
+    absent=None,
+):
+    """Apply the ``[postprocess].ops`` chain to a finished 3D pose.
+
+    A thin wrapper: the corrections themselves live in :mod:`deeperfly.postprocess`, one
+    pure function per op, so a new correction is an entry in that registry plus a line in
+    a config's ``ops`` -- not a new pipeline stage. This function resolves the config,
+    runs the chain, re-measures the residual and logs what each op did.
+
+    Parameters
+    ----------
+    config
+        The run config (the ``[postprocess]`` options).
+    cameras
+        The rig, used only to measure the residual.
+    skeleton
+        The skeleton, which resolves the configured names to columns.
+    pts2d, pts3d
+        The upstream stage's pose -- the smoother's when it ran, else the
+        triangulation's (see :func:`select_postprocess_input`).
+    obs2d
+        The pristine ``pose2d`` detections, which ``reproj_error`` is measured against
+        (as for :func:`stage_eks`, so the column reads "how far the corrected pose sits
+        from the raw detection"). Falls back to ``pts2d``.
+    absent
+        The operator's declaration of which keypoints are not on this animal.
+
+    Returns
+    -------
+    pts2d, pts3d, reproj_error : np.ndarray
+        The corrected 2D, the corrected 3D, and the residual.
+    reports : list of dict
+        One entry per op, in order, recording what it measurably did. The caller
+        persists them as the stage's metadata.
+    """
+    from ..postprocess import apply_ops
+    from ..triangulation import reprojection_error
+    from .core import apply_absent
+
+    if skeleton is None:
+        raise ValueError(
+            "postprocess requires a skeleton, but none was stored; "
+            "re-run with [pipeline].do_pose2d to write one"
+        )
+    ops = list(config.postprocess.ops)
+    if not ops:
+        # Deliberately still a stage output rather than a skip: a downstream stage's
+        # input must not depend on whether the chain happened to be filled in.
+        log.info("postprocess: no ops configured; the pose passes through unchanged")
+    pts2d, pts3d, reports = apply_ops(
+        pts2d, pts3d, ops=ops, skeleton=skeleton, absent=absent
+    )
+    for report in reports:
+        log.info("postprocess: %s", _describe_op(report))
+    observed, _ = apply_absent(
+        np.asarray(pts2d if obs2d is None else obs2d, dtype=float), None, absent
+    )
+    reproj = reprojection_error(cameras, pts3d, observed)
+    return pts2d, pts3d, reproj, reports
+
+
+def _pin_for_fit(config: Config, skeleton, pts3d, names: list[str]):
+    """``[inverse_kinematics].constant_points`` -- the solver's own private pin.
+
+    **Superseded by** ``{ op = "static" }`` in ``[postprocess]``, and kept only for
+    configs that predate it. The difference is commitment, not behavior: this collapses
+    the listed points to their temporal median for the fit alone, so no stage output
+    records it and the videos, the editor and ``results.h5`` all still show the
+    un-pinned pose. The op does the same thing to the *result*.
+
+    It also does less than it looks like it does, in three ways worth knowing before
+    relying on it. QuickIK has no constant-point concept at all -- the pin is array
+    preprocessing the solver never learns about, so it buys no speed (measured: 0.77 s
+    vs 0.76 s over 2007 frames). Under ``fixed_body`` the leg roots are already held at
+    the median coxae by the body plan's own registration. And with a ``static`` op
+    configured, the 3D handed to the fit arrives collapsed already.
+
+    So the warnings below are the point of this function: pinning a point the chain
+    already froze is a no-op worth saying out loud, and pinning one it did *not* means
+    the fit runs on a pose no stage output records -- which is the case that silently
+    puts the stored angles and the stored pose out of agreement.
+    """
+    from ..postprocess import freeze_3d
+
+    cols = _columns_for(names, skeleton, "[inverse_kinematics].constant_points")
+    already = {
+        str(n)
+        for spec in config.postprocess.ops
+        if str(spec.get("op")) == "static"
+        for n in spec.get("points", [])
+    }
+    overlap = sorted(set(names) & already)
+    private = sorted(set(names) - already)
+    if overlap:
+        log.info(
+            "inverse_kinematics: %d of the %d constant_points are already frozen by a "
+            "[postprocess] static op (%s) -- pinning them again is a no-op; the key is "
+            "superseded and can be left empty",
+            len(overlap),
+            len(names),
+            ", ".join(overlap),
+        )
+    if private:
+        log.warning(
+            "inverse_kinematics: constant_points pins %s, which no [postprocess] static "
+            "op freezes -- the fit will run on a pose that NO stage output records, so "
+            "the stored angles and the stored 3D will disagree for those points. Move "
+            "them into [postprocess].ops to make the correction visible",
+            ", ".join(private),
+        )
+    return freeze_3d(pts3d, cols)
+
+
+def _columns_for(names, skeleton, where: str) -> list[int]:
+    """Skeleton point names -> column indices, erroring with the config key that failed."""
+    from ..postprocess import _columns
+
+    return _columns(names, skeleton, where=where)
+
+
+def _describe_op(report: dict) -> str:
+    """One log line per op: what it did, and the number that says whether it should have.
+
+    Every op reports how far it moved the points it touched, because that is the only
+    check on its premise -- a static point that had been drifting a fraction of a pixel
+    really was static, and one drifting tens of pixels was moving.
+    """
+    name = report.get("op", "?")
+    if name == "static":
+        if not report.get("points"):
+            return "static: no points listed; nothing frozen"
+        return (
+            f"static: froze {len(report['points'])} point(s) to their temporal "
+            f"{report['method']}; they had been moving "
+            f"{report['moved_2d_median_px']:.2f} px median / "
+            f"{report['moved_2d_p90_px']:.2f} p90 in 2D "
+            f"({report['moved_3d_median']:.4f} / {report['moved_3d_p90']:.4f} in 3D)"
+            + (f", worst {report['worst_point']}" if report.get("worst_point") else "")
+        )
+    if name == "symmetrize":
+        if not report.get("fitted"):
+            return "symmetrize: no sagittal plane fitted; the pose is unchanged"
+        asym = report.get("asymmetry_before") or {}
+        worst = max(asym, key=asym.get) if asym else None
+        return (
+            f"symmetrize: {len(report['pairs'])} pair(s) + "
+            f"{len(report['midline'])} midline point(s) about a "
+            f"{'per-frame' if report['per_frame'] else 'single'} sagittal plane "
+            f"(strength {report['strength']:g}); moved "
+            f"{report['moved_3d_median']:.4f} median / {report['moved_3d_p90']:.4f} p90"
+            + (f", worst pair {worst} ({asym[worst]:.4f} apart)" if worst else "")
+        )
+    return f"{name}: done"
+
+
 def stage_inverse_kinematics(
     config: Config, skeleton: Skeleton | None, pts3d, conf=None, absent=None
 ):
@@ -508,13 +748,8 @@ def stage_inverse_kinematics(
     template = config.ik_template()
     articulation = config.ik_articulation()
     p = config.inverse_kinematics
-    const_cols = _resolve_constant_points(p.constant_points, skeleton)
-    if const_cols:
-        pts3d = _pin_constant_points(pts3d, const_cols)
-        log.info(
-            "inverse kinematics: holding %d point(s) constant over time (median)",
-            len(const_cols),
-        )
+    if p.constant_points:
+        pts3d = _pin_for_fit(config, skeleton, pts3d, p.constant_points)
     extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
         "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r, %s body)",
@@ -613,8 +848,41 @@ def select_pts2d(enabled: dict[str, bool], store: StageStore) -> np.ndarray | No
 
 
 def select_pts3d(enabled: dict[str, bool], store: StageStore) -> np.ndarray | None:
-    """The 3D points inverse kinematics consumes (triangulation, else pictorial)."""
+    """The 3D points inverse kinematics consumes (eks, else triangulation, else pictorial)."""
     source = fingerprint.pts3d_source(enabled, store)
+    if source is None:
+        return None
+    _pts = store.read_points(source)
+    return None if _pts is None else _pts[1]  # points3d
+
+
+def select_postprocess_input(
+    enabled: dict[str, bool], store: StageStore
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """The ``(pts2d, pts3d)`` the postprocess chain consumes, or ``None``.
+
+    Both spaces come from the *same* upstream stage -- the ops correct the two layers of
+    one pose, so pairing a smoothed 3D with a triangulated 2D would make the output a
+    pose that no stage ever produced. Paired with
+    :func:`~deeperfly.pipeline.fingerprint.postprocess_source`, which explains why this
+    cannot just be :func:`select_pts3d`.
+    """
+    source = fingerprint.postprocess_source(enabled, store)
+    if source is None:
+        return None
+    _pts = store.read_points(source)
+    if _pts is None or _pts[0] is None or _pts[1] is None:
+        return None
+    return _pts[0], _pts[1]
+
+
+def select_eks_init(enabled: dict[str, bool], store: StageStore) -> np.ndarray | None:
+    """The 3D the smoother starts from -- never its own output.
+
+    Paired with :func:`~deeperfly.pipeline.fingerprint.eks_init_source`, which
+    explains why this cannot just be :func:`select_pts3d`.
+    """
+    source = fingerprint.eks_init_source(enabled, store)
     if source is None:
         return None
     _pts = store.read_points(source)

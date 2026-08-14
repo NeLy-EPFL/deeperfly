@@ -66,6 +66,14 @@ coordinate conventions these functions share, see
 
 ::: deeperfly.triangulation
 
+## Ensemble Kalman smoother
+
+::: deeperfly.eks
+
+::: deeperfly.eks.smooth
+
+::: deeperfly.eks.EksResult
+
 ## Acquisition (active learning)
 
 ::: deeperfly.acquisition

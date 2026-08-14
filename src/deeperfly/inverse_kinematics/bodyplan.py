@@ -166,8 +166,10 @@ class BodyPlan:
         """Rebuild a :class:`BodyPlan` from a stored plan and a skeleton.
 
         Lets the GUI re-solve on *exactly* the geometry the pipeline fitted, instead of
-        re-deriving it (which drifts: the pipeline pins ``constant_points`` before
-        measuring, and a live editor's pose is not pinned).
+        re-deriving it (which drifts: the pipeline measures the plan from a pose whose
+        static keypoints are already collapsed to one position -- by the
+        ``[postprocess]`` chain, and/or by ``[inverse_kinematics].constant_points`` --
+        and a live editor's pose is not).
         """
         plan = json.loads(text)
         meta = plan.get(f"x-{_META_KEY}") or {}

@@ -525,7 +525,13 @@ overlap_len = 10           # frames shared with the next segment
 # jittering with per-frame detection noise (and occluded frames get filled in).
 # Empty = off. Refer to points by their [skeleton].point_names. Note that under
 # `fixed_body` the leg roots are already held at their measured medians by
-# construction, so this mainly matters when the body is free. Example:
+# construction, so this mainly matters when the body is free.
+#
+# This is the IK stage's own PRIVATE pin: it affects the fit and nothing else -- no
+# stage output records it, so the videos, the editor and results.h5 still show the
+# unpinned pose. `{ op = "static" }` in [postprocess] is the same idea applied to the
+# RESULT; with it configured this key is redundant -- the 3D handed to the fit already
+# arrives collapsed -- and the run says so in its log. Example:
 # constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
 #                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
 constant_points = []

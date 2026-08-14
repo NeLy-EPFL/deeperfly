@@ -7,6 +7,9 @@ Public surface:
   adjustment, which needs autodiff for the Jacobian.
 - :class:`deeperfly.cameras.Camera` / :class:`deeperfly.cameras.CameraGroup` --
   camera models and config-driven rigs (built on :mod:`deeperfly.geometry`).
+- :func:`deeperfly.eks.smooth` -- the nonlinear multi-view ensemble Kalman
+  smoother, a post-process that fits one temporally-coherent 3D trajectory per
+  keypoint against every view at once (:mod:`deeperfly.eks`).
 - :func:`deeperfly.bundle_adjustment.bundle_adjust` and
   :func:`deeperfly.bundle_adjustment.bundle_adjust_from_config` -- bundle
   adjustment over a ``CameraGroup`` (also on the CPU).
@@ -29,7 +32,7 @@ The end-to-end pipeline is reusable without the CLI:
 
 from __future__ import annotations
 
-from . import geometry, pictorial, pipeline, recordings, triangulation
+from . import eks, geometry, pictorial, pipeline, recordings, triangulation
 from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
 from .cameras import Camera, CameraGroup
 from .config import Config
@@ -44,6 +47,7 @@ from .skeleton import Skeleton
 __all__ = [
     "geometry",
     "triangulation",
+    "eks",
     "pipeline",
     "pictorial",
     "recordings",

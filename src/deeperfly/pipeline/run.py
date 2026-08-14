@@ -19,7 +19,12 @@ from ..config import STAGES, Config
 from ..recordings import require_input_footage
 from ..results import StageStore
 from . import stages
-from .fingerprint import RunRecord, stage_fingerprint, stage_valid
+from .fingerprint import (
+    RunRecord,
+    postprocess_source,
+    stage_fingerprint,
+    stage_valid,
+)
 
 log = logging.getLogger("deeperfly")
 
@@ -59,7 +64,8 @@ def run_recording(
 
     A stage runs only if its input is available -- footage for ``pose2d``, a 2D
     pose for ``bundle_adjustment`` / ``triangulation``, cached candidates for
-    ``pictorial_structures``, a result for ``visualization``; a stage whose
+    ``pictorial_structures``, a 3D pose for ``postprocess`` /
+    ``inverse_kinematics``, a result for ``visualization``; a stage whose
     input is missing is skipped with the reason logged.
 
     Parameters
@@ -405,6 +411,116 @@ def _run_triangulation(ctx: _RunContext) -> bool:
     return True
 
 
+def _load_ensemble_members(ctx: _RunContext) -> list | None:
+    """``[eks].ensemble`` result files -> ``(pts2d, conf)`` pairs, or ``None`` on error.
+
+    Each entry names another run's ``results.h5`` -- a *different detector* over the
+    same recording -- whose 2D becomes another ensemble member. Paths are resolved
+    relative to this recording's output directory, so a project can point at a
+    sibling run without absolute paths. A member that cannot be read aborts the
+    stage rather than silently shrinking the ensemble: an ensemble that quietly
+    lost half its members would report the same numbers with different meaning.
+    """
+    paths = ctx.config.eks.ensemble
+    if not paths:
+        return []
+    members = []
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (ctx.outdir / path).resolve()
+        other = StageStore(path)
+        got = other.read_pose2d()
+        if got is None:
+            log.warning(
+                "skipping eks: [eks].ensemble member %s has no 2D pose (looked in %s)",
+                raw,
+                path,
+            )
+            return None
+        members.append(got)
+    return members
+
+
+def _run_eks(ctx: _RunContext) -> bool:
+    if _no_2d(ctx, "eks"):
+        return False
+    _pose2d = ctx.store.read_pose2d()
+    assert _pose2d is not None
+    _, conf = _pose2d
+    members = _load_ensemble_members(ctx)
+    if members is None:
+        return False
+    pts2d, pts3d, reproj, result = stages.stage_eks(
+        ctx.config,
+        stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
+        stages.select_pts2d(ctx.enabled, ctx.store),
+        conf,
+        init3d=stages.select_eks_init(ctx.enabled, ctx.store),
+        absent=ctx.store.read_animal()[0],
+        members=members,
+    )
+    ctx.store.truncate_from("eks")
+    ctx.store.write_points(
+        "eks",
+        pts2d=pts2d,
+        pts3d=pts3d,
+        reproj_error=reproj,
+        # The posterior variance is the point of an *uncertainty-aware* smoother:
+        # it grows through stretches the views could not pin down. Keeping it means
+        # a later consumer can gate on it instead of re-deriving it.
+        extra={
+            "posterior_var": result.posterior_var,
+            "smooth_param": result.smooth_param,
+        },
+        meta={
+            "method": "eks_multiview_nonlinear",
+            "n_members": 1 + len(members),
+            "n_inflated": result.n_inflated,
+            "n_testable": result.n_testable,
+            "reproj_error_measured_against": "pose2d observations",
+        },
+    )
+    return True
+
+
+def _run_postprocess(ctx: _RunContext) -> bool:
+    pose = stages.select_postprocess_input(ctx.enabled, ctx.store)
+    if pose is None:
+        log.warning(
+            "skipping postprocess: no 3D pose available to correct -- enable "
+            "[pipeline].do_triangulation (or do_eks / do_pictorial_structures)"
+        )
+        return False
+    pts2d_in, pts3d_in = pose
+    source = postprocess_source(ctx.enabled, ctx.store)
+    base = ctx.store.read_pose2d()
+    pts2d, pts3d, reproj, reports = stages.stage_postprocess(
+        ctx.config,
+        stages.select_cameras(ctx.config, ctx.enabled, ctx.store),
+        ctx.store.read_skeleton(),
+        pts2d_in,
+        pts3d_in,
+        obs2d=None if base is None else base[0],
+        absent=ctx.store.read_animal()[0],
+    )
+    ctx.store.truncate_from("postprocess")
+    ctx.store.write_points(
+        "postprocess",
+        pts2d=pts2d,
+        pts3d=pts3d,
+        reproj_error=reproj,
+        meta={
+            "pose_from": source,
+            "reproj_error_measured_against": "pose2d observations",
+            # One entry per op, in order: the same op may appear twice, and what the
+            # second one measured depends on what the first one did.
+            "ops": reports,
+        },
+    )
+    return True
+
+
 def _run_inverse_kinematics(ctx: _RunContext) -> bool:
     pts3d = stages.select_pts3d(ctx.enabled, ctx.store)
     if pts3d is None:
@@ -483,6 +599,8 @@ _RUNNERS = {
     "bundle_adjustment": _run_bundle_adjustment,
     "pictorial_structures": _run_pictorial_structures,
     "triangulation": _run_triangulation,
+    "eks": _run_eks,
+    "postprocess": _run_postprocess,
     "inverse_kinematics": _run_inverse_kinematics,
     "visualization": _run_visualization,
 }

@@ -64,6 +64,8 @@ def test_stage_flags_defaults():
         "bundle_adjustment": True,
         "pictorial_structures": False,
         "triangulation": True,
+        "eks": False,
+        "postprocess": False,
         "inverse_kinematics": False,
         "visualization": True,
     }

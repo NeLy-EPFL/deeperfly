@@ -44,6 +44,18 @@ triangulation/
     points                  (V, T, P, 2)  cleaned 2D (outlier-rejecting methods)
     points3d                (T, P, 3)
     reproj_error            (V, T, P)
+eks/
+    points                  (V, T, P, 2)  the smoothed 3D, reprojected
+    points3d                (T, P, 3)     the smoothed 3D trajectory
+    reproj_error            (V, T, P)     against the pose2d observations (see below)
+    posterior_var           (T, P, 3)     per-axis posterior variance (world units^2)
+    smooth_param            (P,)          the fitted process-noise scale per keypoint
+    attrs["meta"]           json {method, n_members, n_inflated, n_testable, ...}
+postprocess/
+    points                  (V, T, P, 2)  2D after the correction chain
+    points3d                (T, P, 3)     3D after the correction chain
+    reproj_error            (V, T, P)     against the pose2d observations (see below)
+    attrs["meta"]           json {pose_from, ops: [{op, ...what each op measured}]}
 inverse_kinematics/
     angles                  (T, D)        fitted joint angles (radians)
     angle_names             (D,)          the angle names, in column order
@@ -78,6 +90,29 @@ body size relative to the model, from the single coxa registration that also pla
 body plan; the mesh overlay holds the body, head, and abdomen at this fixed size and
 varies only rotation + translation per frame, so the body does not breathe.
 
+The `eks/` group's `reproj_error` means something different from the others', and
+deliberately. Its `points` **is** `points3d` reprojected, so measuring one against the
+other would be identically zero; the residual is taken against the `pose2d`
+observations instead, and so reads "how far the smoother moved from the raw
+detection". `posterior_var` is the smoother's own uncertainty — it grows through
+stretches no view could pin the keypoint down and shrinks where the views agree — and
+is what makes this an *uncertainty-aware* output rather than just a smoothed one.
+`points` keeps `NaN` wherever the detector observed nothing, unless
+[`[eks].fill_unobserved`](configuration.md) is on.
+
+The `postprocess/` group is the pose after the
+[`[postprocess].ops`](configuration.md#postprocess) chain — the corrections that come from
+knowing the animal rather than the pixels. Its `reproj_error` is taken against the `pose2d`
+observations for the same reason the smoother's is. The `meta` records `pose_from` (the
+stage the chain was applied to: `eks`, else `triangulation`, else `pictorial_structures`,
+so the un-corrected pose is still on file in its own group) and `ops` — **one entry per op,
+in order**, since the same op may appear twice and what the second measured depends on what
+the first did. Each entry carries that op's own configuration plus what it measurably did:
+for `static`, the median and p90 drift removed in each space, `moved_2d_median_px_per_point`
+and `worst_point`; for `symmetrize`, the fitted `plane_normal` / `plane_offset` and each
+pair's `asymmetry_before`. Those numbers are the only check on an op's premise — a point
+that had been drifting tens of pixels was moving, and does not belong in a `static` list.
+
 A `cameras/` group stores `names`, `rvecs`, `tvecs`, `intrs` (`[fx, fy, cx, cy]`),
 and `dists`. The `skeleton/` group stores `point_names`, `limb_names`, `limb_id`,
 `bones`, `symmetries` (`(S, 2)` left/right mirror pairs — see
@@ -100,9 +135,9 @@ the best result without knowing which stages ran:
 
 | Field | Preference order |
 | --- | --- |
-| `pts2d` | `triangulation` → `pictorial_structures` → `pose2d` |
-| `pts3d` | `triangulation` → `pictorial_structures` |
-| `reproj_error` | `triangulation` → `pictorial_structures` |
+| `pts2d` | `postprocess` → `eks` → `triangulation` → `pictorial_structures` → `pose2d` |
+| `pts3d` | `postprocess` → `eks` → `triangulation` → `pictorial_structures` |
+| `reproj_error` | `postprocess` → `eks` → `triangulation` → `pictorial_structures` |
 | `cameras` | `bundle_adjustment` → `pose2d` (config rig) |
 | `conf` | `pose2d` |
 | `nmf_pts3d` | `inverse_kinematics` (the fitted model joints) |

@@ -55,6 +55,13 @@ IK_SOLVER = "quickik"
 #: read at all on an install without the optional extra.
 IK_SOLVER_REVISION = 1
 
+#: Bumped by hand when the ensemble Kalman smoother's numerics change the fitted
+#: trajectory without any ``[eks]`` key changing (a different objective, a different
+#: initialization, a different likelihood). Same role as
+#: :data:`IK_SOLVER_REVISION`: because a *dropped* fingerprint key cannot
+#: invalidate a cache, a behavior change has to announce itself with a key.
+EKS_REVISION = 1
+
 
 # -- the run record (<outdir>/run.json) ---------------------------------------
 
@@ -200,7 +207,35 @@ def pts2d_source(enabled: dict[str, bool], store: StageStore) -> str:
 
 
 def pts3d_source(enabled: dict[str, bool], store: StageStore) -> str | None:
-    """Which stage's 3D points a downstream stage consumes (triangulation, else pictorial)."""
+    """Which stage's 3D points a downstream stage consumes, most-derived first."""
+    for stage in ("postprocess", "eks", "triangulation", "pictorial_structures"):
+        if enabled[stage] and store.has(stage):
+            return stage
+    return None
+
+
+def postprocess_source(enabled: dict[str, bool], store: StageStore) -> str | None:
+    """Which stage's pose the correction chain consumes -- never its own output.
+
+    Deliberately *not* :func:`pts3d_source`, for the reason spelled out in
+    :func:`eks_init_source`: a stage whose fingerprint names a selector that can
+    resolve to the stage itself never validates, so its cache would be dead weight.
+    """
+    for stage in ("eks", "triangulation", "pictorial_structures"):
+        if enabled[stage] and store.has(stage):
+            return stage
+    return None
+
+
+def eks_init_source(enabled: dict[str, bool], store: StageStore) -> str | None:
+    """Which stage's 3D seeds the smoother -- never the smoother's own output.
+
+    Deliberately *not* :func:`pts3d_source`. A stage whose fingerprint names an
+    input selector that can resolve to the stage itself never validates: the
+    selector says ``triangulation`` on the first run (nothing cached yet) and
+    ``eks`` on the second, so the recorded fingerprint disagrees with the expected
+    one forever and the stage recomputes on every run.
+    """
     for stage in ("triangulation", "pictorial_structures"):
         if enabled[stage] and store.has(stage):
             return stage
@@ -209,7 +244,7 @@ def pts3d_source(enabled: dict[str, bool], store: StageStore) -> str | None:
 
 def pose_sources(enabled: dict[str, bool], store: StageStore) -> dict[str, str | None]:
     """Which stage outputs the visualization draws (2D and 3D separately)."""
-    for stage in ("triangulation", "pictorial_structures"):
+    for stage in ("postprocess", "eks", "triangulation", "pictorial_structures"):
         if enabled[stage] and store.has(stage):
             return {"pts2d": stage, "pts3d": stage}
     return {"pts2d": "pose2d", "pts3d": None}
@@ -326,6 +361,37 @@ def stage_fingerprint(
                 **dataclasses.asdict(config.triangulation),
                 "cameras_from": _cameras_entry(config, enabled, store),
                 "pts2d_from": pts2d_source(enabled, store),
+            }
+        )
+    if stage == "eks":
+        eks = config.eks
+        fp = {
+            # The smoother has no external solver to name, but it does have
+            # numerics of its own; see EKS_REVISION.
+            "revision": EKS_REVISION,
+            **dataclasses.asdict(eks),
+            "cameras_from": _cameras_entry(config, enabled, store),
+            "pts2d_from": pts2d_source(enabled, store),
+            "init3d_from": eks_init_source(enabled, store),
+        }
+        if eks.ensemble:
+            # The members' *content* is digested, not just their paths: re-running
+            # another model's pipeline rewrites its results.h5 under the same name,
+            # which a path alone cannot see (as for the calibration in
+            # :func:`_camera_geometry`).
+            fp["ensemble"] = [
+                {"path": str(p), "content": _file_digest(p)} for p in eks.ensemble
+            ]
+        return _norm(fp)
+    if stage == "postprocess":
+        return _norm(
+            {
+                **dataclasses.asdict(config.postprocess),
+                # The names are resolved to columns against the skeleton, so a
+                # skeleton whose point order changed freezes different points.
+                "skeleton": _skeleton_digest(config),
+                "cameras_from": _cameras_entry(config, enabled, store),
+                "pose_from": postprocess_source(enabled, store),
             }
         )
     if stage == "inverse_kinematics":

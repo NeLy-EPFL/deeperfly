@@ -42,6 +42,10 @@ __all__ = [
     "Pose2dParams",
     "AutoCropParams",
     "TriangulationParams",
+    "EksParams",
+    "PostprocessParams",
+    "StaticPointsParams",
+    "SymmetrizeParams",
     "PictorialParams",
     "IoParams",
     "BundleAdjustmentParams",
@@ -64,18 +68,23 @@ STAGES = (
     "bundle_adjustment",
     "pictorial_structures",
     "triangulation",
+    "eks",
+    "postprocess",
     "inverse_kinematics",
     "visualization",
 )
 
 #: Default for each ``do_<stage>`` when the key is omitted: detection,
 #: bundle adjustment, triangulation and visualization run by default; pictorial
-#: structures and inverse kinematics are opt-in.
+#: structures, the ensemble Kalman smoother, the postprocess chain and
+#: inverse kinematics are opt-in.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
     "pictorial_structures": False,
     "triangulation": True,
+    "eks": False,
+    "postprocess": False,
     "inverse_kinematics": False,
     "visualization": True,
 }
@@ -159,6 +168,227 @@ class TriangulationParams:
     reproj_threshold: float = 40.0
     max_drops: int = 5
     weigh_by_confidence: bool = False
+
+
+@dataclass(frozen=True)
+class EksParams:
+    """``[eks]`` -- the ensemble Kalman smoother, as a post-process over the 3D pose.
+
+    The nonlinear multi-view EKS of Lightning Pose 3D (see :mod:`deeperfly.eks`).
+    It fits one temporally-coherent 3D trajectory per keypoint directly against
+    every view's pixels -- the observation model is the rig's own projection -- so
+    it both de-jitters the pose and pulls a view whose detection blew up back onto
+    the animal. It runs after triangulation and uses that stage's 3D as its
+    starting point.
+
+    ``smooth_param`` is the process-noise scale, the one knob that trades
+    smoothness against responsiveness: smaller follows the dynamics and smooths
+    harder, larger follows the detector. Omitted (the default), it is *fitted* per
+    keypoint by maximum marginal likelihood, which is the right answer far more
+    often than a hand-set value -- a fly's claw and its thorax do not move alike.
+    Set a number to override every keypoint at once.
+
+    ``inflate_vars`` is the cross-view consistency check: each view's prediction is
+    tested against what the other views say, and the ones that disagree beyond
+    ``inflate_threshold`` have their observation variance multiplied by
+    ``inflate_factor`` until they stop disagreeing, so the smoother down-weights
+    them instead of following them. It needs two *views*, not two models, so on a
+    calibrated rig it is fully active with a single detector -- and it is the
+    component that repairs blown detections. Leave it on.
+
+    ``inflate_threshold`` is the Mahalanobis distance above which a view is called
+    inconsistent (the paper's example value is 5). Lower it to be more suspicious.
+    Note that the test only means what its variances mean: with one detector the
+    observation variance is ``1 / confidence``, whose absolute scale is arbitrary,
+    so the fraction of observations it flags moves with the detector's calibration
+    rather than with any fixed false-positive rate.
+
+    ``inflate_factor`` multiplies an offending view's variance each round (the
+    paper describes doubling; the reference CLI ships 10, which is the default
+    here).
+
+    ``ensemble`` lists other recordings' ``results.h5`` files holding a *different*
+    detector's 2D for this same recording. With them the observation noise becomes
+    a measured across-model spread instead of the ``1 / confidence`` stand-in --
+    the half of "ensemble Kalman smoother" a single detector cannot supply. The
+    ensembles in this literature are the same recipe trained differently (data
+    subsets, initialization, ordering), not different architectures.
+
+    ``avg_mode`` is how the ensemble members are combined into one center,
+    ``"median"`` (robust, the default) or ``"mean"``. It does nothing with a single
+    member.
+
+    ``var_mode`` is how their spread becomes a variance: ``"var"`` is the plain
+    across-model variance and ``"confidence_weighted_var"`` (default) divides it by
+    the mean confidence, so a cell every model is unsure about is treated as
+    noisier than its agreement alone suggests.
+
+    ``fill_unobserved`` reports the smoothed 3D reprojected into views that never
+    observed the keypoint, instead of leaving those cells NaN. Off by default:
+    deeperfly reads NaN in the 2D as "not observed", and filling it hands every
+    downstream consumer a prediction dressed as a measurement. Turn it on to use
+    the smoother as a completion step for occluded joints.
+
+    ``fit_frames`` caps how many leading frames the ``smooth_param`` fit may use
+    (0 = all). Smoothing always runs over every frame; this only bounds the cost of
+    estimating one scalar per keypoint, which a few thousand frames settle.
+
+    ``fit_iterations`` is the number of golden-section steps per keypoint. Each
+    shrinks the bracket by ~0.618, so the default resolves ``log(s)`` to about 1e-4.
+    """
+
+    smooth_param: float | None = None
+    inflate_vars: bool = True
+    inflate_threshold: float = 5.0
+    inflate_factor: float = 10.0
+    ensemble: list[str] = field(default_factory=list)
+    avg_mode: str = "median"
+    var_mode: str = "confidence_weighted_var"
+    fill_unobserved: bool = False
+    fit_frames: int = 2000
+    fit_iterations: int = 24
+
+
+@dataclass(frozen=True)
+class PostprocessParams:
+    """``[postprocess]`` -- an ordered chain of corrections applied to the 3D pose.
+
+    Everything upstream estimates the pose from *pixels*. This stage applies what is
+    known about the **animal** instead: that some keypoints do not move, that the body is
+    bilaterally symmetric. Those are priors, not measurements, so they are kept out of
+    the estimating stages and applied in one explicit, ordered place.
+
+    ``ops`` is that chain -- a list of inline tables, each naming an ``op`` plus its own
+    keys, exactly as ``[[pose2d.preprocessors]].ops`` describes a frame-op chain. Ordered
+    because the ops do not commute, and one list because a new correction should cost a
+    line here rather than a new pipeline stage::
+
+        [postprocess]
+        ops = [
+            { op = "static", points = ["neck", "lf_thorax_coxa"], method = "median" },
+            { op = "symmetrize", pairs = [["lf_thorax_coxa", "rf_thorax_coxa"]],
+              midline = ["neck"] },
+        ]
+
+    Empty (the default) passes the pose through unchanged -- the stage still writes its
+    output, so a downstream stage's input does not depend on whether the list happened
+    to be filled in. See :mod:`deeperfly.postprocess` for the ops and what each one
+    assumes; an unknown ``op`` name, or an unknown key inside one, is a hard error.
+
+    The stage runs **after** the smoother and before inverse kinematics, and that order
+    is forced rather than chosen: the smoother re-derives the 3D from the 2D
+    observations, so a correction applied before it is followed straight back off by the
+    fit chasing its pixels.
+    """
+
+    ops: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StaticPointsParams:
+    """``{ op = "static" }`` -- keypoints held static over the whole recording.
+
+    Some keypoints are not moving. On a *tethered* fly the six thorax-coxa joints and
+    the neck sit on the sclerotized thorax, so their position is a constant of the
+    recording and everything the estimate does over time is per-frame noise. The op
+    replaces each listed point with a single **temporal center**, computed independently
+    in each space the result carries: once in 3D, and once per view in 2D.
+
+    ``points`` names the skeleton points to hold static, by their
+    ``[skeleton].point_names``. Empty leaves the pose untouched. A name that is not in
+    the skeleton is an error, not a silent no-op.
+
+    ``method`` picks *which* center. They differ only in what they assume about the
+    contamination, and the right choice follows from what the estimate's error
+    distribution actually looks like:
+
+    - ``"median"`` (default) -- the per-axis temporal median. Breakdown point 50%, so a
+      minority of blown frames cannot move it, and it is within ~2% of the mean's
+      efficiency at the sample sizes a recording gives. Right until you have a reason.
+    - ``"mean"`` -- the per-axis arithmetic mean. Minimum-variance if the residual really
+      is clean Gaussian noise, and worth having for exactly that check; a single blown
+      frame drags it, so it is the wrong default for detector output.
+    - ``"trimmed_mean"`` -- the mean of the values inside ``[trim, 1 - trim]``, tunable
+      between the two above. Trimming is by *value* threshold, not by exact order
+      statistic, so ties may keep slightly more or fewer than the nominal fraction.
+    - ``"mode"`` -- the half-sample mode (Robertson-Cryer): recursively keep the half of
+      the sample with the smallest range. Parameter-free, unlike a histogram or KDE mode.
+      It follows *density* where the median follows *count*, which matters when the
+      contaminant is the **majority**: correct detections are tight and wrong ones are
+      scattered, so a detector that locks onto a nearby wrong feature more often than not
+      leaves a median out in the middle -- on a position the point never occupied -- and
+      a mode still on the true peak. Below a 50% contaminant the median is already inside
+      the true cluster and this buys nothing, at the cost of more variance.
+    - ``"geometric_median"`` -- the multivariate L1 center (Weiszfeld), the only option
+      here that is **rotation-equivariant**. The other four work axis by axis, so their
+      answer depends on the orientation of the world frame -- an arbitrary choice of the
+      rig. The difference is small for near-symmetric noise and real when the outliers
+      are directional.
+
+    ``trim`` is the fraction discarded from *each* tail by ``"trimmed_mean"``; it is
+    ignored by every other method. It must be in ``[0, 0.5)``: at 0 the trimmed mean is
+    the mean, and at 0.5 it would be the median with nothing left in between.
+    """
+
+    points: list[str] = field(default_factory=list)
+    method: str = field(
+        default="median",
+        metadata={
+            "choices": (
+                "median",
+                "mean",
+                "trimmed_mean",
+                "mode",
+                "geometric_median",
+            )
+        },
+    )
+    trim: float = 0.1
+
+
+@dataclass(frozen=True)
+class SymmetrizeParams:
+    """``{ op = "symmetrize" }`` -- impose bilateral symmetry on the body-fixed points.
+
+    A fly is bilaterally symmetric, so a left keypoint and its right partner should be
+    mirror images across the animal's **sagittal plane**. The estimate does not know
+    that: each side is triangulated from its own cameras, so the pair drifts apart by
+    whatever the two sides' errors differ by. This op fits the plane and enforces the
+    relationship.
+
+    ``pairs`` names the left/right pairs to symmetrize, and it is deliberately **not**
+    defaulted from ``[skeleton].symmetries``. That list pairs every point including the
+    legs, and at any instant a fly's left and right legs are in *different gait phases* --
+    that asymmetry is the behavior being measured. Symmetrizing it would be a serious
+    corruption wearing the costume of a correction. Only body-fixed pairs belong here; on
+    a tethered fly that is the six thorax-coxa joints.
+
+    ``midline`` names points that lie *on* the plane and are projected onto it. Also not
+    inferred: "has no mirror partner" does not imply "on the midline". A fly's abdomen
+    bends laterally, so ``abdomen0..4`` are unpaired and still off-plane; on fly38b the
+    honest midline set is ``neck`` alone.
+
+    The plane is fitted from ``pairs`` only -- each pair's midpoint lies on it and each
+    pair's difference vector is normal to it -- so an off-plane point named in ``midline``
+    can never contaminate the fit that is about to move it.
+
+    ``per_frame`` fits a fresh plane for every frame instead of one for the recording.
+    Off by default, and that default is load-bearing: a single plane is a *fixed* map, so
+    it leaves an already-static point static, and ``{ op = "static" }`` followed by this
+    one satisfies both properties exactly. Fitted per frame the plane wobbles with the
+    estimate, so symmetrizing after a freeze un-freezes it. Turn it on only for a
+    preparation whose body genuinely moves in the world frame.
+
+    ``strength`` scales the correction: 1.0 (default) makes each pair exactly symmetric,
+    0.5 moves each side half-way to the mirror of the other, 0.0 is a no-op. Below 1.0 is
+    the honest setting when you believe the symmetry only approximately -- a real animal
+    is not perfectly symmetric, and the residual asymmetry may be signal.
+    """
+
+    pairs: list[list[str]] = field(default_factory=list)
+    midline: list[str] = field(default_factory=list)
+    per_frame: bool = False
+    strength: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -585,6 +815,14 @@ class Config:
     @property
     def triangulation(self) -> TriangulationParams:
         return _params(self.data, ("triangulation",), TriangulationParams)
+
+    @property
+    def eks(self) -> EksParams:
+        return _params(self.data, ("eks",), EksParams)
+
+    @property
+    def postprocess(self) -> PostprocessParams:
+        return _params(self.data, ("postprocess",), PostprocessParams)
 
     @property
     def pictorial(self) -> PictorialParams:

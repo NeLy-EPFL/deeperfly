@@ -38,10 +38,12 @@ from .config import (
     AnnotationParams,
     BundleAdjustmentParams,
     Config,
+    EksParams,
     GuiParams,
     InverseKinematicsParams,
     PictorialParams,
     Pose2dParams,
+    PostprocessParams,
     TriangulationParams,
 )
 
@@ -57,6 +59,8 @@ __all__ = ["FieldSpec", "SectionSpec", "describe", "sections", "SECTIONS", "effe
 SECTIONS: dict[str, type] = {
     "pose2d": Pose2dParams,
     "triangulation": TriangulationParams,
+    "eks": EksParams,
+    "postprocess": PostprocessParams,
     "pictorial_structures": PictorialParams,
     "bundle_adjustment": BundleAdjustmentParams,
     "inverse_kinematics": InverseKinematicsParams,
@@ -188,6 +192,8 @@ def _params_of(config: Config, section: str):
     accessor = {
         "pose2d": "pose2d",
         "triangulation": "triangulation",
+        "eks": "eks",
+        "postprocess": "postprocess",
         "pictorial_structures": "pictorial",
         "bundle_adjustment": "bundle_adjustment",
         "inverse_kinematics": "inverse_kinematics",

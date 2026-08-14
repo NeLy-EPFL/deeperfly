@@ -110,11 +110,39 @@ do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
 do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
 do_triangulation        = true   # triangulate 2D -> 3D
+do_eks                  = false  # ensemble Kalman smoother over the 3D (opt-in)
+do_postprocess          = false  # corrections from knowing the animal (opt-in)
+do_inverse_kinematics   = false  # fit NeuroMechFly joint angles (opt-in)
 do_visualization        = true   # render the videos
 ```
 
 Each enabled stage has its own top-level `[<stage>]` parameter table (below).
 Pictorial structures is the opt-in stage most commonly flipped on.
+
+Two of the opt-in stages are worth knowing about for a *tethered* preparation.
+[`[eks]`](../reference/configuration.md#eks) fits one 3D trajectory per keypoint to the
+whole recording, which de-jitters the pose and repairs blown detections; and
+[`[postprocess]`](../reference/configuration.md#postprocess) then applies the corrections
+that come from knowing the *animal* rather than the pixels — an ordered chain, so a new
+correction costs a block rather than a new stage:
+
+```toml
+[[postprocess.ops]]              # these keypoints do not move (a tethered thorax)
+op = "static"
+points = ["neck",
+          "lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+          "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+
+[[postprocess.ops]]              # ... and the body is bilaterally symmetric
+op = "symmetrize"
+pairs = [["lf_thorax_coxa", "rf_thorax_coxa"],
+         ["lm_thorax_coxa", "rm_thorax_coxa"],
+         ["lh_thorax_coxa", "rh_thorax_coxa"]]
+midline = ["neck"]
+```
+
+Never put the **legs** in `symmetrize.pairs`: left and right are in different gait phases
+at any instant, and that asymmetry is the behavior being measured.
 
 Editing the config and re-running recomputes exactly the stages you changed (and
 the ones after them); the slow `pose2d` cache is reused untouched. That

@@ -69,12 +69,12 @@ def test_measured_seglens_recovered(template, fly, rng):
     np.testing.assert_allclose(align.seglens["rf"], _SEGLENS, atol=1e-6)
 
 
-# -- constant points (temporal median pin) -----------------------------------
+# -- the IK stage's own constant-point pin (superseded by [postprocess]) ------
 
 
-def test_pin_constant_points_collapses_to_temporal_median():
+def test_freeze_3d_collapses_to_temporal_median():
     """A jittered column is replaced by its temporal nanmedian; NaN frames filled."""
-    from deeperfly.pipeline.stages import _pin_constant_points
+    from deeperfly.postprocess import freeze_3d
 
     rng = np.random.default_rng(0)
     pts3d = rng.normal(size=(20, 4, 3))
@@ -84,36 +84,55 @@ def test_pin_constant_points_collapses_to_temporal_median():
     pts3d[7, 1] = np.nan
     expected = np.nanmedian(pts3d[:, 1], axis=0)
 
-    out = _pin_constant_points(pts3d, [1])
+    out = freeze_3d(pts3d, [1])
     assert np.isfinite(out[:, 1]).all()  # occluded frames get filled by the median
     np.testing.assert_allclose(out[:, 1], expected[None].repeat(20, 0), atol=1e-12)
     np.testing.assert_array_equal(out[:, 0], pts3d[:, 0])  # other points untouched
     assert np.isnan(pts3d[3, 1]).all()  # input array is not mutated
 
 
-def test_pin_constant_points_all_nan_column_stays_nan():
+def test_freeze_3d_all_nan_column_stays_nan():
     """A point that is never observed stays all-NaN (its leg is skipped downstream)."""
-    from deeperfly.pipeline.stages import _pin_constant_points
+    from deeperfly.postprocess import freeze_3d
 
     pts3d = np.zeros((5, 3, 3))
     pts3d[:, 2] = np.nan
-    out = _pin_constant_points(pts3d, [2])
+    out = freeze_3d(pts3d, [2])
     assert np.isnan(out[:, 2]).all()
 
 
-def test_resolve_constant_points_names_and_errors(fly):
-    """Names resolve to columns; empty/None is off; an unknown name is a clear error."""
-    from deeperfly.pipeline.stages import _resolve_constant_points
+def test_the_ik_pin_says_when_it_is_redundant_and_when_it_is_invisible(fly, caplog):
+    """The two things a reader of a config cannot see for themselves.
 
-    assert _resolve_constant_points(None, fly) is None
-    assert _resolve_constant_points([], fly) is None
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    assert _resolve_constant_points(["lf_thorax_coxa", "rh_thorax_coxa"], fly) == [
-        index["lf_thorax_coxa"],
-        index["rh_thorax_coxa"],
-    ]
-    with pytest.raises(ValueError, match=r"constant_points references unknown"):
-        _resolve_constant_points(["not_a_point"], fly)
+    ``[inverse_kinematics].constant_points`` is superseded by ``{ op = "static" }``, and
+    the interesting cases are the two ways the two lists can disagree. A point in both is
+    pinned twice, which is a harmless no-op (the median of a constant is that constant)
+    but worth saying. A point in the IK list ALONE means the fit runs on a pose no stage
+    output records -- so the stored angles and the stored 3D disagree for it, silently,
+    which is the case this warning exists for.
+    """
+    from deeperfly.config import Config
+    from deeperfly.pipeline.stages import _pin_for_fit
+
+    pts3d = np.zeros((6, len(fly.point_names), 3))
+    config = Config.from_dict(
+        {"postprocess": {"ops": [{"op": "static", "points": ["lf_thorax_coxa"]}]}}
+    )
+    with caplog.at_level("INFO", logger="deeperfly"):
+        _pin_for_fit(config, fly, pts3d, ["lf_thorax_coxa", "rf_thorax_coxa"])
+    text = caplog.text
+    assert "already frozen" in text and "lf_thorax_coxa" in text
+    assert "NO stage output records" in text and "rf_thorax_coxa" in text
+
+
+def test_the_ik_pin_names_its_own_key_on_a_typo(fly):
+    """Two config keys carry a held-still list; the error has to say which one."""
+    from deeperfly.config import Config
+    from deeperfly.pipeline.stages import _pin_for_fit
+
+    pts3d = np.zeros((4, len(fly.point_names), 3))
+    with pytest.raises(ValueError, match=r"\[inverse_kinematics\]\.constant_points"):
+        _pin_for_fit(Config.from_dict({}), fly, pts3d, ["not_a_point"])
 
 
 # -- confidence weights ------------------------------------------------------

@@ -214,6 +214,8 @@ mirror = "rh"
 #   do_bundle_adjustment    -> [bundle_adjustment]    refine the cameras
 #   do_pictorial_structures -> [pictorial_structures] peak recovery
 #   do_triangulation        -> [triangulation]        2D -> 3D
+#   do_eks                  -> [eks]                  smooth the 3D over time
+#   do_postprocess          -> [postprocess]        corrections from the animal
 #   do_inverse_kinematics   -> [inverse_kinematics]   3D -> joint angles
 #   do_visualization        -> [visualization]        render the videos
 #
@@ -234,6 +236,8 @@ do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
 do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
 do_triangulation        = true   # triangulate 2D -> 3D
+do_eks                  = false  # ensemble Kalman smoother over the 3D pose (opt-in)
+do_postprocess          = false  # corrections that come from knowing the animal (opt-in)
 do_inverse_kinematics   = false  # fit NeuroMechFly joint angles to the 3D pose (opt-in)
 do_visualization        = true   # render the videos (see [visualization] below)
 
@@ -592,6 +596,146 @@ weigh_by_confidence = false # scale each view by detector confidence; a wash at 
 # max_drops = 5             # method = greedy: max views dropped per offending point
 
 
+# Ensemble Kalman smoother (EKS): a post-process over the 3D pose (off by default;
+# set do_eks = true). Triangulation solves each frame on its own; this fits ONE 3D
+# trajectory per keypoint to the whole recording at once, with the rig's own
+# projection as its observation model -- the nonlinear multi-view EKS of Lightning
+# Pose 3D (Aharon, Whiteway et al. 2026). Two things follow from that. It de-jitters
+# the pose, because a random-walk prior on the 3D point costs nothing to satisfy and
+# per-frame detector noise does not survive it. And it REPAIRS blown detections,
+# because a view whose 2D disagrees with the other views gets its observation
+# variance inflated until the smoother stops believing it -- so the 3D point stays
+# on the animal and the reported 2D for that view is the trajectory reprojected.
+#
+# It runs after triangulation and starts from that stage's 3D, so leave
+# do_triangulation on. Its output then feeds inverse kinematics and the videos.
+# Cost is roughly 20 s per 5000 frames x 38 keypoints on a CPU.
+[eks]
+# smooth_param = 1.0      # process-noise scale: smaller smooths harder. OMITTED (the
+                          # default) fits one per keypoint by maximum marginal
+                          # likelihood, which is almost always the right call -- a
+                          # claw and a thorax do not move alike.
+inflate_vars = true       # test each view against the other views and down-weight the
+                          # ones that disagree. This is the component that repairs
+                          # outliers, and it needs two VIEWS, not two models -- so it
+                          # is fully active with a single detector. Leave it on.
+inflate_threshold = 5.0   # Mahalanobis distance at which a view is called
+                          # inconsistent. Lower is more suspicious. With one detector
+                          # the observation variance is 1/confidence, whose absolute
+                          # scale is arbitrary, so what fraction this flags tracks the
+                          # detector's calibration rather than any fixed false-alarm
+                          # rate -- the logged "inflated N of M" is the number to watch
+inflate_factor = 10.0     # variance multiplier per inflation round
+ensemble = []             # other results.h5 files holding a DIFFERENT detector's 2D
+                          # for this same recording (paths relative to the output dir).
+                          # With them the observation noise becomes a measured
+                          # across-model spread instead of the 1/confidence stand-in --
+                          # the half of "ensemble Kalman smoother" one detector cannot
+                          # supply. The ensembles in this literature are the same
+                          # recipe trained differently (data subsets, seeds, ordering),
+                          # not different architectures.
+avg_mode = "median"       # how members combine: "median" (robust) or "mean"
+var_mode = "confidence_weighted_var"  # "var" is the plain across-model variance;
+                          # the default divides it by the mean confidence
+fill_unobserved = false   # report the smoothed 3D reprojected into views that never
+                          # saw the keypoint, instead of leaving those cells NaN. Off
+                          # by default: deeperfly reads NaN as "not observed", so
+                          # filling hands downstream a prediction dressed as a
+                          # measurement. Turn on to use EKS to complete occlusions
+fit_frames = 2000         # leading frames the smooth_param fit may use (0 = all).
+                          # Smoothing always covers every frame; this only bounds the
+                          # cost of estimating one scalar per keypoint
+fit_iterations = 24       # golden-section steps per keypoint (~0.618 shrink each)
+
+
+# ---------------------------------------------------------------------------
+# Postprocess: an ordered chain of corrections applied to the finished 3D pose (off by
+# default; set do_postprocess = true).
+#
+# Everything upstream estimates the pose from PIXELS -- the detector localizes, the rig
+# triangulates, the smoother fits a trajectory against every view. This stage applies
+# what is known about the ANIMAL instead: that some keypoints do not move, that the body
+# is bilaterally symmetric. Those are priors rather than measurements, and keeping them
+# out of the estimating stages is deliberate -- an estimator already told the answer
+# cannot be checked against it.
+#
+# It runs AFTER the smoother, and that order is forced rather than chosen: the smoother
+# re-derives the 3D from the 2D observations, so a correction applied before it is
+# followed straight back off by the fit chasing its pixels. The honest cost is that these
+# priors OVERWRITE the estimate rather than informing it.
+#
+# Each op is one [[postprocess.ops]] block, applied in the order they appear -- the same
+# shape as [[pose2d.preprocessors]]. Ordered, because the ops do not commute; one list,
+# because a new correction should cost a block here rather than a new pipeline stage.
+# Each op logs how far it moved the points it touched, which is the only check on its
+# premise. With no blocks at all the stage passes the pose through unchanged.
+[postprocess]
+
+# The ops, and what each one assumes:
+#
+# [[postprocess.ops]] with op = "static"   (points, method, trim)
+#   Collapse each listed point to ONE position for the whole recording -- in 3D, and
+#   independently per view in 2D. On a tethered fly the six thorax-coxa joints and the
+#   neck sit on the sclerotized thorax, so their position is a constant of the recording
+#   and everything the estimate does over time is per-frame noise. Within a view that
+#   sees the point the center also fills the frames where the detection dropped out; a
+#   (view, point) pair the view NEVER observes stays NaN.
+#
+#   `method` picks which center, and they differ only in what they assume about the
+#   contamination:
+#     median            per-axis temporal median. 50% breakdown point, within ~2% of the
+#                       mean's efficiency here. Right until you have a reason.
+#     mean              per-axis arithmetic mean. Minimum-variance IF the residual is
+#                       clean Gaussian noise -- worth having to check exactly that -- but
+#                       one blown frame drags it.
+#     trimmed_mean      mean of the values inside [trim, 1-trim]. Tunable between the
+#                       two above; trims by VALUE threshold, not exact order statistic.
+#     mode              half-sample mode (Robertson-Cryer). Follows DENSITY where the
+#                       median follows COUNT, which matters when the contaminant is the
+#                       MAJORITY: correct detections tight, wrong ones scattered. Below
+#                       50% contamination it buys nothing and costs variance.
+#     geometric_median  multivariate L1 center (Weiszfeld). The only ROTATION-EQUIVARIANT
+#                       option -- the other four work axis by axis, so their answer
+#                       depends on the world frame's orientation, a property of the rig.
+#
+# [[postprocess.ops]] with op = "symmetrize"   (pairs, midline, per_frame, strength)
+#   Make each left/right pair a mirror image across the animal's sagittal plane, and put
+#   each `midline` point on that plane. The plane is fitted from `pairs` ONLY (each pair's
+#   midpoint lies on it, each pair's difference is normal to it), so a point that is about
+#   to be moved onto the plane never votes on where the plane is.
+#
+#   NEITHER list is defaulted from [skeleton].symmetries, and that is not an oversight:
+#     - That list pairs the LEGS too, and at any instant a fly's left and right legs are
+#       in different gait phases. That asymmetry IS the behavior. Symmetrizing it would be
+#       a serious corruption wearing the costume of a correction. Only body-fixed pairs
+#       belong here.
+#     - "Has no mirror partner" does not imply "on the midline". A fly's abdomen bends
+#       laterally, so abdomen0..4 are unpaired and still off-plane.
+#
+#   `per_frame = false` (the default) fits one plane for the recording, which makes the op
+#   a FIXED map -- so it leaves an already-static point static, and `static` followed by
+#   `symmetrize` satisfies both properties exactly. Fitted per frame the plane wobbles and
+#   symmetrizing after a freeze un-freezes it. `strength` below 1.0 moves each side only
+#   part-way to the mirror of the other, which is the honest setting when the symmetry is
+#   believed only approximately.
+#
+# For a tethered fly the usual chain is:
+#
+# [[postprocess.ops]]
+# op = "static"
+# method = "median"
+# points = ["neck",
+#           "lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+#           "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+#
+# [[postprocess.ops]]
+# op = "symmetrize"
+# pairs = [["lf_thorax_coxa", "rf_thorax_coxa"],
+#          ["lm_thorax_coxa", "rm_thorax_coxa"],
+#          ["lh_thorax_coxa", "rh_thorax_coxa"]]
+# midline = ["neck"]
+
+
 # Inverse kinematics: fit a NeuroMechFly-style articulated model's joint angles to
 # the triangulated 3D pose (off by default; set do_inverse_kinematics = true). The
 # solver is QuickIK (https://nely-epfl.github.io/quickik/), an optional extra --
@@ -648,7 +792,13 @@ overlap_len = 10           # frames shared with the next segment
 # jittering with per-frame detection noise (and occluded frames get filled in).
 # Empty = off. Refer to points by their [skeleton].point_names. Note that under
 # `fixed_body` the leg roots are already held at their measured medians by
-# construction, so this mainly matters when the body is free. Example:
+# construction, so this mainly matters when the body is free.
+#
+# This is the IK stage's own PRIVATE pin: it affects the fit and nothing else -- no
+# stage output records it, so the videos, the editor and results.h5 still show the
+# unpinned pose. `{ op = "static" }` in [postprocess] is the same idea applied to the
+# RESULT; with it configured this key is redundant -- the 3D handed to the fit already
+# arrives collapsed -- and the run says so in its log. Example:
 # constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
 #                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
 constant_points = []
