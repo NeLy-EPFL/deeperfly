@@ -1,12 +1,12 @@
 """Self-contained HDF5 result container for the pose pipeline.
 
-``results.h5`` (schema v2) stores each pipeline stage's output in its own group,
+``results.h5`` (schema v3) stores each pipeline stage's output in its own group,
 so a stage never overwrites another stage's data and any downstream stage can
 be re-run later from pristine upstream outputs:
 
 .. code-block:: text
 
-    attrs["meta"]            json: {deeperfly_format_version: 2, created_utc, ...}
+    attrs["meta"]            json: {deeperfly_format_version: 3, created_utc, ...}
     skeleton/                the skeleton (point names, bones, visibility, palette)
     pose2d/
         points               (V, T, P, 2) arg-max 2D detections (visibility-masked)
@@ -26,15 +26,13 @@ be re-run later from pristine upstream outputs:
         points3d             (T, P, 3)
         reproj_error         (V, T, P)
     eks/
-        points               (V, T, P, 2) the smoothed trajectory, reprojected
         points3d             (T, P, 3) the smoothed 3D
-        reproj_error         (V, T, P) against the pose2d observations
         posterior_var        (T, P) the smoother's posterior variance
         smooth_param         (P,) the fitted per-keypoint process-noise scale
     postprocess/
-        points               (V, T, P, 2) 2D after the correction chain
         points3d             (T, P, 3) 3D after the correction chain
-        reproj_error         (V, T, P) against the pose2d observations
+        points2d_override    (V, R, 2) the 2D the ops froze in pixel space
+        points2d_override_cols  (R,) which skeleton columns those are
     inverse_kinematics/
         angles               (T, D) fitted joint angles (radians)
         angle_names          (D,) the angle names, in column order
@@ -50,7 +48,35 @@ without the original config files.
 
 Arrays use the view-leading layout: ``pts2d`` is ``(V, T, P, 2)``, ``conf`` is
 ``(V, T, P)``, ``pts3d`` is ``(T, P, 3)``. NaN encodes missing observations /
-un-triangulated points and is preserved by the float64 datasets.
+un-triangulated points and is preserved by the float32 datasets.
+
+**What a stage stores, and what it reconstructs (v3).** Every stage used to keep a
+full ``(V, T, P, 2)`` 2D array and a full ``(V, T, P)`` error, which on an eight-view
+recording is 14.6 MB per stage before any of them says anything new. A stage now stores
+only what cannot be rebuilt from what its neighbors already store, decided per write by
+:func:`_reduce_pts2d` rather than hardcoded per stage -- so a new stage, or an op that
+starts moving pixels per frame, gets the right answer without editing this module:
+
+* A 2D that *is* ``cameras.project(points3d)`` is not stored at all (the smoother's
+  is, exactly). ``attrs["points2d_storage"] = "derived"``.
+* A 2D that is that projection except on a few columns held constant over time is
+  stored as just those constants -- the correction chain's frozen thorax-coxae come
+  to 112 numbers instead of 9.8 MB. ``attrs["points2d_storage"] = "override"``.
+* A 2D that is an independent pixel measurement is stored whole: the detections, the
+  pictorial candidate selection, and triangulation's outlier-cleaned observations.
+  ``attrs["points2d_storage"] = "full"``.
+
+``reproj_error`` is dropped only when a recomputation reproduces it *and* the stage's
+2D was not stored whole. The second half is not an optimization but a safeguard: the
+stored error is the only witness that an outside tool overwrote a stage's 2D with
+something other than the detections (see :func:`deeperfly.acquisition.stored_vs_pose2d`),
+and a recomputed error agrees with the stored 3D by construction, so it can never
+disagree with itself. Deriving it would silently retire that check.
+
+Reading is version-agnostic: every reader prefers a stored array and falls back to
+reconstruction, so a v2 file -- which stores everything -- needs no special case.
+:data:`READABLE_VERSIONS` is what :meth:`PoseResult.load` accepts; ``deeperfly repack``
+rewrites an older file in place (see :func:`repack`).
 """
 
 from __future__ import annotations
@@ -72,10 +98,261 @@ from .skeleton import Skeleton
 if TYPE_CHECKING:
     from .pictorial import Candidates
 
-__all__ = ["PoseResult", "StageStore"]
+__all__ = ["PoseResult", "StageStore", "repack"]
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+
+#: Schema versions this build can *read*. v3 dropped only datasets that are exactly
+#: reconstructible from the ones it kept, so the readers here -- which prefer a stored
+#: array and reconstruct only what is missing -- serve both without a version branch.
+#: Writing is always the current version; :func:`repack` converts.
+READABLE_VERSIONS = (2, FORMAT_VERSION)
+
 _STR = h5py.string_dtype("utf-8")
+
+#: Point arrays are stored as float32 and deflated. They hold pixel coordinates decoded
+#: from a heat-map arg-max and the millimeter 3D fitted from them; float32 resolves those
+#: to ~6e-05 px against the ~1 px the detector can actually localize, so the eight extra
+#: digits float64 carries are noise. Incompressible noise, at that -- which is why
+#: narrowing the dtype saves twice what deflating alone does (2.00x vs 1.32x measured),
+#: and why the two together beat either.
+_STORE_DTYPE = np.float32
+
+#: The deflate filter, and the one knob here with a real cost. Measured on an 8-view
+#: 2007-frame recording (66 MB as v2), whole-file size against the wall clock of reading a
+#: whole array back:
+#:
+#: ===========  =======  ==============  ==================
+#: filter       size     read_pose2d     PoseResult.load
+#: ===========  =======  ==============  ==================
+#: v2, none     65.9 MB     2.4 ms           7.2 ms
+#: none         19.4 MB     5.1 ms          28.2 ms
+#: lzf          18.4 MB    14.2 ms          42.2 ms
+#: gzip-1       15.7 MB    33.6 ms          65.0 ms
+#: gzip-4       15.6 MB    32.7 ms          64.1 ms
+#: ===========  =======  ==============  ==================
+#:
+#: Three things that table settles. Level 4 is free relative to level 1 (same size, same
+#: time), so there is no reason to run the cheap setting. Most of the win -- 3.4x of 4.2x
+#: -- is the reduction and the dtype, which cost almost nothing to read; deflate buys the
+#: last 24% for a 6x read slowdown. And ``load``'s 28 ms floor with no filter at all is
+#: the reprojection that rebuilds the dropped 2D, not decompression.
+#:
+#: Deflate stays on because 64 ms to open a recording is nothing next to the 157-252 ms a
+#: single video frame costs to decode, and nothing reads these arrays in a hot loop. If
+#: something ever does, ``None`` here is the setting to reach for -- it keeps 3.4x.
+_COMPRESSION = "gzip"
+_COMPRESSION_OPTS = 4
+
+#: Below this many elements a filter costs more in chunk bookkeeping than it saves, and
+#: the threshold is also what keeps the policy away from the small float64 arrays whose
+#: precision is load-bearing: a rig's rvecs/tvecs/intrs and the skeleton.
+_FILTER_MIN_SIZE = 4096
+
+#: How far a rebuilt array may sit from the stored one and still count as the same array.
+#: Both sides are computed by the same projection code from the same float64 inputs, so
+#: the honest gap is zero; this is slack against a future rig whose projection is not
+#: bit-reproducible, and it is still ~4 orders below the float32 storage step.
+_DERIVE_ATOL = 1e-9
+
+
+def _put(g: h5py.Group, name: str, arr, *, dtype=_STORE_DTYPE) -> h5py.Dataset:
+    """Create ``g[name]`` under the storage policy: float32 and deflated when it is big.
+
+    Small arrays are written verbatim, which is what keeps camera and skeleton data in
+    float64 without this function needing to know what a camera is.
+    """
+    a = np.asarray(arr)
+    if dtype is not None and a.dtype == np.float64 and a.size >= _FILTER_MIN_SIZE:
+        a = a.astype(dtype)
+    kw = (
+        dict(chunks=True, compression=_COMPRESSION, compression_opts=_COMPRESSION_OPTS)
+        if a.size >= _FILTER_MIN_SIZE
+        else {}
+    )
+    return g.create_dataset(name, data=a, **kw)
+
+
+def _project(cameras: CameraGroup, pts3d) -> np.ndarray:
+    """``cameras.project(pts3d)`` as a writable float64 array.
+
+    ``np.array`` and not ``np.asarray``: the projection comes back from jax read-only,
+    and the override path assigns into it.
+    """
+    return np.array(cameras.project(np.asarray(pts3d, dtype=float)), dtype=float)
+
+
+def _same(a, b, *, atol: float = _DERIVE_ATOL) -> bool:
+    """Whether two arrays match to ``atol``, counting NaN as equal to NaN only.
+
+    ``np.allclose`` cannot express that: its ``equal_nan`` makes NaN equal to NaN but
+    it has no way to *require* the NaN patterns to agree, and here they carry meaning --
+    a NaN is "this view did not see it", which is not interchangeable with a number.
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if a.shape != b.shape:
+        return False
+    na, nb = np.isnan(a), np.isnan(b)
+    if not np.array_equal(na, nb):
+        return False
+    m = ~na
+    return bool(m.sum() == 0 or np.allclose(a[m], b[m], rtol=0, atol=atol))
+
+
+def _constant_over_time(x: np.ndarray) -> bool:
+    """Whether ``x`` ``(V, T, ...)`` is the same at every frame (NaN counting as equal)."""
+    return x.shape[1] == 0 or _same(x, np.broadcast_to(x[:, :1], x.shape), atol=0.0)
+
+
+def _reduce_pts2d(pts2d, pts3d, cameras: CameraGroup | None):
+    """How much of ``pts2d`` must be stored, given that ``pts3d`` and the rig are.
+
+    Returns ``(kind, payload)``:
+
+    ``("derived", None)``
+        ``pts2d`` *is* ``project(pts3d)``; nothing needs storing.
+    ``("override", (cols, values))``
+        it is that projection except on ``cols``, where it is constant over time --
+        a frozen pixel measurement. Only the ``(V, len(cols), 2)`` constants are stored.
+    ``("full", pts2d)``
+        it is an independent estimate of its own; all of it is stored.
+
+    Measured rather than declared per stage, so the classification cannot drift from
+    what the stages actually produce. A column that differs in only *some* frames is
+    not an override -- it is per-frame information, and falls through to ``full``.
+    """
+    if pts2d is None:
+        return "absent", None
+    pts2d = np.asarray(pts2d, dtype=float)
+    if pts3d is None or cameras is None:
+        return "full", pts2d
+    proj = _project(cameras, pts3d)
+    if proj.shape != pts2d.shape:
+        return "full", pts2d
+    if _same(proj, pts2d):
+        return "derived", None
+    finite = ~(np.isnan(proj) | np.isnan(pts2d))
+    differs = ~(np.isclose(proj, pts2d, rtol=0, atol=_DERIVE_ATOL) | ~finite).all(-1)
+    cols = np.flatnonzero(differs.any(axis=(0, 1)))
+    if cols.size and cols.size < pts2d.shape[2]:
+        rest = np.ones(pts2d.shape[2], dtype=bool)
+        rest[cols] = False
+        block = pts2d[:, :, cols, :]
+        if _same(proj[:, :, rest], pts2d[:, :, rest]) and _constant_over_time(block):
+            return "override", (cols.astype(np.int32), block[:, 0])
+    return "full", pts2d
+
+
+def _rebuild_pts2d(g: h5py.Group, cameras: CameraGroup | None) -> np.ndarray | None:
+    """A points group's 2D: the stored array, or the one v3 left to be reconstructed.
+
+    ``None`` when neither is available -- an unfinished group, or a derived 2D in a file
+    whose rig is missing, which is the one case where the reconstruction cannot be done
+    and a caller must be told rather than handed a guess.
+    """
+    if "points" in g:
+        return np.asarray(g["points"][()], dtype=float)
+    if "points3d" not in g or cameras is None:
+        return None
+    out = _project(cameras, g["points3d"][()])
+    if "points2d_override" in g:
+        cols = np.asarray(g["points2d_override_cols"][()], dtype=int)
+        vals = np.asarray(g["points2d_override"][()], dtype=float)
+        out[:, :, cols, :] = vals[:, None]
+    return out
+
+
+def _rebuild_reproj_error(
+    g: h5py.Group, obs2d, cameras: CameraGroup | None
+) -> np.ndarray | None:
+    """A points group's reprojection error: stored, else recomputed against ``obs2d``.
+
+    ``obs2d`` is the ``pose2d`` detections, which is what every stage that lets its error
+    be recomputed measured against (the stages that measured against their own cleaned 2D
+    store it, so they never reach this path).
+    """
+    if "reproj_error" in g:
+        return np.asarray(g["reproj_error"][()], dtype=float)
+    if "points3d" not in g or cameras is None or obs2d is None:
+        return None
+    proj = _project(cameras, g["points3d"][()])
+    obs = np.asarray(obs2d, dtype=float)
+    if proj.shape != obs.shape:
+        return None
+    return np.linalg.norm(proj - obs, axis=-1)
+
+
+def _cameras_from(f: h5py.File) -> CameraGroup | None:
+    """The rig a reconstruction should use: BA-refined when present, else the config rig.
+
+    The same preference :meth:`PoseResult.load` applies, and it has to be, or a rebuilt
+    2D would come off a different rig than the stage that produced it used.
+    """
+    for group in ("bundle_adjustment/cameras", "pose2d/cameras"):
+        if group in f:
+            return _read_cameras(f[group])  # type: ignore[arg-type]
+    return None
+
+
+def _keep_reproj_error(reproj_error, pts3d, obs2d, cameras, *, kind: str) -> bool:
+    """Whether a stage's reprojection error has to be stored rather than recomputed.
+
+    Two reasons to keep it, and only the first is about bytes:
+
+    1. A recomputation would not reproduce it (no rig, no observations, or a stage that
+       measured against something other than the detections). Nothing is derivable here.
+    2. ``kind == "full"`` -- the stage's 2D is stored whole, which is exactly the 2D an
+       outside tool can overwrite. The stored error is then the only witness to that
+       substitution, because a recomputed one agrees with the stored 3D by construction.
+       See :func:`deeperfly.acquisition.stored_vs_pose2d`, which reads it for that.
+    """
+    if reproj_error is None:
+        return False
+    if kind == "full":
+        return True
+    if pts3d is None or cameras is None or obs2d is None:
+        return True
+    proj = _project(cameras, pts3d)
+    obs = np.asarray(obs2d, dtype=float)
+    if proj.shape != obs.shape:
+        return True
+    return not _same(reproj_error, np.linalg.norm(proj - obs, axis=-1))
+
+
+def _write_points_group(
+    g: h5py.Group,
+    *,
+    pts2d,
+    pts3d,
+    reproj_error,
+    extra: dict | None = None,
+    meta: dict | None = None,
+    cameras: CameraGroup | None = None,
+    obs2d=None,
+) -> str:
+    """Fill a freshly created points group, storing only what cannot be rebuilt.
+
+    Shared by :meth:`StageStore.write_points` and :func:`repack` so the two cannot
+    disagree about what a v3 group contains. Returns the ``points2d_storage`` kind.
+    """
+    kind, payload = _reduce_pts2d(pts2d, pts3d, cameras)
+    if kind == "full":
+        _put(g, "points", payload)
+    elif kind == "override":
+        cols, values = payload
+        _put(g, "points2d_override", values)
+        g.create_dataset("points2d_override_cols", data=cols)
+    if pts3d is not None:
+        _put(g, "points3d", pts3d)
+    if _keep_reproj_error(reproj_error, pts3d, obs2d, cameras, kind=kind):
+        _put(g, "reproj_error", reproj_error)
+    for name, arr in sorted((extra or {}).items()):
+        if arr is not None:
+            _put(g, name, arr)
+    g.attrs["points2d_storage"] = kind
+    if meta:
+        g.attrs["meta"] = json.dumps(meta, default=str)
+    return kind
 
 
 def _is_newer(version) -> bool:
@@ -90,6 +367,31 @@ def _is_newer(version) -> bool:
         return False
 
 
+def _version_in(f) -> int | None:
+    """An open result file's schema version, or ``None`` when absent/unparseable."""
+    try:
+        return int(
+            json.loads(f.attrs.get("meta", "{}")).get("deeperfly_format_version")
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def stored_version(path: str | Path) -> int | None:
+    """The schema version recorded in a result file, or ``None``.
+
+    ``None`` for a missing, unreadable, or non-deeperfly file -- every caller here treats
+    those the same way it treats an old one, so they do not need telling apart.
+    """
+    if not Path(path).exists():
+        return None
+    try:
+        with h5py.File(path, "r") as f:
+            return _version_in(f)
+    except OSError:
+        return None
+
+
 def _newer_message(path, version) -> str:
     """The refusal every deeperfly artifact shares, so it reads the same wherever it lands."""
     return (
@@ -99,11 +401,15 @@ def _newer_message(path, version) -> str:
     )
 
 
-#: The dataset whose presence means a stage's output is complete, per stage.
+#: The dataset whose presence means a stage's output is complete, per stage. Every 3D
+#: stage is marked by its ``points3d`` rather than its ``points``, because whether the
+#: 2D is stored is now a property of the *data* (v3 drops a 2D its 3D reprojects to) --
+#: marking a stage by an array the writer is entitled to omit would make a completed
+#: stage look unfinished and recompute forever.
 _STAGE_MARKER = {
     "pose2d": "pose2d/points",
     "bundle_adjustment": "bundle_adjustment/cameras",
-    "pictorial_structures": "pictorial_structures/points",
+    "pictorial_structures": "pictorial_structures/points3d",
     "triangulation": "triangulation/points3d",
     "eks": "eks/points3d",
     "postprocess": "postprocess/points3d",
@@ -290,17 +596,22 @@ class PoseResult:
             f.attrs["meta"] = json.dumps(meta)
             _write_skeleton(f.create_group("skeleton"), self.skeleton)
             g2d = f.create_group("pose2d")
-            g2d.create_dataset("points", data=self.pts2d)
+            _put(g2d, "points", self.pts2d)
             if self.conf is not None:
-                g2d.create_dataset("conf", data=self.conf)
+                _put(g2d, "conf", self.conf)
             _write_cameras(g2d.create_group("cameras"), self.cameras)
             if self.pts3d is not None or self.reproj_error is not None:
+                # ``points`` stays whole here rather than going through the v3 reduction:
+                # an assembled result's 2D is whatever stage produced it, so it is an
+                # independent measurement as far as this file can tell, and the one-shot
+                # writer has no upstream group to reconstruct it from.
                 g3d = f.create_group("triangulation")
-                g3d.create_dataset("points", data=self.pts2d)
+                _put(g3d, "points", self.pts2d)
+                g3d.attrs["points2d_storage"] = "full"
                 if self.pts3d is not None:
-                    g3d.create_dataset("points3d", data=self.pts3d)
+                    _put(g3d, "points3d", self.pts3d)
                 if self.reproj_error is not None:
-                    g3d.create_dataset("reproj_error", data=self.reproj_error)
+                    _put(g3d, "reproj_error", self.reproj_error)
             _write_animal(f, absent=self.absent, subject_id=self.subject_id)
 
     @classmethod
@@ -312,6 +623,14 @@ class PoseResult:
         else pose2d; ``pts3d`` / ``reproj_error`` from the same order (minus
         pose2d, which has no 3D); cameras from bundle_adjustment, else the pose2d
         config rig.
+
+        Reads every version in :data:`READABLE_VERSIONS`. A v2 file stores every array,
+        so it simply never takes the reconstruction path -- which is why this needs no
+        version branch, and why the 2D and error a v2 and a repacked v3 copy of the same
+        recording hand back agree to the float32 storage step.
+
+        Arrays come back as float64 whatever they were stored as, so a caller cannot
+        acquire a float32 pose by reading a newer file.
 
         Parameters
         ----------
@@ -330,10 +649,11 @@ class PoseResult:
             version = meta.pop("deeperfly_format_version", None)
             if _is_newer(version):
                 raise ValueError(_newer_message(path, version))
-            if version != FORMAT_VERSION:
+            if version not in READABLE_VERSIONS:
                 raise ValueError(
-                    f"{path} has deeperfly format version {version!r}, expected "
-                    f"{FORMAT_VERSION}; re-run the pipeline to regenerate it"
+                    f"{path} has deeperfly format version {version!r}, expected one of "
+                    f"{', '.join(str(v) for v in READABLE_VERSIONS)}; re-run the "
+                    "pipeline to regenerate it"
                 )
             skeleton = _read_skeleton(f["skeleton"])  # type: ignore[arg-type]
             absent, subject_id = _read_animal(f)
@@ -344,9 +664,17 @@ class PoseResult:
             )
             cameras = _read_cameras(cameras_group)  # type: ignore[arg-type]
             pts2d = pts3d = reproj = None
+            obs2d = (
+                np.asarray(f["pose2d/points"][()], dtype=float)  # type: ignore[index]
+                if "pose2d/points" in f
+                else None
+            )
             # Most-derived first: the correction chain supersedes the smoother's
             # output, which supersedes the triangulation it was seeded from, which
-            # supersedes the raw detections.
+            # supersedes the raw detections. A stage counts as having a 2D when one can
+            # be *rebuilt*, not only when one is stored -- v3 stores neither the
+            # smoother's nor (all of) the chain's, and skipping past them here would
+            # quietly hand back a less-derived pose than the file holds.
             for stage in (
                 "postprocess",
                 "eks",
@@ -354,13 +682,20 @@ class PoseResult:
                 "pictorial_structures",
                 "pose2d",
             ):
-                if pts2d is None and f"{stage}/points" in f:
-                    pts2d = f[f"{stage}/points"][()]  # type: ignore[index]
-                if pts3d is None and f"{stage}/points3d" in f:
-                    pts3d = f[f"{stage}/points3d"][()]  # type: ignore[index]
-                if reproj is None and f"{stage}/reproj_error" in f:
-                    reproj = f[f"{stage}/reproj_error"][()]  # type: ignore[index]
-            conf = f["pose2d/conf"][()] if "pose2d/conf" in f else None  # type: ignore[index]
+                if stage not in f:
+                    continue
+                g = f[stage]
+                if pts2d is None:
+                    pts2d = _rebuild_pts2d(g, cameras)  # type: ignore[arg-type]
+                if pts3d is None and "points3d" in g:
+                    pts3d = np.asarray(g["points3d"][()], dtype=float)  # type: ignore[index]
+                if reproj is None:
+                    reproj = _rebuild_reproj_error(g, obs2d, cameras)  # type: ignore[arg-type]
+            conf = (
+                np.asarray(f["pose2d/conf"][()], dtype=float)  # type: ignore[index]
+                if "pose2d/conf" in f
+                else None
+            )
             nmf = nmf_angles = nmf_angle_names = nmf_body_plan = None
             nmf_chain_scales: dict[str, float] = {}
             nmf_body_scale = 1.0
@@ -368,9 +703,9 @@ class PoseResult:
                 raw = f["inverse_kinematics/body_plan"][()]  # type: ignore[index]
                 nmf_body_plan = raw.decode() if isinstance(raw, bytes) else str(raw)
             if "inverse_kinematics/points3d" in f:
-                nmf = f["inverse_kinematics/points3d"][()]  # type: ignore[index]
+                nmf = np.asarray(f["inverse_kinematics/points3d"][()], dtype=float)  # type: ignore[index]
             if "inverse_kinematics/angles" in f:
-                nmf_angles = f["inverse_kinematics/angles"][()]  # type: ignore[index]
+                nmf_angles = np.asarray(f["inverse_kinematics/angles"][()], dtype=float)  # type: ignore[index]
                 nmf_angle_names = [
                     n.decode() if isinstance(n, bytes) else n
                     for n in f["inverse_kinematics/angle_names"][()]  # type: ignore[index]
@@ -424,7 +759,16 @@ class StageStore:
     # -- presence -------------------------------------------------------------
 
     def has(self, stage: str) -> bool:
-        """Whether ``stage``'s output is complete in the store.
+        """Whether ``stage``'s output is complete **and reusable** in the store.
+
+        Deliberately stricter than :meth:`_open`, which reads any version in
+        :data:`READABLE_VERSIONS`. This is the question the run asks before *skipping* a
+        stage, and skipping one on an older file would leave the run appending
+        current-schema groups beside older-schema ones, in a file whose recorded version
+        names only one of them. Reading an old file is safe; extending one is not. So an
+        older file always reports incomplete, the run recomputes from ``pose2d``, and
+        :meth:`write_pose2d`'s truncation makes the whole file current. ``deeperfly
+        repack`` is the way to keep an old file's contents without recomputing.
 
         Parameters
         ----------
@@ -435,13 +779,18 @@ class StageStore:
         Returns
         -------
         bool
-            ``True`` if the stage's marker dataset is present (schema v2 only).
+            ``True`` if the stage's marker dataset is present in a current-schema file.
         """
         marker = _STAGE_MARKER.get(stage)
         if marker is None:
             return False
+        # Through :meth:`_open` and not a bare version check, so a *newer* file still
+        # raises here. Answering False for one would restart the run and let
+        # :meth:`write_pose2d` truncate it -- the exact destruction _open documents.
         with self._open() as f:
-            return f is not None and marker in f
+            if f is None:
+                return False
+            return marker in f and _version_in(f) == FORMAT_VERSION
 
     def has_candidates(self) -> bool:
         """Whether the detector's top-K candidates were cached by ``pose2d``."""
@@ -513,9 +862,9 @@ class StageStore:
             f.attrs["meta"] = json.dumps(full_meta)
             _write_skeleton(f.create_group("skeleton"), skeleton)
             g = f.create_group("pose2d")
-            g.create_dataset("points", data=np.asarray(pts2d, dtype=float))
+            _put(g, "points", np.asarray(pts2d, dtype=float))
             if conf is not None:
-                g.create_dataset("conf", data=np.asarray(conf, dtype=float))
+                _put(g, "conf", np.asarray(conf, dtype=float))
             _write_animal(f, absent=carried_absent, subject_id=carried_subject)
             # The image sizes go in BOTH places: in the camera group (so the rig carries its
             # own pixel frame, like a calibration.toml does) and in the legacy sibling attr,
@@ -536,8 +885,8 @@ class StageStore:
                 )
             if candidates is not None:
                 gc = g.create_group("candidates")
-                gc.create_dataset("xy", data=candidates.xy)
-                gc.create_dataset("score", data=candidates.score)
+                _put(gc, "xy", candidates.xy)
+                _put(gc, "score", candidates.score)
 
     def write_cameras(
         self,
@@ -591,21 +940,33 @@ class StageStore:
         meta
             Small free-form metadata for the group's ``attrs``, JSON-encoded. The
             three-array stages record no provenance without it.
+
+        Notes
+        -----
+        What actually lands on disk is decided by :func:`_write_points_group`: a 2D that
+        the stored 3D reprojects to is not written, and neither is a reprojection error a
+        reader can recompute. The rig and the detections that decide it are read back from
+        this same file rather than passed in, so no stage had to learn about the policy.
         """
         with h5py.File(self.path, "a") as f:
+            cameras = _cameras_from(f)
+            obs2d = (
+                np.asarray(f["pose2d/points"][()], dtype=float)  # type: ignore[index]
+                if "pose2d/points" in f
+                else None
+            )
             if stage in f:
                 del f[stage]
-            g = f.create_group(stage)
-            for name, arr in (
-                ("points", pts2d),
-                ("points3d", pts3d),
-                ("reproj_error", reproj_error),
-                *sorted((extra or {}).items()),
-            ):
-                if arr is not None:
-                    g.create_dataset(name, data=np.asarray(arr, dtype=float))
-            if meta:
-                g.attrs["meta"] = json.dumps(meta, default=str)
+            _write_points_group(
+                f.create_group(stage),
+                pts2d=pts2d,
+                pts3d=pts3d,
+                reproj_error=reproj_error,
+                extra=extra,
+                meta=meta,
+                cameras=cameras,
+                obs2d=obs2d,
+            )
 
     def write_ik(
         self,
@@ -641,13 +1002,13 @@ class StageStore:
             if "inverse_kinematics" in f:
                 del f["inverse_kinematics"]
             g = f.create_group("inverse_kinematics")
-            g.create_dataset("angles", data=np.asarray(angles, dtype=float))
+            _put(g, "angles", np.asarray(angles, dtype=float))
             g.create_dataset(
                 "angle_names",
                 data=np.array(list(angle_names), dtype=object),
                 dtype=_STR,
             )
-            g.create_dataset("points3d", data=np.asarray(model_pts3d, dtype=float))
+            _put(g, "points3d", np.asarray(model_pts3d, dtype=float))
             if body_plan is not None:
                 g.create_dataset("body_plan", data=str(body_plan), dtype=_STR)
             if meta:
@@ -764,14 +1125,34 @@ class StageStore:
     def read_points(
         self, stage: str
     ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None] | None:
-        """``(pts2d, pts3d, reproj_error)`` of a points stage, or ``None``."""
+        """``(pts2d, pts3d, reproj_error)`` of a points stage, or ``None``.
+
+        The 2D and the error are reconstructed when v3 chose not to store them, so a
+        downstream stage reading its input cannot tell the difference -- which is the
+        whole point: ``select_postprocess_input`` asks the smoother for a 2D that is no
+        longer on disk, and must still get the array the smoother produced.
+
+        Returns float64 whatever the file stores.
+        """
         with self._open() as f:
             if f is None or stage not in f:
                 return None
             g = f[stage]
-            return tuple(  # type: ignore[return-value]
-                g[name][()] if name in g else None  # type: ignore[index, operator]
-                for name in ("points", "points3d", "reproj_error")
+            cameras = _cameras_from(f)
+            obs2d = (
+                np.asarray(f["pose2d/points"][()], dtype=float)  # type: ignore[index]
+                if "pose2d/points" in f
+                else None
+            )
+            pts3d = (
+                np.asarray(g["points3d"][()], dtype=float)  # type: ignore[index]
+                if "points3d" in g
+                else None
+            )
+            return (
+                _rebuild_pts2d(g, cameras),  # type: ignore[arg-type]
+                pts3d,
+                _rebuild_reproj_error(g, obs2d, cameras),  # type: ignore[arg-type]
             )
 
     def read_point_extra(self, stage: str, name: str) -> np.ndarray | None:
@@ -829,16 +1210,21 @@ class StageStore:
     # -- internals -------------------------------------------------------------
 
     def _open(self):
-        """Open the file read-only iff it exists in the current schema version.
+        """Open the file read-only iff it exists in a schema version this build reads.
 
-        An **older** file reads as absent: every stage is regenerable, so the run simply
-        recomputes it (and :meth:`write_pose2d` truncates it on the way).
+        An **unrecognized** file reads as absent: every stage is regenerable, so the run
+        simply recomputes it (and :meth:`write_pose2d` truncates it on the way).
 
         A **newer** file is refused, because that same treat-as-absent would be silent data
         destruction: every ``has(stage)`` would report false, the run would recompute
         ``pose2d``, and the truncating write would take the newer file with it -- reporting
         success. Regenerable is not the same as disposable, and only the older direction is
         the former.
+
+        An **older but readable** file (:data:`READABLE_VERSIONS`) opens normally, so a
+        viewer or an annotation session can still get at what it holds. Deciding whether
+        to *recompute* it is :meth:`has`'s job, not this one's -- see there for why the two
+        answers differ.
         """
         import contextlib
 
@@ -853,10 +1239,154 @@ class StageStore:
         if _is_newer(version):
             f.close()
             raise ValueError(_newer_message(self.path, version))
-        if version != FORMAT_VERSION:
+        if version not in READABLE_VERSIONS:
             f.close()
             return contextlib.nullcontext(None)
         return contextlib.closing(f)
+
+
+# -- repack -------------------------------------------------------------------
+
+
+#: The stages :func:`repack` re-reduces. Every other group is copied through untouched
+#: (bar the dtype policy), including ones this module knows nothing about: a
+#: ``dfpose_predict/`` group is somebody else's record of what they did to this file, and
+#: dropping it during a *space* optimization would be the same silent loss of provenance
+#: the reprojection-error rule exists to prevent.
+_POINT_STAGES = ("pictorial_structures", "triangulation", "eks", "postprocess")
+
+
+def repack(path: str | Path, *, dst: str | Path | None = None) -> tuple[int, int]:
+    """Rewrite a ``results.h5`` in the current schema, in place by default.
+
+    Reads whatever :data:`READABLE_VERSIONS` allows and writes v3: point arrays narrowed
+    to float32 and deflated, and any 2D or reprojection error a reader can rebuild left
+    out. Nothing is recomputed -- the pose in the file is the pose that comes out, to
+    within the float32 storage step -- so this is the way to shrink an existing recording
+    without re-running the pipeline over it.
+
+    The rewrite goes to a sibling temporary file and is moved into place only once it is
+    complete, so an interrupted repack leaves the original intact.
+
+    Parameters
+    ----------
+    path
+        The ``results.h5`` to repack.
+    dst
+        Write here instead of over ``path``.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(bytes_before, bytes_after)``.
+
+    Raises
+    ------
+    ValueError
+        If the file was written by a newer build, or is not a deeperfly result.
+    """
+    import os
+    import tempfile
+
+    src = Path(path)
+    out = Path(dst) if dst is not None else src
+    before = src.stat().st_size
+    with h5py.File(src, "r") as f:
+        try:
+            meta = json.loads(f.attrs.get("meta", "{}") or "{}")  # type: ignore[arg-type]
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{src} has no readable deeperfly metadata") from e
+        version = _version_in(f)
+        if _is_newer(version):
+            raise ValueError(_newer_message(src, version))
+        if version not in READABLE_VERSIONS:
+            raise ValueError(
+                f"{src} has deeperfly format version {version!r}, which this build "
+                f"cannot read (expected one of "
+                f"{', '.join(str(v) for v in READABLE_VERSIONS)})"
+            )
+        cameras = _cameras_from(f)
+        obs2d = (
+            np.asarray(f["pose2d/points"][()], dtype=float)  # type: ignore[index]
+            if "pose2d/points" in f
+            else None
+        )
+        # The reduced groups are rebuilt wholesale below; everything else is copied, so
+        # name their datasets here rather than deciding per dataset during the walk.
+        rebuilt = {
+            s
+            for s in _POINT_STAGES
+            if s in f and "points3d" in f[s]  # type: ignore[operator]
+        }
+        fd, tmp = tempfile.mkstemp(
+            dir=str(out.parent), prefix=f".{out.name}.", suffix=".repack"
+        )
+        os.close(fd)
+        tmp_path = Path(tmp)
+        try:
+            with h5py.File(tmp_path, "w") as d:
+                for k, v in f.attrs.items():
+                    d.attrs[k] = v
+                d.attrs["meta"] = json.dumps(
+                    {**meta, "deeperfly_format_version": FORMAT_VERSION}
+                )
+
+                def visit(name: str, obj) -> None:
+                    top = name.split("/")[0]
+                    if top in rebuilt:
+                        return
+                    if isinstance(obj, h5py.Group):
+                        g = d.require_group(name)
+                        for k, v in obj.attrs.items():
+                            g.attrs[k] = v
+                        return
+                    parent = (
+                        d.require_group(name.rsplit("/", 1)[0]) if "/" in name else d
+                    )
+                    leaf = name.rsplit("/", 1)[-1]
+                    # Strings and other non-numeric data are copied as they are: the
+                    # dtype policy is about float precision and has nothing to say here.
+                    if obj.dtype.kind in "OSU" or h5py.check_string_dtype(obj.dtype):
+                        ds = parent.create_dataset(leaf, data=obj[()], dtype=obj.dtype)
+                    else:
+                        ds = _put(parent, leaf, obj[()])
+                    for k, v in obj.attrs.items():
+                        ds.attrs[k] = v
+
+                f.visititems(visit)
+                for stage in _POINT_STAGES:
+                    if stage not in rebuilt:
+                        continue
+                    g_src = f[stage]
+                    pts3d = np.asarray(g_src["points3d"][()], dtype=float)  # type: ignore[index]
+                    known = {
+                        "points",
+                        "points3d",
+                        "reproj_error",
+                        "points2d_override",
+                        "points2d_override_cols",
+                    }
+                    g_out = d.create_group(stage)
+                    for k, v in g_src.attrs.items():  # type: ignore[union-attr]
+                        g_out.attrs[k] = v
+                    _write_points_group(
+                        g_out,
+                        pts2d=_rebuild_pts2d(g_src, cameras),  # type: ignore[arg-type]
+                        pts3d=pts3d,
+                        reproj_error=_rebuild_reproj_error(g_src, obs2d, cameras),  # type: ignore[arg-type]
+                        extra={
+                            k: g_src[k][()]  # type: ignore[index]
+                            for k in g_src  # type: ignore[union-attr]
+                            if k not in known and isinstance(g_src[k], h5py.Dataset)  # type: ignore[index]
+                        },
+                        cameras=cameras,
+                        obs2d=obs2d,
+                    )
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    os.replace(tmp_path, out)
+    return before, out.stat().st_size
 
 
 # -- camera (de)serialization ------------------------------------------------

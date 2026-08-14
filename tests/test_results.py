@@ -176,8 +176,13 @@ def test_store_candidates_roundtrip(cameras, rng, tmp_path):
     _write_base(store, cameras, rng, candidates=cand)
     assert store.has_candidates()
     got = store.read_candidates()
-    np.testing.assert_array_equal(got.xy, cand.xy)
-    np.testing.assert_array_equal(got.score, cand.score)
+    # To float32 resolution, not bit-exactly: big point arrays are narrowed on the way in.
+    # Not asserted against a fixed dtype either, because whether a given array is narrowed
+    # depends on its *size* -- these fixtures straddle the threshold, ``xy`` above it and
+    # ``score`` below -- and this test is about the round trip being faithful. What the
+    # policy does by size is ``test_storage_policy_narrows_and_deflates_only_big_arrays``.
+    np.testing.assert_allclose(got.xy, cand.xy, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(got.score, cand.score, rtol=1e-6, atol=1e-7)
 
     _write_base(store, cameras, rng)  # rewrite without candidates -> gone
     assert not store.has_candidates()
@@ -563,3 +568,328 @@ def test_the_true_distortion_lengths_survive_the_round_trip(tmp_path, fly):
         image_sizes={"a": (48, 64), "b": (48, 64)},
     )
     assert store.read_camera_meta("pose2d")["dist_lengths"] == [0, 5]
+
+
+# -- v3: what a stage stores, and what a reader rebuilds ------------------------
+
+
+def _stage_arrays(cameras, rng, *, t=6):
+    """``(pts2d, pts3d, proj)`` for a stage write: an independent 2D and a projected one.
+
+    ``t`` is deliberately small; the arrays that need to clear the compression threshold
+    say so themselves.
+    """
+    n = 38
+    pts3d = rng.uniform(-1.5, 1.5, size=(t, n, 3))
+    proj = np.array(cameras.project(pts3d), dtype=float)
+    assert np.isfinite(proj).all(), "fixture rig projects the fixture points off-camera"
+    pts2d = proj + rng.normal(scale=3.0, size=proj.shape)  # an independent measurement
+    return pts2d, pts3d, proj
+
+
+def test_a_2d_that_is_its_3d_reprojected_is_not_stored(cameras, rng, tmp_path):
+    """The smoother's 2D is exactly ``project(points3d)``, so v3 keeps only the 3D."""
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng)
+    store.write_points("eks", pts2d=proj, pts3d=pts3d, reproj_error=None)
+
+    with h5py.File(store.path, "r") as f:
+        assert "points" not in f["eks"]
+        assert f["eks"].attrs["points2d_storage"] == "derived"
+    got2d, got3d, _ = store.read_points("eks")
+    np.testing.assert_allclose(got2d, proj, rtol=0, atol=1e-4)
+    np.testing.assert_allclose(got3d, pts3d, rtol=0, atol=1e-6)
+
+
+def test_a_2d_frozen_over_time_is_stored_as_an_override(cameras, rng, tmp_path):
+    """The correction chain freezes a few columns in pixel space; only those are stored.
+
+    They are not recoverable from the 3D -- that is the whole point of ``freeze_2d``,
+    which takes each view's own temporal center rather than reprojecting -- but they are
+    constant over time, so the payload is per-view constants and not an array per frame.
+    """
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng)
+    frozen = [3, 11]
+    pts2d = proj.copy()
+    pts2d[:, :, frozen, :] = proj[:, :1, frozen, :] + 5.0  # per view, constant in time
+    store.write_points("postprocess", pts2d=pts2d, pts3d=pts3d, reproj_error=None)
+
+    with h5py.File(store.path, "r") as f:
+        g = f["postprocess"]
+        assert "points" not in g
+        assert g.attrs["points2d_storage"] == "override"
+        assert list(g["points2d_override_cols"][()]) == frozen
+        # (V, len(frozen), 2) and nothing per frame -- the saving is the whole reason.
+        assert g["points2d_override"].shape == (len(cameras), len(frozen), 2)
+    got2d, _, _ = store.read_points("postprocess")
+    np.testing.assert_allclose(got2d, pts2d, rtol=0, atol=1e-4)
+
+
+def test_a_2d_that_differs_per_frame_is_stored_whole(cameras, rng, tmp_path):
+    """An override is only for columns held *constant*; per-frame information is not one."""
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng)
+    pts2d = proj.copy()
+    pts2d[:, :, 4, :] += rng.normal(scale=2.0, size=(len(cameras), proj.shape[1], 2))
+    store.write_points("postprocess", pts2d=pts2d, pts3d=pts3d, reproj_error=None)
+
+    with h5py.File(store.path, "r") as f:
+        assert f["postprocess"].attrs["points2d_storage"] == "full"
+        assert "points" in f["postprocess"]
+
+
+def test_an_independent_2d_is_stored_whole(cameras, rng, tmp_path):
+    """Triangulation's cleaned observations are a measurement, not a reprojection."""
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    pts2d, pts3d, _ = _stage_arrays(cameras, rng)
+    pts2d[0, 0, 0] = np.nan  # a rejected observation
+    store.write_points("triangulation", pts2d=pts2d, pts3d=pts3d, reproj_error=None)
+
+    with h5py.File(store.path, "r") as f:
+        assert f["triangulation"].attrs["points2d_storage"] == "full"
+    got2d, _, _ = store.read_points("triangulation")
+    assert np.isnan(got2d[0, 0, 0]).all()  # the rejection survives
+    np.testing.assert_allclose(got2d[1], pts2d[1], rtol=0, atol=1e-4)
+
+
+def test_a_stored_2d_keeps_its_reproj_error_as_an_audit_record(cameras, rng, tmp_path):
+    """A stage whose 2D is stored whole keeps its error even when it is recomputable.
+
+    Not an oversight: that 2D is the one an outside tool can overwrite, and a recomputed
+    error agrees with the stored 3D by construction, so it could never reveal the
+    substitution. ``acquisition.stored_vs_pose2d`` reads the stored value for exactly that.
+    """
+    store = StageStore(tmp_path / "results.h5")
+    obs2d, _ = _write_base(store, cameras, rng)
+    pts2d, pts3d, proj = _stage_arrays(cameras, rng, t=obs2d.shape[1])
+    recomputable = np.linalg.norm(proj - obs2d, axis=-1)
+    store.write_points(
+        "triangulation", pts2d=pts2d, pts3d=pts3d, reproj_error=recomputable
+    )
+
+    with h5py.File(store.path, "r") as f:
+        assert f["triangulation"].attrs["points2d_storage"] == "full"
+        assert "reproj_error" in f["triangulation"]
+
+
+def test_a_derived_2d_drops_a_recomputable_reproj_error(cameras, rng, tmp_path):
+    """The smoother's error is measured against the detections, so a reader recomputes it."""
+    store = StageStore(tmp_path / "results.h5")
+    obs2d, _ = _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng, t=obs2d.shape[1])
+    reproj = np.linalg.norm(proj - obs2d, axis=-1)
+    store.write_points("eks", pts2d=proj, pts3d=pts3d, reproj_error=reproj)
+
+    with h5py.File(store.path, "r") as f:
+        assert "reproj_error" not in f["eks"]
+    _, _, got = store.read_points("eks")
+    np.testing.assert_allclose(got, reproj, rtol=0, atol=1e-4)
+
+
+def test_a_reproj_error_measured_against_something_else_is_stored(
+    cameras, rng, tmp_path
+):
+    """Dropping it is conditional on a recomputation *reproducing* it, never assumed."""
+    store = StageStore(tmp_path / "results.h5")
+    obs2d, _ = _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng, t=obs2d.shape[1])
+    store.write_points(
+        "eks", pts2d=proj, pts3d=pts3d, reproj_error=np.full(obs2d.shape[:3], 7.0)
+    )
+
+    with h5py.File(store.path, "r") as f:
+        assert f["eks"].attrs["points2d_storage"] == "derived"  # the 2D still went
+        assert "reproj_error" in f["eks"]  # the error did not
+    _, _, got = store.read_points("eks")
+    np.testing.assert_allclose(got, 7.0)
+
+
+def test_storage_policy_narrows_and_deflates_only_big_arrays(cameras, rng, tmp_path):
+    """float32 + deflate for point arrays; small arrays, and so every rig, stay float64.
+
+    The size threshold is what keeps the policy away from the arrays whose precision is
+    load-bearing without this having to know which those are.
+    """
+    store = StageStore(tmp_path / "results.h5")
+    v, t, n = len(cameras), 40, 38
+    store.write_pose2d(
+        cameras=cameras,
+        skeleton=Skeleton.fly(),
+        pts2d=rng.normal(size=(v, t, n, 2)),
+        conf=rng.uniform(size=(v, t, n)),
+        image_sizes=_image_sizes(cameras),
+    )
+    with h5py.File(store.path, "r") as f:
+        big = f["pose2d/points"]
+        assert big.size >= 4096 and big.dtype == np.float32
+        assert big.compression == "gzip"
+        for name in ("rvecs", "tvecs", "intrs"):
+            rig = f[f"pose2d/cameras/{name}"]
+            assert rig.dtype == np.float64, f"{name} must keep full precision"
+            assert rig.compression is None
+
+
+# -- repack --------------------------------------------------------------------
+
+
+def _write_v2(path, cameras, rng, *, t=6):
+    """A schema-v2 file: every stage storing every array, the way older builds wrote them.
+
+    Built by hand rather than by the store, because the store only writes the current
+    schema -- which is the thing :func:`repack` has to be fed an older file to test.
+    """
+    from deeperfly.results import _write_cameras, _write_skeleton
+
+    v, n = len(cameras), 38
+    pts3d = rng.uniform(-1.5, 1.5, size=(t, n, 3))
+    proj = np.array(cameras.project(pts3d), dtype=float)
+    pts2d = proj + rng.normal(scale=3.0, size=proj.shape)
+    pts2d[0, 0, 0] = np.nan
+    err = np.linalg.norm(proj - pts2d, axis=-1)
+    with h5py.File(path, "w") as f:
+        f.attrs["meta"] = json.dumps(
+            {"deeperfly_format_version": 2, "created_utc": "2026-01-01T00:00:00+00:00"}
+        )
+        _write_skeleton(f.create_group("skeleton"), Skeleton.fly())
+        g = f.create_group("pose2d")
+        g.create_dataset("points", data=pts2d)
+        g.create_dataset("conf", data=rng.uniform(size=(v, t, n)))
+        _write_cameras(g.create_group("cameras"), cameras)
+        _write_cameras(
+            f.create_group("bundle_adjustment").create_group("cameras"), cameras
+        )
+        for stage, s2 in (
+            ("triangulation", pts2d),
+            ("eks", proj),
+            ("postprocess", proj),
+        ):
+            gs = f.create_group(stage)
+            gs.create_dataset("points", data=s2)
+            gs.create_dataset("points3d", data=pts3d)
+            gs.create_dataset("reproj_error", data=err)
+    return pts2d, pts3d, proj
+
+
+def test_repack_preserves_the_pose_and_shrinks_the_file(cameras, rng, tmp_path):
+    from deeperfly.results import repack
+
+    path = tmp_path / "results.h5"
+    _write_v2(path, cameras, rng, t=40)
+    before_result = PoseResult.load(path)
+    before, after = repack(path)
+
+    assert after < before
+    got = PoseResult.load(path)
+    # Reconstructed, not reread -- and still the same pose to the float32 storage step.
+    np.testing.assert_allclose(got.pts2d, before_result.pts2d, rtol=0, atol=1e-3)
+    np.testing.assert_allclose(got.pts3d, before_result.pts3d, rtol=0, atol=1e-5)
+    np.testing.assert_allclose(
+        got.reproj_error, before_result.reproj_error, rtol=0, atol=1e-3
+    )
+    assert np.array_equal(np.isnan(got.pts2d), np.isnan(before_result.pts2d))
+    with h5py.File(path, "r") as f:
+        assert json.loads(f.attrs["meta"])["deeperfly_format_version"] == FORMAT_VERSION
+        assert f["triangulation"].attrs["points2d_storage"] == "full"
+        assert f["eks"].attrs["points2d_storage"] == "derived"
+        assert "points" not in f["eks"]
+
+
+def test_repack_keeps_groups_it_does_not_know_about(cameras, rng, tmp_path):
+    """A foreign tool's record of what it did to this file is not a space saving.
+
+    ``dfpose_predict/`` is written by the labeling pipeline and read back by
+    ``acquisition`` to detect reseeded cells; a repack that dropped it would destroy the
+    provenance the reprojection-error rule exists to protect.
+    """
+    from deeperfly.results import repack
+
+    path = tmp_path / "results.h5"
+    _write_v2(path, cameras, rng)
+    with h5py.File(path, "a") as f:
+        g = f.create_group("dfpose_predict")
+        g.create_dataset("contra_seed_source", data=np.arange(12, dtype=np.int32))
+        g["contra_seed_source"].attrs["legend"] = json.dumps({"reprojection": 3})
+        g.attrs["note"] = "written elsewhere"
+    repack(path)
+
+    with h5py.File(path, "r") as f:
+        assert np.array_equal(
+            f["dfpose_predict/contra_seed_source"][()], np.arange(12, dtype=np.int32)
+        )
+        assert json.loads(f["dfpose_predict/contra_seed_source"].attrs["legend"]) == {
+            "reprojection": 3
+        }
+        assert f["dfpose_predict"].attrs["note"] == "written elsewhere"
+
+
+def test_repack_refuses_a_newer_file_and_leaves_it_alone(cameras, rng, tmp_path):
+    from deeperfly.results import repack
+
+    path = tmp_path / "results.h5"
+    _write_v2(path, cameras, rng)
+    with h5py.File(path, "a") as f:
+        f.attrs["meta"] = json.dumps({"deeperfly_format_version": FORMAT_VERSION + 1})
+    size = path.stat().st_size
+
+    with pytest.raises(ValueError, match="newer deeperfly"):
+        repack(path)
+    assert path.stat().st_size == size  # untouched
+    assert not list(path.parent.glob(".*.repack"))  # and no debris left behind
+
+
+def test_an_older_file_reads_but_does_not_let_the_run_skip_a_stage(
+    cameras, rng, tmp_path
+):
+    """The two halves of the version split, which is what makes repack worth having.
+
+    Reads work, so a viewer or an annotation session can open the corpus as it stands.
+    :meth:`StageStore.has` still reports incomplete, so a *run* recomputes rather than
+    appending current-schema groups into an older-schema file.
+    """
+    path = tmp_path / "results.h5"
+    pts2d, _, _ = _write_v2(path, cameras, rng)
+    store = StageStore(path)
+
+    assert not store.has("pose2d")  # a run would recompute from the root
+    assert not store.has("triangulation")
+    got = store.read_pose2d()  # but the detections are still readable
+    assert got is not None
+    np.testing.assert_array_equal(got[0], pts2d)
+    assert store.read_points("eks") is not None
+    assert PoseResult.load(path).pts3d is not None
+
+
+def test_the_correction_chain_still_gets_the_smoother_2d_it_no_longer_stores(
+    cameras, rng, tmp_path
+):
+    """The seam v3 leans on hardest, exercised through the real stage selector.
+
+    ``select_postprocess_input`` asks the smoother for *both* layers of its pose, and
+    insists they come from one stage -- "pairing a smoothed 3D with a triangulated 2D
+    would make the output a pose that no stage ever produced". v3 stops storing that 2D,
+    so this is the caller that would silently receive the wrong array, or ``None``, if the
+    reconstruction were not wired into :meth:`StageStore.read_points`.
+    """
+    from deeperfly.config import STAGES
+    from deeperfly.pipeline import stages as pipeline_stages
+
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    store.write_cameras("bundle_adjustment", cameras)
+    pts2d, pts3d, proj = _stage_arrays(cameras, rng)
+    store.write_points("triangulation", pts2d=pts2d, pts3d=pts3d, reproj_error=None)
+    store.write_points("eks", pts2d=proj, pts3d=pts3d, reproj_error=None)
+
+    enabled = dict.fromkeys(STAGES, True)
+    got = pipeline_stages.select_postprocess_input(enabled, store)
+    assert got is not None, "the chain would skip, reporting no 3D to correct"
+    got2d, got3d = got
+    # The smoother's, reconstructed -- not the triangulation 2D sitting next to it.
+    np.testing.assert_allclose(got2d, proj, rtol=0, atol=1e-4)
+    np.testing.assert_allclose(got3d, pts3d, rtol=0, atol=1e-6)
+    assert np.abs(got2d - pts2d).max() > 1.0  # positively not the upstream array

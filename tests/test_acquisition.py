@@ -255,8 +255,14 @@ def test_prepare_inputs_reads_pose2d_not_the_derived_layer(
     _reseed(path, cameras)
 
     inputs = prepare_inputs(path)
-    assert np.array_equal(inputs.pts2d, noisy)
-    assert not np.array_equal(PoseResult.load(path).pts2d, noisy)  # the trap
+    # To within the float32 storage step, not bit-exactly: which *layer* was read is the
+    # question, and the substituted one sits 40 px away -- five orders above any storage
+    # error, so the tolerance cannot hide a wrong answer. The second assertion says so
+    # positively rather than settling for "not identical", which a narrowed dtype alone
+    # would now satisfy.
+    np.testing.assert_allclose(inputs.pts2d, noisy, rtol=0, atol=1e-3)
+    derived = PoseResult.load(path).pts2d  # the trap
+    assert np.nanmax(np.abs(derived - noisy)) > 1.0
 
 
 def test_prepare_inputs_detects_reseeding_without_the_per_cell_array(

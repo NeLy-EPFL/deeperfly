@@ -13,6 +13,7 @@ neither real weights nor video files.
 
 from __future__ import annotations
 
+import json
 import re
 
 import numpy as np
@@ -1710,3 +1711,42 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
         "bundle_adjustment"
     )
     assert (meta["units"], meta["scale_source"]) == ("mm", "board")
+
+
+def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
+    """``deeperfly repack`` over a directory: every results.h5 under it, once each."""
+    import argparse
+
+    import h5py
+
+    from deeperfly.cli.report import _cmd_repack
+    from deeperfly.results import FORMAT_VERSION
+    from tests.test_results import _write_v2
+
+    sizes = {}
+    for name in ("rec1", "rec2"):
+        (tmp_path / name).mkdir()
+        path = tmp_path / name / "results.h5"
+        _write_v2(path, cameras, rng, t=40)
+        sizes[path] = path.stat().st_size
+
+    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=True))
+    for path, size in sizes.items():  # a dry run replaces nothing
+        assert path.stat().st_size == size
+        with h5py.File(path, "r") as f:
+            assert json.loads(f.attrs["meta"])["deeperfly_format_version"] == 2
+    assert not list(tmp_path.rglob("*.repack"))
+
+    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=False))
+    for path, size in sizes.items():
+        assert path.stat().st_size < size
+        with h5py.File(path, "r") as f:
+            assert (
+                json.loads(f.attrs["meta"])["deeperfly_format_version"]
+                == FORMAT_VERSION
+            )
+
+    after = {p: p.stat().st_size for p in sizes}
+    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=False))
+    for path, size in after.items():  # already current: skipped, byte-for-byte
+        assert path.stat().st_size == size

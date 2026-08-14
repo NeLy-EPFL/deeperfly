@@ -33,7 +33,7 @@ from .project import (
     _cmd_project_skeleton,
     _cmd_project_status,
 )
-from .report import _cmd_doctor, _cmd_init, _cmd_inspect
+from .report import _cmd_doctor, _cmd_init, _cmd_inspect, _cmd_repack
 from .run import _cmd_run
 from .suggest import _cmd_labels_suggest
 
@@ -329,6 +329,28 @@ def inspect(
     """Print a summary of a result .h5 file."""
     _configure_logging(log_level.value)
     _cmd_inspect(argparse.Namespace(input=input))
+
+
+@app.command()
+def repack(
+    paths: Annotated[
+        list[str],
+        typer.Argument(
+            help="result .h5 files, or directories to search for results.h5"
+        ),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="report what each file would shrink to without replacing it",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Rewrite result .h5 files in the current schema, smaller, without recomputing."""
+    _configure_logging(log_level.value)
+    _cmd_repack(argparse.Namespace(paths=paths, dry_run=dry_run))
 
 
 @app.command()

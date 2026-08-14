@@ -33,7 +33,10 @@ stored as `NaN`, and the same convention carries through:
   `(view, point)` as `NaN` — the union of the per-view tables *is* the visibility.
 - Triangulation ignores `NaN` views and returns `NaN` for a point seen by fewer
   than `min_inliers` views.
-- The float64 HDF5 datasets preserve `NaN`, so it round-trips through `results.h5`.
+- The HDF5 datasets preserve `NaN`, so it round-trips through `results.h5`. Point arrays
+  are stored as `float32` (and deflated) but read back as `float64`: the values are pixel
+  coordinates and the millimeter 3D fitted from them, which `float32` resolves ~4 orders
+  finer than the detector can localize.
 
 When you read `pts3d`, treat `NaN` as "not reconstructed for this frame/point".
 Use `np.nanmedian` / `np.nanmax` and friends, as `deeperfly inspect` does.

@@ -68,6 +68,87 @@ def _cmd_inspect(args: argparse.Namespace) -> None:
         )
 
 
+# -- repack: rewrite result files in the current schema ------------------------
+
+
+def _results_files(targets: "list[str]") -> "list[Path]":
+    """Every ``results.h5`` named by ``targets``, deduplicated and sorted.
+
+    A target may be the file itself or a directory to search, which is what makes
+    repacking a whole corpus one command rather than a shell loop.
+    """
+    found: set[Path] = set()
+    for target in targets:
+        path = Path(target)
+        if path.is_dir():
+            found.update(p.resolve() for p in path.rglob("results.h5"))
+        elif path.exists():
+            found.add(path.resolve())
+        else:
+            console.print(f"[yellow]skipped[/yellow] {path} (does not exist)")
+    return sorted(found)
+
+
+def _cmd_repack(args: argparse.Namespace) -> None:
+    """Rewrite result files in the current schema, reporting what each one saved.
+
+    Nothing is recomputed: the pose in the file is the pose that comes out. Files already
+    in the current schema are left alone, because :func:`~deeperfly.results.repack` would
+    have nothing to take out of them.
+
+    Parameters
+    ----------
+    args
+        The ``repack`` namespace (``paths``, ``dry_run``).
+    """
+    import tempfile
+
+    from ..results import FORMAT_VERSION, repack, stored_version
+
+    files = _results_files(list(args.paths))
+    if not files:
+        console.print("[yellow]no results.h5 found[/yellow] at the given paths")
+        return
+    total_before = total_after = 0
+    done = skipped = failed = 0
+    for path in files:
+        if stored_version(path) == FORMAT_VERSION:
+            skipped += 1
+            log.debug("%s is already schema v%d", path, FORMAT_VERSION)
+            continue
+        try:
+            if args.dry_run:
+                # A dry run still does the work -- it is the only honest way to report
+                # the size -- and throws the result away instead of moving it into place.
+                with tempfile.TemporaryDirectory(dir=str(path.parent)) as tmp:
+                    before, after = repack(path, dst=Path(tmp) / "results.h5")
+            else:
+                before, after = repack(path)
+        except (ValueError, OSError) as e:
+            failed += 1
+            console.print(f"[red]failed[/red] {path}: {e}")
+            continue
+        done += 1
+        total_before += before
+        total_after += after
+        console.print(
+            f"{'would repack' if args.dry_run else 'repacked'} {path}  "
+            f"{_fmt_bytes(before)} -> {_fmt_bytes(after)}  "
+            f"[green]{before / max(after, 1):.2f}x[/green]"
+        )
+    verb = "would save" if args.dry_run else "saved"
+    _info_line(
+        "files:    ", f"{done} repacked, {skipped} already current, {failed} failed"
+    )
+    if done:
+        _info_line(
+            "total:    ",
+            f"{_fmt_bytes(total_before)} -> {_fmt_bytes(total_after)}  "
+            f"({verb} {_fmt_bytes(total_before - total_after)}, "
+            f"{total_before / max(total_after, 1):.2f}x)",
+        )
+
+
 # -- doctor: installation / runtime report -----------------------------------
 
 
