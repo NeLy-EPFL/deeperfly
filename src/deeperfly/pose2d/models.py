@@ -166,6 +166,68 @@ class LoadedModel:
         return self.spec.n_out_channels
 
     @property
+    def joint_views(self) -> bool:
+        """Whether this model's ``V`` axis is COUPLED -- views computed together, not apart.
+
+        ``False`` for a per-view detector (the hourglass, the dense HRNet): its ``V`` axis
+        is just more batch, so a caller may put anything there -- other cameras, other
+        candidate crops of one camera -- and the results are unchanged. ``True`` for the
+        multiview transformer, where attention runs across views: a view's output depends
+        on which other views were in the tensor, so the axis carries meaning and cannot be
+        borrowed. :mod:`deeperfly.pose2d.autocrop` reads this to decide whether one probe
+        is one image or one whole moment.
+        """
+        return bool(getattr(self.module, "joint_views", False))
+
+    @property
+    def padded_field(self) -> bool:
+        """Whether a peak may legitimately land OUTSIDE the model input.
+
+        ``True`` when the heatmap covers more than the input -- the dense HRNet pads the
+        field by 25% a side, so a joint the crop cuts off still has a cell and decodes to a
+        coordinate beyond ``[0, 1]``. ``False`` when the field spans the input exactly (the
+        hourglass, and the multiview transformer whose soft-argmax cannot leave it): there
+        a cut-off joint has nowhere to go and piles up *against* the border instead.
+
+        The distinction matters to anything asking "does this crop cut the animal?" --
+        :mod:`deeperfly.pose2d.autocrop` needs a different test in each case, and reading
+        the wrong one makes a clipping box look clean.
+        """
+        return bool(getattr(self.module, "padded_field", False))
+
+    @property
+    def accepts_gray(self) -> bool:
+        """Whether this model is happy with ONE-channel frames.
+
+        ``True`` only for a model whose own preparation turns the frame grayscale anyway --
+        then decoding color-free footage as three identical channels is work done twice, and
+        the decoder can hand over the luma plane it already has. ``False`` (the default) for
+        a model that reads three channels, and for any model whose relationship to color is
+        merely unstated: a detector trained through a color image must keep seeing one.
+
+        Read by :func:`deeperfly.pose2d.stream.detect_2d`, which grants the decoder
+        permission only when EVERY model of the plan says yes.
+        """
+        return bool(getattr(self.module, "accepts_gray", False))
+
+    @property
+    def prepares_on_host(self) -> bool:
+        """Whether this model's own preparation runs on the CPU, not the device.
+
+        A model that reproduces a host training pipeline (PIL, cv2 -- see
+        :func:`deeperfly.pose2d.mvt.prepare_images`) copies any device tensor it is handed
+        straight back down. Uploading the raw window for it is then pure round trip: the
+        frames go up, come back, and the only thing that needs to be on the device is the
+        small normalized input the preparation returns.
+        :func:`deeperfly.pose2d.inference.detect_sequence` reads this to leave such a
+        source's window on the host.
+        """
+        return bool(
+            getattr(self.module, "owns_prepare", False)
+            and getattr(self.module, "prepares_on_host", False)
+        )
+
+    @property
     def peak_convention(self) -> str:
         """How this model's normalized peaks map back through a resize.
 

@@ -289,6 +289,23 @@ def _make_net(arch: dict[str, Any]):
         #: prepares its own inputs (INTER_AREA + per-channel ImageNet).
         owns_decode = True
         owns_prepare = True
+        #: The preparation is PIL and cv2, i.e. host libraries, so a device tensor handed
+        #: to it is copied back down first. See
+        #: :attr:`deeperfly.pose2d.models.LoadedModel.prepares_on_host`.
+        prepares_on_host = True
+        #: The first thing the preparation does is make the frame grayscale, so a
+        #: one-channel frame is not a loss -- it is the frame with the redundant copies of
+        #: the luma left out. See
+        #: :attr:`deeperfly.pose2d.models.LoadedModel.accepts_gray`.
+        accepts_gray = True
+        #: The views of a frame are encoded TOGETHER, so the ``V`` axis is not spare batch:
+        #: a view's output depends on which others were in the tensor. See
+        #: :attr:`deeperfly.pose2d.models.LoadedModel.joint_views`.
+        joint_views = True
+        #: The decode's field is upsampled to EXACTLY the input, so a peak can never land
+        #: outside it -- a joint the crop cuts off saturates toward the border instead of
+        #: leaving the box, as it would in the dense HRNet's padded field.
+        padded_field = False
         #: LP's labels were written with no half-pixel term; see the module docstring.
         peak_convention = "pure-scale"
 
