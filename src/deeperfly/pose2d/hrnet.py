@@ -109,6 +109,14 @@ class HRNetPose:
         raise TypeError("use deeperfly.pose2d.hrnet.build()")
 
 
+#: Backbones whose feature widths are pinned to :data:`EXPECTED_CHANNELS`. Everything else
+#: is accepted on the strength of the stride check below.
+PINNED_CHANNEL_MODELS: frozenset[str] = frozenset({"hrnet_w18_small_v2", "hrnet_w32"})
+
+#: Strides the head consumes, coarse-to-fine. ``WANT_REDUCTIONS[0]`` is the heatmap grid.
+WANT_REDUCTIONS: tuple[int, ...] = (4, 8, 16, 32)
+
+
 def build(
     n_keypoints: int,
     model_name: str = "hrnet_w18_small_v2",
@@ -116,6 +124,7 @@ def build(
     pretrained: bool = False,
     lat: int = 96,
     mid: int = 128,
+    head: str = "concat",
 ):
     """The dense-38 detector as an ``nn.Module``: ``(N,3,H,W) -> [ (N,K,96,192) ]``.
 
@@ -130,29 +139,96 @@ def build(
     class _HRNetPose(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            # out_indices (1,2,3,4) -> strides 4/8/16/32; index 0 is the stride-2 stem.
-            self.backbone = timm.create_model(
-                model_name,
-                pretrained=pretrained,
-                features_only=True,
-                in_chans=3,
-                out_indices=(1, 2, 3, 4),
-            )
-            chs = tuple(self.backbone.feature_info.channels())
-            if chs != EXPECTED_CHANNELS:
+            # SELECT BY STRIDE, NOT BY INDEX. `out_indices=(1,2,3,4)` is a fact about
+            # HRNet -- it alone returns a stride-2 stem at index 0. A ResNet or HGNet
+            # returns four maps starting at stride 4, so that tuple would hand the head
+            # strides 8/16/32/32 and evaluate a plausible, wrong model. Mirrors the same
+            # fix in dfpose's models/hrnet_timm.py; for both HRNet arms this resolves to
+            # (1,2,3,4), i.e. the ported behaviour, unchanged.
+            kw = dict(pretrained=pretrained, features_only=True, in_chans=3)
+            try:
+                self.backbone = timm.create_model(model_name, img_size=(256, 512), **kw)
+            except TypeError:
+                self.backbone = timm.create_model(model_name, **kw)
+            red = tuple(self.backbone.feature_info.reduction())
+            missing = [r for r in WANT_REDUCTIONS if r not in red]
+            if missing:
+                raise RuntimeError(
+                    f"{model_name} exposes feature strides {red}; the stride-4 heatmap "
+                    f"head needs {WANT_REDUCTIONS} and {missing} are absent"
+                )
+            self._sel = tuple(red.index(r) for r in WANT_REDUCTIONS)
+            all_chs = tuple(self.backbone.feature_info.channels())
+            chs = tuple(all_chs[i] for i in self._sel)
+            if model_name in PINNED_CHANNEL_MODELS and chs != EXPECTED_CHANNELS:
                 raise RuntimeError(
                     f"timm {timm.__version__} gives {model_name} feature channels {chs}, "
                     f"expected {EXPECTED_CHANNELS}; the trained weights assume the latter"
                 )
-            self.laterals = nn.ModuleList(
-                [nn.Conv2d(c, lat, kernel_size=1) for c in chs]
-            )
-            self.head = nn.Sequential(
-                nn.Conv2d(lat * len(chs), mid, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(mid),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(mid, n_keypoints, kernel_size=1),
-            )
+            self.head_kind = head
+            self.decoder = None
+            if head == "concat":
+                self.laterals = nn.ModuleList(
+                    [nn.Conv2d(c, lat, kernel_size=1) for c in chs]
+                )
+                self.head = nn.Sequential(
+                    nn.Conv2d(
+                        lat * len(chs), mid, kernel_size=3, padding=1, bias=False
+                    ),
+                    nn.BatchNorm2d(mid),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(mid, n_keypoints, kernel_size=1),
+                )
+            elif head == "unet":
+                # Coarse-to-fine with skips, so a backbone whose stride-4 map is stage-1
+                # output still gets depth at heatmap resolution. Module names match
+                # dfpose's UNetDecoder exactly or the state dict will not load.
+                class _Dec(nn.Module):
+                    def __init__(self, chs, n_kp, dim):
+                        super().__init__()
+                        self.lat = nn.ModuleList(
+                            [nn.Conv2d(c, dim, kernel_size=1) for c in chs]
+                        )
+                        self.blocks = nn.ModuleList(
+                            [
+                                nn.Sequential(
+                                    nn.Conv2d(dim * 2, dim, 3, padding=1, bias=False),
+                                    nn.BatchNorm2d(dim),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv2d(dim, dim, 3, padding=1, bias=False),
+                                    nn.BatchNorm2d(dim),
+                                    nn.ReLU(inplace=True),
+                                )
+                                for _ in range(len(chs) - 1)
+                            ]
+                        )
+                        self.out = nn.Sequential(
+                            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
+                            nn.BatchNorm2d(dim),
+                            nn.ReLU(inplace=True),
+                            nn.Conv2d(dim, n_kp, kernel_size=1),
+                        )
+
+                    def forward(self, fs):
+                        x = self.lat[-1](fs[-1])
+                        for i, blk in zip(range(len(fs) - 2, -1, -1), self.blocks):
+                            x = F.interpolate(
+                                x,
+                                size=fs[i].shape[-2:],
+                                mode="bilinear",
+                                align_corners=False,
+                            )
+                            x = blk(torch.cat([x, self.lat[i](fs[i])], dim=1))
+                        py, px = HM_PAD_PX[0] // STRIDE, HM_PAD_PX[1] // STRIDE
+                        if py or px:
+                            x = F.pad(x, (px, px, py, py))
+                        return self.out(x)
+
+                self.laterals = nn.ModuleList()
+                self.head = nn.Identity()
+                self.decoder = _Dec(chs, n_keypoints, mid)
+            else:
+                raise RuntimeError(f"unknown head {head!r}; use 'concat' or 'unet'")
             self.num_classes = int(n_keypoints)
             #: Set by :func:`load_hrnet` from the checkpoint. The model normalizes its
             #: own input, so a ModelSpec for it declares ``mean = 0.0``.
@@ -162,6 +238,10 @@ def build(
             #: not apply. `LoadedModel` reads this flag and routes to `predict_points`
             #: here instead -- see the module docstring, point 1.
             self.owns_decode = True
+            #: The same padding, stated as what it means to a CONSUMER of the points: a
+            #: peak may land outside [0, 1], which is a joint the crop cut off rather
+            #: than an error. See `LoadedModel.padded_field`.
+            self.padded_field = True
 
         def forward(self, x: "torch.Tensor") -> list["torch.Tensor"]:
             # The pathway hands us (N, 3, H, W) already resized. The three channels are
@@ -170,7 +250,17 @@ def build(
             # NOT a luminance mix, which would be a different input than training saw.
             g = x[:, :1]
             g = (g - self.norm_mean) / self.norm_std
-            fs = list(self.backbone(g.repeat(1, 3, 1, 1)))
+            raw = list(self.backbone(g.repeat(1, 3, 1, 1)))
+            fs = [raw[i] for i in self._sel]
+            if fs[0].shape[1] != (
+                self.laterals[0].in_channels
+                if len(self.laterals)
+                else self.decoder.lat[0].in_channels
+            ):
+                # NHWC (swin, maxvit). Detected from the tensor, not a model-name list.
+                fs = [f.permute(0, 3, 1, 2).contiguous() for f in fs]
+            if self.decoder is not None:
+                return [self.decoder(fs)]
             h, w = fs[0].shape[-2:]  # stride-4 == the UNPADDED heatmap grid
             red = [lat(f) for lat, f in zip(self.laterals, fs, strict=True)]
             ups = [red[0]] + [
@@ -269,8 +359,20 @@ def load_hrnet(weights: str | Path, *, dev: str | None = None, mean: float = 0.0
             "Run it through the grouped multiview path, not a per-view pathway."
         )
     names = list(ck.get("point_names") or [])
-    n_kp = len(names) or int(sd["head.3.weight"].shape[0])
-    model = build(n_kp, MODEL_NAMES.get(ck.get("backbone", ""), "hrnet_w18_small_v2"))
+    # The head is read from the checkpoint, not defaulted. A `unet` checkpoint rebuilt as
+    # `concat` fails load_state_dict on missing `laterals.*` -- and a caller that filters
+    # output to result rows sees an arm with no rows rather than an error. dfpose lost
+    # every unet arm to exactly this before it was caught.
+    head = str(ck.get("args", {}).get("head", "concat"))
+    n_kp = len(names) or int(
+        sd["decoder.out.3.weight" if head == "unet" else "head.3.weight"].shape[0]
+    )
+    backbone = ck.get("backbone", "")
+    model = build(
+        n_kp,
+        MODEL_NAMES.get(backbone, backbone or "hrnet_w18_small_v2"),
+        head=head,
+    )
     model.load_state_dict(sd, strict=True)
     model.norm_mean = float(ck.get("mean", 0.0))
     model.norm_std = float(ck.get("std", 1.0))
