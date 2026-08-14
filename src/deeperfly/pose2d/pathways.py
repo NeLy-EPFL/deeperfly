@@ -239,6 +239,36 @@ class DetectionPlan:
                     )
         return out
 
+    def view_transforms(self) -> dict[str, tuple[FrameTransform, ...]]:
+        """``view name -> every DISTINCT preprocessing chain a pathway detects it through``.
+
+        The companion of :meth:`view_sources`, but it hands back all the candidates rather
+        than picking one, because unlike a source the right answer depends on what the
+        caller wants from the chain. The rig's mirrored twin -- one source feeding two
+        pathways into one view, one of them flipped -- is two different chains looking
+        through the *same window*, so a caller after the window has no conflict while a
+        caller after the chirality has no answer.
+
+        Identity chains are dropped: a pathway that detects on the raw frame constrains
+        nothing, and keeping it would make every mirrored twin look like a disagreement.
+
+        Views no pathway writes are absent, in pathway (config) order.
+
+        Returns
+        -------
+        dict of str to tuple of FrameTransform
+            The distinct non-identity chains per view.
+        """
+        out: dict[str, list[FrameTransform]] = {}
+        for pw in self.pathways:
+            if pw.transform.is_identity():
+                continue
+            for v in np.unique(pw.mapping[:, 1]):
+                seen = out.setdefault(self.view_names[int(v)], [])
+                if pw.transform not in seen:
+                    seen.append(pw.transform)
+        return {view: tuple(chains) for view, chains in out.items()}
+
     @classmethod
     def from_config(cls, config) -> DetectionPlan:
         """Build a plan from a :class:`~deeperfly.config.Config`.

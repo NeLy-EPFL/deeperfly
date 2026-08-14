@@ -467,6 +467,60 @@ class FrameTransform:
         """
         return _apply_affine(np.linalg.inv(self.affine(size)), pts)
 
+    def raw_window(self, raw_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        """The RAW-frame window ``(x, y, width, height)`` this chain's output covers.
+
+        Every op in the grammar maps an axis-aligned rectangle to an axis-aligned
+        rectangle -- a crop translates, a resize scales, a flip or quarter-turn permutes
+        the corners -- so the transformed frame always has exactly one raw-pixel box
+        behind it. Recovered by mapping the output frame's pixel *edges* back through
+        :meth:`affine`, which is exact for every op (the half-pixel resize convention
+        included: its edges are fixed points of the map).
+
+        This is what lets a consumer that can only express a *window* borrow one from a
+        preprocessing chain instead of restating the box -- a ``[[visualization.videos]]``
+        panel showing the region its detection pathway looked through, say. Only the
+        region transfers, not the chirality: a chain that mirrors or turns the picture
+        has the same window as one that does not.
+
+        Parameters
+        ----------
+        raw_size
+            The raw frame ``(height, width)`` the chain is anchored on.
+
+        Returns
+        -------
+        x, y, width, height : int
+            The window in raw-frame pixels. The full frame for the identity.
+
+        Raises
+        ------
+        ValueError
+            If a crop in the chain does not fit inside ``raw_size`` (a stale box against
+            differently-sized footage) -- via :meth:`output_size`.
+        """
+        height, width = self.output_size(raw_size)  # bounds-checks the crops
+        inv = np.linalg.inv(self.affine(raw_size))
+        # Pixel EDGES, not centers: the window's extent is the outer boundary of the
+        # first and last pixel kept, and a center-to-center span would lose a pixel.
+        edges = np.array(
+            [
+                [-0.5, -0.5],
+                [width - 0.5, -0.5],
+                [-0.5, height - 0.5],
+                [width - 0.5, height - 0.5],
+            ]
+        )
+        raw = _apply_affine(inv, edges)
+        x0, y0 = raw.min(axis=0)
+        x1, y1 = raw.max(axis=0)
+        return (
+            int(round(float(x0) + 0.5)),
+            int(round(float(y0) + 0.5)),
+            int(round(float(x1 - x0))),
+            int(round(float(y1 - y0))),
+        )
+
     def map_intrinsics(
         self, intr: np.ndarray, dist: np.ndarray, raw_size: tuple[int, int]
     ) -> np.ndarray:

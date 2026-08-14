@@ -735,12 +735,43 @@ def source_view_frames(
     )
 
 
+def _staged_points(specs, store) -> tuple[dict, dict]:
+    """Read the per-stage points any panel names, as ``(pts2d, pts3d)`` by stage.
+
+    Only the stages actually referenced are read: each is a full ``(V, T, P, ...)``
+    array, so loading every stage a file happens to hold would multiply the render's
+    memory for videos that never ask.
+    """
+    wanted = sorted({p.stage for spec in specs for p in spec.panels if p.stage})
+    if not wanted:
+        return {}, {}
+    if store is None:
+        log.warning(
+            "panels name stage(s) %s but no results store was passed; those videos "
+            "cannot be rendered",
+            ", ".join(wanted),
+        )
+        return {}, {}
+    pts2d, pts3d = {}, {}
+    for stage in wanted:
+        got = store.read_points(stage)
+        if got is None:
+            continue
+        p2, p3, _ = got
+        if p2 is not None:
+            pts2d[stage] = p2
+        if p3 is not None:
+            pts3d[stage] = p3
+    return pts2d, pts3d
+
+
 def render_videos(
     config: Config,
     result: PoseResult,
     outdir: Path,
     *,
     sources: dict[str, list[Path]] | None = None,
+    store: "StageStore | None" = None,
     progress=None,
 ) -> None:
     """Render every ``[[visualization.videos]]`` to ``<outdir>/<name>.mp4``.
@@ -762,6 +793,11 @@ def render_videos(
         The directory the MP4s are written to.
     sources
         Optional pre-resolved footage map for the ``imshow`` overlay panels.
+    store
+        The recording's stage store, needed only by panels that name a ``stage``
+        (``{ plot = "skeleton_3d", stage = "triangulation" }``). Without it such a video
+        is skipped rather than silently drawn from the resolved result -- the whole
+        reason to name a stage is that the resolved one is a different array.
     progress
         Optional progress factory threaded into the per-video compositor.
     """
@@ -773,9 +809,30 @@ def render_videos(
         log.info("no [[visualization.videos]] in the config; nothing to render")
         return
 
+    stage_pts2d, stage_pts3d = _staged_points(specs, store)
     pending = []
     for spec in specs:
-        if result.pts3d is None and any(p.plot == "skeleton_3d" for p in spec.panels):
+        want = {p.stage for p in spec.panels if p.stage}
+        short = sorted(
+            s
+            for s in want
+            if (
+                any(p.stage == s and p.plot == "skeleton_3d" for p in spec.panels)
+                and s not in stage_pts3d
+            )
+            or (
+                any(p.stage == s and p.plot == "skeleton_2d" for p in spec.panels)
+                and s not in stage_pts2d
+            )
+        )
+        if short:
+            log.warning(
+                "skipping video %r: its panels draw stage(s) %s, which this "
+                "results.h5 does not have (enable them and re-run)",
+                spec.video_name,
+                ", ".join(short),
+            )
+        elif result.pts3d is None and any(p.plot == "skeleton_3d" for p in spec.panels):
             log.warning(
                 "skipping video %r: it reprojects the 3D skeleton but the result has "
                 "no 3D pose (enable [pipeline].do_triangulation or do_pictorial_structures)",
@@ -813,6 +870,8 @@ def render_videos(
         nmf_abdomen_scale=result.nmf_abdomen_scale,
         nmf_body_scale=result.nmf_body_scale,
         nmf_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
+        stage_pts2d=stage_pts2d,
+        stage_pts3d=stage_pts3d,
     )
     make_progress = progress or _null_progress
     import os

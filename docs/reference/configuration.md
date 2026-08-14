@@ -521,6 +521,7 @@ Global settings plus one `[[visualization.videos]]` per output MP4.
 | `background` | str or [r, g, b] | `"black"` | Canvas fill (overridable per video / per panel). |
 | `output_fps` | float | input fps | Explicit output frame rate for every video. |
 | `speed` | float | `1.0` | Scale the input fps instead (`0.5` = slow motion). `output_fps` wins if both are set. |
+| `crop` | [x, y, w, h] or str | whole frame | Default panel window (overridable per video / per panel). `"pose2d"` resolves per view — see [`crop`](#panel-crop) below. |
 | `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the videos (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). |
 
 **`[visualization.kwargs]`** — draw-op defaults shared by every video, keyed by
@@ -536,6 +537,7 @@ winning.
 | `panels` | list[table] | *required* | Ordered panels (below); they draw in order, so a skeleton panel over an `imshow` at the same offset overlays it. |
 | `width`, `height` | int | auto-size | Canvas size in pixels; omit to fit all panels. |
 | `background` | str or [r, g, b] | inherits global | Per-video canvas fill. |
+| `crop` | [x, y, w, h] or str | inherits global | Per-video panel window. |
 | `kwargs` | table | `{}` | Per-video draw-op kwargs (merges over the global). |
 
 **Panel** — one draw op for one view at a pixel offset:
@@ -543,12 +545,87 @@ winning.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into the view), `"skeleton_nmf"` (the fitted inverse-kinematics model skeleton reprojected into the view), or `"mesh_nmf"` (the fitted NeuroMechFly *mesh*, shaded and reprojected; `alpha` sets its opacity). |
-| `view` | str | *required* | Camera/view name. |
+| `view` | str | *required* | Camera/view name, or the reserved `"bird"` (below). |
 | `x0`, `y0` | int | `0` | Top-left pixel of the panel. |
 | `scale` | float | `1.0` | Uniform scale. |
 | `width`, `height` | int | from `scale` | Target box (priority over `scale`); one given → the other follows to keep aspect. |
+| `crop` | [x, y, w, h] or str | whole frame | Show only this window of the view's raw frame, and size the panel to it. A string borrows the window from `[pose2d]` instead of restating it (below). |
+| `clip` | bool | `true` | Keep the op inside the panel's footprint. |
+| `stage` | str | most-derived | Which stage's points to draw: `"pose2d"`, `"pictorial_structures"`, `"triangulation"`, `"eks"`, `"postprocess"`. |
 | `background` | str or [r, g, b] | inherits | Per-panel fill. |
 | *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `palette`, …). |
+
+<a id="panel-crop"></a>
+`crop` is for a camera whose animal is a small part of a wide frame — an axial view at
+1600×1008 dropped whole into a 480×240 cell is a smudge with a squashed aspect. It moves
+the image origin and the geometry with it (2D points and the camera's principal point),
+so the overlay stays on the picture; nothing needs adjusting by hand.
+
+Usually the window you want is the one the detector already looks through, and
+`crop = "pose2d"` says so instead of repeating the numbers:
+
+```toml
+[visualization]
+crop = "pose2d"    # every panel shows the window ITS OWN view's pathway detects through
+```
+
+Resolved per view from `[[pose2d.pathways]]`, so one line covers a mixed rig: a view whose
+pathway runs full-frame stays uncropped, and a view no pathway writes — the derived `bird`
+plan view, say — is left alone. `crop = "<preprocessor name>"`
+borrows one `[[pose2d.preprocessors]]` chain by name instead, for a panel the per-view rule
+cannot answer. `crop` resolves across the same three levels as the draw-op kwargs
+(`[visualization]` → the video entry → the panel), most specific winning, so an explicit
+box on one panel still overrides a global setting.
+
+Prefer the reference to a copy of the box. `deeperfly dense-config` **regenerates**
+`[[pose2d.preprocessors]]` from a crop plan for each new recording, and a hand-copied panel
+box then keeps showing the *previous* recording's window under an overlay that still looks
+perfectly well-formed — a rendering bug that reads as a calibration error. The reference
+also travels into the visualization fingerprint, so moving the detector's crop re-renders
+the videos instead of reusing stale MP4s.
+
+Only the *region* transfers, not the orientation: a chain that also mirrors or turns the
+frame is logged, and the panel shows that region in the view's own orientation (the overlay
+is projected into view pixels, and a crop cannot express a reflection). A crop that does not
+fit the footage — a box from a differently-sized recording — fails loudly rather than
+truncating into a plausible-looking panel. And when two pathways window one view
+differently, the panel says so instead of picking one.
+
+`stage` pins what a video means. Left unset, a panel draws whatever the result resolved
+to — the most-derived stage in the file — so enabling a later stage silently changes an
+existing video: turn on `do_eks` and `pose3d` becomes the smoother's output, while
+`pose2d` stops showing the detector (EKS writes a corrected 2D as well). Naming the stage
+also makes a before/after pair expressible, as videos differing only in this key:
+
+```toml
+[[visualization.videos]]
+video_name = "pose3d"          # before
+panels = [{ plot = "skeleton_3d", view = "rf", stage = "triangulation" }]
+
+[[visualization.videos]]
+video_name = "pose3d_eks"      # after the smoother
+panels = [{ plot = "skeleton_3d", view = "rf", stage = "eks" }]
+
+[[visualization.videos]]
+video_name = "pose3d_post"     # ... and after the postprocess chain
+panels = [{ plot = "skeleton_3d", view = "rf", stage = "postprocess" }]
+```
+
+A panel naming a stage the file does not have skips its whole video with a logged reason
+rather than falling back — a fallback would render the pair as two copies of one array.
+
+`clip` exists because the draw ops honour `x0`/`y0` but do not stop at the panel edge, so
+in a grid a limb projecting out of its cell would be painted over the neighbouring
+camera's picture. Turn it off for a panel that is meant to spill. A panel placed at a
+negative offset is never clipped to its own footprint (only to the canvas).
+
+`view = "bird"` is a **derived** dorsal plan view rather than a rig camera: the body axes
+come from the 3D pose itself (anterior from the abdomen tip to the neck, lateral across
+the thorax-coxa joints, dorsal from their cross product with its sign settled by the
+claws), and the focal is solved so the animal fills the frame once for the whole clip. It
+shows all six legs with no body in the way, which the rig cannot do — the tether is above
+the animal. It has no footage, so give it a `skeleton_3d`/`skeleton_nmf` panel and no
+`imshow`. A real camera of that name takes precedence.
 
 A `skeleton_3d` panel needs a 3D pose, and the `skeleton_nmf` / `mesh_nmf` panels
 need the inverse-kinematics model; a video that requires one is skipped (with a

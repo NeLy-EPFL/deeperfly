@@ -371,6 +371,101 @@ def test_map_intrinsics_distortion_guard():
         FrameTransform((Rot90(k=2),)).map_intrinsics(intr, tangential, (100, 100))
 
 
+# -- raw_window ----------------------------------------------------------------
+#
+# The window is what a consumer that can only express a box -- a visualization panel --
+# borrows from a chain instead of restating it. Every case below is one a config could
+# hit, and getting any of them wrong shows the *wrong region* under a well-formed
+# overlay, which reads as a calibration problem rather than a rendering one.
+
+
+def test_raw_window_of_a_crop_is_the_crop():
+    t = FrameTransform((Crop(x=12, y=7, width=40, height=20),))
+    assert t.raw_window((96, 128)) == (12, 7, 40, 20)
+
+
+def test_raw_window_of_the_identity_is_the_whole_frame():
+    assert FrameTransform(()).raw_window((96, 128)) == (0, 0, 128, 96)
+
+
+@pytest.mark.parametrize(
+    "ops", [(Fliplr(),), (Flipud(),), (Rot90(k=1),), (Rot90(k=2),)]
+)
+def test_a_reorientation_alone_still_covers_the_whole_frame(ops):
+    # Mirroring or turning a frame changes which pixel is where, not which pixels are
+    # there -- so these chains are exactly the ones a panel CAN follow (by ignoring them).
+    assert FrameTransform(ops).raw_window((96, 128)) == (0, 0, 128, 96)
+
+
+def test_a_crop_after_a_flip_is_not_the_crop_s_own_numbers():
+    """The case that rules out reading the box straight off the config.
+
+    ``fliplr`` then ``crop x=0`` detects through the frame's RIGHT edge; a panel that
+    copied the crop's ``x`` would show the left one and be 924 pixels wrong while looking
+    entirely reasonable.
+    """
+    t = FrameTransform((Fliplr(), Crop(x=0, y=0, width=100, height=50)))
+    assert t.raw_window((96, 1024)) == (924, 0, 100, 50)
+
+
+def test_a_crop_after_a_quarter_turn_swaps_the_window_s_axes():
+    # rot90 maps (x, y) -> (y, w-1-x), so the crop's width bounds the RAW height.
+    t = FrameTransform((Rot90(k=1), Crop(x=0, y=0, width=10, height=20)))
+    assert t.raw_window((96, 128)) == (108, 0, 20, 10)
+
+
+def test_a_resize_does_not_move_the_window():
+    # The window is a region of the raw frame; resampling changes its resolution only.
+    box = (12, 7, 40, 20)
+    assert (
+        FrameTransform(
+            (Crop(x=12, y=7, width=40, height=20), Resize(scale=4.0))
+        ).raw_window((96, 128))
+        == box
+    )
+    assert (
+        FrameTransform(
+            (Crop(x=12, y=7, width=40, height=20), Resize(width=512, height=256))
+        ).raw_window((96, 128))
+        == box
+    )
+
+
+def test_a_crop_measured_in_resized_pixels_comes_back_in_raw_ones():
+    # Halve the frame, then keep a 10x10 window of it: 20x20 raw pixels at raw (20, 20).
+    t = FrameTransform((Resize(scale=0.5), Crop(x=10, y=10, width=10, height=10)))
+    assert t.raw_window((96, 128)) == (20, 20, 20, 20)
+
+
+def test_raw_window_agrees_with_what_apply_actually_kept():
+    """The end-to-end check: the window's pixels are the transform's pixels.
+
+    Compared as SETS of pixel values (a unique-value multiset), because the chain is
+    allowed to reorder them -- that is the one thing the window deliberately drops.
+    """
+    rng = np.random.default_rng(0)
+    frame = rng.integers(0, 255, size=(96, 128, 1), dtype=np.uint8)
+    for ops in [
+        (Crop(x=12, y=7, width=40, height=20),),
+        (Fliplr(), Crop(x=3, y=5, width=40, height=20)),
+        (Rot90(k=1), Crop(x=0, y=0, width=10, height=20)),
+        (Rot90(k=3), Flipud(), Crop(x=4, y=6, width=30, height=25)),
+    ]:
+        t = FrameTransform(ops)
+        x, y, w, h = t.raw_window((96, 128))
+        np.testing.assert_array_equal(
+            np.sort(t.apply(frame).ravel()),
+            np.sort(frame[y : y + h, x : x + w].ravel()),
+        )
+
+
+def test_raw_window_rejects_a_crop_that_does_not_fit():
+    # A stale crop plan against differently-sized footage: loud, not a truncated slice.
+    t = FrameTransform((Crop(x=12, y=7, width=400, height=20),))
+    with pytest.raises(ValueError, match="exceeds"):
+        t.raw_window((96, 128))
+
+
 # -- config parsing ----------------------------------------------------------
 
 

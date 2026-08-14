@@ -463,7 +463,12 @@ def _run_visualization(ctx: _RunContext) -> bool:
             ", ".join(stale),
         )
     stages.render_videos(
-        ctx.config, result, ctx.outdir, sources=ctx.sources, progress=ctx.progress
+        ctx.config,
+        result,
+        ctx.outdir,
+        sources=ctx.sources,
+        store=ctx.store,
+        progress=ctx.progress,
     )
     return True
 

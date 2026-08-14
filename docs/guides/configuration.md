@@ -150,6 +150,7 @@ Common edits:
 background  = "black"
 # output_fps = 30    # explicit output fps for every video
 # speed      = 0.5   # or scale the input fps instead (0.5 = slow motion)
+# crop       = "pose2d"   # every panel shows the window its view's detector looked through
 
 [visualization.kwargs]   # draw-op defaults shared by every video
 imshow      = { width = 480, height = 240 }
@@ -160,7 +161,14 @@ skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
 The generated config ships two montage videos (`pose2d`, `pose3d`) wired to the
 7-camera rig; reorder, drop, or add `panels` to change the layout. Draw-op kwargs
 merge across three levels (global → per-video → per-panel), most specific
-winning. Video frames are read and written with PyAV. See the
+winning. Video frames are read and written with PyAV.
+
+`crop = "pose2d"` is worth reaching for on any rig with a camera the detector crops
+(an axial view, typically): it resolves *per view* from `[[pose2d.pathways]]`, so a
+single line frames each panel the way its own detector saw it and leaves the
+full-frame views alone. That keeps the box in one place — `deeperfly dense-config`
+regenerates the `[pose2d]` crops per recording, and a copy of the numbers under
+`[visualization]` would silently keep showing the previous recording's window. See the
 [configuration reference](../reference/configuration.md#visualization) for the
 full panel and kwargs schema.
 

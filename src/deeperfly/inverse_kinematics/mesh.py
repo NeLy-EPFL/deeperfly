@@ -127,6 +127,26 @@ class NmfMesh:
         ``["wings"]`` drops every wing face from the overlay. Names not in
         :attr:`part_names` are ignored (so an unknown/empty list hides nothing).
         """
+        key = tuple(hide_parts or ())
+        hit = self._hidden_masks.get(key)
+        if hit is None:
+            hit = self._hidden_masks.setdefault(key, self._compute_hidden_mask(key))
+        return hit
+
+    @functools.cached_property
+    def _hidden_masks(self) -> dict[tuple[str, ...], np.ndarray]:
+        """Per-part-list mask cache. A plain dict rather than ``lru_cache`` on the method:
+        this is a frozen dataclass of arrays, so it is not hashable and cannot be a cache
+        key -- and ``cached_property`` writes through ``__dict__``, which frozen allows."""
+        return {}
+
+    def _compute_hidden_mask(self, hide_parts: tuple[str, ...]) -> np.ndarray:
+        """:meth:`hidden_face_mask` without the cache.
+
+        Worth caching at all because the mask depends only on the mesh's topology and the
+        configured names -- it is a constant of a render, and it used to be rebuilt with an
+        ``np.isin`` over every face once per panel per frame.
+        """
         n_faces = self.faces.shape[0]
         if not hide_parts or not self.part_names:
             return np.zeros(n_faces, dtype=bool)
