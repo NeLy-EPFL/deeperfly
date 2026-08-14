@@ -54,6 +54,10 @@ coordinate conventions these functions share, see
 
 ::: deeperfly.pose2d.stream.detect_2d
 
+::: deeperfly.pose2d.autocrop
+
+::: deeperfly.pose2d.autocrop.ensure_resolved
+
 ## Geometry primitives
 
 ::: deeperfly.geometry

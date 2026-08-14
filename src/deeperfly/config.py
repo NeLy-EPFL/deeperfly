@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Config",
     "Pose2dParams",
+    "AutoCropParams",
     "TriangulationParams",
     "PictorialParams",
     "IoParams",
@@ -105,6 +106,47 @@ class Pose2dParams:
     def __post_init__(self) -> None:
         object.__setattr__(self, "batch_size", max(1, int(self.batch_size)))
         object.__setattr__(self, "decode_buffer", max(1, int(self.decode_buffer)))
+
+
+@dataclass(frozen=True)
+class AutoCropParams:
+    """``[pose2d.autocrop]`` -- how a ``{ op = "crop", auto = true }`` window is searched.
+
+    The knobs are the ones a recording can genuinely need to differ on; the stencil's shape
+    (how many widths, how many centres, how many narrowing rounds) is measured and lives as
+    constants in :mod:`deeperfly.pose2d.autocrop`.
+
+    ``search_frames`` are the frames the objective is scored on and ``gate_frames`` the
+    disjoint set the accept gate uses; both are spread over the whole recording. Raise
+    ``search_frames`` when the animal's distance drifts a lot through a run -- that is
+    exactly the case a single static box serves worst, so a wider sample is the honest
+    answer. ``gate = false`` takes whatever confidence proposed, which is measurably
+    unsafe on its own (a box can get more confident *and* less accurate) and exists for
+    rigs with no usable calibration. ``gate_candidates`` is how many confidence-shortlisted
+    boxes the gate ranks: confidence is what can afford to cover a 3-D space, but its
+    arg-max sits a little too wide, so a handful are re-scored by the better signal, and the
+    best of them is where geometry starts its own search. ``gate_evals`` caps that search's
+    detection passes -- the only real cost here (~350 ms each against ~11 ms for a
+    confidence probe), so it is what bounds the wall clock.
+    ``agreement_warn_px`` is the agreement above which a view is reported as *still* not
+    framing the animal. ``probe_batch`` is the forward batch in probes and is
+    performance-only.
+    """
+
+    search_frames: int = 3
+    gate_frames: int = 8
+    gate: bool = True
+    gate_candidates: int = 4
+    gate_evals: int = 30
+    probe_batch: int = 8
+    agreement_warn_px: float = 20.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "search_frames", max(1, int(self.search_frames)))
+        object.__setattr__(self, "gate_frames", max(0, int(self.gate_frames)))
+        object.__setattr__(self, "gate_candidates", max(1, int(self.gate_candidates)))
+        object.__setattr__(self, "gate_evals", max(2, int(self.gate_evals)))
+        object.__setattr__(self, "probe_batch", max(1, int(self.probe_batch)))
 
 
 @dataclass(frozen=True)
@@ -333,7 +375,9 @@ class GuiParams:
 #: runtime knobs (see :meth:`Config.detection_plan`). They are parsed separately
 #: (:meth:`deeperfly.pose2d.pathways.DetectionPlan.from_config`), so the strict
 #: :func:`_params` validator ignores them when building :class:`Pose2dParams`.
-_POSE2D_PLAN_KEYS = frozenset({"preprocessors", "models", "pathways", "output_points"})
+_POSE2D_PLAN_KEYS = frozenset(
+    {"preprocessors", "models", "pathways", "output_points", "autocrop"}
+)
 
 
 def _dig(data: dict, path: tuple[str, ...]) -> dict:
@@ -432,6 +476,14 @@ class Config:
         self.data = data
         self.text = text
         self.source = source
+        #: Windows for the config's ``{ op = "crop", auto = true }`` preprocessors, once
+        #: something has decided them -- ``preprocessor name -> (x, y, width, height)``.
+        #: :meth:`detection_plan` applies them, so every stage of a run sees the same box
+        #: the detector looked through. Populated by :meth:`read_for_run` from the recorded
+        #: sidecar, and by the pose2d stage when it searches (see
+        #: :mod:`deeperfly.pose2d.autocrop`). Not part of :attr:`data`, so it never enters
+        #: the config snapshot or a fingerprint -- the declaration is what those describe.
+        self.auto_crops: dict[str, tuple[int, int, int, int]] = {}
 
     # -- construction --------------------------------------------------------
 
@@ -494,6 +546,11 @@ class Config:
             The run's output directory, which may already hold a ``config.toml``
             snapshot.
 
+        Any automatic crop window a previous run recorded in ``outdir`` is loaded into
+        :attr:`auto_crops`, so a resume that reuses the cached 2D pose still knows which
+        window the detector looked through -- the visualization panels that borrow it, in
+        particular, are drawn in a later process than the search.
+
         Returns
         -------
         Config
@@ -509,13 +566,21 @@ class Config:
         else:
             path = DEFAULT_CONFIG_PATH
             log.info("using config %s (packaged default; pass -c to override)", path)
-        return cls.from_toml(path)
+        config = cls.from_toml(path)
+        from .pose2d.autocrop import read_sidecar
+
+        config.auto_crops = dict(read_sidecar(outdir))
+        return config
 
     # -- typed per-stage subgroups ------------------------------------------
 
     @property
     def pose2d(self) -> Pose2dParams:
         return _params(self.data, ("pose2d",), Pose2dParams, ignore=_POSE2D_PLAN_KEYS)
+
+    @property
+    def autocrop(self) -> AutoCropParams:
+        return _params(self.data, ("pose2d", "autocrop"), AutoCropParams)
 
     @property
     def triangulation(self) -> TriangulationParams:
@@ -769,6 +834,13 @@ class Config:
     def detection_plan(self) -> "DetectionPlan":
         """The 2D detection plan (``[[sources]]`` + ``[[pose2d.preprocessors]]``/``[[pose2d.models]]``/``[[pose2d.pathways]]``).
 
+        Any window in :attr:`auto_crops` is substituted into the matching
+        ``{ op = "crop", auto = true }`` preprocessor, so a stage that re-derives the plan
+        (a render reusing a cached 2D pose, say) looks through the same box detection did.
+        An automatic crop with no window recorded stays unresolved and raises
+        :class:`~deeperfly.preprocessing.UnresolvedAutoCrop` if anything asks for its
+        geometry -- which is the loud failure, not a silent full frame.
+
         Returns
         -------
         DetectionPlan
@@ -778,7 +850,12 @@ class Config:
         """
         from .pose2d.pathways import DetectionPlan
 
-        return DetectionPlan.from_config(self)
+        plan = DetectionPlan.from_config(self)
+        if self.auto_crops:
+            from .pose2d.autocrop import resolved_plan
+
+            plan = resolved_plan(plan, self.auto_crops)
+        return plan
 
     def camera_table(self) -> tuple[dict, dict]:
         """Split ``[cameras]`` into the shared defaults and the per-camera specs.

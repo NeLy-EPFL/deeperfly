@@ -690,7 +690,9 @@ def load_mvt(
     return net
 
 
-def predict_points(model, inputs, *, method: str = "weighted", radius: int = 2):
+def predict_points(
+    model, inputs, *, method: str = "weighted", radius: int = 2, views=None
+):
     """``(B, V, 3, H, W)`` -> input-normalized ``(B, V, K, 2)`` peaks and ``(B, V, K)`` conf.
 
     ``method``/``radius`` are accepted for interface parity and ignored: this network's
@@ -700,6 +702,15 @@ def predict_points(model, inputs, *, method: str = "weighted", radius: int = 2):
     **The view axis is kept, not flattened.** ``hrnet.predict_points`` deliberately folds
     the leading axes into the batch, which is right for a per-view detector and would here
     delete the only thing this architecture computes -- each view would be encoded alone.
+
+    ``views`` decodes only those view indices and returns the ``V`` axis in *their* order;
+    the FORWARD is unchanged, so every view still informs every other and the numbers are
+    bit-identical to slicing the full result. Worth having because the decode is not a
+    rounding error next to the forward: upsampling to the input size costs 16x the cells, so
+    an 8-view frame spends ~11 ms there against ~10 ms in the network, and a caller reading
+    one view (:mod:`deeperfly.pose2d.autocrop` searching one camera's crop) pays it eight
+    times over for nothing. Exact because channels decode independently -- the same property
+    :func:`decode_points` already relies on to chunk.
     """
     torch = _torch()
     x = (
@@ -717,13 +728,24 @@ def predict_points(model, inputs, *, method: str = "weighted", radius: int = 2):
             "is not a per-view function, so a (N, 3, H, W) batch is ambiguous."
         )
     b, v = x.shape[0], x.shape[1]
+    k = model.num_classes
+    if views is not None:
+        wanted = [int(i) for i in views]
+        if not wanted or any(not 0 <= i < v for i in wanted):
+            raise ValueError(
+                f"views {list(views)!r} outside the {v} view(s) of this input"
+            )
     # No autocast: float32 is the contract, see load_mvt.
     with torch.inference_mode():
         hm = model.forward(x)
+        if views is not None:
+            # Channel c is view c // k (the module docstring's point 1), so a view's
+            # channels are one contiguous run. Slice before the decode, not after.
+            hm = torch.cat([hm[:, i * k : (i + 1) * k] for i in wanted], dim=1)
+            v = len(wanted)
         xy, conf = decode_points(hm, model.input_hw, model.downsample_factor)
     if dev.type == "cuda":
         torch.cuda.synchronize()
-    k = model.num_classes
     return (
         xy.reshape(b, v, k, 2).cpu().numpy().astype(np.float32),
         conf.reshape(b, v, k).cpu().numpy().astype(np.float32),

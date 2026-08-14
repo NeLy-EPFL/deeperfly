@@ -249,11 +249,69 @@ Named, reusable frame-op pipelines, referenced by a pathway's `preprocessor`.
 | `fliplr` | — | Left–right flip. |
 | `flipud` | — | Up–down flip. |
 | `rot90` | `k` (int) | `k` counter-clockwise quarter-turns (any sign). |
-| `crop` | `x`, `y`, `width`, `height` | Keep a window. |
+| `crop` | `x`, `y`, `width`, `height`, or `auto` | Keep a window — written down, or [searched per recording](#autocrop). |
 | `resize` | `scale`, or `width`/`height`; optional `interpolation` (`"bilinear"`/`"nearest"`) | Rescale. |
 
 Detections are mapped back into the raw frame by inverting these ops, so a
 preprocessor never moves the stored 2D or the reconstructed 3D.
+
+<a id="autocrop"></a>
+### The searched crop: `{ op = "crop", auto = true }`
+
+A detector is trained through a box, and a differently framed camera puts the animal at the
+wrong apparent scale — the one thing no augmentation in the recipe undoes. On this rig the six
+side cameras match training full-frame and the two **axial** ones (front and hind, 1600×1008
+against the side cameras' 960×512) do not, so those are the two that usually need a box. `auto`
+says the box should be *measured* for this recording rather than copied from the last one:
+
+```toml
+[[pose2d.preprocessors]]
+name = "crop_h"
+ops = [{ op = "crop", auto = true }]                       # blind: cover the whole frame
+
+[[pose2d.preprocessors]]
+name = "crop_f"
+ops = [{ op = "crop", auto = true, x = 400, y = 290, width = 800, height = 400 }]  # seeded
+```
+
+The four box keys become a **seed** when `auto = true` — all four or none. A seed is not the
+answer, it is where the search starts, and it narrows the search to its neighbourhood.
+
+The `pose2d` stage resolves it before detecting anything: the detector's own confidence covers
+the `(centre, width)` space at ~11 ms a probe, then **agreement with the other cameras' 3D** —
+the target view held out of the triangulation — chooses among what confidence proposed and
+refuses a box that is confidently wrong. Measured blind on a 1600×1008 hind camera: 255 px
+from the other cameras' 3D at full frame, **2.9 px** after the search, against 3.4 px for a box
+tuned by hand. The searched box is recorded in `<outdir>/autocrop.json` and reused by later
+runs, so a resume neither re-searches nor re-detects; `deeperfly auto-crop` runs the search on
+its own and prints the TOML that freezes it permanently.
+
+**It needs a solved rig.** Against the nominal orbit rig the reference is ~120 px out; the gate
+detects that (it checks whether the rig can reproject into the views the reference was built
+*from*), says so, and refuses to run rather than choosing with a broken ruler. The fallback —
+confidence alone — comes out ~1.7× too wide, because confidence and accuracy are uncorrelated
+once the centre is free. So run once with bundle adjustment and point `[cameras].calibration`
+at the exported `calibration.toml` before relying on this.
+
+Anything that asks an unresolved automatic crop for its geometry raises
+`UnresolvedAutoCrop` rather than quietly falling back to the whole frame — including a
+visualization panel with `crop = "pose2d"` in a run where `pose2d` never ran and no box was
+recorded.
+
+### `[pose2d.autocrop]`
+
+Knobs for the search above. Its stencil (how many widths, how many centres, how many rounds)
+is measured and fixed in code; these are the parts a recording can genuinely need to differ on.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `search_frames` | int | `3` | Frames the confidence objective is scored on, spread over the whole recording. Raise it when the animal's distance drifts a lot through a run. |
+| `gate_frames` | int | `8` | Frames the geometry gate is scored on — disjoint from the search's. |
+| `gate` | bool | `true` | `false` takes confidence's box unchecked. Measurably unsafe on its own; for rigs with no usable calibration. |
+| `gate_candidates` | int | `4` | How many confidence finalists the gate scores before searching from the best. |
+| `gate_evals` | int | `30` | Cap on the gate's detection passes (~350 ms each) — what bounds the wall clock. |
+| `probe_batch` | int | `8` | Forward batch in probes. Performance only. |
+| `agreement_warn_px` | float | `20.0` | Agreement above which a view is reported as *still* not framing the animal. |
 
 ### `[[pose2d.models]]`
 

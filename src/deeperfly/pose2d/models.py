@@ -324,6 +324,39 @@ class LoadedModel:
             self.module, inputs, method=method, radius=radius
         )
 
+    def predict_points_for_views(
+        self, inputs, views, *, method: str = "weighted", radius: int = 2
+    ):
+        """:meth:`predict_points`, but decoding only ``views`` of the ``V`` axis.
+
+        Returns the same ``(B, len(views), C_out, 2)`` / ``(B, len(views), C_out)`` a caller
+        would get by slicing the full result -- the *forward* is untouched, so a joint-view
+        model's cross-view attention still sees every view. Only the readout is narrowed.
+
+        The point is cost, and it is only worth anything for a joint-view model: the
+        multiview transformer's decode upsamples every channel to the full input, which for
+        eight views costs about as much as the network itself, and a caller after one camera
+        pays that eight times over. A model that cannot narrow its decode is asked for
+        everything and sliced here, so this is always correct and merely sometimes faster.
+        """
+        impl = self._impl()
+        if impl is not None and getattr(self.module, "joint_views", False):
+            import inspect
+
+            # Asked of the signature rather than by catching TypeError: a genuine TypeError
+            # from inside the decode would otherwise be swallowed into a silent slow path.
+            try:
+                offers = "views" in inspect.signature(impl.predict_points).parameters
+            except (TypeError, ValueError):  # a builtin/C callable has no signature
+                offers = False
+            if offers:
+                return impl.predict_points(
+                    self.module, inputs, method=method, radius=radius, views=views
+                )
+        xy, conf = self.predict_points(inputs, method=method, radius=radius)
+        idx = list(views)
+        return xy[:, idx], conf[:, idx]
+
     def predict_heatmaps(self, inputs):
         """Final-stack heatmaps ``(B, V, C_out, H_out, W_out)`` (host NumPy) for the candidate path."""
         from . import detector

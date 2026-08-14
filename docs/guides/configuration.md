@@ -258,6 +258,50 @@ A pathway's detections are mapped back into its view frame by inverting these op
 raw source frame the view's intrinsics describe. The flip is therefore a
 detector-input concern only — it never reflects the reconstructed 3D skeleton.
 
+### Letting the crop be measured — `auto = true`
+
+The crop is the one op whose right value is a property of *this* recording. A detector is
+trained through a box, and a differently framed camera puts the animal at the wrong
+apparent scale — which no augmentation in the recipe undoes. On this rig the six side
+cameras match training full-frame and the two axial ones (front and hind, 1600×1008 against
+the side cameras' 960×512) do not, so those are the two that usually need one.
+
+Rather than copy last recording's numbers, ask for it to be measured:
+
+```toml
+[[pose2d.preprocessors]]
+name = "crop_h"
+ops  = [{ op = "crop", auto = true }]                      # blind: search the whole frame
+
+[[pose2d.preprocessors]]
+name = "crop_f"
+ops  = [{ op = "crop", auto = true,                        # seeded: search near a box you
+          x = 400, y = 290, width = 800, height = 400 }]   # already trust (fewer probes)
+```
+
+The `pose2d` stage resolves it before detecting: the detector's own confidence covers the
+`(centre, width)` space cheaply, then agreement with the **other cameras' 3D** — the target
+view held out of the triangulation — chooses among what confidence proposed, and refuses a
+box that is confidently wrong. Measured blind on a 1600×1008 hind camera: 255 px from the
+other cameras' 3D at full frame, **2.9 px** after the search, against 3.4 px for a box a
+person tuned by hand; about 15 s a view.
+
+Two things to know. **It needs a solved rig** — against the nominal orbit rig the reference
+is ~120 px out, the gate detects that and refuses to run, and the confidence-only fallback
+comes out ~1.7× too wide. Run once with bundle adjustment and point
+`[cameras].calibration` at the exported `calibration.toml`. And **the box is recorded**, in
+`<outdir>/autocrop.json`, so a resume neither re-searches nor re-detects, and the panels
+that borrow it (`crop = "pose2d"`) keep working in a later process.
+
+To measure without committing to a run — or to freeze the result as plain numbers:
+
+```console
+$ deeperfly auto-crop RECORDING -c config.toml
+```
+
+It prints each view's incumbent, the searched box, the confidence, the agreement in pixels,
+and the TOML to paste back if you would rather the box never be searched again.
+
 ## Bundle adjustment — `[bundle_adjustment]`
 
 Bundle adjustment uses the fly itself as the target, solved with

@@ -269,6 +269,16 @@ batch_size = 16
 # network/remote storage); lower it to shave memory.
 decode_buffer = 4
 
+# Automatic crop search. Off unless a preprocessor asks for it with
+# { op = "crop", auto = true } -- see below. Only the knobs a recording can
+# genuinely need to differ on live here; the search's shape is measured and fixed.
+# [pose2d.autocrop]
+# search_frames = 3      # frames the confidence objective is scored on (spread over the clip)
+# gate_frames   = 8      # disjoint frames the geometry gate is scored on
+# gate          = true   # false = take confidence's box unchecked (measurably over-wide)
+# gate_evals    = 30     # cap on the gate's detection passes -- what bounds the wall clock
+# probe_batch   = 8      # forward batch, in probes (performance only)
+
 # Named preprocessors: an ordered op list applied to a pathway's frames before
 # the model. The detector's points are mapped back into the view frame by
 # inverting these ops, so a mirror here never moves the reconstructed skeleton.
@@ -276,6 +286,33 @@ decode_buffer = 4
 # the same as referencing a preprocessor whose `ops = []`.
 # Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
 #      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
+#
+# A crop can also be SEARCHED per recording instead of written down:
+#
+#   ops = [{ op = "crop", auto = true }]                        # blind: cover the frame
+#   ops = [{ op = "crop", auto = true, x=400, y=290, width=800, height=400 }]   # seeded
+#
+# Why anyone wants this: a detector is trained through a box, and a differently
+# framed camera puts the animal at the wrong apparent scale -- the one thing no
+# augmentation undoes. On this rig the six side cameras match training full-frame
+# and the two axial ones (front, hind) do not, so those are the two that usually
+# need a box. Rather than copying last recording's numbers, the pose2d stage
+# measures it: the detector's own confidence covers the (centre, width) space
+# cheaply, then agreement with the OTHER cameras' 3D -- the target view held out of
+# the triangulation -- chooses among what confidence proposed and refuses a box
+# that is confidently wrong. Measured blind on a 1600x1008 hind camera: 255 px
+# from the other cameras' 3D full-frame, 2.9 px after the search, against 3.4 px
+# for a box a person tuned by hand.
+#
+# Three things worth knowing before using it:
+#   * It needs a SOLVED rig. Against the nominal orbit rig the reference is ~120 px
+#     out, the gate says so and refuses to run, and the fallback (confidence alone)
+#     comes out ~1.7x too wide. Run once with bundle adjustment, then point
+#     [cameras].calibration at the exported calibration.toml.
+#   * A seed is worth writing down when you have one: it narrows the search.
+#   * The searched box is recorded in <outdir>/autocrop.json and reused on later
+#     runs (so a resume neither re-searches nor re-detects). `deeperfly auto-crop`
+#     runs the search on its own and prints the TOML to freeze it permanently.
 [[pose2d.preprocessors]]
 name = "flip"
 ops = [{ op = "fliplr" }]

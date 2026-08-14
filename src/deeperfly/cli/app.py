@@ -12,6 +12,7 @@ import typer
 
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
+from .autocrop import _cmd_auto_crop
 from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .config import _cmd_config_set, _cmd_config_show
@@ -155,6 +156,64 @@ def dense_config(
             batch_size=batch_size,
             overwrite=overwrite,
             source_map=None,
+        )
+    )
+
+
+@app.command(name="auto-crop")
+def auto_crop(
+    inputs: Annotated[
+        list[Path],
+        typer.Argument(
+            metavar="INPUT...",
+            help="one or more recording dirs or wildcard patterns",
+        ),
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c", "--config", help="config TOML declaring the automatic crop(s)"
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output-dir", help="output directory (as for 'run')"),
+    ] = None,
+    recursive: Annotated[
+        bool,
+        typer.Option(
+            "-r", "--recursive", help="run every recording nested under INPUT"
+        ),
+    ] = False,
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write/--no-write",
+            help="record the searched box in <outdir>/autocrop.json, so the next run "
+            "detects through it instead of searching again",
+        ),
+    ] = True,
+    no_gate: Annotated[
+        bool,
+        typer.Option(
+            "--no-gate",
+            help="accept whatever confidence proposed, without checking it against the "
+            "other cameras' 3D. Measurably unsafe on its own -- a box can get more "
+            "confident and less accurate -- so only for a rig with no usable calibration",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Search the detector crop for each view whose config says { op = "crop", auto = true }."""
+    _configure_logging(log_level.value)
+    _cmd_auto_crop(
+        argparse.Namespace(
+            inputs=inputs,
+            config=config,
+            output=output,
+            recursive=recursive,
+            write=write,
+            no_gate=no_gate,
         )
     )
 

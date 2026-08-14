@@ -133,6 +133,34 @@ adjustment caches are reused automatically. Do **not** edit the output-dir
 snapshot *and* pass `-c` at the same time — `-c` wins and overwrites the
 snapshot, silently discarding your edit. Pick one config and stick with it.
 
+## `deeperfly auto-crop` — measure a view's detector crop
+
+```bash
+deeperfly auto-crop INPUT... [-c CONFIG] [-o DIR] [-r] [--no-write] [--no-gate]
+```
+
+Runs the crop search on its own, for every view whose config says
+`{ op = "crop", auto = true }`, and prints what it found: the incumbent box, the searched
+box, the detector's confidence on each, their agreement with the other cameras' 3D, and
+whether the searched box was accepted. The `pose2d` stage does this by itself, so the
+command is for the two cases where you want it separately — **seeing** the numbers before
+trusting them, and **freezing** the result, which it prints as pasteable TOML so the box
+becomes a plain window that never searches again.
+
+```console
+$ deeperfly auto-crop recording/ -c config.toml
+preprocessor  view  incumbent            searched             conf            agree px      
+crop_f        f     (0, 104, 1600, 800)  (395, 304, 955, 478)  0.62 -> 0.95   255.3 -> 4.9   accepted
+crop_h        h     (0, 104, 1600, 800)  (521, 57, 544, 272)   0.48 -> 0.96   229.9 -> 2.9   accepted
+```
+
+The box is recorded in `<outdir>/autocrop.json`, which the next `deeperfly run` reuses
+instead of searching again (`--no-write` measures without recording). `--no-gate` takes
+whatever the detector's confidence preferred, without checking it against the other
+cameras' 3D — measurably unsafe on its own, and only for a rig with no usable calibration.
+Which views need this, and why the gate matters, is in the
+[configuration guide](configuration.md#letting-the-crop-be-measured--auto--true).
+
 ## `deeperfly gui` — annotate a result
 
 ```bash

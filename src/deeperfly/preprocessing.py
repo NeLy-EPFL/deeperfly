@@ -22,11 +22,18 @@ Configured per camera as an ordered list under ``[cameras.<camera>]``::
     ]
 
 (see :func:`parse_frame_transforms`).
+
+One op is a *placeholder* rather than a transform: ``{ op = "crop", auto = true }`` (see
+:class:`AutoCrop`) declares a crop whose window is **searched per recording** by
+:mod:`deeperfly.pose2d.autocrop` instead of written down. It only makes sense on a
+``[[pose2d.preprocessors]]`` chain -- what decides the window is the detector's own
+response -- and until the search fills it in, every geometric method raises
+:class:`UnresolvedAutoCrop`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Union
 
 import numpy as np
@@ -41,6 +48,8 @@ __all__ = [
     "Flipud",
     "Rot90",
     "Crop",
+    "AutoCrop",
+    "UnresolvedAutoCrop",
     "Resize",
     "FrameTransform",
     "frame_transform_from_ops",
@@ -198,6 +207,115 @@ class Crop:
         }
 
 
+class UnresolvedAutoCrop(ValueError):
+    """An automatic crop was asked for its geometry before its box was decided.
+
+    Every geometric method of :class:`AutoCrop` raises this while the window is unknown,
+    so a plan that reaches the pixels unresolved fails loudly here instead of quietly
+    detecting through the whole frame -- which is the very failure the automatic crop
+    exists to prevent, and which looks like a bad detector rather than a bad config.
+    """
+
+
+@dataclass(frozen=True)
+class AutoCrop:
+    """A crop whose window is **searched per recording** instead of written down.
+
+    Declared as ``{ op = "crop", auto = true }``, optionally with an
+    ``x``/``y``/``width``/``height`` **seed** (all four or none). The seed is not the box:
+    it is the incumbent the search starts from, and it narrows the search domain to its
+    neighbourhood. Without one the search covers the whole frame at the model's own
+    aspect, which is what a brand-new rig needs and costs a few more probes.
+
+    Two states, and the distinction is the whole design:
+
+    * **unresolved** (``box is None``) -- every geometric method raises
+      :class:`UnresolvedAutoCrop`. A :class:`FrameTransform` carrying one cannot transform
+      a frame, size an output, or map a point.
+    * **resolved** -- :meth:`resolve` returns a copy whose ``box`` is set, and every method
+      then behaves exactly as the equivalent :class:`Crop`.
+
+    :meth:`to_json` always reports the **declaration**, never the resolved window. That is
+    deliberate: the JSON is what the pipeline fingerprints, so a run whose search picked a
+    box does not then look like a config change and recompute detection forever. The box
+    is a *deterministic function* of the footage, the weights and the seed -- all three
+    already fingerprinted or fixed by the output directory -- so it needs no entry of its
+    own, and it is recorded beside the results for provenance instead.
+
+    Attributes
+    ----------
+    seed
+        The starting ``(x, y, width, height)``, or ``None`` for a blind search.
+    box
+        The resolved ``(x, y, width, height)``, or ``None`` while unresolved.
+    where
+        A config location used in error messages; excluded from equality and from
+        :meth:`to_json`, so two identical declarations from different files still compare
+        equal (and fingerprint the same).
+    """
+
+    seed: tuple[int, int, int, int] | None = None
+    box: tuple[int, int, int, int] | None = None
+    where: str = field(default="", compare=False)
+
+    def __post_init__(self) -> None:
+        for name in ("seed", "box"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            box = tuple(int(v) for v in value)
+            if len(box) != 4:
+                raise ValueError(
+                    f"an automatic crop's {name} must be (x, y, width, height), "
+                    f"got {value!r}"
+                )
+            Crop(*box)  # the same non-negative-origin / positive-size checks
+            object.__setattr__(self, name, box)
+
+    @property
+    def resolved(self) -> bool:
+        """Whether the window has been decided (see :meth:`resolve`)."""
+        return self.box is not None
+
+    def resolve(self, box: tuple[int, int, int, int]) -> "AutoCrop":
+        """A copy of this op with its window set to ``box`` (the seed is kept)."""
+        return AutoCrop(seed=self.seed, box=box, where=self.where)
+
+    def _crop(self) -> Crop:
+        if self.box is None:
+            raise UnresolvedAutoCrop(
+                f"the automatic crop {self.where or '(unnamed)'} has no window yet, so "
+                "this frame cannot be transformed. Its box is searched by the pose2d "
+                "stage: run pose2d (or `deeperfly auto-crop`) before anything that needs "
+                "the geometry, or replace `auto = true` with an explicit "
+                "x/y/width/height."
+            )
+        return Crop(*self.box)
+
+    def is_identity(self) -> bool:
+        return False  # a searched window is never provably a no-op
+
+    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
+        return self._crop().output_size(size)
+
+    def affine(self, size: tuple[int, int]) -> np.ndarray:
+        return self._crop().affine(size)
+
+    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
+        return self._crop().apply_numpy(arr)
+
+    def apply_torch(self, frames):
+        return self._crop().apply_torch(frames)
+
+    def to_json(self) -> dict:
+        """The DECLARATION (``auto`` plus the seed), never the resolved window."""
+        out: dict = {"op": "crop", "auto": True}
+        if self.seed is not None:
+            x, y, w, h = self.seed
+            out.update(x=x, y=y, width=w, height=h)
+        return out
+
+
 def _nearest_indices(out_dim: int, in_dim: int) -> np.ndarray:
     """Half-pixel nearest-neighbor source index per output index.
 
@@ -313,7 +431,7 @@ class Resize:
         return out
 
 
-FrameOp = Union[Fliplr, Flipud, Rot90, Crop, Resize]
+FrameOp = Union[Fliplr, Flipud, Rot90, Crop, AutoCrop, Resize]
 
 
 def _normalize_ops(ops) -> tuple[FrameOp, ...]:
@@ -359,9 +477,51 @@ class FrameTransform:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ops", _normalize_ops(self.ops))
+        if sum(isinstance(op, AutoCrop) for op in self.ops) > 1:
+            raise ValueError(
+                "a preprocessing chain may carry at most one automatic crop; two would "
+                "make 'the searched window' ambiguous (which of them does a panel or a "
+                "detector mean?). Write the fixed one as an explicit x/y/width/height."
+            )
 
     def is_identity(self) -> bool:
         return not self.ops
+
+    @property
+    def auto_crop(self) -> AutoCrop | None:
+        """This chain's :class:`AutoCrop`, or ``None`` (at most one, see the constructor)."""
+        for op in self.ops:
+            if isinstance(op, AutoCrop):
+                return op
+        return None
+
+    @property
+    def needs_auto_crop(self) -> bool:
+        """Whether this chain carries an automatic crop whose window is still unknown."""
+        auto = self.auto_crop
+        return auto is not None and not auto.resolved
+
+    def resolve_auto_crop(self, box: tuple[int, int, int, int]) -> "FrameTransform":
+        """This chain with its automatic crop's window set to ``box``.
+
+        The rest of the chain is untouched, so a mirrored pathway keeps its mirror and
+        keeps applying it *after* the crop -- the order written in the config is the order
+        the detector was trained through.
+
+        Raises
+        ------
+        ValueError
+            If the chain has no automatic crop to resolve.
+        """
+        if self.auto_crop is None:
+            raise ValueError(
+                "this preprocessing chain has no automatic crop to resolve"
+            )
+        return FrameTransform(
+            tuple(
+                op.resolve(box) if isinstance(op, AutoCrop) else op for op in self.ops
+            )
+        )
 
     @property
     def reverses_handedness(self) -> bool:
@@ -606,9 +766,10 @@ def _parse_op(step, where: str) -> FrameOp:
         "fliplr": set(),
         "flipud": set(),
         "rot90": {"k"},
-        "crop": {"x", "y", "width", "height"},
+        "crop": {"x", "y", "width", "height", "auto"},
         "resize": {"width", "height", "scale", "interpolation"},
     }[name]
+    box_keys = {"x", "y", "width", "height"}
     if keys - allowed:
         raise ValueError(
             f"{where} ({name}) has unknown key(s) {sorted(keys - allowed)}; "
@@ -628,9 +789,41 @@ def _parse_op(step, where: str) -> FrameOp:
                 )
             return Rot90(k=k)
         if name == "crop":
-            missing = allowed - set(step)
+            auto = step.get("auto", False)
+            if not isinstance(auto, bool):
+                raise ValueError(
+                    f"{where}.auto must be true or false, got {auto!r} -- it says "
+                    "whether this crop's window is searched per recording"
+                )
+            given = box_keys & set(step)
+            if auto:
+                # All four or none. A partial seed cannot be completed: a width with no
+                # centre (or the reverse) is not a box, and guessing the rest would be
+                # inventing the very quantity the search is for.
+                if given and given != box_keys:
+                    raise ValueError(
+                        f"{where} (crop, auto) has a partial seed box -- give all of "
+                        f"{sorted(box_keys)} or none of them (missing "
+                        f"{sorted(box_keys - given)}). A seed narrows the search to its "
+                        "neighbourhood; without one the whole frame is searched."
+                    )
+                seed = (
+                    (
+                        _require_int(step["x"], 0, "x", where),
+                        _require_int(step["y"], 0, "y", where),
+                        _require_int(step["width"], 1, "width", where),
+                        _require_int(step["height"], 1, "height", where),
+                    )
+                    if given
+                    else None
+                )
+                return AutoCrop(seed=seed, where=where)
+            missing = box_keys - set(step)
             if missing:
-                raise ValueError(f"{where} (crop) missing key(s) {sorted(missing)}")
+                raise ValueError(
+                    f"{where} (crop) missing key(s) {sorted(missing)} -- write the box, "
+                    "or set auto = true to have it searched per recording"
+                )
             return Crop(
                 x=_require_int(step["x"], 0, "x", where),
                 y=_require_int(step["y"], 0, "y", where),

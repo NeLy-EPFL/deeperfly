@@ -215,6 +215,11 @@ def _run_pose2d(ctx: _RunContext) -> bool:
         input=ctx.input,
         want_candidates=ctx.enabled["pictorial_structures"],
         progress=ctx.progress,
+        outdir=ctx.outdir,
+        # This runner only runs when pose2d recomputes, and an automatic crop is part of
+        # what detection *is*: re-detecting through a box carried over from a run whose
+        # inputs have since changed would silently keep a stale window.
+        force_autocrop=True,
     )
     # Truncates the whole file: a fresh detection invalidates everything downstream.
     ctx.store.write_pose2d(

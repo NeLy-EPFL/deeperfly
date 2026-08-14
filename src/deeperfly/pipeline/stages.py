@@ -23,6 +23,7 @@ import numpy as np
 
 from ..cameras import CameraGroup
 from ..config import STAGES, Config
+from ..pose2d import autocrop
 from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
 from ..recordings import source_image_sizes
 from ..results import PoseResult, StageStore
@@ -83,12 +84,19 @@ def stage_pose2d(
     input=None,
     want_candidates: bool,
     progress=None,
+    outdir: Path | None = None,
+    force_autocrop: bool = False,
 ):
     """Run 2D detection over the recording's footage.
 
     Frames are not held in memory (detection streams them in windows -- see
     :func:`deeperfly.pose2d.stream.detect_2d`); a visualization stage re-sources the
     overlay cameras it needs.
+
+    A plan carrying ``{ op = "crop", auto = true }`` has its window(s) resolved first (see
+    :mod:`deeperfly.pose2d.autocrop`) -- reused from ``outdir`` if a previous run recorded
+    one, otherwise searched here and recorded. The resolved boxes are stashed on the config
+    so every later stage's plan carries them too.
 
     Parameters
     ----------
@@ -102,6 +110,11 @@ def stage_pose2d(
         ``pictorial_structures`` stage).
     progress
         Optional progress factory threaded into the streaming detector.
+    outdir
+        The recording's output directory, where an automatic crop's window is read and
+        written. ``None`` searches without persisting (a library call with no run dir).
+    force_autocrop
+        Re-search an automatic crop even if a window is already recorded.
 
     Returns
     -------
@@ -148,6 +161,24 @@ def stage_pose2d(
         next(iter(models.values())).device(),
         resolved_precision,
     )
+
+    # After the models are on the device (the search forwards through them) and before any
+    # frame is detected: an automatic crop decides what the detector even sees.
+    plan, _searched = autocrop.ensure_resolved(
+        config,
+        plan,
+        models=models,
+        cameras=cameras,
+        sources=sources,
+        input=input,
+        outdir=outdir,
+        force=force_autocrop,
+    )
+    # Stash every resolved window on the config, so a later stage that re-derives the plan
+    # -- a render borrowing the detector's box with `crop = "pose2d"` -- looks through the
+    # one detection actually used. Taken from the PLAN rather than from what was searched,
+    # because a box read back from the sidecar needs carrying just as much as a fresh one.
+    config.auto_crops = {**config.auto_crops, **autocrop.resolved_boxes(plan)}
 
     k = config.pictorial.k
     log.info(
