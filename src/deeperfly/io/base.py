@@ -115,7 +115,9 @@ class FrameReader(ABC):
     def close(self) -> None:
         """Release any resources held by the reader (no-op by default)."""
 
-    def cursor(self, *, gray_ok: bool = False) -> FrameCursor:
+    def cursor(
+        self, *, gray_ok: bool = False, same_as_rgb: bool = False
+    ) -> FrameCursor:
         """A stateful random-access cursor over this source.
 
         The base implementation delegates every read to ``self[idx]``, which is correct
@@ -128,6 +130,11 @@ class FrameReader(ABC):
             Permission, not a promise: the caller accepts single-channel ``(H, W)``
             frames for pictures that carry no color, and a cursor that can tell cheaply
             may return them. A cursor with no cheap way to know returns RGB as always.
+        same_as_rgb
+            Narrows ``gray_ok`` to frames whose gray is *numerically* what the RGB decode
+            would produce. A viewer wants a picture and can take a range-scaled gray; a
+            caller doing arithmetic on the pixels -- a detector, a crop search -- must
+            keep seeing the numbers it always saw, and passes this.
 
         Returns
         -------
@@ -157,6 +164,8 @@ class FrameReader(ABC):
         start: int = 0,
         stop: int | None = None,
         step: int = 1,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "H W 3"]]:
         """Yield individual ``(H, W, 3)`` uint8 RGB frames from one forward pass.
 
@@ -164,6 +173,8 @@ class FrameReader(ABC):
         ----------
         start, stop, step
             Frame range, like ``range(start, stop, step)``.
+        gray_ok, thread_count
+            See :meth:`stream_blocks`.
         """
 
     @abstractmethod
@@ -174,6 +185,8 @@ class FrameReader(ABC):
         stop: int | None = None,
         step: int = 1,
         block_size: int = 64,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
         """Yield ``(T, H, W, 3)`` uint8 RGB blocks from one forward pass.
 
@@ -187,11 +200,22 @@ class FrameReader(ABC):
             Frame range, like ``range(start, stop, step)``.
         block_size
             Maximum frames per yielded block.
+        gray_ok
+            Permission, not a promise: the caller accepts ``(T, H, W, 1)`` blocks for
+            footage that carries no color. The channel axis is **kept** (unlike
+            :meth:`cursor`, which drops it) so that ops and models indexing it from the
+            right work unchanged. A source that cannot tell cheaply returns RGB as always,
+            so a caller must read ``shape[-1]`` rather than assume which it got.
+        thread_count
+            Decode threads for this stream, or ``None`` for the backend's own choice.
+            Worth setting when several sources are decoded at once: sizing each pool from
+            the core count oversubscribes the host.
 
         Yields
         ------
         np.ndarray
-            ``(T, H, W, 3)`` uint8 RGB blocks with ``T <= block_size``.
+            ``(T, H, W, C)`` uint8 blocks with ``T <= block_size`` and ``C`` 3, or 1 when
+            ``gray_ok`` was granted and the picture has no color.
         """
 
     @abstractmethod

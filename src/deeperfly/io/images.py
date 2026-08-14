@@ -130,6 +130,8 @@ class ImageSequenceReader(FrameReader):
         start: int = 0,
         stop: int | None = None,
         step: int = 1,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "H W 3"]]:
         for f in self.files[start:stop:step]:
             yield self._decode([f])[0]
@@ -141,7 +143,11 @@ class ImageSequenceReader(FrameReader):
         stop: int | None = None,
         step: int = 1,
         block_size: int = 64,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
+        # gray_ok / thread_count are accepted and ignored: an image sequence is decoded
+        # by PIL per file with no YUV plane to take and no codec thread pool to size.
         if block_size < 1:
             raise ValueError(f"block_size must be >= 1, got {block_size}")
         files = self.files[start:stop:step]

@@ -91,16 +91,103 @@ def _carries_no_color(frame) -> bool:
     return True
 
 
-def _frame_array(frame, *, gray_ok: bool) -> np.ndarray:
-    """A decoded PyAV frame as ``(H, W, 3)`` RGB, or ``(H, W)`` when it has no color.
+#: ``AVCOL_RANGE_JPEG`` -- luma spans the full 0..255 rather than the 16..235 of TV range.
+_COLOR_RANGE_FULL = 2
 
-    Only ever collapses to one channel when the caller passed ``gray_ok`` -- the batch
-    decode paths promise ``(T, H, W, 3)`` and the detector relies on it.
+
+def _is_full_range(frame) -> bool:
+    """Whether the frame's luma is FULL range, so that ``Y`` is already the gray picture.
+
+    This is the condition under which taking the luma plane is not merely cheaper but
+    *identical*. In full range (``yuvj*`` / ``AVCOL_RANGE_JPEG``, what these cameras record)
+    a color-free frame has ``R = G = B = Y`` exactly, so the plane is the same picture the
+    YUV->RGB conversion would build. In TV range it is not: the conversion expands 16..235
+    to 0..255, and the plane is then a different set of numbers from the RGB the rest of the
+    pipeline is calibrated on -- measured 33 against 19 on the same pixel. So TV-range
+    footage is decoded as RGB even when it carries no color, and pays for the conversion.
+    """
+    fmt = frame.format.name
+    if fmt.startswith("yuvj") or fmt.startswith("gray"):
+        return True  # both are full range by definition
+    return int(getattr(frame, "color_range", 0) or 0) == _COLOR_RANGE_FULL
+
+
+def _luma_plane(frame) -> np.ndarray | None:
+    """The frame's ``(H, W)`` luma plane as a NumPy copy, or ``None`` if it has none.
+
+    For planar YUV -- what every camera here records -- the luma plane *is* the gray
+    picture, already in the decoded frame. Taking it is a memcpy of one plane;
+    ``to_ndarray(format="gray")`` instead runs the frame through swscale, which on this
+    footage costs 20-30 ms a frame against 0.1-0.5 ms here (measured on 1600x1008 and
+    960x512 h264, 100-300x) -- and the conversion, not the H.264 decode, is most of what
+    reading a frame costs.
+
+    Callers must have established :func:`_is_full_range` first: the plane is only the same
+    picture as the RGB decode when the luma is not range-scaled.
+
+    Each row's buffer is padded out to ``line_size``; only the first ``width`` bytes are
+    picture, so the padding is sliced off (and the copy that ``ascontiguousarray`` makes is
+    what lets the frame be released).
+    """
+    fmt = frame.format.name
+    if not (fmt.startswith("yuv") or fmt.startswith("gray")):
+        return None
+    plane = frame.planes[0]
+    if plane.width != frame.width or plane.height != frame.height:
+        return None  # subsampled or unexpected layout -- let swscale answer
+    data = np.frombuffer(plane, dtype=np.uint8)
+    if data.size < plane.height * plane.line_size:
+        return None
+    rows = data.reshape(plane.height, plane.line_size)[:, : plane.width]
+    return np.ascontiguousarray(rows)
+
+
+def _stack_frames(frames: list[np.ndarray]) -> np.ndarray:
+    """Stack a block's frames, promoting one channel to three if the block is mixed.
+
+    ``gray_ok`` is decided per **frame** (a color video's black opening frame carries no
+    color *there*), so a block can in principle hold both kinds. Rather than refuse the
+    stack, the odd one out is broadcast to three channels -- which is what it means.
+    """
+    widths = {f.shape[-1] for f in frames}
+    if len(widths) > 1:
+        frames = [np.repeat(f, 3, axis=-1) if f.shape[-1] == 1 else f for f in frames]
+    return np.stack(frames)
+
+
+def _frame_array(
+    frame,
+    *,
+    gray_ok: bool,
+    keep_channel_axis: bool = False,
+    same_as_rgb: bool = False,
+) -> np.ndarray:
+    """A decoded PyAV frame as ``(H, W, 3)`` RGB, or one channel when it has no color.
+
+    Only ever collapses to one channel when the caller passed ``gray_ok``, and then only for
+    a frame that carries no chroma (:func:`_carries_no_color`).
+
+    ``same_as_rgb`` additionally requires the gray to be *numerically* what the RGB decode
+    would have produced, which needs the luma to be full range as well
+    (:func:`_is_full_range`) -- in TV range the conversion expands 16..235 to 0..255 and the
+    plane is a different set of numbers. Two callers, two needs: a viewer wants a cheap
+    picture to LOOK at, so a range-scaled gray is still the right picture; a detector's
+    frames are arithmetic, and one that used to see the RGB luma must keep seeing it.
+
+    ``(H, W)`` is what a cursor's callers expect; ``keep_channel_axis`` returns ``(H, W, 1)``
+    instead, which is what the batch paths want -- every frame op and every model indexes the
+    channel axis from the right (``[..., :3]``, ``shape[-1]``), so a kept axis of length 1
+    flows through them unchanged while a 2-D frame would silently crop the wrong axes.
     """
     if not gray_ok:
         return frame.to_ndarray(format="rgb24")
+    if same_as_rgb and not _is_full_range(frame):
+        return frame.to_ndarray(format="rgb24")
     if frame.format.name.startswith("gray") or _carries_no_color(frame):
-        return frame.to_ndarray(format="gray")
+        gray = _luma_plane(frame) if _is_full_range(frame) else None
+        if gray is None:
+            gray = frame.to_ndarray(format="gray")
+        return gray[..., None] if keep_channel_axis else gray
     return frame.to_ndarray(format="rgb24")
 
 
@@ -122,25 +209,43 @@ class VideoReader(FrameReader):
 
     # -- decode (in-process FFmpeg, CPU) -------------------------------------
 
-    def _decode_stream(self, *, start=0, step=1, stop=None):
-        """Yield ``(H, W, 3)`` uint8 RGB frames from one forward open-and-walk decode.
+    def _decode_stream(
+        self, *, start=0, step=1, stop=None, gray_ok=False, thread_count=None
+    ):
+        """Yield uint8 frames from one forward open-and-walk decode.
+
+        ``(H, W, 3)`` RGB, or ``(H, W, 1)`` luma when ``gray_ok`` and the picture carries
+        no color (see :func:`_frame_array`).
 
         The video stream is decoded with ``thread_type = "AUTO"`` (FFmpeg
         frame/slice multithreading), which is several times faster than the
-        single-threaded default on multi-core hosts.
+        single-threaded default on multi-core hosts. ``thread_count`` caps the pool:
+        ``AUTO`` alone sizes it from the core count, which is right for one stream and
+        oversubscribes the host when a rig's eight cameras each open one (see
+        :func:`_cursor_thread_count`). ``None`` leaves FFmpeg's choice.
         """
         import av
 
         with av.open(str(self.path)) as container:
             stream = container.streams.video[0]
             stream.thread_type = "AUTO"
+            if thread_count:
+                # Before the first decode: the count is read when the codec opens.
+                stream.codec_context.thread_count = int(thread_count)
             for i, frame in enumerate(container.decode(stream)):
                 if i < start:
                     continue
                 if stop is not None and i >= stop:
                     break
                 if (i - start) % step == 0:
-                    yield frame.to_ndarray(format="rgb24")
+                    yield _frame_array(
+                        frame,
+                        gray_ok=gray_ok,
+                        keep_channel_axis=True,
+                        # A batch read feeds detectors and calibration, so gray is taken
+                        # only where it is the same numbers the RGB decode would give.
+                        same_as_rgb=True,
+                    )
 
     def _decode_range(self, start, stop, step) -> np.ndarray:
         """Decode ``range(start, stop, step)`` to a stacked ``(T, H, W, 3)`` array."""
@@ -235,8 +340,16 @@ class VideoReader(FrameReader):
         start: int = 0,
         stop: int | None = None,
         step: int = 1,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "H W 3"]]:
-        yield from self._decode_stream(start=start, stop=stop, step=step)
+        yield from self._decode_stream(
+            start=start,
+            stop=stop,
+            step=step,
+            gray_ok=gray_ok,
+            thread_count=thread_count,
+        )
 
     def stream_blocks(
         self,
@@ -245,17 +358,25 @@ class VideoReader(FrameReader):
         stop: int | None = None,
         step: int = 1,
         block_size: int = 64,
+        gray_ok: bool = False,
+        thread_count: int | None = None,
     ) -> Iterator[Float[np.ndarray, "T H W 3"]]:
         if block_size < 1:
             raise ValueError(f"block_size must be >= 1, got {block_size}")
         buf: list[np.ndarray] = []
-        for frame in self._decode_stream(start=start, stop=stop, step=step):
+        for frame in self._decode_stream(
+            start=start,
+            stop=stop,
+            step=step,
+            gray_ok=gray_ok,
+            thread_count=thread_count,
+        ):
             buf.append(frame)
             if len(buf) >= block_size:
-                yield np.stack(buf)
+                yield _stack_frames(buf)
                 buf = []
         if buf:
-            yield np.stack(buf)
+            yield _stack_frames(buf)
 
     # -- metadata probes (container, no pixel decode) ------------------------
 
@@ -289,14 +410,20 @@ class VideoReader(FrameReader):
             return None
         return float(rate) if rate else None
 
-    def cursor(self, *, gray_ok: bool = False) -> FrameCursor:
+    def cursor(
+        self, *, gray_ok: bool = False, same_as_rgb: bool = False
+    ) -> FrameCursor:
         """A :class:`VideoCursor` over this file, with the decoder held open.
+
+        ``same_as_rgb`` narrows ``gray_ok`` to frames whose gray is numerically what the RGB
+        decode would give -- what a caller whose frames are arithmetic rather than a picture
+        needs (see :func:`_frame_array`).
 
         Falls back to the stateless base cursor if the container cannot be opened or
         carries no usable timestamps -- so a caller always gets something that works.
         """
         try:
-            return VideoCursor(self.path, gray_ok=gray_ok)
+            return VideoCursor(self.path, gray_ok=gray_ok, same_as_rgb=same_as_rgb)
         except Exception as exc:  # noqa: BLE001 -- unreadable / no PTS mapping
             log.debug(
                 "no persistent cursor for %s (%s); using stateless reads",
@@ -364,6 +491,7 @@ class VideoCursor(FrameCursor):
         *,
         gray_ok: bool = False,
         thread_count: int | None = None,
+        same_as_rgb: bool = False,
     ) -> None:
         import av
 
@@ -371,6 +499,7 @@ class VideoCursor(FrameCursor):
             thread_count = _cursor_thread_count()
         self.path = Path(path)
         self._gray_ok = gray_ok
+        self._same_as_rgb = same_as_rgb
         # Held for the whole of every read, so `close` can never free the container out
         # from under a decode in flight -- it waits for the reader to leave instead.
         self._lock = threading.Lock()
@@ -428,8 +557,16 @@ class VideoCursor(FrameCursor):
             if self._gen is not None and self._next == idx:
                 frame = self._continue(idx)
                 if frame is not None:
-                    return _frame_array(frame, gray_ok=self._gray_ok)
-            return _frame_array(self._seek_to(idx), gray_ok=self._gray_ok)
+                    return _frame_array(
+                        frame,
+                        gray_ok=self._gray_ok,
+                        same_as_rgb=self._same_as_rgb,
+                    )
+            return _frame_array(
+                self._seek_to(idx),
+                gray_ok=self._gray_ok,
+                same_as_rgb=self._same_as_rgb,
+            )
 
     def _continue(self, idx: int):
         """The next frame off the live generator if it really is ``idx``, else ``None``.

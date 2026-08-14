@@ -32,11 +32,40 @@ def _indexed_clip(n=12, h=32, w=32):
     return frames.astype(np.uint8)
 
 
-def _write_clip(tmp_path, frames, *, name="clip.mp4"):
+def _write_clip(tmp_path, frames, *, name="clip.mp4", pix_fmt=None):
     path = tmp_path / name
-    with io.VideoWriter(path, fps=10) as writer:
+    kw = {} if pix_fmt is None else {"pix_fmt": pix_fmt}
+    with io.VideoWriter(path, fps=10, **kw) as writer:
         writer.write_frames(frames)
     return path
+
+
+def _write_rig_clip(tmp_path, luma, *, name="rig.mp4"):
+    """A clip shaped like this project's real footage: full-range, flat-chroma yuvj420p.
+
+    The writer's RGB input path cannot produce one -- ``pix_fmt="yuvj420p"`` gets the range
+    right but swscale's RGB->YUV rounds the neutral chroma to 127, and 'no color' means
+    exactly 128 -- so the YUV planes are written directly, which is what a monochrome camera
+    records: the luma as given, both chroma planes pinned neutral.
+    """
+    import av
+
+    n, h, w = luma.shape
+    with av.open(str(tmp_path / name), mode="w") as container:
+        stream = container.add_stream("libx264", rate=10)
+        stream.width, stream.height = w, h
+        stream.pix_fmt = "yuvj420p"
+        for i in range(n):
+            frame = av.VideoFrame(w, h, "yuvj420p")
+            frame.planes[0].update(np.ascontiguousarray(luma[i]).tobytes())
+            neutral = np.full((h // 2, w // 2), 128, np.uint8)
+            frame.planes[1].update(neutral.tobytes())
+            frame.planes[2].update(neutral.tobytes())
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return tmp_path / name
 
 
 # -- to_numpy / to_torch -----------------------------------------------------
@@ -321,14 +350,98 @@ def test_cursor_decides_color_per_frame_not_per_file(tmp_path):
 
 
 def test_cursor_keeps_rgb_unless_gray_is_allowed(tmp_path):
-    # `gray_ok` is permission, and the default is no: the batch decode paths promise
-    # (T, H, W, 3) and the detector relies on three channels.
+    # `gray_ok` is permission, and the default is no: a caller that has not said it accepts
+    # one channel keeps getting three.
     path = _write_clip(tmp_path, _mono_clip(), name="mono2.mp4")
     cursor = io.VideoReader(path).cursor()
     try:
         assert cursor.frame(3).shape[-1] == 3
     finally:
         cursor.close()
+
+
+def test_gray_blocks_are_the_luma_of_the_rgb_blocks(tmp_path):
+    # The point of the batch gray path: it is not an approximation of the RGB decode, it is
+    # the same numbers with the redundancy left out. On full-range monochrome footage
+    # R == G == B == Y, and PIL's integer luma of three equal channels returns them
+    # unchanged (19595 + 38470 + 7471 == 65536, so (v*65536) >> 16 == v), so the single
+    # channel the decoder hands over IS what the detector used to reconstruct with a PIL
+    # convert("L") after paying for the YUV->RGB conversion.
+    PIL = pytest.importorskip("PIL.Image")
+    vals = (np.arange(10) * 15 + 20).clip(0, 255).astype(np.uint8)
+    path = _write_rig_clip(
+        tmp_path, np.broadcast_to(vals[:, None, None], (10, 32, 32)).copy()
+    )
+    gray = np.concatenate(
+        list(io.VideoReader(path).stream_blocks(block_size=5, gray_ok=True))
+    )
+    rgb = np.concatenate(list(io.VideoReader(path).stream_blocks(block_size=5)))
+    assert gray.shape[-1] == 1, (
+        "the channel axis is KEPT, so ops indexing it still work"
+    )
+    assert gray.shape[:-1] == rgb.shape[:-1]
+    luma = np.stack(
+        [np.asarray(PIL.fromarray(f, mode="RGB").convert("L")) for f in rgb]
+    )
+    np.testing.assert_array_equal(gray[..., 0], luma)
+
+
+def test_gray_is_refused_for_tv_range_footage(tmp_path):
+    # The trap the equivalence rests on. In TV range the YUV->RGB conversion EXPANDS
+    # 16..235 to 0..255, so the luma plane is a different set of numbers from the RGB the
+    # detector is calibrated on -- 33 against 19 on the same pixel, which would shift every
+    # input. Colour-free is not enough; the range has to be full too, and it is the writer's
+    # own default that is not.
+    tv = _write_clip(tmp_path, _mono_clip(), name="mono_tv.mp4")  # yuv420p, TV range
+    block = next(io.VideoReader(tv).stream_blocks(block_size=4, gray_ok=True))
+    assert block.shape[-1] == 3, (
+        "TV-range footage must keep going through the conversion"
+    )
+
+
+def test_gray_blocks_keep_color_where_there_is_color(tmp_path):
+    # Permission, not a promise: colour footage keeps its colour even where gray is allowed.
+    vals = (np.arange(8) * 15 + 20).clip(0, 255).astype(np.uint8)
+    mono = _write_rig_clip(
+        tmp_path, np.broadcast_to(vals[:, None, None], (8, 32, 32)).copy(), name="m.mp4"
+    )
+    color = _write_clip(tmp_path, _color_clip(), name="c.mp4", pix_fmt="yuvj420p")
+    assert (
+        next(io.VideoReader(mono).stream_blocks(block_size=4, gray_ok=True)).shape[-1]
+        == 1
+    )
+    assert (
+        next(io.VideoReader(color).stream_blocks(block_size=4, gray_ok=True)).shape[-1]
+        == 3
+    )
+
+
+def test_gray_blocks_stack_a_mixed_block_at_three_channels(tmp_path):
+    # Colour is decided per FRAME, so a clip whose opening frame is neutral and whose rest
+    # is coloured puts both kinds in one block. It must be stacked, not refused -- the gray
+    # frame is broadcast, which is what it means.
+    from deeperfly.io import video as video_mod
+
+    gray = np.full((32, 32, 1), 90, np.uint8)
+    color = np.zeros((32, 32, 3), np.uint8)
+    color[..., 0] = 200
+    stacked = video_mod._stack_frames([gray, color, gray])
+    assert stacked.shape == (3, 32, 32, 3)
+    np.testing.assert_array_equal(stacked[0], np.repeat(gray, 3, axis=-1))
+    np.testing.assert_array_equal(stacked[1], color)
+
+
+def test_stream_blocks_thread_count_does_not_change_the_frames(tmp_path):
+    # Frame threading is bit-exact, so capping the decode pool (which is what keeps eight
+    # concurrent cameras from oversubscribing the host) is free of consequence.
+    frames = _indexed_clip(14, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    ref = np.concatenate(list(io.VideoReader(path).stream_blocks(block_size=5)))
+    for threads in (1, 2, 8, None):
+        got = np.concatenate(
+            list(io.VideoReader(path).stream_blocks(block_size=5, thread_count=threads))
+        )
+        np.testing.assert_array_equal(got, ref)
 
 
 def test_cursor_close_is_idempotent_and_final(tmp_path):

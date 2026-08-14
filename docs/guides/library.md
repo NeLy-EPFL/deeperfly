@@ -120,6 +120,17 @@ clip = io.VideoReader("clip.mp4")[[0, 50]]    # random access (seeks per frame)
 for block in io.open_reader(path).stream_blocks(block_size=64):  # forward, low memory
     ...
 
+# gray_ok is permission, not a promise: monochrome footage then arrives as (T, H, W, 1)
+# and skips the decoder's YUV->RGB conversion, which is most of what reading a frame
+# costs. Colour footage -- and TV-range footage, where the conversion rescales the luma
+# so the plane is not what RGB would give -- comes back (T, H, W, 3) regardless, so read
+# `shape[-1]` rather than assume. thread_count caps the decode pool, which matters when
+# several sources are read at once: sizing each from the core count oversubscribes.
+for block in io.open_reader(path).stream_blocks(
+    block_size=64, gray_ok=True, thread_count=4
+):
+    ...
+
 # VideoWriter encodes a frame, a batch, or any iterable -- so a long clip can be
 # written as it is produced, without ever holding every frame in memory.
 with io.VideoWriter("out.mp4", fps=30) as writer:
