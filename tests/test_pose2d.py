@@ -379,6 +379,82 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
         np.testing.assert_array_equal(c, ref_conf)
 
 
+def test_prepared_inputs_passed_in_match_preparing_them_inline(model):
+    # A streaming caller prepares the NEXT window while this one is in the network, so it
+    # hands detect_sequence the result. Same arithmetic, only moved: passing `prepared` must
+    # give exactly what preparing inline gives.
+    plan = _mini_plan()
+    models = _models(plan, model)
+    rng = np.random.default_rng(7)
+    windows = {
+        s.name: rng.uniform(size=(3, 64, 128, 3)).astype(np.float32)
+        for s in plan.sources
+    }
+    ref_pts, ref_conf = inference.detect_sequence(plan, models, windows)
+    prepared = inference.prepare_pathways(plan, models, windows)
+    got_pts, got_conf = inference.detect_sequence(
+        plan, models, windows, prepared=prepared
+    )
+    np.testing.assert_array_equal(got_pts, ref_pts)
+    np.testing.assert_array_equal(got_conf, ref_conf)
+
+
+def test_prepare_pathways_is_order_stable_with_and_without_a_pool(model):
+    # The pathways are prepared concurrently, so the results must still line up with
+    # plan.pathways -- a pool that returned them out of order would attach every view's
+    # detections to the wrong camera and never raise.
+    from concurrent.futures import ThreadPoolExecutor
+
+    plan = _mini_plan()
+    models = _models(plan, model)
+    rng = np.random.default_rng(8)
+    windows = {
+        s.name: rng.uniform(size=(2, 64, 128, 3)).astype(np.float32)
+        for s in plan.sources
+    }
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pooled = inference.prepare_pathways(plan, models, windows, pool=pool)
+    own = inference.prepare_pathways(plan, models, windows)
+    assert len(pooled) == len(plan.pathways)
+    for a, b in zip(pooled, own):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+
+def test_a_host_preparing_model_is_not_handed_a_device_window(model):
+    # The upload a host-side preparation would immediately undo is skipped. Declared by the
+    # model, so a plan mixing one with a device-side model still uploads the shared source.
+    plan = _mini_plan()
+    models = _models(plan, model)
+    rng = np.random.default_rng(9)
+    windows = {
+        s.name: rng.uniform(size=(2, 64, 128, 3)).astype(np.float32)
+        for s in plan.sources
+    }
+    # Nothing declares prepares_on_host -> every window is moved, as before.
+    moved = inference._windows_to_device(plan, models, windows, "cpu")
+    assert all(hasattr(w, "device") for w in moved.values())
+
+    # Both flags, and that pairing is the point: the shared prepare is a torch resize, so
+    # only a model that ALSO owns its preparation can be trusted to want host frames.
+    for m in models.values():
+        m.module.owns_prepare = True
+        m.module.prepares_on_host = True
+    try:
+        assert all(m.prepares_on_host for m in models.values())
+        kept = inference._windows_to_device(plan, models, windows, "cpu")
+        for name, w in kept.items():
+            assert w is windows[name], (
+                f"{name} should have stayed on the host untouched"
+            )
+        # Dropping owns_prepare alone puts the upload back -- the two are read together.
+        for m in models.values():
+            m.module.owns_prepare = False
+        assert not any(m.prepares_on_host for m in models.values())
+    finally:
+        for m in models.values():
+            del m.module.prepares_on_host, m.module.owns_prepare
+
+
 def test_front_source_two_pathways_bridge_both_sides(model):
     # One front source feeds two pathways (one mirrored) into a single view, so the
     # front row carries BOTH body halves with no NaN.

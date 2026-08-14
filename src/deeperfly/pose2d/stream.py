@@ -191,6 +191,21 @@ def resolve_fps(
     return _FPS_FALLBACK
 
 
+def decode_thread_budget(n_sources: int) -> int:
+    """Decode threads per stream when ``n_sources`` of them are decoded at once.
+
+    ``thread_type = "AUTO"`` alone sizes each stream's pool from the host's core count --
+    16 on a 32-core box -- so a rig's eight cameras open 128 frame threads for 32 cores and
+    spend their time in the scheduler. Dividing the cores between the streams keeps the
+    total pool at roughly one thread per core, with a floor of 2 so a single walk never
+    serializes (see :func:`deeperfly.io.video._cursor_thread_count`, which makes the same
+    trade for the viewer's seeks).
+    """
+    import os
+
+    return max(2, (os.cpu_count() or 4) // max(1, n_sources))
+
+
 def prefetch_windows(
     sources,
     *,
@@ -198,6 +213,7 @@ def prefetch_windows(
     transforms=None,
     depth=1,
     workers=None,
+    gray_ok=False,
 ):
     """Yield ``(window, n)`` multi-camera frame blocks from continuous decode.
 
@@ -241,11 +257,17 @@ def prefetch_windows(
         Queue depth bounding how far the decoder runs ahead of the GPU.
     workers
         Optional worker count for image-sequence decode.
+    gray_ok
+        Permission to decode color-free footage as one channel -- ``(T, H, W, 1)`` rather
+        than ``(T, H, W, 3)``. Granted only when every model that reads these frames wants
+        grayscale anyway (see :meth:`deeperfly.pose2d.models.LoadedModel.accepts_gray`),
+        because it skips the decoder's YUV->RGB conversion, which is the largest single
+        cost in the decode, and thirds every byte after it.
 
     Yields
     ------
     window : list of np.ndarray
-        One ``(T, H, W, 3)`` block per source, aligned across cameras.
+        One ``(T, H, W, C)`` block per source, aligned across cameras.
     n : int
         The number of frames in the window.
 
@@ -273,9 +295,12 @@ def prefetch_windows(
         # decode ceiling on a multi-core host). The transform.apply is fanned out
         # over the same pool.
         pool = ThreadPoolExecutor(max_workers=max(1, len(sources)))
+        threads = decode_thread_budget(len(sources))
         try:
             streams = [
-                io.open_reader(s, workers=workers).stream_blocks(block_size=block)
+                io.open_reader(s, workers=workers).stream_blocks(
+                    block_size=block, gray_ok=gray_ok, thread_count=threads
+                )
                 for s in sources
             ]
             while True:
@@ -306,6 +331,57 @@ def prefetch_windows(
         if item[0] == "err":
             raise item[1]
         yield item[1], item[2]
+
+
+def _prepared_windows(stream, src_names, plan, models, *, depth: int = 1):
+    """Yield ``(windows, prepared)``, preparing one window ahead of the consumer.
+
+    The two halves of a detection step run on different processors and neither needs the
+    other: resizing and normalizing a window is host work (cv2, a copy), forwarding it is
+    the GPU's. Run one after the other and each waits for the other -- on this rig the
+    preparation is a third of the step, spent with the GPU idle. So a worker thread
+    prepares the *next* window while the caller is still forwarding the current one, and
+    the preparation stops costing wall time until it grows past the network.
+
+    ``depth`` bounds how many prepared windows may be waiting, and with it the peak memory:
+    the pathway inputs are small next to the frames they came from, but the *frames* are
+    held too (the coordinate inversion needs each source's size), so this stays shallow
+    and the decode queue upstream does the real buffering.
+
+    The pathway pool is created once here rather than per window: one pool per two frames
+    would spend a recording starting threads.
+    """
+    import queue
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import inference
+
+    q: queue.Queue = queue.Queue(maxsize=max(1, depth))
+    DONE = object()
+    pool = ThreadPoolExecutor(max_workers=max(1, len(plan.pathways)))
+
+    def produce():
+        try:
+            for window, _ in stream:
+                windows = {name: window[i] for i, name in enumerate(src_names)}
+                prepared = inference.prepare_pathways(plan, models, windows, pool=pool)
+                q.put(("win", windows, prepared))
+            q.put(DONE)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on the consumer's thread
+            q.put(("err", exc))
+
+    threading.Thread(target=produce, daemon=True).start()
+    try:
+        while True:
+            item = q.get()
+            if item is DONE:
+                return
+            if item[0] == "err":
+                raise item[1]
+            yield item[1], item[2]
+    finally:
+        pool.shutdown(wait=False)
 
 
 def detect_2d(
@@ -387,41 +463,63 @@ def detect_2d(
     head = io.open_reader(src_files[0]) if src_files else None
     total = head.count() if head is not None else 0
 
+    # Grayscale is asked for only when EVERY model would throw the color away itself, so
+    # a plan mixing the multiview transformer with a 3-channel detector decodes RGB as
+    # before. It stays a permission: footage that carries color is decoded as RGB whatever
+    # this says, and the models see what they always saw.
+    gray_ok = bool(models) and all(
+        # getattr: `models` is duck-typed on this path too, and a stub that says nothing
+        # gets colour, which is what every caller got before.
+        bool(getattr(m, "accepts_gray", False))
+        for m in models.values()
+    )
     log.info(
-        "streaming frames: forward batch %d, decode buffer %d batches (%d frames/source)",
+        "streaming frames: forward batch %d, decode buffer %d batches (%d frames/source), "
+        "%d decode thread(s)/source, grayscale decode %s",
         batch_size,
         depth,
         depth * batch_size,
+        decode_thread_budget(len(src_files)),
+        "requested" if gray_ok else "off (a model wants color)",
     )
 
     make_progress = progress or _null_progress
     pts_parts, conf_parts, cand_xy, cand_score = [], [], [], []
 
+    stream = prefetch_windows(
+        src_files,
+        block=block,
+        depth=depth,
+        workers=workers,
+        gray_ok=gray_ok,
+    )
     with make_progress(total, "detect 2D") as wrap:
-        for window, _ in prefetch_windows(
-            src_files,
-            block=block,
-            depth=depth,
-            workers=workers,
-        ):
-            windows = {name: window[i] for i, name in enumerate(src_names)}
-            if want_candidates:
+        if want_candidates:
+            # The candidate path forwards frame by frame and keeps whole heatmaps, so its
+            # cost is the network and not the preparation; it is left on the simple loop.
+            for window, _ in stream:
+                windows = {name: window[i] for i, name in enumerate(src_names)}
                 p, c, cand = inference.detect_candidates_sequence(
                     plan, models, windows, k=k, progress=wrap
                 )
                 cand_xy.append(cand.xy)
                 cand_score.append(cand.score)
-            else:
+                pts_parts.append(p)
+                conf_parts.append(c)
+                del window
+        else:
+            for windows, prepared in _prepared_windows(stream, src_names, plan, models):
                 p, c = inference.detect_sequence(
                     plan,
                     models,
                     windows,
                     batch_size=batch_size,
                     progress=wrap,
+                    prepared=prepared,
                 )
-            pts_parts.append(p)
-            conf_parts.append(c)
-            del window  # release this window's frames before the next is consumed
+                pts_parts.append(p)
+                conf_parts.append(c)
+                del windows, prepared  # release before the next window is consumed
 
     if not pts_parts:
         raise SystemExit("detector received no frames")

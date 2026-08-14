@@ -1363,6 +1363,67 @@ def test_detect_sequence_progress_called_per_frame(monkeypatch):
     assert pts.shape == (2, T, 38, 2)
 
 
+def test_grayscale_decode_is_requested_only_when_every_model_accepts_it(monkeypatch):
+    from types import SimpleNamespace
+
+    from deeperfly import io
+
+    # A grayscale decode is cheaper AND fewer bytes, but it is only the same input when the
+    # model would have made the frame gray itself. One three-channel model in the plan has
+    # to put the whole run back on colour -- a detector trained through RGB must keep it.
+    asked: list[bool] = []
+
+    def fake_open_reader(src, **kw):
+        def stream_blocks(*, block_size, gray_ok=False, thread_count=None):
+            asked.append(gray_ok)
+            yield np.zeros((1, 4, 4, 3), np.uint8)
+
+        return SimpleNamespace(
+            stream_blocks=stream_blocks, count=lambda: 1, fps=lambda: 100.0
+        )
+
+    monkeypatch.setattr(io, "open_reader", fake_open_reader)
+
+    def run_with(*accepts):
+        asked.clear()
+        models = {
+            f"m{i}": SimpleNamespace(
+                accepts_gray=a, prepares_on_host=True, device=lambda: "cpu"
+            )
+            for i, a in enumerate(accepts)
+        }
+        try:
+            pose2d_stream.detect_2d(
+                Config.from_dict({"sources": [{"name": "s", "filename": "a.mp4"}]}),
+                SimpleNamespace(n_views=1, n_points=1, pathways=[], sources=["s"]),
+                models,
+                sources={"s": ["a.mp4"]},
+                want_candidates=False,
+                k=5,
+            )
+        except SystemExit:
+            pass  # no pathways -> "detector received no frames"; the decode already ran
+        return asked
+
+    assert run_with(True) == [True]
+    assert run_with(True, True) == [True]
+    assert run_with(True, False) == [False], "one colour model vetoes it for the run"
+    assert run_with(False) == [False]
+
+
+def test_decode_threads_are_divided_between_the_sources():
+    # AUTO sizes each stream's pool from the whole host, so eight cameras opening one each
+    # would run 8x that many threads. The budget divides the cores instead, with a floor so
+    # a single walk is never serialized.
+    import os
+
+    cores = os.cpu_count() or 4
+    assert pose2d_stream.decode_thread_budget(1) == max(2, cores)
+    assert pose2d_stream.decode_thread_budget(8) == max(2, cores // 8)
+    assert pose2d_stream.decode_thread_budget(1000) == 2  # the floor holds
+    assert pose2d_stream.decode_thread_budget(0) >= 2  # no sources is not a crash
+
+
 # -- view frame recovery on resume -------------------------------------------
 
 
@@ -1412,19 +1473,28 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
     rng = np.random.default_rng(1)
     win = rng.integers(0, 256, (2, 4, 6, 3), np.uint8)  # one short block of 2 frames
 
+    seen: dict = {}
+
     def fake_open_reader(src, **kw):
-        def stream_blocks(*, block_size):
+        def stream_blocks(*, block_size, gray_ok=False, thread_count=None):
+            seen.update(gray_ok=gray_ok, thread_count=thread_count)
             yield win.copy()  # a single < block block -> last (and only) window
 
         return SimpleNamespace(stream_blocks=stream_blocks)
 
     monkeypatch.setattr(io, "open_reader", fake_open_reader)
     t = preprocessing.FrameTransform((preprocessing.Fliplr(), preprocessing.Rot90(k=1)))
-    windows = list(pose2d_stream.prefetch_windows(["camA"], block=8, transforms=[t]))
+    windows = list(
+        pose2d_stream.prefetch_windows(["camA"], block=8, transforms=[t], gray_ok=True)
+    )
     assert len(windows) == 1
     window, n = windows[0]
     assert n == 2
     np.testing.assert_array_equal(window[0], t.apply(win))
+    # The decode options reach the reader: a grayscale request is only ever honoured by
+    # the reader, and the thread budget is per source rather than per host.
+    assert seen["gray_ok"] is True
+    assert seen["thread_count"] == pose2d_stream.decode_thread_budget(1)
 
 
 def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
@@ -1440,7 +1510,7 @@ def test_prefetch_windows_streams_multiple_blocks_then_stops(monkeypatch):
     def fake_open_reader(src, **kw):
         full = a if src == "A" else b
 
-        def stream_blocks(*, block_size):
+        def stream_blocks(*, block_size, gray_ok=False, thread_count=None):
             for pos in range(0, len(full), block_size):
                 yield full[pos : pos + block_size]
 

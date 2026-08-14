@@ -271,17 +271,61 @@ def _plan_device(models) -> str:
     return next(iter(models.values())).device()
 
 
-def _prepare_pathways(plan, models, windows):
+def _windows_to_device(plan, models, windows, device):
+    """Each source's window on the device -- except the ones no model wants there.
+
+    A model preparing its input with host libraries (:attr:`~deeperfly.pose2d.models.LoadedModel.prepares_on_host`)
+    copies whatever it is handed back to the CPU, so uploading its source's frames is a
+    round trip that ends where it started: up the bus and straight back down, for the
+    multiview transformer's eight views ~18 MB up and ~15 MB down per frame. A source is
+    therefore left on the host when *every* pathway reading it prepares on the host, and
+    uploaded when any pathway needs it there.
+    """
+    on_host: dict[str, bool] = {}
+    for pw in plan.pathways:
+        # getattr, like the peak_convention lookup below: `models` is duck-typed here and a
+        # stub that declares nothing gets the old behaviour, which is the upload.
+        host = bool(getattr(models[pw.model], "prepares_on_host", False))
+        on_host[pw.source] = on_host.get(pw.source, True) and host
+    return {
+        name: w if on_host.get(name, False) else _window_to_device(w, device)
+        for name, w in windows.items()
+    }
+
+
+def prepare_pathways(plan, models, windows, *, pool=None):
     """Batched input prep: ``pathway -> (T, 3, H_out, W_out)`` model input.
 
     Each pathway's *whole* window is oriented (mirror/crop) and resized +
     normalized in one shot, so the heavy resize runs once per pathway over all
     ``T`` frames rather than per frame. Returns the per-pathway prepared inputs.
+
+    The pathways are prepared **concurrently**, one worker each, because a host-side
+    preparation is the pipeline's other half: while it runs (cv2's resize, a copy) the
+    GPU has nothing to do, and eight views' worth of it one after another is the largest
+    non-network cost in detection. The work per pathway is independent by construction --
+    a pathway reads one source and writes its own entry -- and both the resize and the
+    copies release the GIL, so the wall time is the slowest view rather than their sum.
+    Results stay in pathway order.
+
+    ``pool`` reuses a caller's executor. Worth passing on a streaming run: one pool per
+    window would start eight threads per two frames, which over a recording is thousands
+    of thread creations for work measured in milliseconds.
     """
-    return [
-        models[pw.model].prepare(pw.transform.apply(windows[pw.source]))
-        for pw in plan.pathways
-    ]
+    pathways = plan.pathways
+
+    def one(pw):
+        return models[pw.model].prepare(pw.transform.apply(windows[pw.source]))
+
+    if len(pathways) < 2:
+        return [one(pw) for pw in pathways]
+    if pool is not None:
+        return list(pool.map(one, pathways))
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(pathways)) as own:
+        return list(own.map(one, pathways))
 
 
 def detect_sequence(
@@ -293,6 +337,7 @@ def detect_sequence(
     radius: int = 2,
     batch_size: int | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
+    prepared: list | None = None,
 ) -> tuple[Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]]:
     """Detect a multi-source sequence -> ``(V, T, P, 2)`` pixels and ``(V, T, P)`` conf.
 
@@ -318,6 +363,12 @@ def detect_sequence(
     progress
         Optional wrapper of the per-frame iterator, advanced once per completed
         frame; defaults to the identity.
+    prepared
+        This window's already-prepared per-pathway inputs (from
+        :func:`prepare_pathways`), or ``None`` to prepare them here. A streaming caller
+        passes them so the host preparation of the *next* window runs while this one is
+        still in the network; ``windows`` is then read only for each source's frame size,
+        which the coordinate inversion needs.
 
     Returns
     -------
@@ -329,7 +380,8 @@ def detect_sequence(
     import torch
 
     device = _plan_device(models)
-    windows = {name: _window_to_device(w, device) for name, w in windows.items()}
+    if prepared is None:
+        windows = _windows_to_device(plan, models, windows, device)
     source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
     n_frames = len(next(iter(windows.values())))
     pathways = plan.pathways
@@ -337,9 +389,10 @@ def detect_sequence(
 
     out_pts = np.full((plan.n_views, n_frames, plan.n_points, 2), np.nan)
     out_conf = np.zeros((plan.n_views, n_frames, plan.n_points))
-    prepared = _prepare_pathways(
-        plan, models, windows
-    )  # [(T, 3, H_out, W_out)] per pathway
+    if prepared is None:
+        prepared = prepare_pathways(
+            plan, models, windows
+        )  # [(T, 3, H_out, W_out)] per pathway
 
     # results[t][pw_idx] = (points_norm (C_out, 2), conf (C_out,))
     results: list[list] = [[None] * n_pass for _ in range(n_frames)]
@@ -475,7 +528,7 @@ def detect_candidates_sequence(
     from .. import pictorial
 
     device = _plan_device(models)
-    windows = {name: _window_to_device(w, device) for name, w in windows.items()}
+    windows = _windows_to_device(plan, models, windows, device)
     source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
     n_frames = len(next(iter(windows.values())))
     pathways = plan.pathways
@@ -486,7 +539,7 @@ def detect_candidates_sequence(
     cand_xy = np.full((V, n_frames, P, k, 2), np.nan)
     cand_score = np.zeros((V, n_frames, P, k))
 
-    prepared = _prepare_pathways(
+    prepared = prepare_pathways(
         plan, models, windows
     )  # [(T, 3, H_out, W_out)] per pathway
     by_model: dict[str, list[int]] = {}
