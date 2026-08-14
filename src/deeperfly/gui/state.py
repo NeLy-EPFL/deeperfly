@@ -265,9 +265,10 @@ class EditorState:
         ``articulation`` make that re-fit use the *same* model the pipeline did.
 
         ``raw_pts2d`` is the pristine ``pose2d`` detections (``result.pts2d`` is the
-        triangulation-*cleaned* array, so a rejected point is NaN there); it seeds the
-        placeholder for an otherwise-unobserved joint. ``image_sizes`` (camera name ->
-        ``(height, width)``) supplies the placeholder's last-resort image center.
+        most-derived stage's pose, which is not the detector's pixels -- see
+        :attr:`detections`); it seeds the placeholder for an otherwise-unobserved joint.
+        ``image_sizes`` (camera name -> ``(height, width)``) supplies the placeholder's
+        last-resort image center.
         """
         if labels is None:
             labels = Labels.empty(
@@ -439,13 +440,22 @@ class EditorState:
     def detections(self) -> Float[np.ndarray, "V T P 2"]:
         """The detected layer: what the 2D network said, per ``(view, frame, point)``.
 
-        Deliberately :attr:`raw_pts2d` and not ``result.pts2d``. The latter is the
-        triangulation-*cleaned* array -- NaN wherever the pipeline rejected a peak, and in
-        a directory prepared for contralateral labeling it has reprojected geometry written
-        *over* the detector's pixels (measured on scape_Fly4_006: 43% of finite cells
-        differ from ``pose2d/points``, median 14.9 px). Reading it as "the detection" loses
-        the network's opinion exactly where it is most needed and makes a drawn detection
-        ambiguous about what it even is.
+        Deliberately :attr:`raw_pts2d` and not ``result.pts2d``. The latter is whatever the
+        *most-derived* stage in the file produced, which is a moving target and never the
+        detector: the correction chain's pose when there is one, else the smoother's, else
+        the triangulation-cleaned observations. Only the last of those is even in the
+        detector's pixel space, and in a directory prepared for contralateral labeling it
+        has reprojected geometry written *over* the detector's pixels (measured on
+        scape_Fly4_006: 43% of finite cells differ from ``pose2d/points``, median 14.9 px).
+        Reading it as "the detection" loses the network's opinion exactly where it is most
+        needed and makes a drawn detection ambiguous about what it even is.
+
+        Note what this array is *not* a source of any more: rejection. A cleaned 2D is NaN
+        where the pipeline threw a peak out, but a smoothed or corrected one is dense -- it
+        fills every cell by construction -- so ``result.pts2d`` says nothing about which
+        observations survived triangulation. That question is ``triangulation/points``'s to
+        answer, and any caller wanting it must read that group rather than infer it from a
+        NaN here.
 
         Falls back to ``result.pts2d`` only when there is no ``pose2d`` group to read --
         such a file has no separate detector stage, so its points *are* the detections.
@@ -572,7 +582,7 @@ class EditorState:
         1. the reprojection of the derived 3D, when there is one -- the joint's actual
            derived position in this view, so the handle sits where the ghost was,
         2. the raw detector pixel (kept even when triangulation dropped it),
-        3. the nearest frame (within ``window``) whose raw/cleaned pixel in this view
+        3. the nearest frame (within ``window``) whose raw detector pixel in this view
            is finite -- a keypoint moves little frame to frame,
         4. the mean of the joint's connected skeleton neighbors shown in this view,
         5. the centroid of the view's shown points,
@@ -625,16 +635,21 @@ class EditorState:
         # 2. the raw detector pixel at this frame.
         if np.all(np.isfinite(raw[v, t, p])):
             return np.asarray(raw[v, t, p], dtype=float)
-        # 3. the nearest frame (raw, then cleaned) with a finite pixel in this view.
+        # 3. the nearest frame with a raw detector pixel in this view.
+        #
+        # This used to try the *cleaned* array as a second chance per frame, from when
+        # ``detections`` was ``result.pts2d``. Two things retired that rung. It was already
+        # dead -- the refactor to :attr:`raw_pts2d` left both reads pointing at the same
+        # array, so the second test could only repeat the first. And ``result.pts2d`` is no
+        # longer a cleaned array to consult: with the smoother and the correction chain in
+        # the pipeline it is dense, so reinstating the rung literally would make it fire at
+        # ``dt == 1`` for every cell and shadow the neighbor/centroid rungs below.
         for dt in range(1, max(t - lo, hi - t) + 1):
             for tt in (t - dt, t + dt):
                 if not lo <= tt <= hi:
                     continue
                 if np.all(np.isfinite(raw[v, tt, p])):
                     return np.asarray(raw[v, tt, p], dtype=float)
-                cleaned = self.detections[v, tt, p]
-                if np.all(np.isfinite(cleaned)):
-                    return np.asarray(cleaned, dtype=float)
         # 4. the mean of connected skeleton neighbors shown in this view.
         if bones.size:
             nbrs = np.unique(
