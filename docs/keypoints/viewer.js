@@ -188,9 +188,6 @@ function buildScene(mj, model, data, qpos, pose, keypoints, colors) {
   document.getElementById('edge-opacity').addEventListener('input', (e) => {
     overlay.setEdgeOpacity(parseFloat(e.target.value)); requestRender();
   });
-  document.getElementById('toggle-combine-abdomen').addEventListener('change', (e) => {
-    overlay.setCombined(e.target.checked); requestRender();
-  });
   controls.addEventListener('change', requestRender); // orbit / zoom / pan
   wireViewPresets(camera, controls, requestRender);
   setupInteraction({
@@ -367,6 +364,30 @@ function setupInteraction(ctx) {
     }
     return dofs;
   };
+
+  // Some keypoints sit exactly ON the hinge of their own chain — fly38b's `neck` is the
+  // c_thorax-c_head pivot — so every DoF above them rotates *about* them and no drag can
+  // move them anywhere. The damped solve already degrades to a no-op there, but offering
+  // a "grab" cursor that then does nothing is worse than not offering it. Mark them once
+  // by perturbing each DoF and seeing whether the point actually moves, so the rule comes
+  // from the model rather than from a hard-coded point name.
+  (() => {
+    const q0 = Array.from(data.qpos);
+    for (const p of overlay.points) {
+      const dofs = chainDofs(p.bodyId);
+      const home = worldOf(p.offset, p.bodyId);
+      const movable = dofs.some((adr) => {
+        data.qpos[adr] += 1e-3;
+        mj.mj_kinematics(model, data);
+        const moved = worldOf(p.offset, p.bodyId);
+        data.qpos[adr] = q0[adr];
+        return Math.hypot(moved[0] - home[0], moved[1] - home[1], moved[2] - home[2]) > 1e-9;
+      });
+      if (!movable) p.ball.userData.noDrag = true;
+    }
+    for (let i = 0; i < q0.length; i++) data.qpos[i] = q0[i];
+    mj.mj_kinematics(model, data);
+  })();
 
   // --- hover highlight + tooltip ---
   let hovered = null, restoreHover = null;
@@ -580,7 +601,7 @@ const DEFAULT_DOT = 0.0275, DEFAULT_LINE = 0.01;
 
 function buildOverlay(keypoints) {
   const group = new THREE.Group();
-  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE, combined = false;
+  let dotSize = DEFAULT_DOT, lineWidth = DEFAULT_LINE;
 
   // depthTest is off by default (overlay drawn "on top"); transparent:true puts
   // the overlay in the same render pass as the mesh, so when depthTest is turned
@@ -619,26 +640,6 @@ function buildOverlay(keypoints) {
   const bones = keypoints.bones.map((pair) => (
     { cyl: newEdge(keypoints.points[pair[0]].color), i: pair[0], j: pair[1] }));
 
-  // Combined ("medial") abdomen markers: average each left/right pair into one
-  // midline chain, shown in white instead of the two side chains when the
-  // "Combine abdomen" toggle is on.
-  const nameIdx = new Map(keypoints.points.map((p, i) => [p.name, i]));
-  const medialSrc = [0, 1, 2]
-    .map((n) => [nameIdx.get(`l_abdomen${n}`), nameIdx.get(`r_abdomen${n}`)])
-    .filter((pair) => pair.every((i) => i != null));
-  const abdIdx = new Set(medialSrc.flat()); // side points/bones hidden when combined
-  const medialPos = new Float32Array(medialSrc.length * 3);
-  const medialBalls = medialSrc.map((_, k) => {
-    const m = newNode('#ffffff'); m.visible = false;
-    m.userData = { kind: 'node', name: `abdomen ${k} (midline)`, noDrag: true };
-    return m;
-  });
-  const medialBones = [];
-  for (let k = 0; k + 1 < medialSrc.length; k++) {
-    const cyl = newEdge('#ffffff'); cyl.visible = false;
-    medialBones.push({ cyl, i: k, j: k + 1 });
-  }
-
   const a = new THREE.Vector3(), b = new THREE.Vector3(), dir = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
   const placeCyl = (cyl, pa, pb) => {
@@ -652,39 +653,20 @@ function buildOverlay(keypoints) {
     for (const { cyl, i, j } of bones) {
       placeCyl(cyl, a.fromArray(positions, 3 * i), b.fromArray(positions, 3 * j));
     }
-    if (combined) {
-      for (let k = 0; k < medialSrc.length; k++) {
-        const [li, ri] = medialSrc[k];
-        for (let c = 0; c < 3; c++) medialPos[3 * k + c] = (positions[3 * li + c] + positions[3 * ri + c]) / 2;
-        medialBalls[k].position.fromArray(medialPos, 3 * k);
-      }
-      for (const { cyl, i, j } of medialBones) {
-        placeCyl(cyl, a.fromArray(medialPos, 3 * i), b.fromArray(medialPos, 3 * j));
-      }
-    }
   };
 
-  const nodeMeshes = [...points.map((p) => p.ball), ...medialBalls];
+  const nodeMeshes = points.map((p) => p.ball);
 
   return {
     group, points, positions, syncBones, nodeMeshes,
     setDotSize: (s) => {
       dotSize = s;
       for (const p of points) p.ball.scale.setScalar(s);
-      for (const m of medialBalls) m.scale.setScalar(s);
     },
     setLineWidth: (w) => { lineWidth = w; syncBones(); },
     setOnTop: (onTop) => { for (const m of [...nodeMats, ...edgeMats]) m.depthTest = !onTop; },
     setNodeOpacity: (o) => { for (const m of nodeMats) m.opacity = o; },
     setEdgeOpacity: (o) => { for (const m of edgeMats) m.opacity = o; },
-    setCombined: (on) => {
-      combined = on;
-      for (const i of abdIdx) points[i].ball.visible = !on;
-      for (const { cyl, i, j } of bones) if (abdIdx.has(i) && abdIdx.has(j)) cyl.visible = !on;
-      for (const m of medialBalls) m.visible = on;
-      for (const { cyl } of medialBones) cyl.visible = on;
-      if (on) syncBones();
-    },
   };
 }
 
@@ -702,12 +684,18 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
   const byGroup = new Map(pose.groups.map((gr) => [gr.key, []]));
   for (const j of pose.joints) (byGroup.get(j.group) || []).push(j);
 
+  // A slider group is a chain of the MODEL; a limb is a chain of the SKELETON, and the
+  // two only mostly line up. Where a group carries keypoints, it takes their color: the
+  // head group is swatched with the neck, the one point rigidly attached to it, and the
+  // abdomen with fly38b's midline chain, falling back to fly38's left side chain. Either
+  // may be missing — a group with no keypoints at all gets the neutral grey below.
   const limbColor = Object.fromEntries(keypoints.limbs.map((l) => [l.name, l.color]));
   const groupSwatch = {
     lf_leg: limbColor.lf_leg, lm_leg: limbColor.lm_leg, lh_leg: limbColor.lh_leg,
     rf_leg: limbColor.rf_leg, rm_leg: limbColor.rm_leg, rh_leg: limbColor.rh_leg,
     l_antenna: limbColor.l_antenna, r_antenna: limbColor.r_antenna,
-    abdomen: limbColor.l_abdomen, wings: '#9aa0a6', head: '#9aa0a6',
+    abdomen: limbColor.abdomen ?? limbColor.l_abdomen, wings: '#9aa0a6',
+    head: limbColor.neck,
   };
 
   const sliders = [];
@@ -767,13 +755,16 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
   document.getElementById('zero').addEventListener('click',
     () => setPose(new Array(pose.neutral_qpos.length).fill(0)));
 
-  // Legend.
+  // Legend. It names the skeleton: this page is a labeling reference, and one showing a
+  // superseded point set without saying so is worse than none.
   const legend = document.getElementById('legend');
-  const approx = keypoints.approximate.length;
+  const approx = keypoints.approximate;
   legend.innerHTML =
-    `${keypoints.points.length} keypoints · ${pose.joints.length} joint DOFs.` +
-    (approx ? `<br>The ${approx} abdomen markers form two lateral chains; ` +
-      `"Combine abdomen" merges them at the midline.` : '');
+    `<b>${keypoints.skeleton ?? 'skeleton'}</b> — ${keypoints.points.length} keypoints · ` +
+    `${pose.joints.length} joint DOFs.` +
+    (approx.length ? `<br>${approx.length} of them (<code>${approx[0]}</code>…` +
+      `<code>${approx[approx.length - 1]}</code>) have no exact counterpart on the ` +
+      `model and are placed by the labeling convention.` : '');
 
   return { refresh };
 }

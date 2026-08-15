@@ -10,10 +10,21 @@ flygym or mujoco; it only copies the committed files under ``docs/keypoints/``.
 It is therefore run *by hand* (not in CI) whenever the NeuroMechFly model or the
 deeperfly skeleton changes. It needs ``flygym`` and ``mujoco``, which are heavy
 and deliberately not part of any project dependency group. Run it in a throwaway
-environment, e.g.::
+environment **outside the project** -- ``uv run`` inside it would rebuild
+``.venv`` against this script's pins::
 
-    uv run --with flygym --with mujoco --python 3.12 \
-        python scripts/build_keypoint_viewer_assets.py
+    uv venv --python 3.12 /tmp/nmf && \
+    uv pip install --python /tmp/nmf/bin/python 'flygym<2.1' mujoco dm_control pyyaml && \
+    /tmp/nmf/bin/python scripts/build_keypoint_viewer_assets.py
+
+``flygym`` is pinned below 2.1 on purpose: 2.1.0 migrated ``Fly.mjcf_root`` from
+dm_control's PyMJCF to ``mujoco.MjSpec``, and the export below is PyMJCF's. The
+pin is also what keeps a rebuild honest -- ``flygym==2.0.2`` reproduces the
+committed ``model/`` byte for byte, so a run that only changes the skeleton shows
+up as a one-file diff in ``keypoints.json``.
+
+By default the skeleton is whichever one the packaged ``default_config.toml``
+names (``fly38b``); ``--skeleton fly38`` builds the page for another packaged one.
 
 Outputs (all under ``docs/keypoints/assets/``):
 
@@ -31,10 +42,10 @@ Outputs (all under ``docs/keypoints/assets/``):
     A representative RGB per geom, derived from flygym's ``visuals.yaml`` (the
     "Colors" toggle paints the mesh with these instead of a flat grey).
 ``keypoints.json``
-    The 38 deeperfly points (read from the packaged ``default_config.toml`` so
-    they stay in lockstep with the library), each mapped to a NeuroMechFly body
-    plus a local offset, with the limb colors and within-limb bones. The
-    overlay is read from these at runtime.
+    The 38 deeperfly points (read from the packaged skeleton so they stay in
+    lockstep with the library), each mapped to a NeuroMechFly body plus a local
+    offset, with the limb colors and within-limb bones. The overlay is read from
+    these at runtime.
 ``ATTRIBUTION.txt``
     Upstream licence/attribution for the redistributed model. Kept as ``.txt`` so
     MkDocs serves it as a static file rather than rendering an orphan page.
@@ -46,6 +57,7 @@ than silently in the browser.
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import math
@@ -66,8 +78,36 @@ from flygym.compose.pose import KinematicPosePreset
 # --- repo paths -------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_TOML = REPO_ROOT / "src/deeperfly/data/default_config.toml"
+SKELETON_DIR = REPO_ROOT / "src/deeperfly/data/skeletons"
 OUT_DIR = REPO_ROOT / "docs/keypoints/assets"
 MODEL_DIR = OUT_DIR / "model"
+
+
+def load_skeleton(name: str | None = None) -> dict:
+    """The ``[skeleton]`` table, presets expanded -- ``deeperfly.config`` without importing it.
+
+    A run config only *names* its skeleton (``[skeleton] name = "fly38b"``); the point
+    names, mirror pairs, limb chains and colors live in ``data/skeletons/<name>.toml``.
+    This mirrors :func:`deeperfly.config._resolve_skeleton`: a table that already spells
+    out ``point_names`` is self-contained and used as it is, otherwise the named preset is
+    loaded and the config's own keys override it **wholesale, per key**. Reimplemented
+    rather than imported because this script runs in a throwaway flygym environment that
+    has no torch/jax, so it cannot import the library.
+    """
+    with open(CONFIG_TOML, "rb") as fh:
+        skel = tomllib.load(fh)["skeleton"]
+    if name is None and "point_names" in skel:
+        return skel
+    preset = SKELETON_DIR / f"{name or skel.get('name')}.toml"
+    if not preset.is_file():
+        available = ", ".join(sorted(p.stem for p in SKELETON_DIR.glob("*.toml")))
+        sys.exit(f"no packaged skeleton {preset.stem!r} (have: {available})")
+    with open(preset, "rb") as fh:
+        base = tomllib.load(fh)["skeleton"]
+    # An explicit --skeleton asks for that preset as written; otherwise the config's keys
+    # win over the preset's, per key, exactly as a real run resolves them.
+    return base if name else {**base, **skel}
+
 
 # --- keypoint -> NeuroMechFly body mapping ----------------------------------
 # deeperfly tracks the *joint between* two segments; NeuroMechFly defines each
@@ -84,7 +124,8 @@ LEG_SUFFIX_TO_BODY = {
     "claw": "{leg}_tarsus5",  # + distal tip offset
 }
 # The abdomen markers have no exact NeuroMechFly counterpart; these are the
-# hand-tuned (body, body-frame offset in mm) placements per point.
+# hand-tuned (body, body-frame offset in mm) placements per point, and they are the
+# same ones the packaged `data/nmf_articulation.json` carries for the IK.
 ABDOMEN_POINTS = {
     "l_abdomen0": ("c_abdomen3", [0.0, 0.05, 0.30]),
     "l_abdomen1": ("c_abdomen5", [-0.06, 0.05, 0.27]),
@@ -92,6 +133,27 @@ ABDOMEN_POINTS = {
     "r_abdomen0": ("c_abdomen3", [0.0, -0.05, 0.30]),
     "r_abdomen1": ("c_abdomen5", [-0.06, -0.05, 0.27]),
     "r_abdomen2": ("c_abdomen6", [-0.23, -0.05, 0.20]),
+}
+
+# fly38b's dorsal-midline abdomen chain, replacing fly38's two lateral ones. Each point
+# sits on the sagittal plane (y = 0) directly above an abdominal hinge -- `abdomen_k` over
+# the hinge at the head of its own segment -- except `abdomen4`, which is the tip marker
+# on the last segment, there being no sixth hinge. Attaching a point to the segment it
+# sits ON is what makes it ride that tergite when the abdomen curls.
+#
+# The heights are a table rather than a formula because no closed form put all five where
+# an annotator would: interpolating the two unlabeled stripes along the chord between
+# their neighbors (which is how the label corpus derives them, at fractions 0.5652 and
+# 0.3303) bunches `abdomen3` against `abdomen2` on this model and sinks it ~0.049 below
+# the dorsal crest. These were set by eye against the crest instead, and land at an even
+# spacing with a uniform ~0.03 gap under it. `abdomen0` and `abdomen4` are still exactly
+# the fly38 side-pair midpoints; `abdomen2` is the fly38 marker moved onto the hinge.
+MIDLINE_POINTS = {
+    "abdomen0": ("c_abdomen3", [0.0, 0.0, 0.300]),
+    "abdomen1": ("c_abdomen4", [0.0, 0.0, 0.285]),
+    "abdomen2": ("c_abdomen5", [0.0, 0.0, 0.270]),
+    "abdomen3": ("c_abdomen6", [0.0, 0.0, 0.243]),
+    "abdomen4": ("c_abdomen6", [-0.23, 0.0, 0.200]),
 }
 
 
@@ -170,7 +232,14 @@ def map_keypoint(model: mj.MjModel, name: str) -> tuple[str, np.ndarray, bool]:
     if name in ("l_antenna", "r_antenna"):
         # The pedicel–head joint, i.e. the origin of the pedicel body.
         return f"{name[0]}_pedicel", np.zeros(3), False
-    if "abdomen" in name:
+    if name == "neck":
+        # The c_thorax-c_head pivot, i.e. the origin of the head body. Exact, like a leg
+        # joint -- it is a joint of the model, not a placement convention.
+        return "c_head", np.zeros(3), False
+    if name in MIDLINE_POINTS:  # fly38b's abdomen0..4
+        body, offset = MIDLINE_POINTS[name]
+        return body, np.array(offset), True
+    if "abdomen" in name:  # fly38's l_abdomen0..2 / r_abdomen0..2
         body, offset = ABDOMEN_POINTS[name]
         return body, np.array(offset), True
     raise ValueError(f"no NeuroMechFly mapping rule for keypoint {name!r}")
@@ -380,10 +449,8 @@ def joint_group_label(key: str) -> str:
     return labels[key]
 
 
-def build_keypoints_json(model: mj.MjModel) -> dict:
+def build_keypoints_json(model: mj.MjModel, skel: dict) -> dict:
     """The 38 deeperfly points, their NeuroMechFly targets, colors and bones."""
-    with open(CONFIG_TOML, "rb") as fh:
-        skel = tomllib.load(fh)["skeleton"]
     point_names: list[str] = skel["point_names"]
     limb_points: dict[str, list[str]] = skel["limb_points"]
     palette: dict[str, str] = skel.get("limb_palette", {})
@@ -423,6 +490,9 @@ def build_keypoints_json(model: mj.MjModel) -> dict:
         bones.extend([a, b] for a, b in zip(idxs, idxs[1:]))
 
     return {
+        # Named so the viewer can say *which* skeleton it is showing -- the page is a
+        # labeling reference, and a stale one that does not admit it is worse than none.
+        "skeleton": skel.get("name", "?"),
         "limbs": [
             {"name": limb, "color": palette.get(limb, "#888888")}
             for limb in limb_points
@@ -485,15 +555,25 @@ simplified (<=2000 faces) set. The flattened MJCF and the keypoint/pose metadata
 in this directory are produced by `scripts/build_keypoint_viewer_assets.py`.
 
 If you use the NeuroMechFly model, please cite the NeuroMechFly v2 publication
-(see https://neuromechfly.org/). Approximate keypoint placements (antennae and
-abdomen markers, listed under `approximate` in `keypoints.json`) have no exact
+(see https://neuromechfly.org/). Approximate keypoint placements (the abdomen
+markers, listed under `approximate` in `keypoints.json`) have no exact
 NeuroMechFly counterpart and are positioned for illustration only.
 """
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--skeleton",
+        metavar="NAME",
+        help="a packaged skeleton to build the page for (default: whatever "
+        "default_config.toml names)",
+    )
+    args = parser.parse_args()
+
     if not CONFIG_TOML.exists():
         sys.exit(f"cannot find deeperfly config at {CONFIG_TOML}")
+    skel = load_skeleton(args.skeleton)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Composing + exporting NeuroMechFly model ...")
@@ -506,8 +586,8 @@ def main() -> int:
     print("Building colors.json (per-geom flygym colors) ...")
     (OUT_DIR / "colors.json").write_text(json.dumps(build_colors_json(model)))
 
-    print("Building keypoints.json (38 points -> bodies) ...")
-    keypoints = build_keypoints_json(model)
+    print(f"Building keypoints.json ({skel.get('name')} -> bodies) ...")
+    keypoints = build_keypoints_json(model, skel)
     (OUT_DIR / "keypoints.json").write_text(json.dumps(keypoints, indent=1))
 
     (OUT_DIR / "ATTRIBUTION.txt").write_text(ATTRIBUTION)
@@ -518,12 +598,56 @@ def main() -> int:
         f"\nDone -> {OUT_DIR.relative_to(REPO_ROOT)}\n"
         f"  model/fly.xml + {n_stl} STL meshes\n"
         f"  {len(pose['joints'])} controllable DOFs (nq={pose['nq']} total)\n"
-        f"  {len(keypoints['points'])} keypoints, "
+        f"  {keypoints['skeleton']}: {len(keypoints['points'])} keypoints, "
         f"{len(keypoints['bones'])} bones, "
         f"{len(keypoints['approximate'])} approximate\n"
         f"  total {size_mb:.2f} MB"
     )
+    print_ik_markers(keypoints)
     return 0
+
+
+def print_ik_markers(keypoints: dict) -> None:
+    """Echo the head/abdomen placements as an ``[inverse_kinematics.*]`` table.
+
+    The same offsets appear in ``docs/explanation/keypoints.md``, where a reader can
+    paste them into a run config to take a ``fly38b`` body plan from 32 of 38 fitted
+    points to 38 of 38. Printing them here is what keeps that page honest: if a
+    placement above ever changes, the rebuild that changes it also says what the page
+    should now read.
+    """
+    # Only the points the packaged articulation does not already carry are worth a
+    # table: it bakes the antennae and fly38's side chains, so what a fly38b config
+    # has to supply is the head chain re-listed with `neck` (a table replaces the
+    # chain's markers wholesale) plus the midline abdomen.
+    wanted = {
+        "head": lambda n: n.endswith("_antenna") or n == "neck",
+        "abdomen": lambda n: n.startswith("abdomen"),
+    }
+
+    # A point the baked articulation cannot already reach. Without one of these the
+    # skeleton needs no table at all, and an empty heading would only mislead.
+    def novel(name: str) -> bool:
+        return name == "neck" or name.startswith("abdomen")
+
+    points = keypoints["points"]
+    tables = {
+        chain: [p for p in points if keep(p["name"])] for chain, keep in wanted.items()
+    }
+    tables = {
+        c: rows for c, rows in tables.items() if any(novel(p["name"]) for p in rows)
+    }
+    if not tables:
+        return
+    print(
+        "\nMarker placements for [inverse_kinematics] (docs/explanation/keypoints.md):"
+    )
+    for chain, rows in tables.items():
+        print(f"\n    [inverse_kinematics.{chain}]")
+        for p in rows:
+            body = p["body"].split("/")[-1]
+            cells = ", ".join(f"{v:.6g}" for v in p["offset"])
+            print(f'    {p["name"]} = {{ body = "{body}", offset = [{cells}] }}')
 
 
 if __name__ == "__main__":
