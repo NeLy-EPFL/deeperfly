@@ -69,6 +69,18 @@ log = logging.getLogger("deeperfly")
 
 #: Artifact format this loader understands.
 ARTIFACT_FORMAT: str = "deeperfly-mvt-1"
+#: Formats this loader runs. ``-2`` is the same network with its patch-embedding stem
+#: FOLDED onto one grayscale plane: the corpus is monochrome, so two thirds of that
+#: convolution's input weights were three copies of one filter. The fold is exact -- see
+#: dfpose's ``scripts/gray_stem.py`` -- so a ``-2`` artifact is the same function as the
+#: ``-1`` it was folded from, not a retrained model.
+#:
+#: The version is the guard, and it has to be: a ``-1`` artifact fed one plane and a ``-2``
+#: fed three are both shape errors PyTorch would raise, but a ``-2`` whose scalar
+#: normalization was applied as if it were ImageNet's would run and be quietly wrong. The
+#: channel count is therefore read from the artifact's own ``normalization.mean`` and
+#: cross-checked against the stem it actually carries.
+ARTIFACT_FORMATS: tuple[str, ...] = ("deeperfly-mvt-1", "deeperfly-mvt-2")
 
 #: Soft-argmax temperature. Not in the state dict -- LP holds it as a plain attribute
 #: (``self.temperature = torch.tensor(1000.0)``), so it is a property of the decode rather
@@ -128,10 +140,15 @@ def _build_modules(arch: dict[str, Any]):
         )
     qkv_bias = bool(arch.get("qkv_bias", True))
 
+    # 3 for a `deeperfly-mvt-1` artifact (grayscale replicated to RGB, per-channel
+    # ImageNet), 1 for a folded `-2`. Read from the artifact rather than assumed, so the
+    # two cannot be silently interchanged.
+    in_ch = int(arch.get("in_channels", 3))
+
     class PatchEmbeddings(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.projection = nn.Conv2d(3, dim, kernel_size=patch, stride=patch)
+            self.projection = nn.Conv2d(in_ch, dim, kernel_size=patch, stride=patch)
 
         def forward(self, x):
             return self.projection(x).flatten(2).transpose(1, 2)
@@ -558,10 +575,17 @@ def prepare_images(frames, input_hw: tuple[int, int], mean, std, device):
             gray = f[..., 0]
         out[t] = cv2.resize(gray, (w_out, h_out), interpolation=cv2.INTER_AREA)
 
+    # One plane per element of `mean`: three for a `deeperfly-mvt-1` artifact, whose stem
+    # was trained on the grayscale frame replicated to RGB and normalized per channel; one
+    # for a folded `-2`, where those three filters were collapsed into a single exact
+    # equivalent. The artifact states which, so this never has to guess -- and a mismatch
+    # between the plane count and the stem is a shape error at the first conv rather than a
+    # silent broadcast.
+    c = len(tuple(mean))
     x = torch.from_numpy(out).to(device=device, dtype=torch.float32) / 255.0
-    x = x.unsqueeze(1).expand(-1, 3, -1, -1)
-    m = torch.tensor(mean, dtype=x.dtype, device=x.device).view(1, 3, 1, 1)
-    s = torch.tensor(std, dtype=x.dtype, device=x.device).view(1, 3, 1, 1)
+    x = x.unsqueeze(1).expand(-1, c, -1, -1)
+    m = torch.tensor(mean, dtype=x.dtype, device=x.device).view(1, c, 1, 1)
+    s = torch.tensor(std, dtype=x.dtype, device=x.device).view(1, c, 1, 1)
     return (x - m) / s
 
 
@@ -614,13 +638,25 @@ def load_mvt(
     art = torch.load(path, map_location="cpu", weights_only=True)
 
     fmt = art.get("format") if isinstance(art, dict) else None
-    if fmt != ARTIFACT_FORMAT:
+    if fmt not in ARTIFACT_FORMATS:
         raise SystemExit(
-            f"{path}: format {fmt!r}, expected {ARTIFACT_FORMAT!r}. This is not an "
+            f"{path}: format {fmt!r}, expected one of {ARTIFACT_FORMATS!r}. This is not an "
             "exported multiview-transformer artifact (a raw Lightning .ckpt is not one -- "
             "run dfpose's scripts/export_mvt_weights.py)."
         )
-    arch = art["arch"]
+    arch = dict(art["arch"])
+    # The input plane count is the artifact's normalization, and the arch entry must agree
+    # with it. Both are then checked against the stem the weights actually carry, below --
+    # three statements of one fact, because the failure they guard against (an artifact
+    # whose scalar normalization is applied as if it were ImageNet's) produces numbers
+    # rather than an exception.
+    n_norm = len(tuple(art["normalization"]["mean"]))
+    if "in_channels" in arch and int(arch["in_channels"]) != n_norm:
+        raise SystemExit(
+            f"{path}: arch.in_channels={arch['in_channels']} but normalization.mean has "
+            f"{n_norm} entr{'y' if n_norm == 1 else 'ies'}"
+        )
+    arch["in_channels"] = n_norm
     if str(arch.get("view_embed")) != "off":
         raise SystemExit(
             f"artifact declares view_embed={arch.get('view_embed')!r}; only the "
@@ -636,6 +672,23 @@ def load_mvt(
         )
 
     net = _make_net(arch)
+    # The third statement of the fact above, and the only one read off the WEIGHTS. A shape
+    # disagreement would also surface from load_state_dict, but as a RuntimeError about a
+    # tensor name; this says what is actually wrong with the artifact.
+    stem_w = next(
+        (
+            v
+            for k, v in art["state_dict"].items()
+            if k.endswith("patch_embeddings.projection.weight")
+        ),
+        None,
+    )
+    if stem_w is not None and int(stem_w.shape[1]) != n_norm:
+        raise SystemExit(
+            f"{path}: the stem takes {int(stem_w.shape[1])} input channel(s) but the "
+            f"artifact's normalization describes {n_norm}. A folded (grayscale) artifact "
+            f"must declare a single mean/std; see dfpose scripts/gray_stem.py."
+        )
     missing, unexpected = net.load_state_dict(art["state_dict"], strict=False)
     if missing or unexpected:
         raise SystemExit(

@@ -125,6 +125,7 @@ def build(
     lat: int = 96,
     mid: int = 128,
     head: str = "concat",
+    gray_input: bool = False,
 ):
     """The dense-38 detector as an ``nn.Module``: ``(N,3,H,W) -> [ (N,K,96,192) ]``.
 
@@ -145,7 +146,11 @@ def build(
             # strides 8/16/32/32 and evaluate a plausible, wrong model. Mirrors the same
             # fix in dfpose's models/hrnet_timm.py; for both HRNet arms this resolves to
             # (1,2,3,4), i.e. the ported behaviour, unchanged.
-            kw = dict(pretrained=pretrained, features_only=True, in_chans=3)
+            kw = dict(
+                pretrained=pretrained,
+                features_only=True,
+                in_chans=1 if gray_input else 3,
+            )
             try:
                 self.backbone = timm.create_model(model_name, img_size=(256, 512), **kw)
             except TypeError:
@@ -157,6 +162,7 @@ def build(
                     f"{model_name} exposes feature strides {red}; the stride-4 heatmap "
                     f"head needs {WANT_REDUCTIONS} and {missing} are absent"
                 )
+            self.gray_input = bool(gray_input)
             self._sel = tuple(red.index(r) for r in WANT_REDUCTIONS)
             all_chs = tuple(self.backbone.feature_info.channels())
             chs = tuple(all_chs[i] for i in self._sel)
@@ -250,7 +256,10 @@ def build(
             # NOT a luminance mix, which would be a different input than training saw.
             g = x[:, :1]
             g = (g - self.norm_mean) / self.norm_std
-            raw = list(self.backbone(g.repeat(1, 3, 1, 1)))
+            # One plane when the checkpoint's stem takes one. The fold that produced it is
+            # a plain sum of the RGB filters, which is EXACT here because the mean/std
+            # above are scalars shared by all three planes -- the three were identical.
+            raw = list(self.backbone(g if self.gray_input else g.repeat(1, 3, 1, 1)))
             fs = [raw[i] for i in self._sel]
             if fs[0].shape[1] != (
                 self.laterals[0].in_channels
@@ -368,10 +377,15 @@ def load_hrnet(weights: str | Path, *, dev: str | None = None, mean: float = 0.0
         sd["decoder.out.3.weight" if head == "unet" else "head.3.weight"].shape[0]
     )
     backbone = ck.get("backbone", "")
+    # Read back for the same reason `head` is: a gray checkpoint rebuilt as 3-channel
+    # fails load_state_dict on the stem, and the reverse would feed three planes to a
+    # one-plane stem. Both are silent in a filtered log.
+    gray_input = bool(ck.get("args", {}).get("gray_input", False))
     model = build(
         n_kp,
         MODEL_NAMES.get(backbone, backbone or "hrnet_w18_small_v2"),
         head=head,
+        gray_input=gray_input,
     )
     model.load_state_dict(sd, strict=True)
     model.norm_mean = float(ck.get("mean", 0.0))
