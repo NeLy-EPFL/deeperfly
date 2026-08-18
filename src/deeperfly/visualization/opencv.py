@@ -192,6 +192,84 @@ def _colors_u8(skeleton: "Skeleton", palette: dict[str, str] | None) -> np.ndarr
     )
 
 
+#: A bone dash pattern: ``0`` / ``None`` for solid, one number (equal on/off runs) or an
+#: ``(on, off)`` pair, in **canvas** pixels.
+Dash = float | tuple[float, float] | list[float] | None
+
+
+def _dash_pattern(dash: Dash) -> tuple[float, float] | None:
+    """Normalize a ``line_dash`` value to ``(on, off)`` canvas pixels, or ``None`` (solid).
+
+    A single number means equal on/off runs, which is the pattern almost every caller
+    wants and the one a TOML config can state as ``line_dash = 6``. A non-positive ``on``
+    run is solid rather than invisible: a dash length of zero would otherwise erase the
+    skeleton, and "I asked for no dashes" is the only thing it can reasonably mean.
+    """
+    if dash is None:
+        return None
+    if isinstance(dash, (int, float)):
+        on = off = float(dash)
+    else:
+        pair = tuple(float(v) for v in dash)
+        if len(pair) != 2:
+            raise ValueError(
+                f"line_dash must be a number or an (on, off) pair, got {dash!r}"
+            )
+        on, off = pair
+    if on <= 0.0 or off <= 0.0:
+        return None
+    return on, off
+
+
+def _draw_bone(
+    canvas: np.ndarray,
+    a: tuple[int, int],
+    b: tuple[int, int],
+    color: Color,
+    thickness: int,
+    dash: tuple[float, float] | None,
+) -> None:
+    """One bone from ``a`` to ``b``: a solid line, or dashes when ``dash`` is given.
+
+    Dashes are laid out by arc length along the segment *in canvas pixels*, so the
+    pattern is the same visual size in every panel however the view is scaled -- which is
+    the point of a dashed overlay: it has to read as "the reference" at a glance, and a
+    pattern that shrank with the panel would read as a thinner solid line instead.
+    Stepping is `while` over the run length rather than a fixed dash count so a long bone
+    gets more dashes and not longer ones.
+
+    The pattern is geometric arc length (as in SVG or matplotlib), NOT the fraction of
+    pixels that end up lit, and the two differ by more than they look like they should:
+    ``cv2.line`` draws both endpoints inclusively and antialiases a cap past each, so a
+    nominal 50% duty (``(6, 6)``) measures 62% lit at thickness 1 and 79% at thickness 2 --
+    gaps thin enough to read as a slightly ragged solid line. Bias the gap when picking a
+    pattern (``(4, 9)`` measures 62% at thickness 2); the alternative, shortening each run
+    by the cap bleed, would make ``line_dash = 6`` not draw 6-pixel dashes.
+    """
+    if dash is None:
+        cv2.line(canvas, a, b, color, thickness, cv2.LINE_AA)
+        return
+    on, off = dash
+    (x0, y0), (x1, y1) = a, b
+    length = float(np.hypot(x1 - x0, y1 - y0))
+    if length < 1.0:  # a bone shorter than a pixel: one dot, not an empty gap
+        cv2.line(canvas, a, b, color, thickness, cv2.LINE_AA)
+        return
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    s = 0.0
+    while s < length:
+        e = min(s + on, length)
+        cv2.line(
+            canvas,
+            (int(round(x0 + ux * s)), int(round(y0 + uy * s))),
+            (int(round(x0 + ux * e)), int(round(y0 + uy * e))),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        s = e + off
+
+
 def _draw_point(
     canvas: np.ndarray,
     center: tuple[int, int],
@@ -244,6 +322,7 @@ def _draw(
     line_thickness: int,
     draw_points: bool,
     outline_thickness: int,
+    line_dash: Dash = None,
 ) -> np.ndarray:
     """Draw bones then joints, back-to-front when ``depth`` is given."""
     pts = np.asarray(pts, dtype=float)
@@ -254,6 +333,7 @@ def _draw(
             round(pts[i, 1] * scale_y + y0)
         )
 
+    dash = _dash_pattern(line_dash)
     bones = skeleton.bones
     bone_order = range(len(bones))
     if depth is not None and len(bones):
@@ -269,7 +349,7 @@ def _draw(
         a, b = int(bones[k][0]), int(bones[k][1])
         if finite[a] and finite[b]:
             color: Color = tuple(map(int, colors[a]))  # type: ignore[assignment]
-            cv2.line(canvas, xy(a), xy(b), color, line_thickness, cv2.LINE_AA)
+            _draw_bone(canvas, xy(a), xy(b), color, line_thickness, dash)
 
     if not draw_points:
         return canvas
@@ -303,6 +383,7 @@ def draw_skeleton_2d(
     palette: dict[str, str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
+    line_dash: Dash = None,
     draw_points: bool = True,
     outline_thickness: int = 1,
 ) -> np.ndarray:
@@ -333,6 +414,11 @@ def draw_skeleton_2d(
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
+    line_dash
+        Bone dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
+        number gives equal on/off runs, and an ``(on, off)`` pair sets them
+        separately. Dashing one of two overlaid skeletons is how a before/after pair
+        reads as a comparison rather than as one thicker skeleton.
     draw_points
         Whether to draw joints (bones are always drawn).
     outline_thickness
@@ -358,6 +444,7 @@ def draw_skeleton_2d(
         scale_y=sy,
         point_radius=point_radius,
         line_thickness=line_thickness,
+        line_dash=line_dash,
         draw_points=draw_points,
         outline_thickness=outline_thickness,
     )
@@ -376,6 +463,7 @@ def draw_skeleton_3d(
     palette: dict[str, str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
+    line_dash: Dash = None,
     draw_points: bool = True,
     outline_thickness: int = 1,
 ) -> np.ndarray:
@@ -407,6 +495,11 @@ def draw_skeleton_3d(
         Optional ``limb_name -> hex`` override of the skeleton palette.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
+    line_dash
+        Bone dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
+        number gives equal on/off runs, and an ``(on, off)`` pair sets them
+        separately. Dashing one of two overlaid skeletons is how a before/after pair
+        reads as a comparison rather than as one thicker skeleton.
     draw_points
         Whether to draw joints (bones are always drawn).
     outline_thickness
@@ -437,6 +530,7 @@ def draw_skeleton_3d(
         scale_y=sy,
         point_radius=point_radius,
         line_thickness=line_thickness,
+        line_dash=line_dash,
         draw_points=draw_points,
         outline_thickness=outline_thickness,
     )

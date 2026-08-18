@@ -6,6 +6,8 @@ actually draw, depth ordering, config parsing), not pixel-exact rendering.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -117,6 +119,109 @@ def test_draw_point_outline_thickness_zero_is_fill_only():
         canvas, (10, 10), radius=5, color=(0, 200, 255), alpha=0.0, outline_thickness=0
     )
     assert not canvas.any()
+
+
+# -- dashed bones ------------------------------------------------------------
+
+
+def _lit(canvas) -> int:
+    """How many pixels the drawing touched."""
+    import numpy as _np
+
+    return int(_np.asarray(canvas > 0).any(-1).sum())
+
+
+def _canvas_pts(result, canvas_h=96, canvas_w=128):
+    """The synthetic 2D of view 0 rescaled to land inside a canvas of that size."""
+    pts = result.pts2d[0, 0].copy()
+    pts -= np.nanmin(pts, axis=0)
+    pts /= np.nanmax(pts, axis=0) + 1e-9
+    pts *= [canvas_w - 8, canvas_h - 6]
+    return pts
+
+
+def test_line_dash_leaves_gaps_and_zero_is_solid(result, fly):
+    """A dash pattern lights strictly fewer pixels; ``0``/``None`` is byte-for-byte solid."""
+    pts = _canvas_pts(result)
+
+    def render(**kw):
+        canvas = cv.new_canvas(96, 128, "black")
+        cv.draw_skeleton_2d(canvas, pts, fly, line_thickness=2, draw_points=False, **kw)
+        return canvas
+
+    solid = render()
+    dashed = render(line_dash=(4, 9))
+    assert 0 < _lit(dashed) < _lit(solid)
+    # A wider gap lights less still -- the pattern is arc length, not a dash count.
+    assert _lit(render(line_dash=(4, 20))) < _lit(dashed)
+    # Opting out has to be exact: a "solid" skeleton drawn through the dash path
+    # would differ from every other panel by a pixel here and there.
+    for off in (0, None):
+        np.testing.assert_array_equal(render(line_dash=off), solid)
+
+
+def test_line_dash_applies_to_the_3d_drawer_too(cameras, fly, result):
+    """``skeleton_3d`` takes the same pattern -- it is the layer a comparison dashes."""
+
+    def render(**kw):
+        canvas = cv.new_canvas(512, 1024, "black")
+        cv.draw_skeleton_3d(
+            canvas,
+            result.pts3d[0],
+            cameras["rf"],
+            fly,
+            line_thickness=2,
+            draw_points=False,
+            **kw,
+        )
+        return canvas
+
+    assert 0 < _lit(render(line_dash=(4, 9))) < _lit(render())
+
+
+def test_line_dash_rejects_a_malformed_pattern(result, fly):
+    canvas = cv.new_canvas(96, 128, "black")
+    with pytest.raises(ValueError, match="line_dash must be a number or an"):
+        cv.draw_skeleton_2d(canvas, _canvas_pts(result), fly, line_dash=(1, 2, 3))
+
+
+def test_line_dash_reaches_the_draw_op_from_a_config(result, fly):
+    """A dashed reference under a solid overlay is a config, not a code change.
+
+    The point of the parameter: two skeletons in one panel where the config alone says
+    which is which. Reserved layout keys never reach the op, so ``line_dash`` has to
+    travel as a forwarded draw-op kwarg -- and this is the check that it does.
+    """
+    config = Config.from_dict(
+        {
+            "visualization": {
+                "videos": [
+                    {
+                        "video_name": "compare",
+                        "panels": [
+                            {
+                                "plot": "skeleton_3d",
+                                "view": "rh",
+                                "line_dash": [4, 9],
+                                "line_thickness": 2,
+                                "draw_points": False,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    (spec,) = config.videos
+    assert spec.panels[0].options["line_dash"] == [4, 9]
+    # No frames: the panel is then sized from the camera's own intrinsics, so the
+    # reprojected skeleton lands inside the canvas at scale 1 and the lit-pixel count
+    # is the skeleton's alone rather than an imshow's.
+    src = compose.Sources(fly, result.cameras, {}, pts3d=result.pts3d)
+    dashed = compose.compose_frame(spec, src, t=0)
+    solid_spec = copy.deepcopy(spec)
+    solid_spec.panels[0].options.pop("line_dash")
+    assert 0 < _lit(dashed) < _lit(compose.compose_frame(solid_spec, src, t=0))
 
 
 # -- compositor --------------------------------------------------------------

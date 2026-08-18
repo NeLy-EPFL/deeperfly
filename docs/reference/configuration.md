@@ -1245,7 +1245,7 @@ That is exactly equivalent to seventeen hand-written panels — an `imshow` plus
 | `clip` | bool | `true` | Keep the op inside the panel's footprint. |
 | `stage` | str | most-derived | Which stage's points to draw: `"pose2d"`, `"pictorial_structures"`, `"triangulation"`, `"eks"`, `"postprocess"`. |
 | `background` | str or [r, g, b] | inherits | Per-panel fill. |
-| *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `palette`, …). |
+| *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `line_dash`, `palette`, …). |
 
 <a id="panel-crop"></a>
 `crop` is for a camera whose animal is a small part of a wide frame — an axial view at
@@ -1305,6 +1305,38 @@ panels = [{ plot = "skeleton_3d", view = "rf", stage = "postprocess" }]
 
 A panel naming a stage the file does not have skips its whole video with a logged reason
 rather than falling back — a fallback would render the pair as two copies of one array.
+
+<a id="panel-two-layers"></a>
+A before/after pair can also be *one* video rather than two, when what matters is the
+difference and not each pose on its own. A `grid` draws exactly one overlay op per cell,
+but explicit `panels` are appended after the expansion and therefore draw on top of it —
+so the reference goes in the grid and the comparison layer in `panels`, and `line_dash`
+says which is which:
+
+```toml
+[[visualization.videos]]
+video_name = "pose3d_post_vs_ik"
+plot  = "skeleton_3d"          # dashed, underneath: the pose the fit was given
+stage = "postprocess"
+grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+panels = [                     # solid, on top: forward kinematics of the fitted angles
+    { plot = "skeleton_nmf", view = "rf", x0 = 0, y0 = 0 },
+    # ... one per cell, at column * cell_width, row * cell_height
+]
+
+[visualization.videos.kwargs]
+skeleton_3d  = { line_dash = [4, 9], point_radius = 2 }
+skeleton_nmf = { line_thickness = 2, point_radius = 3 }
+```
+
+The explicit panels carry their own `x0`/`y0` because they are outside the grid's
+expansion — column times the cell width, row times its height. `line_dash` is arc length
+in canvas pixels (a number for equal on/off runs, or an `[on, off]` pair), and `0` draws
+solid; bias the gap, because antialiased end caps light more than the nominal duty cycle
+suggests (a `[6, 6]` pattern reads as a ragged solid line at `line_thickness = 2`).
+
+The same layering puts a skeleton over a `mesh_nmf` grid, where the order is not
+optional: a skeleton drawn *under* a translucent surface is a smear.
 
 `clip` exists because the draw ops honour `x0`/`y0` but do not stop at the panel edge, so
 in a grid a limb projecting out of its cell would be painted over the neighbouring
