@@ -74,6 +74,55 @@ def _place_coxae(pts, index, articulation, sim):
 # -- recovering known angles -------------------------------------------------
 
 
+def test_the_leg_parameterisation_is_flygyms(template, fly):
+    """Fitting the MODEL's own neutral pose returns the model's own joint angles.
+
+    This is the test that pins the whole leg frame convention, and it is worth one: the
+    template's DOF axes, their order, the per-side mirroring and the plan's ``offset_quat``
+    all have to agree with the MJCF at once, and every way of getting one of them wrong
+    still produces a plausible-looking fly. Three of them *were* wrong, and nothing caught
+    it, because a leg fitted in the wrong frame still lands near the keypoints -- it just
+    reports angles that are not flygym's, and needs joint limits that are not
+    NeuroMechFly's to reach the pose.
+
+    The check needs no MuJoCo and no synthesis. ``nmf_mesh.npz`` carries the model's
+    neutral keypoint positions and the articulation asset carries its spring references,
+    so: feed the former in as a recording, and the fitted angles must come back as the
+    latter. If they do, deeperfly's angles ARE flygym's angles and its limits mean what
+    NeuroMechFly says.
+
+    The tolerance is 8 degrees, and one DOF needs it: the tibia-tarsus pitch, because
+    deeperfly models the tarsus as ONE straight segment from ``tibia_tarsus`` to ``claw``
+    where flygym has five tarsal joints, so the single angle splits the difference. Every
+    other DOF lands within 5 degrees and the median is under 1.
+    """
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+
+    mesh = load_nmf_mesh()
+    kp = np.asarray(mesh.kp_neutral, dtype=float)
+    assert kp.shape[0] == fly.n_points, "the mesh asset is not this skeleton's"
+    rest = load_articulation().leg_rest
+    assert rest, "the articulation asset carries no leg spring references"
+
+    result = solve_inverse_kinematics(np.repeat(kp[None], 3, axis=0), fly, template)
+    col = {n: i for i, n in enumerate(result.angle_names)}
+    errs = {
+        name: abs((result.angles[0, col[name]] - want + np.pi) % (2 * np.pi) - np.pi)
+        for name, want in rest.items()
+    }
+    worst = max(errs, key=errs.get)
+    assert np.rad2deg(errs[worst]) < 8.0, (
+        f"{worst} is {np.rad2deg(errs[worst]):.1f} deg from the model's rest angle"
+    )
+    assert np.rad2deg(np.median(list(errs.values()))) < 1.0
+    assert sum(np.rad2deg(e) < 5.0 for e in errs.values()) >= len(errs) - 4
+
+    # and the pose it reaches really is the model's, not merely a self-consistent one
+    fitted = result.model_pts3d[0]
+    seen = np.isfinite(fitted).all(axis=-1)
+    assert np.nanmax(np.linalg.norm(fitted[seen] - kp[seen], axis=-1)) < 0.02
+
+
 def test_recovers_the_generating_leg_angles(template, fly, articulation):
     """A pose built by forward kinematics from known angles solves back to them.
 

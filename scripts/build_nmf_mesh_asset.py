@@ -256,6 +256,35 @@ ABDOMEN_CHAIN = {
 }
 CHAINS = [HEAD_CHAIN, ABDOMEN_CHAIN]
 
+# The leg DOFs deeperfly fits, as the flygym joint names, in template order. Only used to
+# read each one's SPRING REFERENCE out of the model -- the resting angle its passive
+# spring holds it at (`stiffness="10" springref="..."` on every leg hinge in the MJCF).
+# That is the model's rest pose, and it is NOT the middle of a joint's travel, which is
+# what the body plan used to substitute for it.
+LEG_DOFS = [
+    ("c_thorax-{leg}_coxa", ("yaw", "pitch", "roll")),
+    ("{leg}_coxa-{leg}_trochanterfemur", ("pitch", "roll")),
+    ("{leg}_trochanterfemur-{leg}_tibia", ("pitch",)),
+    ("{leg}_tibia-{leg}_tarsus1", ("pitch",)),
+]
+
+
+def _leg_rest(model) -> dict[str, float]:
+    """``angle name -> springref in radians`` for every leg DOF deeperfly fits.
+
+    Taken verbatim, with no per-side sign flip: the template mirrors the axis of a DOF the
+    model mirrors, so a right leg's angle is flygym's own value rather than its negation,
+    and one number serves both sides of the plan.
+    """
+    out: dict[str, float] = {}
+    for leg in LEGS:
+        for joint, dofs in LEG_DOFS:
+            for dof in dofs:
+                name = f"{joint.format(leg=leg)}-{dof}"
+                adr = model.jnt_qposadr[model.joint(name).id]
+                out[name] = round(float(model.qpos_spring[adr]), 10)
+    return out
+
 
 def main() -> None:
     # Disable fusestatic so every keypoint-bearing body keeps its own frame.
@@ -461,11 +490,13 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
 
     coxa_points = [f"{leg}_thorax_coxa" for leg in LEGS]
     coxa_neutral = [kp_neutral[kp_index[p]].round(8).tolist() for p in coxa_points]
+    leg_rest = _leg_rest(model)
     OUT_ARTIC.write_text(
         json.dumps(
             {
                 "coxa_points": coxa_points,
                 "coxa_neutral": coxa_neutral,
+                "leg_rest": leg_rest,
                 "chains": chains,
                 "bodies": bodies,
             },
@@ -475,7 +506,7 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
     print(
         f"wrote {OUT_ARTIC.relative_to(REPO)}  "
         f"({len(chains)} chains: {[c['name'] for c in chains]}, "
-        f"{len(bodies)} attachment bodies)"
+        f"{len(bodies)} attachment bodies, {len(leg_rest)} leg spring references)"
     )
 
 

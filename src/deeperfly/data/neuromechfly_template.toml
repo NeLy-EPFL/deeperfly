@@ -8,15 +8,43 @@
 # NeLy-EPFL/sequential-inverse-kinematics (`body_config`), transcribed so deeperfly
 # carries no ikpy/flygym dependency.
 #
-# Leg-local frame: x = anterior, y = left, z = dorsal (up). The rest leg points
-# straight down (-z); with every joint angle zero the chain reproduces that pose.
-# A leg is a serial chain from the body-fixed thorax-coxa (ThC) out to the claw.
-# Each joint rotates the running frame about its DOF `axis` vectors (applied in the
-# listed order); the next joint's `segment` then offsets the position down the rest
-# axis by the *measured* segment length (lengths come from the data, not this file).
+# Frame: the MODEL's own frame -- x = anterior, y = left, z = dorsal (up) -- which is
+# also every leg body's frame, since the MJCF gives each of them quat="1 0 0 0". The rest
+# leg points straight down (-z), and the model agrees: each distal body sits at a pure -z
+# offset from its parent (unit direction [0, 0, -1] to three decimals). A leg is a serial
+# chain from the body-fixed thorax-coxa (ThC) out to the claw. Each joint rotates the
+# running frame about its DOF `axis` vectors (applied in the listed order); the next
+# joint's `segment` then offsets the position down the rest axis by the *measured* segment
+# length (lengths come from the data, not this file).
 #
-# Joint angle limits are the `[bounds.<side>]` tables below, in DEGREES. Override
-# any of them per leg from the run config, keyed by the flygym joint angle name, e.g.
+# THE AXIS NAMES ARE ANATOMICALLY ROTATED, exactly as on the abdomen chain, and this file
+# used to have two of them backwards. Read off the MJCF at flygym zero, in each child
+# body's own frame, every leg hinge is:
+#
+#     -yaw    ->  local x        -pitch  ->  local y        -roll   ->  local z
+#
+# so `yaw` is not about the dorsal axis and `roll` is not about the long axis. Declaring
+# yaw = z and roll = x (which is what one reaches for, and what this file said) leaves the
+# fit unable to reproduce the model's OWN resting posture: it saturated the +-50 deg ThC
+# yaw wall on four of six legs just to represent the rest pose, at a keypoint residual of
+# 0.034 model units, and drove the mid and hind legs into the mirror branch of the
+# (yaw, roll) double cover.
+#
+# With the axes as below -- and the leg subtree no longer rotated by the coxa-derived body
+# frame, which was the other half of it -- a fit of the model's neutral keypoints returns
+# flygym's own joint angles to a mean of 1.0 deg (worst 7.8, the tarsus, which deeperfly
+# models as one segment against flygym's five) at a residual of 0.0011, and on a real
+# recording the leg residual falls 41% with no change to any limit. The worst-pinned leg
+# DOF goes from 71% of frames to 0.7%. `test_the_leg_parameterisation_is_flygyms` in
+# tests/test_inverse_kinematics_quickik.py pins it.
+#
+# `mirror` marks a DOF whose axis the model negates on the right side (the right hinges
+# carry axis="-1 0 0" / "0 0 -1"). Mirroring it here keeps a fitted right-leg angle equal
+# to flygym's own value rather than its negation -- and lets the limits below be ONE table
+# instead of two mirror-image ones.
+#
+# Joint angle limits are the `[bounds]` table below, in DEGREES. Override any of them per
+# leg from the run config, keyed by the flygym joint angle name, e.g.
 #   [inverse_kinematics.bounds]
 #   "rf_trochanterfemur-rf_tibia-pitch" = [10, 160]
 #
@@ -36,9 +64,9 @@ name = "ThC"            # thorax-coxa: 3-DOF ball joint at the body-fixed coxa
 suffix = "thorax_coxa"
 joint = "c_thorax-{leg}_coxa"
 dofs = [
-    { name = "yaw",   axis = [0.0, 0.0, 1.0] },
+    { name = "yaw",   axis = [1.0, 0.0, 0.0], mirror = true },
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
-    { name = "roll",  axis = [1.0, 0.0, 0.0] },
+    { name = "roll",  axis = [0.0, 0.0, 1.0], mirror = true },
 ]
 
 [[joints]]
@@ -48,7 +76,7 @@ segment = "coxa"
 joint = "{leg}_coxa-{leg}_trochanterfemur"
 dofs = [
     { name = "pitch", axis = [0.0, 1.0, 0.0] },
-    { name = "roll",  axis = [1.0, 0.0, 0.0] },
+    { name = "roll",  axis = [0.0, 0.0, 1.0], mirror = true },
 ]
 
 [[joints]]
@@ -75,24 +103,28 @@ suffix = "claw"
 segment = "tarsus"
 
 # -- joint angle limits (degrees) --------------------------------------------
-# Right side from NeuroMechFly; left side mirrors the roll/yaw ranges. The middle
-# and hind legs reuse the front-leg ranges by default -- tighten them per leg in
-# the run config if needed.
-
-[bounds.r]
+# NeuroMechFly's, and now ONE table: the two mirror-image side tables this file used to
+# carry existed only to undo a shared axis, and `mirror` above does that properly. A
+# `[bounds.l]` / `[bounds.r]` sub-table still overrides this per side for a custom
+# template.
+#
+# A limit must contain its own SPRING REFERENCE -- the resting angle the model itself
+# holds that joint at, which the plan uses as the DOF's neutral. Two of NeuroMechFly's
+# transcribed ranges did not, and the fit was pinned there on every frame trying to reach
+# a pose the model considers rest:
+#
+#   ThC_roll   rest is 33 / 87 / 134 deg (front / mid / hind); the range ended at 130
+#   CTr_roll   rest is -15 / 15 / 4 deg;                        the range started at 0
+#
+# Both are widened to clear their rest by the same 30 deg of headroom the other DOFs
+# happen to have. The middle and hind legs otherwise reuse the front-leg ranges, which is
+# now defensible in a way it was not before: with the axes fixed, every leg's rest pose
+# sits inside them, and on a real recording no ThC DOF is pinned in more than 3% of frames.
+[bounds]
 ThC_yaw = [-50, 50]
 ThC_pitch = [-40, 60]
-ThC_roll = [-130, 50]
+ThC_roll = [-50, 165]
 CTr_pitch = [-180, 0]
-CTr_roll = [-150, 0]
-FTi_pitch = [0, 170]
-TiTa_pitch = [-150, 0]
-
-[bounds.l]
-ThC_yaw = [-50, 50]
-ThC_pitch = [-40, 60]
-ThC_roll = [-50, 130]
-CTr_pitch = [-180, 0]
-CTr_roll = [0, 150]
+CTr_roll = [-45, 150]
 FTi_pitch = [0, 170]
 TiTa_pitch = [-150, 0]

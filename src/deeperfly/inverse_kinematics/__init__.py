@@ -267,13 +267,22 @@ _PINNED_REPORT = 0.25
 def _warn_about_pinned_limits(angles: np.ndarray, plan: BodyPlan) -> None:
     """Report DOFs whose joint limits, not the data, are deciding the fit.
 
-    QuickIK enforces limits by clamping each Gauss-Newton step, without the
-    gradient projection a trust-region method would apply, so a binding limit costs
-    noticeably more accuracy than it used to -- and the packaged template is explicit
-    that the middle and hind legs *reuse the front leg's ranges* as a placeholder. When
-    a DOF spends most of the recording against a limit, that limit is what is capping
-    the fit, and widening it via ``[inverse_kinematics.bounds]`` is the fix. Worth
-    saying out loud rather than leaving as an unexplained residual.
+    QuickIK enforces limits by clamping each Gauss-Newton step, without the gradient
+    projection a trust-region method would apply, so a binding limit costs noticeably
+    more accuracy than it used to. When a DOF spends most of the recording against a
+    limit, that limit is what is capping the fit there -- worth saying out loud rather
+    than leaving as an unexplained residual.
+
+    The message deliberately does **not** say to widen it. A pinned limit is evidence that
+    something is wrong, not that the limit is the wrong thing: a solver will happily drive
+    one DOF into a wall to absorb a geometry error elsewhere in the chain, and both of the
+    worst cases seen so far were exactly that. The legs pinned the +-50 degree thorax-coxa
+    yaw wall in 71% of frames because two template axes were swapped and the leg frame was
+    rotated wrongly -- once fixed, the same range pinned 0.7% of frames and the residual
+    fell 41%, far more than widening had bought. The abdomen pinned its lateral wall in 54%
+    of frames because two markers shared a body; correcting that stopped the pinning
+    without touching the range. The way to tell the cases apart is to relax the limit and
+    see whether the residual actually moves.
     """
     lo = np.array([d["limits"][0] for j in plan.plan["joints"] for d in j["dofs"]])
     hi = np.array([d["limits"][1] for j in plan.plan["joints"] for d in j["dofs"]])
@@ -292,8 +301,9 @@ def _warn_about_pinned_limits(angles: np.ndarray, plan: BodyPlan) -> None:
         return
     log.warning(
         "inverse kinematics: %d joint angle(s) sit at a limit in most frames, so the "
-        "limits -- not the keypoints -- are capping the fit there. Widen them with "
-        "[inverse_kinematics.bounds] if the pose looks constrained: %s",
+        "limits -- not the keypoints -- are capping the fit there. Check the chain's "
+        "geometry before widening with [inverse_kinematics.bounds]: a pinned limit is "
+        "often absorbing an error elsewhere, and then widening it does not help: %s",
         len(pinned),
         ", ".join(
             f"{plan.angle_names[i]} {frac[i]:.0%} "

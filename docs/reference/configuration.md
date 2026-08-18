@@ -868,14 +868,29 @@ mainly matters when the body is free.
       under-converges when over-damped.
     - Where a limit genuinely binds, it caps the achievable fit more than it used to. The
       stage logs a warning naming any DOF that sits at a limit in most frames, because
-      that is a signal your `bounds` are what's limiting the fit — the packaged template
-      gives the middle and hind legs the **front** leg's ranges as a placeholder, and on
-      real recordings the hind legs do press against them.
+      that is a signal your `bounds` are what's limiting the fit.
 
-    Measured on the example recording, the fitted model lands a mean 0.049 world units
-    from the triangulated keypoints, against 0.037 for the pre-QuickIK solver. The gap
-    is concentrated in the bound-limited hind legs: widening the pressed limits closes
-    it and then some (0.032, i.e. better than the old solver).
+!!! note "A pinned limit is often a symptom, not the cause"
+
+    The warning's advice — widen it — is right less often than it reads, and the legs are
+    the cautionary tale. They used to pin the `±50°` thorax-coxa yaw wall in **71%** of
+    frames on the example recording, with three times the residual on those frames, and
+    widening the wall did cut the leg residual 30%. It was still the wrong fix: the
+    template had two DOF axes swapped and the leg subtree was rotated by the wrong body
+    frame, so the fit was reaching the pose through the *mirror* branch of the
+    `(yaw, roll)` double cover, where the required yaw is a further 90° out. Once the frame
+    was right the same NeuroMechFly ranges stopped binding on their own — the worst-pinned
+    leg DOF fell from 71% of frames to **0.7%** — and the residual fell 41%, more than
+    widening ever bought.
+
+    The tell was that the fit could not reproduce the *model's own resting posture* within
+    the model's own limits (it saturated yaw on four of six legs trying). That is now a
+    test, `test_the_leg_parameterisation_is_flygyms`. Before widening a limit, check
+    whether the pose you are asking for is one the model considers rest.
+
+    The abdomen has the same story from the other direction — see
+    [the note below](#ik-chain-size) — where a lateral wall pinned in 54% of frames stopped
+    pinning entirely once the marker geometry was corrected, without being touched.
 
 A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits in
 **degrees**. Keys are the flygym joint angle names `"<parent_body>-<child_body>-<dof>"`
@@ -888,8 +903,12 @@ Each abdomen segment carries **two** DOFs, and by default:
 
 | dof | axis | default range | what it is |
 | --- | --- | --- | --- |
-| `…-pitch` | `+Y` (lateral) | `[-30, 0]` | **vertical** bend, ventral (downward) only |
-| `…-yaw` | `+Z` (dorsal) | `[-15, 15]` | **lateral** bend, symmetric |
+| `…-pitch` | segment-local *y* | `[-30, 0]` | **vertical** bend, ventral (downward) only |
+| `…-roll` | segment-local *z* | `[-15, 15]` | **lateral** bend, symmetric |
+
+Read those names as flygym's labels for the *axes*, not as descriptions of the motion: on
+this chain flygym's axis names are anatomically rotated, so the axis it calls `roll` is the
+one you would call yaw, and its `yaw` is the axial twist. Same on the legs.
 
 Vertical bend is one-sided because the five near-midline markers under-constrain the
 sagittal chain, so a symmetric range lets the solver fold it into a non-physical zig-zag
@@ -897,10 +916,13 @@ while a downward-only range keeps the fit a smooth ventral curl. Lateral bend is
 because a fly bends either way; `[-15, 15]` is where the fit's 90th-percentile marker
 residual flattens and the fraction of frames spent against the bound falls to ~6%.
 
-There is deliberately **no twist DOF**: no abdomen joint takes an axis with a component
-along the chain's own long axis. Successive bends can still compose to a net axial
-rotation — that is geometry rather than a degree of freedom, which is why the model
-excludes the *axis* rather than trying to constrain the net rotation.
+There is deliberately **no twist DOF** — flygym's `…-yaw`, the segment-local *x*. It is
+excluded because it **aliases** the lateral bend rather than being unobservable: every
+marker on this chain lies in the sagittal plane, so both DOFs swing it sideways, and the
+two displacement fields agree to cos 0.87–0.97 (14–29° apart) while a 20° twist still moves
+the markers 41–88% as far as the same lateral bend. Fitting both would split the motion
+between them arbitrarily. Successive bends can still compose to a net axial rotation —
+that is geometry rather than a degree of freedom.
 
 Lateral bend is not a formality. Measured on three animals across two rigs, the abdomen
 markers leave the midline by **30–80× the frame-to-frame noise floor**, growing

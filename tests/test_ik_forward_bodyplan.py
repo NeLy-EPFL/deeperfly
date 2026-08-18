@@ -31,7 +31,6 @@ from deeperfly.inverse_kinematics.bodyplan import (
     PLAN_VERSION,
     ROOT_NAME,
     BodyPlan,
-    _model_body_axes,
     _model_seglens,
     build_body_plan,
 )
@@ -334,14 +333,29 @@ def test_plan_rebuilt_from_json_matches_the_original(plan, fly):
     assert again.chain_scales == pytest.approx(plan.chain_scales)
 
 
-def test_plan_neutral_is_mid_range_not_the_singular_zero_pose(plan, template):
-    """Every DOF's neutral sits inside its limits, away from the straight-leg pose.
+def test_plan_neutral_is_the_models_spring_reference(plan, template, articulation):
+    """Every leg DOF's neutral is the model's own resting angle, strictly inside its limits.
 
-    A leg at all-zero angles is straight, where the Jacobian's null direction is pure
-    thorax-coxa yaw; QuickIK is plain damped Gauss-Newton with no line search, so
-    starting there (and pulling back toward there) leaves large residual angle error.
-    The abdomen has the mirror-image problem: its limits are ``[-30, 0]`` degrees, so a
-    zero neutral would sit exactly *on* a bound and flatten the curl.
+    A DOF's neutral is two things at once in QuickIK: the pose frame 0 starts from, and
+    what ``neutral_weight`` pulls every frame toward. So it has to be a *rest pose*, and
+    the model states one -- each leg hinge in the MJCF carries a ``springref``, baked into
+    the articulation asset. The plan used the midpoint of the limits instead, which is not
+    a rest pose and, for the mid and hind legs, sat nearer the mirror branch of the
+    ``(yaw, roll)`` double cover than the real one -- so a whole recording came back
+    reported in it.
+
+    Two properties the midpoint was originally chosen for still have to hold, and the
+    spring reference is checked against both rather than assumed to satisfy them.
+
+    *Strictly inside the limits.* A neutral sitting exactly on a bound starts the solve
+    pinned. Two of NeuroMechFly's transcribed ranges did not contain their own spring
+    reference (``ThC_roll`` ended at 130 deg against a hind rest of 134; ``CTr_roll``
+    started at 0 against a front rest of -15) and are widened in the template.
+
+    *Away from the singular straight-leg pose.* A leg at all-zero angles is straight,
+    where the Jacobian's null direction is pure thorax-coxa yaw; QuickIK is plain damped
+    Gauss-Newton with no line search, so starting there leaves large residual angle error.
+    The real rest pose is a bent leg, far from it.
     """
     col = {n: i for i, n in enumerate(plan.angle_names)}
     for joint in plan.plan["joints"]:
@@ -350,10 +364,14 @@ def test_plan_neutral_is_mid_range_not_the_singular_zero_pose(plan, template):
             assert lo <= dof["neutral"] <= hi
             if lo < hi:
                 assert lo < dof["neutral"] < hi
+    rest = articulation.leg_rest
+    assert rest, "the articulation asset carries no leg spring references"
     for leg in template.legs:
-        lo, hi = leg.bounds
         got = np.array([plan.neutral[col[n]] for n in leg.dof_names])
-        np.testing.assert_allclose(got, np.clip(0.5 * (lo + hi), lo, hi), atol=1e-12)
+        want = np.array([rest[n] for n in leg.dof_names])
+        np.testing.assert_allclose(got, want, atol=1e-12)
+        # not the straight-leg singularity: a real leg rests bent
+        assert np.abs(got).max() > np.deg2rad(45)
 
 
 def test_plan_frames_round_trip_between_model_and_world(plan, real_pts3d):
@@ -366,17 +384,19 @@ def test_plan_frames_round_trip_between_model_and_world(plan, real_pts3d):
 # -- evaluating the plan ------------------------------------------------------
 
 
-def test_plan_leg_rest_pose_points_down_the_model_body_axis(
+def test_plan_leg_rest_pose_points_straight_down_the_model_frame(
     plan, template, fly, measurements
 ):
-    """At all-zero angles each leg is straight along the model body frame's ``-z``.
+    """At all-zero angles each leg is straight along the MODEL frame's ``-z``.
 
-    The invariant that catches a sign or axis error in the conversion: the template's
-    rest pose is a straight leg pointing down its *own* frame's ``-z``, and the plan
-    carries that frame on the thorax-coxa's ``offset_quat``.
+    The invariant that catches a sign or axis error in the conversion. It is the model
+    frame itself and not a rotated one: every leg body in the MJCF carries
+    ``quat="1 0 0 0"`` and sits at a pure ``-z`` offset from its parent, so a leg subtree
+    in a model-frame plan needs no ``offset_quat`` at all. The leg used to be rotated by
+    the coxa-derived body frame, which is pitched ~23 degrees away from this one.
     """
     align, sim = measurements
-    down = _model_body_axes() @ np.array([0.0, 0.0, -1.0])
+    down = np.array([0.0, 0.0, -1.0])
     positions = plan.kinematics().joint_positions(np.zeros(plan.n_dofs))[0]
     row = {name: i for i, name in enumerate(plan.joint_names)}
     for leg in template.legs:

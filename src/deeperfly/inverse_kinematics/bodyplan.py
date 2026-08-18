@@ -31,15 +31,27 @@ are mapped back out. That also makes the solver's distance-based tolerances
 rig-independent and keeps coordinates order-1, which matters because QuickIK is
 ``f32``.
 
-The leg limits keep their exact meaning without rewriting a single axis: each leg's
-thorax-coxa joint gets ``offset_quat`` = the *model's* coxa-derived body frame. A
-joint's DOF axes live in its post-``offset_quat`` frame, so the template's
-``yaw z / pitch y / roll x`` and its straight-down ``-z`` rest direction still mean what
-they say, with one quaternion rotating the whole leg subtree into the model frame.
+The leg limits keep their exact meaning with no rotation at all: every leg body in the
+MJCF carries ``quat="1 0 0 0"``, so a leg's hinge axes ARE the model frame's, and the plan
+already lives in the model frame. Each leg subtree therefore gets an identity
+``offset_quat`` and the template's axes apply verbatim.
+
+That is a correction. The leg subtree used to be rotated by the model's *coxa-derived*
+body frame -- what a recording's ``r_body`` estimates -- which is pitched about 23 degrees
+away from the model's own. Combined with two swapped axes in the template it left the fit
+unable to reproduce the model's resting posture at all. Both are fixed together, and
+:mod:`deeperfly.inverse_kinematics.template` carries the measurement.
+
+A DOF's ``neutral`` is the model's own **spring reference** for that joint -- the resting
+angle its MJCF spring holds it at -- not the midpoint of its limits. QuickIK uses
+``neutral`` both as the pose it starts frame 0 from and as what ``neutral_weight`` pulls
+toward, so it is what picks between the two branches of the ``(yaw, roll)`` double cover.
+A midpoint is not a rest pose and does not select a branch on purpose.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from dataclasses import dataclass, field
@@ -47,9 +59,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from jaxtyping import Bool, Float
 
-from .align import Alignment, _body_axes
+from .align import Alignment
 from .articulation import Articulation, Chain
-from .forward import REST_AXIS, PlanKinematics, rmat_to_quat
+from .forward import REST_AXIS, PlanKinematics
 from .template import KinematicTemplate
 
 __all__ = ["BodyPlan", "build_body_plan", "PLAN_VERSION"]
@@ -376,12 +388,12 @@ def build_body_plan(
 def _leg_joints(leg, skeleton, alignment: Alignment, body_sim) -> list[dict]:
     """One leg's chain: the thorax-coxa at its measured place, then measured segments.
 
-    The thorax-coxa carries ``offset_quat`` = the model's own coxa-derived body frame,
-    so the template's axes and its straight-down rest direction apply verbatim inside
-    the leg while the whole subtree sits in the model frame.
+    Every joint carries an identity ``offset_quat``: the plan is in the model frame and
+    each leg body is axis-aligned with it, so the template's axes and its straight-down
+    rest direction already mean what they say (see the module docstring).
     """
     rot, scale, trans = body_sim
-    quat = [float(v) for v in rmat_to_quat(_model_body_axes())]
+    rest = _leg_spring_reference()
     origin = alignment.leg_origin.get(leg.name)
     if origin is None or not np.all(np.isfinite(origin)):
         # No coxa was ever seen: fall back to the model's own neutral coxa so the leg
@@ -407,13 +419,17 @@ def _leg_joints(leg, skeleton, alignment: Alignment, body_sim) -> list[dict]:
                 "name": joint.point,
                 "parent": parent,
                 "offset_pos": offset,
-                "offset_quat": quat if j == 0 else list(_IDENTITY_QUAT),
+                "offset_quat": list(_IDENTITY_QUAT),
                 "dofs": [
                     {
                         "type": "hinge",
                         "axis": [float(a) for a in dof.axis],
                         "neutral": float(
-                            np.clip(0.5 * (dof.lo + dof.hi), dof.lo, dof.hi)
+                            np.clip(
+                                rest.get(f"{joint.joint}-{dof.name}", 0.0),
+                                dof.lo,
+                                dof.hi,
+                            )
                         ),
                         "limits": [float(dof.lo), float(dof.hi)],
                         "x-deeperfly-angle": f"{joint.joint}-{dof.name}",
@@ -510,23 +526,31 @@ def _chain_joints(
     return out
 
 
-def _model_body_axes() -> np.ndarray:
-    """The model's own coxa-derived body frame (columns x anterior, y left, z dorsal).
+@functools.cache
+def _leg_spring_reference() -> dict[str, float]:
+    """``angle name -> resting angle in radians``, the model's own spring references.
 
-    :func:`~deeperfly.inverse_kinematics.align._body_axes` applied to the *model's*
-    neutral coxae. The template's leg axes and limits are expressed in that frame (it
-    is what a recording's ``r_body`` estimates), so a leg subtree rotated by this
-    quaternion keeps them meaning exactly what they say -- while the model frame it
-    sits in is pitched about 23 degrees away from it.
+    Every leg hinge in the MJCF carries a ``springref``: the angle its passive spring
+    holds the joint at, which is the model's resting posture and not the middle of its
+    travel. :mod:`deeperfly.inverse_kinematics.articulation` bakes them, so this needs no
+    MuJoCo at runtime.
+
+    They are the plan's ``neutral``, which QuickIK uses for two things: the pose it starts
+    the first frame from, and the target ``neutral_weight`` pulls every DOF toward. Both
+    matter more than they look. The leg chain's ``(yaw, roll)`` pair has a double cover --
+    ``(theta, r)`` and ``(-theta, r +- 180)`` place the leg identically -- and nothing in
+    the keypoints distinguishes them, so whichever branch the solve starts nearest is the
+    one the whole recording is reported in. Started from the midpoint of the limits, the
+    mid and hind legs went to the mirror branch, where the required yaw is a further 90
+    degrees out and the limits then clip it.
+
+    Read from the packaged asset rather than an argument because a legs-only plan (no
+    ``articulation=``) needs them just as much, and a leg's rest pose is a property of the
+    model, not of what the caller chose to fit.
     """
     from .articulation import load_articulation
 
-    art = load_articulation()
-    origins = {
-        point.split("_")[0]: np.asarray(neutral, dtype=float)
-        for point, neutral in zip(art.coxa_points, art.coxa_neutral)
-    }
-    return _body_axes(origins)
+    return {k: float(v) for k, v in load_articulation().leg_rest.items()}
 
 
 def _model_neutral(skeleton, point: str) -> np.ndarray:

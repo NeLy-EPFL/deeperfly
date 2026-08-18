@@ -141,12 +141,21 @@ class Articulation:
     the head subtree) to its neutral world frame and chain/depth -- used to recompute
     a marker's neutral position when the run config overrides its offset (see
     :meth:`load`). Empty for an older asset baked before body frames were stored.
+
+    ``leg_rest`` is ``angle name -> radians``, the **spring reference** of every leg DOF:
+    the resting angle the model's own passive spring holds that joint at. It is what
+    :mod:`deeperfly.inverse_kinematics.bodyplan` gives QuickIK as each DOF's ``neutral``,
+    in place of the midpoint of its limits. Lives here rather than in the leg template
+    because it is a measurement off the model, baked by
+    ``scripts/build_nmf_mesh_asset.py``, while the template is NeuroMechFly's hand-kept
+    spec. Empty for an older asset, which falls the plan back to zero.
     """
 
     chains: tuple[Chain, ...]
     coxa_points: tuple[str, ...]
     coxa_neutral: np.ndarray  # (6, 3) neutral thorax-coxa positions, in coxa order
     bodies: dict[str, dict] = field(default_factory=dict)
+    leg_rest: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def load(
@@ -199,6 +208,7 @@ class Articulation:
             coxa_points=tuple(spec["coxa_points"]),
             coxa_neutral=np.asarray(spec["coxa_neutral"], dtype=float),
             bodies=bodies,
+            leg_rest={str(k): float(v) for k, v in spec.get("leg_rest", {}).items()},
         )
 
     def chain(self, name: str) -> Chain | None:

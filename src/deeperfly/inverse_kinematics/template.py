@@ -49,8 +49,12 @@ TEMPLATES = {"neuromechfly": DEFAULT_TEMPLATE_PATH}
 class Dof:
     """One revolute degree of freedom: a rotation about ``axis`` bounded to ``[lo, hi]``.
 
-    ``axis`` is a unit vector in the leg-local frame; ``lo`` / ``hi`` are the angle
-    limits in **radians** (the file gives degrees; the loader converts).
+    ``axis`` is a unit vector in the model frame; ``lo`` / ``hi`` are the angle limits in
+    **radians** (the file gives degrees; the loader converts). A DOF marked ``mirror`` in
+    the template has its axis negated on the right side, because the model does: the right
+    legs' hinges carry ``axis="-1 0 0"`` / ``"0 0 -1"`` where the left carry ``+1``. That
+    keeps a fitted angle equal to *flygym's own* angle on both sides, rather than its
+    negation on one of them.
     """
 
     name: str
@@ -179,8 +183,14 @@ class KinematicTemplate:
                 f"[inverse_kinematics].legs has unknown leg(s) {unknown}; "
                 f"the template defines {all_legs}"
             )
+        # A flat [bounds] table applies to both sides; [bounds.l] / [bounds.r] override
+        # it per side. The packaged template needs only the flat one now that a mirrored
+        # DOF negates its axis instead of its range -- the per-side tables it used to
+        # carry were exactly each other's negation, compensating for a shared axis.
+        raw = dict(spec.get("bounds", {}))
+        flat = {k: v for k, v in raw.items() if k not in ("l", "r")}
         bounds_by_side = {
-            side: dict(spec.get("bounds", {}).get(side, {})) for side in ("l", "r")
+            side: {**flat, **dict(raw.get(side, {}))} for side in ("l", "r")
         }
         chains = tuple(
             _build_leg(leg, spec["joints"], bounds_by_side, overrides) for leg in chosen
@@ -228,10 +238,13 @@ def _build_leg(
             lo_deg, hi_deg = _resolve_bounds(
                 dof_name, side_bounds.get(side_key), overrides
             )
+            # The model mirrors these axes on the right; mirroring here too is what
+            # makes a right leg's fitted angle flygym's own value and not its negation.
+            flip = -1.0 if (dspec.get("mirror") and side == "r") else 1.0
             dofs.append(
                 Dof(
                     name=dspec["name"],
-                    axis=tuple(float(a) for a in dspec["axis"]),
+                    axis=tuple(flip * float(a) for a in dspec["axis"]),
                     lo=float(np.deg2rad(lo_deg)),
                     hi=float(np.deg2rad(hi_deg)),
                 )
