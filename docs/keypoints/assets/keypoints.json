@@ -410,44 +410,44 @@
    "name": "abdomen0",
    "limb": "abdomen",
    "color": "#61e47b",
-   "body": "c_abdomen3",
+   "body": "c_abdomen12",
    "offset": [
+    -0.37,
     0.0,
-    0.0,
-    0.3
+    0.34
    ]
   },
   {
    "name": "abdomen1",
    "limb": "abdomen",
    "color": "#61e47b",
-   "body": "c_abdomen4",
+   "body": "c_abdomen3",
    "offset": [
+    -0.22,
     0.0,
-    0.0,
-    0.285
+    0.32
    ]
   },
   {
    "name": "abdomen2",
    "limb": "abdomen",
    "color": "#61e47b",
-   "body": "c_abdomen5",
+   "body": "c_abdomen4",
    "offset": [
+    -0.23,
     0.0,
-    0.0,
-    0.27
+    0.3
    ]
   },
   {
    "name": "abdomen3",
    "limb": "abdomen",
    "color": "#61e47b",
-   "body": "c_abdomen6",
+   "body": "c_abdomen5",
    "offset": [
+    -0.24,
     0.0,
-    0.0,
-    0.243
+    0.28
    ]
   },
   {
@@ -456,9 +456,9 @@
    "color": "#61e47b",
    "body": "c_abdomen6",
    "offset": [
-    -0.23,
+    -0.25,
     0.0,
-    0.2
+    0.22
    ]
   }
  ],

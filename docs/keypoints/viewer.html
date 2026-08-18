@@ -64,6 +64,11 @@
   .joint { padding: 3px 10px 6px; }
   .joint .row { display: flex; justify-content: space-between; font-size: 11px;
         color: var(--muted); }
+  /* Marks a joint whose axis name does not describe what its slider does (the
+     abdomen's flygym `roll`, which bends it laterally): the row carries a tooltip
+     saying so, and this is the cue that there is one to read. */
+  .joint .row .hinted { text-decoration: underline dotted; text-underline-offset: 2px;
+        cursor: help; }
   .joint input[type=range] { width: 100%; margin: 1px 0 0; accent-color: var(--accent); }
   #legend { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
   #legend code { background: var(--code-bg); padding:0 3px; border-radius:3px; }

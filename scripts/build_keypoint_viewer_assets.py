@@ -33,11 +33,13 @@ Outputs (all under ``docs/keypoints/assets/``):
     references, written by ``dm_control.mjcf.export_with_assets``. The browser
     loads this exact file via ``mj_loadXML``.
 ``pose.json``
-    The *controllable* joint DOFs (the 7 actuated DOFs of each of the 6 legs plus
-    the 3 head DOFs): name, ``qpos`` address, neutral (resting) angle, slider
-    range, a human label and a UI group. Drives the slider panel and its
-    defaults. Also carries the full neutral ``qpos`` vector for all DOFs, so the
-    rest of the body stays posed at its resting angles.
+    The *controllable* joint DOFs (the 7 actuated DOFs of each of the 6 legs, the
+    3 head DOFs, and the pitch + roll of each of the 5 abdominal hinges): name,
+    ``qpos`` address, neutral (resting) angle, slider range, a human label, a UI
+    group, and for the few DOFs whose axis name misdescribes them a ``hint`` the
+    panel shows as a tooltip. Drives the slider panel and its defaults. Also
+    carries the full neutral ``qpos`` vector for all DOFs, so the rest of the body
+    stays posed at its resting angles.
 ``colors.json``
     A representative RGB per geom, derived from flygym's ``visuals.yaml`` (the
     "Colors" toggle paints the mesh with these instead of a flat grey).
@@ -148,12 +150,23 @@ ABDOMEN_POINTS = {
 # the dorsal crest. These were set by eye against the crest instead, and land at an even
 # spacing with a uniform ~0.03 gap under it. `abdomen0` and `abdomen4` are still exactly
 # the fly38 side-pair midpoints; `abdomen2` is the fly38 marker moved onto the hinge.
+#
+# Each stripe hangs off the segment BEHIND its intersegmental fold, one body proximal of
+# where the first fly38b retarget put it -- hence the -x in every offset. The earlier
+# anchoring had `abdomen3` and `abdomen4` on the SAME body (`c_abdomen6`), so no joint lay
+# between them and the model held them rigidly 0.234 apart while a real fly measured 0.287:
+# 18% short and unreachable by any angle, which was the largest single abdomen residual.
+# One joint now lies between every neighbouring pair, and on a re-fit of the same recording
+# every abdomen segment length lands within 2% of the animal's and the chain's residual
+# falls 42%. Keep this table and `docs/keypoints/assets/keypoints.json` in step: this is
+# what generates that file, and `scripts/build_nmf_mesh_asset.py` then reads it into the
+# IK's own asset, so an edit made only to the JSON is reverted by the next run of this.
 MIDLINE_POINTS = {
-    "abdomen0": ("c_abdomen3", [0.0, 0.0, 0.300]),
-    "abdomen1": ("c_abdomen4", [0.0, 0.0, 0.285]),
-    "abdomen2": ("c_abdomen5", [0.0, 0.0, 0.270]),
-    "abdomen3": ("c_abdomen6", [0.0, 0.0, 0.243]),
-    "abdomen4": ("c_abdomen6", [-0.23, 0.0, 0.200]),
+    "abdomen0": ("c_abdomen12", [-0.37, 0.0, 0.340]),
+    "abdomen1": ("c_abdomen3", [-0.22, 0.0, 0.320]),
+    "abdomen2": ("c_abdomen4", [-0.23, 0.0, 0.300]),
+    "abdomen3": ("c_abdomen5", [-0.24, 0.0, 0.280]),
+    "abdomen4": ("c_abdomen6", [-0.25, 0.0, 0.220]),
 }
 
 
@@ -265,8 +278,9 @@ def joint_group(child: str) -> tuple[str, str]:
 
 
 # Only these DOFs get a slider: the 7 actuated leg DOFs (per NeuroMechFly) for
-# each of the 6 legs, plus the 3 head DOFs. Everything else stays at its neutral
-# angle (still in neutral_qpos, so the body remains posed).
+# each of the 6 legs, the 3 head DOFs, and 2 of the 3 DOFs of each of the 5
+# abdominal hinges. Everything else stays at its neutral angle (still in
+# neutral_qpos, so the body remains posed).
 GROUP_ORDER = [
     "lf_leg",
     "lm_leg",
@@ -278,13 +292,52 @@ GROUP_ORDER = [
     "abdomen",
 ]
 HEAD_DOFS = {"c_thorax-c_head-yaw", "c_thorax-c_head-pitch", "c_thorax-c_head-roll"}
-# The abdomen kinematic chain, pitch DOFs only (c_thorax -> 12 -> 3 -> 4 -> 5 -> 6).
+# The abdomen kinematic chain (c_thorax -> 12 -> 3 -> 4 -> 5 -> 6), two DOFs per hinge --
+# the same pair `scripts/build_nmf_mesh_asset.py` bakes into the IK's abdomen chain, so the
+# sliders here move the fly through exactly the angles a fit reports. In the child
+# segment's own frame every abdominal hinge's axes are:
+#
+#     -pitch  ->  local y  ->  sagittal bend (the ventral curl)
+#     -roll   ->  local z  ->  LATERAL swing, despite the name
+#     -yaw    ->  local x  ->  axial twist about the long axis
+#
+# flygym's axis names are anatomically rotated on this chain, so the lateral DOF is `-roll`
+# and not the `-yaw` one would reach for -- worth spelling out because both readings look
+# plausible and only one is right.
+#
+# The twist gets no slider, because the IK does not fit it, and the reason is aliasing
+# rather than invisibility: every marker on this chain lies in the sagittal plane, and such
+# a point is swung sideways by BOTH a twist about local x and a bend about local z -- the
+# two differ only in lever arm (the marker's height above the axis, vs its distance behind
+# the hinge). Measured on this model the two displacement fields agree to cos 0.87-0.97 per
+# hinge, so a twist slider would largely repeat the roll one. The markers are not actually
+# *on* the twist axis -- they clear it by 0.22-0.34 model units, and a 20 deg twist moves
+# them 41-88% as far as the same roll does -- so it is the near-collinearity that rules the
+# twist out, not a vanishing lever arm.
 ABDOMEN_DOFS = {
     "c_thorax-c_abdomen12-pitch",
+    "c_thorax-c_abdomen12-roll",
     "c_abdomen12-c_abdomen3-pitch",
+    "c_abdomen12-c_abdomen3-roll",
     "c_abdomen3-c_abdomen4-pitch",
+    "c_abdomen3-c_abdomen4-roll",
     "c_abdomen4-c_abdomen5-pitch",
+    "c_abdomen4-c_abdomen5-roll",
     "c_abdomen5-c_abdomen6-pitch",
+    "c_abdomen5-c_abdomen6-roll",
+}
+# Slider tooltips, keyed by model joint name. Only a DOF whose flygym axis name does not
+# describe what the reader sees the slider do needs one, which on this model is exactly
+# the abdominal `-roll` set above: unexplained, a "roll" slider that bends the abdomen
+# sideways reads as a bug in the viewer rather than a naming convention of the model.
+JOINT_HINTS = {
+    name: "flygym's roll axis — but on the abdomen the axis names are anatomically "
+    "rotated, and this one is the segment's local z, so it swings the abdomen "
+    "LATERALLY (left/right) rather than twisting it. The twist axis (flygym's yaw) "
+    "gets no slider: on a marker that sits on the midline a twist is almost the same "
+    "motion as this lateral swing, so the two could not be told apart."
+    for name in ABDOMEN_DOFS
+    if name.endswith("-roll")
 }
 
 
@@ -411,16 +464,17 @@ def build_pose_json(model: mj.MjModel) -> dict:
             lo = min(-math.pi, neutral - 0.1)
             hi = max(math.pi, neutral + 0.1)
         key, label = joint_group(child)
-        joints.append(
-            {
-                "name": name,
-                "qposadr": adr,
-                "neutral": neutral,
-                "range": [lo, hi],
-                "label": f"{child.split('_', 1)[-1]} · {axis}" if axis else child,
-                "group": key,
-            }
-        )
+        entry = {
+            "name": name,
+            "qposadr": adr,
+            "neutral": neutral,
+            "range": [lo, hi],
+            "label": f"{child.split('_', 1)[-1]} · {axis}" if axis else child,
+            "group": key,
+        }
+        if name in JOINT_HINTS:
+            entry["hint"] = JOINT_HINTS[name]
+        joints.append(entry)
 
     groups = [{"key": k, "label": joint_group_label(k)} for k in GROUP_ORDER]
     return {

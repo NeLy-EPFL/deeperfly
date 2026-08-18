@@ -127,7 +127,12 @@ def test_quickik_reproduces_the_recorded_registration(baseline):
     """
     pytest.importorskip("quickik", reason="needs the deeperfly[ik] extra")
     res = solve_with_defaults(baseline["real_pts3d"])
-    assert res.angle_names == baseline["real_angle_names"]
+    # The recorded name list predates the abdomen's lateral DOFs. This test is about the
+    # body registration, so it holds the part the baseline can still speak for -- the leg
+    # block, which comes first and which no chain change touches -- and requires the
+    # recorded chain DOFs to have survived rather than pinning the total count.
+    assert res.angle_names[:N_LEG_DOFS] == baseline["real_angle_names"][:N_LEG_DOFS]
+    assert set(baseline["real_angle_names"]) <= set(res.angle_names)
     assert res.body_scale == pytest.approx(baseline["real_body_scale"], abs=1e-6)
     assert res.chain_scales == {"head": 1.0, "abdomen": 1.0}
     assert baseline["real_chain_scales"] != pytest.approx(res.chain_scales, abs=1e-3)

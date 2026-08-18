@@ -40,7 +40,12 @@ from ..config import InverseKinematicsParams
 from ..skeleton import Skeleton
 from ._quickik import MissingQuickIK, require_quickik
 from .align import Alignment, body_alignment
-from .articulation import Articulation, body_similarity, estimate_chain_scale
+from .articulation import (
+    Articulation,
+    body_similarity,
+    calibrate_chain,
+    estimate_chain_scale,
+)
 from .bodyplan import BodyPlan, build_body_plan
 from .mesh import NmfMesh, load_nmf_mesh
 from .template import KinematicTemplate
@@ -330,20 +335,31 @@ def _plan_for(
     scales: dict[str, float] = {}
     offsets: dict[str, np.ndarray] = {}
     if articulation is not None:
-        offsets = _chain_offsets(pts3d, index, articulation, sim)
-        scales = _chain_scales(pts3d, index, articulation, sim)
-        if scales:
-            log.info(
-                "inverse kinematics: estimated chain scale %s",
-                {k: round(v, 3) for k, v in scales.items()},
-            )
-        for name, shift in offsets.items():
+        based = _chain_offsets(pts3d, index, articulation, sim)
+        for name, shift in based.items():
             log.info(
                 "inverse kinematics: %s chain placed on its measured base, %.3f model "
                 "units off the registered one (%s)",
                 name,
                 float(np.linalg.norm(shift)),
                 np.round(shift, 3).tolist(),
+            )
+        scales, offsets = _chain_calibration(
+            pts3d, index, articulation, sim, based=based
+        )
+        if scales:
+            log.info(
+                "inverse kinematics: estimated chain scale %s",
+                {k: round(v, 3) for k, v in scales.items()},
+            )
+        for name in sorted(set(offsets) - set(based)):
+            log.info(
+                "inverse kinematics: %s chain has no base landmark, so its root was "
+                "FITTED from its whole marker set: %.3f model units off the registered "
+                "one (%s)",
+                name,
+                float(np.linalg.norm(offsets[name])),
+                np.round(offsets[name], 3).tolist(),
             )
     return build_body_plan(
         template,
@@ -384,17 +400,27 @@ def _chain_offsets(
     body landmark on a tethered fly, so it is one point per recording and the median is
     what rejects the per-frame detection noise around it.
 
-    The abdomen gets no shift, and deliberately not the head's. Its root anchor sits at
-    almost exactly the head pivot's dorsal height (1.300 against 1.301), which invites
+    The abdomen gets no shift *here*, and deliberately not the head's. Its root anchor sits
+    at almost exactly the head pivot's dorsal height (1.300 against 1.301), which invites
     reusing the ``neck``'s measurement -- but the two anchors are on *opposite sides* of
     the coxa centroid in x (+0.53 and -0.36), and the registration's ill-determined mode
     is a pitch about that centroid, which tilts them opposite ways. Measured: searching
     the abdomen root over a grid at the fitted size, applying the neck's shift makes the
     marker residual **worse** than no shift in every recording tried (0.091 -> 0.149,
-    0.082 -> 0.132, 0.061 -> 0.079, 0.226 -> 0.247), and the abdomen's own optimum is at
-    *positive* dz. Its root is genuinely misplaced, but nothing in the pose measures it:
-    no keypoint sits on it, and fitting it would be three free parameters trading against
-    five angles on five near-collinear markers.
+    0.082 -> 0.132, 0.061 -> 0.079, 0.226 -> 0.247), and that search put the abdomen's own
+    optimum at *positive* dz.
+
+    Its root is genuinely misplaced, and nothing in the *pose* measures it -- no keypoint
+    sits on it. What does measure it is the chain's whole marker set, and
+    :func:`_chain_calibration` now fits it there, jointly with the chain's size, for any
+    chain this function leaves out. That is not a reversal of the paragraph above: the grid
+    search held the size at the rigid-ruler value, which for the abdomen over-reads by
+    10-19%, and size and root translation are coupled through an exact null direction of
+    the fit -- so with the size free the optimum moves and its dz changes sign (to
+    -0.176 / -0.137 / -0.107 on three animals, same sign each time). The objection that it
+    would be "three free parameters trading against five angles" is also still true, and
+    is why the fitted root is reduced to one value per recording rather than solved per
+    frame.
 
     Returns ``{}`` unless a chain both names a base point and had it triangulated.
     """
@@ -438,25 +464,75 @@ def _coxa_similarity(pts3d: np.ndarray, index: dict[str, int], reference: Articu
     return body_similarity(reference.coxa_neutral, measured)
 
 
-def _chain_scales(
+def _chain_markers_local(
+    pts3d: np.ndarray,
+    index: dict[str, int],
+    chain,
+    sim: tuple[np.ndarray, float, np.ndarray],
+) -> np.ndarray:
+    """``(T, M, 3)`` a chain's measured markers, read in the model frame (NaN if absent)."""
+    rot, scale, trans = sim
+    n_frames = pts3d.shape[0]
+    cols = [index.get(name, -1) for name in chain.marker_names]
+    world = np.stack(
+        [pts3d[:, c] if c >= 0 else np.full((n_frames, 3), np.nan) for c in cols],
+        axis=1,
+    )
+    return ((world - trans) @ rot) / max(scale, 1e-12)
+
+
+def _chain_calibration(
     pts3d: np.ndarray,
     index: dict[str, int],
     articulation: Articulation,
     sim: tuple[np.ndarray, float, np.ndarray],
-) -> dict[str, float]:
-    """Each chain's data-estimated size: its measured markers, read in the model frame."""
-    rot, scale, trans = sim
-    n_frames = pts3d.shape[0]
-    out: dict[str, float] = {}
+    *,
+    based: dict[str, np.ndarray] | None = None,
+) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+    """Each chain's size and root, fitted against its whole marker set.
+
+    Size and root are estimated **together** and per chain, because they are coupled: the
+    chain's first two hinges and a translation of its root trade along an exact null
+    direction of the fit, so measuring either with the other held at a wrong value gives a
+    wrong -- and confidently repeatable -- answer for both. See
+    :func:`~deeperfly.inverse_kinematics.articulation.calibrate_chain` for the measurement
+    and what it is worth on each chain.
+
+    A chain that :func:`_chain_offsets` already placed on a base landmark (``based``) keeps
+    that root and only has its size fitted; one with no landmark has both fitted. Both come
+    back as per-recording constants, which is what leaves the per-frame angle solve free of
+    that null direction.
+    """
+    based = dict(based or {})
+    scales: dict[str, float] = {}
+    offsets: dict[str, np.ndarray] = dict(based)
     for chain in articulation.chains:
-        cols = [index.get(name, -1) for name in chain.marker_names]
-        world = np.stack(
-            [pts3d[:, c] if c >= 0 else np.full((n_frames, 3), np.nan) for c in cols],
-            axis=1,
+        local = _chain_markers_local(pts3d, index, chain, sim)
+        # Only a seed: `calibrate_chain` below measures the size without needing an
+        # articulation-invariant pair, and the abdomen deliberately no longer has one.
+        ruler = estimate_chain_scale(local, chain, warn_if_unmeasurable=False)
+        fit_root = chain.name not in based
+        scale, shift = calibrate_chain(
+            local,
+            chain,
+            seed_scale=ruler,
+            base_shift=based.get(chain.name),
+            fit_root=fit_root,
         )
-        local = ((world - trans) @ rot) / max(scale, 1e-12)
-        out[chain.name] = estimate_chain_scale(local, chain)
-    return out
+        scales[chain.name] = scale
+        if fit_root:
+            offsets[chain.name] = shift
+        if abs(scale - ruler) > 0.05 * max(ruler, 1e-9):
+            log.info(
+                "inverse_kinematics: the %s chain's whole-marker size %.4f differs from "
+                "its rigid-ruler estimate %.4f by %+.1f%%; the ruler is believed only "
+                "where it has a long, well-observed baseline (see calibrate_chain)",
+                chain.name,
+                scale,
+                ruler,
+                100.0 * (scale / max(ruler, 1e-9) - 1.0),
+            )
+    return scales, offsets
 
 
 # -- observations ------------------------------------------------------------

@@ -305,20 +305,94 @@ def test_nmf_mesh_hidden_face_mask_hides_parts():
 # -- head / abdomen articulation chains ---------------------------------------
 
 
-def test_abdomen_bounds_are_downward_only():
-    """The baked abdomen chain only bends ventrally (downward), <=30 deg per joint.
+def test_abdomen_bends_vertically_and_laterally_but_never_twists():
+    """The abdomen chain bends in two planes per joint and has no axial-twist DOF.
 
-    The few midline markers under-constrain the 5-DOF sagittal chain, so symmetric
-    limits let the solver fold it into a non-physical zig-zag; a downward-only,
-    monotone range keeps the fit a smooth ventral curl (model +pitch is dorsal, so
-    "down" is the negative range).
+    Vertical (``pitch``, about ``+Y``) is downward-only: the few midline markers
+    under-constrain the sagittal chain, so symmetric limits let the solver fold it into a
+    non-physical zig-zag, and a downward-only range keeps it a smooth ventral curl (model
+    +pitch is dorsal, so "down" is the negative range). Lateral is symmetric, because a
+    fly bends either way.
+
+    The lateral DOF is flygym's ``roll``, and the twist that is excluded is flygym's
+    ``yaw`` -- the names are anatomically rotated on this chain, which is exactly why this
+    test exists. Measured off the MJCF, every hinge's axes are, in the child segment's own
+    frame: ``pitch`` = local *y* (sagittal), ``roll`` = local *z* (lateral), ``yaw`` =
+    local *x* (the axial twist). See ``docs/explanation/keypoints.md``.
+
+    Twist is excluded by construction, and the thing to assert is that no axis lies along
+    the chain's own long axis -- **not** that no axis has a world ``X`` component. The
+    lateral axes legitimately carry one: each segment's local *z* is tilted out of world
+    dorsal by its place in the resting curl (0.22-0.34 of world x), and dropping that tilt
+    for a round ``[0, 0, 1]`` would be a different, worse model. Successive bends can also
+    compose to a net axial rotation -- that is geometry, not a degree of freedom.
     """
     from deeperfly.inverse_kinematics.articulation import load_articulation
 
-    lo, hi = load_articulation().chain("abdomen").bounds
-    assert np.all(hi <= 1e-9)  # no dorsal (upward) flexion
-    assert np.all(lo >= np.deg2rad(-30) - 1e-9)  # at most 30 deg per joint
-    assert np.all(lo < hi)  # a real (non-empty) downward range
+    chain = load_articulation().chain("abdomen")
+    lo, hi = chain.bounds
+    axes = np.asarray(chain.axes, dtype=float)
+    anchors = np.asarray(chain.anchors, dtype=float)
+
+    # The long axis is the direction the chain runs; no joint may rotate about it.
+    long_axis = anchors[-1] - anchors[0]
+    long_axis /= np.linalg.norm(long_axis)
+    # The real axes clear it with room to spare: the worst is 0.159 (the waist's lateral
+    # hinge, the most tilted segment). A twist DOF would read ~1.0 here.
+    assert np.abs(axes @ long_axis).max() < 0.2, "a joint rotates about the long axis"
+
+    pitch = [i for i, n in enumerate(chain.dof_names) if n.endswith("pitch")]
+    lateral = [i for i, n in enumerate(chain.dof_names) if n.endswith("roll")]
+    assert len(pitch) == len(lateral) > 0, "every joint bends in both planes"
+    # flygym's `yaw` IS the twist on this chain, so its absence is the assertion.
+    assert not [n for n in chain.dof_names if n.endswith("yaw")], (
+        "a twist DOF is present"
+    )
+
+    # vertical: downward only, at most 30 deg per joint
+    assert np.all(hi[pitch] <= 1e-9)
+    assert np.all(lo[pitch] >= np.deg2rad(-30) - 1e-9)
+    # lateral: symmetric about zero
+    np.testing.assert_allclose(lo[lateral], -hi[lateral], atol=1e-12)
+    assert np.all(hi[lateral] > 0)
+    assert np.all(lo < hi)  # every range is real (non-empty)
+
+
+def test_abdomen_pitch_is_vertical_and_roll_is_lateral():
+    """The two DOF families move the markers in the planes the model says they should.
+
+    Named axes are easy to get backwards, and the consequence -- an abdomen that swings
+    sideways when the fly nodded it down -- is invisible in a residual. So drive each
+    family on its own and check which coordinate moves. Doubly worth pinning here because
+    flygym's names are anatomically rotated on this chain: it is ``roll`` that swings the
+    abdomen laterally, not ``yaw`` (which is the twist, and is excluded).
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        chain_markers,
+        load_articulation,
+    )
+
+    chain = load_articulation().chain("abdomen")
+    zero = np.zeros(len(chain.dof_names))
+    rest = chain_markers(chain, zero, 1.0)
+
+    def moved(which: str, deg: float) -> np.ndarray:
+        theta = zero.copy()
+        for i, n in enumerate(chain.dof_names):
+            if n.endswith(which):
+                theta[i] = np.deg2rad(deg)
+        return np.abs(chain_markers(chain, theta, 1.0) - rest).max(axis=0)
+
+    vertical = moved("pitch", -15.0)
+    lateral = moved("roll", 10.0)
+    assert vertical[2] > 10 * max(vertical[1], 1e-12), (
+        "pitch must move the markers in z"
+    )
+    # Lateral motion is y-dominant but not purely y: each hinge axis is the segment's
+    # own local z, tilted by its place in the resting curl, so a little z comes with
+    # it. Measured 0.544 in y against 0.051 in z -- assert the ratio, not purity.
+    assert lateral[1] == max(lateral), "roll must move the markers mostly in y"
+    assert lateral[2] < 0.15 * lateral[1], "roll leaked into z"
 
 
 def test_articulation_bakes_attachment_body_frames():
@@ -347,7 +421,12 @@ def test_articulation_marker_override_recomputes_neutral_from_offset():
     art = Articulation.load(marker_overrides=over)
     ab = art.chain("abdomen")
     assert ab.marker_names == ("l_abdomen0", "r_abdomen0")  # table replaces the set
-    assert ab.marker_depth == (2, 2)  # depth follows from the attachment body
+    # Depth follows from the attachment body, and is a count of proximal JOINTS -- so it
+    # tracks the chain's DOF count rather than its segment count. Read from the body
+    # rather than written down, or adding a DOF per segment desyncs the two silently.
+    body_depth = int(art.bodies["c_abdomen3"]["depth"])
+    assert ab.marker_depth == (body_depth, body_depth)
+    assert body_depth <= len(ab.dof_names)
     frame = art.bodies["c_abdomen3"]
     pos = np.asarray(frame["pos"])
     mat = np.asarray(frame["mat"]).reshape(3, 3)
@@ -427,23 +506,33 @@ def test_articulation_marker_override_rejects_bad_body():
         )
 
 
-@pytest.mark.parametrize("name,size", [("head", 1.7), ("abdomen", 0.7)])
-def test_estimate_chain_scale_recovers_a_resized_chain_at_a_bent_pose(name, size):
-    """The size estimate recovers a chain grown/shrunk by ``size`` -- while it is BENT.
+@pytest.mark.parametrize(
+    "name,size,has_ruler", [("head", 1.7, True), ("abdomen", 0.7, False)]
+)
+def test_a_resized_chain_is_recovered_at_a_bent_pose(name, size, has_ruler):
+    """A chain grown/shrunk by ``size`` is measured back -- while it is BENT.
 
-    The bent pose is the point of the test. The estimate only ever compares distances
-    the chain's own joints cannot change, so articulating the chain must not move it at
-    all. That is a real property and not a formality: the abdomen's markers sit on the
-    dorsal *surface*, the outside of a ventral bend, so a polyline through them
-    lengthens by 57% over the joints' range -- a ruler drawn along the chain would read
-    this bent pose as a much bigger animal.
+    The bent pose is the point of the test. A *ruler* only ever compares distances the
+    chain's own joints cannot change, so articulating the chain must not move it at all.
+    That is a real property and not a formality: the abdomen's markers sit on the dorsal
+    *surface*, the outside of a ventral bend, so a polyline through them lengthens by 57%
+    over the joints' range -- a ruler drawn along the chain would read this bent pose as a
+    much bigger animal.
+
+    The two chains take the two different routes, which is why ``has_ruler`` is a
+    parameter rather than an assumption. The **head** has an invariant ruler (the
+    neck-to-antennae radius) and :func:`estimate_chain_scale` recovers the size outright.
+    The **abdomen** has none -- deliberately, since its one qualifying pair only qualified
+    because two markers shared a body -- so the ruler falls back to model size and
+    :func:`calibrate_chain` recovers it instead, by fitting posture and size together.
 
     Each chain is measured against the skeleton that labels its markers, and is
-    synthesized at a base the model does not share, so this also pins that the ruler is
-    internal to the chain: measured from the model's own anchor, that shift would read
+    synthesized at a base the model does not share, so this also pins that the measurement
+    is internal to the chain: measured from the model's own anchor, that shift would read
     as a change in size.
     """
     from deeperfly.inverse_kinematics.articulation import (
+        calibrate_chain,
         estimate_chain_scale,
         load_articulation,
     )
@@ -469,7 +558,16 @@ def test_estimate_chain_scale_recovers_a_resized_chain_at_a_bent_pose(name, size
         [pts[:, c] if c >= 0 else np.full((3, 3), np.nan) for c in cols], axis=1
     )
     local = ((world - trans) @ rot) / body_scale
-    assert estimate_chain_scale(local, chain) == pytest.approx(size, abs=1e-6)
+
+    ruler = estimate_chain_scale(local, chain, warn_if_unmeasurable=False)
+    if has_ruler:
+        assert ruler == pytest.approx(size, abs=1e-6)
+    else:
+        assert ruler == 1.0, (
+            "a chain with no invariant pair must fall back to model size"
+        )
+    fitted, _ = calibrate_chain(local, chain, seed_scale=ruler, fit_root=True)
+    assert fitted == pytest.approx(size, rel=2e-3)
 
 
 def test_the_size_ruler_is_only_ever_an_invariant_separation():
@@ -496,7 +594,13 @@ def test_the_size_ruler_is_only_ever_an_invariant_separation():
             frozenset(names[i] + names[j]) for i, j, _ in _rigid_ruler(chain, groups)
         }
     assert picked["head"] == {frozenset({"neck", "l_antenna", "r_antenna"})}
-    assert picked["abdomen"] == {frozenset({"abdomen3", "abdomen4"})}
+    # The abdomen has NO ruler, and that is the design rather than a gap. Its only
+    # qualifying pair used to be abdomen3-abdomen4, which qualified solely because both
+    # markers hung off c_abdomen6 -- so the model held them rigidly apart while a real
+    # abdomen does not, 18% short of a measured fly and unreachable by any angle. Moving
+    # each stripe one segment proximal put a hinge between them, and removed the residual
+    # and the ruler together. `calibrate_chain` measures the size without one.
+    assert picked["abdomen"] == set()
 
 
 def test_the_size_ruler_ignores_a_left_right_split():
@@ -613,3 +717,167 @@ def test_nmf_mesh_articulates_head_and_abdomen_from_angles():
     assert np.nanmax(np.abs(bent[node] - rigid[node])) > 0.05
     body = mesh.vert_slot == 0
     np.testing.assert_allclose(bent[body], rigid[body], atol=1e-9)
+
+
+# -- whole-chain calibration ---------------------------------------------------
+
+
+def _synthetic_chain_markers(chain, *, scale, shift, angles):
+    """Markers a chain of that size, at that root, in those poses, would produce."""
+    from deeperfly.inverse_kinematics.articulation import chain_markers
+
+    return np.stack([chain_markers(chain, a, scale, shift) for a in angles])
+
+
+def _plausible_poses(chain, n=24, seed=0):
+    """Angle sequences inside the chain's own bounds, away from the limits."""
+    lo, hi = chain.bounds
+    rng = np.random.default_rng(seed)
+    mid = 0.5 * (lo + hi)
+    half = 0.35 * (hi - lo)
+    return mid + half * (2.0 * rng.random((n, len(lo))) - 1.0)
+
+
+@pytest.mark.parametrize("chain_name", ["head", "abdomen"])
+@pytest.mark.parametrize("truth", [0.85, 1.0, 1.35])
+def test_calibrate_chain_recovers_a_known_size(chain_name, truth):
+    """On markers generated from a known size, the fit returns that size.
+
+    Deliberately seeded from a *wrong* ruler value, because that is the case it exists
+    for: the abdomen's single ruler over-reads by 10-19% and the seed must not be where
+    the answer comes from.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        calibrate_chain,
+        load_articulation,
+    )
+
+    chain = load_articulation().chain(chain_name)
+    angles = _plausible_poses(chain)
+    markers = _synthetic_chain_markers(
+        chain, scale=truth, shift=np.zeros(3), angles=angles
+    )
+    got, shift = calibrate_chain(markers, chain, seed_scale=truth * 1.25, n_frames=8)
+    assert got == pytest.approx(truth, abs=5e-3)
+    np.testing.assert_allclose(
+        shift, np.zeros(3), atol=1e-12
+    )  # not fitted -> untouched
+
+
+def test_calibrate_chain_recovers_a_known_size_and_root_together():
+    """With the root free, a chain displaced AND resized is recovered in both.
+
+    Size and root translation are coupled through a null direction of the fit, so a test
+    that moves only one of them cannot see the coupling that this function exists to
+    handle.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        calibrate_chain,
+        load_articulation,
+    )
+
+    chain = load_articulation().chain("abdomen")
+    truth_scale, truth_shift = 1.18, np.array([0.06, 0.0, -0.17])
+    angles = _plausible_poses(chain, seed=3)
+    markers = _synthetic_chain_markers(
+        chain, scale=truth_scale, shift=truth_shift, angles=angles
+    )
+    scale, shift = calibrate_chain(
+        markers, chain, seed_scale=1.46, fit_root=True, n_frames=8
+    )
+    assert scale == pytest.approx(truth_scale, abs=0.02)
+    np.testing.assert_allclose(shift, truth_shift, atol=0.02)
+
+
+def test_calibrate_chain_never_moves_a_midline_root_sideways():
+    """A midline chain's fitted root stays in the sagittal plane.
+
+    Its lateral joints and a sideways root shift express the *same* displacement, so
+    freeing both attributes the animal's lateral bend to whichever the optimiser reaches
+    first. The plane is derived from the chain, not configured -- the head, which carries
+    the two antennae, is not midline and keeps all three components.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        _is_midline,
+        calibrate_chain,
+        load_articulation,
+    )
+
+    art = load_articulation()
+    abdomen, head = art.chain("abdomen"), art.chain("head")
+    assert _is_midline(abdomen) and not _is_midline(head)
+
+    # markers really are displaced sideways: the fit must NOT absorb it into the root
+    angles = _plausible_poses(abdomen, seed=5)
+    markers = _synthetic_chain_markers(
+        abdomen, scale=1.2, shift=np.array([0.0, 0.12, 0.0]), angles=angles
+    )
+    _, shift = calibrate_chain(
+        markers, abdomen, seed_scale=1.2, fit_root=True, n_frames=6
+    )
+    assert shift[1] == 0.0
+
+    _, head_shift = calibrate_chain(
+        _synthetic_chain_markers(
+            head,
+            scale=1.2,
+            shift=np.array([0.0, 0.09, 0.0]),
+            angles=_plausible_poses(head, seed=6),
+        ),
+        head,
+        seed_scale=1.2,
+        fit_root=True,
+        n_frames=6,
+    )
+    assert abs(head_shift[1]) > 0.01  # not midline -> its y IS measured
+
+
+def test_calibrate_chain_keeps_the_seed_when_the_chain_is_unobserved(caplog):
+    """An all-NaN chain cannot be fitted, and says so instead of returning a number."""
+    from deeperfly.inverse_kinematics.articulation import (
+        calibrate_chain,
+        load_articulation,
+    )
+
+    chain = load_articulation().chain("abdomen")
+    nan = np.full((7, len(chain.marker_names), 3), np.nan)
+    # Name the logger: a CLI test elsewhere calls logging.basicConfig, so a caplog that
+    # relies on the root logger passes alone and captures nothing in a full-suite run.
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        scale, shift = calibrate_chain(nan, chain, seed_scale=1.31)
+    assert scale == pytest.approx(1.31)
+    np.testing.assert_allclose(shift, np.zeros(3))
+    assert "never fully observed" in caplog.text
+
+
+def test_chain_markers_agrees_with_chain_fk():
+    """The calibration's forward model is the solver's, not a second copy of it.
+
+    Rolling a chain's kinematics by hand is a live trap: composing the rotations in the
+    opposite order is invisible on the abdomen (its axes are parallel, so they commute)
+    and wrong by ~0.9 model units on the head's three-axis ball joint.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        chain_markers,
+        load_articulation,
+    )
+    from deeperfly.inverse_kinematics.forward import chain_fk
+
+    rng = np.random.default_rng(0)
+    for chain in load_articulation().chains:
+        anchors = np.asarray(chain.anchors, float)
+        neutral = np.asarray(chain.marker_neutral, float)
+        base = anchors[0]
+        lo, hi = chain.bounds
+        for _ in range(25):
+            f = float(rng.uniform(0.7, 1.6))
+            theta = lo + (hi - lo) * rng.random(len(lo))
+            mine = chain_markers(chain, theta, f)
+            theirs = chain_fk(
+                base + f * (anchors - base),
+                np.asarray(chain.axes, float),
+                tuple(int(d) for d in chain.marker_depth),
+                theta,
+                base + f * (neutral - base),
+            )
+            np.testing.assert_allclose(mine, theirs, atol=1e-12)

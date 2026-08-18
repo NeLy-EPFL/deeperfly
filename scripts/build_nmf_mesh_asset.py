@@ -116,12 +116,52 @@ HEAD_CHAIN = {
 # constrained the chain better than fly38's six paraxial ones did. They do not: opened to
 # [-90, 30] the fit averages 2.72 sign changes along the five hinges -- the fold, not a
 # curl -- for a residual gain of about a third. So the range stays a REGULARIZER, and it
-# binds: the fitted pose is typically [-26, 0, 0, 0, 0] deg, i.e. all the bend at the
-# waist with hinges 1..4 held against the UPPER bound wanting to go dorsal. Expect
-# `_warn_about_pinned_limits` to name them on every run. Widening the ventral side does
-# not help (it is the wrong end); over [-45,0], [-60,0] and a [-60,0] waist the residual
-# moves 0.7% and the pinned fraction 2%.
+# binds. Widening the ventral side does not help (it is the wrong end); over [-45,0],
+# [-60,0] and a [-60,0] waist the residual moves 0.7% and the pinned fraction 2%.
+#
+# Re-measured again after the markers were re-anchored one segment proximal (below) and
+# the lateral DOF added. The bend is no longer all at the waist: over 287 frames of one
+# recording the fitted pose runs about [-19, -0.5, -1, -8, -10] deg, so the waist and the
+# two distal hinges share the curl while hinges 1-2 sit against the UPPER bound wanting to
+# go dorsal (pinned 89% and 22% of frames; the other three do not pin at all). Expect
+# `_warn_about_pinned_limits` to name those two on every run. That pinning is NOT what the
+# old anchoring's abdomen residual was: relaxing these bounds to [-60, 30] moved the
+# five-marker residual by +3% (it got slightly worse, redistributing between markers),
+# while re-anchoring moved it -42%. A saturated limit can be a symptom of geometry
+# elsewhere rather than a cause -- the lateral wall, pinned 54% of frames before, stopped
+# pinning entirely once the geometry was right, without being touched.
 ABDOMEN_PITCH_BOUNDS = [-30, 0]
+# Each hinge also gets a second DOF, so the abdomen can swing sideways as well as curl
+# ventrally. A tethered fly does swing it laterally, and a pitch-only chain has to absorb
+# that in the one place it can -- the root placement -- which drags the whole chain off the
+# midline instead of bending it. The range is half the pitch's: lateral swing is the
+# smaller motion, and a wide one lets it stand in for the ventral curl.
+#
+# That DOF is flygym's `-roll`, NOT its `-yaw`. The names are anatomically rotated on this
+# chain, and it is worth spelling out because both alternatives are plausible-looking and
+# only one is observable. Measured off the MJCF at the neutral pose, every abdomen hinge's
+# axes are, in the child segment's own frame:
+#
+#     -pitch  ->  local y  ->  sagittal bend (the ventral curl)     <- wanted
+#     -roll   ->  local z  ->  lateral swing                        <- wanted
+#     -yaw    ->  local x  ->  axial TWIST about the long axis      <- unusable
+#
+# The twist is excluded on purpose, and the reason is ALIASING rather than invisibility.
+# Every marker on this chain lies in the sagittal plane, and such a point is swung sideways
+# by both a twist about local x and a bend about local z -- the two differ only in lever arm
+# (the marker's height above the axis, against its distance behind the hinge). Measured on
+# this model the two displacement fields agree to cos 0.87-0.97 per hinge, i.e. they are
+# only 14-29 deg apart, so a twist DOF would largely repeat the lateral one and the fit
+# would split the motion between them arbitrarily. The markers are NOT on the twist axis --
+# they clear it by 0.22-0.34 model units, and a 20 deg twist moves them 41-88% as far as
+# the same lateral bend does -- so it is the near-collinearity that rules the twist out,
+# not a vanishing lever arm. `scripts/build_keypoint_viewer_assets.py` withholds its slider
+# for the same reason, with the same numbers.
+#
+# Reading a `-roll` axis off the model rather than writing `[0, 0, 1]` by hand also keeps
+# the 13-15 deg of segment pitch: each segment's local z is tilted out of world dorsal by
+# its own place in the resting curl, and the hand-written vector loses that.
+ABDOMEN_LATERAL_BOUNDS = [-15, 15]
 ABDOMEN_CHAIN = {
     "name": "abdomen",
     "joints": [
@@ -131,9 +171,19 @@ ABDOMEN_CHAIN = {
             "bounds": ABDOMEN_PITCH_BOUNDS,
         },
         {
+            "joint": "c_thorax-c_abdomen12-roll",
+            "angle": "c_thorax-c_abdomen12-roll",
+            "bounds": ABDOMEN_LATERAL_BOUNDS,
+        },
+        {
             "joint": "c_abdomen12-c_abdomen3-pitch",
             "angle": "c_abdomen12-c_abdomen3-pitch",
             "bounds": ABDOMEN_PITCH_BOUNDS,
+        },
+        {
+            "joint": "c_abdomen12-c_abdomen3-roll",
+            "angle": "c_abdomen12-c_abdomen3-roll",
+            "bounds": ABDOMEN_LATERAL_BOUNDS,
         },
         {
             "joint": "c_abdomen3-c_abdomen4-pitch",
@@ -141,14 +191,29 @@ ABDOMEN_CHAIN = {
             "bounds": ABDOMEN_PITCH_BOUNDS,
         },
         {
+            "joint": "c_abdomen3-c_abdomen4-roll",
+            "angle": "c_abdomen3-c_abdomen4-roll",
+            "bounds": ABDOMEN_LATERAL_BOUNDS,
+        },
+        {
             "joint": "c_abdomen4-c_abdomen5-pitch",
             "angle": "c_abdomen4-c_abdomen5-pitch",
             "bounds": ABDOMEN_PITCH_BOUNDS,
         },
         {
+            "joint": "c_abdomen4-c_abdomen5-roll",
+            "angle": "c_abdomen4-c_abdomen5-roll",
+            "bounds": ABDOMEN_LATERAL_BOUNDS,
+        },
+        {
             "joint": "c_abdomen5-c_abdomen6-pitch",
             "angle": "c_abdomen5-c_abdomen6-pitch",
             "bounds": ABDOMEN_PITCH_BOUNDS,
+        },
+        {
+            "joint": "c_abdomen5-c_abdomen6-roll",
+            "angle": "c_abdomen5-c_abdomen6-roll",
+            "bounds": ABDOMEN_LATERAL_BOUNDS,
         },
     ],
     # The five dorsal-midline tergite stripes of `fly38b`. Unlike every other tracked
@@ -163,21 +228,30 @@ ABDOMEN_CHAIN = {
     # the thorax, and no keypoint sits on it. The abdomen is therefore placed by the
     # coxa registration -- see `_chain_offsets`, which shares the head's measurement
     # because the two anchors sit at the same dorsal height on the same rigid thorax.
+    # `keypoints.json` anchors each stripe one segment PROXIMAL of where fly38b's first
+    # retarget put it, and gives every offset an -x component: the stripes sit on the
+    # dorsal surface of the segment BEHIND the intersegmental fold, not in front of it.
+    # The old anchoring put abdomen3 and abdomen4 on the same body (c_abdomen6), which
+    # made their separation rigid -- 18% short of a measured fly and unreachable by any
+    # angle, the single largest abdomen residual. One joint now lies between them.
     "markers": [
         ("abdomen0", 2),
-        ("abdomen1", 3),
-        ("abdomen2", 4),
-        ("abdomen3", 5),
-        ("abdomen4", 5),
+        ("abdomen1", 4),
+        ("abdomen2", 6),
+        ("abdomen3", 8),
+        ("abdomen4", 10),
     ],
     "base_point": None,
-    # abdomen segment body -> chain depth, used to assign each segment mesh a node.
+    # abdomen segment body -> chain depth, used to assign each segment mesh a node and
+    # to check every marker's declared depth. Depth counts CHAIN JOINTS proximal to the
+    # body (the head's `node_depth` = 3 for its three DOFs at one anchor), so two per
+    # hinge here -- pitch and yaw.
     "segment_depth": {
-        "c_abdomen12": 1,
-        "c_abdomen3": 2,
-        "c_abdomen4": 3,
-        "c_abdomen5": 4,
-        "c_abdomen6": 5,
+        "c_abdomen12": 2,
+        "c_abdomen3": 4,
+        "c_abdomen4": 6,
+        "c_abdomen5": 8,
+        "c_abdomen6": 10,
     },
 }
 CHAINS = [HEAD_CHAIN, ABDOMEN_CHAIN]

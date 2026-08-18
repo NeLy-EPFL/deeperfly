@@ -67,9 +67,12 @@ inverse_kinematics/
 `angle_names` are the flygym joint names `<parent_body>-<child_body>-<dof>`: e.g.
 `c_thorax-rf_coxa-{yaw,pitch,roll}` / `rf_coxa-rf_trochanterfemur-{pitch,roll}` /
 `rf_trochanterfemur-rf_tibia-pitch` / `rf_tibia-rf_tarsus1-pitch` for a leg,
-`c_thorax-c_head-{yaw,pitch,roll}` for the head, and the `c_thorax-c_abdomen12-pitch`
-… `c_abdomen5-c_abdomen6-pitch` chain for the abdomen (the head/abdomen columns are
-present only when `fit_head` / `fit_abdomen` are on). A limb with too few observed
+`c_thorax-c_head-{yaw,pitch,roll}` for the head, and `c_thorax-c_abdomen12-{pitch,roll}`
+… `c_abdomen5-c_abdomen6-{pitch,roll}` for the abdomen (the head/abdomen columns are
+present only when `fit_head` / `fit_abdomen` are on). On the abdomen chain `pitch` is the
+sagittal ventral curl and `roll` is the lateral swing — flygym's axis names are
+anatomically rotated there, and its `yaw` (the axial twist) is deliberately not fitted,
+because every midline marker sits almost on that axis and so cannot observe it. A limb with too few observed
 keypoints in a frame — fewer than two — is `NaN` for that frame rather than filled with
 the solver's neutral-biased guess, so "not fitted" stays distinguishable from "fitted
 straight". `points3d` carries the model's prediction for every fitted

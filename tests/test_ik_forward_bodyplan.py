@@ -263,10 +263,22 @@ def test_plan_angle_names_match_the_results_contract(plan):
     Legs (in config order) then head then abdomen, with the flygym
     ``<parent>-<child>-<dof>`` names -- the contract the mesh overlay's by-name angle
     lookups and every downstream consumer read.
+
+    The recorded list predates the abdomen's lateral DOFs, so it is a *subsequence* rather
+    than the whole thing: every name it holds must still be present, in the same relative
+    order, and the added ones interleave into the abdomen block. Checking order and
+    membership rather than equality is what keeps this a contract test after a chain gains
+    a DOF -- the by-name lookups downstream never depended on the count.
     """
     with np.load(IK_BASELINE_PATH, allow_pickle=True) as z:
         recorded = [str(n) for n in z["real_angle_names"]]
-    assert list(plan.angle_names) == recorded
+    names = list(plan.angle_names)
+    assert set(recorded) <= set(names), sorted(set(recorded) - set(names))
+    positions = [names.index(n) for n in recorded]
+    assert positions == sorted(positions), "the recorded DOFs changed relative order"
+    # Legs still come first and are untouched by anything the chains do.
+    added = [n for n in names if n not in set(recorded)]
+    assert all("abdomen" in n for n in added), added
 
 
 def test_plan_respects_the_configured_leg_subset(fly, articulation, measurements):

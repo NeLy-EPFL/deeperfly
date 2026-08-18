@@ -56,6 +56,16 @@ log = logging.getLogger("deeperfly")
 
 _EPS = 1e-9
 
+#: How many frames the whole-chain calibration fits, evenly spaced over the recording.
+#: A chain's size and root are constants of the animal, so this only has to out-average
+#: the per-frame detection noise; 60 costs well under a second and the median over them
+#: moves by <1% against every frame.
+_CALIBRATION_FRAMES = 60
+
+#: The root shift is searched inside this fraction of the chain's own neutral extent.
+#: Relative rather than absolute so a short chain cannot be translated off its own body.
+_ROOT_SHIFT_FRACTION = 0.5
+
 #: How far apart two markers' neutral positions may be, after mirroring one across the
 #: sagittal plane, and still count as a left/right pair to fold (:func:`_midline_groups`).
 #: The baked neutrals are stored to 8 decimals, so this is loose enough to survive that
@@ -331,6 +341,7 @@ def estimate_chain_scale(
     chain: Chain,
     *,
     clamp: tuple[float, float] = (0.3, 3.0),
+    warn_if_unmeasurable: bool = True,
 ) -> float:
     """Isotropic size of a chain relative to the model, from lengths its joints cannot change.
 
@@ -360,6 +371,19 @@ def estimate_chain_scale(
     recordings, because each antenna is triangulated from its own side's cameras. The
     midpoint is unmoved by a symmetric outward push, so folding removes it.
 
+    A chain left with **one** ruler is measured only as well as that one pair -- see
+    :func:`calibrate_chain`, which measures size from the whole marker set instead and is
+    what the pipeline now uses; this function remains its seed, and the two agree to ~1%
+    on the head.
+
+    The abdomen now has **no** ruler at all, and that is the point. Its one invariant pair
+    used to be ``abdomen3``-``abdomen4``, which existed only because both markers hung off
+    the same body (``c_abdomen6``) -- so their separation was rigid in the model while a
+    real fly's is not, 18% short of a measured animal and unreachable by any joint angle.
+    Re-anchoring each stripe one segment proximal put a hinge between them, which removes
+    the residual and the ruler together. So a chain reporting no ruler is not a defect
+    here: pass ``warn_if_unmeasurable=False`` wherever a fitted size follows.
+
     Multiple rulers are combined by least squares, ``s = sum(D d) / sum(D^2)`` over the
     pairs observed in that frame, which is the maximum-likelihood isotropic scale when
     the per-point error does not depend on the pair -- so a long ruler counts for more
@@ -377,24 +401,30 @@ def estimate_chain_scale(
         The articulation chain (its neutral markers, their depths, axes and bounds).
     clamp
         ``(lo, hi)`` bounds on the returned scale, to reject outlier frames.
+    warn_if_unmeasurable
+        Whether "no usable ruler" is worth a warning. True for a standalone measurement,
+        where a silent ``1.0`` would read as a *measurement* that the chain matches the
+        model and the overlay would then draw a confidently mis-sized head. False when
+        this is only a seed for :func:`calibrate_chain`, which measures the size without a
+        ruler -- the abdomen's has been deliberately removed (see above), so a warning
+        there would fire on every run and say something untrue.
 
     Returns
     -------
     float
         The median measured/model length ratio over the valid frames, clamped to
         ``clamp``. ``1.0`` (model size) when the chain has no invariant ruler at all, or
-        none that this recording observed -- warned about, because a silent ``1.0`` would
-        read as a *measurement* that the chain matches the model and the overlay would
-        then draw a confidently mis-sized head.
+        none that this recording observed.
     """
     local = np.asarray(local_markers, dtype=float)
     groups = _midline_groups(chain)
     pairs = _rigid_ruler(chain, groups)
     if not pairs:
-        log.warning(
+        log.log(
+            logging.WARNING if warn_if_unmeasurable else logging.DEBUG,
             "inverse_kinematics: the %s chain has no articulation-invariant marker "
-            "separation (markers %s at depths %s), so its size cannot be measured; "
-            "leaving it at model size",
+            "separation (markers %s at depths %s), so this ruler cannot measure its "
+            "size; seeding from model size",
             chain.name,
             list(chain.marker_names),
             list(chain.marker_depth),
@@ -421,9 +451,10 @@ def estimate_chain_scale(
     ratio = np.atleast_1d(ratio)
     ratio = ratio[np.isfinite(ratio)]
     if ratio.size == 0:
-        log.warning(
+        log.log(
+            logging.WARNING if warn_if_unmeasurable else logging.DEBUG,
             "inverse_kinematics: the %s chain's size ruler (%s) was never observed, so "
-            "its size cannot be measured; leaving it at model size",
+            "this ruler cannot measure its size; seeding from model size",
             chain.name,
             ", ".join(
                 f"{chain.marker_names[groups[i][0]]}-{chain.marker_names[groups[j][0]]}"
@@ -432,6 +463,201 @@ def estimate_chain_scale(
         )
         return 1.0
     return float(np.clip(np.median(ratio), clamp[0], clamp[1]))
+
+
+def _scaled_chain(chain: "Chain", scale: float):
+    """A chain's ``(anchors, markers)`` grown by ``scale`` about its own base anchor.
+
+    The same growth :func:`~deeperfly.inverse_kinematics.bodyplan._chain_joints` builds
+    into the solver's plan and the mesh overlay applies to its node affines, so a size
+    measured here means the same thing in all three.
+    """
+    anchors = np.asarray(chain.anchors, dtype=float)
+    markers = np.asarray(chain.marker_neutral, dtype=float)
+    base = anchors[0]
+    f = float(scale)
+    return base + f * (anchors - base), base + f * (markers - base)
+
+
+def chain_markers(
+    chain: "Chain", angles: np.ndarray, scale: float, shift: np.ndarray | None = None
+) -> np.ndarray:
+    """``(M, 3)`` model-frame marker positions of a chain at ``angles``, grown and shifted.
+
+    Thin wrapper over :func:`~deeperfly.inverse_kinematics.forward.chain_fk` that applies
+    the size and root conventions in one place, so the calibration below cannot drift from
+    the forward kinematics the fit and the overlay use. Rolling this by hand is a live
+    trap: composing a chain's rotations in the opposite order is invisible on the abdomen,
+    whose five axes are all ``+Y`` and therefore commute, and wrong by ~0.9 model units on
+    the head's three-axis ball joint.
+    """
+    from .forward import chain_fk
+
+    anchors, markers = _scaled_chain(chain, scale)
+    posed = chain_fk(
+        anchors,
+        np.asarray(chain.axes, dtype=float),
+        tuple(int(d) for d in chain.marker_depth),
+        np.asarray(angles, dtype=float),
+        markers,
+    )
+    return posed if shift is None else posed + np.asarray(shift, dtype=float)
+
+
+def _is_midline(chain: "Chain", tol: float = _MIRROR_TOL) -> bool:
+    """Whether the chain lies entirely in the sagittal plane (every ``y`` is zero).
+
+    True of the abdomen, whose five keypoints are midline dorsal points, and false of the
+    head, which carries the two antennae. It decides which components of a fitted root
+    shift are meaningful: see :func:`calibrate_chain`.
+    """
+    return bool(
+        np.abs(np.asarray(chain.anchors, dtype=float)[:, 1]).max() <= tol
+        and np.abs(np.asarray(chain.marker_neutral, dtype=float)[:, 1]).max() <= tol
+    )
+
+
+def calibrate_chain(
+    local_markers: np.ndarray,
+    chain: "Chain",
+    *,
+    seed_scale: float,
+    base_shift: np.ndarray | None = None,
+    fit_root: bool = False,
+    n_frames: int = _CALIBRATION_FRAMES,
+    clamp: tuple[float, float] = (0.3, 3.0),
+) -> tuple[float, np.ndarray]:
+    """A chain's size (and, optionally, its root) from its WHOLE marker set.
+
+    :func:`estimate_chain_scale` measures size from separations no joint can change,
+    which is exact but leaves the abdomen resting on a **single** ruler --
+    ``abdomen3``-``abdomen4``, its two most distal keypoints, 0.234 model units apart.
+    That is the shortest baseline in the chain between its least reliable points, so a
+    0.05 localisation error reads as a 21% size error, and it does: measured on three
+    animals across two rigs the ruler over-reads by 10.8% / 14.8% / 18.5%, always the
+    same sign, and always making the abdomen come out *larger* than the same fly's head
+    (1.34-1.49 against 1.20-1.25) -- one animal cannot have those two sizes.
+
+    So this measures size the other way: fit the chain's angles and its size *together*
+    against every marker, treating posture as the nuisance parameter rather than
+    something to avoid. Posture is then explicitly fitted out instead of dodged, which is
+    why no invariance requirement is needed and why the whole marker set can be used.
+    Seeded from ``seed_scale`` (the ruler), reduced by the **median** over sampled frames
+    because a chain's size is a constant of the animal.
+
+    Measured against the ruler, on the head -- where the ruler is a long, well-defined
+    ``neck``-to-antennae radius and is trusted -- the two agree to **+0.7% / +1.6% /
+    +0.9%**, the marker residual is unchanged and the fitted angle ranges are identical.
+    That agreement is what licenses the abdomen answer, where they differ by 15%.
+
+    ``fit_root`` additionally frees the chain's root position, for a chain that has no
+    base landmark to be placed on (the abdomen: no keypoint sits on its root). Left on the
+    model's own anchor, that root inherits the coxa registration's worst-conditioned
+    direction. The three shift components are **not** equally determined -- the Jacobian
+    has one exact null direction, ``(-0.68, +0.68, 0, 0, 0 | scale 0.000 | dx -0.07, dy 0,
+    dz +0.25)``, i.e. hinge 0 trading against hinge 1 and a root translation -- so:
+
+    * **Size is unaffected by it.** Its coefficient in that null vector is 0.000, so
+      ``seed_scale``'s replacement is well posed whether or not the root is fitted.
+    * **The root is resolved once per recording**, as the median over frames, and then
+      held fixed while the angles are solved per frame -- exactly how a base landmark's
+      shift is already treated, and for the same reason: it is one body landmark, not a
+      per-frame quantity. Fixing it removes the null direction from the per-frame solve.
+
+    Only ``dz`` is repeatable across animals (-0.176 / -0.137 / -0.107, same sign);
+    ``dx`` scatters about zero, which is the null direction showing through. It is still
+    returned, because the residual and not the decomposition is what the pose is read
+    from, and the per-frame scatter of the fit is 1-2% of the chain's length. ``dy`` is
+    **not** fitted at all for a midline chain (:func:`_is_midline`) -- see below.
+
+    An earlier grid search over the abdomen root reported its optimum at *positive* ``dz``
+    and rejected the idea. That search held the size at the ruler's value; size and root
+    are coupled through this same null direction, so with the size free the optimum moves
+    and changes sign. Neither result is wrong about what it measured.
+
+    Parameters
+    ----------
+    local_markers
+        ``(T, M, 3)`` the chain's measured markers in the model frame, as
+        :func:`estimate_chain_scale` takes them.
+    chain
+        The articulation chain.
+    seed_scale
+        Starting size, normally :func:`estimate_chain_scale`'s ruler answer.
+    base_shift
+        A root shift already known from a base landmark, held fixed and added to.
+    fit_root
+        Whether to free the root position on top of ``base_shift``.
+    n_frames
+        How many evenly spaced frames to fit.
+    clamp
+        ``(lo, hi)`` bounds on the returned size.
+
+    Returns
+    -------
+    scale : float
+        The median fitted size, clamped.
+    shift : np.ndarray
+        ``(3,)`` the chain's root shift (``base_shift`` when ``fit_root`` is false).
+    """
+    from scipy.optimize import least_squares
+
+    local = np.asarray(local_markers, dtype=float)
+    base = np.zeros(3) if base_shift is None else np.asarray(base_shift, dtype=float)
+    lo, hi = chain.bounds
+    n_dof = len(lo)
+    if local.ndim != 3 or local.shape[0] == 0 or n_dof == 0:
+        return float(np.clip(seed_scale, *clamp)), base
+    usable = np.flatnonzero(np.isfinite(local).all(axis=(1, 2)))
+    if usable.size == 0:
+        log.warning(
+            "inverse_kinematics: the %s chain was never fully observed, so its size "
+            "cannot be fitted; keeping the ruler estimate %.4f",
+            chain.name,
+            seed_scale,
+        )
+        return float(np.clip(seed_scale, *clamp)), base
+    take = usable[np.unique(np.linspace(0, usable.size - 1, n_frames).astype(int))]
+
+    anchors = np.asarray(chain.anchors, dtype=float)
+    span = float(np.linalg.norm(anchors[-1] - anchors[0])) or 1.0
+    reach = _ROOT_SHIFT_FRACTION * max(span, float(np.abs(chain.marker_neutral).max()))
+    # A midline chain's root is a landmark on the animal's own plane of symmetry, and the
+    # registration error that displaces it is a pitch about the coxa centroid -- which is
+    # in that plane too. So its lateral component is not something to measure: freeing it
+    # only lets the root drift sideways in place of the chain's own lateral joints, which
+    # is the same displacement attributed to the wrong thing.
+    free_axes = (0, 2) if (fit_root and _is_midline(chain)) else (0, 1, 2)
+    n_extra = len(free_axes) if fit_root else 0
+    mid = 0.5 * (lo + hi)
+    x0 = np.concatenate([mid, [seed_scale], np.zeros(n_extra)])
+    blo = np.concatenate([lo, [clamp[0]], np.full(n_extra, -reach)])
+    bhi = np.concatenate([hi, [clamp[1]], np.full(n_extra, reach)])
+
+    def _shift(p: np.ndarray) -> np.ndarray:
+        """The root shift a parameter vector encodes: the base plus its free axes."""
+        if not fit_root:
+            return base
+        out = np.array(base, dtype=float)
+        out[list(free_axes)] += p[n_dof + 1 :]
+        return out
+
+    scales: list[float] = []
+    shifts: list[np.ndarray] = []
+    for t in take:
+        target = local[t]
+
+        def residual(p, target=target):
+            return (
+                chain_markers(chain, p[:n_dof], p[n_dof], _shift(p)) - target
+            ).ravel()
+
+        fit = least_squares(residual, x0, bounds=(blo, bhi), xtol=1e-10, ftol=1e-10)
+        scales.append(float(fit.x[n_dof]))
+        shifts.append(_shift(fit.x))
+    scale = float(np.clip(np.median(scales), *clamp))
+    shift = np.median(np.stack(shifts), axis=0) if fit_root else base
+    return scale, shift
 
 
 def _midline_groups(chain: Chain) -> list[tuple[int, ...]]:

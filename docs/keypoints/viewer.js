@@ -715,6 +715,12 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
       const wrap = document.createElement('div'); wrap.className = 'joint';
       const row = document.createElement('div'); row.className = 'row';
       const name = document.createElement('span'); name.textContent = j.label;
+      // A DoF whose flygym axis name misdescribes what the slider visibly does carries a
+      // `hint` (the abdomen's `roll`, which swings it laterally). Explain it on hover
+      // anywhere in the row, and underline the label so there is something to hover:
+      // unannounced, a "roll" slider that bends the abdomen sideways reads as a bug here
+      // rather than as a naming convention of the model.
+      if (j.hint) { wrap.title = j.hint; name.className = 'hinted'; }
       const val = document.createElement('span');
       const input = document.createElement('input');
       input.type = 'range';

@@ -803,7 +803,8 @@ Runs only when `do_inverse_kinematics = true`. Fits a NeuroMechFly-style
 articulated model to the triangulated 3D pose: the six legs (with segment lengths
 **measured from the data**, so the fitted model matches this fly's proportions), plus
 the **head** (yaw/pitch/roll, reaching the two antenna tips) and the **abdomen** (a
-five-segment sagittal pitch chain reaching the abdomen markers). The head and abdomen
+five-segment chain reaching the abdomen markers, each segment bending **vertically and
+laterally** — and never twisting about the abdomen's own long axis). The head and abdomen
 use fixed model geometry baked from the NeuroMechFly MJCF, sized to this fly by a
 per-recording scale estimated from the data. Writes the joint angles **and** the fitted
 model joints (which reproject onto the raw images — see the `skeleton_nmf` / `mesh_nmf`
@@ -881,26 +882,41 @@ A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits i
 (dofs `yaw`/`pitch`/`roll`) — the same names written to `results.h5` — e.g.
 `"rf_trochanterfemur-rf_tibia-pitch" = [10, 160]` for a leg,
 `"c_thorax-c_head-pitch" = [-30, 30]` for the head, or
-`"c_abdomen12-c_abdomen3-pitch" = [-45, 20]` for the abdomen. By default each abdomen
-hinge is limited to **ventral
-(downward) flexion only**, up to 30° (`[-30, 0]`): the five near-midline abdomen
-markers under-constrain the five-segment chain, so a symmetric range lets the solver
-fold it into a non-physical zig-zag, while a downward-only range keeps the fit a
-smooth ventral curl.
+`"c_abdomen12-c_abdomen3-pitch" = [-45, 20]` for the abdomen.
 
-!!! note "The abdomen hinges *will* report as pinned — and widening them is the wrong fix"
-    That range is a **regularizer**, and on real recordings it binds: a typical fitted
-    abdomen is `[-26, 0, 0, 0, 0]`°, all the bend at the waist with the remaining hinges
-    held against the **upper** bound. The pinned-limit warning names them on most runs.
-    Taking its advice here makes things worse: opened to `[-90, 30]` the fit averages
-    **2.7 sign changes** along the five hinges — a folded chain rather than a curl — to
-    buy about a third of the residual, and widening the *ventral* side alone (the wrong
-    end) moves the residual 0.7% and the pinned fraction 2%. The residual that remains is
-    mostly the chain's **root**: it is placed by the coxa registration, which
-    [extrapolates badly](#ik-head-base) at that height, and unlike the head the abdomen
-    has no landmark on its own base to correct it with — the `neck`'s correction does not
-    transfer, because the two anchors sit on opposite sides of the coxa centroid and the
-    registration's ill-determined mode tilts them opposite ways.
+Each abdomen segment carries **two** DOFs, and by default:
+
+| dof | axis | default range | what it is |
+| --- | --- | --- | --- |
+| `…-pitch` | `+Y` (lateral) | `[-30, 0]` | **vertical** bend, ventral (downward) only |
+| `…-yaw` | `+Z` (dorsal) | `[-15, 15]` | **lateral** bend, symmetric |
+
+Vertical bend is one-sided because the five near-midline markers under-constrain the
+sagittal chain, so a symmetric range lets the solver fold it into a non-physical zig-zag
+while a downward-only range keeps the fit a smooth ventral curl. Lateral bend is symmetric
+because a fly bends either way; `[-15, 15]` is where the fit's 90th-percentile marker
+residual flattens and the fraction of frames spent against the bound falls to ~6%.
+
+There is deliberately **no twist DOF**: no abdomen joint takes an axis with a component
+along the chain's own long axis. Successive bends can still compose to a net axial
+rotation — that is geometry rather than a degree of freedom, which is why the model
+excludes the *axis* rather than trying to constrain the net rotation.
+
+Lateral bend is not a formality. Measured on three animals across two rigs, the abdomen
+markers leave the midline by **30–80× the frame-to-frame noise floor**, growing
+monotonically toward the tip, and that excursion is 26–51% of the vertical one. A
+pitch-only chain cannot represent any of it; adding the lateral DOF cuts the abdomen's
+marker residual by 24–39%.
+
+!!! note "If the abdomen fits as a straight, static rod, the bounds are not the cause"
+    A chain that reports the *same* angles in every frame — the root at exactly `-30` and
+    the interior hinges at exactly `0` — is not a saturated fit but a fit whose target it
+    cannot reach from any pose in the box, so the constrained optimum is the same corner
+    every frame. Widening the range does not help, and the pinned-limit warning's advice
+    is misleading here: with the chain's [size](#ik-chain-size) and root measured properly
+    the fit lands well inside `[-30, 0]`, and removing the box entirely changes the
+    residual by 0.0001. Look at `chain_scales` first — an abdomen reading substantially
+    *larger* than the same fly's head is the signature.
 
 ### The head's base — `neck` { #ik-head-base }
 
@@ -933,9 +949,15 @@ The head and abdomen are fixed model geometry, so each gets **one uniform multip
 `inverse_kinematics` metadata, baked into `body_plan` and applied to the same chain by
 the mesh overlay.
 
-It is measured only from **separations between the chain's own markers that the chain's
-own joints cannot change** — for the head the `neck`-to-antennae radius, for the abdomen
-the one pair sharing a body. Both restrictions are load-bearing:
+It is measured by fitting the chain's **angles and its size together** against its whole
+marker set, seeded from a rigid-ruler estimate (below) and reduced by the median over
+sampled frames, since a chain's size is a constant of the animal. Fitting posture out as a
+nuisance parameter, rather than avoiding it, is what lets every marker contribute.
+
+The **seed** comes from **separations between the chain's own markers that the chain's own
+joints cannot change** — for the head, the `neck`-to-antennae radius. The abdomen has no
+such separation at all (see the note below), so its seed is simply model size. Both
+restrictions are load-bearing for that seed:
 
 - **Posture is not size.** The abdomen's five markers sit on the dorsal *surface*, which
   is the outside of a ventral bend, so a ruler drawn *along* the chain lengthens by 57%
@@ -953,19 +975,51 @@ the one pair sharing a body. Both restrictions are load-bearing:
 
 Which pairs qualify is decided by probing the chain's forward kinematics across its own
 bounds, not by a hand-written list, so a chain retargeted with a
-[marker table](#ik-markers) gets the right ruler with no code change. A marker set with
-no qualifying pair — `fly38`'s, for either chain — cannot be measured at all: the chain
-stays at model size and the run **warns**, because a silent `1.0` would read as a
+[marker table](#ik-markers) gets the right ruler with no code change. A marker set with no
+qualifying pair leaves the seed at model size. That is only a *seed*, so it is not warned
+about here — the whole-marker fit above still measures the size. Calling
+`estimate_chain_scale` on its own does warn, because there a silent `1.0` would read as a
 measurement that this fly matches the model.
 
-!!! note "What one uniform scale can and cannot do"
-    On real recordings the abdomen's rigid ruler and an independent bend-corrected
-    measurement of the whole span agree to ~2% (1.47× and 1.52× the model, median over 30
-    recordings). The scale that would *minimise the fit residual* is lower, around
-    1.2–1.3×, which says the model's abdomen **shape** differs from a real fly's — the
-    proximal end reads about 1.1× where the last tergite reads about 1.5×, so no single
-    uniform multiplier is right everywhere. The reported number is the measurement, not
-    the residual-minimising compromise.
+!!! note "Why the abdomen has no rigid ruler, on purpose"
+    A chain with **one** qualifying pair is measured only as well as that pair, and the
+    abdomen used to be exactly that case: its sole ruler was `abdomen3`–`abdomen4`, the
+    shortest baseline in the chain (0.234 model units) between its two most distal — and
+    least reliably localised — keypoints, where a 0.05 error is a 21% size error.
+
+    That pair qualified for a reason that was itself the problem: **both markers hung off
+    the same body** (`c_abdomen6`), so no joint lay between them and the model held them
+    rigidly apart. A real abdomen does not. On one recording the model's separation came
+    out **18% short** of the measured one and no joint angle could make it up — the single
+    largest abdomen residual, `abdomen3` and `abdomen4` sitting 0.032 / 0.024 model units
+    off with 99% of that a fixed bias rather than per-frame noise.
+
+    The ruler also over-read. On three animals across two rigs it exceeded the whole-marker
+    fit by **10.8% / 14.8% / 18.5%**, always the same sign, and always making the abdomen
+    come out *larger* than the same fly's head (1.34–1.49 against 1.20–1.25) — one animal
+    cannot have both. The cause is a **shape** mismatch rather than a measurement error:
+    the model's abdomen is not a scaled real one, reading about 1.1× at the proximal end
+    and about 1.5× at the last tergite, so the pair that happened to qualify sat at the
+    worst end for this purpose.
+
+    Anchoring each stripe one segment **proximal** puts a hinge between `abdomen3` and
+    `abdomen4`, which removes the residual and the ruler together: measured on the same
+    recording, every abdomen segment length lands within 2% of the animal's (from −18.2%
+    and +13.0%) and the chain's total residual falls **42%**. So the abdomen is now
+    measured only by the whole-marker fit, and reports no ruler at all.
+
+    The cross-check that licenses that fit is the **head**, where the ruler is a long,
+    well-defined radius and is trusted: there the two agree to **+0.7…1.6%**, with an
+    unchanged marker residual and identical fitted angle ranges.
+
+    A chain with **no** measured base landmark (the abdomen: no keypoint sits on its root)
+    additionally has its root position fitted here, jointly, because size and root trade
+    along an exact null direction of the fit — measuring either with the other held wrong
+    gives a confidently repeatable wrong answer for both. The size itself is *not* in that
+    null direction, so it is well posed either way. For a **midline** chain the root's
+    lateral component is deliberately not fitted: a sideways root and the chain's own
+    lateral joints express the same displacement, so freeing both attributes the animal's
+    lateral bend to whichever the optimiser reaches first.
 
 ### Marker placement — `[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]` { #ik-markers }
 
@@ -980,11 +1034,11 @@ skeleton point name:
 
 ```toml
 [inverse_kinematics.abdomen]
-abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.0, 0.30] }
-abdomen1 = { body = "c_abdomen4", offset = [0.0, 0.0, 0.285] }
-abdomen2 = { body = "c_abdomen5", offset = [0.0, 0.0, 0.27] }
-abdomen3 = { body = "c_abdomen6", offset = [0.0, 0.0, 0.243] }
-abdomen4 = { body = "c_abdomen6", offset = [-0.23, 0.0, 0.20] }
+abdomen0 = { body = "c_abdomen12", offset = [-0.37, 0.0, 0.34] }
+abdomen1 = { body = "c_abdomen3",  offset = [-0.22, 0.0, 0.32] }
+abdomen2 = { body = "c_abdomen4",  offset = [-0.23, 0.0, 0.30] }
+abdomen3 = { body = "c_abdomen5",  offset = [-0.24, 0.0, 0.28] }
+abdomen4 = { body = "c_abdomen6",  offset = [-0.25, 0.0, 0.22] }
 
 [inverse_kinematics.head]
 neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0], base = true }

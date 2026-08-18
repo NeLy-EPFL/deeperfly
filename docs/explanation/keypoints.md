@@ -47,6 +47,20 @@ seven rig angles (RH–LH) plus hind, bottom and top.
     and `abdomen4` is the tip marker on the last segment, there being no fifth hinge.
     Each rides the segment it sits on, so the chain follows the abdomen as it curls.
 
+    Every hinge — the waist plus those four — carries **two** sliders in the viewer, the
+    same two DOFs the [IK fits](../reference/configuration.md#ik-markers): `pitch`, the
+    sagittal bend that curls the abdomen ventrally, and `roll`, which swings it
+    **laterally**. Read `roll` as flygym's name for the axis rather than as a description
+    of the motion: on this chain flygym's axis names are anatomically rotated, and the
+    axis it calls `roll` is the segment's local *z* — the one you would intuitively call
+    yaw. flygym's `yaw` is the local *x*, the axial twist about the abdomen's long axis,
+    and it deliberately gets no slider, because the IK does not fit it. All five markers
+    lie in the sagittal plane, and a point in that plane is swung sideways by a twist just
+    as it is by a lateral bend — by its height above the axis rather than its distance
+    behind the hinge — so as *motions of these five points* the two are only 14–29° apart
+    on this model. That is close enough that fitting both would be guesswork, so the chain
+    keeps the one that also moves the mesh the way a tethered fly visibly does.
+
     `abdomen0` and `abdomen4` are exactly the historical DeepFly3D per-side markers
     collapsed onto the midline: the two sides differ only laterally, so the midpoint of a
     labeled pair *is* the midline point — which is how a `fly38` corpus migrates.
