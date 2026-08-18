@@ -13,6 +13,7 @@ import json
 import h5py
 import numpy as np
 import pytest
+from helpers import make_cameras
 
 from deeperfly.acquisition import (
     SUGGESTIONS_FORMAT_VERSION,
@@ -312,9 +313,18 @@ def test_fps_prefers_the_stamp_then_the_default(tmp_path, cameras, fly, truth):
 # -- select_frames ------------------------------------------------------------
 
 
-@pytest.fixture
-def ramp(cameras, rng):
-    """Scores over 1000 frames whose worst frames are deliberately adjacent."""
+@pytest.fixture(scope="module")
+def ramp():
+    """Scores over 1000 frames whose worst frames are deliberately adjacent.
+
+    Module-scoped: scoring 1000 frames costs ~1 s and the eight tests below only ever
+    read this, so rebuilding it per test was the single largest block of repeated
+    setup in the suite. It therefore builds its own rig and generator instead of
+    taking the function-scoped ``cameras``/``rng`` fixtures, which a module-scoped
+    fixture may not depend on.
+    """
+    cameras = make_cameras()
+    rng = np.random.default_rng(0)
     pts3d = rng.uniform(-1.5, 1.5, size=(1000, 38, 3))
     pts2d = np.array(cameras.project(pts3d))
     # Three hard *moments*, each smeared over neighbouring frames -- the shape that

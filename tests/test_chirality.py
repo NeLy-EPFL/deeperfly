@@ -14,7 +14,15 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, FOCAL_PX, HEIGHT, WIDTH
+from helpers import (
+    AZIMUTHS_DEG,
+    CAMERA_NAMES,
+    DISTANCE_MM,
+    FOCAL_PX,
+    HEIGHT,
+    WIDTH,
+    reference_rmat,
+)
 
 from deeperfly import chirality
 from deeperfly.cameras import CameraGroup
@@ -24,8 +32,6 @@ from deeperfly.geometry import rmat_to_rvec
 @pytest.fixture
 def rig_cameras():
     """The reference 7-camera orbit rig (see ``conftest``'s ``rig``)."""
-    from conftest import reference_rmat
-
     rmats = np.array([reference_rmat(t) for t in np.deg2rad(AZIMUTHS_DEG)])
     return CameraGroup.from_arrays(
         CAMERA_NAMES,

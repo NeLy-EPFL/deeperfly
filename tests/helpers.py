@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from deeperfly import geometry as geom
+from deeperfly.cameras import CameraGroup
 from deeperfly.config import Config
 
 # Reference rig parameters.
@@ -73,6 +75,40 @@ def reference_rmat(yaw_rad: float) -> np.ndarray:
     y = np.array([0.0, 0.0, -1.0])
     z = np.array([-np.cos(yaw_rad), -np.sin(yaw_rad), 0.0])
     return np.array([np.cross(y, z), y, z])
+
+
+def rig_arrays() -> dict:
+    """The canonical 7-camera orbit rig as plain arrays.
+
+    Returns a dict with ``names``, ``rvecs``, ``tvecs``, ``intrs`` (4-vector
+    ``[fx, fy, cx, cy]``) and ``dists`` (empty, i.e. no distortion).
+
+    Lives here rather than only in the ``rig`` fixture so that module- or
+    session-scoped fixtures can build the rig too: a widened fixture may not depend
+    on a function-scoped one, and duplicating the construction would let the copy
+    drift away from the reference convention.
+    """
+    cx, cy = (WIDTH - 1) / 2, (HEIGHT - 1) / 2
+    rmats = np.array([reference_rmat(t) for t in np.deg2rad(AZIMUTHS_DEG)])
+    rvecs = np.asarray(geom.rmat_to_rvec(rmats))
+    tvecs = np.array([[0.0, 0.0, DISTANCE_MM]] * len(rmats))
+    intrs = np.tile([FOCAL_PX, FOCAL_PX, cx, cy], (len(rmats), 1))
+    dists = np.zeros((len(rmats), 0))
+    return {
+        "names": CAMERA_NAMES,
+        "rvecs": rvecs,
+        "tvecs": tvecs,
+        "intrs": intrs,
+        "dists": dists,
+    }
+
+
+def make_cameras() -> CameraGroup:
+    """:func:`rig_arrays` as a :class:`~deeperfly.cameras.CameraGroup`."""
+    r = rig_arrays()
+    return CameraGroup.from_arrays(
+        r["names"], r["rvecs"], r["tvecs"], r["intrs"], r["dists"]
+    )
 
 
 def small_rotation(sigma: float, seed: int) -> np.ndarray:

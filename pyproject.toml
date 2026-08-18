@@ -112,6 +112,11 @@ dev = [
 test = [
     "pytest>=9.0.3",
     "pytest-cov>=6.0",
+    # Runs the suite across processes (`-n auto` in addopts). The suite is ~110s of
+    # genuine per-test work with no single hot spot, so parallelism is the only large
+    # lever: 115s serial -> 39s on 24 cores. Pairs with the `threadcap` plugin, which
+    # is what makes it pay off (see tests/threadcap.py).
+    "pytest-xdist>=3.6",
     # Exercise the web GUI: FastAPI's TestClient (httpx-backed) drives the API +
     # WebSocket in-process, no real server or browser needed. FastAPI/uvicorn
     # themselves are core deps; only the httpx test client is test-only.
@@ -133,7 +138,10 @@ docs = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-q"
+# `-p threadcap` must come before anything imports numpy/jax/torch; `-n auto` uses
+# one worker per physical core. Override either per-run: `-n 0` restores a plain
+# in-process run (what you want for `--pdb`, `-s`, or a single test).
+addopts = "-q -p threadcap -n auto"
 
 [tool.ruff.lint]
 # Default rules (E4/E7/E9 + F) plus pycodestyle warnings (W) and import sorting (I).

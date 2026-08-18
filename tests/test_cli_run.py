@@ -1836,10 +1836,10 @@ def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
     import argparse
 
     import h5py
+    from test_results import _write_v2
 
     from deeperfly.cli.report import _cmd_repack
     from deeperfly.results import FORMAT_VERSION
-    from tests.test_results import _write_v2
 
     sizes = {}
     for name in ("rec1", "rec2"):
