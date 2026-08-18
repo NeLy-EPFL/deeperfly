@@ -717,7 +717,7 @@ def load_mvt(
     if dev is None:
         # Imported only when the caller did not choose: the backend's auto-selection lives
         # in the hourglass module, and this class has no other reason to pull it in.
-        from .model import device as _default_device
+        from .runtime import device as _default_device
 
         target = _default_device()
     else:

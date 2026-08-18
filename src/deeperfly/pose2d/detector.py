@@ -112,9 +112,9 @@ def set_precision(model, precision: str = "float32") -> None:
     precision
         ``"float32"``, ``"float16"`` or ``"bfloat16"``.
     """
-    from . import model as _model
+    from .runtime import set_precision as _set
 
-    _model.set_precision(model, precision)
+    _set(model, precision)
 
 
 def detector_device(model) -> str:

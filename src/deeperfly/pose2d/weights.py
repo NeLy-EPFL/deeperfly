@@ -12,8 +12,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from . import model as _model
-from .model import HourglassNet, device
+from . import runtime as _runtime
+from .model import HourglassNet
+from .runtime import device
 
 
 def _place(model: HourglassNet, dev: str | None) -> HourglassNet:
@@ -26,7 +27,7 @@ def _place(model: HourglassNet, dev: str | None) -> HourglassNet:
     """
     target = dev or device()
     model = model.eval().to(target)
-    if _model.USE_CHANNELS_LAST and torch.device(target).type == "cuda":
+    if _runtime.USE_CHANNELS_LAST and torch.device(target).type == "cuda":
         model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     return model
 

@@ -17,11 +17,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-#: Lay the CUDA conv batch out ``channels_last`` (NHWC in memory, same NCHW logical
-#: shape) so cuDNN picks its faster Tensor-Core conv kernels. A CUDA-only win;
-#: CPU/MPS keep the default contiguous layout regardless. Set ``False`` to force
-#: the plain NCHW path (e.g. to A/B the speedup or work around a cuDNN regression).
-USE_CHANNELS_LAST = True
+from .runtime import (  # noqa: F401
+    USE_CHANNELS_LAST,
+    autocast_dtype,
+    device,
+    set_precision,
+)
+from .runtime import as_torch as _as_torch  # noqa: F401
 
 
 class Bottleneck(nn.Module):
@@ -186,40 +188,6 @@ class HourglassNet(nn.Module):
         return out
 
 
-def device() -> str:
-    """Best available torch device: NVIDIA CUDA, then Apple Metal (MPS), else CPU.
-
-    On Apple Silicon ``"mps"`` runs the hourglass forward on the GPU via Metal
-    Performance Shaders (~6x over CPU for sh8); output matches CPU to float32
-    epsilon, so the detector is accelerated on macOS with no setup.
-
-    Returns
-    -------
-    str
-        ``"cuda"``, ``"mps"`` or ``"cpu"``.
-    """
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def _as_torch(inputs) -> "torch.Tensor":
-    """Coerce ``(N, 3, H, W)`` inputs to a torch tensor, on-device when possible.
-
-    ``inputs`` is usually already a ``torch.Tensor`` on the detector device (so a
-    GPU-decoded frame reaches the forward without leaving the GPU) and passes
-    straight through. Any other DLPack-capable on-device array is bridged
-    zero-copy; host NumPy is copied to a writable tensor.
-    """
-    if isinstance(inputs, torch.Tensor):
-        return inputs
-    if hasattr(inputs, "__dlpack__"):  # other on-device array -- zero-copy
-        return torch.from_dlpack(inputs)
-    return torch.from_numpy(np.array(inputs))  # host array -> writable copy
-
-
 #: Cache of ``torch.compile``-d models, keyed by ``id(model)`` (a run holds one).
 _COMPILED: dict[int, "torch.nn.Module"] = {}
 
@@ -241,55 +209,6 @@ def _forward_fn(model: HourglassNet, dev: "torch.device", batch: int):
     return fn
 
 
-#: Detector forward precision -> autocast dtype (``None`` = run in float32).
-_PRECISIONS = {
-    "float32": None,
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-}
-
-
-def set_precision(model: HourglassNet, precision: str = "float32") -> None:
-    """Record the forward precision ``predict_heatmaps`` should run the model in.
-
-    ``"float32"`` (default, the reference), ``"float16"`` or ``"bfloat16"`` (CUDA
-    autocast). float16 is fastest; bfloat16 trades a touch of that speed for the
-    wider exponent range of float32, so it can't overflow. Stored on the model so
-    the forward picks it up without threading it through every call.
-
-    Parameters
-    ----------
-    model
-        The detector (the precision is stored on it).
-    precision
-        ``"float32"``, ``"float16"`` or ``"bfloat16"``.
-
-    Raises
-    ------
-    ValueError
-        On an unknown ``precision`` name.
-    """
-    precision = (precision or "float32").lower()
-    if precision not in _PRECISIONS:
-        opts = ", ".join(repr(p) for p in _PRECISIONS)
-        raise ValueError(f"unknown detector precision {precision!r}; use one of {opts}")
-    # A real detector (nn.Module) carries a __dict__; bare test stubs don't (and
-    # never run the real forward), so there's nothing to set on them.
-    if hasattr(model, "__dict__"):
-        model._deeperfly_precision = precision  # type: ignore[assignment]
-
-
-def _autocast_dtype(model: HourglassNet, dev: "torch.device"):
-    """Autocast dtype for the forward, or ``None`` to run in float32.
-
-    Honors the precision set by :func:`set_precision`, but only on CUDA: fp16
-    autocast is where the win is, and CPU/MPS stay on the float32 reference path.
-    """
-    if dev.type != "cuda":
-        return None
-    return _PRECISIONS.get(getattr(model, "_deeperfly_precision", "float32"))
-
-
 def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
     """Run the detector and return the final-stack heatmaps, on-device as float32.
 
@@ -303,7 +222,7 @@ def _forward_last(model: HourglassNet, inputs) -> "torch.Tensor":
     x = _as_torch(inputs).float().to(dev)
     batch = int(np.prod(x.shape[:-3]))  # folded conv batch (B*V for a 5D input)
     fn = _forward_fn(model, dev, batch)
-    dtype = _autocast_dtype(model, dev)
+    dtype = autocast_dtype(model, dev)
     if dtype is not None:  # fp16/bf16 autocast on CUDA; conv runs low, reductions f32
         with torch.autocast(dev.type, dtype=dtype):
             out = fn(x)[-1]

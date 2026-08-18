@@ -348,7 +348,7 @@ def load_hrnet(weights: str | Path, *, dev: str | None = None, mean: float = 0.0
     """
     import torch
 
-    from .model import device
+    from .runtime import device
 
     if float(mean) != 0.0:
         raise SystemExit(
@@ -413,7 +413,8 @@ def predict_points(model, inputs, *, method: str = "weighted", radius: int = 2):
     """
     import torch
 
-    from .model import _as_torch, _autocast_dtype
+    from .runtime import as_torch as _as_torch
+    from .runtime import autocast_dtype as _autocast_dtype
 
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
@@ -445,7 +446,8 @@ def predict_heatmaps(model, inputs) -> np.ndarray:
     """
     import torch
 
-    from .model import _as_torch, _autocast_dtype
+    from .runtime import as_torch as _as_torch
+    from .runtime import autocast_dtype as _autocast_dtype
 
     dev = next(model.parameters()).device
     x = _as_torch(inputs).float().to(dev)
