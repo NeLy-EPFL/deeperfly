@@ -96,6 +96,11 @@ def run_recording(
     store = StageStore(outdir / "results.h5")
     record = RunRecord(outdir / "run.json")
 
+    # Before anything is read or computed: a cached pose on another skeleton makes every
+    # array in the file mean something else, and there is no point costing the user a
+    # detection pass to find that out.
+    _refuse_a_foreign_skeleton(config, store)
+
     # Validate the footage *before* creating the output dir, so a fresh run that
     # can't read its input fails cleanly instead of leaving an empty dir behind.
     # Only pose2d decodes the recording, and only when it recomputes; a resume
@@ -164,6 +169,47 @@ def run_recording(
         if _RUNNERS[name](ctx):
             record.set(name, expected)
             recomputed = True
+
+
+def _refuse_a_foreign_skeleton(config: Config, store: StageStore) -> None:
+    """Refuse to continue a run whose stored pose is on a different skeleton.
+
+    Every array in ``results.h5`` is ``(..., P, ...)`` with no names beside it, so the
+    meaning of the ``P`` axis is whatever skeleton the file records -- and a resume that
+    does not recompute ``pose2d`` never rewrites that record. If the config now resolves
+    a *different* skeleton, the downstream stages read one skeleton's names against the
+    other's columns, and the failure surfaces (if at all) as an unrelated complaint about
+    an unknown point name.
+
+    Two 38-point skeletons load each other's files perfectly happily, so a count check
+    cannot see this -- only the ordered names can. That is also why the check is by name
+    list and not by the skeleton's *name*: a preset can be renamed without a single
+    coordinate changing, and a name can be reused for a different point order.
+    """
+    stored = store.read_skeleton()
+    if stored is None:  # a fresh output directory: pose2d will write the record
+        return
+    want = list(config.skeleton().point_names)
+    have = list(stored.point_names)
+    if have == want:
+        return
+    gone = [n for n in have if n not in want]
+    extra = [n for n in want if n not in have]
+    raise SystemExit(
+        f"this output directory holds a pose on a different skeleton than the config "
+        f"resolves, so its arrays cannot be read against it.\n"
+        f"  stored in results.h5 : {len(have)} points, named {stored.name!r}\n"
+        f"  the config resolves  : {len(want)} points, named {config.skeleton().name!r}\n"
+        + (f"  only in the stored one: {', '.join(gone[:6])}\n" if gone else "")
+        + (f"  only in the config's  : {', '.join(extra[:6])}\n" if extra else "")
+        + (
+            "  (same points, different ORDER -- every stored column means another point)\n"
+            if not gone and not extra
+            else ""
+        )
+        + "Point [skeleton] at the skeleton this pose was detected on, run into a fresh "
+        "output directory, or migrate the labels with `deeperfly project skeleton`."
+    )
 
 
 def _log_recompute(name: str, reason: str) -> None:

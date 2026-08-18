@@ -74,7 +74,7 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     path = tmp_path / "result.h5"
     res.save(path)
     sk = PoseResult.load(path).skeleton
-    assert sk.name == "fly38b"
+    assert sk.name == "fly38"
     assert sk.point_names == Skeleton.fly().point_names
     assert sk.palette == Skeleton.fly().palette
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)

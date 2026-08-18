@@ -97,19 +97,19 @@ def test_limb_points_resolve_names():
 # -- left/right symmetry ------------------------------------------------------
 
 
-def test_fly38_declares_a_pair_for_every_point(fly38):
-    """``fly38`` pairs all 38 points, and pairs them across the halves.
+def test_the_deepfly3d_set_declares_a_pair_for_every_point(deepfly3d):
+    """``deepfly3d`` pairs all 38 points, and pairs them across the halves.
 
     The left-first block layout means the partner of point ``i`` is ``i + 19``; asserting
     that (rather than just "19 pairs exist") is what would catch an edit that paired two
     points on the same side.
     """
-    assert fly38.n_symmetries == 19
-    pairs = np.asarray(fly38.symmetries)
+    assert deepfly3d.n_symmetries == 19
+    pairs = np.asarray(deepfly3d.symmetries)
     assert pairs.shape == (19, 2)
     assert sorted(pairs.reshape(-1).tolist()) == list(range(38))
     np.testing.assert_array_equal(pairs[:, 1] - pairs[:, 0], np.full(19, 19))
-    for a, b in fly38.symmetry_names:
+    for a, b in deepfly3d.symmetry_names:
         assert a[0] == "l" and b[0] == "r" and a[1:] == b[1:]
 
 
@@ -145,13 +145,13 @@ def test_flip_perm_is_an_involution(fly):
         assert perm[i] == i
 
 
-def test_flip_perm_matches_the_fly38_block_layout(fly38):
-    """For ``fly38`` the mirror is exactly "swap the halves".
+def test_flip_perm_matches_the_deepfly3d_block_layout(deepfly3d):
+    """For ``deepfly3d`` the mirror is exactly "swap the halves".
 
     That is also what the dfpose trainer's ``FLIP_PERM`` is; a divergence here would
     silently retrain every left channel on a right joint.
     """
-    np.testing.assert_array_equal(fly38.flip_perm(), np.roll(np.arange(38), 19))
+    np.testing.assert_array_equal(deepfly3d.flip_perm(), np.roll(np.arange(38), 19))
 
 
 def test_partner(fly):

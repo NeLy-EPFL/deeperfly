@@ -269,7 +269,9 @@ def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng
     assert not np.allclose(on.tvecs, off.tvecs, atol=1e-6)
 
 
-def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly38, rng):
+def test_front_camera_bridges_left_right_in_bundle_adjustment(
+    rig, cameras, deepfly3d, rng
+):
     """The front camera, seeing both body sides, is what co-registers the two
     camera clusters in bundle adjustment.
 
@@ -321,13 +323,13 @@ def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly3
         pts2d = fly_masked(pts2d_full.copy())
         if not front_sees_both:  # drop the front camera's left-side observations
             fi = names.index("f")
-            for j in leg_indices(fly38, "l"):
+            for j in leg_indices(deepfly3d, "l"):
                 pts2d[fi, :, j] = np.nan
         opt, _ = bundle_adjust_cameras(
             perturbed,
             pts2d,
             conf,
-            fly38,
+            deepfly3d,
             fixed=fixed,
             bone_prior=False,
             max_frames=16,
@@ -401,7 +403,7 @@ def test_bundle_adjust_cameras_legs_only_ignores_corrupted_nonleg(
     assert np.nanmax(np.abs(proj[:, :, legs] - pts2d[:, :, legs])) < 1e-2
 
 
-def test_run_with_bundle_adjustment(rig, cameras, fly38):
+def test_run_with_bundle_adjustment(rig, cameras, deepfly3d):
     # With per-side visibility masking (now applied by the plan, here reproduced
     # via fly_masked) and bone_prior=False, the far side is bridged only by the
     # front camera -- a weakly constrained sub-problem whose conditioning depends
@@ -416,7 +418,7 @@ def test_run_with_bundle_adjustment(rig, cameras, fly38):
 
     result = run_from_points2d(
         cams0,
-        fly38,
+        deepfly3d,
         pts2d,
         do_bundle_adjust=True,
         bundle_adjust_kwargs={
@@ -431,7 +433,7 @@ def test_run_with_bundle_adjustment(rig, cameras, fly38):
     # Right-side points (seen by the gauge-anchored right cameras) recover
     # tightly; far-side points are weaker once visibility masking is applied,
     # but the whole pose is still close and reprojects well.
-    right = leg_indices(fly38, "r")
+    right = leg_indices(deepfly3d, "r")
     np.testing.assert_allclose(result.pts3d[:, right], pts3d[:, right], atol=1e-2)
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.5)
     assert np.nanmax(result.reproj_error) < 5.0
@@ -602,3 +604,62 @@ def test_apply_absent_accepts_a_whole_recording_declaration():
     pts2d, conf = np.zeros((2, 3, 4, 2)), np.ones((2, 3, 4))
     a, c = apply_absent(pts2d, conf, np.array([False, True, False, False]))
     assert np.isnan(a[:, :, 1]).all() and (c[:, :, 1] == 0).all()
+
+
+# -- a run refuses an output directory holding another skeleton's pose ---------
+
+
+def _store_on(outputs, cameras, skeleton):
+    """A minimal cached ``pose2d`` output, written against ``skeleton``."""
+    from deeperfly.results import StageStore
+
+    outputs.mkdir(parents=True, exist_ok=True)
+    store = StageStore(outputs / "results.h5")
+    v, t, p = len(cameras.names), 2, len(skeleton.point_names)
+    store.write_pose2d(
+        cameras=cameras,
+        skeleton=skeleton,
+        pts2d=np.zeros((v, t, p, 2)),
+        conf=np.ones((v, t, p)),
+        image_sizes={n: (8, 16) for n in cameras.names},
+    )
+    return store
+
+
+def test_a_run_refuses_a_cached_pose_on_another_skeleton(tmp_path, cameras, deepfly3d):
+    """A resume whose stored 2D is on a different point set stops, and says which.
+
+    Every array in ``results.h5`` is ``(..., P, ...)`` with no names beside it, and a
+    resume that does not recompute ``pose2d`` never rewrites the record of what those
+    columns mean. Both skeletons here are 38 points, so no shape check can see the
+    difference -- which is the whole reason the guard compares the ordered names.
+    """
+    from deeperfly.config import Config
+    from deeperfly.pipeline.run import run_recording
+
+    outputs = tmp_path / "out"
+    _store_on(outputs, cameras, deepfly3d)  # the retired DeepFly3D point set
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[skeleton]\nname = "fly38"\n')  # the shipped one
+    with pytest.raises(SystemExit) as excinfo:
+        run_recording(outdir=outputs, config_path=cfg)
+    message = str(excinfo.value)
+    assert "different skeleton" in message
+    assert "l_abdomen0" in message, "the points only the stored one has are named"
+    assert "abdomen0" in message, "and the points only the config's has"
+    # Deliberately NOT keyed on the skeleton's name: renaming a preset moves no
+    # coordinate, and a name can be reused for a different point order.
+    assert Config.from_toml(cfg).skeleton().n_points == deepfly3d.n_points
+
+
+def test_a_run_accepts_a_cached_pose_on_the_same_skeleton(tmp_path, cameras, fly):
+    """The same points under a former spelling of the name are not a mismatch."""
+    from deeperfly.config import Config
+    from deeperfly.pipeline.run import _refuse_a_foreign_skeleton
+
+    outputs = tmp_path / "out"
+    store = _store_on(outputs, cameras, fly)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[skeleton]\nname = "fly38b"\n')  # the pre-1.0 spelling
+    _refuse_a_foreign_skeleton(Config.from_toml(cfg), store)  # does not raise

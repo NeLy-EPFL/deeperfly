@@ -31,7 +31,7 @@ import numpy as np
 import pytest
 from helpers import (
     IK_BASELINE_PATH,
-    fly38_skeleton,  # noqa: F401
+    deepfly3d_skeleton,  # noqa: F401
 )
 
 from deeperfly.config import Config
@@ -64,7 +64,7 @@ def solve_with_defaults(pts3d: np.ndarray, overrides: dict | None = None):
     the ``constant_points`` pin and the config plumbing too.
     """
     cfg = Config.from_dict({"inverse_kinematics": dict(overrides or {})})
-    return stages.stage_inverse_kinematics(cfg, fly38_skeleton(), pts3d)
+    return stages.stage_inverse_kinematics(cfg, deepfly3d_skeleton(), pts3d)
 
 
 def keypoint_residual(model_pts3d: np.ndarray, pts3d: np.ndarray) -> np.ndarray:
@@ -79,7 +79,7 @@ def keypoint_residual(model_pts3d: np.ndarray, pts3d: np.ndarray) -> np.ndarray:
 
 def test_baseline_fixture_is_self_describing(baseline):
     """The fixture holds both cases with matching shapes and the synthetic truth."""
-    fly = fly38_skeleton()
+    fly = deepfly3d_skeleton()
     assert baseline["real_angles"].shape == (64, 50)
     assert baseline["synth_angles"].shape == (3, 50)
     for case, n_frames in (("real", 64), ("synth", 3)):

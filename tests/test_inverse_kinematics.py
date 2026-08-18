@@ -20,7 +20,7 @@ from helpers import (
 from helpers import (
     bent_angles as _bent_angles,
 )
-from helpers import fly38_skeleton, fly38b_skeleton  # noqa: F401
+from helpers import deepfly3d_skeleton, fly38_skeleton  # noqa: F401
 from helpers import (
     place_chain_markers as _place_chain_markers,
 )
@@ -47,7 +47,7 @@ def template() -> KinematicTemplate:
 
 @pytest.fixture
 def fly() -> Skeleton:
-    return fly38_skeleton()
+    return deepfly3d_skeleton()
 
 
 # -- alignment ---------------------------------------------------------------
@@ -691,7 +691,7 @@ def test_a_resized_chain_is_recovered_at_a_bent_pose(name, size, has_ruler):
         load_articulation,
     )
 
-    fly = fly38b_skeleton()
+    fly = fly38_skeleton()
     index = {n: i for i, n in enumerate(fly.point_names)}
     chain = load_articulation().chain(name)
     rng = np.random.default_rng(5)
@@ -773,7 +773,7 @@ def test_the_size_ruler_ignores_a_left_right_split():
         load_articulation,
     )
 
-    fly = fly38b_skeleton()
+    fly = fly38_skeleton()
     index = {n: i for i, n in enumerate(fly.point_names)}
     chain = load_articulation().chain("head")
     rng = np.random.default_rng(11)
@@ -816,7 +816,7 @@ def test_a_chain_with_no_invariant_ruler_says_so(caplog):
         load_articulation,
     )
 
-    fly = fly38_skeleton()
+    fly = deepfly3d_skeleton()
     index = {n: i for i, n in enumerate(fly.point_names)}
     chain = load_articulation().chain("head")
     assert chain.base_point not in index, "fly38 does not label the neck"

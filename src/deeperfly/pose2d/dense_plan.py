@@ -295,7 +295,7 @@ def _replace_section(
 def replace_skeleton_section(config_text: str, skeleton_toml: str) -> str:
     """Swap the ``[skeleton]`` tables for those of a standalone ``skeleton.toml``.
 
-    The dense detector's channels ARE a skeleton: a checkpoint trained on ``fly38b``
+    The dense detector's channels ARE a skeleton: a checkpoint trained on ``fly38``
     routed through a ``fly38`` config would put the abdomen chain on points that no
     longer exist. Stamping both in one edit is what keeps them from disagreeing.
     """

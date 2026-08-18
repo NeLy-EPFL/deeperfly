@@ -372,7 +372,7 @@ class SymmetrizeParams:
 
     ``midline`` names points that lie *on* the plane and are projected onto it. Also not
     inferred: "has no mirror partner" does not imply "on the midline". A fly's abdomen
-    bends laterally, so ``abdomen0..4`` are unpaired and still off-plane; on fly38b the
+    bends laterally, so ``abdomen0..4`` are unpaired and still off-plane; on ``fly38`` the
     honest midline set is ``neck`` alone.
 
     The plane is fitted from ``pairs`` only -- each pair's midpoint lies on it and each
@@ -726,8 +726,34 @@ def _source_filename(filename, name: str) -> str | list[str]:
 # -- skeleton presets ---------------------------------------------------------
 
 
+#: Retired preset names that still resolve, ``old name -> packaged name``.
+#:
+#: A rename is not a data migration: ``fly38b`` became ``fly38`` when it was left as the
+#: only packaged skeleton, and not one coordinate moved. But a *reference* to it is on
+#: disk in every config and every output-directory snapshot written before that, and
+#: those would otherwise fail to load at all -- so the old spelling keeps working. It
+#: resolves to the same file, and the config's own ``name`` still wins, so such a run
+#: goes on calling its skeleton ``fly38b`` and computes exactly what it always did (the
+#: skeleton's name is not in any fingerprint -- see
+#: :func:`deeperfly.pipeline.fingerprint._skeleton_digest`).
+#:
+#: This is deliberately not symmetric. ``fly38`` now means the midline-abdomen set, and
+#: an old config naming it means the DeepFly3D one -- a different point order under the
+#: same word, which no alias can disentangle. What stands there instead is a check on the
+#: points themselves: the detector refuses a checkpoint whose channels are another
+#: skeleton's (:func:`deeperfly.pose2d.stream._check_channel_names`) and a run refuses an
+#: output directory whose stored pose is
+#: (:func:`deeperfly.pipeline.run._refuse_a_foreign_skeleton`).
+SKELETON_ALIASES = {"fly38b": "fly38"}
+
+
 def skeleton_presets() -> dict[str, Path]:
-    """The packaged skeletons, ``name -> file`` (see :data:`SKELETON_PRESET_DIR`)."""
+    """The packaged skeletons, ``name -> file`` (see :data:`SKELETON_PRESET_DIR`).
+
+    Retired spellings from :data:`SKELETON_ALIASES` are not listed -- they resolve, but
+    an error message offering them as choices would be advertising a name the release no
+    longer has.
+    """
     if not SKELETON_PRESET_DIR.is_dir():
         return {}
     return {p.stem: p for p in sorted(SKELETON_PRESET_DIR.glob("*.toml"))}
@@ -738,10 +764,12 @@ def _resolve_skeleton(data: dict, source: Path | None) -> dict:
 
     A skeleton is 80-odd lines of point names, mirror pairs, limb chains and colors that
     almost never differ between recordings of the same animal -- and when it does differ it
-    differs completely (``fly38`` and ``fly38b`` share 32 of 38 points in a different
-    order). So it belongs in a file that a config *names*, not in every config:
+    differs completely (the DeepFly3D set and ``fly38`` are both 38 points and share 32 of
+    them, in a different order). So it belongs in a file that a config *names*, not in
+    every config:
 
-    * ``name = "fly38b"`` -- a packaged preset (:func:`skeleton_presets`).
+    * ``name = "fly38"`` -- a packaged preset (:func:`skeleton_presets`), or a retired
+      spelling of one (:data:`SKELETON_ALIASES`).
     * ``file = "skeleton.toml"`` -- a path, resolved next to the config that wrote it.
       The format is the same, which is what makes a preset and a project's own
       ``skeleton.toml`` interchangeable.
@@ -783,6 +811,15 @@ def _resolve_skeleton(data: dict, source: Path | None) -> dict:
             )
     elif skel.get("name") in presets:
         path = presets[skel["name"]]
+    elif SKELETON_ALIASES.get(skel.get("name")) in presets:
+        current = SKELETON_ALIASES[skel["name"]]
+        path = presets[current]
+        log.info(
+            "[skeleton] name = %r is the former spelling of %r and resolves to it; the "
+            "points are unchanged",
+            skel["name"],
+            current,
+        )
     else:
         raise ValueError(
             f"[skeleton] declares no 'point_names' and name = {skel.get('name')!r} is not "

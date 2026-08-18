@@ -98,7 +98,7 @@ def test_bone_prior_uses_shared_targets(cameras, fly, rng):
 # -- recovery vs rejection (headline) ----------------------------------------
 
 
-def test_pictorial_recovers_decoyed_joint(cameras, fly38, rng):
+def test_pictorial_recovers_decoyed_joint(cameras, deepfly3d, rng):
     pts3d = fly_cloud(rng)
     proj = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     k = 5
@@ -116,7 +116,7 @@ def test_pictorial_recovers_decoyed_joint(cameras, fly38, rng):
     argmax = xy[:, :, :, 0, :]  # the (wrong) single-peak detections
 
     ps3d, _, _ = pictorial.reconstruct(
-        cameras, fly38, cands, argmax, bone_max_frames=None
+        cameras, deepfly3d, cands, argmax, bone_max_frames=None
     )
     # The greedy path triangulates the arg-max (including the decoy).
     rp3d, _, _ = reconstruct(cameras, fly_masked(argmax))

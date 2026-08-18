@@ -73,7 +73,7 @@ def _check_channel_names(name: str, model, plan) -> None:
     """Refuse a model whose recorded channel order is not this config's skeleton.
 
     A dense detector's channels ARE a skeleton, and a count check cannot tell two
-    skeletons apart: ``fly38`` and ``fly38b`` are both 38 points, share 32 of them, and
+    skeletons apart: ``fly38`` and the DeepFly3D set are both 38 points, share 32 of them, and
     are in a different order, so routing one through the other's config attaches six
     points to the wrong joints and shifts the rest -- a wrong limb, not a crash.
 

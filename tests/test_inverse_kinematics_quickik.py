@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from helpers import (
     bent_angles,
-    fly38_skeleton,  # noqa: F401
-    fly38b_skeleton,
+    deepfly3d_skeleton,  # noqa: F401
+    fly38_skeleton,
     place_chain_markers,
     rot_z,
     synth_leg_pose,
@@ -41,7 +41,7 @@ def fly() -> Skeleton:
     and both chains are fit. (``fly38`` keeps a home in ``test_ik_baseline.py``, whose
     recorded pose is in its order.)
     """
-    return fly38b_skeleton()
+    return fly38_skeleton()
 
 
 @pytest.fixture(scope="module")
@@ -637,7 +637,7 @@ def test_both_antennae_absent_leaves_the_head_unfitted(template, articulation):
     nothing measured. This is the case that separates "places the chain" from
     "constrains the chain".
     """
-    fly = fly38b_skeleton()
+    fly = fly38_skeleton()
     index = _index(fly)
     sim = (rot_z(0.2), 1.5, np.array([1.0, 2.0, -1.0]))
     rng = np.random.default_rng(12)
@@ -672,7 +672,7 @@ def test_the_head_is_placed_on_the_measured_neck(template, articulation):
     the chain is placed on its own landmark instead, exactly as each leg is placed on its
     measured median thorax-coxa.
     """
-    fly = fly38b_skeleton()
+    fly = fly38_skeleton()
     index = _index(fly)
     sim = (rot_z(0.35), 1.3, np.array([-1.0, 0.5, 2.0]))
     rng = np.random.default_rng(3)

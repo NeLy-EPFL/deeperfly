@@ -48,18 +48,20 @@ filename = ["camera_LH.mp4", "camera_6.mp4"]
 
 
 # == Skeleton ================================================================
-# The tracked points and their structure, by name. `fly38b` is 38 points: six 5-point
-# legs, two antennae, the neck, and a 5-point dorsal-midline abdomen chain
-# (src/deeperfly/data/skeletons/fly38b.toml). `fly38` -- the historical DeepFly3D set,
-# abdomen as two side chains -- is the other packaged one. Add any key here to override
+# The tracked points and their structure, by name. `fly38` is the one packaged skeleton:
+# 38 points -- six 5-point legs, two antennae, the neck, and a 5-point dorsal-midline
+# abdomen chain (src/deeperfly/data/skeletons/fly38.toml). Add any key here to override
 # it, `file = "skeleton.toml"` for a project's own, or spell out `point_names` to make
 # this table self-contained.
 #
 # It must be the skeleton the detector was TRAINED on: a dense detector's channels ARE a
-# skeleton, and fly38 / fly38b are the same 38 points in a different order, so the wrong
-# one attaches six of them to the wrong joints. Checked against the checkpoint every run.
+# skeleton, so the wrong one attaches points to the wrong joints. That is checked against
+# the checkpoint every run, by the ordered point NAMES and not by this label -- which is
+# what makes it a real check: this file was called `fly38b` before the 1.0 release (that
+# spelling still resolves), and the DeepFly3D set that `fly38` named until then was also
+# 38 points, sharing 32 of these in a different order. A count could not tell them apart.
 [skeleton]
-name = "fly38b"
+name = "fly38"
 
 
 # == Views ===================================================================

@@ -19,8 +19,9 @@ import json
 import numpy as np
 import pytest
 from helpers import (
+    DEEPFLY3D_SKELETON_PATH,
     IK_BASELINE_PATH,
-    fly38_skeleton,  # noqa: F401
+    deepfly3d_skeleton,  # noqa: F401
 )
 
 from deeperfly.config import Config
@@ -43,7 +44,7 @@ _SEGLENS = np.array([0.0, 0.40, 0.69, 0.54, 0.63])
 
 @pytest.fixture(scope="module")
 def fly() -> Skeleton:
-    return fly38_skeleton()
+    return deepfly3d_skeleton()
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +71,7 @@ def _measure(real_pts3d, fly, template, *, symmetric_segments=False):
     whichever skeleton is asked for; a point the fixture has no column for stays NaN.
     """
     articulation = load_articulation()
-    src = {n: i for i, n in enumerate(fly38_skeleton().point_names)}
+    src = {n: i for i, n in enumerate(deepfly3d_skeleton().point_names)}
     pts3d = np.stack(
         [
             real_pts3d[:, src[n]]
@@ -216,11 +217,11 @@ def test_plan_shape_and_coverage(plan, fly, template, articulation):
 
 
 @pytest.mark.parametrize(
-    "name,model_only,skeleton_only",
+    "ref,model_only,skeleton_only",
     [
-        ("fly38b", [], []),
+        ({"name": "fly38"}, [], []),
         (
-            "fly38",
+            {"file": str(DEEPFLY3D_SKELETON_PATH)},
             ["abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4", "neck"],
             [
                 "l_abdomen0",
@@ -232,24 +233,26 @@ def test_plan_shape_and_coverage(plan, fly, template, articulation):
             ],
         ),
     ],
+    ids=["fly38", "deepfly3d"],
 )
 def test_which_points_the_plan_covers(
-    name, model_only, skeleton_only, template, articulation, real_pts3d
+    ref, model_only, skeleton_only, template, articulation, real_pts3d
 ):
     """Coverage is an intersection, and both gaps are named rather than papered over.
 
     A joint tracks a keypoint only where the *model* has a marker for it and the *run's
-    skeleton* names it, so the two sets are allowed to disagree. On ``fly38b`` they no
-    longer do: with the head and abdomen chains both targeted at it, the plan covers all
-    38 points and the fit has nothing left un-modelled.
+    skeleton* names it, so the two sets are allowed to disagree. On the shipped ``fly38``
+    they no longer do: with the head and abdomen chains both targeted at it, the plan
+    covers all 38 points and the fit has nothing left un-modelled.
 
-    ``fly38`` is the other side of that. Its two historical abdomen side chains have no
-    marker on the model any more and its skeleton has no ``neck``, so eleven points fall
-    out on one side or the other -- the whole abdomen among them, which means a ``fly38``
-    run gets no abdomen fit at all. Asserted by name so a future retarget fails this test
-    rather than passing it quietly.
+    The retired DeepFly3D set is the other side of that, and it is the reason the release
+    stopped shipping it as much as the point names are: its two abdomen side chains have
+    no marker on the model any more and it has no ``neck``, so eleven points fall out on
+    one side or the other -- the whole abdomen among them, which means such a run gets no
+    abdomen fit at all. Asserted by name so a future retarget fails this test rather than
+    passing it quietly.
     """
-    fly = Skeleton.from_config(Config.from_dict({"skeleton": {"name": name}}))
+    fly = Skeleton.from_config(Config.from_dict({"skeleton": ref}))
     plan = make_plan(fly, template, articulation, _measure(real_pts3d, fly, template))
     planned = {p for p in plan.joint_point if p}
     assert sorted(planned - set(fly.point_names)) == model_only

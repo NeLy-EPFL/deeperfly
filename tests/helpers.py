@@ -132,31 +132,40 @@ def sparse_config() -> Config:
     return Config.from_toml(SPARSE_CONFIG_PATH)
 
 
-def fly38_skeleton():
-    """The ``fly38`` preset, for tests defined against ITS point set.
+#: The historical DeepFly3D 38-point set, retired as a packaged skeleton by the 1.0
+#: release and kept here as TEST DATA (the file says why).
+DEEPFLY3D_SKELETON_PATH = Path(__file__).parent / "data" / "fly38_deepfly3d.toml"
 
-    The packaged NeuroMechFly articulation still carries the **abdomen** markers for
-    ``l_abdomen0..2`` / ``r_abdomen0..2`` -- fly38's two side chains -- so an abdomen
-    test has to be written against fly38 to have any markers at all. ``fly38b``'s
-    midline ``abdomen0..4`` have no marker on the model yet (see
-    ``data/default_config.toml``). The **head** is the other way round: its ``neck``
-    base marker exists only in fly38b, so head tests use :func:`fly38b_skeleton`.
+
+def fly38_skeleton():
+    """The packaged ``fly38`` preset, loaded by name.
+
+    The same skeleton :func:`deeperfly.skeleton.Skeleton.fly` returns, but reached through
+    the config layer -- so a test using this one is also asserting that the preset
+    reference resolves.
     """
     from deeperfly.skeleton import Skeleton
 
     return Skeleton.from_config(Config.from_dict({"skeleton": {"name": "fly38"}}))
 
 
-def fly38b_skeleton():
-    """The ``fly38b`` preset -- the skeleton the head chain is targeted at.
+def deepfly3d_skeleton():
+    """The retired DeepFly3D point set, for tests defined against ITS layout.
 
-    It is the one that labels ``neck``, the head chain's base marker, so it is the only
-    skeleton on which the head is fitted about its *measured* pivot rather than the one
-    the coxa registration extrapolates.
+    Two things in the suite are: the recorded IK baseline
+    (:data:`IK_BASELINE_PATH`, whose 38 columns have no names beside them and mean what
+    this order says) and the chirality QC tests, which build a deliberately-mirrored pose
+    as ``concatenate([left19, right19])`` -- expressible only on a skeleton whose two
+    halves are contiguous index blocks.
+
+    Loaded by PATH: it is no longer a packaged preset, and ``fly38`` now names a different
+    point set.
     """
     from deeperfly.skeleton import Skeleton
 
-    return Skeleton.from_config(Config.from_dict({"skeleton": {"name": "fly38b"}}))
+    return Skeleton.from_config(
+        Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}})
+    )
 
 
 def fly_masked(pts2d: np.ndarray) -> np.ndarray:

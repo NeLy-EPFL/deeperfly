@@ -59,11 +59,13 @@ _STANDOFF: float = 100.0
 def _abdomen_tip(names: list[str]) -> list[int]:
     """The most posterior abdomen point(s), for either skeleton generation.
 
-    ``fly38b`` has one midline chain (``abdomen0..4``) whose tip is the highest index;
-    ``fly38`` has two side chains (``l_abdomen0..2`` / ``r_abdomen0..2``) whose tip is
-    the highest index on *both* sides, whose centroid is back on the midline. Keying on
-    the trailing number rather than on position in the list covers both without the
-    caller having to say which skeleton it has.
+    ``fly38`` has one midline chain (``abdomen0..4``) whose tip is the highest index. A
+        two-side-chain abdomen (``l_abdomen0..2`` / ``r_abdomen0..2``, as the DeepFly3D set
+        had) has its tip at the highest index on *both* sides, whose centroid is back on the
+        midline. Keying on the trailing number rather than on position in the list covers
+        either without the caller having to say which it has, which is why the generality is
+        kept now that only one skeleton ships: it costs a dict and it is what lets a project
+        bring its own abdomen.
     """
     ranked: dict[int, list[int]] = {}
     for i, n in enumerate(names):
@@ -88,8 +90,8 @@ def _landmarks(skeleton: "Skeleton") -> dict[str, list[int]]:
     """The anatomical groups the body frame is built from, resolved BY NAME.
 
     Resolved by name rather than by index so a skeleton change cannot silently
-    re-point them -- ``fly38`` and ``fly38b`` differ in exactly this region (the
-    abdomen went from two side chains to one midline chain, and gained a neck).
+    re-point them -- this is exactly the region the DeepFly3D set and ``fly38`` differ in
+    (the abdomen went from two side chains to one midline chain, and gained a neck).
     """
     names = list(skeleton.point_names)
     groups = {

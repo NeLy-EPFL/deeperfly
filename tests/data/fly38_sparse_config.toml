@@ -39,8 +39,11 @@ filename = ["camera_LH.mp4", "camera_6.mp4"]
 # == Skeleton ================================================================
 # `fly38`: two mirrored 19-point halves, so the partner of point i is point i + 19. That
 # block layout is what makes a side-agnostic 19-channel detector expressible at all.
+# By PATH, not by name: this plan's 19 channels are one body half of the historical
+# DeepFly3D point set, which is no longer a packaged skeleton (`fly38` now names the
+# midline-abdomen one). The file sits beside this config.
 [skeleton]
-name = "fly38"
+file = "fly38_deepfly3d.toml"
 
 
 # == Views ===================================================================

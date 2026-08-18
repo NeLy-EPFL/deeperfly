@@ -1,8 +1,20 @@
-# fly38 -- the DeepFly3D 38-point skeleton: 19 per side (L = 0..18, R = 19..37),
-# three 5-point legs plus one antenna and three abdominal markers per side.
+# fly38 -- the 38 tracked points: six 5-point legs, two antennae, the neck, and a
+# 5-point dorsal-midline abdomen chain (the tergite stripes).
 #
-# Referenced from a run config as `[skeleton] name = "fly38"`. Any key written in
-# that table overrides the one here (wholesale, per key).
+# This file was called `fly38b` up to the 1.0 release, when it became the only packaged
+# skeleton and took the plain name. `name = "fly38b"` still resolves here, so a config or
+# an output directory written before the rename keeps working.
+#
+# It is NOT the historical DeepFly3D set, which also had 38 points and is what `fly38`
+# named before 1.0: that one carried two three-marker abdomen SIDE chains
+# (l_abdomen0..2 / r_abdomen0..2) and no neck. Same count, different points, different
+# order -- so a labels.h5 or results.h5 written against it has to be remapped by name and
+# never reinterpreted. `deeperfly project skeleton` is that migration; a run refuses
+# outright (deeperfly.pipeline.run) rather than reading one skeleton's names against the
+# other's columns.
+#
+# Referenced from a run config as `[skeleton] name = "fly38"`. Any key written in that
+# table overrides the one here (wholesale, per key).
 
 [skeleton]
 name = "fly38"
@@ -11,16 +23,18 @@ point_names = [
     "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
     "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
     "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
-    "l_antenna", "l_abdomen0", "l_abdomen1", "l_abdomen2",
+    "l_antenna",
     "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
     "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
     "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
-    "r_antenna", "r_abdomen0", "r_abdomen1", "r_abdomen2",
+    "r_antenna",
+    "neck",
+    "abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4",
 ]
 
-# Left/right mirror pairs. Written out rather than inferred from the name tokens so that
-# renaming a point cannot quietly re-pair the skeleton. Read by flip augmentation, the
-# `[pose2d.output_points]` mirror check, and the chirality QC.
+# The abdomen chain is ON the midline, so its points have no mirror partner and are
+# correctly absent here; so is `neck`. Mirroring a frame leaves each midline point mapped
+# to itself, which is what a midline point requires.
 symmetries = [
     ["lf_thorax_coxa",     "rf_thorax_coxa"],
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],
@@ -38,9 +52,6 @@ symmetries = [
     ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
     ["lh_claw",            "rh_claw"],
     ["l_antenna",          "r_antenna"],
-    ["l_abdomen0",         "r_abdomen0"],
-    ["l_abdomen1",         "r_abdomen1"],
-    ["l_abdomen2",         "r_abdomen2"],
 ]
 
 # Each limb's points in kinematic-chain order.
@@ -49,22 +60,26 @@ lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_ta
 lm_leg = ["lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw"]
 lh_leg = ["lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw"]
 l_antenna = ["l_antenna"]
-l_abdomen = ["l_abdomen0", "l_abdomen1", "l_abdomen2"]
 rf_leg = ["rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw"]
 rm_leg = ["rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw"]
 rh_leg = ["rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"]
 r_antenna = ["r_antenna"]
-r_abdomen = ["r_abdomen0", "r_abdomen1", "r_abdomen2"]
+neck = ["neck"]
+# One chain, anterior to posterior: stripe 1 (tergite A1+2) through stripe 5 (A6).
+abdomen = ["abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4"]
 
-# Left = blue / right = red, lightening front -> hind.
+# Left = blue / right = red, lightening front -> hind. The neck and the abdomen are no
+# longer side structures, so instead of sitting on one of the two side ramps they get a
+# third, green one of their own -- lightening the same way, anterior (neck) to posterior
+# (abdomen). Three hues, so which side a point belongs to reads at a glance.
 [skeleton.limb_palette]
 lf_leg = "#0f7399"
 lm_leg = "#1a8daf"
 lh_leg = "#75becb"
 l_antenna = "#0a4f6b"
-l_abdomen = "#a9dbe4"
 rf_leg = "#ba1e31"
 rm_leg = "#c9564f"
 rh_leg = "#d58579"
 r_antenna = "#8c1525"
-r_abdomen = "#e6b3a8"
+neck = "#15a315"
+abdomen = "#61e47b"

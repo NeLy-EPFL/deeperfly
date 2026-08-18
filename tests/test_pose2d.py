@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from helpers import output_points_table
+from helpers import DEEPFLY3D_SKELETON_PATH, output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d import detector, inference
@@ -211,15 +211,16 @@ def _model_list():
 
 
 def _fly38() -> dict:
-    """The ``fly38`` skeleton table, spelled out.
+    """The retired DeepFly3D skeleton table, spelled out.
 
-    These plans are the SPARSE 19-channel ones: a pathway detects one body side and a
-    mirrored twin supplies the other, which only makes sense against a skeleton whose 38
-    points are two mirrored 19-point halves. That is ``fly38`` specifically, not "whatever
-    the package ships" -- the packaged default is now the midline ``fly38b``, where points
-    19..37 are not the mirror of 0..18 and the plan's own mirror check says so.
+    These plans are the SPARSE, mirrored ones, which only mean anything against a
+    skeleton whose 38 points are two mirrored 19-point halves. That is the DeepFly3D set
+    specifically, not "whatever the package ships" -- the packaged ``fly38`` is the
+    midline one, where points ``i`` and ``i + 19`` are not each other's mirror image.
     """
-    return Config.from_dict({"skeleton": {"name": "fly38"}}).data["skeleton"]
+    return Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}}).data[
+        "skeleton"
+    ]
 
 
 def _mini_plan():

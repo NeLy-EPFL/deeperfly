@@ -126,10 +126,17 @@ def _norm(value):
 
 
 def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
-    """The skeleton parts that affect geometry (+ drawing, when ``cosmetic``)."""
+    """The skeleton parts that affect geometry (+ drawing, when ``cosmetic``).
+
+    The skeleton's ``name`` is deliberately **not** in here. A name is a label a human
+    chose; what decides every stage's answer is the ordered ``point_names`` and the
+    ``bones`` between them, and two skeletons agreeing on both compute the same result
+    whatever they are called. Including the name meant renaming a preset invalidated
+    every cached stage of every existing output tree -- a full re-detection bought by a
+    string -- while telling the cache nothing that the point names had not already said.
+    """
     skel = config.skeleton()
     digest = {
-        "name": skel.name,
         "point_names": list(skel.point_names),
         "bones": skel.bones.tolist(),
     }

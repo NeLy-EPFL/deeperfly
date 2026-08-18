@@ -4,7 +4,7 @@ Each of these replaces a block of the packaged config with a *reference* to some
 that already knows the answer, so each test's real job is to pin that the short form and
 the long form mean exactly the same thing:
 
-* ``[skeleton] name = "fly38b"``  -- a packaged skeleton instead of ~80 written lines.
+* ``[skeleton] name = "fly38"``  -- a packaged skeleton instead of ~80 written lines.
 * ``[[pose2d.models]]`` with only ``class``/``weights`` -- the rest from the class.
 * ``weights = "x.pth"`` -- found on ``$DEEPERFLY_MODELS`` instead of a machine's path.
 * ``grid = [[...]]``  -- a montage instead of hand-computed panel offsets.
@@ -39,10 +39,26 @@ def _skeleton_signature(s):
 
 
 def test_packaged_presets_are_discoverable():
-    assert set(skeleton_presets()) == {"fly38", "fly38b"}
+    assert set(skeleton_presets()) == {"fly38"}
 
 
-@pytest.mark.parametrize("preset", ["fly38", "fly38b"])
+def test_a_retired_preset_name_still_resolves():
+    """``fly38b`` was renamed to ``fly38``; the old spelling has to keep loading.
+
+    Every config and every output-directory snapshot written before the rename holds the
+    old reference, and a reference that no longer resolves is not a rename, it is a file
+    that cannot be opened. The alias resolves to the same table -- and the config's own
+    ``name`` still wins over the file's, which is why such a run goes on *calling* its
+    skeleton fly38b while computing exactly what it always did.
+    """
+    aliased = Config.from_dict({"skeleton": {"name": "fly38b"}}).skeleton()
+    current = Config.from_dict({"skeleton": {"name": "fly38"}}).skeleton()
+    assert list(aliased.point_names) == list(current.point_names)
+    assert aliased.bones.tolist() == current.bones.tolist()
+    assert aliased.name == "fly38b", "the config's own name is not overwritten"
+
+
+@pytest.mark.parametrize("preset", ["fly38"])
 def test_preset_matches_the_same_table_written_out(preset):
     """A named preset resolves to exactly the table it replaces -- the whole premise."""
     spelled = tomllib.loads(skeleton_presets()[preset].read_text())["skeleton"]
@@ -54,7 +70,7 @@ def test_preset_matches_the_same_table_written_out(preset):
 
 def test_preset_keys_are_overridden_wholesale():
     cfg = Config.from_dict(
-        {"skeleton": {"name": "fly38b", "limb_palette": {"neck": "#ffffff"}}}
+        {"skeleton": {"name": "fly38", "limb_palette": {"neck": "#ffffff"}}}
     )
     palette = cfg.skeleton().palette
     assert palette["neck"] == "#ffffff"
@@ -65,7 +81,7 @@ def test_preset_keys_are_overridden_wholesale():
 def test_a_self_contained_table_is_left_alone():
     """A config that spells out point_names keeps its meaning -- `name` stays free text."""
     cfg = Config.from_dict(
-        {"skeleton": {"name": "fly38b", "point_names": ["a", "b", "c"]}}
+        {"skeleton": {"name": "fly38", "point_names": ["a", "b", "c"]}}
     )
     assert cfg.skeleton().n_points == 3
 
@@ -81,7 +97,7 @@ def test_file_reference_resolves_next_to_its_config(tmp_path):
 
 
 def test_unknown_preset_names_the_ones_that_exist():
-    with pytest.raises(ValueError, match=r"not a packaged skeleton.*fly38b"):
+    with pytest.raises(ValueError, match=r"not a packaged skeleton.*fly38"):
         Config.from_dict({"skeleton": {"name": "fly99"}})
 
 
@@ -108,7 +124,7 @@ def test_the_resolved_points_reach_the_fingerprint():
     """
     from deeperfly.pipeline.fingerprint import _skeleton_digest
 
-    cfg = Config.from_dict({"skeleton": {"name": "fly38b"}})
+    cfg = Config.from_dict({"skeleton": {"name": "fly38"}})
     assert _skeleton_digest(cfg)["point_names"][:2] == [
         "lf_thorax_coxa",
         "lf_coxa_trochanter",
@@ -143,7 +159,7 @@ def _dense_config(model_table):
             "sources": [
                 {"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in CAMERA_NAMES
             ],
-            "skeleton": {"name": "fly38b"},
+            "skeleton": {"name": "fly38"},
             "cameras": {
                 v: {"azimuth_deg": az, "distance": 100.0, "focal_length_px": 1.0}
                 for v, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
@@ -257,7 +273,7 @@ def _grid_config(video, cameras=CAMERA_NAMES):
     return Config.from_dict(
         {
             "sources": [{"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in cameras],
-            "skeleton": {"name": "fly38b"},
+            "skeleton": {"name": "fly38"},
             "cameras": {
                 v: {
                     "azimuth_deg": azimuths.get(v, 0.0),
@@ -396,7 +412,7 @@ def test_a_grid_with_no_cell_size_says_so():
 
 def test_the_packaged_config_is_a_dense_plan_over_the_whole_skeleton():
     cfg = Config.default()
-    assert cfg.skeleton().name == "fly38b"
+    assert cfg.skeleton().name == "fly38"
     plan = cfg.detection_plan()
     # One pathway per camera: no mirrored twins, so no [pose2d.output_points] table.
     assert [p.name for p in plan.pathways] == plan.view_names
@@ -455,7 +471,7 @@ def _plan_config(pose2d: dict) -> Config:
     return Config.from_dict(
         {
             "sources": [{"name": "vid_a"}, {"name": "vid_b"}],
-            "skeleton": {"name": "fly38b"},
+            "skeleton": {"name": "fly38"},
             "cameras": {
                 "a": {"azimuth_deg": 0, "focal_length_px": 1.0, "distance": 1.0},
                 "b": {"azimuth_deg": 90, "focal_length_px": 1.0, "distance": 1.0},
@@ -552,7 +568,7 @@ def test_every_config_is_dense_over_the_whole_skeleton(path):
     assert [p.name for p in plan.pathways] == plan.view_names
     assert "output_points" not in cfg.data["pose2d"]
     assert plan.visibility_mask().all()
-    assert cfg.skeleton().name == "fly38b"
+    assert cfg.skeleton().name == "fly38"
 
 
 @pytest.mark.parametrize(

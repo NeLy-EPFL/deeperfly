@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import output_points_table
+from helpers import DEEPFLY3D_SKELETON_PATH, output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d.pathways import (
@@ -16,15 +16,17 @@ from deeperfly.preprocessing import Fliplr, FrameTransform, Resize
 
 
 def _fly38_table() -> dict:
-    """The ``fly38`` skeleton table.
+    """The retired DeepFly3D skeleton table.
 
     These plans are the SPARSE, mirrored ones -- a pathway detects one body side and its
     twin supplies the other -- which only means anything against a skeleton whose 38
-    points are two mirrored 19-point halves. That is fly38, not "whatever ships": the
-    packaged default is the midline fly38b, where a mirrored channel landing on point
+    points are two mirrored 19-point halves. That is the DeepFly3D set, not "whatever
+    ships": on the packaged midline ``fly38`` a mirrored channel landing on point
     ``i + 19`` is a genuine left/right error and the mirror check correctly says so.
     """
-    return Config.from_dict({"skeleton": {"name": "fly38"}}).data["skeleton"]
+    return Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}}).data[
+        "skeleton"
+    ]
 
 
 def _config(pathways, output_points, cameras=None, models=None):

@@ -508,7 +508,7 @@ class Project:
         root: str | Path,
         *,
         name: str | None = None,
-        skeleton: str = "fly38b",
+        skeleton: str = "fly38",
         description: str = "",
         exist_ok: bool = False,
     ) -> Project:
@@ -1461,7 +1461,7 @@ def _skeleton_text(skeleton: str) -> str:
     parsed = tomllib.loads(text).get("skeleton")
     if parsed is None:
         raise ValueError(f"{path} has no [skeleton] table")
-    # A config may only NAME its skeleton (`[skeleton] name = "fly38b"`). Seeding a
+    # A config may only NAME its skeleton (`[skeleton] name = "fly38"`). Seeding a
     # project from one has to write the skeleton out, not copy the reference: a project
     # is a long-lived record of what it tracks, and a reference would let a package
     # upgrade change, retroactively, what its stored labels mean.
