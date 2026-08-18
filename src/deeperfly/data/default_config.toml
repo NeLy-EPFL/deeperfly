@@ -235,7 +235,21 @@ inflate_threshold = 15.0
 
 # == Inverse kinematics ======================================================
 # Every knob is at its default, so no table is written (`deeperfly config show
-# inverse_kinematics`). Two things about the packaged model are worth knowing:
+# inverse_kinematics`). Three things about the packaged model are worth knowing:
+#
+# The leg segment lengths are MEASURED per leg, which fits this fly rather than a generic
+# one but measures each side on its own. `symmetric_segments = true` gives each mirror
+# pair the mean of the two -- one animal rather than two half-animals. It constrains the
+# ANIMAL only: the two sides' joint angles stay independent, because a leg's left/right
+# asymmetry at any instant is the behavior. It is OFF by default because it costs, and
+# measurably: all five points of a leg are tracked, so the chain is over-determined and
+# the per-leg lengths already ARE the best fit to the data. On the 8-view example
+# recording the femurs measure 4-6% apart on all three pairs (always left-longer, a
+# stable offset), and sharing them made every score worse -- 3D residual +22%, 2D
+# reprojection +0.14 px in 7 of 8 views, and the left/right gap in each DOF's median
+# angle 4.7 -> 6.4 deg, which is the opposite of what sharing was supposed to fix. Turn
+# it on when you want one animal (comparing angles across sides, driving a simulation),
+# knowing what it costs -- and see docs/reference/configuration.md#ik-symmetric-segments.
 #
 # Both chains are targeted at THIS skeleton, so a body plan covers all 38 points. The
 # abdomen's five markers are the dorsal-midline tergite stripes, placed on the model at

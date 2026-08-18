@@ -77,6 +77,7 @@ class NmfLive:
         neutral_weight: float | None = None,
         damping: float | None = None,
         fixed_body: bool | None = None,
+        symmetric_segments: bool | None = None,
     ) -> None:
         from ..config import InverseKinematicsParams
 
@@ -84,7 +85,9 @@ class NmfLive:
         defaults = InverseKinematicsParams()
         self.skeleton = result.skeleton
         self.result = result
-        self.plan = self._load_plan(result, template, articulation, fixed_body)
+        self.plan = self._load_plan(
+            result, template, articulation, fixed_body, symmetric_segments
+        )
         self.kinematics = self.plan.kinematics()
         self.angle_names = list(self.plan.angle_names)
         self.chain_scales = dict(self.plan.chain_scales)
@@ -106,7 +109,9 @@ class NmfLive:
 
     # -- setup ---------------------------------------------------------------
 
-    def _load_plan(self, result, template, articulation, fixed_body) -> BodyPlan:
+    def _load_plan(
+        self, result, template, articulation, fixed_body, symmetric_segments=None
+    ) -> BodyPlan:
         """The pipeline's stored plan, else one rebuilt from the config and the pose."""
         from ..config import InverseKinematicsParams
         from ..inverse_kinematics import _plan_for
@@ -124,14 +129,18 @@ class NmfLive:
         pts3d = np.asarray(result.pts3d, dtype=float)
         tpl = template or KinematicTemplate.load("neuromechfly")
         art = articulation if articulation is not None else load_articulation()
-        fixed = (
-            InverseKinematicsParams().fixed_body if fixed_body is None else fixed_body
+        defaults = InverseKinematicsParams()
+        fixed = defaults.fixed_body if fixed_body is None else fixed_body
+        symmetric = (
+            defaults.symmetric_segments
+            if symmetric_segments is None
+            else symmetric_segments
         )
         return _plan_for(
             pts3d,
             result.skeleton,
             tpl,
-            body_alignment(pts3d, result.skeleton, tpl),
+            body_alignment(pts3d, result.skeleton, tpl, symmetric_segments=symmetric),
             art,
             fixed,
         )

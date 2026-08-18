@@ -10,7 +10,9 @@ estimates the rigid body frame and the per-leg geometry that bridge the two:
   not move, so these are constant up to noise);
 - each leg's coxa origin (the median thorax-coxa world position);
 - each leg's *measured* segment lengths (median bone lengths), so the fitted chain
-  matches the real fly's proportions and reprojects tightly.
+  matches the real fly's proportions and reprojects tightly -- optionally shared
+  between each leg and its mirror image (:func:`symmetrize_seglens`), because a fly's
+  left and right femurs are the same bone measured twice.
 
 Per frame the solver transforms a leg's measured joints into the leg-local frame
 (:func:`to_local`); the fitted model joints are mapped back to world
@@ -19,6 +21,7 @@ Per frame the solver transforms a leg's measured joints into the leg-local frame
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -26,7 +29,21 @@ import numpy as np
 from ..skeleton import Skeleton
 from .template import KinematicTemplate
 
-__all__ = ["Alignment", "body_alignment", "to_local", "to_world"]
+__all__ = [
+    "Alignment",
+    "body_alignment",
+    "mirror_leg_pairs",
+    "symmetrize_seglens",
+    "to_local",
+    "to_world",
+]
+
+log = logging.getLogger("deeperfly")
+
+#: A measured length at or below this is "never observed" -- the same convention
+#: :func:`~deeperfly.inverse_kinematics.bodyplan._model_seglens` reads it by, where such a
+#: segment falls back to the model's own bone.
+_EPS = 1e-9
 
 
 @dataclass(frozen=True)
@@ -62,7 +79,11 @@ def _nanmedian_point(pts: np.ndarray) -> np.ndarray:
 
 
 def body_alignment(
-    pts3d: np.ndarray, skeleton: Skeleton, template: KinematicTemplate
+    pts3d: np.ndarray,
+    skeleton: Skeleton,
+    template: KinematicTemplate,
+    *,
+    symmetric_segments: bool = False,
 ) -> Alignment:
     """Estimate the body frame + per-leg origins and segment lengths from the pose.
 
@@ -72,9 +93,14 @@ def body_alignment(
         The reconstructed 3D pose, shape ``(T, P, 3)`` in world coordinates
         (NaN for un-triangulated points).
     skeleton
-        The skeleton (resolves point names to columns of ``pts3d``).
+        The skeleton (resolves point names to columns of ``pts3d``, and declares which
+        points mirror each other).
     template
         The kinematic template (its legs name the thorax-coxa / joint points).
+    symmetric_segments
+        Give each leg and its mirror image the same segment lengths
+        (:func:`symmetrize_seglens`). Off by default, which measures the two sides
+        independently.
 
     Returns
     -------
@@ -99,6 +125,9 @@ def body_alignment(
             continue
         leg_origin[leg.name] = origins[leg.name]
         seglens[leg.name] = _measured_seglens(pts3d, index, leg)
+
+    if symmetric_segments:
+        seglens = symmetrize_seglens(seglens, template, skeleton)
 
     head_origin = _head_origin(origins)
     return Alignment(
@@ -160,6 +189,140 @@ def _measured_seglens(pts3d: np.ndarray, index: dict, leg) -> np.ndarray:
         else:
             lengths.append(0.0)
     return np.asarray(lengths, dtype=float)
+
+
+def mirror_leg_pairs(
+    template: KinematicTemplate, skeleton: Skeleton
+) -> tuple[tuple[str, str], ...]:
+    """The template's legs paired with their mirror images, per the skeleton.
+
+    Two legs pair when *every* joint of one mirrors the joint at the same depth of the
+    other, by the skeleton's own ``symmetries`` -- the same declared relation the
+    training mirror augmentation and the chirality QC read
+    (:mod:`deeperfly.skeleton`). Derived rather than matched on the ``l``/``r`` name
+    prefix on purpose: the prefix is a convention of *this* template and this skeleton,
+    while the symmetry pairs are the config's explicit statement of which point is which
+    point's mirror image, and a skeleton that declares none is stating that its subject
+    is not bilaterally symmetric.
+
+    Returns each pair once, in template leg order, with the ``symmetries``-ordered
+    partner second. A leg whose partner is not in the template (``legs = ["rf", "lf",
+    "rm"]``) is absent, as is any leg in a skeleton that declares no pairs.
+    """
+    by_name = {leg.name: leg for leg in template.legs}
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for leg in template.legs:
+        if leg.name in seen:
+            continue
+        partners = {
+            skeleton.partner(point) if point in skeleton.point_names else None
+            for point in leg.point_names
+        }
+        if None in partners:  # some joint of this leg has no mirror point
+            continue
+        names = {skeleton.point_names[i] for i in partners}  # type: ignore[index]
+        match = next(
+            (
+                other.name
+                for other in template.legs
+                if other.name != leg.name and set(other.point_names) == names
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        # Same depth as well as the same set: a chain paired point-for-point in the
+        # wrong ORDER would share lengths between different bones.
+        if any(
+            skeleton.partner(a) != skeleton.point_names.index(b)
+            for a, b in zip(leg.point_names, by_name[match].point_names)
+        ):
+            continue
+        out.append((leg.name, match))
+        seen |= {leg.name, match}
+    return tuple(out)
+
+
+def symmetrize_seglens(
+    seglens: dict[str, np.ndarray],
+    template: KinematicTemplate,
+    skeleton: Skeleton,
+) -> dict[str, np.ndarray]:
+    """Give each leg and its mirror image one shared length per segment.
+
+    A fly's left and right femurs are the same bone measured twice, so at most one of the
+    two measured lengths can be anatomy. Averaging the two medians is what does not
+    privilege a side (the same argument :func:`~deeperfly.postprocess.symmetrize_3d`
+    makes for the body-fixed points, and the reason this is a *mean* rather than a pooled
+    median over both sides' frames: pooling weights the side with more triangulated
+    frames).
+
+    A segment measured on only one side adopts that side's length rather than averaging
+    a zero in -- which is strictly better than what happens without symmetry, where an
+    unmeasured segment falls back to the model's own generic bone
+    (:func:`~deeperfly.inverse_kinematics.bodyplan._model_seglens`). A segment measured
+    on neither side is left at ``0.0`` for that fallback to pick up.
+
+    This is a constraint on the *fly*, not on its pose: it fixes what the two legs are,
+    and says nothing about what they are doing. Nothing here couples the two sides'
+    joint angles, which is right -- a leg's left/right asymmetry at any instant IS the
+    behavior.
+
+    **It is a prior, and it costs.** Every point of a leg chain is tracked, so the chain
+    is over-determined and the per-leg measured lengths already *are* the best fit to the
+    keypoints; a shared length can only move off them. On the eight-view example
+    recording, whose femurs measure 4-6% apart on all three pairs, sharing them raised
+    the 3D residual 22% and the reprojection 0.14 px in 7 of 8 views -- and *raised* the
+    left/right gap in each DOF's median angle from 4.7 to 6.4 degrees, which is the
+    opposite of the hypothesis that a length error the solve cannot express as length
+    comes out as angle. Hence off by default, and worth turning on for what it makes true
+    of the model (one animal, comparable across sides) rather than for accuracy.
+
+    Returns a new mapping; ``seglens`` is not modified.
+    """
+    pairs = mirror_leg_pairs(template, skeleton)
+    out = {name: np.array(v, dtype=float) for name, v in seglens.items()}
+    if not pairs:
+        log.warning(
+            "inverse_kinematics: symmetric_segments is on, but no leg of template %r "
+            "pairs with a mirror image under skeleton %r's symmetries, so the segment "
+            "lengths are unchanged",
+            template.name,
+            skeleton.name,
+        )
+        return out
+
+    report: list[str] = []
+    for left, right in pairs:
+        la, lb = out.get(left), out.get(right)
+        if la is None or lb is None:  # a leg with no observed coxa has no lengths
+            continue
+        gaps: list[float] = []
+        for j in range(1, min(la.size, lb.size)):
+            a, b = float(la[j]), float(lb[j])
+            ok_a = np.isfinite(a) and a > _EPS
+            ok_b = np.isfinite(b) and b > _EPS
+            if ok_a and ok_b:
+                shared = 0.5 * (a + b)
+                gaps.append(abs(a - b) / shared)
+            elif ok_a or ok_b:
+                shared = a if ok_a else b
+            else:
+                continue  # never measured on either side: leave the model fallback
+            la[j] = lb[j] = shared
+        if gaps:
+            report.append(f"{left}|{right} {max(gaps):.1%} worst")
+    # The gap the sides HAD is the only check on the premise: two sides already
+    # agreeing to within the noise had nothing to share, and a large gap says how much
+    # of the fit's residual was the two triplets disagreeing about one bone.
+    log.info(
+        "inverse kinematics: segment lengths shared across %d mirror leg pair(s); "
+        "the sides had differed by %s",
+        len(pairs),
+        ", ".join(report) if report else "(nothing measured on both sides)",
+    )
+    return out
 
 
 def _head_origin(origins: dict) -> np.ndarray | None:

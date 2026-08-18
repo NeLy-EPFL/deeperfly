@@ -412,6 +412,8 @@ def stage_fingerprint(
                 "position_tolerance": p.position_tolerance,
                 "angle_tolerance": p.angle_tolerance,
                 "fixed_body": p.fixed_body,
+                # Changes the plan's segment lengths, hence the whole fit.
+                "symmetric_segments": p.symmetric_segments,
                 "weigh_by_confidence": p.weigh_by_confidence,
                 # Segmentation changes the answer (each segment restarts from neutral),
                 # so it belongs here even though it reads like a performance knob.

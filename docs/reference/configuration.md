@@ -842,10 +842,82 @@ scale the camera rig happens to be gauged at.
 | `position_tolerance` | float | `0.001` | Early stop: largest root-position step, in model units. Inert under `fixed_body` (the root does not move). |
 | `angle_tolerance` | float | `0.001` | Early stop: largest joint-angle step, in radians. |
 | `fixed_body` | bool | `true` | Fix the body in the model frame — right for a **tethered** fly, whose body does not move: the leg roots sit at their measured medians and only the joint angles vary. Set `false` for a freely-moving preparation, to give QuickIK a 6-DOF root to fit per frame. |
+| `symmetric_segments` | bool | `false` | Give each leg and its mirror image **one shared length per segment** (the mean of the two sides' measurements) instead of measuring the two sides independently — see below. |
 | `weigh_by_confidence` | bool | `false` | Weigh each observation by the detector's confidence instead of treating every observed keypoint equally. |
 | `parallel` | bool | `false` | Solve in overlapping segments across worker threads. Off by default: each segment restarts from the neutral pose and only warm-starts within itself, so the angle traces can step at a seam — a poor trade for a joint-angle time series unless the recording is long enough to need the speed. |
 | `segment_len` | int | `200` | Frames per segment (includes the overlap); `parallel` only. |
 | `overlap_len` | int | `10` | Frames shared with the next segment; `parallel` only. |
+
+### Left/right symmetry — `symmetric_segments` { #ik-symmetric-segments }
+
+The leg segment lengths are **measured from the data**: each is the median, over the
+recording, of the distance between two triangulated joints. That is right in principle —
+it fits *this* fly rather than the generic model — but it measures each leg on its own,
+and a fly's left and right femurs are the same bone measured twice. `symmetric_segments
+= true` gives each mirror pair the **mean of the two measurements**, which is the
+combination that does not privilege a side (the same argument
+[`{ op = "symmetrize" }`](#op-symmetrize) makes for the body-fixed points, and the reason
+it is a mean rather than a median pooled over both sides' frames: pooling would weight
+the side with more triangulated frames). A segment measured on **one** side only adopts
+its mirror's length — strictly better than the alternative, which is falling back to the
+model's own generic bone. One measured on neither keeps that fallback.
+
+Two things it deliberately does **not** do:
+
+- **It does not couple the two sides' joint angles.** The constraint is on the *animal*,
+  not on its pose: a leg's left/right asymmetry at any instant *is* the behavior.
+- **It does not move the coxae.** Where a leg is attached is the body registration's
+  business, and imposing symmetry on the *pose* is
+  [`{ op = "symmetrize" }`](#op-symmetrize)'s — which is what the example configs use it
+  for, on the thorax-coxa joints and never on the legs.
+
+!!! note "It reads the skeleton's declared `symmetries`"
+
+    Which leg mirrors which is derived from [`[skeleton].symmetries`](#skeleton) — the
+    same declared relation the training mirror augmentation and the chirality QC read —
+    and not from the `l`/`r` name prefix. A skeleton that declares no pairs is stating
+    that its subject is not bilaterally symmetric, so nothing is shared and the stage
+    says so in a warning rather than silently doing nothing.
+
+!!! warning "It is a prior, and it costs accuracy against your own data"
+
+    Off by default, and the reason is measured rather than conservative. On the eight-view
+    example recording the two sides genuinely disagree — the femurs come out **4–6% apart
+    on all three pairs, always with the left longer**, as a stable offset whose 10th–90th
+    percentile bands do not overlap:
+
+    | pair | measured left | measured right | gap |
+    | --- | --- | --- | --- |
+    | `lf`/`rf` femur | 0.616 | 0.583 | 5.5% |
+    | `lm`/`rm` femur | 0.741 | 0.704 | 5.2% |
+    | `lh`/`rh` femur | 0.730 | 0.701 | 4.1% |
+
+    But sharing them made **every** measurable score worse on that recording:
+
+    | score | free lengths | shared | |
+    | --- | --- | --- | --- |
+    | 3D residual, model vs its target pose (median) | 0.0120 | 0.0146 | +22% |
+    | 2D reprojection vs the `pose2d` detections (median px) | 4.45 | 4.59 | +0.14 px, worse in 7 of 8 views |
+    | left/right gap in each DOF's median angle (mean over 24) | 4.7° | 6.4° | +1.7° |
+
+    The third row is the one that settles it. The hope was that a length error the solve
+    cannot express as length comes out as *angle*, so sharing the bones should make the
+    two sides' angle statistics more comparable. Measured over 2007 frames it does the
+    opposite. All five points of a leg are tracked, so the chain is over-determined and
+    the per-leg measured lengths already *are* the best fit to the data; any shared length
+    can only move the model away from it.
+
+    Nor is the gap a per-side rig artifact, which would have been the case for imposing
+    symmetry regardless. Within-side body-fixed distances are symmetric to under 2%
+    (`neck`→front coxa 0.996, `neck`→antenna 0.990, front→mid coxa 1.005), as are the
+    coxa and tibia segments (0.98–1.01) — it is the **femur specifically**, on all three
+    pairs. A per-side scale error would have inflated all of them together.
+
+    So turn it on when you have a reason to want one animal rather than two half-animals —
+    comparing joint angles between sides, driving a simulation, or reporting a
+    morphology — and know that you are buying that with a little accuracy against your own
+    keypoints. Note that this cuts the other way too: a 5% femur difference that is *not*
+    anatomy is a detector bias you are otherwise reporting as biology.
 
 `constant_points` names skeleton points whose 3D position is physically fixed over the
 recording; each is replaced by its temporal median before the fit, so it stops jittering

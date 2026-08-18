@@ -29,7 +29,13 @@ from helpers import (
 )
 from helpers import synth_leg_pose as _synth_pose
 
-from deeperfly.inverse_kinematics.align import body_alignment, to_local, to_world
+from deeperfly.inverse_kinematics.align import (
+    body_alignment,
+    mirror_leg_pairs,
+    symmetrize_seglens,
+    to_local,
+    to_world,
+)
 from deeperfly.inverse_kinematics.template import KinematicTemplate
 from deeperfly.skeleton import Skeleton
 
@@ -68,6 +74,154 @@ def test_measured_seglens_recovered(template, fly, rng):
     pts3d, _ = _synth_pose(template, fly, rng)
     align = body_alignment(pts3d, fly, template)
     np.testing.assert_allclose(align.seglens["rf"], _SEGLENS, atol=1e-6)
+
+
+# -- left/right segment symmetry ---------------------------------------------
+
+
+def _asymmetric_pose(template, fly, rng, *, stretch=1.10):
+    """A synthetic pose whose LEFT legs are ``stretch`` times longer than its right.
+
+    The bones are the ones a real recording gets wrong: both sides are the same animal,
+    but each is triangulated from its own camera triplet, so one side comes back
+    systematically longer. Stretching about each leg's own coxa leaves the coxae -- and
+    therefore the body frame and the registration -- exactly where the symmetric pose
+    put them, so the only thing under test is the lengths.
+    """
+    pts3d, truth = _synth_pose(template, fly, rng)
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    for leg in template.legs:
+        if leg.side != "l":
+            continue
+        coxa = pts3d[:, index[leg.point_names[0]]]
+        for name in leg.point_names[1:]:
+            col = index[name]
+            pts3d[:, col] = coxa + stretch * (pts3d[:, col] - coxa)
+    return pts3d, truth
+
+
+def test_mirror_leg_pairs_come_from_the_skeletons_declared_symmetries(template, fly):
+    """The pairing is derived from ``[skeleton].symmetries``, not from the leg names."""
+    assert set(map(frozenset, mirror_leg_pairs(template, fly))) == {
+        frozenset(("lf", "rf")),
+        frozenset(("lm", "rm")),
+        frozenset(("lh", "rh")),
+    }
+
+
+def test_a_leg_whose_partner_is_not_fitted_has_no_pair(fly):
+    """``legs = [...]`` may name one side of a pair; that leg simply keeps its own bones."""
+    half = KinematicTemplate.load("neuromechfly", legs=["rf", "lf", "rm"])
+    assert set(map(frozenset, mirror_leg_pairs(half, fly))) == {frozenset(("lf", "rf"))}
+
+
+def test_a_skeleton_declaring_no_symmetries_symmetrizes_nothing(
+    template, fly, rng, caplog
+):
+    """Declaring no pairs means "this subject is not bilaterally symmetric" -- obey it.
+
+    The same convention :meth:`Skeleton.flip_perm` and the chirality QC follow. Silence
+    would be wrong here: the config asked for symmetric segments and did not get them.
+    """
+    from dataclasses import replace
+
+    asymmetric = replace(fly, symmetries=np.empty((0, 2), np.int64))
+    pts3d, _ = _asymmetric_pose(template, asymmetric, rng)
+    assert mirror_leg_pairs(template, asymmetric) == ()
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        align = body_alignment(pts3d, asymmetric, template, symmetric_segments=True)
+    assert "no leg" in caplog.text and "symmetric_segments" in caplog.text
+    assert align.seglens["lf"][2] > align.seglens["rf"][2]
+
+
+def test_symmetric_segments_gives_a_mirror_pair_one_shared_bone(template, fly, rng):
+    """Both sides end on the mean of the two measurements -- neither side's own value."""
+    pts3d, _ = _asymmetric_pose(template, fly, rng, stretch=1.10)
+    measured = body_alignment(pts3d, fly, template).seglens
+    shared = body_alignment(pts3d, fly, template, symmetric_segments=True).seglens
+
+    for left, right in (("lf", "rf"), ("lm", "rm"), ("lh", "rh")):
+        np.testing.assert_allclose(shared[left], shared[right], atol=1e-12)
+        np.testing.assert_allclose(
+            shared[left][1:],
+            0.5 * (measured[left][1:] + measured[right][1:]),
+            atol=1e-12,
+        )
+        # The mean of a 10%-stretched side and an unstretched one, so strictly between.
+        assert (shared[left][1:] < measured[left][1:]).all()
+        assert (shared[left][1:] > measured[right][1:]).all()
+
+
+def test_symmetry_does_not_privilege_a_side_and_leaves_the_input_alone(
+    template, fly, rng
+):
+    """Averaging into one side would import that side's error into both.
+
+    The same argument :func:`~deeperfly.postprocess.symmetrize_3d` makes for the pose.
+    Swapping which side is stretched must give the identical answer.
+    """
+    left_long, _ = _asymmetric_pose(template, fly, rng, stretch=1.10)
+    measured = body_alignment(left_long, fly, template).seglens
+    before = {k: v.copy() for k, v in measured.items()}
+    a = symmetrize_seglens(measured, template, fly)
+    swapped = {
+        "lf": measured["rf"],
+        "rf": measured["lf"],
+        "lm": measured["rm"],
+        "rm": measured["lm"],
+        "lh": measured["rh"],
+        "rh": measured["lh"],
+    }
+    b = symmetrize_seglens(swapped, template, fly)
+    for leg in ("lf", "rf", "lm", "rm", "lh", "rh"):
+        np.testing.assert_allclose(a[leg], b[leg], atol=1e-12)
+    for leg, arr in before.items():  # the caller's mapping is not modified
+        np.testing.assert_array_equal(measured[leg], arr)
+
+
+def test_a_segment_seen_on_one_side_only_borrows_its_mirror(template, fly, rng):
+    """Better than the alternative: an unmeasured bone otherwise gets the MODEL's own.
+
+    Without symmetry a never-triangulated segment measures 0 and
+    ``_model_seglens`` substitutes the generic model bone. With it, the same segment on
+    the other side of the same animal is available and is the better answer -- so the
+    missing side adopts it rather than averaging a zero in.
+    """
+    pts3d, _ = _synth_pose(template, fly, rng)
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    rf = next(leg for leg in template.legs if leg.name == "rf")
+    pts3d[:, index[rf.point_names[3]]] = np.nan  # rf tibia-tarsus never triangulated
+
+    measured = body_alignment(pts3d, fly, template).seglens
+    assert measured["rf"][3] == 0.0 and measured["rf"][4] == 0.0  # both its bones gone
+    shared = body_alignment(pts3d, fly, template, symmetric_segments=True).seglens
+    np.testing.assert_allclose(shared["rf"][3], measured["lf"][3], atol=1e-12)
+    np.testing.assert_allclose(shared["rf"][4], measured["lf"][4], atol=1e-12)
+    # ...and the observed side keeps its own measurement rather than being halved.
+    np.testing.assert_allclose(shared["lf"], measured["lf"], atol=1e-12)
+
+
+def test_a_segment_seen_on_neither_side_is_left_for_the_model_fallback(
+    template, fly, rng
+):
+    """0.0 is the "never observed" sentinel ``_model_seglens`` reads; keep it."""
+    pts3d, _ = _synth_pose(template, fly, rng)
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    for leg in ("lf", "rf"):
+        chain = next(x for x in template.legs if x.name == leg)
+        pts3d[:, index[chain.point_names[4]]] = np.nan  # both claws gone
+
+    shared = body_alignment(pts3d, fly, template, symmetric_segments=True).seglens
+    assert shared["lf"][4] == 0.0 and shared["rf"][4] == 0.0
+
+
+def test_symmetric_segments_reports_the_gap_it_closed(template, fly, rng, caplog):
+    """The premise-check: sides already agreeing had nothing to share."""
+    pts3d, _ = _asymmetric_pose(template, fly, rng, stretch=1.10)
+    with caplog.at_level("INFO", logger="deeperfly"):
+        body_alignment(pts3d, fly, template, symmetric_segments=True)
+    assert "3 mirror leg pair(s)" in caplog.text
+    assert "9.5%" in caplog.text  # |1.10 - 1| / mean(1.10, 1) worst per pair
 
 
 # -- the IK stage's own constant-point pin (superseded by [postprocess]) ------

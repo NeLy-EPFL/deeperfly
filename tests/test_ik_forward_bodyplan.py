@@ -63,7 +63,7 @@ def real_pts3d() -> np.ndarray:
         return z["real_pts3d"]
 
 
-def _measure(real_pts3d, fly, template):
+def _measure(real_pts3d, fly, template, *, symmetric_segments=False):
     """``(alignment, body_sim)`` measured from the real pose, as the stage does.
 
     ``real_pts3d`` is stored in ``fly38`` order, so it is re-gathered **by name** for
@@ -80,7 +80,7 @@ def _measure(real_pts3d, fly, template):
         ],
         axis=1,
     )
-    align = body_alignment(pts3d, fly, template)
+    align = body_alignment(pts3d, fly, template, symmetric_segments=symmetric_segments)
     index = {n: i for i, n in enumerate(fly.point_names)}
     coxae = np.stack([pts3d[:, index[p]] for p in articulation.coxa_points], axis=1)
     with np.errstate(all="ignore"):
@@ -713,3 +713,42 @@ def test_the_overlay_mesh_and_the_plan_agree_on_the_shifted_pivot(
         assert np.linalg.norm((a0 @ neutral + b0) - want) == pytest.approx(
             float(np.linalg.norm(shift)), abs=1e-12
         )
+
+
+def test_symmetric_segments_puts_the_same_bones_on_both_sides_of_the_plan(
+    real_pts3d, fly, template, articulation
+):
+    """The end of the chain: what the option changes is the plan QuickIK is handed.
+
+    On a real recording the two sides' *measured* femurs differ by several percent --
+    each side is triangulated from its own camera triplet, and the plan carries whatever
+    it measured straight into the link offsets. Symmetrized, the mirror legs' links are
+    bit-identical, so the fitted model is one animal; the coxa offsets are untouched,
+    because where a leg is attached is the body registration's business (and
+    ``[postprocess] symmetrize``'s), not this option's.
+    """
+    plain = make_plan(fly, template, articulation, _measure(real_pts3d, fly, template))
+    shared = make_plan(
+        fly,
+        template,
+        articulation,
+        _measure(real_pts3d, fly, template, symmetric_segments=True),
+    )
+
+    def links(plan, leg):
+        """``{point: offset}`` for one leg -- the root's coxa place, then its bones."""
+        chain = next(x for x in template.legs if x.name == leg)
+        by_name = {
+            j["name"]: np.asarray(j["offset_pos"], float) for j in plan.plan["joints"]
+        }
+        return [by_name[p] for p in chain.point_names]
+
+    gaps = []
+    for left, right in (("lf", "rf"), ("lm", "rm"), ("lh", "rh")):
+        for a, b in zip(links(shared, left)[1:], links(shared, right)[1:]):
+            np.testing.assert_array_equal(a, b)  # exactly, not approximately
+        for a, b in zip(links(plain, left)[1:], links(plain, right)[1:]):
+            gaps.append(abs(np.linalg.norm(a) - np.linalg.norm(b)) / np.linalg.norm(a))
+        # the coxa (offset 0) is a place, not a bone: this option does not move it
+        np.testing.assert_array_equal(links(shared, left)[0], links(plain, left)[0])
+    assert max(gaps) > 0.02, "the fixture pose is already symmetric; nothing under test"

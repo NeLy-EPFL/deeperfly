@@ -771,6 +771,7 @@ def stage_inverse_kinematics(
         position_tolerance=p.position_tolerance,
         angle_tolerance=p.angle_tolerance,
         fixed_body=p.fixed_body,
+        symmetric_segments=p.symmetric_segments,
         parallel=p.parallel,
         segment_len=p.segment_len,
         overlap_len=p.overlap_len,

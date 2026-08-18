@@ -140,6 +140,7 @@ def solve_inverse_kinematics(
     position_tolerance: float = _D.position_tolerance,
     angle_tolerance: float = _D.angle_tolerance,
     fixed_body: bool = _D.fixed_body,
+    symmetric_segments: bool = _D.symmetric_segments,
     parallel: bool = _D.parallel,
     segment_len: int = _D.segment_len,
     overlap_len: int = _D.overlap_len,
@@ -168,6 +169,11 @@ def solve_inverse_kinematics(
     fixed_body
         Fix the body in the model frame (a tethered fly) instead of fitting a 6-DOF
         root per frame.
+    symmetric_segments
+        Give each leg and its mirror image the same measured segment lengths
+        (:func:`~deeperfly.inverse_kinematics.align.symmetrize_seglens`), so the fitted
+        model is one animal rather than two half-animals. A constraint on the *fly*,
+        not on its pose: the two sides' joint angles stay independent.
     parallel, segment_len, overlap_len
         Solve in overlapping segments across worker threads. Off by default: segments
         restart from the neutral pose, so the angle traces can step at a seam.
@@ -194,7 +200,9 @@ def solve_inverse_kinematics(
     pts3d = np.asarray(pts3d, dtype=float)
     n_frames, n_points = pts3d.shape[0], pts3d.shape[1]
 
-    alignment = body_alignment(pts3d, skeleton, template)
+    alignment = body_alignment(
+        pts3d, skeleton, template, symmetric_segments=symmetric_segments
+    )
     plan = _plan_for(pts3d, skeleton, template, alignment, articulation, fixed_body)
 
     positions, obs_weights = observations(pts3d, plan, weights)

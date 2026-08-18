@@ -753,3 +753,73 @@ def test_a_missing_detection_does_not_lower_the_bar(template, fly, articulation)
     col = {n: i for i, n in enumerate(res.angle_names)}
     rh = next(leg for leg in template.legs if leg.name == "rh")
     assert np.isnan(res.angles[:, [col[n] for n in rh.dof_names]]).all()
+
+
+def test_symmetric_segments_constrains_the_animal_not_its_pose(
+    template, fly, articulation
+):
+    """Shared bones must not become shared angles.
+
+    The distinction is the whole design: a fly's left and right femurs are the same
+    length (a fact about the animal, and what the option imposes), while a leg's
+    left/right asymmetry at any instant IS the behavior (a fact about the pose, which
+    nothing here may touch). The synthetic pose gives all six legs the *same* bones and
+    independent random angles, so the option has nothing to correct and the fit must be
+    the un-symmetrized one to the solver's own reproducibility.
+    """
+    rng = np.random.default_rng(20260818)
+    pts3d, _ = synth_leg_pose(template, fly, rng, n_frames=3)
+    kw = dict(articulation=articulation, neutral_weight=1e-5)
+    free = solve_inverse_kinematics(pts3d, fly, template, **kw)
+    shared = solve_inverse_kinematics(
+        pts3d, fly, template, symmetric_segments=True, **kw
+    )
+    np.testing.assert_allclose(shared.angles, free.angles, atol=1e-12)
+
+    col = {n: i for i, n in enumerate(shared.angle_names)}
+    by_name = {leg.name: leg for leg in template.legs}
+
+    def dofs(leg_name):
+        return shared.angles[0, [col[n] for n in by_name[leg_name].dof_names]]
+
+    for left, right in (("lf", "rf"), ("lm", "rm"), ("lh", "rh")):
+        assert np.abs(dofs(left) - dofs(right)).max() > 0.1, (
+            f"{left}/{right} were driven to the same pose"
+        )
+
+
+def test_symmetric_segments_fits_one_animal_to_a_lopsided_measurement(
+    template, fly, articulation
+):
+    """A pose whose left legs measure 10% longer fits with mirror-equal model bones.
+
+    That is the case the option exists for -- the real one, where each side is
+    triangulated from its own camera triplet. The *fitted model* is what has to come out
+    symmetric; the observations stay as measured.
+    """
+    rng = np.random.default_rng(11)
+    pts3d, _ = synth_leg_pose(template, fly, rng, n_frames=2)
+    index = _index(fly)
+    for leg in template.legs:  # stretch the left legs about their own coxae
+        if leg.side != "l":
+            continue
+        coxa = pts3d[:, index[leg.point_names[0]]]
+        for name in leg.point_names[1:]:
+            pts3d[:, index[name]] = coxa + 1.10 * (pts3d[:, index[name]] - coxa)
+
+    res = solve_inverse_kinematics(
+        pts3d,
+        fly,
+        template,
+        articulation=articulation,
+        symmetric_segments=True,
+        neutral_weight=1e-5,
+    )
+
+    def bones(leg_name):
+        chain = next(x for x in template.legs if x.name == leg_name)
+        pts = res.model_pts3d[0, [index[p] for p in chain.point_names]]
+        return np.linalg.norm(np.diff(pts, axis=0), axis=-1)
+
+    for left, right in (("lf", "rf"), ("lm", "rm"), ("lh", "rh")):
+        np.testing.assert_allclose(bones(left), bones(right), rtol=2e-3)

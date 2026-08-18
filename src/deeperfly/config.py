@@ -473,6 +473,22 @@ class InverseKinematicsParams:
     leg roots then sit at their measured medians and only the joint angles move. Set it
     false for a freely-moving preparation to give QuickIK a 6-DOF root to fit per frame.
 
+    ``symmetric_segments`` gives each leg and its mirror image one shared length per
+    segment -- the mean of the two sides' measurements -- instead of measuring the two
+    sides independently. A fly's left and right femurs are the same bone, so at most one
+    of the two measured lengths can be anatomy, and on the eight-view example rig they
+    disagree by 4-6% on every femur. It constrains the *animal*, not its pose: the two
+    sides' joint angles stay independent, which they must, because a leg's left/right
+    asymmetry at any instant is the behavior.
+
+    Off by default because it is a prior that **costs**, measurably. Every point of a leg
+    chain is tracked, so the chain is over-determined and the per-leg lengths already are
+    the best fit to the keypoints -- on that recording, sharing them raised the 3D
+    residual 22%, the reprojection 0.14 px in 7 of 8 views, and the left/right gap in
+    each DOF's median angle from 4.7 to 6.4 degrees. Turn it on for what it makes true of
+    the model, not for accuracy; see
+    :func:`~deeperfly.inverse_kinematics.align.symmetrize_seglens`.
+
     ``weigh_by_confidence`` feeds the detector's per-keypoint confidence to the solver
     as observation weights instead of weighting every observed point equally.
 
@@ -517,6 +533,7 @@ class InverseKinematicsParams:
     position_tolerance: float = 1e-3
     angle_tolerance: float = 1e-3
     fixed_body: bool = True
+    symmetric_segments: bool = False
     weigh_by_confidence: bool = False
     parallel: bool = False
     segment_len: int = 200
@@ -981,6 +998,7 @@ class Config:
         position_tolerance = ik.pop("position_tolerance", defaults.position_tolerance)
         angle_tolerance = ik.pop("angle_tolerance", defaults.angle_tolerance)
         fixed_body = ik.pop("fixed_body", defaults.fixed_body)
+        symmetric_segments = ik.pop("symmetric_segments", defaults.symmetric_segments)
         weigh_by_confidence = ik.pop(
             "weigh_by_confidence", defaults.weigh_by_confidence
         )
@@ -1004,6 +1022,7 @@ class Config:
             position_tolerance=float(position_tolerance),
             angle_tolerance=float(angle_tolerance),
             fixed_body=bool(fixed_body),
+            symmetric_segments=bool(symmetric_segments),
             weigh_by_confidence=bool(weigh_by_confidence),
             parallel=bool(parallel),
             segment_len=int(segment_len),
