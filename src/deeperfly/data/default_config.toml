@@ -1,30 +1,29 @@
-# deeperfly run configuration -- a single self-contained file.
-#
-# Bundles everything one run needs: the shared inputs ([[sources]] footage, the
-# camera rig, the skeleton) and the pipeline -- a linear sequence of stages, each
-# a top-level table. The 2D detector and its detection plan live under [pose2d]
-# (preprocessors -> models -> pathways, with [pose2d.output_points] saying how
-# each pathway's output channels are packaged into the per-view 2D keypoints).
-# Run with:
+# deeperfly run configuration -- everything one run needs, in one file.
 #
 #     deeperfly run recording/ -c config.toml -o outputs/
-#     # -c defaults to this packaged config; -o defaults to <recording>/deeperfly_outputs/
+#     # -c defaults to this packaged config; -o to <recording>/deeperfly_outputs/
 #
-# Every section is also usable on its own: CameraGroup.from_config reads only
-# [cameras.*], Skeleton.from_config only [skeleton] -- foreign sections are ignored.
+# This file carries the STRUCTURE of a run -- footage, rig, skeleton, detector -- and the
+# few values this setup has a measured opinion about. It does not restate defaults: an
+# omitted stage table runs on its own, and every key is one command away.
+#
+#     deeperfly config show eks                      # one section, with its docs
+#     deeperfly config set eks.inflate_threshold 15  # validated as a run would
+#
+# Sections are independently usable (CameraGroup.from_config reads only [cameras.*]), and
+# an enabled stage reuses its cache while its keys here are unchanged -- so an edit
+# recomputes exactly the affected stages. `--overwrite [stage]` forces it.
+# Full reference: docs/reference/configuration.md.
 
 
-# ===========================================================================
-# Sources: named footage globs, each decoded once. A shared input -- a
-# [[pose2d.pathways]] entry runs a detector on a source, and visualization draws
-# a view's frames from it. Decoupled from the cameras and pathways that reference
-# it by name, so one source can feed several pathways.
-# ===========================================================================
-# `filename` is a footage glob (a file, prefix, or wildcard), or a list of
-# alternates tried in order -- the first that resolves footage wins. It is matched
-# case-insensitively, so `camera_RH.mp4` finds a `CAMERA_rh.MP4`. Each source below
-# names its self-describing anatomical file (RH = right hind, F = front, ...) and
-# falls back to the DeepFly3D positional index (`camera_0` .. `camera_6`).
+# == Footage =================================================================
+# Named sources, each decoded once. `filename` is a glob, or alternates tried in order,
+# matched case-insensitively -- so `camera_RH.mp4` finds a `CAMERA_rh.MP4`. Each names
+# its anatomical file (RH = right hind, F = front) and falls back to the DeepFly3D index.
+# One source can feed several views.
+#
+# [[sources]] blocks, not one inline array: `deeperfly project` lifts whole TOML *tables*
+# by their headers, and a bare top-level key is not a header.
 [[sources]]
 name = "vid_rh"
 filename = ["camera_RH.mp4", "camera_0.mp4"]
@@ -47,142 +46,50 @@ filename = ["camera_LM.mp4", "camera_5.mp4"]
 name = "vid_lh"
 filename = ["camera_LH.mp4", "camera_6.mp4"]
 
-[io.image]
-workers = 0   # decode threads (0 = auto, one per CPU)
 
-
-# ===========================================================================
-# Skeleton: the tracked points and their structure (DeepFly3D 7-camera rig). 38
-# points = 19 per side (L = 0..18, R = 19..37): three 5-point legs, one antenna
-# and three abdominal markers per side. `limb_points` groups the points into 10
-# named limbs, each a kinematic chain; `limb_palette` gives each limb its
-# plotting color. Edit to track a different animal.
-# ===========================================================================
+# == Skeleton ================================================================
+# The tracked points and their structure, by name. `fly38b` is 38 points: six 5-point
+# legs, two antennae, the neck, and a 5-point dorsal-midline abdomen chain
+# (src/deeperfly/data/skeletons/fly38b.toml). `fly38` -- the historical DeepFly3D set,
+# abdomen as two side chains -- is the other packaged one. Add any key here to override
+# it, `file = "skeleton.toml"` for a project's own, or spell out `point_names` to make
+# this table self-contained.
+#
+# It must be the skeleton the detector was TRAINED on: a dense detector's channels ARE a
+# skeleton, and fly38 / fly38b are the same 38 points in a different order, so the wrong
+# one attaches six of them to the wrong joints. Checked against the checkpoint every run.
 [skeleton]
-name = "fly38"
+name = "fly38b"
 
-point_names = [
-    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
-    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
-    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
-    "l_antenna", "l_abdomen0", "l_abdomen1", "l_abdomen2",
-    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
-    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
-    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
-    "r_antenna", "r_abdomen0", "r_abdomen1", "r_abdomen2",
-]
 
-# Left/right mirror pairs -- the same relation SLEAP models as a `type 2` skeleton edge.
-# Which side comes first means nothing (a pair is an unordered set), each point may appear
-# in at most one pair, and a point named in no pair simply carries no side. Three things
-# read this list, and each stops working (silently, in two cases) without it:
+# == Views ===================================================================
+# The geometric cameras a pathway maps its points back into: seven views orbiting an
+# object near the world origin. A view holds only geometry -- its footage comes from the
+# pathway's source, and its intrinsics describe that source's RAW frame, since detections
+# are mapped back to raw pixels before they meet a camera. `defaults` merges into each.
 #
-#   * `[pose2d.output_points]` validation. A pathway whose preprocessor mirrors the frame
-#     must land on the MIRRORED points; with the pairs declared, a one-word typo that maps
-#     a flipped pathway onto `rf_*` instead of `lf_*` is a config error at load time
-#     instead of a left/right-swapped reconstruction that still looks plausible.
-#   * flip augmentation for the trainer (`deeperfly.training.mirror`). Mirroring an image
-#     without permuting the channels trains every left channel on a right joint.
-#   * `deeperfly.chirality`, the offline check for labels whose sides look swapped.
+# `calibration` points at a SOLVED rig -- a calibration.toml from a previous run
+# (`deeperfly calibration export`) or a board -- and WINS over the orbits below, which are
+# then read only for their order. That is how a rig travels between recordings: an orbit
+# is a human's description of it, a calibration a solver's measurement, and raw extrinsics
+# cannot be written in a view table at all.
 #
-# Omitting the list is legal and switches all three off -- right for an asymmetric subject,
-# wrong for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
-# tokens (l*/r*, *_L/*_R, left_*/right_*) for a skeleton that does not declare them; the
-# 19 below are exactly what it proposes for these names, written out so that renaming a
-# point cannot quietly re-pair the skeleton.
-symmetries = [
-    ["lf_thorax_coxa",     "rf_thorax_coxa"],
-    ["lf_coxa_trochanter", "rf_coxa_trochanter"],
-    ["lf_femur_tibia",     "rf_femur_tibia"],
-    ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
-    ["lf_claw",            "rf_claw"],
-    ["lm_thorax_coxa",     "rm_thorax_coxa"],
-    ["lm_coxa_trochanter", "rm_coxa_trochanter"],
-    ["lm_femur_tibia",     "rm_femur_tibia"],
-    ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
-    ["lm_claw",            "rm_claw"],
-    ["lh_thorax_coxa",     "rh_thorax_coxa"],
-    ["lh_coxa_trochanter", "rh_coxa_trochanter"],
-    ["lh_femur_tibia",     "rh_femur_tibia"],
-    ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
-    ["lh_claw",            "rh_claw"],
-    ["l_antenna",          "r_antenna"],
-    ["l_abdomen0",         "r_abdomen0"],
-    ["l_abdomen1",         "r_abdomen1"],
-    ["l_abdomen2",         "r_abdomen2"],
-]
-
-# Limbs: each entry lists a limb's tracked points (by name) in kinematic-chain order.
-[skeleton.limb_points]
-lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]
-lm_leg = ["lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw"]
-lh_leg = ["lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw"]
-l_antenna = ["l_antenna"]
-l_abdomen = ["l_abdomen0", "l_abdomen1", "l_abdomen2"]
-rf_leg = ["rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw"]
-rm_leg = ["rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw"]
-rh_leg = ["rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"]
-r_antenna = ["r_antenna"]
-r_abdomen = ["r_abdomen0", "r_abdomen1", "r_abdomen2"]
-
-# Per-limb plotting color (hex). Legs read left = blue / right = red, lightening
-# front -> hind. Limbs without an entry fall back to a default colormap.
-[skeleton.limb_palette]
-lf_leg = "#0f7399"
-lm_leg = "#1a8daf"
-lh_leg = "#75becb"
-l_antenna = "#0a4f6b"
-l_abdomen = "#a9dbe4"
-rf_leg = "#ba1e31"
-rm_leg = "#c9564f"
-rh_leg = "#d58579"
-r_antenna = "#8c1525"
-r_abdomen = "#e6b3a8"
-
-
-# ===========================================================================
-# Views: the geometric cameras a pathway maps its points back into -- an array
-# of views orbiting an object near the world origin. Each `[cameras.<name>]` holds
-# only geometry (intrinsics + the orbit extrinsics); its footage comes from the
-# pathway's source, and its intrinsics describe that source's raw frame.
-# `[cameras.defaults]` is merged into every view; per-view keys override it.
-# ===========================================================================
-[cameras]
-# Optional. Point at a *solved* rig -- a `calibration.toml` written by a previous
-# run's bundle adjustment (`deeperfly calibration export` extracts one from any
-# results.h5), or by a calibration board. When set it WINS over the orbit specs
-# below, which are then read only for their order; the run logs which won.
+# `mirror` names the view seeing this one's MIRROR IMAGE. A TRAINING key only -- flip
+# augmentation relabels a flipped sample with the mirrored camera, so a metric splitting
+# ipsilateral from contralateral error still reads the side off the camera id -- and a run
+# drops it. Must be an involution; a midline camera names itself. Written out rather than
+# computed: that it is `-azimuth` here is a coincidence of a symmetric layout.
 #
-# This is how a rig travels between recordings: an orbit is a human's description
-# of the rig they built, a calibration is a solver's measurement of it, and raw
-# extrinsics (rvec/tvec) cannot be written in a [cameras.<name>] table at all.
-# A relative path resolves next to THIS config file.
+# One [cameras.<name>] table per view rather than inline entries under a bare [cameras]:
+# `deeperfly project` injects its solved rig as a `calibration` key there.
 #
-# calibration = "calibration.toml"
-
+#   [cameras]
+#   calibration = "calibration.toml"      # relative to THIS file; uncomment to use one
 [cameras.defaults]
-focal_length_px = [22388.125, 22388.125]    # scalar also allowed when fx == fy
-
-# optional; omit to use each view's image center ((w-1)/2, (h-1)/2). Set it only
-# when the principal point is not at the image center.
-# principal_point_px = [479.5, 239.5]
-
-distortion_coefficients = []  # empty means no distortion
-look_at = [0.0, 0.0, 0.0]
+focal_length_px = 22388.125               # scalar when fx == fy, else [fx, fy]
 distance = 107.463
-elevation_deg = 0.0
-roll_deg = 0.0
+# principal_point_px = [479.5, 239.5]     # omit: inferred per view from its own frame
 
-# `mirror` names the view that sees this view's MIRROR IMAGE. The animal is bilaterally
-# symmetric, so a horizontally-flipped right-side view is a valid left-side view -- which is
-# what makes flip augmentation legal at all, and it is why the flipped sample has to be
-# relabeled with the mirrored camera: a metric that splits ipsilateral from contralateral
-# error reads the camera id, so without this it calls every swapped channel by the wrong
-# side. The relation must be symmetric, and a camera on the midline (the front view, whose
-# mirror is still a front view) names itself. Written out rather than computed from the
-# azimuths: it happens to be `-azimuth` for this rig, and that is a coincidence of a
-# symmetric layout, not something a differently-arranged rig would inherit. Omit `mirror`
-# and flip augmentation simply has no view to remap to.
 [cameras.rh]
 azimuth_deg = -120
 mirror = "lh"
@@ -205,339 +112,105 @@ mirror = "rm"
 azimuth_deg = 120
 mirror = "rh"
 
+# An 8th, axial hind view (the rig's only left/right bridge) is added like this. A
+# different lens changes BOTH focal and distance, and no residual can afterwards detect
+# it: bundle adjustment holds the intrinsics fixed, so it absorbs a focal error into the
+# distance instead of reporting it.
+# [cameras.h]
+# azimuth_deg = 180
+# focal_length_px = 24168.591
+# distance = 158.9168
 
-# ===========================================================================
-# Pipeline: a linear sequence of stages, each an on/off switch in [pipeline]
-# (do_<stage>) with its own parameter table:
-#
-#   do_pose2d               -> [pose2d]               detect 2D per view
-#   do_bundle_adjustment    -> [bundle_adjustment]    refine the cameras
-#   do_pictorial_structures -> [pictorial_structures] peak recovery
-#   do_triangulation        -> [triangulation]        2D -> 3D
-#   do_eks                  -> [eks]                  smooth the 3D over time
-#   do_postprocess          -> [postprocess]        corrections from the animal
-#   do_inverse_kinematics   -> [inverse_kinematics]   3D -> joint angles
-#   do_visualization        -> [visualization]        render the videos
-#
-# An enabled stage reuses its cached result from the output dir while its
-# parameters here are unchanged; *editing this file recomputes exactly the
-# affected stages* (and the ones after them) on the next run -- tweak the
-# triangulation or the videos and re-run; the slow 2D detection is reused.
-# --overwrite forces a recompute even when nothing changed (bare --overwrite
-# redoes everything; `--overwrite pose2d visualization` redoes just those, plus
-# the stages after them). The cached 2D pose always feeds the stages downstream
-# -- so `do_pose2d = false` reconstructs 3D from a cached 2D pose without
-# re-detecting -- while a *derived* stage's cached output is used only while
-# that stage is on. An enabled stage whose input is unavailable is skipped,
-# with the reason logged.
-# ===========================================================================
+
+# == Pipeline ================================================================
+# The stages, in run order. `do_pose2d = false` reconstructs from a cached 2D pose without
+# re-detecting; the 2D cache always feeds downstream, while a derived stage's cached output
+# is used only while that stage is on. An enabled stage whose input is unavailable is
+# skipped, with the reason logged.
 [pipeline]
-do_pose2d               = true   # detect 2D pose in every camera view
-do_bundle_adjustment    = true   # refine the cameras with bundle adjustment
-do_pictorial_structures = false  # DeepFly3D-style pictorial-structures recovery
-do_triangulation        = true   # triangulate 2D -> 3D
-do_eks                  = false  # ensemble Kalman smoother over the 3D pose (opt-in)
-do_postprocess          = false  # corrections that come from knowing the animal (opt-in)
-do_inverse_kinematics   = false  # fit NeuroMechFly joint angles to the 3D pose (opt-in)
-do_visualization        = true   # render the videos (see [visualization] below)
+do_pose2d               = true
+do_bundle_adjustment    = true
+do_pictorial_structures = false  # DeepFly3D-style peak recovery over the top-K candidates
+do_triangulation        = true
+# MEASURED: -39% 3D jitter, at the cost of lagging a claw mid-swing (0.13% of cells).
+# Turn off if claw timing is the measurement -- configuration.md#eks has the numbers.
+do_eks                  = true   # ensemble Kalman smoother over the 3D (de-jitters, repairs)
+# Assumes a TETHERED animal (see the chain below). Turn off for a freely-moving one.
+do_postprocess          = true   # the corrections below, from knowing the animal
+do_inverse_kinematics   = false  # fit NeuroMechFly joint angles (needs `deeperfly[ik]`;
+                                 # see the note under == Inverse kinematics below)
+do_visualization        = true
 
 
-# ===========================================================================
-# 2D detection (the pose2d stage). [pose2d] holds the detector's performance
-# knobs; its detection plan -- what to detect and how -- follows as sub-tables
-# whose counts may all differ:
-#   [[pose2d.preprocessors]]      -- named, reusable frame-op pipelines (mirror/crop/resize)
-#   [[pose2d.models]]             -- detector models (class + weights + input contract)
-#   [[pose2d.pathways]]           -- a named source -> preprocessor -> model inference run
-#   [pose2d.output_points.<view>] -- how each pathway's output channels are packaged
-#                                    into the per-view 2D keypoints
-# Video frames are decoded with PyAV (on the CPU).
-# ===========================================================================
+# == 2D detection ============================================================
+# The detection plan: sources -> preprocessors -> models -> pathways. This one is DENSE --
+# one pathway per camera, the model emitting every tracked point for every view -- so
+# channel i -> point i of the pathway's view and no [pose2d.output_points] table is
+# needed. (The historical 19-channel detector predicted one body side, ran each side
+# camera twice, and needed 132 hand-written mapping rows. A contralateral point now
+# arrives as a prediction to correct, not a gap to author from nothing.)
+#
+# `class` picks the network: "mvt" encodes a frame's views TOGETHER, so a joint only one
+# camera can see informs the ones that cannot; "hrnet" is the dense per-view detector;
+# "hourglass" is DeepFly2D, the only class whose weights download automatically -- but
+# 19-channel, so it needs `fly38` and an explicit mapping table.
+#
+# `weights` is a bare filename found on $DEEPERFLY_MODELS, or an outright path; a dense
+# detector is trained per project, so there is nothing to download and the run stops with
+# the search path printed if it finds none. Prefer the bare name: it is a fact about
+# which model a run used and travels with the recording, where /mnt/... is a fact about
+# one machine. Everything else -- input_size, mean, n_out_channels, mvt's float32 -- is a
+# property of the checkpoint whose loader refuses a config that disagrees.
+#
+# `model` is the default for every pathway below; write `model` on one to override it,
+# and with a single [[pose2d.models]] entry it can be dropped entirely.
+#
+# No `batch_size`: 16, the default, is also the measured best (configuration.md#pose2d).
 [pose2d]
-# Forward precision. "float32" is the reference; "float16" (default) runs under CUDA
-# autocast -- ~1.5-2x faster on the GPU with negligible keypoint drift. "bfloat16" is
-# about as fast with a wider range (no overflow) at slightly lower precision.
-# Ignored on CPU/MPS, which stay float32. This is the default for every model; a
-# model can override it with its own `precision` (see [[pose2d.models]] below).
-precision = "float16"
-# GPU forward batch: images pushed through the detector at once. The 8-stack
-# network is compute-bound, so throughput plateaus by ~16 on a fast GPU -- 16
-# saturates speed while keeping forward VRAM low (~0.8 GB). Raise it only if a
-# benchmark shows a gain on your hardware. Ignored on CPU (one pass-group at a time).
-batch_size = 16
-# Video decode buffer, in multiples of batch_size. Each camera is decoded in one
-# continuous pass into a queue, one batch_size-frame block at a time; the reader
-# runs ahead and pauses once this many blocks are queued, so it never outruns the
-# GPU or grows memory without bound (peak ~(decode_buffer + 2) * batch_size frames
-# per camera). Raise it to keep the GPU fed when decode is jittery (slow seeks,
-# network/remote storage); lower it to shave memory.
-decode_buffer = 4
-
-# Automatic crop search. Off unless a preprocessor asks for it with
-# { op = "crop", auto = true } -- see below. Only the knobs a recording can
-# genuinely need to differ on live here; the search's shape is measured and fixed.
-# [pose2d.autocrop]
-# search_frames = 3      # frames the confidence objective is scored on (spread over the clip)
-# gate_frames   = 8      # disjoint frames the geometry gate is scored on
-# gate          = true   # false = take confidence's box unchecked (measurably over-wide)
-# gate_evals    = 30     # cap on the gate's detection passes -- what bounds the wall clock
-# probe_batch   = 8      # forward batch, in probes (performance only)
-
-# Named preprocessors: an ordered op list applied to a pathway's frames before
-# the model. The detector's points are mapped back into the view frame by
-# inverting these ops, so a mirror here never moves the reconstructed skeleton.
-# A pathway may omit `preprocessor` entirely -- that means no ops (identity),
-# the same as referencing a preprocessor whose `ops = []`.
-# Ops: { op = "fliplr" } / { op = "flipud" } / { op = "rot90", k = 1 } /
-#      { op = "crop", x=, y=, width=, height= } / { op = "resize", scale= }.
+model = "dense38mv"
+models = [
+    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" },
+]
+pathways = [
+    { name = "rh", source = "vid_rh" },
+    { name = "rm", source = "vid_rm" },
+    { name = "rf", source = "vid_rf" },
+    { name = "f",  source = "vid_f"  },
+    { name = "lf", source = "vid_lf" },
+    { name = "lm", source = "vid_lm" },
+    { name = "lh", source = "vid_lh" },
+]
+# Preprocessors: an ordered op list applied to a pathway's frames before the model and
+# inverted on the way back, so a mirror here never moves the reconstructed skeleton.
+# Ops: fliplr / flipud / rot90(k) / crop(x,y,width,height) / resize(scale).
 #
-# A crop can also be SEARCHED per recording instead of written down:
+# A detector is trained through a box, and a differently framed camera puts the animal at
+# the wrong apparent SCALE -- the one thing no augmentation undoes. On this rig the six
+# side cameras match training full-frame and the axial ones do not, so only those need a
+# box; `auto = true` searches one per recording (255 px -> 2.9 px blind on a 1600x1008
+# axial camera, against 3.4 hand-tuned -- configuration.md#autocrop).
 #
-#   ops = [{ op = "crop", auto = true }]                        # blind: cover the frame
-#   ops = [{ op = "crop", auto = true, x=400, y=290, width=800, height=400 }]   # seeded
+# Off here, deliberately: the search needs a SOLVED rig ([cameras].calibration) and enough
+# recording to spread its sample frames over, and against a nominal orbit the gate refuses
+# and the fallback comes out ~1.7x too wide. Run once, export the calibration, then:
 #
-# Why anyone wants this: a detector is trained through a box, and a differently
-# framed camera puts the animal at the wrong apparent scale -- the one thing no
-# augmentation undoes. On this rig the six side cameras match training full-frame
-# and the two axial ones (front, hind) do not, so those are the two that usually
-# need a box. Rather than copying last recording's numbers, the pose2d stage
-# measures it: the detector's own confidence covers the (centre, width) space
-# cheaply, then agreement with the OTHER cameras' 3D -- the target view held out of
-# the triangulation -- chooses among what confidence proposed and refuses a box
-# that is confidently wrong. Measured blind on a 1600x1008 hind camera: 255 px
-# from the other cameras' 3D full-frame, 2.9 px after the search, against 3.4 px
-# for a box a person tuned by hand.
+#   preprocessors = [
+#       { name = "crop_f", ops = [{ op = "crop", auto = true }] },                # blind
+#       { name = "crop_h", ops = [{ op = "crop", auto = true, x = 400, y = 290,
+#                                   width = 800, height = 400 }] },               # seeded
+#   ]
+#   # ...then on the pathway:  { name = "f", source = "vid_f", preprocessor = "crop_f" }
 #
-# Three things worth knowing before using it:
-#   * It needs a SOLVED rig. Against the nominal orbit rig the reference is ~120 px
-#     out, the gate says so and refuses to run, and the fallback (confidence alone)
-#     comes out ~1.7x too wide. Run once with bundle adjustment, then point
-#     [cameras].calibration at the exported calibration.toml.
-#   * A seed is worth writing down when you have one: it narrows the search.
-#   * The searched box is recorded in <outdir>/autocrop.json and reused on later
-#     runs (so a resume neither re-searches nor re-detects). `deeperfly auto-crop`
-#     runs the search on its own and prints the TOML to freeze it permanently.
-[[pose2d.preprocessors]]
-name = "flip"
-ops = [{ op = "fliplr" }]
-
-# Models: `class` selects the network ("hourglass" = DeepFly2D); `weights` is a
-# checkpoint path ("" / omitted uses the auto-provisioned cache); `input_size`
-# (height, width) is the frame size the network was trained on -- every frame is
-# resized to it before inference and the output peaks are scaled back out of it,
-# so it cannot be inferred; `mean` is subtracted after /255; `n_out_channels` is
-# the output heatmap count (validated against the weights). `precision` is optional
-# and overrides [pose2d].precision for this model only (omit it to inherit) -- use it
-# when one model needs a different dtype (e.g. a traced/lite export pinned to float32
-# while others run float16).
-[[pose2d.models]]
-name = "deepfly2d"
-class = "hrnet_timm"  # or "hrnet_w32" / "hrnet_timm" / "unet_smp"
-weights = ""
-input_size = [256, 512]
-mean = 0.22
-n_out_channels = 19
-# precision = "float32"  # optional per-model override (default: inherit [pose2d].precision)
-
-# Pathways: each a named source -> preprocessor -> model run. A pathway just says
-# what to detect on; where its output channels land is in [pose2d.output_points]
-# below. The front source feeds two pathways (one mirrored). Each pathway needs a
-# unique `name` so [pose2d.output_points] can reference it.
-[[pose2d.pathways]]
-name = "rh"
-source = "vid_rh"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "rm"
-source = "vid_rm"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "rf"
-source = "vid_rf"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "f"
-source = "vid_f"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "f_flip"
-source = "vid_f"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "lf_flip"
-source = "vid_lf"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "lm_flip"
-source = "vid_lm"
-preprocessor = "flip"
-model = "deepfly2d"
-
-[[pose2d.pathways]]
-name = "lh_flip"
-source = "vid_lh"
-preprocessor = "flip"
-model = "deepfly2d"
-
-# output_points: how the stage packages its result. For each view, where every
-# tracked point's data comes from: `point = { pathway, out_channel }` fills that
-# point of the view from output channel `out_channel` of the named pathway. Keying
-# by (view, point) means each point has exactly one source (a repeat is an error);
-# a (view, point) left out stays unobserved (NaN) -- that union is the visibility
-# mask. The front view is filled by two pathways: the un-flipped pass supplies the
-# right distal joints, the mirrored pass the left.
-[pose2d.output_points.rh]
-rf_thorax_coxa     = { pathway = "rh", out_channel = 0  }
-rf_coxa_trochanter = { pathway = "rh", out_channel = 1  }
-rf_femur_tibia     = { pathway = "rh", out_channel = 2  }
-rf_tibia_tarsus    = { pathway = "rh", out_channel = 3  }
-rf_claw            = { pathway = "rh", out_channel = 4  }
-rm_thorax_coxa     = { pathway = "rh", out_channel = 5  }
-rm_coxa_trochanter = { pathway = "rh", out_channel = 6  }
-rm_femur_tibia     = { pathway = "rh", out_channel = 7  }
-rm_tibia_tarsus    = { pathway = "rh", out_channel = 8  }
-rm_claw            = { pathway = "rh", out_channel = 9  }
-rh_thorax_coxa     = { pathway = "rh", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rh", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rh", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rh", out_channel = 13 }
-rh_claw            = { pathway = "rh", out_channel = 14 }
-r_antenna          = { pathway = "rh", out_channel = 15 }
-r_abdomen0         = { pathway = "rh", out_channel = 16 }
-r_abdomen1         = { pathway = "rh", out_channel = 17 }
-r_abdomen2         = { pathway = "rh", out_channel = 18 }
-
-[pose2d.output_points.rm]
-rf_thorax_coxa     = { pathway = "rm", out_channel = 0  }
-rf_coxa_trochanter = { pathway = "rm", out_channel = 1  }
-rf_femur_tibia     = { pathway = "rm", out_channel = 2  }
-rf_tibia_tarsus    = { pathway = "rm", out_channel = 3  }
-rf_claw            = { pathway = "rm", out_channel = 4  }
-rm_thorax_coxa     = { pathway = "rm", out_channel = 5  }
-rm_coxa_trochanter = { pathway = "rm", out_channel = 6  }
-rm_femur_tibia     = { pathway = "rm", out_channel = 7  }
-rm_tibia_tarsus    = { pathway = "rm", out_channel = 8  }
-rm_claw            = { pathway = "rm", out_channel = 9  }
-rh_thorax_coxa     = { pathway = "rm", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rm", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rm", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rm", out_channel = 13 }
-rh_claw            = { pathway = "rm", out_channel = 14 }
-r_antenna          = { pathway = "rm", out_channel = 15 }
-r_abdomen0         = { pathway = "rm", out_channel = 16 }
-r_abdomen1         = { pathway = "rm", out_channel = 17 }
-r_abdomen2         = { pathway = "rm", out_channel = 18 }
-
-[pose2d.output_points.rf]
-rf_thorax_coxa     = { pathway = "rf", out_channel = 0  }
-rf_coxa_trochanter = { pathway = "rf", out_channel = 1  }
-rf_femur_tibia     = { pathway = "rf", out_channel = 2  }
-rf_tibia_tarsus    = { pathway = "rf", out_channel = 3  }
-rf_claw            = { pathway = "rf", out_channel = 4  }
-rm_thorax_coxa     = { pathway = "rf", out_channel = 5  }
-rm_coxa_trochanter = { pathway = "rf", out_channel = 6  }
-rm_femur_tibia     = { pathway = "rf", out_channel = 7  }
-rm_tibia_tarsus    = { pathway = "rf", out_channel = 8  }
-rm_claw            = { pathway = "rf", out_channel = 9  }
-rh_thorax_coxa     = { pathway = "rf", out_channel = 10 }
-rh_coxa_trochanter = { pathway = "rf", out_channel = 11 }
-rh_femur_tibia     = { pathway = "rf", out_channel = 12 }
-rh_tibia_tarsus    = { pathway = "rf", out_channel = 13 }
-rh_claw            = { pathway = "rf", out_channel = 14 }
-r_antenna          = { pathway = "rf", out_channel = 15 }
-
-[pose2d.output_points.f]
-rf_femur_tibia     = { pathway = "f", out_channel = 2  }
-rf_tibia_tarsus    = { pathway = "f", out_channel = 3  }
-rf_claw            = { pathway = "f", out_channel = 4  }
-rm_femur_tibia     = { pathway = "f", out_channel = 7  }
-rm_tibia_tarsus    = { pathway = "f", out_channel = 8  }
-rm_claw            = { pathway = "f", out_channel = 9  }
-r_antenna          = { pathway = "f", out_channel = 15 }
-lf_femur_tibia     = { pathway = "f_flip", out_channel = 2  }
-lf_tibia_tarsus    = { pathway = "f_flip", out_channel = 3  }
-lf_claw            = { pathway = "f_flip", out_channel = 4  }
-lm_femur_tibia     = { pathway = "f_flip", out_channel = 7  }
-lm_tibia_tarsus    = { pathway = "f_flip", out_channel = 8  }
-lm_claw            = { pathway = "f_flip", out_channel = 9  }
-l_antenna          = { pathway = "f_flip", out_channel = 15 }
-
-[pose2d.output_points.lf]
-lf_thorax_coxa     = { pathway = "lf_flip", out_channel = 0  }
-lf_coxa_trochanter = { pathway = "lf_flip", out_channel = 1  }
-lf_femur_tibia     = { pathway = "lf_flip", out_channel = 2  }
-lf_tibia_tarsus    = { pathway = "lf_flip", out_channel = 3  }
-lf_claw            = { pathway = "lf_flip", out_channel = 4  }
-lm_thorax_coxa     = { pathway = "lf_flip", out_channel = 5  }
-lm_coxa_trochanter = { pathway = "lf_flip", out_channel = 6  }
-lm_femur_tibia     = { pathway = "lf_flip", out_channel = 7  }
-lm_tibia_tarsus    = { pathway = "lf_flip", out_channel = 8  }
-lm_claw            = { pathway = "lf_flip", out_channel = 9  }
-lh_thorax_coxa     = { pathway = "lf_flip", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lf_flip", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lf_flip", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lf_flip", out_channel = 13 }
-lh_claw            = { pathway = "lf_flip", out_channel = 14 }
-l_antenna          = { pathway = "lf_flip", out_channel = 15 }
-
-[pose2d.output_points.lm]
-lf_thorax_coxa     = { pathway = "lm_flip", out_channel = 0  }
-lf_coxa_trochanter = { pathway = "lm_flip", out_channel = 1  }
-lf_femur_tibia     = { pathway = "lm_flip", out_channel = 2  }
-lf_tibia_tarsus    = { pathway = "lm_flip", out_channel = 3  }
-lf_claw            = { pathway = "lm_flip", out_channel = 4  }
-lm_thorax_coxa     = { pathway = "lm_flip", out_channel = 5  }
-lm_coxa_trochanter = { pathway = "lm_flip", out_channel = 6  }
-lm_femur_tibia     = { pathway = "lm_flip", out_channel = 7  }
-lm_tibia_tarsus    = { pathway = "lm_flip", out_channel = 8  }
-lm_claw            = { pathway = "lm_flip", out_channel = 9  }
-lh_thorax_coxa     = { pathway = "lm_flip", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lm_flip", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lm_flip", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lm_flip", out_channel = 13 }
-lh_claw            = { pathway = "lm_flip", out_channel = 14 }
-l_antenna          = { pathway = "lm_flip", out_channel = 15 }
-l_abdomen0         = { pathway = "lm_flip", out_channel = 16 }
-l_abdomen1         = { pathway = "lm_flip", out_channel = 17 }
-l_abdomen2         = { pathway = "lm_flip", out_channel = 18 }
-
-[pose2d.output_points.lh]
-lf_thorax_coxa     = { pathway = "lh_flip", out_channel = 0  }
-lf_coxa_trochanter = { pathway = "lh_flip", out_channel = 1  }
-lf_femur_tibia     = { pathway = "lh_flip", out_channel = 2  }
-lf_tibia_tarsus    = { pathway = "lh_flip", out_channel = 3  }
-lf_claw            = { pathway = "lh_flip", out_channel = 4  }
-lm_thorax_coxa     = { pathway = "lh_flip", out_channel = 5  }
-lm_coxa_trochanter = { pathway = "lh_flip", out_channel = 6  }
-lm_femur_tibia     = { pathway = "lh_flip", out_channel = 7  }
-lm_tibia_tarsus    = { pathway = "lh_flip", out_channel = 8  }
-lm_claw            = { pathway = "lh_flip", out_channel = 9  }
-lh_thorax_coxa     = { pathway = "lh_flip", out_channel = 10 }
-lh_coxa_trochanter = { pathway = "lh_flip", out_channel = 11 }
-lh_femur_tibia     = { pathway = "lh_flip", out_channel = 12 }
-lh_tibia_tarsus    = { pathway = "lh_flip", out_channel = 13 }
-lh_claw            = { pathway = "lh_flip", out_channel = 14 }
-l_antenna          = { pathway = "lh_flip", out_channel = 15 }
-l_abdomen0         = { pathway = "lh_flip", out_channel = 16 }
-l_abdomen1         = { pathway = "lh_flip", out_channel = 17 }
-l_abdomen2         = { pathway = "lh_flip", out_channel = 18 }
+# The searched box lands in <outdir>/autocrop.json and is reused, so a resume neither
+# re-searches nor re-detects; `deeperfly auto-crop` runs it alone and prints the TOML.
 
 
-# Bundle adjustment: the fly itself is the target. Solved with
-# scipy.optimize.least_squares; its kwargs (max_nfev, loss, f_scale, ...) sit
-# directly in this table.
+# == Bundle adjustment =======================================================
+# The fly itself is the target; scipy.optimize.least_squares kwargs (max_nfev, loss,
+# f_scale, ...) sit directly in this table. `deeperfly config show bundle_adjustment`
 [bundle_adjustment]
-# Skeleton point names (from [skeleton].point_names) that drive bundle adjustment.
-# The leg joints sit at sharp limb corners and detect most reliably, so the
-# default uses the 30 leg points only. Omit this key to bundle-adjust on all keypoints.
+# The leg joints sit at sharp limb corners and detect most reliably, so only they drive
+# the solve. Omit this key to use every keypoint.
 points_to_use = [
     "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
     "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
@@ -546,418 +219,159 @@ points_to_use = [
     "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
     "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
 ]
-fixed = [
-    "*.intr",       # keep all intrinsics fixed
-    # "f.rvec",     # anchor the front camera's orientation ...
-    # "f.tvec",     # ... and position (fixes the world gauge)
-    # "rm.tvec[2]",
-]
-shared = [] # e.g., [["lf.tvec[2]", "rf.tvec[2]"]] to tie the cameras' z distances together
-weigh_by_confidence = false # whether keypoints with higher detector confidence get more weight
-max_frames = 200            # bundle-adjust on at most this many frames (subsampled from the recording)
-frame_sampling = "even"     # which frames to keep when subsampling:
-                            #   even       - evenly spaced over the recording (default; temporal spread)
-                            #   confidence - the highest-confidence frame in each time bin
-                            #                (uses detector confidence; independent of weigh_by_confidence)
-                            #   coverage   - the frame in each time bin with the most
-                            #                keypoints seen by >= 2 cameras (best-conditioned)
-                            #   diversity  - frames whose postures are most spread apart, so the
-                            #                target is seen in many distinct configurations
-max_nfev = 2000             # forwarded to scipy.optimize.least_squares
-loss = "linear"
-
-
-# Pictorial structures: DeepFly3D-style peak recovery over the detector's top-K
-# candidates before triangulation. The candidates are extracted during detection
-# and cached when this stage is on -- enabling it on an existing output dir
-# re-runs pose2d once; afterwards, tweaking temporal/lam reuses the cached
-# candidates without re-detecting.
-[pictorial_structures]
-k = 5                    # candidate peaks per joint
-temporal = false         # add a temporal-consistency term
-lam = 1.0                # bone-length prior weight
-
-
-# Triangulation: how the per-view 2D points become one 3D point.
-[triangulation]
-method = "ransac"           # ransac - largest multi-view consensus (default, robust)
-                            # greedy - drop the worst-reprojecting view
-                            # dlt    - plain least-squares, no outlier handling
-ransac_threshold = 15.0     # inlier reprojection cutoff (px); ~8-20 is the robust
-                            # plateau -- tighter starts rejecting good views (coverage
-                            # drops), looser degrades toward plain dlt
-min_inliers = 2             # min agreeing views to accept a point; keep at 2 -- many
-                            # leg joints are seen by only 2-3 ipsilateral cameras, so
-                            # 3 silently discards a large fraction of the skeleton
-weigh_by_confidence = false # scale each view by detector confidence; a wash at the
-                            # default threshold (bundle adjustment already weighs by
-                            # confidence), left off to keep triangulation geometric
-# reproj_threshold = 40.0   # method = greedy: per-view reprojection cutoff (px)
-# max_drops = 5             # method = greedy: max views dropped per offending point
-
-
-# Ensemble Kalman smoother (EKS): a post-process over the 3D pose (off by default;
-# set do_eks = true). Triangulation solves each frame on its own; this fits ONE 3D
-# trajectory per keypoint to the whole recording at once, with the rig's own
-# projection as its observation model -- the nonlinear multi-view EKS of Lightning
-# Pose 3D (Aharon, Whiteway et al. 2026). Two things follow from that. It de-jitters
-# the pose, because a random-walk prior on the 3D point costs nothing to satisfy and
-# per-frame detector noise does not survive it. And it REPAIRS blown detections,
-# because a view whose 2D disagrees with the other views gets its observation
-# variance inflated until the smoother stops believing it -- so the 3D point stays
-# on the animal and the reported 2D for that view is the trajectory reprojected.
-#
-# It runs after triangulation and starts from that stage's 3D, so leave
-# do_triangulation on. Its output then feeds inverse kinematics and the videos.
-# Cost is roughly 20 s per 5000 frames x 38 keypoints on a CPU.
-[eks]
-# smooth_param = 1.0      # process-noise scale: smaller smooths harder. OMITTED (the
-                          # default) fits one per keypoint by maximum marginal
-                          # likelihood, which is almost always the right call -- a
-                          # claw and a thorax do not move alike.
-inflate_vars = true       # test each view against the other views and down-weight the
-                          # ones that disagree. This is the component that repairs
-                          # outliers, and it needs two VIEWS, not two models -- so it
-                          # is fully active with a single detector. Leave it on.
-inflate_threshold = 5.0   # Mahalanobis distance at which a view is called
-                          # inconsistent. Lower is more suspicious. With one detector
-                          # the observation variance is 1/confidence, whose absolute
-                          # scale is arbitrary, so what fraction this flags tracks the
-                          # detector's calibration rather than any fixed false-alarm
-                          # rate -- the logged "inflated N of M" is the number to watch
-inflate_factor = 10.0     # variance multiplier per inflation round
-ensemble = []             # other results.h5 files holding a DIFFERENT detector's 2D
-                          # for this same recording (paths relative to the output dir).
-                          # With them the observation noise becomes a measured
-                          # across-model spread instead of the 1/confidence stand-in --
-                          # the half of "ensemble Kalman smoother" one detector cannot
-                          # supply. The ensembles in this literature are the same
-                          # recipe trained differently (data subsets, seeds, ordering),
-                          # not different architectures.
-avg_mode = "median"       # how members combine: "median" (robust) or "mean"
-var_mode = "confidence_weighted_var"  # "var" is the plain across-model variance;
-                          # the default divides it by the mean confidence
-fill_unobserved = false   # report the smoothed 3D reprojected into views that never
-                          # saw the keypoint, instead of leaving those cells NaN. Off
-                          # by default: deeperfly reads NaN as "not observed", so
-                          # filling hands downstream a prediction dressed as a
-                          # measurement. Turn on to use EKS to complete occlusions
-fit_frames = 2000         # leading frames the smooth_param fit may use (0 = all).
-                          # Smoothing always covers every frame; this only bounds the
-                          # cost of estimating one scalar per keypoint
-fit_iterations = 24       # golden-section steps per keypoint (~0.618 shrink each)
-
-
-# ---------------------------------------------------------------------------
-# Postprocess: an ordered chain of corrections applied to the finished 3D pose (off by
-# default; set do_postprocess = true).
-#
-# Everything upstream estimates the pose from PIXELS -- the detector localizes, the rig
-# triangulates, the smoother fits a trajectory against every view. This stage applies
-# what is known about the ANIMAL instead: that some keypoints do not move, that the body
-# is bilaterally symmetric. Those are priors rather than measurements, and keeping them
-# out of the estimating stages is deliberate -- an estimator already told the answer
-# cannot be checked against it.
-#
-# It runs AFTER the smoother, and that order is forced rather than chosen: the smoother
-# re-derives the 3D from the 2D observations, so a correction applied before it is
-# followed straight back off by the fit chasing its pixels. The honest cost is that these
-# priors OVERWRITE the estimate rather than informing it.
-#
-# Each op is one [[postprocess.ops]] block, applied in the order they appear -- the same
-# shape as [[pose2d.preprocessors]]. Ordered, because the ops do not commute; one list,
-# because a new correction should cost a block here rather than a new pipeline stage.
-# Each op logs how far it moved the points it touched, which is the only check on its
-# premise. With no blocks at all the stage passes the pose through unchanged.
-[postprocess]
-
-# The ops, and what each one assumes:
-#
-# [[postprocess.ops]] with op = "static"   (points, method, trim)
-#   Collapse each listed point to ONE position for the whole recording -- in 3D, and
-#   independently per view in 2D. On a tethered fly the six thorax-coxa joints and the
-#   neck sit on the sclerotized thorax, so their position is a constant of the recording
-#   and everything the estimate does over time is per-frame noise. Within a view that
-#   sees the point the center also fills the frames where the detection dropped out; a
-#   (view, point) pair the view NEVER observes stays NaN.
-#
-#   `method` picks which center, and they differ only in what they assume about the
-#   contamination:
-#     median            per-axis temporal median. 50% breakdown point, within ~2% of the
-#                       mean's efficiency here. Right until you have a reason.
-#     mean              per-axis arithmetic mean. Minimum-variance IF the residual is
-#                       clean Gaussian noise -- worth having to check exactly that -- but
-#                       one blown frame drags it.
-#     trimmed_mean      mean of the values inside [trim, 1-trim]. Tunable between the
-#                       two above; trims by VALUE threshold, not exact order statistic.
-#     mode              half-sample mode (Robertson-Cryer). Follows DENSITY where the
-#                       median follows COUNT, which matters when the contaminant is the
-#                       MAJORITY: correct detections tight, wrong ones scattered. Below
-#                       50% contamination it buys nothing and costs variance.
-#     geometric_median  multivariate L1 center (Weiszfeld). The only ROTATION-EQUIVARIANT
-#                       option -- the other four work axis by axis, so their answer
-#                       depends on the world frame's orientation, a property of the rig.
-#
-# [[postprocess.ops]] with op = "symmetrize"   (pairs, midline, per_frame, strength)
-#   Make each left/right pair a mirror image across the animal's sagittal plane, and put
-#   each `midline` point on that plane. The plane is fitted from `pairs` ONLY (each pair's
-#   midpoint lies on it, each pair's difference is normal to it), so a point that is about
-#   to be moved onto the plane never votes on where the plane is.
-#
-#   NEITHER list is defaulted from [skeleton].symmetries, and that is not an oversight:
-#     - That list pairs the LEGS too, and at any instant a fly's left and right legs are
-#       in different gait phases. That asymmetry IS the behavior. Symmetrizing it would be
-#       a serious corruption wearing the costume of a correction. Only body-fixed pairs
-#       belong here.
-#     - "Has no mirror partner" does not imply "on the midline". A fly's abdomen bends
-#       laterally, so abdomen0..4 are unpaired and still off-plane.
-#
-#   `per_frame = false` (the default) fits one plane for the recording, which makes the op
-#   a FIXED map -- so it leaves an already-static point static, and `static` followed by
-#   `symmetrize` satisfies both properties exactly. Fitted per frame the plane wobbles and
-#   symmetrizing after a freeze un-freezes it. `strength` below 1.0 moves each side only
-#   part-way to the mirror of the other, which is the honest setting when the symmetry is
-#   believed only approximately.
-#
-# For a tethered fly the usual chain is:
-#
-# [[postprocess.ops]]
-# op = "static"
-# method = "median"
-# points = ["neck",
-#           "lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
-#           "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
-#
-# [[postprocess.ops]]
-# op = "symmetrize"
-# pairs = [["lf_thorax_coxa", "rf_thorax_coxa"],
-#          ["lm_thorax_coxa", "rm_thorax_coxa"],
-#          ["lh_thorax_coxa", "rh_thorax_coxa"]]
-# midline = ["neck"]
-
-
-# Inverse kinematics: fit a NeuroMechFly-style articulated model's joint angles to
-# the triangulated 3D pose (off by default; set do_inverse_kinematics = true). The
-# solver is QuickIK (https://nely-epfl.github.io/quickik/), an optional extra --
-# install it with `deeperfly[ik]`. deeperfly builds a body plan for the recording
-# (the six legs with segment lengths MEASURED from the data, plus the head and the
-# abdomen's sagittal pitch chain) and QuickIK fits the whole body against every
-# tracked keypoint at once. The angles AND the fitted model joints (which reproject
-# onto the raw images -- see the `skeleton_nmf` / `mesh_nmf` panels and the GUI's NMF
-# overlays) are written to results.h5.
-[inverse_kinematics]
-template = "neuromechfly"   # a packaged template name, or a path to a template TOML
-# legs = ["lf", "lm", "lh", "rf", "rm", "rh"]  # which legs to fit (default: all)
-fit_head = true            # fit the head chain (yaw/pitch/roll) from the antenna tips
-fit_abdomen = true         # fit the abdomen pitch chain from the abdomen markers
-
-# QuickIK solver knobs (its SolverConfig). The body plan is solved in MODEL units, so
-# the two tolerances mean the same thing whatever scale the camera rig is gauged at.
-n_iterations = 60          # Gauss-Newton steps per frame
-neutral_weight = 0.001     # pull toward each DOF's neutral value; this is what pins
-                           # the DOFs the keypoints don't determine (raise it if a
-                           # sparsely-observed limb wanders, at the cost of some bias)
-damping = 0.1              # Levenberg-Marquardt damping. Far above QuickIK's own
-                           # suggested ~1e-6, deliberately: the abdomen's five
-                           # near-collinear hinges are ill-conditioned, so a lightly
-                           # damped step overshoots into the joint limits -- and since
-                           # limits are enforced by clamping the step rather than
-                           # projecting the gradient, a clamped angle stays clamped and
-                           # the solve deadlocks at a feasible but wrong pose (at 0.01
-                           # an exactly-straight synthetic abdomen curls right up).
-                           # It can't go much higher either: the head is well
-                           # conditioned and just under-converges when over-damped.
-position_tolerance = 0.001  # early stop: largest root-position step (model units)
-angle_tolerance = 0.001     # early stop: largest joint-angle step (radians)
-
-# Fix the body in the model frame: right for a TETHERED fly, whose body doesn't move.
-# The leg roots then sit at their measured medians and only the joint angles vary. Set
-# false for a freely-moving preparation, to give QuickIK a 6-DOF root to fit per frame.
-fixed_body = true
-
-# Weigh each observation by the detector's confidence instead of treating every
-# observed keypoint equally.
+fixed = ["*.intr"]          # e.g. also "f.rvec"/"f.tvec" to fix the world gauge
 weigh_by_confidence = false
+max_frames = 200            # bundle-adjust on at most this many frames
 
-# Solve long recordings in overlapping segments across worker threads. Off by default:
-# every segment restarts from the neutral pose and only warm-starts within itself, so
-# the angle traces can step at a seam -- a poor trade for a joint-angle time series
-# unless the recording is long enough to need the speed.
-parallel = false
-segment_len = 200          # frames per segment (includes the overlap)
-overlap_len = 10           # frames shared with the next segment
 
-# Points whose 3D position is physically fixed over the recording. Before the fit,
-# each listed point is replaced by its temporal median across all frames, so it stops
-# jittering with per-frame detection noise (and occluded frames get filled in).
-# Empty = off. Refer to points by their [skeleton].point_names. Note that under
-# `fixed_body` the leg roots are already held at their measured medians by
-# construction, so this mainly matters when the body is free.
+# == Ensemble Kalman smoother ================================================
+# One 3D trajectory per keypoint fitted to the whole recording against every view, with
+# the rig's own projection as the observation model. `deeperfly config show eks`
+[eks]
+# Raised from the shipped 5.0: over a 5..30 sweep this is the best reprojection median,
+# and it flags 37% of observations rather than two thirds of everything.
+inflate_threshold = 15.0
+
+
+# == Inverse kinematics ======================================================
+# Every knob is at its default, so no table is written (`deeperfly config show
+# inverse_kinematics`). Two things about the packaged model are worth knowing:
 #
-# This is the IK stage's own PRIVATE pin: it affects the fit and nothing else -- no
-# stage output records it, so the videos, the editor and results.h5 still show the
-# unpinned pose. `{ op = "static" }` in [postprocess] is the same idea applied to the
-# RESULT; with it configured this key is redundant -- the 3D handed to the fit already
-# arrives collapsed -- and the run says so in its log. Example:
-# constant_points = ["lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
-#                    "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
-constant_points = []
-
-# Per-DOF joint angle limits, in DEGREES, overriding the template defaults. Keys are
-# the flygym joint angle names "<parent_body>-<child_body>-<dof>" (dofs: yaw/pitch/
-# roll), the same names written to results.h5. The abdomen hinges default to
-# downward-only flexion ([-30, 0]) so the sparse markers can't fold the chain into a
-# zig-zag; override here to widen/flip that. Examples:
-[inverse_kinematics.bounds]
-# "rf_trochanterfemur-rf_tibia-pitch" = [10, 160]
-# "c_thorax-rf_coxa-roll"             = [-120, 40]
-# "c_thorax-c_head-pitch"             = [-30, 30]
-# "c_abdomen12-c_abdomen3-pitch"      = [-45, 20]
-
-# Marker placement: *where* each head/abdomen keypoint sits relative to the model
-# (the labeling-scheme choice -- e.g. the abdomen points are annotated as offsets
-# from the model's abdomen joints). Each entry is { body, offset } in model units;
-# the chain and depth follow from `body`. A table here REPLACES that chain's default
-# markers, so a different skeleton can retarget them without rebuilding the model.
-# Omit both tables to keep the packaged NeuroMechFly markers. Examples:
-# [inverse_kinematics.abdomen]
-# l_abdomen0 = { body = "c_abdomen3", offset = [0.0,  0.05, 0.30] }
-# r_abdomen0 = { body = "c_abdomen3", offset = [0.0, -0.05, 0.30] }
-# [inverse_kinematics.head]
-# l_antenna  = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
-# r_antenna  = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
-
-
-# ---------------------------------------------------------------------------
-# Correction GUI (`deeperfly gui`): display-only settings (no effect on the pipeline).
-[gui]
-# Body parts hidden from the NeuroMechFly overlay in the editor. Choose from:
-# wings, halteres, eyes, antennae, head, thorax, abdomen, legs.
-mesh_hide = ["wings"]
-
-
-# ---------------------------------------------------------------------------
-# Visualization: each [[visualization.videos]] is one output MP4
-# (`<video_name>.mp4`), composited from an ordered list of `panels`. A panel draws
-# one `plot` op for one `view` (camera) with its top-left at pixel (`x0`, `y0`):
-#   imshow      - that view's video frame
-#   skeleton_2d - that view's 2D detections
-#   skeleton_3d - the 3D skeleton reprojected into that view (OpenCV, depth-sorted)
-# Panels draw in order, so a skeleton panel after an `imshow` at the same offset
-# overlays it. The canvas auto-sizes to fit all panels unless you set
-# `width`/`height` on the video.
+# Both chains are targeted at THIS skeleton, so a body plan covers all 38 points. The
+# abdomen's five markers are the dorsal-midline tergite stripes, placed on the model at
+# the same body + offset the docs keypoint viewer draws them at -- so what the labeling
+# reference shows and what the IK fits are the same choice, read from the same file. The
+# other side of that: a `fly38` run gets NO abdomen fit at all (its two side chains have
+# no marker on the model any more) and no head or abdomen SIZE, because neither of that
+# skeleton's marker sets contains a separation the size estimate can use. Both are
+# warned about, not silent.
 #
-# `background` is the canvas fill (default black): set it under `[visualization]`
-# for every video, or per panel to repaint just its tile.
+# Retarget a chain with a marker table if your labeling scheme differs (`body` names a
+# baked body; the abdomen chain is c_abdomen12 / c_abdomen3 / c_abdomen4 / c_abdomen5 /
+# c_abdomen6). Declaring the table REPLACES that chain's markers, so list all of them:
 #
-# Output frame rate: set `output_fps` (explicit fps) or `speed` (output fps = input
-# fps * speed; 0.5 = slow motion) -- globally or per video, the per-video value
-# winning. With neither, a video plays at the recording's own detected rate.
+#   [inverse_kinematics.abdomen]
+#   abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.0, 0.30] }
+#   abdomen1 = { body = "c_abdomen4", offset = [0.0, 0.0, 0.285] }
+#   abdomen2 = { body = "c_abdomen5", offset = [0.0, 0.0, 0.27] }
+#   abdomen3 = { body = "c_abdomen6", offset = [0.0, 0.0, 0.243] }
+#   abdomen4 = { body = "c_abdomen6", offset = [-0.23, 0.0, 0.20] }
 #
-# Draw-op kwargs (point_radius, line_thickness, outline_thickness, scale, palette,
-# ...) merge across three levels, each keyed by the `plot` op name, most specific
-# winning:
-# `[visualization.kwargs]` (every video), a `kwargs` table on a video entry (that
-# video), and extra keys on a single panel.
+# Each chain also gets ONE uniform size multiplier of its own, measured from the marker
+# separations its own joints cannot change -- the head's neck-to-antennae radius, the
+# abdomen's one pair sharing a body. That restriction is what keeps posture out of size:
+# the abdomen's markers sit on the dorsal surface, the OUTSIDE of a ventral bend, so a
+# ruler drawn along the chain reads a curled abdomen as 57% larger across the joints'
+# range. A left-to-right distance is excluded for a second reason -- across the corpus
+# the l_antenna-r_antenna span reads 1.515x the model where either antenna's distance to
+# the neck reads 1.196x, 26% wider in all 30 recordings, because each side is
+# triangulated from its own cameras -- so a mirror pair is folded to its midpoint first.
 #
-# Instead of `scale`, give a target `width` and/or `height` in pixels (settable at
-# any level, priority over `scale`): both -> that exact box, one -> the other
-# follows to keep aspect.
-# ---------------------------------------------------------------------------
+# `neck` is not an ordinary marker: it is the head chain's BASE. It sits on the head's
+# rotation center, so it constrains none of the three head angles -- what it does is say
+# where the pivot IS, which the six thorax-coxae cannot. They are very nearly coplanar
+# (singular values 0.693 / 0.325 / 0.085) and the pivot sits 0.404 above their centroid,
+# so registering off them alone extrapolates 4.7x along their worst-determined axis and
+# puts the head a median 0.125 model units too dorsal -- 29% of the head's own radius,
+# the same sign in all 55 corpus recordings -- which the antennae absorb as ~11 deg of
+# spurious pitch. Because it is a base and not evidence, declaring BOTH antennae absent
+# still leaves the head unfitted. A marker table that redeclares the head chain replaces
+# the baked nomination too, so carry it over with `base = true`:
+#
+#   [inverse_kinematics.head]
+#   neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0], base = true }
+#   l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
+#   r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
+
+
+# == Postprocess =============================================================
+# Corrections from knowing the ANIMAL rather than the pixels, applied in order to the
+# finished 3D. Keeping these priors out of the estimating stages is deliberate: an
+# estimator already told the answer cannot be checked against it. Runs after the smoother
+# because the smoother re-derives 3D from the 2D, so anything corrected before it is
+# followed straight back off.
+#
+# ORDER MATTERS. With one fitted plane (the default) symmetrize is a FIXED map, so it
+# leaves an already-static point static and static-then-symmetrize satisfies both exactly;
+# the other order would not. Each op logs how far it moved what it touched -- a point
+# drifting tens of pixels was moving, and belongs out of the list rather than nailed down.
+
+# A tethered fly's thorax plate does not move, so these seven are a constant of the
+# recording and everything the estimate does over time is per-frame noise. `abdomen*` is
+# deliberately absent: it pitches, telescopes and bends, which is worth measuring.
+[[postprocess.ops]]
+op = "static"
+method = "median"           # or mean / trimmed_mean / mode / geometric_median
+points = ["neck",
+          "lf_thorax_coxa", "lm_thorax_coxa", "lh_thorax_coxa",
+          "rf_thorax_coxa", "rm_thorax_coxa", "rh_thorax_coxa"]
+
+# Each side is triangulated from its own cameras, so a left/right pair drifts apart by
+# whatever the two sides' errors differ by; this closes that gap. ONLY body-fixed pairs --
+# never the legs, whose left/right asymmetry at any instant IS the behavior. The plane is
+# fitted from `pairs` alone, so a point about to be moved onto it never votes on where it
+# is, and a bent abdomen cannot drag it.
+[[postprocess.ops]]
+op = "symmetrize"
+pairs = [["lf_thorax_coxa", "rf_thorax_coxa"],
+         ["lm_thorax_coxa", "rm_thorax_coxa"],
+         ["lh_thorax_coxa", "rh_thorax_coxa"]]
+midline = ["neck"]
+
+
+# == Visualization ===========================================================
+# Each [[visualization.videos]] is one MP4. `grid` lays views out in cells, expanding to an
+# `imshow` plus the named `plot` per cell with the offsets computed -- a cell whose view is
+# not a camera (the synthetic `bird`) gets no imshow, and `""` leaves a gap. Add an
+# explicit `panels` list for a layout a grid cannot say; it draws on top.
+#
+# `stage` names WHICH stage's points to draw. Left out it means "the most-derived stage
+# present" -- so with do_eks on, a video named pose3d silently becomes the smoother's
+# output and pose2d stops showing the detector at all. Naming it is how each video keeps
+# meaning one thing, and the only way to render a before/after pair.
+#
+# `view = "bird"` is a synthetic dorsal plan view fitted to the animal's own body axes from
+# the 3D: the one viewpoint showing all six legs with no body in the way, which the rig
+# cannot have because the tether is up there. Having no footage, it never appears in the
+# 2D video.
+#
+# `crop = "pose2d"` frames every panel through the window its own view's pathway detected
+# through, resolved per view, so an axial camera is not a smudge in its cell -- and the box
+# stays in exactly one place. A copy down here would keep showing the previous recording's
+# window under an overlay that still looks well-formed.
 [visualization]
 background = "black"
-# Output MP4s are encoded with PyAV (H.264 / libx264, on the CPU).
-# output_fps = 30        # explicit output fps for every video (per-video override below)
-# speed      = 1.0       # or scale the input video fps instead (0.5 = slow motion)
-# Body parts hidden from the `mesh_nmf` overlay in the rendered videos. Choose from:
-# wings, halteres, eyes, antennae, head, thorax, abdomen, legs. (The GUI has its own
-# `[gui].mesh_hide`.)
-mesh_hide = ["wings"]
+crop = "pose2d"
 
-# skeleton joints draw as a solid outline ring whose fill opacity is the detector
-# confidence (0..1, verbatim), so a low-confidence joint fades to just its ring
-# instead of vanishing. Set `outline_thickness = 0` for the old fill-only markers.
+# Joints draw as a solid outline ring whose fill opacity is the detector confidence, so a
+# low-confidence joint fades to its ring instead of vanishing (`outline_thickness = 0`
+# restores fill-only markers). `width`/`height` here also size the grid's cells.
 [visualization.kwargs]
-imshow      = { width = 480, height = 240 }
-skeleton_2d = { line_thickness = 2, width = 480, height = 240 }
-skeleton_3d = { line_thickness = 2, width = 480, height = 240 }
-skeleton_nmf = { line_thickness = 2, width = 480, height = 240 }  # fitted NMF model skeleton overlay
-mesh_nmf     = { alpha = 0.55, width = 480, height = 240 }        # fitted NMF model mesh overlay
+imshow       = { width = 480, height = 240 }
+skeleton_2d  = { width = 480, height = 240, line_thickness = 2 }
+skeleton_3d  = { width = 480, height = 240, line_thickness = 2 }
+skeleton_nmf = { width = 480, height = 240, line_thickness = 2 }
+mesh_nmf     = { width = 480, height = 240, alpha = 0.55 }
+
+# Right-side cameras in the LEFT column, so the montage reads as the animal from above.
+[[visualization.videos]]
+video_name = "pose2d"       # camera frames with the raw 2D detections
+plot  = "skeleton_2d"
+stage = "pose2d"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
 
 [[visualization.videos]]
-video_name = "pose2d"   # camera frames with the raw 2D detections drawn on top
-panels = [
-    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
-    { plot = "skeleton_2d", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "skeleton_2d", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
-    { plot = "skeleton_2d", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "skeleton_2d", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
-    { plot = "skeleton_2d", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "skeleton_2d", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
-    { plot = "skeleton_2d", view = "lh", x0 = 480, y0 = 720 },
-]
+video_name = "pose3d"       # the triangulated 3D reprojected back into each view
+plot  = "skeleton_3d"
+stage = "triangulation"
+grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "", "lh"]]
 
 [[visualization.videos]]
-video_name = "pose3d"   # same montage with the triangulated 3D skeleton reprojected back
-panels = [
-    { plot = "imshow",      view = "f",  x0 = 240, y0 = 0   },
-    { plot = "skeleton_3d", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",      view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "skeleton_3d", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",      view = "lf", x0 = 480, y0 = 240 },
-    { plot = "skeleton_3d", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",      view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "skeleton_3d", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",      view = "lm", x0 = 480, y0 = 480 },
-    { plot = "skeleton_3d", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",      view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "skeleton_3d", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",      view = "lh", x0 = 480, y0 = 720 },
-    { plot = "skeleton_3d", view = "lh", x0 = 480, y0 = 720 },
-]
+video_name = "pose_nmf"     # the fitted NeuroMechFly skeleton (needs do_inverse_kinematics)
+plot  = "skeleton_nmf"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
 
 [[visualization.videos]]
-video_name = "pose_nmf"  # camera frames with the fitted NeuroMechFly model overlaid
-                         # (needs do_inverse_kinematics = true; skipped otherwise)
-panels = [
-    { plot = "imshow",       view = "f",  x0 = 240, y0 = 0   },
-    { plot = "skeleton_nmf", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",       view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "skeleton_nmf", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",       view = "lf", x0 = 480, y0 = 240 },
-    { plot = "skeleton_nmf", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",       view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "skeleton_nmf", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",       view = "lm", x0 = 480, y0 = 480 },
-    { plot = "skeleton_nmf", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",       view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "skeleton_nmf", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",       view = "lh", x0 = 480, y0 = 720 },
-    { plot = "skeleton_nmf", view = "lh", x0 = 480, y0 = 720 },
-]
-
-[[visualization.videos]]
-video_name = "pose_mesh"  # camera frames with the fitted NeuroMechFly *mesh* overlaid
-                          # (needs do_inverse_kinematics = true; skipped otherwise)
-panels = [
-    { plot = "imshow",   view = "f",  x0 = 240, y0 = 0   },
-    { plot = "mesh_nmf", view = "f",  x0 = 240, y0 = 0   },
-    { plot = "imshow",   view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "mesh_nmf", view = "rf", x0 = 0,   y0 = 240 },
-    { plot = "imshow",   view = "lf", x0 = 480, y0 = 240 },
-    { plot = "mesh_nmf", view = "lf", x0 = 480, y0 = 240 },
-    { plot = "imshow",   view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "mesh_nmf", view = "rm", x0 = 0,   y0 = 480 },
-    { plot = "imshow",   view = "lm", x0 = 480, y0 = 480 },
-    { plot = "mesh_nmf", view = "lm", x0 = 480, y0 = 480 },
-    { plot = "imshow",   view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "mesh_nmf", view = "rh", x0 = 0,   y0 = 720 },
-    { plot = "imshow",   view = "lh", x0 = 480, y0 = 720 },
-    { plot = "mesh_nmf", view = "lh", x0 = 480, y0 = 720 },
-]
+video_name = "pose_mesh"    # the fitted NeuroMechFly mesh (needs do_inverse_kinematics)
+plot  = "mesh_nmf"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]

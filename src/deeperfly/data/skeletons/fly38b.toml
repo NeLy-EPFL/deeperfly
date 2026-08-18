@@ -1,0 +1,79 @@
+# fly38b -- fly38 with the abdomen moved onto the midline.
+#
+#   - l_abdomen0..2 and r_abdomen0..2  (two historical DeepFly3D side chains)  REMOVED
+#   + abdomen0..4                      (one dorsal-midline chain, the 5 tergite stripes)
+#   + neck                             (the head-thorax pivot)
+#
+# 38 points -> 38 points, but a DIFFERENT set in a different order, so a labels.h5 or
+# results.h5 written against `fly38` has to be remapped by name, not reinterpreted.
+#
+# Referenced from a run config as `[skeleton] name = "fly38b"`. Any key written in that
+# table overrides the one here (wholesale, per key).
+
+[skeleton]
+name = "fly38b"
+
+point_names = [
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "l_antenna",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+    "r_antenna",
+    "neck",
+    "abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4",
+]
+
+# The abdomen chain is ON the midline, so its points have no mirror partner and are
+# correctly absent here; so is `neck`. Mirroring a frame leaves each midline point mapped
+# to itself, which is what a midline point requires.
+symmetries = [
+    ["lf_thorax_coxa",     "rf_thorax_coxa"],
+    ["lf_coxa_trochanter", "rf_coxa_trochanter"],
+    ["lf_femur_tibia",     "rf_femur_tibia"],
+    ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
+    ["lf_claw",            "rf_claw"],
+    ["lm_thorax_coxa",     "rm_thorax_coxa"],
+    ["lm_coxa_trochanter", "rm_coxa_trochanter"],
+    ["lm_femur_tibia",     "rm_femur_tibia"],
+    ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
+    ["lm_claw",            "rm_claw"],
+    ["lh_thorax_coxa",     "rh_thorax_coxa"],
+    ["lh_coxa_trochanter", "rh_coxa_trochanter"],
+    ["lh_femur_tibia",     "rh_femur_tibia"],
+    ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
+    ["lh_claw",            "rh_claw"],
+    ["l_antenna",          "r_antenna"],
+]
+
+# Each limb's points in kinematic-chain order.
+[skeleton.limb_points]
+lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]
+lm_leg = ["lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw"]
+lh_leg = ["lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw"]
+l_antenna = ["l_antenna"]
+rf_leg = ["rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw"]
+rm_leg = ["rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw"]
+rh_leg = ["rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"]
+r_antenna = ["r_antenna"]
+neck = ["neck"]
+# One chain, anterior to posterior: stripe 1 (tergite A1+2) through stripe 5 (A6).
+abdomen = ["abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4"]
+
+# Left = blue / right = red, lightening front -> hind. The neck and the abdomen are no
+# longer side structures, so instead of sitting on one of the two side ramps they get a
+# third, green one of their own -- lightening the same way, anterior (neck) to posterior
+# (abdomen). Three hues, so which side a point belongs to reads at a glance.
+[skeleton.limb_palette]
+lf_leg = "#0f7399"
+lm_leg = "#1a8daf"
+lh_leg = "#75becb"
+l_antenna = "#0a4f6b"
+rf_leg = "#ba1e31"
+rm_leg = "#c9564f"
+rh_leg = "#d58579"
+r_antenna = "#8c1525"
+neck = "#15a315"
+abdomen = "#61e47b"

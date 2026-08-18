@@ -18,7 +18,8 @@ frames out of 4,073 -- about 40 MB of JPEG against 5.5 GB of video.
     /rig                     rig.toml text            (when the project has one)
     /landmarks               landmarks.toml text      (when it declares any)
     /profiles/<name>         profile text
-    /calibrations/<name>     calibration.toml text
+    /calibrations/<name>     project-wide rig text
+    /calibrations/<slug>/<name>  a rig solved for one recording
     /recordings/<slug>/
         meta                 attrs: id, subject, n_frames, fps, footage basenames
         labels               the labels.h5 file, byte for byte
@@ -147,8 +148,24 @@ def export_package(project, out: str | Path, *, embed: str = "user") -> PackageR
         _put_text(f, "landmarks", project.root / "landmarks.toml")
         for profile in sorted((project.root / "profiles").glob("*.toml")):
             _put_text(f, f"profiles/{profile.stem}", profile)
-        for calibration in sorted((project.root / "calibrations").glob("*.toml")):
+        # TWO LAYOUTS live under calibrations/ and only the flat one was packaged.
+        # `calibrations/<name>.toml` is the project-wide rig (cli/calibrate.py:444);
+        # `calibrations/<slug>/<name>.toml` is a rig solved for ONE recording
+        # (gui/ba.py:611), and results.h5 names the active one by that path. A working
+        # corpus carries dozens of the second kind and none of the first, so
+        # `glob("*.toml")` matched nothing: the package claimed to carry the
+        # calibrations and carried zero, and every imported recording silently fell
+        # back to its stored cameras.
+        calibrations = project.root / "calibrations"
+        for calibration in sorted(calibrations.glob("*.toml")):
             _put_text(f, f"calibrations/{calibration.stem}", calibration)
+            report.calibrations += 1
+        for calibration in sorted(calibrations.glob("*/*.toml")):
+            _put_text(
+                f,
+                f"calibrations/{calibration.parent.name}/{calibration.stem}",
+                calibration,
+            )
             report.calibrations += 1
 
         for entry in project.recordings:
@@ -364,7 +381,7 @@ def describe_package(path: str | Path) -> dict:
             "provenance": json.loads(meta.attrs.get("provenance", "{}")),
             "has_rig": "rig" in f,
             "has_landmarks": "landmarks" in f,
-            "calibrations": sorted(f.get("calibrations", {})),
+            "calibrations": _leaf_names(f.get("calibrations", {})),
             "profiles": sorted(f.get("profiles", {})),
             "recordings": recordings,
         }
@@ -426,11 +443,19 @@ def import_package(
                 if name in f:
                     (target / out).write_text(_text(f[name][()]))
             for kind in ("calibrations", "profiles"):
-                for stem in f.get(kind, {}):
-                    (target / kind / f"{stem}.toml").write_text(
-                        _text(f[f"{kind}/{stem}"][()])
-                    )
-        report.calibrations = len(f.get("calibrations", {}))
+                for name, node in f.get(kind, {}).items():
+                    # A group here is a per-recording calibration directory; the
+                    # directory name is the slug results.h5 resolves the active rig
+                    # through, so it has to survive the round trip.
+                    if isinstance(node, h5py.Group):
+                        (target / kind / name).mkdir(parents=True, exist_ok=True)
+                        for stem, leaf in node.items():
+                            (target / kind / name / f"{stem}.toml").write_text(
+                                _text(leaf[()])
+                            )
+                    else:
+                        (target / kind / f"{name}.toml").write_text(_text(node[()]))
+        report.calibrations = len(_leaf_names(f.get("calibrations", {})))
 
         for slug in sorted(f.get("recordings", {})):
             group = f[f"recordings/{slug}"]
@@ -536,3 +561,19 @@ def _resolve(path: str | Path) -> Path:
 
 def _text(raw) -> str:
     return raw.decode() if isinstance(raw, bytes) else str(raw)
+
+
+def _leaf_names(group) -> list[str]:
+    """Every text leaf under a package group, as ``<name>`` or ``<dir>/<name>``.
+
+    Calibrations nest one level (see :func:`export_package`), so counting or listing
+    the top-level names alone reports one entry per *recording* rather than one per
+    rig -- and reports zero for a package whose rigs are all nested.
+    """
+    out: list[str] = []
+    for name, node in (group or {}).items():
+        if isinstance(node, h5py.Group):
+            out.extend(f"{name}/{stem}" for stem in node)
+        else:
+            out.append(name)
+    return sorted(out)

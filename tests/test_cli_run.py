@@ -30,16 +30,24 @@ FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
 
 def _default_cfg(tmp_path, *, name="config.toml", **flags):
-    """Write the packaged default config with the given ``do_<stage>`` flags flipped.
+    """Write the packaged default config with an explicit, fully-stated pipeline.
 
-    Pass any subset of stage names (``pose2d``, ``bundle_adjustment``,
-    ``pictorial_structures``, ``triangulation``, ``visualization``) as keyword
-    booleans. The full default is needed by tests that run the ``pose2d``
-    stage (it builds the camera rig from ``[cameras]``); tests that resume from a
-    cached result use small hand-written configs instead.
+    Pass any subset of stage names as keyword booleans; every stage the caller does not
+    name is written at its ``STAGE_DEFAULTS`` value, NOT at whatever the packaged config
+    happens to recommend. The packaged config turns the smoother and the correction chain
+    on because they are the right thing for a tethered recording -- a *test* asking for
+    "pose2d and nothing after it" means that literally, and should not have to keep a list
+    of the recommendations in sync to get it.
+
+    The full default is needed by tests that run the ``pose2d`` stage (it builds the
+    camera rig from ``[cameras]``); tests that resume from a cached result use small
+    hand-written configs instead.
     """
+    unknown = set(flags) - set(STAGES)
+    assert not unknown, f"not pipeline stages: {sorted(unknown)}"
     text = DEFAULT_CONFIG_PATH.read_text()
-    for stage, on in flags.items():
+    for stage in STAGES:
+        on = flags.get(stage, STAGE_DEFAULTS[stage])
         # Anchor to the start of a line so a `do_<stage> = ...` example inside a
         # comment is not matched ahead of the real [pipeline] flag.
         text, n = re.subn(
@@ -58,17 +66,17 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
 
 
 def test_stage_flags_defaults():
-    """An empty config uses STAGE_DEFAULTS; the packaged default matches it."""
+    """An empty config uses STAGE_DEFAULTS; the packaged default RECOMMENDS two more.
+
+    The two are not defaults and are not silent: they are what a tethered recording
+    wants, they are written in the file, and `[eks]` and `[[postprocess.ops]]` are there
+    to be read. A config that says nothing still gets the conservative set.
+    """
     assert Config.from_dict({}).stage_flags() == STAGE_DEFAULTS
     assert Config.default().stage_flags() == {
-        "pose2d": True,
-        "bundle_adjustment": True,
-        "pictorial_structures": False,
-        "triangulation": True,
-        "eks": False,
-        "postprocess": False,
-        "inverse_kinematics": False,
-        "visualization": True,
+        **STAGE_DEFAULTS,
+        "eks": True,  # de-jitters the 3D and repairs blown detections
+        "postprocess": True,  # freezes the tethered thorax, symmetrizes it
     }
 
 
@@ -200,6 +208,55 @@ def _edit_snapshot(outdir, pattern, repl):
     text, n = re.subn(pattern, repl, snapshot.read_text(), count=1, flags=re.M)
     assert n == 1, f"{pattern!r} not found in the snapshot"
     snapshot.write_text(text)
+
+
+def _set_snapshot_key(outdir, section, line):
+    """Set ``line`` inside ``[section]`` of the snapshot, adding the table if absent.
+
+    The packaged config states only what it *changes*, so most stage tables are simply
+    not in it -- and a test that changes a knob to prove cache invalidation cannot assume
+    the knob is written down anywhere. This sets it either way: after the ``[section]``
+    header when there is one, as a new table at the end otherwise.
+    """
+    snapshot = outdir / "config.toml"
+    text = snapshot.read_text()
+    header = f"[{section}]"
+    key = line.split("=", 1)[0].strip()
+    lines = text.splitlines(keepends=True)
+    for i, ln in enumerate(lines):
+        if ln.strip() != header:
+            continue
+        # Replace the key if this table already sets it (a second copy is a TOML error),
+        # else insert it right after the header.
+        for j in range(i + 1, len(lines)):
+            stripped = lines[j].strip()
+            if stripped.startswith("["):
+                break
+            if stripped.split("=", 1)[0].strip() == key:
+                lines[j] = line + "\n"
+                snapshot.write_text("".join(lines))
+                return
+        lines.insert(i + 1, line + "\n")
+        snapshot.write_text("".join(lines))
+        return
+    snapshot.write_text(text.rstrip("\n") + f"\n\n{header}\n{line}\n")
+
+
+def _with_calibration(text, filename=None):
+    """The packaged config with ``[cameras].calibration`` set.
+
+    A ``[cameras]`` table is *added* rather than uncommented: the packaged config gives
+    each view its own ``[cameras.<name>]`` table and no bare ``[cameras]`` header, because
+    ``deeperfly project`` injects its solved rig as a ``calibration`` key there and two
+    headers would collide. Enabling one by hand therefore means adding the table, which
+    is what this reproduces.
+    """
+    from deeperfly.calibration import CALIBRATION_FILENAME as _default
+
+    name = filename or _default
+    marker = "[cameras.defaults]"
+    assert marker in text, "the packaged config no longer has [cameras.defaults]"
+    return text.replace(marker, f'[cameras]\ncalibration = "{name}"\n\n{marker}', 1)
 
 
 def _make_fly_recording(d):
@@ -941,9 +998,7 @@ def test_config_change_recomputes_only_affected_stages(tmp_path, monkeypatch, ca
     assert (len(calls), len(tri_calls)) == (1, 1)
     assert tri_calls[0].ransac_threshold == 15.0
 
-    _edit_snapshot(
-        tmp_path / "out", r"^ransac_threshold = 15\.0", "ransac_threshold = 9.0"
-    )
+    _set_snapshot_key(tmp_path / "out", "triangulation", "ransac_threshold = 9.0")
     with caplog.at_level("INFO", logger="deeperfly"):
         # no -c -> the edited snapshot drives the run
         cli.main(_run_args(tmp_path, log_level="info"))
@@ -964,8 +1019,8 @@ def test_perf_only_knobs_do_not_invalidate(tmp_path, monkeypatch):
     )
     _, calls = _stub_detect(monkeypatch, tmp_path)
     cli.main(_run_args(tmp_path, cfg))
-    _edit_snapshot(tmp_path / "out", r"^batch_size = 16", "batch_size = 2")
-    _edit_snapshot(tmp_path / "out", r"^decode_buffer = 4", "decode_buffer = 8")
+    _set_snapshot_key(tmp_path / "out", "pose2d", "batch_size = 4")
+    _set_snapshot_key(tmp_path / "out", "pose2d", "decode_buffer = 8")
     cli.main(_run_args(tmp_path))  # no -c -> the edited snapshot drives
     assert len(calls) == 1  # nothing recomputed
 
@@ -978,16 +1033,21 @@ def test_pose2d_param_change_recomputes_with_loud_warning(
     cfg = _default_cfg(
         tmp_path, bundle_adjustment=False, triangulation=False, visualization=False
     )
+    # Drive an `hrnet` model rather than the packaged `mvt`: the multiview transformer
+    # PINS float32 in its class defaults, so `[pose2d].precision` is inert for it and
+    # editing it changes no resolved value -- correctly, but then there is nothing here
+    # to invalidate. `hrnet` inherits the [pose2d] default, which is the case this is about.
+    cfg.write_text(cfg.read_text().replace('class = "mvt"', 'class = "hrnet"', 1))
     _, calls = _stub_detect(monkeypatch, tmp_path)
     cli.main(_run_args(tmp_path, cfg))
-    _edit_snapshot(tmp_path / "out", r'^precision = "float16"', 'precision = "float32"')
+    _set_snapshot_key(tmp_path / "out", "pose2d", 'precision = "bfloat16"')
     with caplog.at_level("WARNING", logger="deeperfly"):
         cli.main(_run_args(tmp_path, log_level="warning"))
     assert len(calls) == 2
     assert any(
         "recomputing pose2d" in r.message
         and "precision" in r.message
-        and "float32" in r.message
+        and "float16" in r.message
         and r.levelname == "WARNING"
         for r in caplog.records
     )
@@ -1026,7 +1086,7 @@ def test_enable_pictorial_later_redetects_candidates(tmp_path, monkeypatch, capl
         for r in caplog.records
     )
 
-    _edit_snapshot(tmp_path / "out", r"^lam = 1\.0", "lam = 2.0")
+    _set_snapshot_key(tmp_path / "out", "pictorial_structures", "lam = 2.0")
     cli.main(_run_args(tmp_path))
     # only pictorial (and downstream) reran, from the cached candidates.
     assert (len(calls), len(ps_calls)) == (2, 2)
@@ -1200,7 +1260,8 @@ def test_model_load_explicit_weights(tmp_path, monkeypatch):
     ckpt = tmp_path / "custom.pth"
     ckpt.write_bytes(b"weights")
     lm = models.load_model(ModelSpec(name="m", cls="hourglass", weights=str(ckpt)))
-    assert lm.module == ("loaded", str(ckpt))
+    # The loader is handed a resolved Path, not the config's raw string.
+    assert lm.module == ("loaded", ckpt)
 
 
 def test_model_load_missing_weights_raises(tmp_path):
@@ -1433,13 +1494,34 @@ def test_decode_threads_are_divided_between_the_sources():
 def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     from deeperfly import io
 
-    # open_reader()[key] echoes its source so we see which footage each view used.
-    class _FakeReader:
+    # Footage from disk comes back as a lazy CursorFrames, so what shows which footage a
+    # view used is which source got opened -- not the value, which is now a provider.
+    opened: list = []
+    closed: list = []
+
+    class _FakeCursor:
         def __init__(self, src):
             self._src = src
 
-        def __getitem__(self, key):
-            return ("frames", self._src)
+        def frame(self, idx):
+            return np.zeros((2, 3, 3), np.uint8)
+
+        def close(self):
+            closed.append(self._src)
+
+    class _FakeReader:
+        def __init__(self, src):
+            self._src = src
+            opened.append(src)
+
+        def count(self):
+            return 4
+
+        def cursor(self, **kw):
+            return _FakeCursor(self._src)
+
+        def close(self):
+            pass
 
     monkeypatch.setattr(io, "open_reader", lambda src, **kw: _FakeReader(src))
     cfg = Config.from_dict({"pose2d": {}})
@@ -1451,7 +1533,14 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     got = pipeline.source_view_frames(
         cfg, res, [v0, v1], sources={v0: ["f0"], v1: ["f1"]}
     )
-    assert got == {v0: ("frames", ["f0"]), v1: ("frames", ["f1"])}
+    assert opened == [["f0"], ["f1"]]  # each view opened its own footage
+    assert set(got) == {v0, v1}
+    # Lazy, but it still states the clip it stands for: count from the reader, frame
+    # shape from a real decoded frame.
+    assert all(f.shape == (4, 2, 3, 3) for f in got.values())
+    for f in got.values():
+        f.close()
+    assert closed == [["f0"], ["f1"]]  # and closing it releases the decoder
 
     # 2) no run footage -> error telling the user to re-pass the recording.
     with pytest.raises(SystemExit, match="original frames"):
@@ -1622,13 +1711,7 @@ def test_a_run_can_be_driven_by_the_calibration_a_previous_run_wrote(
     )
     # Uncomment the line the packaged config already documents, rather than adding a
     # second [cameras] table (which TOML forbids).
-    text, n = re.subn(
-        rf'(?m)^# (calibration = "{CALIBRATION_FILENAME}")$',
-        r"\1",
-        DEFAULT_CONFIG_PATH.read_text(),
-        count=1,
-    )
-    assert n == 1, "the packaged config no longer documents [cameras].calibration"
+    text = _with_calibration(DEFAULT_CONFIG_PATH.read_text())
     cfg_b = tmp_path / "b" / "config.toml"
     cfg_b.write_text(text)
 
@@ -1680,13 +1763,7 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
         provenance={"method": "board", "intrinsics": "board"},
     ).save(tmp_path / "b" / CALIBRATION_FILENAME)
 
-    text, n = re.subn(
-        rf'(?m)^# (calibration = "{CALIBRATION_FILENAME}")$',
-        r"\1",
-        DEFAULT_CONFIG_PATH.read_text(),
-        count=1,
-    )
-    assert n == 1
+    text = _with_calibration(DEFAULT_CONFIG_PATH.read_text())
     cfg_b = tmp_path / "b" / "config.toml"
     cfg_b.write_text(text)
     cli.main(

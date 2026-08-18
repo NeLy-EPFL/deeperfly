@@ -24,12 +24,14 @@ def test_bone_indices_in_range(fly):
 
 
 def test_palette(fly):
-    # One color per limb, with the bright antenna/abdomen cues set in the config.
+    # One color per limb, with the bright antenna cues set in the skeleton.
     assert set(fly.palette) == set(fly.limb_names)
     assert fly.palette["l_antenna"] == "#0a4f6b"
     assert fly.palette["r_antenna"] == "#8c1525"
-    assert fly.palette["l_abdomen"] == "#a9dbe4"
-    assert fly.palette["r_abdomen"] == "#e6b3a8"
+    # The packaged skeleton's neck and abdomen are MIDLINE structures, so they take a
+    # green ramp of their own rather than sitting on the left or the right one.
+    assert fly.palette["neck"] == "#15a315"
+    assert fly.palette["abdomen"] == "#61e47b"
 
 
 def test_left_right_legs_disjoint(fly):
@@ -95,36 +97,69 @@ def test_limb_points_resolve_names():
 # -- left/right symmetry ------------------------------------------------------
 
 
-def test_fly38_declares_a_pair_for_every_point(fly):
-    """The packaged skeleton pairs all 38 points, and pairs them across the halves.
+def test_fly38_declares_a_pair_for_every_point(fly38):
+    """``fly38`` pairs all 38 points, and pairs them across the halves.
 
     The left-first block layout means the partner of point ``i`` is ``i + 19``; asserting
-    that (rather than just "19 pairs exist") is what would catch a config edit that paired
-    two points on the same side.
+    that (rather than just "19 pairs exist") is what would catch an edit that paired two
+    points on the same side.
     """
-    assert fly.n_symmetries == 19
-    pairs = np.asarray(fly.symmetries)
+    assert fly38.n_symmetries == 19
+    pairs = np.asarray(fly38.symmetries)
     assert pairs.shape == (19, 2)
     assert sorted(pairs.reshape(-1).tolist()) == list(range(38))
     np.testing.assert_array_equal(pairs[:, 1] - pairs[:, 0], np.full(19, 19))
+    for a, b in fly38.symmetry_names:
+        assert a[0] == "l" and b[0] == "r" and a[1:] == b[1:]
+
+
+def test_the_packaged_skeleton_pairs_every_point_that_has_a_side(fly):
+    """``fly38b``'s unpaired points are exactly the midline ones, and no others.
+
+    A point off the midline with no partner is a real defect -- it silently drops out of
+    flip augmentation and the chirality check -- so "16 pairs" is asserted as *which* six
+    points are left over, not as a count.
+    """
+    paired = {fly.point_names[i] for pair in fly.symmetries for i in pair}
+    unpaired = [n for n in fly.point_names if n not in paired]
+    assert unpaired == [
+        "neck",
+        "abdomen0",
+        "abdomen1",
+        "abdomen2",
+        "abdomen3",
+        "abdomen4",
+    ]
     for a, b in fly.symmetry_names:
         assert a[0] == "l" and b[0] == "r" and a[1:] == b[1:]
 
 
-def test_flip_perm_is_an_involution_and_matches_the_block_layout(fly):
+def test_flip_perm_is_an_involution(fly):
     perm = fly.flip_perm()
     assert perm.shape == (38,)
     # Applying the mirror twice is the identity -- the property every consumer relies on.
     np.testing.assert_array_equal(perm[perm], np.arange(38))
-    # For this layout it is exactly "swap the halves", which is also what the dfpose
-    # trainer's FLIP_PERM is; a divergence here would silently retrain on swapped sides.
-    np.testing.assert_array_equal(perm, np.roll(np.arange(38), 19))
+    # A midline point maps to ITSELF, which is what makes mirroring a frame legal for it.
+    for name in ("neck", "abdomen0", "abdomen4"):
+        i = fly.point_names.index(name)
+        assert perm[i] == i
+
+
+def test_flip_perm_matches_the_fly38_block_layout(fly38):
+    """For ``fly38`` the mirror is exactly "swap the halves".
+
+    That is also what the dfpose trainer's ``FLIP_PERM`` is; a divergence here would
+    silently retrain every left channel on a right joint.
+    """
+    np.testing.assert_array_equal(fly38.flip_perm(), np.roll(np.arange(38), 19))
 
 
 def test_partner(fly):
     assert fly.point_names[fly.partner("lf_claw")] == "rf_claw"
     assert fly.point_names[fly.partner("r_antenna")] == "l_antenna"
-    assert fly.partner(0) == 19
+    assert fly.partner(0) == fly.point_names.index("rf_thorax_coxa")
+    # A midline point has no partner at all -- None, not itself.
+    assert fly.partner("neck") is None
     with pytest.raises(ValueError, match="not a point of skeleton"):
         fly.partner("no_such_point")
 

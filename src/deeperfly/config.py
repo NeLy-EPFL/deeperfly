@@ -52,10 +52,17 @@ __all__ = [
     "InverseKinematicsParams",
     "AnnotationParams",
     "DEFAULT_CONFIG_PATH",
+    "SKELETON_PRESET_DIR",
+    "skeleton_presets",
 ]
 
 #: Packaged template emitted by ``deeperfly init`` (also the run-config example).
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
+
+#: Packaged skeletons, referenced by ``[skeleton] name``. Each file holds a complete
+#: ``[skeleton]`` table in the same format ``deeperfly dense-config --skeleton`` takes, so
+#: a preset and a project's own ``skeleton.toml`` are interchangeable.
+SKELETON_PRESET_DIR = Path(__file__).parent / "data" / "skeletons"
 
 log = logging.getLogger("deeperfly")
 
@@ -478,8 +485,19 @@ class InverseKinematicsParams:
     ``markers`` redefines the head/abdomen chain markers -- *where* each tracked
     keypoint sits relative to the model, the labeling-scheme choice. It is keyed by
     chain name (``"head"`` / ``"abdomen"``), each holding ``point -> {"body", "offset",
-    "depth"?}`` (from the ``[inverse_kinematics.head]`` / ``[inverse_kinematics.abdomen]``
-    config tables); see :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
+    "depth"?, "base"?}`` (from the ``[inverse_kinematics.head]`` /
+    ``[inverse_kinematics.abdomen]`` config tables); see
+    :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
+
+    ``base = true`` nominates a marker as its chain's **base landmark** -- the point that
+    says where the chain sits, the way a leg's thorax-coxa does. The packaged head chain
+    nominates ``neck``, which sits on the head's own rotation center: it constrains none
+    of the three head angles, and is not counted as evidence the head was observed, but
+    it places the pivot far better than the coxa registration can (that fit extrapolates
+    4.7x along the coxae's worst-determined axis, and lands ~11 degrees of pitch off).
+    Because a table replaces its chain's whole marker set, a config that redeclares the
+    head has to carry the nomination over or the chain silently reverts to the
+    registered base.
 
     ``constant_points`` names skeleton points whose 3D position is physically fixed
     over the recording. Before the fit, each listed point is replaced by its temporal
@@ -606,7 +624,7 @@ class GuiParams:
 #: (:meth:`deeperfly.pose2d.pathways.DetectionPlan.from_config`), so the strict
 #: :func:`_params` validator ignores them when building :class:`Pose2dParams`.
 _POSE2D_PLAN_KEYS = frozenset(
-    {"preprocessors", "models", "pathways", "output_points", "autocrop"}
+    {"preprocessors", "model", "models", "pathways", "output_points", "autocrop"}
 )
 
 
@@ -688,6 +706,83 @@ def _source_filename(filename, name: str) -> str | list[str]:
     )
 
 
+# -- skeleton presets ---------------------------------------------------------
+
+
+def skeleton_presets() -> dict[str, Path]:
+    """The packaged skeletons, ``name -> file`` (see :data:`SKELETON_PRESET_DIR`)."""
+    if not SKELETON_PRESET_DIR.is_dir():
+        return {}
+    return {p.stem: p for p in sorted(SKELETON_PRESET_DIR.glob("*.toml"))}
+
+
+def _resolve_skeleton(data: dict, source: Path | None) -> dict:
+    """Expand a ``[skeleton]`` table that *references* a skeleton instead of spelling one.
+
+    A skeleton is 80-odd lines of point names, mirror pairs, limb chains and colors that
+    almost never differ between recordings of the same animal -- and when it does differ it
+    differs completely (``fly38`` and ``fly38b`` share 32 of 38 points in a different
+    order). So it belongs in a file that a config *names*, not in every config:
+
+    * ``name = "fly38b"`` -- a packaged preset (:func:`skeleton_presets`).
+    * ``file = "skeleton.toml"`` -- a path, resolved next to the config that wrote it.
+      The format is the same, which is what makes a preset and a project's own
+      ``skeleton.toml`` interchangeable.
+
+    A table that spells out ``point_names`` is already self-contained and is left exactly
+    as it is -- so every config written before presets existed keeps its own meaning, and
+    ``name`` goes on being a free-text label for those. Resolution happens once, at
+    :class:`Config` construction, so everything downstream (the skeleton itself, the
+    fingerprints, ``deeperfly config show``) sees one fully-populated table and needs to
+    know nothing about presets.
+
+    Keys written in the config win **wholesale, per key**: a ``limb_palette`` there
+    replaces the referenced one rather than merging entry by entry, because a half-merged
+    palette keyed on limbs that the override renamed is not a thing anyone means.
+
+    Returns
+    -------
+    dict
+        ``data`` with ``[skeleton]`` expanded. The input is not mutated.
+
+    Raises
+    ------
+    ValueError
+        If the reference names no packaged preset / no readable file, or if the
+        referenced file carries no ``[skeleton]`` table.
+    """
+    skel = data.get("skeleton")
+    if not isinstance(skel, dict) or "point_names" in skel:
+        return data
+
+    ref, presets = skel.get("file"), skeleton_presets()
+    if ref:
+        path = Path(ref)
+        if not path.is_absolute() and source is not None:
+            path = source.parent / path
+        if not path.is_file():
+            raise ValueError(
+                f"[skeleton] file = {ref!r} does not exist (looked in {path})"
+            )
+    elif skel.get("name") in presets:
+        path = presets[skel["name"]]
+    else:
+        raise ValueError(
+            f"[skeleton] declares no 'point_names' and name = {skel.get('name')!r} is not "
+            f"a packaged skeleton (have: {sorted(presets)}). Either spell the skeleton out "
+            "in this table, name a packaged one, or point 'file' at a skeleton.toml."
+        )
+
+    loaded = tomllib.loads(path.read_text()).get("skeleton")
+    if not isinstance(loaded, dict) or "point_names" not in loaded:
+        raise ValueError(
+            f"{path} carries no [skeleton] table with 'point_names'; it is not a skeleton "
+            "file (the format is the one `deeperfly dense-config --skeleton` takes)"
+        )
+    log.info("skeleton %r from %s", loaded.get("name", path.stem), path)
+    return {**data, "skeleton": {**loaded, **skel}}
+
+
 # -- the Config class --------------------------------------------------------
 
 
@@ -703,7 +798,12 @@ class Config:
     def __init__(
         self, data: dict, *, text: str | None = None, source: Path | None = None
     ):
-        self.data = data
+        #: The parsed config. A ``[skeleton]`` table that merely *references* a skeleton
+        #: (see :func:`_resolve_skeleton`) is expanded here, once, so nothing downstream
+        #: has to know presets exist. :attr:`text` keeps the reference, which is what the
+        #: snapshot records -- the resolved point names reach the pose2d fingerprint, so a
+        #: preset that changes under a cached run invalidates it rather than passing.
+        self.data = _resolve_skeleton(data, source)
         self.text = text
         self.source = source
         #: Windows for the config's ``{ op = "crop", auto = true }`` preprocessors, once

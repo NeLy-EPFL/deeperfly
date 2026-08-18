@@ -84,13 +84,56 @@ def small_rotation(sigma: float, seed: int) -> np.ndarray:
     return expm(skew)
 
 
-def fly_masked(pts2d: np.ndarray) -> np.ndarray:
-    """NaN-out the ``(view, point)`` pairs the fly default plan does not observe.
+#: A 19-channel, one-side-per-pass plan over ``fly38`` -- the shape deeperfly shipped
+#: before the dense detectors. Kept as test data rather than read from the packaged
+#: config, because the packaged plan is now DENSE: every view sees every point, so its
+#: visibility mask is all-True and cannot express the thing these tests are about.
+SPARSE_CONFIG_PATH = Path(__file__).parent / "data" / "fly38_sparse_config.toml"
 
-    Visibility is the union of the default config's pathway maps. The leading axis
-    must be the 7 fly views in order (rh, rm, rf, f, lf, lm, lh).
+
+def sparse_config() -> Config:
+    """The 19-channel ``fly38`` plan, for tests about PARTIAL per-view visibility."""
+    return Config.from_toml(SPARSE_CONFIG_PATH)
+
+
+def fly38_skeleton():
+    """The ``fly38`` preset, for tests defined against ITS point set.
+
+    The packaged NeuroMechFly articulation still carries the **abdomen** markers for
+    ``l_abdomen0..2`` / ``r_abdomen0..2`` -- fly38's two side chains -- so an abdomen
+    test has to be written against fly38 to have any markers at all. ``fly38b``'s
+    midline ``abdomen0..4`` have no marker on the model yet (see
+    ``data/default_config.toml``). The **head** is the other way round: its ``neck``
+    base marker exists only in fly38b, so head tests use :func:`fly38b_skeleton`.
     """
-    mask = Config.default().detection_plan().visibility_mask()  # (7, 38)
+    from deeperfly.skeleton import Skeleton
+
+    return Skeleton.from_config(Config.from_dict({"skeleton": {"name": "fly38"}}))
+
+
+def fly38b_skeleton():
+    """The ``fly38b`` preset -- the skeleton the head chain is targeted at.
+
+    It is the one that labels ``neck``, the head chain's base marker, so it is the only
+    skeleton on which the head is fitted about its *measured* pivot rather than the one
+    the coxa registration extrapolates.
+    """
+    from deeperfly.skeleton import Skeleton
+
+    return Skeleton.from_config(Config.from_dict({"skeleton": {"name": "fly38b"}}))
+
+
+def fly_masked(pts2d: np.ndarray) -> np.ndarray:
+    """NaN-out the ``(view, point)`` pairs a **one-side** detector does not observe.
+
+    Visibility is the union of :func:`sparse_config`'s pathway maps: each side camera
+    sees only its own body half, and the front view is bridged by two pathways. That
+    partial coverage is the premise of every test that calls this -- a joint seen by two
+    or three cameras behaves differently under an outlier than one seen by seven.
+
+    The leading axis must be the 7 fly views in order (rh, rm, rf, f, lf, lm, lh).
+    """
+    mask = sparse_config().detection_plan().visibility_mask()  # (7, 38)
     m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
     return np.where(m[..., None], pts2d, np.nan)
 
@@ -151,22 +194,48 @@ def synth_leg_pose(template, skeleton, rng, r_body=None, n_frames=3):
     return pts3d, truth
 
 
-def place_chain_markers(chain, theta, sim, pts, index, size=1.0):
+def place_chain_markers(chain, theta, sim, pts, index, size=1.0, shift=None):
     """Fill ``pts`` with a chain's markers, FK'd by ``theta`` then placed by ``sim``.
 
-    ``size`` grows the neutral markers about the chain base before the forward
-    kinematics -- the same transform the body plan bakes in and the overlay mesh
-    applies -- so a recording can be synthesized for a head/abdomen that differs in
-    size from the model geometry.
+    ``size`` grows the chain about its base before the forward kinematics -- the same
+    transform the body plan bakes in and the overlay mesh applies -- so a recording can
+    be synthesized for a head/abdomen that differs in size from the model geometry.
+    ``shift`` then translates the grown chain in the model frame, synthesizing an animal
+    whose chain base does not sit where the model's does -- which is the normal case for
+    the head, and what the chain's base marker measures.
+
+    The **anchors scale with the markers**, which is what ``_chain_joints`` does and is
+    load-bearing for a serial chain: rotating a grown marker about an un-grown anchor is
+    a different pose, so a synthesized abdomen would then be unreachable by the plan that
+    is supposed to reproduce it. The head cannot show this (its three anchors all sit on
+    its base, which scaling leaves alone) and neither can a straight chain (no rotation
+    to be about the wrong point), so only a **bent** resized abdomen catches it.
+
+    A marker the skeleton does not label is skipped rather than raising: the packaged
+    model and the run's skeleton are allowed to disagree about which points exist (the
+    abdomen markers are fly38b's, and ``fly38`` labels neither them nor the ``neck``),
+    and the body plan itself handles that by leaving the joint untracked.
     """
+    from dataclasses import replace
+
     from deeperfly.inverse_kinematics.forward import chain_affine
 
     rot, scale, trans = sim
     base = np.asarray(chain.anchors[0], dtype=float)
-    for k, (name, depth) in enumerate(zip(chain.marker_names, chain.marker_depth)):
-        a, b = chain_affine(chain, depth, theta)
-        neutral = base + size * (chain.marker_neutral[k] - base)
-        pts[:, index[name]] = scale * (rot @ (a @ neutral + b)) + trans
+    delta = np.zeros(3) if shift is None else np.asarray(shift, dtype=float)
+    grown = replace(
+        chain,
+        anchors=base + size * (np.asarray(chain.anchors, dtype=float) - base),
+        marker_neutral=base
+        + size * (np.asarray(chain.marker_neutral, dtype=float) - base),
+    )
+    for k, (name, depth) in enumerate(zip(grown.marker_names, grown.marker_depth)):
+        if name not in index:
+            continue
+        a, b = chain_affine(grown, depth, theta)
+        pts[:, index[name]] = (
+            scale * (rot @ (a @ grown.marker_neutral[k] + b + delta)) + trans
+        )
 
 
 def rot_z(angle: float) -> np.ndarray:

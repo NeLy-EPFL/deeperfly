@@ -9,8 +9,6 @@ that it *refuses* to be applied to footage or a camera set it does not describe.
 
 from __future__ import annotations
 
-import re
-
 import numpy as np
 import pytest
 from helpers import CAMERA_NAMES, HEIGHT, WIDTH
@@ -244,15 +242,16 @@ def _config_with_calibration(tmp_path, cameras, *, sizes=SIZES) -> Config:
         cameras.names, cameras.rvecs, cameras.tvecs + 1.25, cameras.intrs, cameras.dists
     )
     moved.to_calibration(name="solved", image_sizes=sizes).save(tmp_path)
-    # Uncomment the line the packaged config ships, rather than injecting our own
-    # [cameras] table -- so this also asserts the documented example actually works.
-    text, n = re.subn(
-        rf'(?m)^# (calibration = "{CALIBRATION_FILENAME}")$',
-        r"\1",
-        Config.default().snapshot_text(),
-        count=1,
+    # A [cameras] table is ADDED rather than uncommented. The packaged config gives each
+    # view its own [cameras.<name>] table and ships no bare [cameras] header, because
+    # `deeperfly project` injects its solved rig as a `calibration` key there and two
+    # headers would collide -- so enabling one by hand means adding the table.
+    marker = "[cameras.defaults]"
+    base = Config.default().snapshot_text()
+    assert marker in base, "the packaged config no longer has [cameras.defaults]"
+    text = base.replace(
+        marker, f'[cameras]\ncalibration = "{CALIBRATION_FILENAME}"\n\n{marker}', 1
     )
-    assert n == 1, "the packaged config no longer documents [cameras].calibration"
     (tmp_path / "config.toml").write_text(text)
     return Config.from_toml(tmp_path / "config.toml")
 

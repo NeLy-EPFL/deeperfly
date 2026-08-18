@@ -129,7 +129,7 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
 
     cli.main(["inspect", str(outdir / "results.h5")])
     printed = capsys.readouterr().out
-    assert "skeleton: fly38  (38 points)" in printed
+    assert "skeleton: fly38b  (38 points)" in printed
     assert "has 3D:   True" in printed
 
 

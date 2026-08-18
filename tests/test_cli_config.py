@@ -41,7 +41,7 @@ def test_init_writes_parseable_config(tmp_path):
     # Footage globs live on the sources; the detection plan parses end to end.
     assert all("filename" in s for s in config["sources"])
     plan = cfg.detection_plan()
-    assert len(plan.sources) == 7 and len(plan.pathways) == 8
+    assert len(plan.sources) == 7 and len(plan.pathways) == 7  # dense: one per camera
 
 
 def test_init_refuses_to_clobber(tmp_path, capsys):

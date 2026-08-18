@@ -90,10 +90,21 @@ PROFILE_DIRNAME = "profiles"
 DEFAULT_PROFILE = "default.toml"
 OUTPUTS_DIRNAME = "deeperfly_outputs"
 
-#: Skeletons ``deeperfly project new --skeleton`` understands, besides a path.
-#: ``fly38`` is lifted from the packaged config *with its comments*, so a project seeded
-#: from it carries the prose explaining the limb ordering and the palette convention.
-SKELETON_PRESETS = ("fly38", "blank")
+
+def skeleton_preset_names() -> tuple[str, ...]:
+    """Skeletons ``deeperfly project new --skeleton`` understands, besides a path.
+
+    The packaged skeletons (:func:`deeperfly.config.skeleton_presets`) plus ``blank``.
+    Derived rather than listed, so a skeleton added to the package is offered here
+    without a second place to remember.
+    """
+    from .config import skeleton_presets
+
+    return (*sorted(skeleton_presets()), "blank")
+
+
+#: Backwards-compatible snapshot of :func:`skeleton_preset_names`.
+SKELETON_PRESETS = skeleton_preset_names()
 
 _BLANK_SKELETON = """\
 # The project's skeleton: what is tracked, in order.
@@ -497,7 +508,7 @@ class Project:
         root: str | Path,
         *,
         name: str | None = None,
-        skeleton: str = "fly38",
+        skeleton: str = "fly38b",
         description: str = "",
         exist_ok: bool = False,
     ) -> Project:
@@ -1417,10 +1428,14 @@ def _write_recording_file(
 def _skeleton_text(skeleton: str) -> str:
     """The text for a new project's ``skeleton.toml``.
 
-    A preset name, or a path to a TOML file holding a ``[skeleton]`` table. The
-    ``fly38`` preset is lifted out of the packaged config *with its comments*, so the
-    prose explaining the left-first ordering and the palette convention travels with the
-    project instead of being re-derived.
+    A preset name, or a path to a TOML file holding a ``[skeleton]`` table. A packaged
+    preset is copied *with its comments*, so the prose explaining the point ordering and
+    the palette convention travels with the project instead of being re-derived.
+
+    The preset is read from the packaged skeleton FILE rather than out of the packaged
+    run config. Those are two different questions -- "what is a fly38" and "what does a
+    fresh config detect" -- and tying them meant that changing the shipped detector
+    changed what a new project's skeleton was.
 
     Raises
     ------
@@ -1428,21 +1443,30 @@ def _skeleton_text(skeleton: str) -> str:
         If ``skeleton`` is neither a known preset nor a readable file with a
         ``[skeleton]`` table.
     """
+    from .config import skeleton_presets
+
     if skeleton == "blank":
         return _BLANK_SKELETON
-    if skeleton == "fly38":
-        from .config import DEFAULT_CONFIG_PATH
-
-        return _toml.extract_section(DEFAULT_CONFIG_PATH.read_text(), "skeleton")
+    presets = skeleton_presets()
+    if skeleton in presets:
+        return _toml.extract_section(presets[skeleton].read_text(), "skeleton")
     path = Path(skeleton)
     if not path.exists():
         raise ValueError(
-            f"unknown skeleton {skeleton!r}: expected one of {list(SKELETON_PRESETS)} "
-            "or a path to a TOML file with a [skeleton] table"
+            f"unknown skeleton {skeleton!r}: expected one of "
+            f"{list(skeleton_preset_names())} or a path to a TOML file with a "
+            "[skeleton] table"
         )
     text = path.read_text()
-    if "skeleton" not in tomllib.loads(text):
+    parsed = tomllib.loads(text).get("skeleton")
+    if parsed is None:
         raise ValueError(f"{path} has no [skeleton] table")
+    # A config may only NAME its skeleton (`[skeleton] name = "fly38b"`). Seeding a
+    # project from one has to write the skeleton out, not copy the reference: a project
+    # is a long-lived record of what it tracks, and a reference would let a package
+    # upgrade change, retroactively, what its stored labels mean.
+    if "point_names" not in parsed and parsed.get("name") in presets:
+        text = presets[parsed["name"]].read_text()
     # Keep only the skeleton section: a whole run config would drag a rig and a
     # detection plan into the project's skeleton file, where a later reader would have
     # no way to know which of the two definitions was authoritative.

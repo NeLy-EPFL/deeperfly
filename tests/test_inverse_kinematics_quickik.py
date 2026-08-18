@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import bent_angles, place_chain_markers, rot_z, synth_leg_pose
+from helpers import (
+    bent_angles,
+    fly38_skeleton,  # noqa: F401
+    fly38b_skeleton,
+    place_chain_markers,
+    rot_z,
+    synth_leg_pose,
+)
 
 from deeperfly.config import Config
 from deeperfly.inverse_kinematics.articulation import load_articulation
-from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
 from deeperfly.inverse_kinematics.template import KinematicTemplate
 from deeperfly.skeleton import Skeleton
 
@@ -28,7 +34,14 @@ from deeperfly.inverse_kinematics import (  # noqa: E402  (after importorskip)
 
 @pytest.fixture(scope="module")
 def fly() -> Skeleton:
-    return Skeleton.fly()
+    """``fly38b`` -- the skeleton both baked chains are targeted at.
+
+    It is the one that labels the head's ``neck`` base and the abdomen's midline
+    ``abdomen0..4``, so it is the only skeleton on which a body plan covers every point
+    and both chains are fit. (``fly38`` keeps a home in ``test_ik_baseline.py``, whose
+    recorded pose is in its order.)
+    """
+    return fly38b_skeleton()
 
 
 @pytest.fixture(scope="module")
@@ -46,10 +59,16 @@ def _index(skeleton) -> dict[str, int]:
 
 
 def _place_coxae(pts, index, articulation, sim):
-    """Put the six body-fixed coxae where ``sim`` maps the model's, registering the body."""
-    neutral = load_nmf_mesh().kp_neutral
-    for name in articulation.coxa_points:
-        pts[:, index[name]] = sim[1] * (sim[0] @ neutral[index[name]]) + sim[2]
+    """Put the six body-fixed coxae where ``sim`` maps the model's, registering the body.
+
+    From ``articulation.coxa_neutral``, which is paired with ``coxa_points`` by position,
+    rather than from the mesh asset's ``kp_neutral`` indexed by the run's skeleton: that
+    asset carries its own point order, and indexing it with another skeleton's silently
+    reads a different point. It is also exactly the array ``_coxa_similarity`` fits
+    against, so the registration this synthesizes is the one the stage recovers.
+    """
+    for name, neutral in zip(articulation.coxa_points, articulation.coxa_neutral):
+        pts[:, index[name]] = sim[1] * (sim[0] @ np.asarray(neutral)) + sim[2]
 
 
 # -- recovering known angles -------------------------------------------------
@@ -91,34 +110,40 @@ def test_recovers_the_generating_chain_angles(template, fly, articulation, name,
     """A head/abdomen chain solves back to the angles that placed its markers.
 
     ``size`` exercises a chain grown or shrunk relative to the model geometry: the
-    markers are placed for that size, and the estimator must recover it from their
-    contour length so the plan is built at the right scale.
+    markers are placed for that size, and the estimator must recover it so the plan is
+    built at the right scale.
 
-    The abdomen is posed *straight* rather than bent, because its size estimate is only
-    exact at the neutral pose -- it comes from a polyline through the per-depth marker
-    centroids, which shortens as a serial chain curls (the head's three DOFs share one
-    pivot, so its contour is rotation-invariant and any pose will do). That is a
-    property of the estimator, not of the solve; it is pinned down directly by
-    ``test_estimate_chain_scale_recovers_contour_length``.
+    Both chains are posed **bent**, which is the whole point on the abdomen: its markers
+    sit on the dorsal surface, the outside of a ventral bend, so a ruler drawn along the
+    chain would read a curled abdomen as a much larger one. The estimator only compares
+    separations the chain's own joints cannot change, so posture cannot leak into size --
+    pinned directly by ``test_estimate_chain_scale_recovers_a_resized_chain_at_a_bent_pose``.
+
+    The head is synthesized at a base the model does not share, which is the real case
+    since the coxa registration cannot locate the head pivot. Both the shift and the size
+    have to come back, and they are not separable by the solve: read the size from the
+    model's own anchor and a displaced base reads as a bigger head, which then needs a
+    rotation to reach the antennae.
     """
     index = _index(fly)
     chain = articulation.chain(name)
     rng = np.random.default_rng(0)
     sim = (rot_z(0.4), 1.6, np.array([2.0, -1.0, 3.0]))
-    truth = (
-        bent_angles(chain, rng, frac=(0.4, 0.6))
-        if name == "head"
-        else np.zeros(len(chain.dof_names))
-    )
+    truth = bent_angles(chain, rng, frac=(0.4, 0.6))
+    shift = np.array([0.04, -0.03, -0.14]) if name == "head" else None
     pts = np.full((3, fly.n_points, 3), np.nan)
     _place_coxae(pts, index, articulation, sim)
-    place_chain_markers(chain, truth, sim, pts, index, size=size)
+    place_chain_markers(chain, truth, sim, pts, index, size=size, shift=shift)
 
     res = solve_inverse_kinematics(
         pts, fly, template, articulation=articulation, neutral_weight=0.0
     )
     assert res.chain_scales[name] == pytest.approx(size, abs=1e-3)
+    if shift is not None:
+        np.testing.assert_allclose(res.chain_offsets[name], shift, atol=1e-6)
     for marker in chain.marker_names:
+        if marker not in index:
+            continue  # a model marker this skeleton does not label
         np.testing.assert_allclose(
             res.model_pts3d[0, index[marker]], pts[0, index[marker]], atol=5e-3
         )
@@ -177,7 +202,7 @@ def test_solve_fills_head_and_abdomen_markers(template, fly, articulation):
             chain, bent_angles(chain, rng, frac=(0.4, 0.6)), sim, pts, index
         )
     res = solve_inverse_kinematics(pts, fly, template, articulation=articulation)
-    for name in ("l_antenna", "r_antenna", "l_abdomen0", "r_abdomen2"):
+    for name in ("l_antenna", "r_antenna", "neck", "abdomen0", "abdomen4"):
         assert np.isfinite(res.model_pts3d[0, index[name]]).all()
 
 
@@ -551,6 +576,76 @@ def test_declaring_absence_cannot_buy_an_underdetermined_fit(
     col = {n: i for i, n in enumerate(res.angle_names)}
     lf = next(leg for leg in template.legs if leg.name == "lf")
     assert np.isnan(res.angles[:, [col[n] for n in lf.dof_names]]).all()
+
+
+def test_both_antennae_absent_leaves_the_head_unfitted(template, articulation):
+    """The ``neck`` is a landmark, not evidence -- so it cannot rescue a headless fit.
+
+    The neck sits on the head's own rotation center, so all three head DOFs leave it
+    exactly where it was. Counting it would make the head look observable with one
+    marker (3 coordinates against 3 DOFs, which is the relaxation a *unilateral*
+    ablation relies on), and QuickIK would return its neutral-biased answer for angles
+    nothing measured. This is the case that separates "places the chain" from
+    "constrains the chain".
+    """
+    fly = fly38b_skeleton()
+    index = _index(fly)
+    sim = (rot_z(0.2), 1.5, np.array([1.0, 2.0, -1.0]))
+    rng = np.random.default_rng(12)
+    pts = np.full((2, fly.n_points, 3), np.nan)
+    _place_coxae(pts, index, articulation, sim)
+    for chain in articulation.chains:
+        place_chain_markers(
+            chain, bent_angles(chain, rng, frac=(0.4, 0.6)), sim, pts, index
+        )
+    absent = np.zeros(len(fly.point_names), dtype=bool)
+    for name in ("l_antenna", "r_antenna"):  # a bilateral ablation
+        pts[:, index[name]] = np.nan
+        absent[index[name]] = True
+    assert np.isfinite(pts[:, index["neck"]]).all(), "the neck is still measured"
+
+    res = solve_inverse_kinematics(
+        pts, fly, template, articulation=articulation, absent_points=absent
+    )
+    head = next(c for c in articulation.chains if c.name == "head")
+    cols = [i for i, n in enumerate(res.angle_names) if n in set(head.dof_names)]
+    assert cols, "the head chain contributes DOFs"
+    assert np.isnan(res.angles[:, cols]).all()
+    # ...while the neck itself is still *placed*: the plan knows where the pivot is.
+    assert np.isfinite(res.model_pts3d[:, index["neck"]]).all()
+
+
+def test_the_head_is_placed_on_the_measured_neck(template, articulation):
+    """The head chain's base goes where the neck was measured, not where the coxae say.
+
+    The six thorax-coxae are very nearly coplanar, so the similarity fit through them
+    barely determines the dorsal direction the head pivot sits 0.4 above -- which is why
+    the chain is placed on its own landmark instead, exactly as each leg is placed on its
+    measured median thorax-coxa.
+    """
+    fly = fly38b_skeleton()
+    index = _index(fly)
+    sim = (rot_z(0.35), 1.3, np.array([-1.0, 0.5, 2.0]))
+    rng = np.random.default_rng(3)
+    shift = np.array([0.03, -0.02, -0.13])
+    pts = np.full((4, fly.n_points, 3), np.nan)
+    _place_coxae(pts, index, articulation, sim)
+    head = next(c for c in articulation.chains if c.name == "head")
+    place_chain_markers(
+        head, bent_angles(head, rng, frac=(0.4, 0.6)), sim, pts, index, shift=shift
+    )
+
+    res = solve_inverse_kinematics(pts, fly, template, articulation=articulation)
+    np.testing.assert_allclose(res.chain_offsets["head"], shift, atol=1e-9)
+    plan = res.body_plan
+    root = next(j for j in plan.plan["joints"] if j["name"] == head.dof_names[0])
+    np.testing.assert_allclose(
+        root["offset_pos"], np.asarray(head.anchors[0]) + shift, atol=1e-9
+    )
+    # and the fitted neck lands on the measured one, in world coordinates
+    np.testing.assert_allclose(
+        res.model_pts3d[0, index["neck"]], pts[0, index["neck"]], atol=1e-6
+    )
 
 
 def test_one_absent_antenna_leaves_the_head_fittable(template, fly, articulation):

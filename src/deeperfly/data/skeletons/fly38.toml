@@ -1,0 +1,70 @@
+# fly38 -- the DeepFly3D 38-point skeleton: 19 per side (L = 0..18, R = 19..37),
+# three 5-point legs plus one antenna and three abdominal markers per side.
+#
+# Referenced from a run config as `[skeleton] name = "fly38"`. Any key written in
+# that table overrides the one here (wholesale, per key).
+
+[skeleton]
+name = "fly38"
+
+point_names = [
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "l_antenna", "l_abdomen0", "l_abdomen1", "l_abdomen2",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+    "r_antenna", "r_abdomen0", "r_abdomen1", "r_abdomen2",
+]
+
+# Left/right mirror pairs. Written out rather than inferred from the name tokens so that
+# renaming a point cannot quietly re-pair the skeleton. Read by flip augmentation, the
+# `[pose2d.output_points]` mirror check, and the chirality QC.
+symmetries = [
+    ["lf_thorax_coxa",     "rf_thorax_coxa"],
+    ["lf_coxa_trochanter", "rf_coxa_trochanter"],
+    ["lf_femur_tibia",     "rf_femur_tibia"],
+    ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
+    ["lf_claw",            "rf_claw"],
+    ["lm_thorax_coxa",     "rm_thorax_coxa"],
+    ["lm_coxa_trochanter", "rm_coxa_trochanter"],
+    ["lm_femur_tibia",     "rm_femur_tibia"],
+    ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
+    ["lm_claw",            "rm_claw"],
+    ["lh_thorax_coxa",     "rh_thorax_coxa"],
+    ["lh_coxa_trochanter", "rh_coxa_trochanter"],
+    ["lh_femur_tibia",     "rh_femur_tibia"],
+    ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
+    ["lh_claw",            "rh_claw"],
+    ["l_antenna",          "r_antenna"],
+    ["l_abdomen0",         "r_abdomen0"],
+    ["l_abdomen1",         "r_abdomen1"],
+    ["l_abdomen2",         "r_abdomen2"],
+]
+
+# Each limb's points in kinematic-chain order.
+[skeleton.limb_points]
+lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]
+lm_leg = ["lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw"]
+lh_leg = ["lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw"]
+l_antenna = ["l_antenna"]
+l_abdomen = ["l_abdomen0", "l_abdomen1", "l_abdomen2"]
+rf_leg = ["rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw"]
+rm_leg = ["rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw"]
+rh_leg = ["rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"]
+r_antenna = ["r_antenna"]
+r_abdomen = ["r_abdomen0", "r_abdomen1", "r_abdomen2"]
+
+# Left = blue / right = red, lightening front -> hind.
+[skeleton.limb_palette]
+lf_leg = "#0f7399"
+lm_leg = "#1a8daf"
+lh_leg = "#75becb"
+l_antenna = "#0a4f6b"
+l_abdomen = "#a9dbe4"
+rf_leg = "#ba1e31"
+rm_leg = "#c9564f"
+rh_leg = "#d58579"
+r_antenna = "#8c1525"
+r_abdomen = "#e6b3a8"

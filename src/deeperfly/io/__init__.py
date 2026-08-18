@@ -32,6 +32,7 @@ from pathlib import Path
 from .base import (
     IMAGE_EXTS,
     VIDEO_EXTS,
+    CursorFrames,
     FrameCursor,
     FrameReader,
     is_video_file,
@@ -96,6 +97,7 @@ def open_reader(
 
 
 __all__ = [
+    "CursorFrames",
     "FrameCursor",
     "FrameReader",
     "VideoCursor",

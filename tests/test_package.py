@@ -227,6 +227,56 @@ def test_a_calibration_travels(cameras, tmp_path):
     np.testing.assert_allclose(restored.cameras.tvecs, cameras.tvecs)
 
 
+def test_a_per_recording_calibration_travels(cameras, tmp_path):
+    """The rig a corpus actually has: ``calibrations/<slug>/<name>.toml``.
+
+    ``glob("*.toml")`` matched only the project-wide rig, so a project whose rigs were all
+    per-recording -- which is what solving one in the GUI produces, and what every recording
+    in the working corpus carries -- packaged ZERO of them and reported success.
+    """
+    from deeperfly.calibration import Calibration
+
+    project, entry = _project(tmp_path)
+    solved = project.root / "calibrations" / entry.slug
+    solved.mkdir(parents=True, exist_ok=True)
+    cameras.to_calibration(name="latest", image_sizes=SIZES).save(
+        solved / "latest.toml"
+    )
+
+    out = export_package(project, tmp_path / "out.dfpkg", embed="none")
+    assert out.calibrations == 1
+
+    assert describe_package(tmp_path / "out.dfpkg")["calibrations"] == [
+        f"{entry.slug}/latest"
+    ]
+
+    back = import_package(tmp_path / "out.dfpkg", tmp_path / "back")
+    assert back.calibrations == 1
+    landed = tmp_path / "back" / "calibrations" / entry.slug / "latest.toml"
+    assert landed.exists(), "the slug directory is how results.h5 names its active rig"
+    np.testing.assert_allclose(Calibration.load(landed).cameras.tvecs, cameras.tvecs)
+
+
+def test_both_calibration_layouts_travel_together(cameras, tmp_path):
+    """A project-wide rig and a per-recording one are not alternatives; both are packaged."""
+    project, entry = _project(tmp_path)
+    cal = cameras.to_calibration(name="rig", image_sizes=SIZES)
+    cal.save(project.root / "calibrations" / "rig.toml")
+    (project.root / "calibrations" / entry.slug).mkdir(parents=True, exist_ok=True)
+    cal.save(project.root / "calibrations" / entry.slug / "latest.toml")
+
+    out = export_package(project, tmp_path / "out.dfpkg", embed="none")
+    assert out.calibrations == 2
+    assert describe_package(tmp_path / "out.dfpkg")["calibrations"] == [
+        f"{entry.slug}/latest",
+        "rig",
+    ]
+
+    import_package(tmp_path / "out.dfpkg", tmp_path / "back")
+    assert (tmp_path / "back" / "calibrations" / "rig.toml").exists()
+    assert (tmp_path / "back" / "calibrations" / entry.slug / "latest.toml").exists()
+
+
 def test_embedded_frames_land_as_files_named_by_source_frame(tmp_path):
     """The index is in the FILENAME, so a frame is traceable without opening anything."""
     pytest.importorskip("av")

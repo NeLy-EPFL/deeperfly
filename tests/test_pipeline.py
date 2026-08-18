@@ -269,7 +269,7 @@ def test_stage_bundle_adjustment_respects_weigh_by_confidence_flag(rig, fly, rng
     assert not np.allclose(on.tvecs, off.tvecs, atol=1e-6)
 
 
-def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly, rng):
+def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly38, rng):
     """The front camera, seeing both body sides, is what co-registers the two
     camera clusters in bundle adjustment.
 
@@ -321,13 +321,13 @@ def test_front_camera_bridges_left_right_in_bundle_adjustment(rig, cameras, fly,
         pts2d = fly_masked(pts2d_full.copy())
         if not front_sees_both:  # drop the front camera's left-side observations
             fi = names.index("f")
-            for j in leg_indices(fly, "l"):
+            for j in leg_indices(fly38, "l"):
                 pts2d[fi, :, j] = np.nan
         opt, _ = bundle_adjust_cameras(
             perturbed,
             pts2d,
             conf,
-            fly,
+            fly38,
             fixed=fixed,
             bone_prior=False,
             max_frames=16,
@@ -401,7 +401,7 @@ def test_bundle_adjust_cameras_legs_only_ignores_corrupted_nonleg(
     assert np.nanmax(np.abs(proj[:, :, legs] - pts2d[:, :, legs])) < 1e-2
 
 
-def test_run_with_bundle_adjustment(rig, cameras, fly):
+def test_run_with_bundle_adjustment(rig, cameras, fly38):
     # With per-side visibility masking (now applied by the plan, here reproduced
     # via fly_masked) and bone_prior=False, the far side is bridged only by the
     # front camera -- a weakly constrained sub-problem whose conditioning depends
@@ -416,7 +416,7 @@ def test_run_with_bundle_adjustment(rig, cameras, fly):
 
     result = run_from_points2d(
         cams0,
-        fly,
+        fly38,
         pts2d,
         do_bundle_adjust=True,
         bundle_adjust_kwargs={
@@ -431,7 +431,7 @@ def test_run_with_bundle_adjustment(rig, cameras, fly):
     # Right-side points (seen by the gauge-anchored right cameras) recover
     # tightly; far-side points are weaker once visibility masking is applied,
     # but the whole pose is still close and reprojects well.
-    right = leg_indices(fly, "r")
+    right = leg_indices(fly38, "r")
     np.testing.assert_allclose(result.pts3d[:, right], pts3d[:, right], atol=1e-2)
     np.testing.assert_allclose(result.pts3d, pts3d, atol=0.5)
     assert np.nanmax(result.reproj_error) < 5.0

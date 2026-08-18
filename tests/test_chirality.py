@@ -89,11 +89,11 @@ def _swap(points, pairs, rows):
 # -- the sound case: 3D -------------------------------------------------------
 
 
-def test_a_clean_3d_pose_is_decided_and_quiet(fly):
+def test_a_clean_3d_pose_is_decided_and_quiet(fly38):
     rng = np.random.default_rng(0)
     flags = 0
     for _ in range(200):
-        v = chirality.check(_asymmetric_fly(rng), fly.symmetries)
+        v = chirality.check(_asymmetric_fly(rng), fly38.symmetries)
         assert v.decided, v.reason
         flags += len(v.swapped)
     # Measured at 1 in 500 poses; 200 poses must stay in single digits or the false-positive
@@ -102,40 +102,40 @@ def test_a_clean_3d_pose_is_decided_and_quiet(fly):
 
 
 @pytest.mark.parametrize("n_swaps", [1, 2, 3, 4])
-def test_planted_swaps_are_recovered_exactly(fly, n_swaps):
+def test_planted_swaps_are_recovered_exactly(fly38, n_swaps):
     rng = np.random.default_rng(1)
     hits = 0
     trials = 100
     for _ in range(trials):
         pose = _asymmetric_fly(rng)
-        rows = rng.choice(fly.n_symmetries, n_swaps, replace=False)
-        v = chirality.check(_swap(pose, fly.symmetries, rows), fly.symmetries)
-        want = {tuple(int(x) for x in p) for p in np.asarray(fly.symmetries)[rows]}
+        rows = rng.choice(fly38.n_symmetries, n_swaps, replace=False)
+        v = chirality.check(_swap(pose, fly38.symmetries, rows), fly38.symmetries)
+        want = {tuple(int(x) for x in p) for p in np.asarray(fly38.symmetries)[rows]}
         if v.decided and {c.points for c in v.swapped} == want:
             hits += 1
     assert hits / trials >= 0.95, f"recovered {hits}/{trials} exactly"
 
 
-def test_candidates_are_ranked_worst_first(fly):
+def test_candidates_are_ranked_worst_first(fly38):
     rng = np.random.default_rng(2)
     pose = _asymmetric_fly(rng)
-    v = chirality.check(_swap(pose, fly.symmetries, [0, 5, 11]), fly.symmetries)
+    v = chirality.check(_swap(pose, fly38.symmetries, [0, 5, 11]), fly38.symmetries)
     margins = [c.relative_margin for c in v.swapped]
     assert margins == sorted(margins, reverse=True)
     assert all(c.margin > 0 for c in v.swapped)
 
 
-def test_truthiness_reads_as_intended(fly):
+def test_truthiness_reads_as_intended(fly38):
     rng = np.random.default_rng(3)
     pose = _asymmetric_fly(rng)
-    assert not chirality.check(pose, fly.symmetries)
-    assert chirality.check(_swap(pose, fly.symmetries, [7]), fly.symmetries)
+    assert not chirality.check(pose, fly38.symmetries)
+    assert chirality.check(_swap(pose, fly38.symmetries, [7]), fly38.symmetries)
 
 
 # -- the axis fit -------------------------------------------------------------
 
 
-def test_the_axis_is_recovered_from_partly_swapped_data(fly):
+def test_the_axis_is_recovered_from_partly_swapped_data(fly38):
     """The premise of the whole method: the second-moment fit is sign-blind.
 
     If the axis needed correct pairs to be found, it could not then be used to find the
@@ -144,7 +144,7 @@ def test_the_axis_is_recovered_from_partly_swapped_data(fly):
     """
     rng = np.random.default_rng(4)
     pose = _asymmetric_fly(rng)
-    pairs = np.asarray(fly.symmetries)
+    pairs = np.asarray(fly38.symmetries)
     base, _ = chirality.sagittal_axis(pose[pairs[:, 1]] - pose[pairs[:, 0]])
     for rows in ([0], [0, 1, 2], list(range(10)), list(range(19))):
         swapped = _swap(pose, pairs, rows)
@@ -152,10 +152,10 @@ def test_the_axis_is_recovered_from_partly_swapped_data(fly):
         assert abs(abs(float(base @ axis)) - 1.0) < 1e-6, rows
 
 
-def test_the_reported_axis_points_at_the_majority_side(fly):
+def test_the_reported_axis_points_at_the_majority_side(fly38):
     """The rig puts the left side at +y, and most pairs are (left, right) -> -y."""
     rng = np.random.default_rng(5)
-    v = chirality.check(_asymmetric_fly(rng), fly.symmetries)
+    v = chirality.check(_asymmetric_fly(rng), fly38.symmetries)
     assert v.axis is not None
     assert abs(float(v.axis @ [0, 1, 0])) > 0.99  # essentially the y axis
 
@@ -163,24 +163,24 @@ def test_the_reported_axis_points_at_the_majority_side(fly):
 # -- refusing to judge --------------------------------------------------------
 
 
-def test_no_declared_pairs_is_undecided_not_clean(fly):
+def test_no_declared_pairs_is_undecided_not_clean(fly38):
     rng = np.random.default_rng(6)
     v = chirality.check(_asymmetric_fly(rng), np.empty((0, 2), np.int64))
     assert not v.decided and not v.swapped
     assert "no symmetry pairs" in v.reason
 
 
-def test_too_few_co_visible_pairs_is_undecided(fly):
+def test_too_few_co_visible_pairs_is_undecided(fly38):
     """Unobserved points are ``NaN``; a pair with either member missing cannot vote."""
     rng = np.random.default_rng(7)
     pose = _asymmetric_fly(rng)
     pose[2:] = np.nan  # leave one pair's worth of points at most
-    v = chirality.check(pose, fly.symmetries)
+    v = chirality.check(pose, fly38.symmetries)
     assert not v.decided
     assert "co-visible" in v.reason
 
 
-def test_a_collapsed_left_right_axis_is_refused(fly, rig_cameras):
+def test_a_collapsed_left_right_axis_is_refused(fly38, rig_cameras):
     """A camera looking down the left-right axis sees a symmetric pose's pairs coincide.
 
     That view must decline to judge rather than reporting the order of two points that are
@@ -189,7 +189,7 @@ def test_a_collapsed_left_right_axis_is_refused(fly, rig_cameras):
     rng = np.random.default_rng(8)
     pts2d = np.asarray(rig_cameras.project(_mirrored_fly(rng)[None]))[:, 0]
     lateral = [CAMERA_NAMES.index("rm"), CAMERA_NAMES.index("lm")]
-    verdicts = chirality.check_views(pts2d, fly.symmetries)
+    verdicts = chirality.check_views(pts2d, fly38.symmetries)
     for v in (verdicts[i] for i in lateral):
         assert not v.decided
         assert "collapsed" in v.reason
@@ -199,9 +199,9 @@ def test_a_collapsed_left_right_axis_is_refused(fly, rig_cameras):
     assert front.decided and front.separation_frac > 0.4
 
 
-def test_an_undecided_verdict_never_carries_candidates(fly):
+def test_an_undecided_verdict_never_carries_candidates(fly38):
     """``decided=False`` with a non-empty ``swapped`` would be read as a real finding."""
-    for pairs in (np.empty((0, 2), np.int64), fly.symmetries):
+    for pairs in (np.empty((0, 2), np.int64), fly38.symmetries):
         pose = np.full((38, 3), np.nan)
         v = chirality.check(pose, pairs)
         assert not v.decided and v.swapped == ()
@@ -210,7 +210,7 @@ def test_an_undecided_verdict_never_carries_candidates(fly):
 # -- the limit ----------------------------------------------------------------
 
 
-def test_a_wholesale_flip_is_self_consistent_and_reported_clean(fly):
+def test_a_wholesale_flip_is_self_consistent_and_reported_clean(fly38):
     """Swapping EVERY pair is undetectable here, and that is correct, not a bug.
 
     With no unpaired landmark and no outside reference, nothing inside the sample says which
@@ -219,13 +219,13 @@ def test_a_wholesale_flip_is_self_consistent_and_reported_clean(fly):
     """
     rng = np.random.default_rng(9)
     pose = _asymmetric_fly(rng)
-    flipped = _swap(pose, fly.symmetries, list(range(fly.n_symmetries)))
-    v = chirality.check(flipped, fly.symmetries)
+    flipped = _swap(pose, fly38.symmetries, list(range(fly38.n_symmetries)))
+    v = chirality.check(flipped, fly38.symmetries)
     assert v.decided
     assert v.swapped == ()
 
 
-def test_a_majority_swap_is_reported_as_the_minority_being_wrong(fly):
+def test_a_majority_swap_is_reported_as_the_minority_being_wrong(fly38):
     """The vote is a majority, so swapping most pairs inverts what "wrong side" means.
 
     Worth pinning because it is the honest consequence of having no external reference: the
@@ -234,17 +234,17 @@ def test_a_majority_swap_is_reported_as_the_minority_being_wrong(fly):
     rng = np.random.default_rng(10)
     pose = _asymmetric_fly(rng)
     swapped_rows = list(range(15))  # 15 of 19
-    v = chirality.check(_swap(pose, fly.symmetries, swapped_rows), fly.symmetries)
+    v = chirality.check(_swap(pose, fly38.symmetries, swapped_rows), fly38.symmetries)
     assert v.decided
     flagged = {c.points for c in v.swapped}
-    untouched = {tuple(int(x) for x in p) for p in np.asarray(fly.symmetries)[15:]}
+    untouched = {tuple(int(x) for x in p) for p in np.asarray(fly38.symmetries)[15:]}
     assert flagged == untouched
 
 
 # -- 2D, the documented diagnostic --------------------------------------------
 
 
-def test_per_view_2d_is_offered_but_noisy_on_side_views(fly, rig_cameras):
+def test_per_view_2d_is_offered_but_noisy_on_side_views(fly38, rig_cameras):
     """The measurement behind the module's "run this on 3D" instruction.
 
     The front camera is sound; the oblique side cameras flag real posture crossings. This
@@ -256,7 +256,7 @@ def test_per_view_2d_is_offered_but_noisy_on_side_views(fly, rig_cameras):
     poses = 60
     for _ in range(poses):
         pts2d = np.asarray(rig_cameras.project(_asymmetric_fly(rng)[None]))[:, 0]
-        verdicts = chirality.check_views(pts2d, fly.symmetries)
+        verdicts = chirality.check_views(pts2d, fly38.symmetries)
         front_flags += len(verdicts[CAMERA_NAMES.index("f")].swapped)
         for name in ("rh", "rf", "lf", "lh"):
             side_flags += len(verdicts[CAMERA_NAMES.index(name)].swapped)
@@ -266,20 +266,20 @@ def test_per_view_2d_is_offered_but_noisy_on_side_views(fly, rig_cameras):
     )
 
 
-def test_check_works_the_same_on_2d(fly, rig_cameras):
+def test_check_works_the_same_on_2d(fly38, rig_cameras):
     """A planted swap is found in the front view too: the function is dimension-agnostic."""
     rng = np.random.default_rng(12)
     pose = _asymmetric_fly(rng)
     pts2d = np.asarray(rig_cameras.project(pose[None]))[:, 0]
     f = CAMERA_NAMES.index("f")
-    v = chirality.check(_swap(pts2d[f], fly.symmetries, [3]), fly.symmetries)
+    v = chirality.check(_swap(pts2d[f], fly38.symmetries, [3]), fly38.symmetries)
     assert v.decided
     assert {c.points for c in v.swapped} == {
-        tuple(int(x) for x in np.asarray(fly.symmetries)[3])
+        tuple(int(x) for x in np.asarray(fly38.symmetries)[3])
     }
 
 
-def test_the_gate_is_scale_free(fly, rig_cameras):
+def test_the_gate_is_scale_free(fly38, rig_cameras):
     """Scaling the whole sample must not change the verdict -- the gate is a ratio.
 
     Otherwise the same frame would judge differently at 1024 px and at 480 px, and world
@@ -287,10 +287,10 @@ def test_the_gate_is_scale_free(fly, rig_cameras):
     """
     rng = np.random.default_rng(13)
     pose = _asymmetric_fly(rng)
-    swapped = _swap(pose, fly.symmetries, [2, 8])
-    base = chirality.check(swapped, fly.symmetries)
+    swapped = _swap(pose, fly38.symmetries, [2, 8])
+    base = chirality.check(swapped, fly38.symmetries)
     for scale in (0.01, 100.0):
-        other = chirality.check(swapped * scale, fly.symmetries)
+        other = chirality.check(swapped * scale, fly38.symmetries)
         assert other.decided == base.decided
         assert {c.points for c in other.swapped} == {c.points for c in base.swapped}
         assert other.separation_frac == pytest.approx(base.separation_frac)

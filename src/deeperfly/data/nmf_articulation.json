@@ -125,8 +125,24 @@
       0.0,
       0.0
      ]
+    },
+    {
+     "point": "neck",
+     "depth": 0,
+     "neutral": [
+      0.5247,
+      0.0,
+      1.300698
+     ],
+     "body": "c_head",
+     "offset": [
+      0.0,
+      0.0,
+      0.0
+     ]
     }
-   ]
+   ],
+   "base_point": "neck"
   },
   {
    "name": "abdomen",
@@ -219,96 +235,82 @@
    ],
    "markers": [
     {
-     "point": "l_abdomen0",
+     "point": "abdomen0",
      "depth": 2,
      "neutral": [
       -0.79375212,
-      0.05,
+      0.0,
       1.53584457
      ],
      "body": "c_abdomen3",
      "offset": [
       0.0,
-      0.05,
+      0.0,
       0.3
      ]
     },
     {
-     "point": "r_abdomen0",
-     "depth": 2,
+     "point": "abdomen1",
+     "depth": 3,
      "neutral": [
-      -0.79375212,
-      -0.05,
-      1.53584457
+      -0.96926522,
+      0.0,
+      1.48151771
      ],
-     "body": "c_abdomen3",
+     "body": "c_abdomen4",
      "offset": [
       0.0,
-      -0.05,
-      0.3
+      0.0,
+      0.285
      ]
     },
     {
-     "point": "l_abdomen1",
+     "point": "abdomen2",
      "depth": 4,
      "neutral": [
-      -1.18923591,
-      0.05,
-      1.41718731
+      -1.13102558,
+      0.0,
+      1.4317323
      ],
      "body": "c_abdomen5",
      "offset": [
-      -0.06,
-      0.05,
+      0.0,
+      0.0,
       0.27
      ]
     },
     {
-     "point": "r_abdomen1",
-     "depth": 4,
+     "point": "abdomen3",
+     "depth": 5,
      "neutral": [
-      -1.18923591,
-      -0.05,
-      1.41718731
+      -1.34360863,
+      0.0,
+      1.36002028
      ],
-     "body": "c_abdomen5",
+     "body": "c_abdomen6",
      "offset": [
-      -0.06,
-      -0.05,
-      0.27
+      0.0,
+      0.0,
+      0.243
      ]
     },
     {
-     "point": "l_abdomen2",
+     "point": "abdomen4",
      "depth": 5,
      "neutral": [
-      -1.55804425,
-      0.05,
-      1.26639144
+      -1.55804426,
+      0.0,
+      1.26639143
      ],
      "body": "c_abdomen6",
      "offset": [
       -0.23,
-      0.05,
-      0.2
-     ]
-    },
-    {
-     "point": "r_abdomen2",
-     "depth": 5,
-     "neutral": [
-      -1.55804425,
-      -0.05,
-      1.26639144
-     ],
-     "body": "c_abdomen6",
-     "offset": [
-      -0.23,
-      -0.05,
+      0.0,
       0.2
      ]
     }
-   ]
+   ],
+   "base_point": null
   }
  ],
  "bodies": {

@@ -45,7 +45,7 @@ import logging
 from dataclasses import dataclass, field
 
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 
 from .align import Alignment, _body_axes
 from .articulation import Articulation, Chain
@@ -58,7 +58,13 @@ log = logging.getLogger("deeperfly")
 
 #: Bumped when the generated plan's *structure* changes in a way that a stored plan
 #: from an earlier deeperfly cannot be interpreted as. Carried in ``x-deeperfly``.
-PLAN_VERSION = 1
+#:
+#: 2 -- a chain may be placed on a measured base marker rather than the model's anchor
+#: (``chain_offsets``), and a chain may carry a zero-DOF marker at depth 0 that no DOF
+#: moves. A version-1 plan still *reads* correctly (a missing ``chain_offsets`` is no
+#: shift), but it was solved on the registered base, so its head angles are not
+#: comparable with a version-2 fit's.
+PLAN_VERSION = 2
 
 #: The root joint. It sits at the model origin with an identity rotation: a fixed-base
 #: plan then *is* the model frame (QuickIK leaves ``root_pos``/``root_rot`` untouched),
@@ -103,6 +109,12 @@ class BodyPlan:
     chain_scales
         ``chain name -> data-estimated size`` already baked into the plan's chain
         offsets.
+    chain_offsets
+        ``chain name -> (3,)`` how far the recording's chain base sits from the model's
+        own, in model units, already baked into the plan's chain offsets. Measured from
+        the chain's base marker (the ``neck`` for the head); absent for a chain that has
+        no such landmark, which leaves it on the registered base as before. The mesh
+        overlay applies the same translation, so the fit and the overlay agree.
     """
 
     plan: dict
@@ -115,6 +127,7 @@ class BodyPlan:
     neutral: np.ndarray
     body_sim: tuple[np.ndarray, float, np.ndarray]
     chain_scales: dict[str, float] = field(default_factory=dict)
+    chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
 
     # -- views ---------------------------------------------------------------
 
@@ -133,6 +146,31 @@ class BodyPlan:
     def kinematics(self) -> PlanKinematics:
         """Compile the plan for numpy forward kinematics."""
         return PlanKinematics.from_plan(self.plan)
+
+    @property
+    def joint_is_base(self) -> Bool[np.ndarray, "N"]:
+        """``(N,)`` which joints are their chain's **base landmark**.
+
+        A base landmark measures where its chain sits; it is not evidence about the
+        chain's angles. The head's ``neck`` is the case that matters: it sits on the
+        head's rotation center, and rotation about a point leaves that point exactly
+        where it was, so no head DOF can move it however well it is triangulated.
+
+        Read by :func:`deeperfly.inverse_kinematics.unfittable_branches`, which must not
+        accept it as evidence the chain was observed -- otherwise declaring both
+        antennae absent would leave the head "fitted" from the neck alone, and the
+        solver's neutral-biased yaw/pitch/roll would be reported as a measurement.
+
+        Taken from the plan's own joints so a plan rebuilt from JSON agrees with a
+        freshly built one. Deliberately **not** derived as "no DOF can move this joint":
+        that is equally true of each leg's thorax-coxa under a fixed base, and excluding
+        those would change how an amputated leg is reported -- a separate question, and
+        one this module answers per-branch rather than per-DOF.
+        """
+        return np.asarray(
+            [bool(j.get(f"x-{_META_KEY}-base")) for j in self.plan["joints"]],
+            dtype=bool,
+        )
 
     # -- frames --------------------------------------------------------------
 
@@ -206,6 +244,10 @@ class BodyPlan:
             chain_scales={
                 str(k): float(v) for k, v in (meta.get("chain_scales") or {}).items()
             },
+            chain_offsets={
+                str(k): np.asarray(v, dtype=float).reshape(3)
+                for k, v in (meta.get("chain_offsets") or {}).items()
+            },
         )
 
 
@@ -223,6 +265,7 @@ def build_body_plan(
     *,
     articulation: Articulation | None = None,
     chain_scales: dict[str, float] | None = None,
+    chain_offsets: dict[str, np.ndarray] | None = None,
     fixed_body: bool = True,
 ) -> BodyPlan:
     """Assemble the body plan for one recording.
@@ -245,6 +288,11 @@ def build_body_plan(
         ``chain name -> size relative to the model``, baked into that chain's offsets
         so the fit and the mesh overlay agree (the overlay scales about the same base
         anchor). Missing entries mean model size.
+    chain_offsets
+        ``chain name -> (3,)`` model-unit translation putting that chain's base where
+        the recording's base marker was measured, rather than where the body
+        registration extrapolated it. Missing entries leave the chain on the registered
+        base.
     fixed_body
         Whether the root is fixed in the model frame. ``True`` suits a tethered fly
         (the body does not move, so the six body-fixed coxae pin it); ``False`` gives
@@ -256,6 +304,9 @@ def build_body_plan(
         The plan plus the joint/DOF bookkeeping its caller needs.
     """
     scales = dict(chain_scales or {})
+    shifts = {
+        str(k): np.asarray(v, dtype=float) for k, v in (chain_offsets or {}).items()
+    }
     joints: list[dict] = [
         {
             "name": ROOT_NAME,
@@ -270,7 +321,9 @@ def build_body_plan(
     for leg in template.legs:
         joints += _leg_joints(leg, skeleton, alignment, body_sim)
     for chain in articulation.chains if articulation is not None else ():
-        joints += _chain_joints(chain, scales.get(chain.name, 1.0))
+        joints += _chain_joints(
+            chain, scales.get(chain.name, 1.0), shifts.get(chain.name)
+        )
 
     plan = {
         "fixed_base": bool(fixed_body),
@@ -278,6 +331,10 @@ def build_body_plan(
             "version": PLAN_VERSION,
             "template": template.name,
             "chain_scales": {k: float(v) for k, v in scales.items()},
+            "chain_offsets": {
+                k: [float(x) for x in np.asarray(v).reshape(3)]
+                for k, v in shifts.items()
+            },
             "body_sim": {
                 "rot": [[float(v) for v in row] for row in np.asarray(body_sim[0])],
                 "scale": float(body_sim[1]),
@@ -312,6 +369,7 @@ def build_body_plan(
             np.asarray(body_sim[2], dtype=float),
         ),
         chain_scales=scales,
+        chain_offsets=shifts,
     )
 
 
@@ -369,7 +427,9 @@ def _leg_joints(leg, skeleton, alignment: Alignment, body_sim) -> list[dict]:
     return out
 
 
-def _chain_joints(chain: Chain, scale: float) -> list[dict]:
+def _chain_joints(
+    chain: Chain, scale: float, shift: np.ndarray | None = None
+) -> list[dict]:
     """A baked chain's hinges followed by its markers as zero-DOF pseudo-joints.
 
     The chain's anchors are absolute neutral-model positions, so successive
@@ -382,16 +442,31 @@ def _chain_joints(chain: Chain, scale: float) -> list[dict]:
     ``scale`` grows the chain about its base anchor -- the same anchor and the same
     transform the mesh overlay scales that chain's nodes about, so the fit and the
     overlay stay consistent.
+
+    ``shift`` then translates the grown chain rigidly, putting its base where the
+    recording's own base marker was measured instead of where the coxa registration
+    extrapolated it (:attr:`~deeperfly.inverse_kinematics.articulation.Chain.base_point`).
+    This is the chain's version of what :func:`_leg_joints` already does with each leg's
+    measured median thorax-coxa, and it matters for the same reason: a chain root left
+    at the model's own anchor inherits every error in the registration that placed it.
+    Only the two *absolute* offsets move -- the root's, and those of markers parented
+    straight to the root -- because every other offset in the chain is a difference
+    between two anchors, which a rigid translation leaves alone. The mesh overlay
+    applies the same translation to its node affines, where a rigid shift of a chain's
+    anchors and its attached points is exactly a post-translation of ``(A, b)``.
     """
     anchors = np.asarray(chain.anchors, dtype=float)
     lo, hi = chain.bounds
     base = anchors[0]
+    delta = np.zeros(3) if shift is None else np.asarray(shift, dtype=float)
+    origin = base + delta
     f = float(scale)
     out: list[dict] = []
     for i, name in enumerate(chain.dof_names):
-        # offset_pos[0] is the (unscaled) base anchor; scaling about the base leaves it
-        # in place and multiplies every later inter-anchor step.
-        offset = base if i == 0 else f * (anchors[i] - anchors[i - 1])
+        # offset_pos[0] is the (unscaled) base anchor, shifted onto the measured base;
+        # scaling about the base leaves it in place and multiplies every later
+        # inter-anchor step.
+        offset = origin if i == 0 else f * (anchors[i] - anchors[i - 1])
         out.append(
             {
                 "name": name,
@@ -416,7 +491,7 @@ def _chain_joints(chain: Chain, scale: float) -> list[dict]:
         neutral = np.asarray(chain.marker_neutral[m], dtype=float)
         if depth <= 0:  # rigidly on the body: no chain joint moves it
             parent = ROOT_NAME
-            offset = base + f * (neutral - base)
+            offset = origin + f * (neutral - base)
         else:
             parent = chain.dof_names[depth - 1]
             offset = f * (neutral - anchors[depth - 1])
@@ -429,6 +504,7 @@ def _chain_joints(chain: Chain, scale: float) -> list[dict]:
                 "dofs": [],
                 "x-deeperfly-point": point,
                 "x-deeperfly-branch": chain.name,
+                **({f"x-{_META_KEY}-base": True} if point == chain.base_point else {}),
             }
         )
     return out

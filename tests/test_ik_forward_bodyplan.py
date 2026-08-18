@@ -18,8 +18,12 @@ import json
 
 import numpy as np
 import pytest
-from helpers import IK_BASELINE_PATH
+from helpers import (
+    IK_BASELINE_PATH,
+    fly38_skeleton,  # noqa: F401
+)
 
+from deeperfly.config import Config
 from deeperfly.inverse_kinematics import forward as fwd
 from deeperfly.inverse_kinematics.align import body_alignment
 from deeperfly.inverse_kinematics.articulation import body_similarity, load_articulation
@@ -40,7 +44,7 @@ _SEGLENS = np.array([0.0, 0.40, 0.69, 0.54, 0.63])
 
 @pytest.fixture(scope="module")
 def fly() -> Skeleton:
-    return Skeleton.fly()
+    return fly38_skeleton()
 
 
 @pytest.fixture(scope="module")
@@ -60,18 +64,35 @@ def real_pts3d() -> np.ndarray:
         return z["real_pts3d"]
 
 
-@pytest.fixture(scope="module")
-def measurements(real_pts3d, fly, template, articulation):
-    """``(alignment, body_sim)`` measured from the real pose, as the stage does."""
-    align = body_alignment(real_pts3d, fly, template)
-    index = {n: i for i, n in enumerate(fly.point_names)}
-    coxae = np.stack(
-        [real_pts3d[:, index[p]] for p in articulation.coxa_points], axis=1
+def _measure(real_pts3d, fly, template):
+    """``(alignment, body_sim)`` measured from the real pose, as the stage does.
+
+    ``real_pts3d`` is stored in ``fly38`` order, so it is re-gathered **by name** for
+    whichever skeleton is asked for; a point the fixture has no column for stays NaN.
+    """
+    articulation = load_articulation()
+    src = {n: i for i, n in enumerate(fly38_skeleton().point_names)}
+    pts3d = np.stack(
+        [
+            real_pts3d[:, src[n]]
+            if n in src
+            else np.full((real_pts3d.shape[0], 3), np.nan)
+            for n in fly.point_names
+        ],
+        axis=1,
     )
+    align = body_alignment(pts3d, fly, template)
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    coxae = np.stack([pts3d[:, index[p]] for p in articulation.coxa_points], axis=1)
     with np.errstate(all="ignore"):
         sim = body_similarity(articulation.coxa_neutral, np.nanmedian(coxae, axis=0))
     assert sim is not None
     return align, sim
+
+
+@pytest.fixture(scope="module")
+def measurements(real_pts3d, fly, template):
+    return _measure(real_pts3d, fly, template)
 
 
 def make_plan(fly, template, articulation, measurements, **kw) -> BodyPlan:
@@ -180,17 +201,60 @@ def test_axis_rmat_batches_over_angles():
 
 
 def test_plan_shape_and_coverage(plan, fly, template, articulation):
-    """The plan holds one joint per keypoint plus the hinges that carry no keypoint."""
+    """The plan holds one joint per model point plus the hinges that carry no keypoint."""
     n_chain_dofs = sum(len(c.dof_names) for c in articulation.chains)
     n_markers = sum(len(c.marker_names) for c in articulation.chains)
     n_leg_joints = sum(len(leg.joints) for leg in template.legs)
     assert plan.n_joints == 1 + n_leg_joints + n_chain_dofs + n_markers
     assert plan.n_dofs == len(template.dof_names) + n_chain_dofs
-    # Every skeleton point is tracked by exactly one joint, and nothing else is.
-    assert int((plan.joint_row >= 0).sum()) == fly.n_points
-    assert sorted(p for p in plan.joint_point if p) == sorted(fly.point_names)
+
+    planned = {p for p in plan.joint_point if p}
+    tracked = {p for p, r in zip(plan.joint_point, plan.joint_row) if r >= 0}
+    assert tracked == planned & set(fly.point_names)
+    assert int((plan.joint_row >= 0).sum()) == len(tracked)
     assert plan.joint_names[0] == ROOT_NAME
     assert plan.joint_point[0] is None and plan.joint_branch[0] == ""
+
+
+@pytest.mark.parametrize(
+    "name,model_only,skeleton_only",
+    [
+        ("fly38b", [], []),
+        (
+            "fly38",
+            ["abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4", "neck"],
+            [
+                "l_abdomen0",
+                "l_abdomen1",
+                "l_abdomen2",
+                "r_abdomen0",
+                "r_abdomen1",
+                "r_abdomen2",
+            ],
+        ),
+    ],
+)
+def test_which_points_the_plan_covers(
+    name, model_only, skeleton_only, template, articulation, real_pts3d
+):
+    """Coverage is an intersection, and both gaps are named rather than papered over.
+
+    A joint tracks a keypoint only where the *model* has a marker for it and the *run's
+    skeleton* names it, so the two sets are allowed to disagree. On ``fly38b`` they no
+    longer do: with the head and abdomen chains both targeted at it, the plan covers all
+    38 points and the fit has nothing left un-modelled.
+
+    ``fly38`` is the other side of that. Its two historical abdomen side chains have no
+    marker on the model any more and its skeleton has no ``neck``, so eleven points fall
+    out on one side or the other -- the whole abdomen among them, which means a ``fly38``
+    run gets no abdomen fit at all. Asserted by name so a future retarget fails this test
+    rather than passing it quietly.
+    """
+    fly = Skeleton.from_config(Config.from_dict({"skeleton": {"name": name}}))
+    plan = make_plan(fly, template, articulation, _measure(real_pts3d, fly, template))
+    planned = {p for p in plan.joint_point if p}
+    assert sorted(planned - set(fly.point_names)) == model_only
+    assert sorted(set(fly.point_names) - planned) == skeleton_only
 
 
 def test_plan_angle_names_match_the_results_contract(plan):
@@ -511,3 +575,109 @@ def test_plan_kinematics_rejects_an_unknown_parent():
 def test_plan_kinematics_rejects_the_wrong_number_of_angles(plan):
     with pytest.raises(ValueError, match="DOF angles per frame"):
         plan.kinematics().joint_positions(np.zeros(plan.n_dofs + 1))
+
+
+# -- placing a chain on its measured base -------------------------------------
+
+
+def test_chain_offset_moves_only_the_chain_root_and_its_root_parented_markers(
+    fly, template, articulation, measurements
+):
+    """A base shift is rigid: it moves the two absolute offsets and nothing else.
+
+    Every other offset in a chain is a *difference* between two neutral anchors, which a
+    rigid translation leaves alone -- so a shift must not change the chain's internal
+    geometry, only where the whole thing sits. That is what makes it composable with the
+    size estimate, which scales those differences.
+    """
+    shift = np.array([0.03, -0.02, -0.13])
+    base = make_plan(fly, template, articulation, measurements)
+    moved = make_plan(
+        fly, template, articulation, measurements, chain_offsets={"head": shift}
+    )
+    by_name = {j["name"]: j for j in base.plan["joints"]}
+    head = articulation.chain("head")
+    root_parented = {head.dof_names[0], "neck"}  # the hinge stack's root, and the base
+
+    for j in moved.plan["joints"]:
+        want = np.asarray(by_name[j["name"]]["offset_pos"], dtype=float)
+        if j["x-deeperfly-branch"] == "head" and j["name"] in root_parented:
+            want = want + shift
+        np.testing.assert_allclose(j["offset_pos"], want, atol=1e-12)
+
+
+def test_chain_offsets_round_trip_through_the_stored_plan(
+    fly, template, articulation, measurements
+):
+    """The editor's live re-fit must re-solve on the pivot the pipeline fitted about.
+
+    It rebuilds the plan from the JSON in ``results.h5`` rather than re-deriving it, so
+    the shift has to survive that trip -- otherwise a corrected label would be fitted
+    about the model's anchor while the stored angles describe the measured one.
+    """
+    shift = np.array([0.03, -0.02, -0.13])
+    plan = make_plan(
+        fly, template, articulation, measurements, chain_offsets={"head": shift}
+    )
+    back = BodyPlan.from_json(plan.to_json(), fly)
+    np.testing.assert_allclose(back.chain_offsets["head"], shift, atol=1e-12)
+    assert back.plan["x-deeperfly"]["version"] == plan.plan["x-deeperfly"]["version"]
+
+
+def test_a_plan_without_chain_offsets_reads_as_no_shift(
+    fly, template, articulation, measurements
+):
+    """A version-1 plan carries no ``chain_offsets``; that has to mean zero, not missing."""
+    plan = make_plan(fly, template, articulation, measurements)
+    stored = json.loads(plan.to_json())
+    stored["x-deeperfly"].pop("chain_offsets", None)  # as an older deeperfly wrote it
+    back = BodyPlan.from_json(json.dumps(stored), fly)
+    assert back.chain_offsets == {}
+
+
+def test_the_overlay_mesh_and_the_plan_agree_on_the_shifted_pivot(
+    fly, template, articulation, measurements
+):
+    """The mesh node affine lands a marker exactly where the plan's FK does.
+
+    ``chain_scales`` already had to hold this property -- fit and overlay must describe
+    one pose -- and a base shift is the second thing that can break it. Shifting a
+    chain's anchors *and* its attached points by ``d`` is exactly a post-translation of
+    the affine, so passing ``chain_offsets`` to :meth:`NmfMesh.pose` is the whole
+    correction; the second half of this test is what omitting it costs.
+    """
+    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+
+    shift = np.array([0.03, -0.02, -0.13])
+    plan = make_plan(
+        fly,
+        template,
+        articulation,
+        measurements,
+        chain_scales={"head": 1.24},
+        chain_offsets={"head": shift},
+    )
+    head = articulation.chain("head")
+    mesh = load_nmf_mesh()
+    col = {n: i for i, n in enumerate(plan.angle_names)}
+    row = list(plan.joint_names).index("l_antenna")
+    neutral = head.marker_neutral[head.marker_index("l_antenna")]
+
+    rng = np.random.default_rng(4)
+    for _ in range(8):
+        angles = np.zeros((1, plan.n_dofs))
+        for name, value in zip(head.dof_names, rng.uniform(-0.6, 0.6, 3)):
+            angles[0, col[name]] = value
+        want = plan.kinematics().joint_positions(angles, None, None)[0, row]
+
+        a, b = mesh._node_transforms(
+            angles[0], list(plan.angle_names), (1.24, 1.0), {"head": shift}
+        )[(0, 3)]
+        np.testing.assert_allclose(a @ neutral + b, want, atol=1e-12)
+
+        a0, b0 = mesh._node_transforms(angles[0], list(plan.angle_names), (1.24, 1.0))[
+            (0, 3)
+        ]
+        assert np.linalg.norm((a0 @ neutral + b0) - want) == pytest.approx(
+            float(np.linalg.norm(shift)), abs=1e-12
+        )

@@ -65,7 +65,9 @@ class Pathway:
     source, preprocessor, model
         The names referenced from ``[[sources]]`` / ``[[pose2d.preprocessors]]`` /
         ``[[pose2d.models]]``. ``preprocessor`` is ``None`` when the pathway omits it
-        (no frame ops; ``transform`` is the identity).
+        (no frame ops; ``transform`` is the identity). ``model`` is always resolved --
+        a pathway that omits it takes ``[pose2d].model``, or the sole declared model
+        (see :func:`_default_model`).
     transform
         The resolved preprocessor (the pathway's geometric frame prep); the
         identity when ``preprocessor`` is omitted.
@@ -291,7 +293,7 @@ class DetectionPlan:
 
         sources = _parse_sources(data.get("sources"))
         preprocessors = _parse_preprocessors(pose2d.get("preprocessors"))
-        models = _parse_models(pose2d.get("models"))
+        models = _parse_models(pose2d.get("models"), n_points=skeleton.n_points)
         pathways = _parse_pathways(
             pose2d.get("pathways"),
             sources={s.name for s in sources},
@@ -300,6 +302,7 @@ class DetectionPlan:
             view_names=view_names,
             point_index=point_index,
             output_points=pose2d.get("output_points"),
+            default_model=pose2d.get("model"),
         )
         check_mirror_consistency(pathways, models, skeleton, view_names)
         return cls(
@@ -431,8 +434,20 @@ def _parse_sources(raw) -> list[Source]:
 
 
 def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
+    """Parse ``[[pose2d.preprocessors]]``; the section itself is optional.
+
+    A pathway's ``preprocessor`` key is already optional (omitting it means the identity),
+    so a plan whose every pathway detects on the raw frame has nothing to declare -- and
+    requiring an empty list from it was asking for a line that says "no line".
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"[[pose2d.preprocessors]] must be a list of tables, got {raw!r}"
+        )
     out: dict[str, FrameTransform] = {}
-    for i, p in enumerate(_require_list(raw, "[[pose2d.preprocessors]]")):
+    for i, p in enumerate(raw):
         name = p.get("name")
         if not isinstance(name, str):
             raise ValueError(
@@ -446,7 +461,17 @@ def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
     return out
 
 
-def _parse_models(raw) -> dict[str, ModelSpec]:
+def _parse_models(raw, *, n_points: int | None = None) -> dict[str, ModelSpec]:
+    """Parse ``[[pose2d.models]]``, filling omitted keys from the model class.
+
+    Only ``name``, ``class`` and (for the classes with no auto-provisioned cache)
+    ``weights`` are irreducible. ``input_size`` / ``mean`` / ``n_out_channels`` /
+    ``precision`` come from :func:`~deeperfly.pose2d.models.class_defaults` when the table
+    does not state them -- with the dense classes' channel count resolved against
+    ``n_points``, the skeleton this plan routes into.
+    """
+    from .models import class_defaults
+
     fixed = {
         "name",
         "class",
@@ -470,7 +495,8 @@ def _parse_models(raw) -> dict[str, ModelSpec]:
             raise ValueError(
                 f"[[pose2d.models]] {name!r} needs a string 'class', got {cls!r}"
             )
-        size = m.get("input_size", list(ModelSpec.input_size))
+        fallback = class_defaults(cls, n_points)
+        size = m.get("input_size") or list(fallback["input_size"])
         if len(size) != 2:
             raise ValueError(
                 f"[[pose2d.models]] {name!r} input_size must be [height, width]"
@@ -479,11 +505,12 @@ def _parse_models(raw) -> dict[str, ModelSpec]:
         out[name] = ModelSpec(
             name=name,
             cls=cls,
-            weights=(weights or None),  # "" / absent -> cached default
+            weights=(weights or None),  # "" / absent -> resolved at load
             input_size=(int(size[0]), int(size[1])),
-            mean=float(m.get("mean", ModelSpec.mean)),
-            n_out_channels=int(m.get("n_out_channels", ModelSpec.n_out_channels)),
-            precision=(m.get("precision") or None),  # "" / absent -> [pose2d] default
+            mean=float(m.get("mean", fallback["mean"])),
+            n_out_channels=int(m.get("n_out_channels", fallback["n_out_channels"])),
+            # "" / absent -> the class's own requirement, else [pose2d].precision
+            precision=(m.get("precision") or fallback["precision"]),
             kwargs={k: v for k, v in m.items() if k not in fixed},
         )
     return out
@@ -611,6 +638,28 @@ def _identity_triples(
     return [(i, view, i) for i in range(n_points)]
 
 
+def _default_model(declared, models: dict[str, ModelSpec]) -> str | None:
+    """The model a pathway that names none gets: ``[pose2d].model``, else the sole one.
+
+    A dense plan is one pathway per camera through *one* detector, so the model name
+    was written once per camera and said nothing -- the repetition is only there to be
+    a reference. ``[pose2d].model`` hoists it to where it belongs, and a plan with a
+    single ``[[pose2d.models]]`` entry needs even that: there is exactly one answer.
+
+    The fallback is deliberately not "the first model". Adding a second model to a plan
+    whose pathways are bare must be an error naming both, not a silent pick -- that is
+    the moment the default stops being unambiguous.
+    """
+    if declared is not None:
+        if declared not in models:
+            raise ValueError(
+                f"[pose2d].model references unknown model {declared!r}; "
+                f"models: {sorted(models)}"
+            )
+        return declared
+    return next(iter(models)) if len(models) == 1 else None
+
+
 def _parse_pathways(
     raw,
     *,
@@ -620,10 +669,12 @@ def _parse_pathways(
     view_names: list[str],
     point_index: dict[str, int],
     output_points,
+    default_model=None,
 ) -> list[Pathway]:
     specs: list[
         tuple[str, str, str | None, str]
     ] = []  # name, source, preprocessor, model
+    fallback = _default_model(default_model, models)
     seen: set[str] = set()
     for i, pw in enumerate(_require_list(raw, "[[pose2d.pathways]]")):
         where = f"[[pose2d.pathways]][{i}]"
@@ -639,7 +690,13 @@ def _parse_pathways(
         prep = pw.get("preprocessor")
         if prep is not None and prep not in preprocessors:
             raise ValueError(f"{where} references unknown preprocessor {prep!r}")
-        model = pw.get("model")
+        model = pw.get("model", fallback)
+        if model is None:
+            raise ValueError(
+                f"{where} ({name!r}) names no model and there is no default: this plan "
+                f"declares {len(models)} models ({sorted(models)}), so write 'model' on "
+                "the pathway, or [pose2d].model to set one for all of them"
+            )
         if model not in models:
             raise ValueError(f"{where} references unknown model {model!r}")
         specs.append((name, src, prep, model))

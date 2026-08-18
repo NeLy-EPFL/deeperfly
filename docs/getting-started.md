@@ -104,7 +104,7 @@ deeperfly inspect examples/data/deeperfly_outputs/results.h5
 file:     examples/data/deeperfly_outputs/results.h5
 views:    7  ['rh', 'rm', 'rf', 'f', 'lf', 'lm', 'lh']
 frames:   100
-skeleton: fly38  (38 points)
+skeleton: fly38b  (38 points)
 has 3D:   True
 reproj:   median 2.1 px  max 8.7 px
 ```

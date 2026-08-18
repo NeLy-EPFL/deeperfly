@@ -1,10 +1,20 @@
 # Writing configs
 
 A run is driven by a single self-contained `config.toml`. `deeperfly init
-config.toml` writes a fully commented copy to edit in place; `deeperfly run
-recording/` with no `-c` falls back to the packaged defaults. A single file
-carries everything a run needs — the camera rig, which file belongs to which
-camera, the detector, the pipeline and the visualization.
+config.toml` writes a copy to edit in place; `deeperfly run recording/` with no
+`-c` falls back to the packaged defaults. A single file carries everything a run
+needs — the camera rig, which file belongs to which camera, the detector, the
+pipeline and the visualization.
+
+**A section you leave out runs on its defaults.** The packaged config states only
+what it changes, so it is short enough to read; to see a key it does not mention,
+ask the code rather than hunting for a commented-out line:
+
+```console
+$ deeperfly config show                 # every section, every key, its default
+$ deeperfly config show triangulation   # one section, with its documentation
+$ deeperfly config set triangulation.method greedy
+```
 
 This guide walks through customizing a config, ordered roughly by how often
 you'll touch each section: the first few you'll set for almost every recording,
@@ -15,13 +25,22 @@ parameter-by-parameter listing (every key, its type and default), see the
 ## The detection plan
 
 2D detection is described by the top-level `[[sources]]` footage list plus the
-detector's own machinery under `[pose2d]` — `[[pose2d.preprocessors]]`,
-`[[pose2d.models]]`, `[[pose2d.pathways]]` — and a `[pose2d.output_points]`
-mapping table. A neural network turns a preprocessed image into output channels;
+detector's own machinery under `[pose2d]` — `preprocessors`, `models` and
+`pathways`. A neural network turns a preprocessed image into output channels;
 the plan says which footage feeds which model (the pathways) and where each
-output channel lands in the skeleton (`[pose2d.output_points]`). The default fly
-rig is **7 sources → 8 pathways → 7 views** (the front camera is read twice, once
-mirrored).
+output channel lands in the skeleton.
+
+The packaged plan is **dense**: one pathway per camera, with the model emitting
+every tracked point for every view, so channel *i* is point *i* of that pathway's
+view and no mapping table is written at all. A contralateral point arrives as a
+prediction to correct rather than as a gap to author from nothing.
+
+A **19-channel** detector predicts one body side instead, which means running each
+side camera twice (once mirrored) and saying, per view and per channel, which
+point it landed on — a `[pose2d.output_points]` table, 132 rows for the seven-camera
+rig. That plan is still supported and is documented under
+[`[pose2d.output_points]`](../reference/configuration.md#output_points); it is no
+longer what a new config starts from.
 
 **Sources** name the footage, the one setting almost every recording needs. Each
 `filename` is a glob matched inside the recording directory:
@@ -53,48 +72,60 @@ name = "mirror"
 ops  = [{ op = "fliplr" }]
 ```
 
-**Models** select a detector network: `class` is the registry key
-(`"hourglass"` = DeepFly2D), `weights` a checkpoint (`""`/omitted uses the cached
-download), `input_size` the `(height, width)` it expects, `mean` the scalar
-subtracted after `/255`, and `n_out_channels` the output heatmap count.
+**Models** select a detector network. Only two keys are really yours: `class`, the
+registry key (`"mvt"` cross-view dense, `"hrnet"` per-view dense, `"hourglass"` =
+19-channel DeepFly2D), and `weights`, the checkpoint.
 
 ```toml
-[[pose2d.models]]
-name = "deepfly2d"
-class = "hourglass"
-weights = ""
-input_size = [256, 512]
-mean = 0.22
-n_out_channels = 19
+models = [{ name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" }]
 ```
+
+`input_size`, `mean`, `n_out_channels` and (for `mvt`) `precision` are properties of
+the checkpoint whose loader already refuses a config that disagrees, so the class
+states them — see
+[what the class already knows](../reference/configuration.md#model-class-defaults).
+Write one only to override it.
+
+A bare `weights` filename is looked up on `$DEEPERFLY_MODELS` (then the download
+cache); anything with a path separator is used as written. Prefer the bare name:
+*which model a run used* travels with the recording, where `/mnt/...` is a fact about
+one machine. `"hourglass"` is the only class that needs no checkpoint at all — its
+published weights are downloaded and cached on first use.
 
 **Pathways** are named `source -> preprocessor -> model` inference runs. A
-pathway only says *what to detect on*; each needs a unique `name`:
+pathway only says *what to detect on*; each needs a unique `name`, and in a dense
+plan that name is its view:
 
 ```toml
-[[pose2d.pathways]]
-name = "rh"; source = "vid_rh"; model = "deepfly2d"            # no preprocessor = identity
-[[pose2d.pathways]]                                            # the front source, mirrored pass
-name = "f_flip";  source = "vid_f";  preprocessor = "flip"; model = "deepfly2d"
+model = "dense38mv"                                       # the default for every pathway
+pathways = [
+    { name = "rh", source = "vid_rh" },                   # identity preprocessor
+    { name = "f",  source = "vid_f", preprocessor = "crop_f" },
+]
 ```
 
-**`[pose2d.output_points.<view>]`** says *where the outputs land*: for each view,
-a table keyed by point name where `point = { pathway, out_channel }` fills that
-point from output channel `out_channel` of the named pathway. Keying on `(view,
-point)` makes every point's data come from exactly one place (a duplicate is a
-config error); a `(view, point)` no entry names is left unobserved (NaN) — that
-union *is* the visibility, with no separate table.
+A pathway takes `[pose2d].model` when it names none of its own — and with a single
+`[[pose2d.models]]` entry it takes that one, so a single-detector plan need not name it
+anywhere. Two models and a bare pathway is an error naming both, never a silent pick:
+see [the model a pathway takes](../reference/configuration.md#pathway-model).
+
+**Where the outputs land** needs no table in a dense plan: channel *i* is point *i*
+of the view the pathway is named after. When a detector is *not* dense — the
+19-channel one predicts one body side, so its channels mean different points in
+different views — a `[pose2d.output_points.<view>]` table says so explicitly, keyed
+by point name:
 
 ```toml
-[pose2d.output_points.rh]                 # right-side view: 19 channels of one pathway
-rf_thorax_coxa = { pathway = "rh", out_channel = 0 }
-# ... through ...
-r_abdomen2     = { pathway = "rh", out_channel = 18 }
-
 [pose2d.output_points.f]                  # one view fed by two pathways, disjoint points
 rf_femur_tibia = { pathway = "f",      out_channel = 2 }   # right, un-flipped
 lf_femur_tibia = { pathway = "f_flip", out_channel = 2 }   # left, mirrored
 ```
+
+Keying on `(view, point)` makes every point's data come from exactly one place (a
+duplicate is a config error); a `(view, point)` no entry names is left unobserved
+(NaN) — that union *is* the visibility, with no separate table. See the
+[reference](../reference/configuration.md#output_points) for the full form and the
+left/right check that guards it.
 
 This modularity supports a range of setups: a single front model predicting both
 legs, per-view or per-side specialized models, or a different `model` per
@@ -110,8 +141,8 @@ do_pose2d               = true   # detect 2D pose in every camera view
 do_bundle_adjustment    = true   # refine the cameras (bundle adjustment)
 do_pictorial_structures = false  # DeepFly3D-style peak recovery (opt-in)
 do_triangulation        = true   # triangulate 2D -> 3D
-do_eks                  = false  # ensemble Kalman smoother over the 3D (opt-in)
-do_postprocess          = false  # corrections from knowing the animal (opt-in)
+do_eks                  = true   # ensemble Kalman smoother over the 3D
+do_postprocess          = true   # corrections from knowing the animal (assumes TETHERED)
 do_inverse_kinematics   = false  # fit NeuroMechFly joint angles (opt-in)
 do_visualization        = true   # render the videos
 ```
@@ -119,12 +150,17 @@ do_visualization        = true   # render the videos
 Each enabled stage has its own top-level `[<stage>]` parameter table (below).
 Pictorial structures is the opt-in stage most commonly flipped on.
 
-Two of the opt-in stages are worth knowing about for a *tethered* preparation.
+Two of these are on in the packaged config because they are worth having on a *tethered*
+preparation, and both are worth understanding before you keep them.
 [`[eks]`](../reference/configuration.md#eks) fits one 3D trajectory per keypoint to the
-whole recording, which de-jitters the pose and repairs blown detections; and
-[`[postprocess]`](../reference/configuration.md#postprocess) then applies the corrections
-that come from knowing the *animal* rather than the pixels — an ordered chain, so a new
-correction costs a block rather than a new stage:
+whole recording, which de-jitters the pose (measured: **39% less** frame-to-frame
+acceleration) and repairs blown detections — at the cost of lagging a keypoint that moves
+faster per frame than the detector localizes it, which at 100 fps means a claw in swing
+(0.13% of cells reproject >100 px, and every one is a claw). Turn it off if claw timing is
+the measurement. [`[postprocess]`](../reference/configuration.md#postprocess) then applies
+the corrections that come from knowing the *animal* rather than the pixels — an ordered
+chain, so a new correction costs a block rather than a new stage. **It assumes the animal
+is tethered**; turn it off for a freely-moving one:
 
 ```toml
 [[postprocess.ops]]              # these keypoints do not move (a tethered thorax)
@@ -385,8 +421,9 @@ The orbit parameters (`look_at`, `distance`, `azimuth_deg`, `elevation_deg`,
 
 The tracked points and their structure (38-point, 7-camera *Drosophila* rig):
 `point_names`, `limb_points` kinematic chains (each a list of point names), and
-the plotting `limb_palette`. Which view sees which point is not set here — it is
-the union of the `[pose2d.output_points]` tables. Edit this only to track a
+the plotting `limb_palette`. Naming a packaged skeleton (`name = "fly38b"`) loads all
+three; write a key to override it. Which view sees which point is not set here — it is
+the union of the pathway maps, which a dense plan makes total. Edit this only to track a
 different animal — see the
 [reference](../reference/configuration.md#skeleton) and the
 [pipeline explainer](../explanation/pipeline.md).

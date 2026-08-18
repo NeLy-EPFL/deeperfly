@@ -6,18 +6,31 @@ this page is the exhaustive listing.
 
 A config is one TOML file. Each stage reads its parameters through a typed
 accessor whose **defaults are the single source of truth** (the frozen `*Params`
-dataclasses in `src/deeperfly/config.py`); the packaged
-`default_config.toml` mirrors them exactly. An unknown key in a stage table is a
+dataclasses in `src/deeperfly/config.py`). An unknown key in a stage table is a
 hard error that names the allowed keys. Performance-only knobs (`batch_size`,
 `decode_buffer`, `[io.image]`) never invalidate a stage's cache; everything else
 that affects a result does.
 
+**A stage table you leave out runs on its defaults**, and the packaged
+`default_config.toml` deliberately omits the ones it does not change — it carries the
+*structure* of a run (footage, rig, skeleton, detector) and the few values this rig has
+a measured opinion about. To see a key without opening a file:
+
+```console
+$ deeperfly config show                          # every section
+$ deeperfly config show eks                      # one section, with its docs
+$ deeperfly config set eks.inflate_threshold 15  # validated as a run would
+```
+
+`config show` marks which values were *set* versus inherited, which is the question a
+file full of defaults cannot answer.
+
 The top-level layout:
 
 ```toml
-[[sources]]            # footage globs (shared input)
+sources = [...]        # footage globs (shared input); or [[sources]] blocks
 [io.image]             # image-sequence decode
-[skeleton]             # tracked points and limbs
+[skeleton]             # tracked points and limbs (or a preset name)
 [cameras.defaults]     # rig geometry: shared defaults
 [cameras.<name>]       # rig geometry: per-view overrides
 [pipeline]             # which stages run
@@ -30,6 +43,16 @@ The top-level layout:
 [inverse_kinematics]   # opt-in: 3D -> NeuroMechFly joint angles
 [visualization]        # output videos
 ```
+
+Every array-of-tables section (`[[pose2d.models]]`, `[[pose2d.pathways]]`,
+`[[pose2d.preprocessors]]`, `[cameras.<name>]`) can equivalently be written as an array
+of inline tables — `models = [{ name = "m", class = "mvt", weights = "x.pth" }]` — which
+is what the packaged config does. TOML parses the two identically.
+
+!!! warning "`[[sources]]` is the exception"
+    Keep the footage list as `[[sources]]` blocks. `deeperfly project` lifts whole TOML
+    *tables* out of a config by their headers, and a bare top-level `sources = [...]`
+    key is not a header — a project's `rig.toml` would silently come out with no footage.
 
 ## `[[sources]]` — footage { #sources }
 
@@ -60,7 +83,8 @@ default 38-point fly skeleton.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `name` | str | `"skeleton"` | Skeleton identifier (e.g. `"fly38"`). |
+| `name` | str | `"skeleton"` | Skeleton identifier, **or a packaged preset to load** (below). |
+| `file` | str | *unset* | Load a skeleton from this path (relative to *this* config), instead of a preset. |
 | `point_names` | list[str] | *required* | Ordered tracked-point names; the length is `P`. |
 | `symmetries` | list[[str, str]] | `[]` | Left/right mirror pairs (see below). Unordered within a pair; each point in at most one pair. |
 | `limb_points` | table | `{}` | `[skeleton.limb_points]`: each limb name → its points in kinematic-chain order. |
@@ -68,7 +92,7 @@ default 38-point fly skeleton.
 
 ```toml
 [skeleton]
-name = "fly38"
+name = "fly38b"
 point_names = ["lf_thorax_coxa", "lf_coxa_trochanter", "..."]
 
 symmetries = [
@@ -85,6 +109,63 @@ lf_leg = "#0f7399"
 
 Which view sees which point is **not** set here — it is the union of the
 [`[pose2d.output_points]`](#output_points) tables.
+
+#### Presets — naming a skeleton instead of spelling one { #skeleton-presets }
+
+A skeleton is ~80 lines that almost never differ between recordings of the same animal,
+and when they do differ they differ completely. So a table that declares **no
+`point_names`** is read as a *reference* and expanded at load:
+
+```toml
+[skeleton]
+name = "fly38b"          # a packaged skeleton
+```
+
+```toml
+[skeleton]
+file = "skeleton.toml"   # a project's own, resolved next to this config
+```
+
+Packaged presets live in `src/deeperfly/data/skeletons/`:
+
+| Preset | Points |
+| --- | --- |
+| `fly38` | The historical DeepFly3D set: three 5-point legs, an antenna and three abdominal markers **per side**. |
+| `fly38b` | Same legs and antennae, but the abdomen is one 5-point **dorsal-midline** chain plus a `neck`. Also 38 points, in a different order. |
+
+!!! warning "`fly38` and inverse kinematics"
+    The packaged NeuroMechFly articulation targets **`fly38b`**: a body plan built
+    against it covers **38 of 38 points**, both chains fit, and both are sized from
+    measurement. Against `fly38` it covers 27 — that skeleton labels neither the head's
+    `neck` nor the midline `abdomen0..4`, so **the abdomen is not fitted at all** (its
+    five DOFs come back NaN in every frame) and neither chain's size can be measured, so
+    both are drawn at the model's own size. Nothing fails, and both are warned about
+    rather than silent.
+    Retarget either chain with [`[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]`](#ik-markers)
+    if your labeling scheme differs — where a point sits on the model is a
+    labeling-scheme decision, and the packaged placements are tabulated in
+    [Keypoint locations](../explanation/keypoints.md).
+
+A preset file is a complete `[skeleton]` table in exactly the format
+`deeperfly dense-config --skeleton` takes, so a preset and a project's own
+`skeleton.toml` are interchangeable.
+
+Keys written in the config **override the referenced ones wholesale, per key** — a
+`limb_palette` here replaces the referenced palette rather than merging into it. A table
+that *does* spell out `point_names` is already self-contained and is left exactly as it
+is, so every config written before presets existed keeps its meaning and `name` goes on
+being a free-text label for those.
+
+The reference is what the run snapshot records, and the *resolved* point names reach the
+`pose2d` fingerprint — so a preset that changes underneath a cached run invalidates it
+rather than silently passing.
+
+!!! warning "The skeleton must be the one the detector was trained on"
+    A dense detector's channels **are** a skeleton. `fly38` and `fly38b` are both 38
+    points sharing 32 of them in a different order, so routing one through the other's
+    config attaches six points to the wrong joints and shifts the rest — a wrong limb,
+    not a crash. The checkpoint's own recorded channel names are compared against
+    `[skeleton]` on **every run** (`deeperfly.pose2d.stream.load_models`).
 
 ### `symmetries` — left/right pairs { #symmetries }
 
@@ -103,9 +184,10 @@ Three things read the pairs, and two of them fail *silently* without them:
 
 Omitting the key switches all three off — correct for an asymmetric subject, wrong
 for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
-tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged fly38 skeleton
-writes out the 19 pairs that inference proposes, rather than relying on it, so that
-renaming a point cannot quietly re-pair the skeleton.
+tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged skeletons write out
+the pairs that inference proposes (16 for `fly38b`, 19 for `fly38` — the difference is
+the abdomen, which `fly38b` puts on the midline where it has no mirror partner), rather
+than relying on it, so that renaming a point cannot quietly re-pair the skeleton.
 
 Editing the pairs is a **non-destructive** skeleton migration: no label moves and no
 sidecar is rewritten, but the change is still reported, because it changes what the
@@ -237,6 +319,21 @@ the detection plan — what to detect and how.
 | `batch_size` | int | `16` | GPU forward batch (images per forward). Clamped to ≥ 1; throughput plateaus by ~16 on a fast GPU. |
 | `decode_buffer` | int | `4` | Decode queue depth, in multiples of `batch_size`. Clamped to ≥ 1. Peak frames/camera ≈ `(decode_buffer + 2) * batch_size`. |
 
+**`batch_size` is in images, not frames.** `detect_sequence` forwards
+`batch_size // pathways` whole frames at a time, so on a seven- or eight-camera rig
+anything below 8 is **one frame per forward** — which is why the default is not smaller.
+Measured on an RTX 4090, 8 views at 256×512, multiview transformer:
+
+| `batch_size` | 2 | 8 | 16 | 32 | 64 |
+| --- | --- | --- | --- | --- | --- |
+| fps | 49.6 | 52.9 | 59.4 | 60.1 | 58.9 |
+
+The transformer is compute-bound (10.0 ms/frame at batch 8 against 11.1 at batch 1), so
+the knob plateaus by 32. It was worth nothing at all until host preparation stopped
+blocking the GPU: before that the same sweep read 31 fps flat at every value, because the
+bottleneck was a YUV→RGB conversion, a device round trip and a PIL grayscale that no batch
+size touches. A batch knob buys throughput only once the thing it feeds is the bottleneck.
+
 ### `[[pose2d.preprocessors]]`
 
 Named, reusable frame-op pipelines, referenced by a pathway's `preprocessor`.
@@ -319,16 +416,53 @@ is measured and fixed in code; these are the parts a recording can genuinely nee
 
 ### `[[pose2d.models]]`
 
-A detector network and its input contract.
+A detector network and its input contract. In practice only `name`, `class` and
+`weights` are written — everything else is a property of the checkpoint.
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `name` | str | Model identifier (referenced by pathways). |
-| `class` | str | Network registry key (`"hourglass"` = DeepFly2D). |
-| `weights` | str | Checkpoint path; `""` / omitted uses the auto-provisioned cache. |
-| `input_size` | [int, int] | `(height, width)` the network expects; frames are resized to it and peaks scaled back. |
-| `mean` | float | Scalar subtracted after `/255` normalization. |
-| `n_out_channels` | int | Output heatmap count (validated against the weights). |
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | str | *required* | Model identifier (referenced by pathways). |
+| `class` | str | *required* | Network registry key: `"hourglass"` (= `"deepfly2d"`, the 19-channel DeepFly2D), `"hrnet"` (= `"hrnet_timm"`, dense per-view), `"mvt"` (= `"multiview_transformer"`, dense cross-view). |
+| `weights` | str | *see below* | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. |
+| `input_size` | [int, int] | from the class | `(height, width)` the network expects; frames are resized to it and peaks scaled back. |
+| `mean` | float | from the class | Scalar subtracted after `/255` normalization. |
+| `n_out_channels` | int | from the class | Output heatmap count (validated against the weights). |
+| `precision` | str | from the class, then `[pose2d].precision` | `float32` / `float16` / `bfloat16`. |
+
+#### What the class already knows { #model-class-defaults }
+
+The last four keys are not preferences: each is a property of the network whose loader
+**already refuses to run against a disagreeing config**. Writing them was the config
+restating the artifact under threat of rejection, so the class states them instead
+(`deeperfly.pose2d.models.CLASS_DEFAULTS`) and a table only speaks up to override.
+
+| class | `mean` | `n_out_channels` | `precision` |
+| --- | --- | --- | --- |
+| `hourglass` | `0.22` | `19` | inherits `[pose2d].precision` |
+| `hrnet` | `0.0` (the checkpoint carries its own) | the skeleton's point count | inherits |
+| `mvt` | `0.0` | the skeleton's point count | `float32` (bf16 moved 99.6% of cells) |
+
+`n_out_channels` defaulting to the skeleton's point count *is* what "dense" means, so a
+dense config stops restating its own skeleton's size and cannot get it wrong. A
+checkpoint that records the input size it was trained at also contradicts a disagreeing
+`input_size` at load, because a mis-resized fly arrives at the wrong scale rather than
+crashing.
+
+#### Where `weights` is looked up { #weights-resolution }
+
+Dense detectors are trained per project, so there is nothing to download and `weights` is
+required for them. Three forms:
+
+| Value | Meaning |
+| --- | --- |
+| `""` / omitted | `hourglass` downloads and caches its published DeepFly2D checkpoint. Any other class stops, with setup instructions. |
+| `my_detector.pth` (a bare filename) | Searched along `$DEEPERFLY_MODELS` (`os.pathsep`-separated, like `PATH`), then the download cache. |
+| `/path/to/x.pth`, `./x.pth`, `~/x.pth` | Used as written. |
+
+Prefer the bare filename: *which model a run used* is a fact about the recording and
+travels with it, where `/mnt/upramdya_data/...` is a fact about one mount on one machine
+and breaks the moment the config is opened anywhere else. A failed lookup prints every
+directory it searched.
 
 ### `[[pose2d.pathways]]`
 
@@ -338,8 +472,41 @@ A named `source → preprocessor → model` inference run. Says *what to detect 
 | --- | --- | --- | --- |
 | `name` | str | yes | Unique pathway identifier (referenced by `output_points`). |
 | `source` | str | yes | The `[[sources]]` name to detect on. |
-| `model` | str | yes | The `[[pose2d.models]]` name to use. |
+| `model` | str | no | The `[[pose2d.models]]` name to use; omit for [the default](#pathway-model). |
 | `preprocessor` | str | no | A `[[pose2d.preprocessors]]` name; omit for identity. |
+
+#### The model a pathway takes when it names none { #pathway-model }
+
+A dense plan is one pathway per camera through **one** detector, so writing the model on
+every pathway was the same string repeated once per view, existing only to point at the
+single entry above it. It is hoisted instead:
+
+```toml
+[pose2d]
+model = "dense38mv"                  # the default for every pathway below
+models = [
+    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" },
+]
+pathways = [
+    { name = "rh", source = "vid_rh" },
+    { name = "f",  source = "vid_f", preprocessor = "crop_f" },
+    { name = "h",  source = "vid_h", model = "axial" },   # this one overrides it
+]
+```
+
+Resolution, in order: the pathway's own `model`, then `[pose2d].model`, then — when
+`models` has exactly **one** entry — that entry. So a single-detector plan need not name
+it anywhere.
+
+The last step is deliberately *not* "the first model". Adding a second entry to a plan
+whose pathways are bare raises an error naming both, rather than silently deciding which
+camera runs which detector:
+
+```
+[[pose2d.pathways]][0] ('rh') names no model and there is no default: this plan
+declares 2 models (['axial', 'dense38mv']), so write 'model' on the pathway, or
+[pose2d].model to set one for all of them
+```
 
 ### `[pose2d.output_points.<view>]` { #output_points }
 
@@ -486,6 +653,18 @@ localize them — a tethered fly's body and proximal joints, not a claw mid-swin
 target moving several times that floor the fitted parameter backs the prior off, but
 about 10% of median lag survives and raising `smooth_param` does not remove it. The
 de-jittering and the outlier repair are unaffected.
+
+**What it buys and costs, measured** on a 100 fps eight-camera recording of a tethered
+fly. 3D jitter — median frame-to-frame acceleration — drops **39%**, 0.0062 → 0.0038.
+Against that, 779 cells (0.13%) reproject more than 100 px from the detector's 2D, and
+every one of them is a **claw**: exactly the lag above, not a tuning failure. Turn the
+stage off if claw timing is the measurement.
+
+A sweep of `inflate_threshold` over 5 / 10 / 15 / 20 / 30 on the same recording moves the
+flag rate from 68% to 21% while the reprojection distribution barely shifts (median
+2.90–3.01 px, p99 ≈ 26.6 throughout) — so the threshold is not what shapes the result.
+The packaged config raises it to **15.0**, the best median of the sweep, which flags 37%
+rather than the bulk.
 
 ## `[postprocess]` — corrections from knowing the animal { #postprocess }
 
@@ -704,37 +883,125 @@ A `[inverse_kinematics.bounds]` sub-table overrides per-DOF joint angle limits i
 `"c_thorax-c_head-pitch" = [-30, 30]` for the head, or
 `"c_abdomen12-c_abdomen3-pitch" = [-45, 20]` for the abdomen. By default each abdomen
 hinge is limited to **ventral
-(downward) flexion only**, up to 30° (`[-30, 0]`): the few near-midline abdomen
+(downward) flexion only**, up to 30° (`[-30, 0]`): the five near-midline abdomen
 markers under-constrain the five-segment chain, so a symmetric range lets the solver
 fold it into a non-physical zig-zag, while a downward-only range keeps the fit a
 smooth ventral curl.
 
+!!! note "The abdomen hinges *will* report as pinned — and widening them is the wrong fix"
+    That range is a **regularizer**, and on real recordings it binds: a typical fitted
+    abdomen is `[-26, 0, 0, 0, 0]`°, all the bend at the waist with the remaining hinges
+    held against the **upper** bound. The pinned-limit warning names them on most runs.
+    Taking its advice here makes things worse: opened to `[-90, 30]` the fit averages
+    **2.7 sign changes** along the five hinges — a folded chain rather than a curl — to
+    buy about a third of the residual, and widening the *ventral* side alone (the wrong
+    end) moves the residual 0.7% and the pinned fraction 2%. The residual that remains is
+    mostly the chain's **root**: it is placed by the coxa registration, which
+    [extrapolates badly](#ik-head-base) at that height, and unlike the head the abdomen
+    has no landmark on its own base to correct it with — the `neck`'s correction does not
+    transfer, because the two anchors sit on opposite sides of the coxa centroid and the
+    registration's ill-determined mode tilts them opposite ways.
+
+### The head's base — `neck` { #ik-head-base }
+
+The head's three DOFs turn about one pivot, and `neck` sits **on** that pivot. Rotation
+about a point leaves that point where it was, so the neck constrains none of the three
+angles — and it is deliberately not counted as evidence the head was observed, which is
+why declaring *both* antennae absent leaves the head unfitted rather than reporting the
+solver's neutral-biased answer.
+
+What it does instead is say **where the pivot is**, and nothing else in the pose can. The
+body registration is a similarity fit through the six thorax-coxae, which are very nearly
+coplanar (singular values 0.693 / 0.325 / 0.085 on the standard rig) while the pivot sits
+0.404 above their centroid — a 4.7× extrapolation along their worst-determined axis.
+Measured across a 55-recording corpus that lands the pivot a median **0.125 model units
+too dorsal**, 29% of the head's own radius, with the same sign in every recording; the
+antennae then absorb it as roughly **11° of spurious pitch**, and the head's estimated
+size reads ~12% too large because its ruler started from that displaced anchor. So the
+head chain is placed on its measured median `neck` — the way each leg is placed on its
+measured median thorax-coxa — and sized from the neck out to the antennae.
+
+The shift is recorded as `chain_offsets` in the `inverse_kinematics` metadata and baked
+into `body_plan`, and the mesh overlay is given the same vector, so the drawn head and
+the fitted angles describe one pose.
+
+### Chain size — `chain_scales` { #ik-chain-size }
+
+The legs are skinned between real keypoints, so they carry this fly's own bone lengths.
+The head and abdomen are fixed model geometry, so each gets **one uniform multiplier**
+(x, y and z alike) on top of the body scale, recorded as `chain_scales` in the
+`inverse_kinematics` metadata, baked into `body_plan` and applied to the same chain by
+the mesh overlay.
+
+It is measured only from **separations between the chain's own markers that the chain's
+own joints cannot change** — for the head the `neck`-to-antennae radius, for the abdomen
+the one pair sharing a body. Both restrictions are load-bearing:
+
+- **Posture is not size.** The abdomen's five markers sit on the dorsal *surface*, which
+  is the outside of a ventral bend, so a ruler drawn *along* the chain lengthens by 57%
+  over the joints' 30°-per-hinge range — more than the size differences being measured. A
+  curled abdomen would read as a much bigger one.
+- **A left-to-right distance is not the animal.** Each side is triangulated from its own
+  cameras, so a cross-midline span carries the two sides' disagreement at full strength:
+  across the corpus `l_antenna`–`r_antenna` reads **1.515×** the model where either
+  antenna's distance to the `neck` reads **1.196×** — 26% wider, the same sign in all 30
+  recordings. Mirror-symmetric markers are therefore folded to their midpoint first,
+  which a symmetric outward push leaves exactly where it was.
+- **The model's own anchor is not a marker.** Starting the ruler there measures partly
+  the chain and partly how well the coxa registration placed it — the extrapolation
+  described above, worth ~12% on the head.
+
+Which pairs qualify is decided by probing the chain's forward kinematics across its own
+bounds, not by a hand-written list, so a chain retargeted with a
+[marker table](#ik-markers) gets the right ruler with no code change. A marker set with
+no qualifying pair — `fly38`'s, for either chain — cannot be measured at all: the chain
+stays at model size and the run **warns**, because a silent `1.0` would read as a
+measurement that this fly matches the model.
+
+!!! note "What one uniform scale can and cannot do"
+    On real recordings the abdomen's rigid ruler and an independent bend-corrected
+    measurement of the whole span agree to ~2% (1.47× and 1.52× the model, median over 30
+    recordings). The scale that would *minimise the fit residual* is lower, around
+    1.2–1.3×, which says the model's abdomen **shape** differs from a real fly's — the
+    proximal end reads about 1.1× where the last tergite reads about 1.5×, so no single
+    uniform multiplier is right everywhere. The reported number is the measurement, not
+    the residual-minimising compromise.
+
 ### Marker placement — `[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]` { #ik-markers }
 
 *Where* each head/abdomen keypoint sits relative to the NeuroMechFly model is a
-**labeling-scheme choice** — e.g. the packaged abdomen markers reproduce the original
-DeepFly3D annotation as small offsets from the model's abdomen joints (see
-[Keypoint locations](../explanation/keypoints.md)). These tables let a different
+**labeling-scheme choice** — the packaged abdomen markers are the five dorsal-midline
+tergite stripes, placed at the same body + offset the docs keypoint viewer draws them at
+(both read `docs/keypoints/assets/keypoints.json`, so the labeling reference and the IK
+cannot disagree; see [Keypoint locations](../explanation/keypoints.md)). These tables let a different
 skeleton retarget those markers **without re-running the model build**: when a table
 is present it **replaces** that chain's default markers. Each entry is keyed by the
 skeleton point name:
 
 ```toml
 [inverse_kinematics.abdomen]
-l_abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.05, 0.30] }
-r_abdomen0 = { body = "c_abdomen3", offset = [0.0, -0.05, 0.30] }
-# ... the full set of abdomen markers you track
+abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.0, 0.30] }
+abdomen1 = { body = "c_abdomen4", offset = [0.0, 0.0, 0.285] }
+abdomen2 = { body = "c_abdomen5", offset = [0.0, 0.0, 0.27] }
+abdomen3 = { body = "c_abdomen6", offset = [0.0, 0.0, 0.243] }
+abdomen4 = { body = "c_abdomen6", offset = [-0.23, 0.0, 0.20] }
 
 [inverse_kinematics.head]
+neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0], base = true }
 l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
 r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
 ```
+
+Because a table **replaces** its chain's whole marker set, a config that redeclares the
+head must carry `base = true` over with it. Leave it out and the chain quietly reverts to
+the registered base — the head still fits, just about the wrong pivot.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `body` | str | *required* | The model body the marker is rigidly attached to. The chain (head/abdomen) and the marker's chain depth follow from it. The abdomen bodies are `c_abdomen12`/`c_abdomen3`/`c_abdomen4`/`c_abdomen5`/`c_abdomen6`; the head bodies are the head subtree (`c_head`, `l_pedicel`/`r_pedicel`, eyes, …). |
 | `offset` | [float, float, float] | *required* | Offset from that body's origin (the joint), in the body's frame — the model units the rest of the IK uses. The marker's neutral position is `body_frame · offset`. |
 | `depth` | int | the body's chain depth | Override the chain depth (rarely needed; the body determines it). |
+| `base` | bool | `false` | Nominate this marker as the chain's [base landmark](#ik-head-base). Its depth is forced to 0 — it is on the chain's own origin, so no chain DOF moves it. At most one per chain, and it must be one of the table's markers. |
 
 The joint geometry (anchors, axes) stays the model's; only the markers move. Omit
 both tables to keep the packaged NeuroMechFly markers. Custom markers also flow into
@@ -778,11 +1045,44 @@ winning.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `video_name` | str | *required* | Output filename (`<video_name>.mp4`). |
-| `panels` | list[table] | *required* | Ordered panels (below); they draw in order, so a skeleton panel over an `imshow` at the same offset overlays it. |
+| `grid` | list[list[str]] | *unset* | A montage, as rows of view names — expands to panels (below). |
+| `plot` | str | *required with `grid`* | The overlay op drawn on each grid cell. |
+| `cell` | [int, int] | from `imshow` kwargs | Grid cell size in pixels. |
+| `panels` | list[table] | *unset* | Ordered panels (below); they draw in order, so a skeleton panel over an `imshow` at the same offset overlays it. Appended *after* any `grid` expansion. |
+| `stage` | str | most-derived | Forwarded to every panel the `grid` expands to. |
 | `width`, `height` | int | auto-size | Canvas size in pixels; omit to fit all panels. |
 | `background` | str or [r, g, b] | inherits global | Per-video canvas fill. |
 | `crop` | [x, y, w, h] or str | inherits global | Per-video panel window. |
 | `kwargs` | table | `{}` | Per-video draw-op kwargs (merges over the global). |
+
+#### `grid` — a montage without the arithmetic { #grid }
+
+A montage is the overwhelmingly common video and it is pure repetition: every panel is
+the same two ops at a position that is a row and a column times the cell size. `grid`
+says the shape and lets the offsets be computed:
+
+```toml
+[[visualization.videos]]
+video_name = "pose3d"
+plot  = "skeleton_3d"
+stage = "triangulation"
+grid  = [["rf", "f",    "lf"],
+         ["rm", "bird", "lm"],
+         ["rh", "h",    "lh"]]
+```
+
+That is exactly equivalent to seventeen hand-written panels — an `imshow` plus a
+`skeleton_3d` for each of the eight cameras, and a lone `skeleton_3d` for `bird`.
+
+- **Cell size** comes from the resolved `imshow` `width`/`height` (the same
+  `[visualization.kwargs]` the panels already read), or from an explicit `cell = [w, h]`.
+- **A cell whose view is not a camera** gets no `imshow` — the synthetic `bird` plan view
+  has no footage. With `plot = "skeleton_2d"` such a cell is skipped entirely, since
+  there are no 2D detections to draw. This is derived from `[cameras.*]`, so a rig that
+  gains a camera gains a drawable cell without a second list to edit.
+- **`""`, `"-"` or `"."`** leaves a tile empty.
+- **`panels` still works**, alone or alongside — explicit panels are appended after the
+  expansion, so a one-off tile can be added to a grid without abandoning it.
 
 **Panel** — one draw op for one view at a pixel offset:
 
@@ -888,9 +1188,9 @@ the **main frame slider** still scrubs the 3D pose through time. Both **re-fit t
 corrections** — as the latent skeleton is edited, the model is re-solved for that
 frame and the overlay follows. The legs skin to the corrected keypoints; the head
 and abdomen are fixed model geometry, sized to this fly by a per-recording scale the
-IK stage **estimates from the data** (each chain's contour length — how far its
-markers reach along it — analogous to the coxa-derived body scale), so a longer
-abdomen or bigger head is matched without a manual knob. The same scale is used by the `mesh_nmf` video op,
+IK stage **estimates from the data** ([one uniform multiplier per chain](#ik-chain-size),
+from the marker separations its joints cannot change — analogous to the coxa-derived
+body scale), so a longer abdomen or bigger head is matched without a manual knob. The same scale is used by the `mesh_nmf` video op,
 whose GPU rasterizer uploads each frame's posed geometry once and renders every
 camera from it (so a multi-view mesh video renders an order of magnitude faster than
 the old per-view software path).

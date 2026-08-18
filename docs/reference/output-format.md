@@ -83,9 +83,20 @@ dataset rather than a meta key because it runs to tens of kilobytes, close enoug
 64 KB an HDF5 attribute allows to be worth keeping out.
 
 The meta's `chain_scales`
-(`{"head": …, "abdomen": …}`) are the head/abdomen size relative to the model that
-the stage estimates from each chain's contour length (its markers' reach along the
-chain), applied to the fit and the mesh overlay alike. `body_scale` is the recording's
+(`{"head": …, "abdomen": …}`) are the head/abdomen size relative to the model — one
+uniform multiplier per chain, estimated from the marker separations that chain's own
+joints cannot change (see
+[Chain size](configuration.md#ik-chain-size)) and applied to the fit and the mesh overlay
+alike. A chain whose marker set has no such separation stays at `1.0` and the run warns. `chain_offsets`
+(`{"head": [x, y, z]}`) is the companion translation: how far that chain's base sits
+from the model's own, in model units, measured from the chain's base landmark — the
+`neck` for the head. Both are baked into `body_plan` **and** handed to the overlay,
+because the fit and the drawing have to describe one pose; a chain drawn about the
+model's anchor while its angles were fitted about the measured one is off by exactly
+this vector. A file written before chains had base landmarks carries no `chain_offsets`,
+which correctly reads as no shift.
+
+`body_scale` is the recording's
 body size relative to the model, from the single coxa registration that also places the
 body plan; the mesh overlay holds the body, head, and abdomen at this fixed size and
 varies only rotation + translation per frame, so the body does not breathe.

@@ -147,8 +147,13 @@ def test_a_skeleton_path_keeps_only_the_skeleton_section(tmp_path):
     assert set(tomllib.loads(text)) == {"skeleton"}
     assert project.skeleton().n_points == 38
     # The pairs must survive the lift, or a project seeded this way silently loses the
-    # mirror check, flip augmentation and the chirality QC.
-    assert project.skeleton().n_symmetries == 19
+    # mirror check, flip augmentation and the chirality QC. Sixteen, not nineteen: the
+    # packaged skeleton is `fly38b`, whose neck and five abdomen points are ON the
+    # midline and so correctly have no mirror partner.
+    assert project.skeleton().n_symmetries == 16
+    # And the lift RESOLVED the packaged config's `name = "fly38b"` reference: a project
+    # records what it tracks, so a later package upgrade cannot restate it.
+    assert "point_names" in tomllib.loads(text)["skeleton"]
 
 
 def test_creating_over_an_existing_project_is_refused(tmp_path):
@@ -759,9 +764,9 @@ def test_composition_yields_a_valid_run_config(project):
     config = Config.from_dict(tomllib.loads(text))
     assert config.skeleton().n_points == 38
     assert len(config.source_patterns()) == 7
-    # The open-ended parts come from the base, so a project never restates 132 detector
-    # channel mappings to change one knob.
-    assert len(config.detection_plan().pathways) == 8
+    # The open-ended parts come from the base, so a project never restates the detection
+    # plan to change one knob. One pathway per camera: the packaged plan is dense.
+    assert len(config.detection_plan().pathways) == 7
 
 
 def test_a_profile_overrides_only_what_it_names(project):
@@ -774,7 +779,7 @@ def test_a_profile_overrides_only_what_it_names(project):
     assert config.triangulation.method == "dlt"
     # Everything the profile did not mention still defaults.
     assert config.triangulation.min_inliers == 2
-    assert len(config.detection_plan().pathways) == 8
+    assert len(config.detection_plan().pathways) == 7
 
 
 def test_a_fresh_project_seeds_an_empty_profile(project):

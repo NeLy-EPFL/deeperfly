@@ -53,35 +53,61 @@ def test_empty_config_uses_python_defaults():
     assert c.stage_flags() == STAGE_DEFAULTS
 
 
-def test_template_matches_python_defaults():
-    """The packaged template's tunables must equal the Python defaults (anti-drift).
+def test_a_section_the_template_omits_resolves_to_the_python_defaults():
+    """The template no longer *restates* the defaults -- it omits them, and they hold.
 
-    This is the guard that would have caught ``decode_buffer = 4`` in the TOML vs
-    ``8`` in code: the template documents the defaults, so it must agree with them.
+    This replaces an older anti-drift guard that asserted the TOML equalled the Python
+    defaults key for key (it is what would have caught ``decode_buffer = 4`` in the TOML
+    against ``8`` in code). That guard protected a file whose job was to *document* the
+    defaults; documentation kept in two places drifts in one of them, so the template
+    stopped carrying it and `deeperfly config show` answers instead. The property worth
+    pinning now is the other half: a section the file never mentions still arrives fully
+    formed. The complementary check -- that nothing it DOES write merely restates a
+    default -- is in ``test_config_compaction.py``.
     """
     c = Config.default()
-    assert c.pose2d == Pose2dParams()
+    for section in ("triangulation", "pictorial_structures", "inverse_kinematics"):
+        assert section not in c.data, f"[{section}] is back in the template"
     assert c.triangulation == TriangulationParams()
     assert c.pictorial == PictorialParams()
     assert c.io == IoParams()
     assert c.inverse_kinematics == InverseKinematicsParams()
-    assert c.stage_flags() == STAGE_DEFAULTS
+    # `[pose2d]` carries no knobs at all now: the measured-best forward batch (16, in
+    # IMAGES) is also the field default, so there is nothing left to say.
+    assert c.pose2d == Pose2dParams()
+
+    # What it DOES state, it states because it differs from the default:
+    assert c.eks.inflate_threshold == 15.0  # measured; the shipped default is 5.0
+    recommended = {**STAGE_DEFAULTS, "eks": True, "postprocess": True}
+    assert c.stage_flags() == recommended
 
 
-def test_examples_config_inverse_kinematics_matches_the_packaged_template():
-    """``examples/config.toml``'s IK section must be the packaged one, verbatim.
+@pytest.mark.parametrize(
+    "example", sorted((Path(__file__).parents[1] / "examples").glob("*/config.toml"))
+)
+def test_every_example_config_still_validates(example):
+    """Every checked-in example config must still parse and validate.
 
-    The example config is a hand-maintained copy with no guard of its own, so it drifts
-    silently -- and a stale ``[inverse_kinematics]`` there is not a cosmetic problem:
-    the GUI reads the config snapshot beside ``results.h5`` to rebuild the model, and a
-    key the validator no longer accepts makes it fall back to the packaged default model
-    with only a logged warning.
+    They are hand-maintained copies with no guard of their own, so they drift silently --
+    and a stale section is not a cosmetic problem: the GUI reads the config snapshot
+    beside ``results.h5`` to rebuild the model, and a key the validator no longer accepts
+    makes it fall back to the packaged default with only a logged warning.
+
+    Checked against the *validator* rather than against the packaged template's text,
+    which is what this used to compare to: the template no longer carries most stage
+    tables at all (they are entirely defaults), so there is nothing to match. The
+    validator was always the thing that decides.
+
+    Parametrized over the directory rather than naming one file, because
+    ``examples/config.toml`` moved next to its footage as ``examples/data/config.toml``
+    and a hard-coded path went stale without anything noticing.
     """
-    packaged = _ik_section(DEFAULT_CONFIG_PATH.read_text())
-    example = _ik_section(
-        (Path(__file__).parents[1] / "examples/config.toml").read_text()
-    )
-    assert example == packaged
+    cfg = Config.from_toml(example)
+    assert cfg.skeleton().n_points > 0
+    # Each typed accessor raises on any key its validator rejects.
+    for section in ("pose2d", "triangulation", "eks", "bundle_adjustment"):
+        getattr(cfg, section if section != "eks" else "eks")
+    assert cfg.inverse_kinematics.template == InverseKinematicsParams().template
 
 
 def test_overrides_win_over_defaults():
@@ -264,7 +290,7 @@ def test_inverse_kinematics_reads_marker_tables():
         {
             "inverse_kinematics": {
                 "abdomen": {
-                    "l_abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.05, 0.5]},
+                    "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
                 },
                 "head": {
                     "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.0]},
@@ -273,21 +299,21 @@ def test_inverse_kinematics_reads_marker_tables():
         }
     ).inverse_kinematics
     assert set(ik.markers) == {"head", "abdomen"}
-    assert ik.markers["abdomen"]["l_abdomen0"]["body"] == "c_abdomen3"
+    assert ik.markers["abdomen"]["abdomen0"]["body"] == "c_abdomen3"
 
 
 def test_ik_articulation_applies_marker_offsets():
     import numpy as np
 
     base = Config.from_dict({}).ik_articulation().chain("abdomen")
-    i = base.marker_names.index("l_abdomen0")
+    i = base.marker_names.index("abdomen0")
     cfg = Config.from_dict(
         {
             "inverse_kinematics": {
                 "fit_head": False,
                 "abdomen": {
-                    "l_abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.05, 0.5]},
-                    "r_abdomen0": {"body": "c_abdomen3", "offset": [0.0, -0.05, 0.5]},
+                    "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
+                    "abdomen1": {"body": "c_abdomen4", "offset": [0.0, 0.0, 0.5]},
                 },
             }
         }
@@ -295,7 +321,7 @@ def test_ik_articulation_applies_marker_offsets():
     art = cfg.ik_articulation()
     assert [c.name for c in art.chains] == ["abdomen"]  # fit_head=False drops head
     ab = art.chain("abdomen")
-    assert ab.marker_names == ("l_abdomen0", "r_abdomen0")  # table replaces the set
+    assert ab.marker_names == ("abdomen0", "abdomen1")  # table replaces the set
     # a different offset moves the neutral marker (the default z-offset was 0.3)
     assert not np.allclose(ab.marker_neutral[0], base.marker_neutral[i])
 

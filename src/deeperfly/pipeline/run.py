@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from ..config import STAGES, Config
 from ..recordings import require_input_footage
 from ..results import StageStore
@@ -555,6 +557,10 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
             "solver": "quickik",
             "alignment": result.alignment.to_json(),
             "chain_scales": result.chain_scales,
+            "chain_offsets": {
+                k: [float(x) for x in np.asarray(v).reshape(3)]
+                for k, v in result.chain_offsets.items()
+            },
             "body_scale": result.body_scale,
         },
     )

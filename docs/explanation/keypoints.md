@@ -59,33 +59,35 @@ seven rig angles (RH–LH) plus hind, bottom and top.
 
 !!! tip "Using these placements for inverse kinematics"
 
-    The packaged articulation still carries the `fly38` abdomen markers, so a `fly38b`
-    body plan fits **32 of 38** points out of the box — the legs and antennae — and
-    leaves the neck and the midline abdomen unfitted (nothing fails; they are simply
-    absent from the plan). Retargeting it to the placements above, via
-    [`[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]`](../reference/configuration.md#ik-markers),
-    brings that to **38 of 38**. Each table *replaces* its chain's markers, so list the
-    antennae again alongside the neck:
+    Every placement above is **already baked in**: the packaged articulation carries
+    `l_antenna` / `r_antenna` with `neck` as the head chain's
+    [base landmark](../reference/configuration.md#ik-head-base), and `abdomen0`…`abdomen4`
+    at exactly the bodies and offsets this page lists. A `fly38b` body plan therefore
+    fits **38 of 38** points with no config at all. The asset bake reads this same
+    `keypoints.json`, so what the viewer draws and what the IK fits cannot drift apart —
+    and `scripts/build_keypoint_viewer_assets.py` prints the table when it rebuilds the
+    viewer, so a placement change reports what this page should now say.
 
-    ```toml
-    [inverse_kinematics.head]
-    l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
-    r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
-    neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0] }
+    Retarget a chain only if your labeling scheme differs, via
+    [`[inverse_kinematics.abdomen]`](../reference/configuration.md#ik-markers) — and note
+    that a table **replaces** its chain's whole marker set, so list every marker you
+    track.
 
-    [inverse_kinematics.abdomen]
-    abdomen0 = { body = "c_abdomen3", offset = [ 0.0,  0.0, 0.3   ] }
-    abdomen1 = { body = "c_abdomen4", offset = [ 0.0,  0.0, 0.285 ] }
-    abdomen2 = { body = "c_abdomen5", offset = [ 0.0,  0.0, 0.27  ] }
-    abdomen3 = { body = "c_abdomen6", offset = [ 0.0,  0.0, 0.243 ] }
-    abdomen4 = { body = "c_abdomen6", offset = [-0.23, 0.0, 0.2   ] }
-    ```
-
-    `scripts/build_keypoint_viewer_assets.py` prints this exact table when it rebuilds
-    the viewer, so a placement change reports what this page should now say.
+    Because these five markers sit on the abdomen's dorsal *surface* rather than on its
+    hinges, the distance between neighbouring ones grows as the abdomen curls — the
+    outside of a bend is longer. The
+    [size estimate](../reference/configuration.md#ik-chain-size) is built only from
+    separations the chain's joints cannot change, so a curled abdomen is not mistaken for
+    a bigger one.
 
     The neck sits *on* the head hinge, so it constrains where the head chain is anchored
-    rather than how it is rotated.
+    rather than how it is rotated — which is exactly why the fit treats it as a base
+    landmark and not as evidence about the head angles. Anchoring the head there instead
+    of at the coxa registration's extrapolation is worth about 11° of head pitch; see
+    [The head's base](../reference/configuration.md#ik-head-base). If you do redeclare
+    `[inverse_kinematics.head]` for some other reason, carry the nomination over —
+    `neck = { body = "c_head", offset = [0.0, 0.0, 0.0], base = true }` — because a table
+    replaces its chain's whole marker set.
 
 The model is rendered with [MuJoCo](https://mujoco.org/) compiled to WebAssembly,
 running entirely in your browser — no data is uploaded. It is the

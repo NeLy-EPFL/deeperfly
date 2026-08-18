@@ -110,7 +110,7 @@ def _cmd_dense_config(args: argparse.Namespace) -> None:
     plan = dense_pose2d(
         views=views,
         point_names=point_names,
-        weights=str(Path(args.weights).resolve()),
+        weights=_weights_value(Path(args.weights)),
         sources=sources,
         crops=crops,
         precision=args.precision,
@@ -131,6 +131,25 @@ def _cmd_dense_config(args: argparse.Namespace) -> None:
         box = crops.get(view)
         where = "full frame" if box is None else f"crop {tuple(box)}"
         print(f"  view {view:<3} source {sources[view]:<10} {where}")
+
+
+def _weights_value(weights: Path) -> str:
+    """What to write as ``weights``: the bare filename when it is on the search path.
+
+    A config records *which model this recording was run with*, which travels with the
+    recording; an absolute ``/mnt/...`` records which machine it was run on, which does
+    not. So when the checkpoint is already findable by name -- ``$DEEPERFLY_MODELS``, or
+    the download cache -- the name is the better thing to write, and
+    :func:`~deeperfly.pose2d.download.resolve_weights` will find it again on any machine
+    set up the same way. Anything else is written resolved, because a bare name that
+    resolves nowhere is a config that cannot run.
+    """
+    from ..pose2d.download import search_path
+
+    resolved = weights.resolve()
+    if any((d / weights.name).resolve() == resolved for d in search_path()):
+        return weights.name
+    return str(resolved)
 
 
 def _guess_source(config, view: str) -> str:

@@ -322,7 +322,7 @@ editor writes is the very file a training set reads. Creating a project copies n
 and can lose nothing.
 
 ```bash
-deeperfly project new  DIR [--skeleton fly38|blank|PATH] [--name NAME]
+deeperfly project new  DIR [--skeleton fly38b|fly38|blank|PATH] [--name NAME]
 deeperfly project add  PROJECT RECORDING... [--copy] [--subject ID] [-c CONFIG]
 deeperfly project ls     [PROJECT]
 deeperfly project status [PROJECT]
@@ -339,8 +339,11 @@ else — a camera rig is either pointed at with a
 [calibration](#deeperfly-calibration-reuse-a-solved-camera-rig) or solved later from
 labels.
 
-`--skeleton fly38` seeds the packaged 38-point *Drosophila* skeleton; `blank` gives you
-an empty one to define yourself; a path copies the `[skeleton]` table out of any config.
+`--skeleton fly38b` (the default) seeds the packaged 38-point *Drosophila* skeleton --
+six legs, two antennae, the neck and a midline abdomen chain; `fly38` is the historical
+DeepFly3D set with per-side abdominal markers; `blank` gives you an empty one to define
+yourself; a path copies the `[skeleton]` table out of any config. A config that only
+*names* its skeleton is resolved on the way in, so the project always records its own.
 
 ### `add`
 
@@ -361,7 +364,7 @@ authored in the original will not appear in the project, and vice versa.
 ```console
 $ deeperfly project status
 project:  new-rig-38kp  (.)
-skeleton: fly38  (38 points)
+skeleton: fly38b  (38 points)
 calib:    none (uncalibrated -- no 3D until a rig is solved)
 ┏━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┓
 ┃ slug        ┃ frames ┃ labeled ┃ reviewed ┃ trainable ┃ dropped ┃ occl ┃ state ┃

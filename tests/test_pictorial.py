@@ -64,7 +64,8 @@ def test_skeleton_chains_partition_fly(fly):
     chains = pictorial.skeleton_chains(fly)
     covered = sorted(j for c in chains for j in c)
     assert covered == list(range(fly.n_points))  # exact partition, no dupes
-    assert sorted(len(c) for c in chains) == [1, 1, 3, 3, 5, 5, 5, 5, 5, 5]
+    # fly38b: six 5-point legs, a 5-point midline abdomen, two antennae and the neck.
+    assert sorted(len(c) for c in chains) == [1, 1, 1, 5, 5, 5, 5, 5, 5, 5]
     # Each leg chain is a contiguous thorax_coxa..claw run.
     legs = [c for c in chains if len(c) == 5]
     for c in legs:
@@ -97,7 +98,7 @@ def test_bone_prior_uses_shared_targets(cameras, fly, rng):
 # -- recovery vs rejection (headline) ----------------------------------------
 
 
-def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
+def test_pictorial_recovers_decoyed_joint(cameras, fly38, rng):
     pts3d = fly_cloud(rng)
     proj = np.asarray(cameras.project(pts3d))  # (V, P, 2)
     k = 5
@@ -115,7 +116,7 @@ def test_pictorial_recovers_decoyed_joint(cameras, fly, rng):
     argmax = xy[:, :, :, 0, :]  # the (wrong) single-peak detections
 
     ps3d, _, _ = pictorial.reconstruct(
-        cameras, fly, cands, argmax, bone_max_frames=None
+        cameras, fly38, cands, argmax, bone_max_frames=None
     )
     # The greedy path triangulates the arg-max (including the decoy).
     rp3d, _, _ = reconstruct(cameras, fly_masked(argmax))

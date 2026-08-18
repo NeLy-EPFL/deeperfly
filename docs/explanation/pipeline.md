@@ -136,19 +136,24 @@ flowchart TD
 
 - **Consumes:** the recording's footage (the `[[sources]]` globs), plus the
   detection plan (`[[pose2d.preprocessors]]` / `[[pose2d.models]]` /
-  `[[pose2d.pathways]]` / `[pose2d.output_points]`).
+  `[[pose2d.pathways]]`, and `[pose2d.output_points]` only when the detector is
+  not dense).
 - **Produces:** `pts2d` `(V, T, P, 2)` and `conf` `(V, T, P)`, the config camera
   rig as built at detect time, the raw image sizes, and — when
   `pictorial_structures` is enabled — the detector's top-K candidate peaks.
 - **Cached in:** `pose2d/` (the whole `results.h5` is rewritten when this stage
   runs, since everything downstream derives from it).
 
-Each pathway runs its source's frames (optionally preprocessed, e.g. mirrored)
-through a stacked-hourglass network, locates the heatmap peaks, maps them back
-into the raw source frame, and `[pose2d.output_points]` scatters each output
-channel into its `(view, point)` slot. A `(view, point)` no pathway fills is
-left `NaN` — that union *is* the visibility, with no separate mask. Frames are
-streamed in fixed-size windows, so memory is constant regardless of clip length.
+Each pathway runs its source's frames (optionally preprocessed, e.g. cropped or
+mirrored) through its detector network, locates the heatmap peaks, maps them
+back into the raw source frame, and scatters each output channel into its
+`(view, point)` slot. With a **dense** detector that scatter is the identity —
+channel *i* is point *i* of the pathway's view — and the packaged config writes
+no mapping at all; a 19-channel one-side detector declares the scatter explicitly
+in `[pose2d.output_points]`. A `(view, point)` no pathway fills is left `NaN` —
+that union *is* the visibility, with no separate mask, and a dense plan leaves
+none. Frames are streamed in fixed-size windows, so memory is constant regardless
+of clip length.
 
 ### 2. `bundle_adjustment` — refine the cameras
 
@@ -206,6 +211,15 @@ deeperfly builds a NeuroMechFly body plan for the recording, with each leg's seg
 lengths **measured from that recording** (so the fitted model has this fly's
 proportions and lands on its keypoints rather than near them), plus the head and the
 abdomen's sagittal pitch chain from geometry baked out of the NeuroMechFly MJCF.
+
+The head is *placed* from the recording too. Its three DOFs turn about the head–thorax
+pivot, and the `neck` keypoint sits on that pivot — so it constrains none of the three
+angles, but it says where the pivot is, which the rest of the pose cannot: the six
+thorax-coxae that register the body are very nearly coplanar, and the pivot sits well
+above their plane, so placing it from them alone is a long extrapolation along their
+worst-determined direction. The chain is therefore put on its own measured landmark, the
+way each leg is put on its measured median thorax-coxa, and its size is measured from
+the neck out to the antennae rather than from the registered anchor.
 [QuickIK](https://nely-epfl.github.io/quickik/) then fits the whole body at once —
 every leg, the head and the abdomen against all the tracked keypoints in one solve,
 rather than each limb on its own — with a toward-neutral prior pinning the DOFs the

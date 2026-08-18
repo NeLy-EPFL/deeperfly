@@ -70,7 +70,9 @@ PART_SEGMENT = {
 # world anchor + axis are read from the model; ``angle`` is the fitted DOF's name
 # and ``bounds`` its default limits in degrees (overridable from the run config).
 # ``markers`` lists the tracked keypoints rigidly attached at a chain depth
-# (number of proximal joints that move them).
+# (number of proximal joints that move them). ``base_point`` names the marker that
+# measures where the chain's base sits on the real animal -- the counterpart of a leg's
+# thorax-coxa, without which the chain is placed by the coxa registration alone.
 HEAD_CHAIN = {
     "name": "head",
     "joints": [
@@ -90,7 +92,16 @@ HEAD_CHAIN = {
             "bounds": [-60, 60],
         },
     ],
-    "markers": [("l_antenna", 3), ("r_antenna", 3)],
+    # `neck` is the head-thorax pivot: it sits ON `c_head`'s origin, which is exactly
+    # this chain's rotation anchor, so its depth is 0 (no head DOF can move a point on
+    # the rotation center) and it constrains no angle. What it measures is *where the
+    # pivot is* -- which the six near-coplanar coxae cannot say: they are singular along
+    # dorsal (0.693 / 0.325 / 0.085) and the neck sits 0.404 above their centroid, a
+    # 4.7x extrapolation. Across the 55-recording corpus that puts the fitted pivot a
+    # median 0.125 model units too dorsal (29% of the head's own radius, same sign in
+    # every recording), which the antennae then absorb as ~11 deg of spurious pitch.
+    "markers": [("l_antenna", 3), ("r_antenna", 3), ("neck", 0)],
+    "base_point": "neck",
     # model bodies whose meshes ride this node (the whole head, at chain depth 3).
     "node_root": "c_head",
     "node_depth": 3,
@@ -100,6 +111,16 @@ HEAD_CHAIN = {
 # the 5-DOF sagittal chain, so symmetric limits let the solver fold it into a
 # non-physical zig-zag. A downward-only, monotone range keeps the fit a smooth ventral
 # curl. The model's +pitch raises the tip (dorsal), so "down" is the negative range.
+#
+# Re-measured after the fly38b retarget, because five midline markers might have
+# constrained the chain better than fly38's six paraxial ones did. They do not: opened to
+# [-90, 30] the fit averages 2.72 sign changes along the five hinges -- the fold, not a
+# curl -- for a residual gain of about a third. So the range stays a REGULARIZER, and it
+# binds: the fitted pose is typically [-26, 0, 0, 0, 0] deg, i.e. all the bend at the
+# waist with hinges 1..4 held against the UPPER bound wanting to go dorsal. Expect
+# `_warn_about_pinned_limits` to name them on every run. Widening the ventral side does
+# not help (it is the wrong end); over [-45,0], [-60,0] and a [-60,0] waist the residual
+# moves 0.7% and the pinned fraction 2%.
 ABDOMEN_PITCH_BOUNDS = [-30, 0]
 ABDOMEN_CHAIN = {
     "name": "abdomen",
@@ -130,14 +151,26 @@ ABDOMEN_CHAIN = {
             "bounds": ABDOMEN_PITCH_BOUNDS,
         },
     ],
+    # The five dorsal-midline tergite stripes of `fly38b`. Unlike every other tracked
+    # keypoint these are not model joints: they are points on the abdomen's dorsal
+    # SURFACE, whose body + offset were chosen in `docs/keypoints/assets/keypoints.json`
+    # so the labeling reference draws them where a human sees the stripes. `point_meta`
+    # reads that same file, so the offsets here and the ones the docs viewer shows can
+    # never disagree. Each marker's depth is its attachment body's -- asserted below
+    # against the model's own tree rather than trusted.
+    #
+    # No `base_point`: the chain's root anchor (c_thorax-c_abdomen12) is buried inside
+    # the thorax, and no keypoint sits on it. The abdomen is therefore placed by the
+    # coxa registration -- see `_chain_offsets`, which shares the head's measurement
+    # because the two anchors sit at the same dorsal height on the same rigid thorax.
     "markers": [
-        ("l_abdomen0", 2),
-        ("r_abdomen0", 2),
-        ("l_abdomen1", 4),
-        ("r_abdomen1", 4),
-        ("l_abdomen2", 5),
-        ("r_abdomen2", 5),
+        ("abdomen0", 2),
+        ("abdomen1", 3),
+        ("abdomen2", 4),
+        ("abdomen3", 5),
+        ("abdomen4", 5),
     ],
+    "base_point": None,
     # abdomen segment body -> chain depth, used to assign each segment mesh a node.
     "segment_depth": {
         "c_abdomen12": 1,
@@ -316,6 +349,7 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
         return data.xanchor[jid].round(8).tolist(), data.xaxis[jid].round(8).tolist()
 
     kp_index = {n: i for i, n in enumerate(point_names)}
+    bodies = _chain_bodies(model, data)
     chains = []
     for chain in CHAINS:
         joints = []
@@ -332,6 +366,7 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
         markers = []
         for name, depth in chain["markers"]:
             meta = point_meta.get(name, {})
+            _check_depth(chain, name, meta.get("body"), depth, bodies)
             markers.append(
                 {
                     "point": name,
@@ -341,9 +376,14 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
                     "offset": meta.get("offset"),
                 }
             )
-        chains.append({"name": chain["name"], "joints": joints, "markers": markers})
-
-    bodies = _chain_bodies(model, data)
+        chains.append(
+            {
+                "name": chain["name"],
+                "joints": joints,
+                "markers": markers,
+                "base_point": chain.get("base_point"),
+            }
+        )
 
     coxa_points = [f"{leg}_thorax_coxa" for leg in LEGS]
     coxa_neutral = [kp_neutral[kp_index[p]].round(8).tolist() for p in coxa_points]
@@ -363,6 +403,38 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
         f"({len(chains)} chains: {[c['name'] for c in chains]}, "
         f"{len(bodies)} attachment bodies)"
     )
+
+
+def _check_depth(chain, point: str, body: str | None, depth: int, bodies: dict) -> None:
+    """A marker's declared depth must be its attachment body's, read from the model.
+
+    The depth decides which joints carry the marker, so getting it wrong silently fits
+    the wrong DOFs -- and it is written twice: once in the chain's ``markers`` list here,
+    once implicitly by the ``body`` that ``keypoints.json`` assigns the point. This
+    asserts the two agree against MuJoCo's own tree rather than trusting either.
+
+    The chain's ``base_point`` is exempt: it names the marker that measures where the
+    chain *sits*, which is forced to depth 0 because it lies on the rotation center, and
+    its attachment body's depth would say otherwise (``c_head``'s is 3).
+    """
+    if point == chain.get("base_point"):
+        return
+    if body is None:
+        raise ValueError(
+            f"{chain['name']} marker {point!r} has no attachment body in "
+            "docs/keypoints/assets/keypoints.json; add its `body` + `offset` there"
+        )
+    frame = bodies.get(body)
+    if frame is None:
+        raise ValueError(
+            f"{chain['name']} marker {point!r} attaches to {body!r}, which is not a "
+            f"chain body ({sorted(bodies)})"
+        )
+    if int(frame["depth"]) != int(depth):
+        raise ValueError(
+            f"{chain['name']} marker {point!r} is declared at depth {depth}, but its "
+            f"attachment body {body!r} sits at depth {frame['depth']} in the model"
+        )
 
 
 def _chain_bodies(model, data) -> dict[str, dict]:

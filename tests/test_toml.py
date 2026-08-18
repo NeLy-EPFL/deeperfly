@@ -96,6 +96,15 @@ def test_the_packaged_config_round_trips_through_every_extractor():
     for name in _toml.top_level_tables(text):
         one = tomllib.loads(_toml.extract_tables(text, [name]))
         assert set(one) == {name}, name
+    # A lifted [skeleton] section must mean exactly what it meant in the whole file --
+    # asserted on the table rather than on named keys, because the packaged config may
+    # *reference* its skeleton (`name = "fly38b"`) rather than spell one out, and the
+    # extractor's job is to carry whichever form is there without interpreting it.
     skeleton = tomllib.loads(_toml.extract_section(text, "skeleton"))["skeleton"]
-    assert skeleton["symmetries"] == whole["skeleton"]["symmetries"]
-    assert len(skeleton["point_names"]) == len(whole["skeleton"]["point_names"])
+    assert skeleton == whole["skeleton"]
+    # ...and that section, alone, still resolves to the full skeleton a run uses.
+    from deeperfly.config import Config
+
+    lifted = Config.from_dict(tomllib.loads(_toml.extract_section(text, "skeleton")))
+    assert lifted.skeleton().point_names == Config.default().skeleton().point_names
+    assert lifted.skeleton().n_symmetries > 0

@@ -39,12 +39,12 @@ def test_all_four_things_move_together(sample, perm, fly):
     )
     np.testing.assert_array_equal(out_img, image[:, ::-1])
     # The left front thorax-coxa slot now holds the mirrored RIGHT front thorax-coxa.
-    assert (
-        fly.point_names[0] == "lf_thorax_coxa"
-        and fly.point_names[19] == "rf_thorax_coxa"
-    )
-    assert out_pts[0, 0] == pytest.approx(127 - points[19, 0])
-    assert out_pts[0, 1] == pytest.approx(points[19, 1])  # y untouched
+    # `perm[0]` rather than a literal 19: which slot that is depends on the skeleton's
+    # layout, and the property under test does not.
+    assert fly.point_names[0] == "lf_thorax_coxa"
+    assert fly.point_names[perm[0]] == "rf_thorax_coxa"
+    assert out_pts[0, 0] == pytest.approx(127 - points[perm[0], 0])
+    assert out_pts[0, 1] == pytest.approx(points[perm[0], 1])  # y untouched
     np.testing.assert_array_equal(out_vis, visible[perm])
     np.testing.assert_array_equal(out_conf, conf[perm])
 
@@ -110,7 +110,7 @@ def test_image_layouts(shape, width, perm):
     points = rng.uniform(0, width, size=(38, 2))
     out_img, out_pts = mirror_sample(image, points, flip_perm=perm)
     assert out_img.shape == image.shape
-    assert out_pts[0, 0] == pytest.approx((width - 1) - points[19, 0])
+    assert out_pts[0, 0] == pytest.approx((width - 1) - points[perm[0], 0])
 
 
 def test_a_batched_points_array_keeps_its_leading_axes(perm):
@@ -119,7 +119,7 @@ def test_a_batched_points_array_keeps_its_leading_axes(perm):
     vis = rng.integers(0, 2, size=(4, 7, 38)).astype(bool)
     _, out_pts, out_vis = mirror_sample(None, points, vis, flip_perm=perm, width=128)
     assert out_pts.shape == points.shape and out_vis.shape == vis.shape
-    np.testing.assert_allclose(out_pts[2, 5, 0, 0], 127 - points[2, 5, 19, 0])
+    np.testing.assert_allclose(out_pts[2, 5, 0, 0], 127 - points[2, 5, perm[0], 0])
     np.testing.assert_array_equal(out_vis[2, 5], vis[2, 5][perm])
 
 

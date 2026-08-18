@@ -20,7 +20,6 @@ is trained on -- only the coordinate decode is mapped back through the pathway.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 #: DeepFly2D subtracts this scalar from the ``[0, 1]`` image.
 DEFAULT_MEAN = 0.22
@@ -28,6 +27,65 @@ DEFAULT_MEAN = 0.22
 DEFAULT_INPUT_SIZE = (256, 512)
 #: DeepFly2D body-side detector channels.
 DEFAULT_N_OUT_CHANNELS = 19
+
+#: Every ``class`` spelling -> its canonical name, so aliases share one set of defaults.
+CLASS_ALIASES: dict[str, str] = {
+    "hourglass": "hourglass",
+    "deepfly2d": "hourglass",
+    "hrnet": "hrnet",
+    "hrnet_timm": "hrnet",
+    "mvt": "mvt",
+    "multiview_transformer": "mvt",
+}
+
+#: What a ``[[pose2d.models]]`` table may leave out, per class.
+#:
+#: These are not preferences: each is a property of the network that its own loader
+#: already **refuses to run against a disagreeing config**. The dense classes carry their
+#: normalization in the checkpoint and reject any ``mean`` but 0.0; the multiview
+#: transformer rejects any ``precision`` but float32. Writing them in the config was the
+#: config restating the artifact under threat of rejection -- information nowhere, friction
+#: everywhere -- so the class states them and a table only speaks up to *disagree*.
+#:
+#: ``n_out_channels = None`` means "as many channels as the skeleton has points", which is
+#: what DENSE means. It is resolved against the skeleton in :func:`class_defaults`, so a
+#: dense config stops restating its own skeleton's size (and cannot get it wrong).
+CLASS_DEFAULTS: dict[str, dict] = {
+    "hourglass": {"mean": DEFAULT_MEAN, "n_out_channels": DEFAULT_N_OUT_CHANNELS},
+    "hrnet": {"mean": 0.0, "n_out_channels": None},
+    "mvt": {"mean": 0.0, "n_out_channels": None, "precision": "float32"},
+}
+
+
+def class_defaults(cls: str, n_points: int | None = None) -> dict:
+    """The defaults for model class ``cls``, with ``n_out_channels`` resolved.
+
+    Parameters
+    ----------
+    cls
+        The ``class`` key from a ``[[pose2d.models]]`` table (an alias is fine).
+    n_points
+        The skeleton's point count, used for a class whose channel count is "dense".
+        When ``None`` (no skeleton in hand) the dense entry falls back to
+        :data:`DEFAULT_N_OUT_CHANNELS`.
+
+    Returns
+    -------
+    dict
+        ``input_size`` / ``mean`` / ``n_out_channels`` / ``precision`` for the class.
+        An unknown class gets the DeepFly2D defaults -- it will fail at load with a
+        message about the class itself, which is the useful error.
+    """
+    out = {
+        "input_size": DEFAULT_INPUT_SIZE,
+        "mean": DEFAULT_MEAN,
+        "n_out_channels": DEFAULT_N_OUT_CHANNELS,
+        "precision": None,
+        **CLASS_DEFAULTS.get(CLASS_ALIASES.get(cls, cls), {}),
+    }
+    if out["n_out_channels"] is None:
+        out["n_out_channels"] = DEFAULT_N_OUT_CHANNELS if n_points is None else n_points
+    return out
 
 
 @dataclass(frozen=True)
@@ -71,55 +129,46 @@ class ModelSpec:
 def _load_hourglass(spec: "ModelSpec"):
     """Load the DeepFly2D stacked-hourglass detector from a ``.pth`` (or the cache)."""
     from . import detector
-    from .download import download_torch_weights
+    from .download import download_torch_weights, resolve_weights
 
-    weights = spec.weights
-    if weights is not None and not Path(weights).exists():
-        raise SystemExit(
-            f"no detector checkpoint at {weights}. Remove the model's 'weights' "
-            "to use the auto-provisioned cache, or point it at a valid .pth."
-        )
-    path = weights or download_torch_weights()
-    return detector.load_detector(path, **spec.kwargs)
+    path = resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
+    return detector.load_detector(path or download_torch_weights(), **spec.kwargs)
 
 
 def _load_hrnet(spec: "ModelSpec"):
     """Load the dense-38 HRNet detector (see :mod:`deeperfly.pose2d.hrnet`).
 
     Unlike the hourglass there is no auto-provisioned cache: this network is trained
-    per-project, so its ``weights`` path is required. ``spec.mean`` is passed through
+    per-project, so ``weights`` is required -- as a bare filename on
+    ``$DEEPERFLY_MODELS`` or an outright path (see
+    :func:`~deeperfly.pose2d.download.resolve_weights`). ``spec.mean`` is passed through
     to be REFUSED unless it is 0.0 -- the checkpoint carries its own normalization.
     """
     from . import hrnet
+    from .download import missing_weights, resolve_weights
 
-    if not spec.weights:
-        raise SystemExit(
-            "a dense-38 hrnet model needs an explicit 'weights' path in its "
-            "[[pose2d.models]] table -- there is no auto-provisioned cache for it"
-        )
-    return hrnet.load_hrnet(spec.weights, mean=spec.mean, **spec.kwargs)
+    path = resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
+    if path is None:
+        raise missing_weights(spec.cls, spec.name)
+    return hrnet.load_hrnet(path, mean=spec.mean, **spec.kwargs)
 
 
 def _load_mvt(spec: "ModelSpec"):
     """Load the multiview transformer (see :mod:`deeperfly.pose2d.mvt`).
 
-    Like the dense HRNet there is no auto-provisioned cache yet, so ``weights`` must name
-    an exported artifact -- and it must be an *exported* one: a raw Lightning ``.ckpt``
+    Like the dense HRNet there is no auto-provisioned cache, so ``weights`` must name an
+    exported artifact -- and it must be an *exported* one: a raw Lightning ``.ckpt``
     carries no point names, so nothing could check the channel order it is about to be
     routed through. ``spec.mean`` and ``spec.precision`` are passed through to be REFUSED
     unless they are 0.0 and float32.
     """
     from . import mvt
+    from .download import missing_weights, resolve_weights
 
-    if not spec.weights:
-        raise SystemExit(
-            "a multiview-transformer model needs an explicit 'weights' path in its "
-            "[[pose2d.models]] table, pointing at an artifact written by dfpose's "
-            "scripts/export_mvt_weights.py"
-        )
-    return mvt.load_mvt(
-        spec.weights, mean=spec.mean, precision=spec.precision, **spec.kwargs
-    )
+    path = resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
+    if path is None:
+        raise missing_weights(spec.cls, spec.name)
+    return mvt.load_mvt(path, mean=spec.mean, precision=spec.precision, **spec.kwargs)
 
 
 #: ``class`` name -> loader(spec) -> torch module. New detector architectures register
@@ -410,5 +459,17 @@ def load_model(spec: ModelSpec) -> LoadedModel:
         raise ValueError(
             f"model {spec.name!r} declares n_out_channels={spec.n_out_channels} "
             f"but its weights emit {num_classes} channels"
+        )
+    # An artifact that records the input size it was trained at gets to contradict the
+    # config: the resize is what puts the animal at the scale the network learned, so a
+    # disagreement here is a silently mis-scaled fly rather than a crash.
+    input_hw = getattr(module, "input_hw", None)
+    if input_hw is not None and tuple(int(v) for v in input_hw) != tuple(
+        spec.input_size
+    ):
+        raise ValueError(
+            f"model {spec.name!r} declares input_size={list(spec.input_size)} but its "
+            f"weights were trained at {list(input_hw)}. Drop 'input_size' from its "
+            "[[pose2d.models]] table to take the checkpoint's."
         )
     return LoadedModel(spec, module)

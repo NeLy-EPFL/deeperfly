@@ -15,9 +15,21 @@ from deeperfly.pose2d.pathways import (
 from deeperfly.preprocessing import Fliplr, FrameTransform, Resize
 
 
+def _fly38_table() -> dict:
+    """The ``fly38`` skeleton table.
+
+    These plans are the SPARSE, mirrored ones -- a pathway detects one body side and its
+    twin supplies the other -- which only means anything against a skeleton whose 38
+    points are two mirrored 19-point halves. That is fly38, not "whatever ships": the
+    packaged default is the midline fly38b, where a mirrored channel landing on point
+    ``i + 19`` is a genuine left/right error and the mirror check correctly says so.
+    """
+    return Config.from_dict({"skeleton": {"name": "fly38"}}).data["skeleton"]
+
+
 def _config(pathways, output_points, cameras=None, models=None):
     """Build a plan from explicit ``[[pose2d.pathways]]`` and ``[pose2d.output_points]`` tables."""
-    skel = Config.default().data["skeleton"]
+    skel = _fly38_table()
     data = {
         "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
         "pose2d": {
@@ -54,7 +66,7 @@ def _plan(specs, **kwargs):
     table derived from ``points`` (``points[i]`` = the point index channel ``i``
     fills, ``-1`` to drop).
     """
-    point_names = Config.default().data["skeleton"]["point_names"]
+    point_names = _fly38_table()["point_names"]
     pathways, ps_specs = [], []
     for s in specs:
         name = f"{s['view']}_p"
@@ -197,7 +209,7 @@ def test_footage_by_view_rekeys_source_footage_to_view_names():
 
     from deeperfly.pipeline.run import _footage_by_view
 
-    point_names = Config.default().data["skeleton"]["point_names"]
+    point_names = _fly38_table()["point_names"]
     pathways = [
         {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
         {"name": "lf_p", "source": "s1", "preprocessor": "mirror", "model": "m"},
@@ -232,7 +244,7 @@ def test_footage_by_view_rekeys_source_footage_to_view_names():
                 "rh": {"azimuth_deg": 0, "distance": 100, "focal_length_px": 1},
                 "lf": {"azimuth_deg": 1, "distance": 100, "focal_length_px": 1},
             },
-            "skeleton": Config.default().data["skeleton"],
+            "skeleton": _fly38_table(),
         }
     )
 
@@ -374,7 +386,7 @@ def test_an_explicit_table_and_the_identity_default_agree_for_a_dense_pathway():
             "weights": "unused.pt",
         }
     ]
-    names = list(Config.default().data["skeleton"]["point_names"])
+    names = list(_fly38_table()["point_names"])
     explicit = {
         "rh": {n: {"pathway": "rh", "out_channel": i} for i, n in enumerate(names)}
     }
@@ -463,12 +475,29 @@ def _mirror_config(left_point, *, symmetries=None, mirror_left=True):
 PAIRS = [["l_a", "r_a"], ["l_b", "r_b"]]
 
 
-def test_the_packaged_plan_satisfies_the_mirror_invariant():
-    """Every mirrored channel of the shipped config lands on the symmetric partner."""
-    plan = Config.default().detection_plan()
+def test_a_real_mirrored_plan_satisfies_the_mirror_invariant():
+    """Every mirrored channel of a real 19-channel config lands on the symmetric partner.
+
+    Run against the shipped-before-dense plan rather than the packaged one: the packaged
+    detector is dense, so it has no mirrored pathway and nothing for this check to
+    compare. That is not the invariant weakening -- it is the config no longer relying on
+    132 hand-written rows for its left/right identities, which is what the check existed
+    to police.
+    """
+    from helpers import sparse_config
+
+    plan = sparse_config().detection_plan()
     mirrored = {pw.name for pw in plan.pathways if pw.transform.reverses_handedness}
     # The check is only meaningful if the config actually has both parities.
     assert mirrored and len(mirrored) < len(plan.pathways)
+
+
+def test_the_packaged_plan_is_dense_and_needs_no_mirror_check():
+    """The shipped plan states its left/right identities structurally, not in a table."""
+    plan = Config.default().detection_plan()
+    assert not any(pw.transform.reverses_handedness for pw in plan.pathways)
+    assert [pw.name for pw in plan.pathways] == plan.view_names
+    assert plan.visibility_mask().all()
 
 
 def test_a_mirrored_pathway_on_the_partner_is_accepted():

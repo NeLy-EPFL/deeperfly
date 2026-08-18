@@ -918,6 +918,7 @@ def assemble_result(
                 pts2d = better2d
     nmf_pts3d = nmf_angles = nmf_angle_names = nmf_body_plan = None
     nmf_chain_scales: dict[str, float] = {}
+    nmf_chain_offsets: dict[str, np.ndarray] = {}
     nmf_body_scale = 1.0
     if fingerprint.nmf_source(enabled, store) is not None:
         ik = store.read_ik()
@@ -930,6 +931,10 @@ def assemble_result(
             ik_meta = store.read_ik_meta()
             nmf_chain_scales = {
                 str(k): float(v) for k, v in (ik_meta.get("chain_scales") or {}).items()
+            }
+            nmf_chain_offsets = {
+                str(k): np.asarray(v, dtype=float).reshape(3)
+                for k, v in (ik_meta.get("chain_offsets") or {}).items()
             }
             if ik_meta.get("body_scale") is not None:
                 nmf_body_scale = float(ik_meta["body_scale"])
@@ -949,6 +954,7 @@ def assemble_result(
         nmf_angles=nmf_angles,
         nmf_angle_names=nmf_angle_names,
         nmf_chain_scales=nmf_chain_scales,
+        nmf_chain_offsets=nmf_chain_offsets,
         nmf_body_scale=nmf_body_scale,
         nmf_body_plan=nmf_body_plan,
         absent=absent,  # type: ignore[arg-type]
@@ -966,12 +972,25 @@ def source_view_frames(
     *,
     sources: dict[str, list[Path]] | None = None,
     in_memory: list | None = None,
-) -> dict[str, np.ndarray]:
+    window: int = 48,
+) -> dict[str, Any]:
     """Per-view footage for the visualization stage's ``imshow`` panels.
 
     Uses ``in_memory`` frames (indexed by camera order) when available; otherwise
     the footage ``deeperfly run`` resolved up front (``sources``). A resume that
     re-renders just re-passes the recording, re-resolving the footage the same way.
+
+    Footage read from disk comes back as :class:`~deeperfly.io.CursorFrames`, one per
+    view -- an array-like that decodes on demand rather than a resident array. **This is
+    load-bearing rather than an optimization.** A decoded clip costs
+    ``frames x height x width x 3`` bytes, and the stage needs one per ``imshow`` view at
+    once, so an eight-camera 5900-frame 1984-wide recording came to 155 GB and was
+    OOM-killed on a 184 GB host -- while the compositor it feeds already streams its
+    output and never holds more than a few frames. Only the input side was eager. Reads
+    are near-sequential (see :func:`~deeperfly.visualization.compose._composited_in_order`),
+    which is the access pattern a cursor is fastest at, so the peak drops to ``window``
+    frames a view for the same work: measured 160.8 GiB (killed) -> 3.28 GiB on that
+    recording, and a byte-identical output video on one that could already render.
 
     Parameters
     ----------
@@ -984,12 +1003,19 @@ def source_view_frames(
     sources
         Optional pre-resolved ``camera_name -> footage files`` map.
     in_memory
-        Optional in-memory frames per camera (in ``result.cameras`` order).
+        Optional in-memory frames per camera (in ``result.cameras`` order). Passed
+        straight through -- a caller that brought its own arrays keeps them.
+    window
+        Decoded frames kept per view. Must exceed the consumer's look-ahead, or every
+        read pays a seek; :func:`render_videos` sizes it from its own render workers.
 
     Returns
     -------
-    dict of str to np.ndarray
-        ``view -> preprocessed footage`` (empty when ``views`` is empty).
+    dict
+        ``view -> footage``, each an ``ndarray`` (from ``in_memory``) or a
+        :class:`~deeperfly.io.CursorFrames` presenting the same ``(T, H, W[, 3])``
+        surface lazily. Empty when ``views`` is empty. **Close them when done** --
+        :func:`render_videos` does this in a ``finally``, since each holds a decoder open.
 
     Raises
     ------
@@ -1017,15 +1043,20 @@ def source_view_frames(
 
     sources = sources or {}
     if all(sources.get(src_for[v]) for v in views):
-        # Decode the views concurrently (each with its own multithreaded reader),
-        # instead of one after another -- the overlay footage is tens of GB.
-        from concurrent.futures import ThreadPoolExecutor
-
-        def _load(v: str):
-            return v, io.open_reader(sources[src_for[v]], workers=workers)[:]
-
-        with ThreadPoolExecutor(max_workers=max(1, min(len(views), 8))) as pool:
-            return dict(pool.map(_load, views))
+        # One lazy provider per view, each with its own held-open decoder. Opening these
+        # is cheap (a container header and one frame apiece), so there is nothing to fan
+        # out over threads any more -- the concurrency that used to matter here was eight
+        # full clip decodes racing each other, and those are what blew up the host.
+        opened: dict[str, Any] = {}
+        try:
+            for v in views:
+                reader = io.open_reader(sources[src_for[v]], workers=workers)
+                opened[v] = io.CursorFrames(reader, window=window)
+        except BaseException:
+            for f in opened.values():  # do not leak decoders on a partial failure
+                f.close()
+            raise
+        return opened
     raise SystemExit(
         "image (imshow) panels need the original frames, but none are in memory and "
         "the run resolved no footage. Re-run with the recording as the input "
@@ -1155,10 +1186,24 @@ def render_videos(
     views = sorted(
         {p.view for spec in pending for p in spec.panels if p.plot == "imshow"}
     )
+    import os
+
+    cfg_workers = config.io.image_workers or 0  # may be None (auto) or 0
+    # Compositing is the render bottleneck (OpenCV, GIL-releasing); fan it out over
+    # a few threads. Cap at 8 (diminishing returns past that) and respect an
+    # explicit [io.image] workers when set.
+    render_workers = min(8, cfg_workers if cfg_workers > 0 else (os.cpu_count() or 4))
+    # The footage window has to cover the compositor's look-ahead, or a worker reaching
+    # past it makes its view's cursor seek on every frame. `_composited_in_order` keeps
+    # `max(2, workers * 2)` frames in flight; double that, so a straggling worker still
+    # lands inside the window.
+    frame_window = max(8, render_workers * 4)
     src = compose.Sources(
         skeleton=result.skeleton,
         camera_group=result.cameras,
-        frames=source_view_frames(config, result, views, sources=sources),
+        frames=source_view_frames(
+            config, result, views, sources=sources, window=frame_window
+        ),
         pts2d=result.pts2d,
         pts3d=result.pts3d,
         conf=result.conf,
@@ -1167,30 +1212,32 @@ def render_videos(
         nmf_angle_names=result.nmf_angle_names,
         nmf_head_scale=result.nmf_head_scale,
         nmf_abdomen_scale=result.nmf_abdomen_scale,
+        nmf_chain_offsets=result.nmf_chain_offsets,
         nmf_body_scale=result.nmf_body_scale,
         nmf_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
         stage_pts2d=stage_pts2d,
         stage_pts3d=stage_pts3d,
     )
     make_progress = progress or _null_progress
-    import os
-
-    cfg_workers = config.io.image_workers or 0  # may be None (auto) or 0
-    # Compositing is the render bottleneck (OpenCV, GIL-releasing); fan it out over
-    # a few threads. Cap at 8 (diminishing returns past that) and respect an
-    # explicit [io.image] workers when set.
-    render_workers = min(8, cfg_workers if cfg_workers > 0 else (os.cpu_count() or 4))
-    for spec in pending:
-        path = outdir / f"{spec.video_name}.mp4"
-        fps = spec.resolve_fps(input_fps)
-        log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
-        # Composite and encode frame by frame, so a long clip is never fully held
-        # in memory (peak is a few in-flight frames plus the encoder's buffers).
-        with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
-            with io.VideoWriter(path, fps=fps) as writer:
-                writer.write_frames(
-                    compose.stream_video(
-                        spec, src, progress=wrap, workers=render_workers
+    try:
+        for spec in pending:
+            path = outdir / f"{spec.video_name}.mp4"
+            fps = spec.resolve_fps(input_fps)
+            log.info("rendering %s -> %s @ %g fps", spec.video_name, path, fps)
+            # Composite and encode frame by frame, so a long clip is never fully held
+            # in memory (peak is a few in-flight frames plus the encoder's buffers).
+            with make_progress(src.n_frames(), f"render {spec.video_name}") as wrap:
+                with io.VideoWriter(path, fps=fps) as writer:
+                    writer.write_frames(
+                        compose.stream_video(
+                            spec, src, progress=wrap, workers=render_workers
+                        )
                     )
-                )
-        log.info("wrote %s", path)
+            log.info("wrote %s", path)
+    finally:
+        # Each footage view holds a decoder open (and, for a video, an av container).
+        # Arrays a caller passed in as `in_memory` have no close and are left alone.
+        for frames in src.frames.values():
+            closer = getattr(frames, "close", None)
+            if closer is not None:
+                closer()

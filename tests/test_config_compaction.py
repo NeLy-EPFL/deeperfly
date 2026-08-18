@@ -1,0 +1,584 @@
+"""Tests for the four ways a config is allowed to say less than it used to.
+
+Each of these replaces a block of the packaged config with a *reference* to something
+that already knows the answer, so each test's real job is to pin that the short form and
+the long form mean exactly the same thing:
+
+* ``[skeleton] name = "fly38b"``  -- a packaged skeleton instead of ~80 written lines.
+* ``[[pose2d.models]]`` with only ``class``/``weights`` -- the rest from the class.
+* ``weights = "x.pth"`` -- found on ``$DEEPERFLY_MODELS`` instead of a machine's path.
+* ``grid = [[...]]``  -- a montage instead of hand-computed panel offsets.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+
+import pytest
+from helpers import AZIMUTHS_DEG, CAMERA_NAMES
+
+from deeperfly.config import DEFAULT_CONFIG_PATH, Config, skeleton_presets
+from deeperfly.pose2d import download
+from deeperfly.pose2d.models import CLASS_ALIASES, class_defaults
+
+# -- skeleton presets ---------------------------------------------------------
+
+
+def _skeleton_signature(s):
+    """Everything a skeleton IS, so two of them can be compared for real."""
+    return (
+        s.name,
+        tuple(s.point_names),
+        tuple(s.limb_names),
+        tuple(map(tuple, s.bones)),
+        tuple(sorted(s.palette.items())),
+        s.symmetries.tolist(),
+    )
+
+
+def test_packaged_presets_are_discoverable():
+    assert set(skeleton_presets()) == {"fly38", "fly38b"}
+
+
+@pytest.mark.parametrize("preset", ["fly38", "fly38b"])
+def test_preset_matches_the_same_table_written_out(preset):
+    """A named preset resolves to exactly the table it replaces -- the whole premise."""
+    spelled = tomllib.loads(skeleton_presets()[preset].read_text())["skeleton"]
+    by_name = Config.from_dict({"skeleton": {"name": preset}}).skeleton()
+    written = Config.from_dict({"skeleton": spelled}).skeleton()
+    assert _skeleton_signature(by_name) == _skeleton_signature(written)
+    assert by_name.n_points == 38
+
+
+def test_preset_keys_are_overridden_wholesale():
+    cfg = Config.from_dict(
+        {"skeleton": {"name": "fly38b", "limb_palette": {"neck": "#ffffff"}}}
+    )
+    palette = cfg.skeleton().palette
+    assert palette["neck"] == "#ffffff"
+    # Wholesale, not merged: the override replaces the referenced palette entirely.
+    assert "lf_leg" not in palette
+
+
+def test_a_self_contained_table_is_left_alone():
+    """A config that spells out point_names keeps its meaning -- `name` stays free text."""
+    cfg = Config.from_dict(
+        {"skeleton": {"name": "fly38b", "point_names": ["a", "b", "c"]}}
+    )
+    assert cfg.skeleton().n_points == 3
+
+
+def test_file_reference_resolves_next_to_its_config(tmp_path):
+    (tmp_path / "sk").mkdir()
+    (tmp_path / "sk" / "mine.toml").write_text(
+        '[skeleton]\nname = "mine"\npoint_names = ["a", "b"]\n'
+    )
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[skeleton]\nfile = "sk/mine.toml"\n')
+    assert Config.from_toml(cfg_path).skeleton().name == "mine"
+
+
+def test_unknown_preset_names_the_ones_that_exist():
+    with pytest.raises(ValueError, match=r"not a packaged skeleton.*fly38b"):
+        Config.from_dict({"skeleton": {"name": "fly99"}})
+
+
+def test_missing_file_reference_says_where_it_looked(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[skeleton]\nfile = "nope.toml"\n')
+    with pytest.raises(ValueError, match="does not exist"):
+        Config.from_toml(cfg_path)
+
+
+def test_a_file_without_a_skeleton_table_is_refused(tmp_path):
+    (tmp_path / "notaskeleton.toml").write_text("[cameras]\n")
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[skeleton]\nfile = "notaskeleton.toml"\n')
+    with pytest.raises(ValueError, match="carries no .skeleton. table"):
+        Config.from_toml(cfg_path)
+
+
+def test_the_resolved_points_reach_the_fingerprint():
+    """A preset is a reference in the snapshot but the RESOLVED names are cached on.
+
+    Otherwise a preset edited between releases would leave every cached run believing a
+    skeleton it no longer routes.
+    """
+    from deeperfly.pipeline.fingerprint import _skeleton_digest
+
+    cfg = Config.from_dict({"skeleton": {"name": "fly38b"}})
+    assert _skeleton_digest(cfg)["point_names"][:2] == [
+        "lf_thorax_coxa",
+        "lf_coxa_trochanter",
+    ]
+
+
+# -- model class defaults -----------------------------------------------------
+
+
+@pytest.mark.parametrize("alias", sorted(CLASS_ALIASES))
+def test_every_registered_class_has_defaults(alias):
+    d = class_defaults(alias, 38)
+    assert d["input_size"] == (256, 512)
+    assert d["n_out_channels"] in (19, 38)
+
+
+def test_dense_classes_take_their_channel_count_from_the_skeleton():
+    assert class_defaults("hrnet", 38)["n_out_channels"] == 38
+    assert class_defaults("mvt", 12)["n_out_channels"] == 12
+    # ...while the 19-channel one-side detector keeps its own count.
+    assert class_defaults("hourglass", 38)["n_out_channels"] == 19
+
+
+def test_mvt_pins_float32_without_the_config_saying_so():
+    assert class_defaults("mvt")["precision"] == "float32"
+    assert class_defaults("hrnet")["precision"] is None
+
+
+def _dense_config(model_table):
+    return Config.from_dict(
+        {
+            "sources": [
+                {"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in CAMERA_NAMES
+            ],
+            "skeleton": {"name": "fly38b"},
+            "cameras": {
+                v: {"azimuth_deg": az, "distance": 100.0, "focal_length_px": 1.0}
+                for v, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
+            },
+            "pose2d": {
+                "models": [model_table],
+                "pathways": [
+                    {"name": v, "source": f"vid_{v}", "model": model_table["name"]}
+                    for v in CAMERA_NAMES
+                ],
+            },
+        }
+    )
+
+
+def test_a_three_key_model_table_is_a_complete_dense_plan():
+    plan = _dense_config(
+        {"name": "m", "class": "mvt", "weights": "x.pth"}
+    ).detection_plan()
+    spec = plan.models["m"]
+    assert (spec.input_size, spec.mean, spec.n_out_channels, spec.precision) == (
+        (256, 512),
+        0.0,
+        38,
+        "float32",
+    )
+    mask = plan.visibility_mask()
+    assert mask.all(), "a dense plan leaves no (view, point) cell unobserved"
+
+
+def test_an_explicit_key_still_wins_over_the_class():
+    plan = _dense_config(
+        {"name": "m", "class": "mvt", "weights": "x.pth", "precision": "float16"}
+    ).detection_plan()
+    assert plan.models["m"].precision == "float16"
+
+
+# -- weights resolution -------------------------------------------------------
+
+
+@pytest.fixture
+def models_dir(tmp_path, monkeypatch):
+    d = tmp_path / "models"
+    d.mkdir()
+    (d / "detector.pth").write_bytes(b"weights")
+    monkeypatch.setenv(download.MODELS_ENV, str(d))
+    return d
+
+
+def test_a_bare_filename_is_found_on_the_search_path(models_dir):
+    got = download.resolve_weights("detector.pth", cls="mvt", model_name="m")
+    assert got == models_dir / "detector.pth"
+
+
+def test_a_path_is_used_as_written(models_dir):
+    explicit = models_dir / "detector.pth"
+    assert (
+        download.resolve_weights(str(explicit), cls="mvt", model_name="m") == explicit
+    )
+
+
+def test_a_relative_path_is_not_searched(tmp_path, models_dir, monkeypatch):
+    """`./detector.pth` means *here*, not "look on the path" -- the separator decides."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit, match="no detector checkpoint at"):
+        download.resolve_weights("./detector.pth", cls="mvt", model_name="m")
+
+
+def test_an_empty_value_defers_to_the_class(models_dir):
+    assert download.resolve_weights("", cls="mvt", model_name="m") is None
+    assert download.resolve_weights(None, cls="hourglass", model_name="m") is None
+
+
+def test_a_missing_bare_name_lists_every_directory_searched(models_dir):
+    with pytest.raises(SystemExit) as e:
+        download.resolve_weights("absent.pth", cls="mvt", model_name="dense38mv")
+    message = str(e.value)
+    assert str(models_dir) in message
+    assert str(download.cache_dir()) in message
+    assert "dense38mv" in message and download.MODELS_ENV in message
+
+
+def test_multiple_search_directories_are_honored_in_order(tmp_path, monkeypatch):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for d in (first, second):
+        d.mkdir()
+    (second / "only_in_b.pth").write_bytes(b"w")
+    (first / "both.pth").write_bytes(b"w")
+    (second / "both.pth").write_bytes(b"w")
+    monkeypatch.setenv(download.MODELS_ENV, os.pathsep.join([str(first), str(second)]))
+    assert download.resolve_weights("only_in_b.pth", cls="mvt", model_name="m") == (
+        second / "only_in_b.pth"
+    )
+    assert download.resolve_weights("both.pth", cls="mvt", model_name="m") == (
+        first / "both.pth"
+    )
+
+
+def test_a_dense_class_with_no_weights_explains_the_setup():
+    message = str(download.missing_weights("mvt", "dense38mv"))
+    assert download.MODELS_ENV in message
+    assert "dense38mv" in message
+    assert "hourglass" in message, "the zero-setup alternative has to be named"
+
+
+# -- the visualization grid ---------------------------------------------------
+
+
+def _grid_config(video, cameras=CAMERA_NAMES):
+    azimuths = dict(zip(CAMERA_NAMES, AZIMUTHS_DEG))
+    return Config.from_dict(
+        {
+            "sources": [{"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in cameras],
+            "skeleton": {"name": "fly38b"},
+            "cameras": {
+                v: {
+                    "azimuth_deg": azimuths.get(v, 0.0),
+                    "distance": 100.0,
+                    "focal_length_px": 1.0,
+                }
+                for v in cameras
+            },
+            "pose2d": {
+                "models": [{"name": "m", "class": "hrnet", "weights": "x.pth"}],
+                "pathways": [
+                    {"name": v, "source": f"vid_{v}", "model": "m"} for v in cameras
+                ],
+            },
+            "visualization": {
+                "kwargs": {"imshow": {"width": 480, "height": 240}},
+                "videos": [video],
+            },
+        }
+    )
+
+
+def _panel_signature(spec):
+    return [(p.plot, p.view, p.x0, p.y0, p.stage) for p in spec.panels]
+
+
+def test_grid_expands_to_the_panels_it_replaces():
+    grid = _grid_config(
+        {
+            "video_name": "v",
+            "plot": "skeleton_3d",
+            "stage": "triangulation",
+            "grid": [["rf", "f", "lf"], ["rm", "bird", "lm"]],
+        }
+    ).videos[0]
+    hand = _grid_config(
+        {
+            "video_name": "v",
+            "panels": [
+                {"plot": op, "view": view, "x0": x, "y0": y, "stage": "triangulation"}
+                for view, x, y in [
+                    ("rf", 0, 0),
+                    ("f", 480, 0),
+                    ("lf", 960, 0),
+                    ("rm", 0, 240),
+                    ("bird", 480, 240),
+                    ("lm", 960, 240),
+                ]
+                for op in (
+                    ("imshow", "skeleton_3d") if view != "bird" else ("skeleton_3d",)
+                )
+            ],
+        }
+    ).videos[0]
+    # `stage` rides along on the overlay only; imshow has no points to stage.
+    assert [p[:4] for p in _panel_signature(grid)] == [
+        p[:4] for p in _panel_signature(hand)
+    ]
+
+
+def test_a_non_camera_cell_gets_no_frame_under_it():
+    spec = _grid_config(
+        {"video_name": "v", "plot": "skeleton_3d", "grid": [["rf", "bird"]]}
+    ).videos[0]
+    assert _panel_signature(spec) == [
+        ("imshow", "rf", 0, 0, None),
+        ("skeleton_3d", "rf", 0, 0, None),
+        ("skeleton_3d", "bird", 480, 0, None),
+    ]
+
+
+def test_a_non_camera_cell_is_skipped_entirely_in_a_2d_video():
+    """There is no picture to draw 2D detections on, so the tile is left empty."""
+    spec = _grid_config(
+        {"video_name": "v", "plot": "skeleton_2d", "grid": [["rf", "bird"]]}
+    ).videos[0]
+    assert {p.view for p in spec.panels} == {"rf"}
+
+
+@pytest.mark.parametrize("gap", ["", "-", "."])
+def test_a_gap_cell_leaves_its_tile_empty(gap):
+    spec = _grid_config(
+        {"video_name": "v", "plot": "skeleton_3d", "grid": [["rf", gap, "lf"]]}
+    ).videos[0]
+    assert [(p.view, p.x0) for p in spec.panels if p.plot == "skeleton_3d"] == [
+        ("rf", 0),
+        ("lf", 960),
+    ]
+
+
+def test_cell_size_can_be_stated_when_imshow_kwargs_do_not_say():
+    cfg = _grid_config(
+        {
+            "video_name": "v",
+            "plot": "skeleton_3d",
+            "cell": [100, 50],
+            "grid": [["rf", "lf"], ["rm", "lm"]],
+        }
+    )
+    del cfg.data["visualization"]["kwargs"]
+    offsets = [(p.x0, p.y0) for p in cfg.videos[0].panels if p.plot == "skeleton_3d"]
+    assert offsets == [(0, 0), (100, 0), (0, 50), (100, 50)]
+
+
+def test_explicit_panels_are_appended_after_the_grid():
+    spec = _grid_config(
+        {
+            "video_name": "v",
+            "plot": "skeleton_3d",
+            "grid": [["rf"]],
+            "panels": [{"plot": "imshow", "view": "lh", "x0": 999, "y0": 9}],
+        }
+    ).videos[0]
+    assert _panel_signature(spec)[-1] == ("imshow", "lh", 999, 9, None)
+
+
+def test_a_grid_without_a_plot_is_an_error():
+    with pytest.raises(ValueError, match="no 'plot'"):
+        _grid_config({"video_name": "v", "grid": [["rf"]]}).videos
+
+
+def test_a_grid_with_an_unknown_plot_is_an_error():
+    with pytest.raises(ValueError, match="unknown plot op"):
+        _grid_config({"video_name": "v", "plot": "nope", "grid": [["rf"]]}).videos
+
+
+def test_a_grid_with_no_cell_size_says_so():
+    cfg = _grid_config({"video_name": "v", "plot": "skeleton_3d", "grid": [["rf"]]})
+    del cfg.data["visualization"]["kwargs"]
+    with pytest.raises(ValueError, match="cell size"):
+        cfg.videos
+
+
+# -- the packaged config it all adds up to ------------------------------------
+
+
+def test_the_packaged_config_is_a_dense_plan_over_the_whole_skeleton():
+    cfg = Config.default()
+    assert cfg.skeleton().name == "fly38b"
+    plan = cfg.detection_plan()
+    # One pathway per camera: no mirrored twins, so no [pose2d.output_points] table.
+    assert [p.name for p in plan.pathways] == plan.view_names
+    assert "output_points" not in cfg.data["pose2d"]
+    assert plan.visibility_mask().all()
+
+
+def test_the_packaged_config_states_only_what_it_changes():
+    """Every stage key it writes must differ from that stage's dataclass default.
+
+    This is the property that keeps the file short as defaults move: a key that drifts
+    back to its default shows up here as a line to delete, rather than as one more line
+    nobody reads.
+    """
+    from deeperfly import config_schema as cs
+
+    cfg = Config.default()
+    redundant = {}
+    for section in cs.SECTIONS:
+        defaults = {f.name: f.default for f in cs.describe(section).fields}
+        for key, (value, is_default) in cs.effective(cfg, section).items():
+            if not is_default and value == defaults[key]:
+                redundant.setdefault(section, []).append(key)
+    assert not redundant, f"these keys restate their own default: {redundant}"
+
+
+def test_the_packaged_config_still_snapshots_byte_exactly(tmp_path):
+    cfg = Config.from_toml(DEFAULT_CONFIG_PATH)
+    cfg.save_snapshot(tmp_path)
+    assert (tmp_path / "config.toml").read_text() == Path(
+        DEFAULT_CONFIG_PATH
+    ).read_text()
+
+
+def test_the_packaged_config_names_its_checkpoint_portably():
+    """The shipped `weights` is a bare FILENAME, never a path.
+
+    There is no dense model to auto-download, so the config has to name one -- but naming
+    `/mnt/.../mvt_alt8_fly38b.pth` would make the packaged default a fact about one
+    machine's mount. A bare name is a fact about which model to use, resolved per machine
+    against $DEEPERFLY_MODELS, and the failure when it is not there is the actionable one.
+    """
+    spec = Config.default().detection_plan().models["dense38mv"]
+    assert spec.weights == "mvt_alt8_fly38b.pth"
+    assert "/" not in spec.weights and not Path(spec.weights).is_absolute()
+    with pytest.raises(SystemExit) as e:
+        download.resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
+    assert download.MODELS_ENV in str(e.value)
+
+
+# -- the pathway's model, hoisted one level ----------------------------------
+
+
+def _plan_config(pose2d: dict) -> Config:
+    """A minimal two-view config wrapped around a ``[pose2d]`` table."""
+    return Config.from_dict(
+        {
+            "sources": [{"name": "vid_a"}, {"name": "vid_b"}],
+            "skeleton": {"name": "fly38b"},
+            "cameras": {
+                "a": {"azimuth_deg": 0, "focal_length_px": 1.0, "distance": 1.0},
+                "b": {"azimuth_deg": 90, "focal_length_px": 1.0, "distance": 1.0},
+            },
+            "pose2d": pose2d,
+        }
+    )
+
+
+DENSE = {"name": "m", "class": "mvt", "weights": "w.pth"}
+OTHER = {"name": "m2", "class": "hrnet", "weights": "w2.pth"}
+BARE = [{"name": "a", "source": "vid_a"}, {"name": "b", "source": "vid_b"}]
+
+
+def test_a_sole_model_needs_naming_nowhere():
+    """One entry in ``models`` is one possible answer, so no pathway has to repeat it.
+
+    This is the shape every dense plan has -- one detector, one pathway per camera -- and
+    the name existed only to be pointed at.
+    """
+    plan = _plan_config({"models": [DENSE], "pathways": BARE}).detection_plan()
+    assert [p.model for p in plan.pathways] == ["m", "m"]
+
+
+def test_pose2d_model_is_the_default_and_a_pathway_may_still_override_it():
+    plan = _plan_config(
+        {
+            "model": "m",
+            "models": [DENSE, OTHER],
+            "pathways": [BARE[0], {**BARE[1], "model": "m2"}],
+        }
+    ).detection_plan()
+    assert [p.model for p in plan.pathways] == ["m", "m2"]
+
+
+def test_two_models_and_a_bare_pathway_is_an_error_that_names_both():
+    """Adding a second model must break the plan LOUDLY, not silently pick the first.
+
+    A bare pathway is unambiguous only while there is one model; the moment there are
+    two, "the first one" would be a guess about which camera runs which detector.
+    """
+    cfg = _plan_config({"models": [DENSE, OTHER], "pathways": BARE})
+    with pytest.raises(ValueError, match="names no model and there is no default") as e:
+        cfg.detection_plan()
+    # Both candidates are named: "which one did you mean" is the only question here.
+    assert "'m', 'm2'" in str(e.value)
+
+
+def test_an_unknown_default_model_is_rejected_at_the_table_that_declared_it():
+    cfg = _plan_config({"model": "nope", "models": [DENSE], "pathways": BARE})
+    with pytest.raises(ValueError, match=r"\[pose2d\]\.model references unknown model"):
+        cfg.detection_plan()
+
+
+# -- every config in the repo, held to the same shape -------------------------
+
+REPO = Path(__file__).resolve().parents[1]
+#: Every config a user is meant to read or run, packaged and staged alike.
+ALL_CONFIGS = [DEFAULT_CONFIG_PATH, *sorted(REPO.glob("examples/*/config.toml"))]
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: Path(p).parent.name)
+def test_no_config_repeats_the_model_on_every_pathway(path):
+    raw = tomllib.loads(Path(path).read_text())["pose2d"]
+    assert not [pw for pw in raw["pathways"] if "model" in pw]
+    plan = Config.from_toml(path).detection_plan()
+    assert {p.model for p in plan.pathways} == {m["name"] for m in raw["models"]}
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: Path(p).parent.name)
+def test_every_config_states_only_what_it_changes(path):
+    """The rule that keeps them short applies to the staged examples too.
+
+    Six recordings each carrying its own copy of `[triangulation]`, `[eks]` and
+    `[pictorial_structures]` at their defaults is how they reached 600 lines, and it is
+    also how a default change silently stops reaching them.
+    """
+    from deeperfly import config_schema as cs
+
+    cfg = Config.from_toml(path)
+    redundant = {}
+    for section in cs.SECTIONS:
+        defaults = {f.name: f.default for f in cs.describe(section).fields}
+        for key, (value, is_default) in cs.effective(cfg, section).items():
+            if not is_default and value == defaults[key]:
+                redundant.setdefault(section, []).append(key)
+    assert not redundant, f"these keys restate their own default: {redundant}"
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: Path(p).parent.name)
+def test_every_config_is_dense_over_the_whole_skeleton(path):
+    cfg = Config.from_toml(path)
+    plan = cfg.detection_plan()
+    assert [p.name for p in plan.pathways] == plan.view_names
+    assert "output_points" not in cfg.data["pose2d"]
+    assert plan.visibility_mask().all()
+    assert cfg.skeleton().name == "fly38b"
+
+
+@pytest.mark.parametrize(
+    "path", sorted(REPO.glob("examples/*/config.toml")), ids=lambda p: p.parent.name
+)
+def test_a_staged_example_is_exactly_what_dense_config_would_write(path):
+    """Re-rendering each example's own plan reproduces the file, byte for byte.
+
+    `deeperfly dense-config` rewrites this section for every new recording, so the
+    checked-in files have to BE its output -- otherwise the first regeneration silently
+    reformats a file nobody meant to touch, and the diff hides whatever else changed.
+    """
+    from deeperfly.pose2d.dense_plan import pose2d_toml, replace_pose2d_section
+
+    text = Path(path).read_text()
+    p2 = tomllib.loads(text)["pose2d"]
+    rendered = pose2d_toml(
+        {
+            "precision": p2.get("precision"),
+            "batch_size": p2.get("batch_size", 16),
+            "decode_buffer": p2.get("decode_buffer", 4),
+            "preprocessors": p2.get("preprocessors", []),
+            "models": p2["models"],
+            "model": p2["model"],
+            "pathways": p2["pathways"],
+            "n_out_channels": len(Config.from_toml(path).skeleton().point_names),
+        }
+    )
+    assert replace_pose2d_section(text, rendered) == text

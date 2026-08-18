@@ -20,6 +20,7 @@ from helpers import (
 from helpers import (
     bent_angles as _bent_angles,
 )
+from helpers import fly38_skeleton, fly38b_skeleton  # noqa: F401
 from helpers import (
     place_chain_markers as _place_chain_markers,
 )
@@ -40,7 +41,7 @@ def template() -> KinematicTemplate:
 
 @pytest.fixture
 def fly() -> Skeleton:
-    return Skeleton.fly()
+    return fly38_skeleton()
 
 
 # -- alignment ---------------------------------------------------------------
@@ -355,6 +356,60 @@ def test_articulation_marker_override_recomputes_neutral_from_offset():
     )
 
 
+def test_a_marker_table_can_carry_the_base_nomination_over():
+    """Redeclaring a chain must not silently drop its base marker.
+
+    The table *replaces* the chain's markers, so a config that retargets the head would
+    otherwise put it back on the registered base -- a change of pivot with nothing in the
+    config that says so. ``base = true`` is how the nomination is expressed, and the base
+    is forced to depth 0 whatever its attachment body's depth says (``c_head``'s is 3),
+    because a point on the rotation center is moved by none of the chain's DOFs.
+    """
+    from deeperfly.inverse_kinematics.articulation import Articulation
+
+    table = {
+        "head": {
+            "neck": {"body": "c_head", "offset": [0.0, 0.0, 0.0], "base": True},
+            "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.0]},
+            "r_antenna": {"body": "r_pedicel", "offset": [0.0, 0.0, 0.0]},
+        }
+    }
+    head = Articulation.load(marker_overrides=table).chain("head")
+    assert head.base_point == "neck"
+    assert head.marker_depth[head.marker_index("neck")] == 0
+    np.testing.assert_allclose(
+        head.marker_neutral[head.marker_index("neck")], head.anchors[0], atol=1e-7
+    )
+
+    forgotten = {k: v for k, v in table["head"].items() if k != "neck"}
+    assert (
+        Articulation.load(marker_overrides={"head": forgotten}).chain("head").base_point
+        is None
+    )
+
+
+def test_a_marker_table_rejects_two_bases_and_a_base_that_is_not_a_marker():
+    from deeperfly.inverse_kinematics.articulation import Articulation
+
+    with pytest.raises(ValueError, match="a chain has one base"):
+        Articulation.load(
+            marker_overrides={
+                "head": {
+                    "l_antenna": {
+                        "body": "l_pedicel",
+                        "offset": [0, 0, 0],
+                        "base": True,
+                    },
+                    "r_antenna": {
+                        "body": "r_pedicel",
+                        "offset": [0, 0, 0],
+                        "base": True,
+                    },
+                }
+            }
+        )
+
+
 def test_articulation_marker_override_rejects_bad_body():
     """An unknown / wrong-chain attachment body is a clear config error."""
     from deeperfly.inverse_kinematics.articulation import Articulation
@@ -373,39 +428,162 @@ def test_articulation_marker_override_rejects_bad_body():
 
 
 @pytest.mark.parametrize("name,size", [("head", 1.7), ("abdomen", 0.7)])
-def test_estimate_chain_scale_recovers_contour_length(name, size):
-    """The size estimate recovers a chain grown/shrunk by ``size`` from its contour.
+def test_estimate_chain_scale_recovers_a_resized_chain_at_a_bent_pose(name, size):
+    """The size estimate recovers a chain grown/shrunk by ``size`` -- while it is BENT.
 
-    The estimate is the measured/model ratio of the chain's contour length
-    (``base -> per-depth marker centroids``). The head's three DOFs share one pivot,
-    so that length is exactly rotation-invariant and is checked at a bent pose; the
-    abdomen is a serial chain whose contour is exact at the neutral (straight) pose,
-    where it scales precisely with ``size``.
+    The bent pose is the point of the test. The estimate only ever compares distances
+    the chain's own joints cannot change, so articulating the chain must not move it at
+    all. That is a real property and not a formality: the abdomen's markers sit on the
+    dorsal *surface*, the outside of a ventral bend, so a polyline through them
+    lengthens by 57% over the joints' range -- a ruler drawn along the chain would read
+    this bent pose as a much bigger animal.
+
+    Each chain is measured against the skeleton that labels its markers, and is
+    synthesized at a base the model does not share, so this also pins that the ruler is
+    internal to the chain: measured from the model's own anchor, that shift would read
+    as a change in size.
     """
     from deeperfly.inverse_kinematics.articulation import (
         estimate_chain_scale,
         load_articulation,
     )
 
-    fly = Skeleton.fly()
+    fly = fly38b_skeleton()
     index = {n: i for i, n in enumerate(fly.point_names)}
     chain = load_articulation().chain(name)
     rng = np.random.default_rng(5)
     rot, body_scale, trans = _rot_z(0.3), 1.4, np.array([1.0, -2.0, 0.5])
-    theta = (
-        _bent_angles(chain, rng) if name == "head" else np.zeros(len(chain.dof_names))
-    )
     pts = np.full((3, fly.n_points, 3), np.nan)
-    _place_chain_markers(chain, theta, (rot, body_scale, trans), pts, index, size=size)
+    _place_chain_markers(
+        chain,
+        _bent_angles(chain, rng),
+        (rot, body_scale, trans),
+        pts,
+        index,
+        size=size,
+        shift=np.array([0.05, -0.02, -0.15]),
+    )
 
-    cols = [index[m] for m in chain.marker_names]
-    world = np.stack([pts[:, c] for c in cols], axis=1)
+    cols = [index.get(m, -1) for m in chain.marker_names]
+    world = np.stack(
+        [pts[:, c] if c >= 0 else np.full((3, 3), np.nan) for c in cols], axis=1
+    )
     local = ((world - trans) @ rot) / body_scale
     assert estimate_chain_scale(local, chain) == pytest.approx(size, abs=1e-6)
 
 
+def test_the_size_ruler_is_only_ever_an_invariant_separation():
+    """Each chain's ruler is the marker separation its own joints cannot change.
+
+    Pins *which* distances are measured, because that is the whole design: the head's
+    is the neck-to-antennae radius (rotating about a point cannot change a distance from
+    that point) and the abdomen's is its one pair sharing a body. Every other abdomen
+    pair spans a hinge and is rejected -- including the neighbouring ones a chain-length
+    ruler would naturally string together.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        _midline_groups,
+        _rigid_ruler,
+        load_articulation,
+    )
+
+    art = load_articulation()
+    picked = {}
+    for chain in art.chains:
+        groups = _midline_groups(chain)
+        names = [tuple(chain.marker_names[c] for c in g) for g in groups]
+        picked[chain.name] = {
+            frozenset(names[i] + names[j]) for i, j, _ in _rigid_ruler(chain, groups)
+        }
+    assert picked["head"] == {frozenset({"neck", "l_antenna", "r_antenna"})}
+    assert picked["abdomen"] == {frozenset({"abdomen3", "abdomen4"})}
+
+
+def test_the_size_ruler_ignores_a_left_right_split():
+    """Pushing a mirror pair symmetrically apart must not change the measured size.
+
+    A left-to-right distance carries the two sides' triangulation disagreement at full
+    strength, and on real data that is not a rounding error: across the corpus the
+    ``l_antenna``-``r_antenna`` span reads 1.515x the model where either antenna's
+    distance to the ``neck`` reads 1.196x -- 26% wider, the same sign in all 30
+    recordings, because each antenna is triangulated from its own side's cameras. Folding
+    a mirror pair to its midpoint before measuring is what makes the ruler immune, and
+    this pins that it is.
+    """
+    from deeperfly.inverse_kinematics.articulation import (
+        estimate_chain_scale,
+        load_articulation,
+    )
+
+    fly = fly38b_skeleton()
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    chain = load_articulation().chain("head")
+    rng = np.random.default_rng(11)
+    pts = np.full((3, fly.n_points, 3), np.nan)
+    _place_chain_markers(
+        chain, _bent_angles(chain, rng), (np.eye(3), 1.0, np.zeros(3)), pts, index
+    )
+    cols = [index[m] for m in chain.marker_names]
+    local = pts[:, cols]
+
+    left = chain.marker_names.index("l_antenna")
+    right = chain.marker_names.index("r_antenna")
+    spread = local.copy()
+    # Push the pair 30% apart along its own axis -- symmetric about the midpoint, which
+    # is how a two-sided reconstruction splits, and frame-independent (the head here is
+    # bent, so "along y" would not be symmetric in the head's own frame).
+    mid = 0.5 * (local[:, left] + local[:, right])
+    for k in (left, right):
+        spread[:, k] = mid + 1.3 * (local[:, k] - mid)
+    moved = np.linalg.norm(spread[:, left] - local[:, left], axis=-1)
+    assert moved.min() > 0.02, "the pair really moved"
+    assert estimate_chain_scale(spread, chain) == pytest.approx(
+        estimate_chain_scale(local, chain), abs=1e-9
+    )
+
+
+def test_a_chain_with_no_invariant_ruler_says_so(caplog):
+    """A marker set that cannot measure its chain warns instead of reporting model size.
+
+    ``fly38`` labels neither the ``neck`` nor ``abdomen0..4``, so on that skeleton
+    neither chain has a single separation to measure. Returning 1.0 is the only
+    available answer, but on its own it reads as a *measurement* that this fly matches
+    the model -- and the overlay would then draw a confidently mis-sized head. The
+    warning is what separates "the same size" from "no ruler".
+    """
+    import logging
+
+    from deeperfly.inverse_kinematics.articulation import (
+        estimate_chain_scale,
+        load_articulation,
+    )
+
+    fly = fly38_skeleton()
+    index = {n: i for i, n in enumerate(fly.point_names)}
+    chain = load_articulation().chain("head")
+    assert chain.base_point not in index, "fly38 does not label the neck"
+    rng = np.random.default_rng(7)
+    pts = np.full((3, fly.n_points, 3), np.nan)
+    _place_chain_markers(
+        chain,
+        _bent_angles(chain, rng),
+        (np.eye(3), 1.0, np.zeros(3)),
+        pts,
+        index,
+        size=1.4,
+    )
+    cols = [index.get(m, -1) for m in chain.marker_names]
+    local = np.stack(
+        [pts[:, c] if c >= 0 else np.full((3, 3), np.nan) for c in cols], axis=1
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deeperfly"):
+        assert estimate_chain_scale(local, chain) == 1.0
+    assert "never observed" in caplog.text and "head" in caplog.text
+
+
 def test_estimate_chain_scale_defaults_to_one_when_unobserved():
-    """With no frame where the contour is observed, the size stays at the model (1.0)."""
+    """With no frame where the ruler is observed, the size stays at the model (1.0)."""
     from deeperfly.inverse_kinematics.articulation import (
         estimate_chain_scale,
         load_articulation,

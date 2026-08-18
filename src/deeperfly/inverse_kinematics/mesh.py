@@ -207,6 +207,7 @@ class NmfMesh:
         *,
         head_scale: float = 1.0,
         abdomen_scale: float = 1.0,
+        chain_offsets: dict[str, np.ndarray] | None = None,
         body_scale: float | None = None,
     ) -> tuple[Float[np.ndarray, "Nv 3"], np.ndarray]:
         """Pose the mesh to one frame's fitted joints (and optional chain angles).
@@ -228,6 +229,12 @@ class NmfMesh:
             abdomen are fixed model geometry (unlike the legs, which skin to the real
             keypoints), so these let the overlay match a fly whose head/abdomen differ
             in size (e.g. a fuller abdomen). ``1.0`` leaves them at the model size.
+        chain_offsets
+            ``chain name -> (3,)`` model-unit translation of a chain's base, from the
+            IK stage's ``chain_offsets``. The solved body plan bakes the same shift into
+            that chain's joint offsets, so passing it keeps the drawn head on the pivot
+            the angles were fitted about; omitting it draws the head at the registered
+            base while the angles describe the measured one. ``None`` means no shift.
         body_scale
             The recording's fixed body scale (see
             :attr:`~deeperfly.inverse_kinematics.IKResult.body_scale`). When given,
@@ -248,7 +255,7 @@ class NmfMesh:
         rot, scale, trans = self._body_transform(pts3d, fixed_scale=body_scale)
         up = rot @ np.array([0.0, 0.0, 1.0])  # live dorsal axis fixes the bone roll
         node_xform = self._node_transforms(
-            angles, angle_names, (head_scale, abdomen_scale)
+            angles, angle_names, (head_scale, abdomen_scale), chain_offsets
         )
 
         for slot, rows in enumerate(self._slot_verts):
@@ -279,6 +286,7 @@ class NmfMesh:
         angles: np.ndarray | None,
         angle_names: list[str] | None,
         scales: tuple[float, float] = (1.0, 1.0),
+        chain_offsets: dict[str, np.ndarray] | None = None,
     ) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]:
         """Model-frame affine ``(A, b)`` per ``(chain, depth)`` node from the angles.
 
@@ -289,6 +297,13 @@ class NmfMesh:
         bakes that same growth into its chain offsets, so the fitted angles and the
         nodes drawn from them describe one pose (see
         :mod:`deeperfly.inverse_kinematics.bodyplan`).
+
+        ``chain_offsets`` then translates a chain onto its measured base. Shifting a
+        chain's rotation anchors *and* the points attached to them by the same delta is
+        exactly a post-translation of the affine -- with anchors ``c_i + d`` and point
+        ``p + d`` the recurrence gives ``A_d (p + d) + b'_d = A_d p + b_d + d`` -- so
+        the whole correction is one added term, and it is the same term the body plan
+        bakes into that chain's root offset.
 
         Deliberately driven by the *unfiltered* packaged articulation and the angle
         *names*, not by the recording's body plan: chain index 0 is always the head and
@@ -324,6 +339,9 @@ class NmfMesh:
                 if f != 1.0:  # grow the node about its chain base anchor
                     base = chain.anchors[0]
                     a, b = f * a, f * b + (1.0 - f) * base
+                shift = (chain_offsets or {}).get(chain.name)
+                if shift is not None:  # then put that base where it was measured
+                    b = b + np.asarray(shift, dtype=float)
             out[(chain_idx, depth)] = (a, b)
         return out
 

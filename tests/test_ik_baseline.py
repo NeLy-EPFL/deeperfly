@@ -29,11 +29,13 @@ import json
 
 import numpy as np
 import pytest
-from helpers import IK_BASELINE_PATH
+from helpers import (
+    IK_BASELINE_PATH,
+    fly38_skeleton,  # noqa: F401
+)
 
 from deeperfly.config import Config
 from deeperfly.pipeline import stages
-from deeperfly.skeleton import Skeleton
 
 #: Leg DOFs come first in the angle columns: 6 legs x (ThC 3 + CTr 2 + FTi 1 + TiTa 1).
 N_LEG_DOFS = 42
@@ -62,7 +64,7 @@ def solve_with_defaults(pts3d: np.ndarray, overrides: dict | None = None):
     the ``constant_points`` pin and the config plumbing too.
     """
     cfg = Config.from_dict({"inverse_kinematics": dict(overrides or {})})
-    return stages.stage_inverse_kinematics(cfg, Skeleton.fly(), pts3d)
+    return stages.stage_inverse_kinematics(cfg, fly38_skeleton(), pts3d)
 
 
 def keypoint_residual(model_pts3d: np.ndarray, pts3d: np.ndarray) -> np.ndarray:
@@ -77,7 +79,7 @@ def keypoint_residual(model_pts3d: np.ndarray, pts3d: np.ndarray) -> np.ndarray:
 
 def test_baseline_fixture_is_self_describing(baseline):
     """The fixture holds both cases with matching shapes and the synthetic truth."""
-    fly = Skeleton.fly()
+    fly = fly38_skeleton()
     assert baseline["real_angles"].shape == (64, 50)
     assert baseline["synth_angles"].shape == (3, 50)
     for case, n_frames in (("real", 64), ("synth", 3)):
@@ -109,17 +111,26 @@ def test_synthetic_baseline_records_the_generating_angles(baseline):
 
 
 def test_quickik_reproduces_the_recorded_registration(baseline):
-    """The measured quantities are unchanged by the solver swap.
+    """The body registration is unchanged by the solver swap.
 
-    The chain sizes and the body scale come from measurement -- the coxa registration and
-    the chains' contour lengths -- not from the fit, so they must match the old solver's
-    to within the float32 rounding in the two baked copies of the neutral coxae.
+    The body scale comes from measurement -- the coxa registration -- not from the fit,
+    so it must match the old solver's to within the float32 rounding in the two baked
+    copies of the neutral coxae.
+
+    The recorded **chain** scales are a different story and are deliberately not compared:
+    they were measured by the old contour ruler, which drew part of its length from the
+    model's own anchor and so inherited the coxa registration's extrapolation. The size
+    estimate now only compares separations between the chain's own markers, and ``fly38``
+    labels none of the ones that qualify -- neither the head's ``neck`` nor the abdomen's
+    ``abdomen0..4`` -- so on this pose there is nothing to measure and both chains stay at
+    model size, warned about rather than reported as a measurement.
     """
     pytest.importorskip("quickik", reason="needs the deeperfly[ik] extra")
     res = solve_with_defaults(baseline["real_pts3d"])
     assert res.angle_names == baseline["real_angle_names"]
-    assert res.chain_scales == pytest.approx(baseline["real_chain_scales"], abs=1e-6)
     assert res.body_scale == pytest.approx(baseline["real_body_scale"], abs=1e-6)
+    assert res.chain_scales == {"head": 1.0, "abdomen": 1.0}
+    assert baseline["real_chain_scales"] != pytest.approx(res.chain_scales, abs=1e-3)
 
 
 def test_quickik_fit_is_close_to_the_old_solver(baseline):
@@ -138,7 +149,13 @@ def test_quickik_fit_is_close_to_the_old_solver(baseline):
     assert np.nanmean(was) < 0.04  # the recorded fixture, for context
     assert np.nanmean(got) < 0.06
     assert np.nanpercentile(got, 95) < 0.25
-    assert np.isfinite(res.angles).all()  # every track solved on this recording
+    # Every leg track solved. The abdomen does not: its chain is targeted at fly38b's
+    # midline `abdomen0..4`, which this fly38 pose does not label, so the branch has no
+    # observation at all and is masked out rather than invented.
+    abdomen = [i for i, n in enumerate(res.angle_names) if "abdomen" in n]
+    legs = [i for i in range(len(res.angle_names)) if i < N_LEG_DOFS]
+    assert np.isfinite(res.angles[:, legs]).all()
+    assert not np.isfinite(res.angles[:, abdomen]).any()
 
 
 def test_widening_the_pressed_limits_beats_the_old_solver(baseline):

@@ -38,14 +38,15 @@ log = logging.getLogger("deeperfly")
 #: The dense model's input ``(height, width)``.
 INPUT_HW: tuple[int, int] = (256, 512)
 
-#: Model classes that must run in float32 and say so in their own table.
-_FLOAT32_CLASSES: frozenset[str] = frozenset({"mvt", "multiview_transformer"})
-
-#: A ``[pose2d].batch_size`` for each dense class, because the unit differs. For the
-#: per-view HRNet an item is one image; for the multiview transformer an item is one
-#: MOMENT -- 8 images, and a decode that upsamples 38 channels per view to the full input
-#: size. 16 moments would be 128 images and several GB of transient heatmap.
-DEFAULT_BATCH: dict[str, int] = {"hrnet": 16, "mvt": 2}
+#: A ``[pose2d].batch_size`` for each dense class.
+#:
+#: The unit is IMAGES for both, and it is not per-class after all:
+#: :func:`~deeperfly.pose2d.inference.detect_sequence` forwards ``batch_size // pathways``
+#: whole frames at a time, so with eight pathways anything below 8 is one frame per
+#: forward. ``mvt`` was set to 2 here on the theory that its item was one *moment*; it is
+#: not, and 2 therefore meant "one frame per forward" -- measured at 49.6 fps against 59.4
+#: at 16 on an RTX 4090 (8 views, 256x512). 16 is the first value giving two frames.
+DEFAULT_BATCH: dict[str, int] = {"hrnet": 16, "mvt": 16}
 
 
 def crops_from_plan(
@@ -96,7 +97,7 @@ def dense_pose2d(
     weights: str,
     sources: dict[str, str],
     crops: dict[str, tuple[int, int, int, int] | None] | None = None,
-    precision: str = "float16",
+    precision: str | None = None,
     batch_size: int = 16,
     decode_buffer: int = 4,
     model_class: str = "hrnet",
@@ -133,11 +134,7 @@ def dense_pose2d(
                     "ops": [{"op": "crop", "x": x, "y": y, "width": w, "height": h}],
                 }
             )
-        pw: dict[str, Any] = {
-            "name": view,
-            "source": sources[view],
-            "model": model_name,
-        }
+        pw: dict[str, Any] = {"name": view, "source": sources[view]}
         if prep_name:
             pw["preprocessor"] = prep_name
         pathways.append(pw)
@@ -153,25 +150,24 @@ def dense_pose2d(
         "batch_size": batch_size,
         "decode_buffer": decode_buffer,
         "preprocessors": preprocessors,
+        # Just the class and the checkpoint. `input_size`, `mean`, `n_out_channels` and
+        # (for the multiview transformer) `precision` are all properties of the artifact
+        # whose loader already refuses a config that disagrees, so the class states them
+        # -- see `deeperfly.pose2d.models.CLASS_DEFAULTS`. Writing them here would be the
+        # generator copying the checkpoint into a file that gets rejected if it copies
+        # wrong.
         "models": [
             {
                 "name": model_name,
                 "class": model_class,
                 "weights": str(weights),
-                "input_size": list(INPUT_HW),
-                # 0.0 and not DeepFly2D's 0.22: both dense networks carry their own
-                # normalization with the weights and apply it themselves. Their loaders
-                # refuse anything else rather than shifting every input by a quarter of
-                # its range.
-                "mean": 0.0,
-                "n_out_channels": len(point_names),
-                # Written explicitly for the multiview transformer rather than inherited:
-                # it runs in float32, and a model table that inherited [pose2d].precision
-                # would say float16 while the model quietly ignored it. `load_mvt` refuses
-                # anything but float32, so the config has to be honest about what runs.
-                **({"precision": "float32"} if model_class in _FLOAT32_CLASSES else {}),
             }
         ],
+        # The pathways carry no `model` key: one dense detector serves every camera, so
+        # naming it per pathway was the same string written V times to point at the one
+        # entry above. `[pose2d].model` is that default (see
+        # `deeperfly.pose2d.pathways._default_model`).
+        "model": model_name,
         "pathways": pathways,
         "n_out_channels": len(point_names),
     }
@@ -191,56 +187,65 @@ def _fmt(value: Any) -> str:
     raise TypeError(f"cannot serialize {value!r} to TOML")
 
 
+#: ``[pose2d]`` knobs this generator only writes when they differ from the config
+#: default. Restating a default is noise a reader has to check against the docs before
+#: they can ignore it, and it silently freezes today's default into every generated file.
+_KNOB_DEFAULTS: dict[str, Any] = {
+    "precision": "bfloat16",
+    "batch_size": 16,
+    "decode_buffer": 4,
+}
+
+
 def pose2d_toml(plan: dict[str, Any]) -> str:
-    """Render :func:`dense_pose2d`'s result as the ``[pose2d]`` section of a config."""
+    """Render :func:`dense_pose2d`'s result as the ``[pose2d]`` section of a config.
+
+    Written as one table with inline arrays rather than ``[[pose2d.models]]`` /
+    ``[[pose2d.pathways]]`` blocks. The two parse identically; the difference is that a
+    dense plan's pathway is three short keys, so a block per camera spent four lines and
+    a blank on what reads as one row of a table.
+    """
+    n = plan["n_out_channels"]
+    v = len(plan["pathways"])
     lines = [
-        "# ===========================================================================",
-        "# 2D detection -- DENSE plan: one pathway per camera, every point in every",
-        "# view. Generated by `deeperfly dense-config`; see deeperfly.pose2d.dense_plan.",
+        "# == 2D detection ============================================================",
+        f"# A DENSE plan ({v} pathways, one per camera), generated by `deeperfly",
+        "# dense-config`. The model emits every tracked point for every view, so the",
+        "# mapping is channel i -> point i of the pathway's view and no",
+        f"# [pose2d.output_points] table is written: the {n} x {v} rows it would take carry no",
+        "# information, and a transposition in any one is a wrong limb rather than a crash.",
+        "# That the model's channels really are this skeleton's, in this order, is checked",
+        "# when the weights load.",
         "#",
-        "# The 19-channel default runs each side camera twice (once mirrored) and leaves",
-        "# the far side of every view NaN. This detector emits all",
-        f"# {plan['n_out_channels']} channels per",
-        "# view, so a contralateral point arrives as a prediction to correct rather than",
-        "# as a gap to author from nothing.",
-        "#",
-        "# There is deliberately no [pose2d.output_points] table: with one pathway per",
-        "# camera and every point predicted, the mapping IS channel i -> point i of that",
-        "# pathway's view, which is what the plan assumes when no table names a pathway.",
-        "# The 38 x V lines it would take carry no information, and a transposition in any",
-        "# one of them would be a wrong limb rather than a crash. That the model's channels",
-        "# really are this skeleton's, in this order, is checked when the weights load.",
-        "# ===========================================================================",
+        "# `model` is the default for every pathway below; write `model` on one to override",
+        "# it. Everything else about the model -- input_size, mean, n_out_channels, and the",
+        "# multiview transformer's float32 -- is a property of the checkpoint whose loader",
+        "# refuses a config that disagrees, so the class states it and this does not.",
         "[pose2d]",
     ]
-    for key in ("precision", "batch_size", "decode_buffer"):
-        lines.append(f"{key} = {_fmt(plan[key])}")
+    for key, default in _KNOB_DEFAULTS.items():
+        if plan.get(key) is not None and plan[key] != default:
+            lines.append(f"{key} = {_fmt(plan[key])}")
+
+    lines += [f"model = {_fmt(plan['model'])}", "models = ["]
+    lines += [f"    {_fmt(m)}," for m in plan["models"]]
+    lines.append("]")
 
     if plan["preprocessors"]:
         lines += [
             "",
-            "# Per-camera training crops. A detector is trained through a box; feeding it",
-            "# a different one changes the fly's apparent scale, which is the one thing",
-            "# no augmentation in this recipe undoes. A view with no entry here is run",
-            "# full-frame, which is this rig's frozen policy for the six side cameras.",
-        ]
-    for prep in plan["preprocessors"]:
-        lines += [
-            "[[pose2d.preprocessors]]",
-            f"name = {_fmt(prep['name'])}",
-            f"ops = {_fmt(prep['ops'])}",
+            "# Per-camera training crops. A detector is trained through a box, and a",
+            "# differently framed camera puts the animal at the wrong apparent SCALE --",
+            "# the one thing no augmentation undoes. A view with no entry here runs",
+            "# full-frame.",
+            "preprocessors = [",
+            *(f"    {_fmt(p)}," for p in plan["preprocessors"]),
+            "]",
         ]
 
-    lines += ["", "[[pose2d.models]]"]
-    for k, v in plan["models"][0].items():
-        lines.append(f"{k} = {_fmt(v)}")
-
-    lines.append("")
-    for pw in plan["pathways"]:
-        lines.append("[[pose2d.pathways]]")
-        for k, v in pw.items():
-            lines.append(f"{k} = {_fmt(v)}")
-        lines.append("")
+    lines += ["", "pathways = ["]
+    lines += [f"    {_fmt(pw)}," for pw in plan["pathways"]]
+    lines.append("]")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -277,9 +282,14 @@ def _replace_section(
     stop = after
     while stop - 1 > last and lines[stop - 1].lstrip().startswith("#"):
         stop -= 1
-    while stop - 1 > last and not lines[stop - 1].strip():
-        stop -= 1
-    return "".join(lines[:start]) + new.rstrip("\n") + "\n\n" + "".join(lines[stop:])
+    # The blank lines between the two sections are NOT preserved -- they are re-emitted
+    # below. Keeping them and adding a separator was adding one blank line per rewrite,
+    # so running the generator twice on one file produced two different files.
+    tail = "".join(lines[stop:])
+    # Two blank lines between top-level sections, which is what these configs use, so a
+    # replaced section leaves a file that still looks written rather than patched.
+    gap = "\n\n\n" if tail.strip() else "\n"
+    return "".join(lines[:start]) + new.rstrip("\n") + gap + tail
 
 
 def replace_skeleton_section(config_text: str, skeleton_toml: str) -> str:

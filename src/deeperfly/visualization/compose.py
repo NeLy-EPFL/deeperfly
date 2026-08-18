@@ -70,7 +70,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Protocol
 
 import numpy as np
 from jaxtyping import Float
@@ -261,11 +261,38 @@ class VideoSpec:
         return float(input_fps)
 
 
+class FrameSeq(Protocol):
+    """A view's footage: how many frames, how big, and the one being drawn.
+
+    Deliberately narrow -- those three questions are *all* the compositor ever asks of
+    footage, and stating that is what lets a caller hand over something other than a
+    resident array. A ``(T, H, W[, 3])`` ndarray satisfies it, and so does
+    :class:`~deeperfly.io.CursorFrames`, which answers ``frames[t]`` by decoding that one
+    frame. The pipeline passes the latter: a render never holds more than its look-ahead,
+    so materializing the clip to satisfy a type would reintroduce a cost nothing here
+    needs (eight 1984x512 cameras over 5900 frames is 155 GB).
+
+    Frames are read in near-sequential forward order (see :func:`_composited_in_order`),
+    which a lazy implementation may rely on -- and ``__getitem__`` is only ever called
+    with a single integer, never a slice or a fancy index.
+    """
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """``(T, H, W[, 3])`` -- frame count first, then one frame's shape."""
+        ...
+
+    def __getitem__(self, t: int, /) -> np.ndarray:
+        """One frame, ``(H, W, 3)`` uint8 RGB (or ``(H, W)`` if it has no color)."""
+        ...
+
+
 @dataclass
 class Sources:
     """The data the panels draw from, shared across every video and frame.
 
-    ``frames`` maps a view name to that camera's footage ``(T, H, W[, 3])``.
+    ``frames`` maps a view name to that camera's footage as a :class:`FrameSeq`
+    (``(T, H, W[, 3])``) -- an ndarray, or anything that serves one frame at a time.
     ``pts2d`` / ``conf`` are aligned to ``camera_group`` order (``(V, T, P, 2)``
     / ``(V, T, P)``); ``pts3d`` is ``(T, P, 3)`` in world coordinates. Only the
     sources a video's ops actually reference need to be provided.
@@ -273,7 +300,7 @@ class Sources:
 
     skeleton: "Skeleton"
     camera_group: "CameraGroup"
-    frames: dict[str, np.ndarray]
+    frames: dict[str, FrameSeq]
     pts2d: Float[np.ndarray, "V T P 2"] | None = None
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     conf: Float[np.ndarray, "V T P"] | None = None
@@ -282,6 +309,10 @@ class Sources:
     nmf_angle_names: list[str] | None = None
     nmf_head_scale: float = 1.0
     nmf_abdomen_scale: float = 1.0
+    #: ``chain name -> (3,)`` model-unit shift of a chain's base onto its measured
+    #: landmark, from the IK stage. The angles were fitted about the shifted pivot, so
+    #: the overlay has to be drawn about it too.
+    nmf_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
     nmf_body_scale: float = 1.0
     nmf_hide_parts: tuple[str, ...] = ("wings",)
     #: Per-stage points, for panels that name a ``stage`` instead of taking whatever the
@@ -369,6 +400,12 @@ class Sources:
             self.nmf_abdomen_scale,
             self.nmf_body_scale,
             self.nmf_hide_parts,
+            tuple(
+                sorted(
+                    (k, tuple(float(x) for x in np.asarray(v).reshape(3)))
+                    for k, v in self.nmf_chain_offsets.items()
+                )
+            ),
         )
         hit = self._pose_cache.get(key)
         if hit is not None:
@@ -383,6 +420,7 @@ class Sources:
             self.nmf_angle_names,
             head_scale=self.nmf_head_scale,
             abdomen_scale=self.nmf_abdomen_scale,
+            chain_offsets=self.nmf_chain_offsets,
             body_scale=self.nmf_body_scale,
         )
         posed = (verts, valid & ~mesh.hidden_face_mask(self.nmf_hide_parts))
@@ -650,6 +688,95 @@ def _op_kwargs(table: dict, plot: str) -> dict:
     return value
 
 
+#: Grid cells that mean "leave this tile empty".
+_GRID_GAP = frozenset({"", "-", "."})
+
+
+def _expand_grid(entry: dict, viz: dict, config: "Config", loc: str) -> list[dict]:
+    """Expand a video's ``grid`` into ``imshow`` + overlay panels with computed offsets.
+
+    A montage is the overwhelmingly common video and it is pure repetition: every panel
+    is the same two ops at a position that is a row and a column times the cell size. Two
+    of those three facts were being written by hand, per panel, per video -- fourteen
+    lines each to say "three by three", with the pixel offsets recomputed by a person
+    whenever a cell size changed. So a video may say the shape instead::
+
+        [[visualization.videos]]
+        video_name = "pose3d"
+        plot  = "skeleton_3d"
+        stage = "triangulation"
+        grid  = [["rf", "f",    "lf"],
+                 ["rm", "bird", "lm"],
+                 ["rh", "h",    "lh"]]
+
+    Cell size comes from the resolved ``imshow`` width/height (the same
+    ``[visualization.kwargs]`` the panels already read), or from an explicit
+    ``cell = [w, h]``. A cell of ``""``, ``"-"`` or ``"."`` leaves its tile empty.
+
+    A cell whose view is **not a camera** gets no ``imshow`` -- the synthetic ``bird``
+    plan view has no footage to draw under its skeleton, and with ``plot = "skeleton_2d"``
+    it has nothing to draw at all, so it is skipped entirely rather than drawn onto black.
+    Deriving that from ``[cameras.*]`` rather than asking is the whole point: a rig that
+    gains a camera gains a drawable cell without anyone editing a second list.
+
+    Explicit ``panels`` are still honored and are appended after the expansion, so a
+    one-off tile can be added to a grid without abandoning it.
+
+    Returns
+    -------
+    list of dict
+        Panel tables in the same shape a hand-written ``panels`` list produces.
+    """
+    grid = entry.get("grid")
+    if grid is None:
+        return []
+    if not isinstance(grid, list) or not all(isinstance(r, list) for r in grid):
+        raise ValueError(f"{loc} 'grid' must be a list of rows (lists of view names)")
+    plot = entry.get("plot")
+    if plot is None:
+        raise ValueError(
+            f"{loc} has a 'grid' but no 'plot' -- name the overlay op drawn on each "
+            f"cell (one of {sorted(OPS)})"
+        )
+    if plot not in OPS:
+        raise ValueError(
+            f"{loc} has unknown plot op {plot!r}; choose from {sorted(OPS)}"
+        )
+
+    cell = entry.get("cell")
+    if cell is None:
+        merged = {
+            **_op_kwargs(viz.get("kwargs", {}), "imshow"),
+            **_op_kwargs(entry.get("kwargs", {}), "imshow"),
+        }
+        cell = [merged.get("width"), merged.get("height")]
+    if len(cell) != 2 or not all(isinstance(v, int) and v > 0 for v in cell):
+        raise ValueError(
+            f"{loc} needs a cell size for its 'grid': set cell = [width, height] on the "
+            "video, or give [visualization.kwargs] imshow both a width and a height"
+        )
+    cw, ch = int(cell[0]), int(cell[1])
+
+    cameras = set(config.camera_table()[1])
+    extras = {k: entry[k] for k in ("stage",) if k in entry}
+    panels: list[dict] = []
+    for r, row in enumerate(grid):
+        for c, view in enumerate(row):
+            if not isinstance(view, str):
+                raise ValueError(
+                    f"{loc} grid[{r}][{c}] must be a view name, got {view!r}"
+                )
+            if view in _GRID_GAP:
+                continue
+            at = {"view": view, "x0": c * cw, "y0": r * ch}
+            if view in cameras:
+                panels.append({"plot": "imshow", **at})
+            elif plot == "skeleton_2d":
+                continue  # no footage, so no 2D detections to draw on it
+            panels.append({"plot": plot, **at, **extras})
+    return panels
+
+
 def _layout_key(panel: dict, options: dict, key: str):
     """Resolve a structural layout key (``scale`` / ``width`` / ``height``).
 
@@ -821,6 +948,10 @@ class _PlanOnDemand:
 def read_video_specs(config: "Config") -> list[VideoSpec]:
     """Parse ``[[visualization.videos]]`` from a config.
 
+    A video's panels come from its ``grid`` (see :func:`_expand_grid`), its explicit
+    ``panels`` list, or both -- the grid expands first and the explicit panels follow, so
+    they draw on top. A video with neither draws nothing and is rejected.
+
     Per-op kwargs are merged into each panel's ``options`` from least to most
     specific: global ``[visualization.kwargs]``, the video entry's
     ``kwargs``, then the panel's own extra keys (each keyed by ``plot`` op name).
@@ -856,7 +987,8 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
         _require_keys(entry, ("video_name",), loc)
         video_kwargs = entry.get("kwargs", {})
         panels = []
-        for j, p in enumerate(entry.get("panels", [])):
+        raw_panels = [*_expand_grid(entry, viz, config, loc), *entry.get("panels", [])]
+        for j, p in enumerate(raw_panels):
             ploc = f"{loc} panel {j}"
             _require_keys(p, ("plot", "view"), ploc)
             plot = p["plot"]

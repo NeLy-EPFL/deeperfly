@@ -467,6 +467,13 @@ class PoseResult:
     nmf_angles: Float[np.ndarray, "T D"] | None = None
     nmf_angle_names: list[str] | None = None
     nmf_chain_scales: dict[str, float] = field(default_factory=dict)
+    #: ``chain name -> (3,)`` model-unit shift putting a chain's base where the
+    #: recording's own base landmark was measured (the head's ``neck``). The mesh
+    #: overlay needs it for the same reason it needs ``nmf_chain_scales``: the solved
+    #: plan baked the shift into the angles, so drawing without it puts the head on a
+    #: different pivot than the one it was fitted about. Empty for a file written before
+    #: chains had base landmarks, which is correctly no shift.
+    nmf_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
     nmf_body_scale: float = 1.0
     #: The body plan the fit was solved on, as JSON, when the file recorded one. Lets
     #: the editor's live re-fit run on exactly the pipeline's geometry instead of
@@ -698,6 +705,7 @@ class PoseResult:
             )
             nmf = nmf_angles = nmf_angle_names = nmf_body_plan = None
             nmf_chain_scales: dict[str, float] = {}
+            nmf_chain_offsets: dict[str, np.ndarray] = {}
             nmf_body_scale = 1.0
             if "inverse_kinematics/body_plan" in f:
                 raw = f["inverse_kinematics/body_plan"][()]  # type: ignore[index]
@@ -716,6 +724,10 @@ class PoseResult:
                     str(k): float(v)
                     for k, v in (ik_meta.get("chain_scales") or {}).items()
                 }
+                nmf_chain_offsets = {
+                    str(k): np.asarray(v, dtype=float).reshape(3)
+                    for k, v in (ik_meta.get("chain_offsets") or {}).items()
+                }
                 if ik_meta.get("body_scale") is not None:
                     nmf_body_scale = float(ik_meta["body_scale"])
         if pts2d is None:
@@ -731,6 +743,7 @@ class PoseResult:
             nmf_angles=nmf_angles,  # type: ignore[arg-type]
             nmf_angle_names=nmf_angle_names,
             nmf_chain_scales=nmf_chain_scales,
+            nmf_chain_offsets=nmf_chain_offsets,
             nmf_body_scale=nmf_body_scale,
             nmf_body_plan=nmf_body_plan,
             absent=absent,  # type: ignore[arg-type]

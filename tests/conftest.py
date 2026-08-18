@@ -62,7 +62,22 @@ def cameras(rig) -> CameraGroup:
 
 @pytest.fixture
 def fly() -> Skeleton:
+    """Whatever skeleton the package currently ships (``fly38b``)."""
     return Skeleton.fly()
+
+
+@pytest.fixture
+def fly38() -> Skeleton:
+    """The ``fly38`` preset specifically, for the tests that are about ITS layout.
+
+    ``fly38`` is the only skeleton whose 38 points are two mirrored 19-point halves, so
+    the block-layout properties (partner of ``i`` is ``i + 19``, the flip permutation is a
+    roll by 19) are facts about this skeleton and not about "the default". Pinning them to
+    the preset keeps them meaningful when the shipped default changes again.
+    """
+    from deeperfly.config import Config
+
+    return Config.from_dict({"skeleton": {"name": "fly38"}}).skeleton()
 
 
 @pytest.fixture

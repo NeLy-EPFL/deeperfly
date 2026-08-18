@@ -17,7 +17,9 @@ NumPy array or a torch tensor. :data:`VIDEO_EXTS` / :data:`IMAGE_EXTS` and
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -269,3 +271,132 @@ class FrameCursor:
 
     def close(self) -> None:
         """Release anything the cursor holds open (no-op by default)."""
+
+
+class CursorFrames:
+    """A whole clip presented as an array-like, decoded lazily one frame at a time.
+
+    A consumer that walks a clip frame by frame needs only three things from it: how many
+    frames there are, how big they are, and the frame it is drawing now. ``reader[:]``
+    answers all three by decoding the entire clip into one ``(T, H, W, 3)`` array, which
+    makes peak memory ``T x H x W x 3`` whether the consumer holds the clip or not. This
+    class answers the same three things over a :class:`FrameCursor`, keeping a bounded
+    window of decoded frames instead of all of them.
+
+    The difference is the difference between running and not running. Measured on an
+    eight-camera 5900-frame render, seven views 1984x512 and one 1984x832: decoding the
+    clips was **OOM-killed at 160.8 GiB** on a 184 GB host, and the same render through
+    this class peaks at **3.28 GiB** and finishes in 67 s -- with a byte-identical output
+    video, since only how frames are fetched changed.
+
+    Reads are expected to be **roughly sequential and forward**, which is what a render
+    loop does. A miss walks the cursor forward one frame at a time and caches every frame
+    on the way, so a consumer with a small look-ahead finds its slightly-out-of-order
+    requests already in the cache and every decode is a cheap step rather than a seek
+    (5 ms against 195 ms on this footage -- see :class:`~deeperfly.io.video.VideoCursor`).
+    A jump further than ``window`` seeks instead of walking, and so does any jump
+    backwards out of the window; both are correct, just not cheap. **Keep ``window``
+    comfortably above the consumer's look-ahead** or every read pays a seek.
+
+    Thread-safe: one lock covers the cursor and the cache together, so several worker
+    threads may share one instance per source. Reads of *different* sources still proceed
+    in parallel, one cursor each.
+
+    Parameters
+    ----------
+    reader
+        The source to read. Its cursor is held open until :meth:`close`.
+    n_frames
+        Frame count, when the caller knows it better than the container does. Defaults to
+        ``reader.count()``.
+    window
+        How many decoded frames to keep.
+
+    Raises
+    ------
+    ValueError
+        If the frame count is unknown -- :attr:`shape` has to state it, and unlike a
+        progress-bar total (see :meth:`FrameReader.count`) a wrong one here is a
+        correctness problem, so it is refused rather than guessed.
+    """
+
+    def __init__(
+        self,
+        reader: FrameReader,
+        *,
+        n_frames: int | None = None,
+        window: int = 48,
+    ) -> None:
+        n = reader.count() if n_frames is None else n_frames
+        if not n or int(n) <= 0:
+            raise ValueError(
+                f"cannot present {type(reader).__name__} over {getattr(reader, 'path', '?')} "
+                "as frames: its frame count is unknown, and a frame provider has to state "
+                "one. Pass n_frames= if it is known from elsewhere."
+            )
+        self._reader = reader
+        self._cursor = reader.cursor()
+        self._window = max(2, int(window))
+        self._lock = threading.Lock()
+        self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        # Decode frame 0 up front: it is the only way to learn H, W and the channel count
+        # without trusting a container header, and it is the frame the consumer wants next.
+        first = self._cursor.frame(0)
+        self._cache[0] = first
+        self._served = 0  # highest index decoded, i.e. where a forward walk resumes
+        #: ``(T, H, W[, 3])`` -- the shape this clip would have if it were resident.
+        self.shape: tuple[int, ...] = (int(n), *first.shape)
+        #: dtype of a decoded frame (``uint8``), for callers that inspect it like an array.
+        self.dtype = first.dtype
+
+    def __len__(self) -> int:
+        return int(self.shape[0])
+
+    def __getitem__(self, t: int) -> np.ndarray:
+        """Frame ``t``, from the window when it is there and decoded when it is not."""
+        if not isinstance(t, (int, np.integer)):
+            raise TypeError(
+                f"{type(self).__name__} serves one frame at a time, so it takes an integer "
+                f"index; got {type(t).__name__}. Slice a decoded frame instead, or use "
+                "the reader directly if a whole block is really wanted."
+            )
+        idx = int(t)
+        if idx < 0:
+            idx += int(self.shape[0])
+        if not 0 <= idx < int(self.shape[0]):
+            raise IndexError(
+                f"frame index {t} is out of range for {self.shape[0]} frames"
+            )
+        with self._lock:
+            hit = self._cache.get(idx)
+            if hit is not None:
+                return hit
+            # Walk forward from where the cursor already is when the gap is small: each
+            # step decodes one frame, and it lands exactly the frames the rest of the
+            # consumer's look-ahead is about to ask for. A longer jump -- or any jump
+            # backwards -- goes straight to the frame and lets the cursor seek, rather
+            # than decoding hundreds of frames nobody asked for.
+            gap = idx - self._served
+            start = self._served + 1 if 0 < gap <= self._window else idx
+            for i in range(start, idx + 1):
+                self._cache[i] = self._cursor.frame(i)
+                while len(self._cache) > self._window:
+                    self._cache.popitem(last=False)  # insertion order == index order
+            # Either way the last frame decoded was `idx`, so that is where the cursor
+            # now sits and where the next forward walk resumes.
+            self._served = idx
+            return self._cache[idx]
+
+    def close(self) -> None:
+        """Release the cursor, the reader and the cached frames."""
+        try:
+            self._cursor.close()
+        finally:
+            self._cache.clear()
+            self._reader.close()
+
+    def __enter__(self) -> CursorFrames:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()

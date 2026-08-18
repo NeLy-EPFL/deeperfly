@@ -99,6 +99,12 @@ class IKResult:
         ``chain name -> data-estimated size`` (head / abdomen) relative to the model.
         Baked into the plan's chain offsets, and applied to the same chains by the mesh
         overlay, so the fit and the overlay agree. Empty when no chains were fit.
+    chain_offsets
+        ``chain name -> (3,)`` model-unit shift putting each chain's base where the
+        recording's own base landmark was measured (the head's ``neck``) instead of
+        where the coxa registration extrapolated it. Baked into the plan and applied to
+        the mesh overlay for the same reason ``chain_scales`` is. Empty for a chain with
+        no base landmark, which leaves it on the registered base as before.
     body_scale
         The recording's body size relative to the model, from the one coxa registration
         that also places the plan. The fly is rigid, so this is constant over the
@@ -112,6 +118,7 @@ class IKResult:
     alignment: Alignment
     body_plan: BodyPlan | None = None
     chain_scales: dict[str, float] = field(default_factory=dict)
+    chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
     body_scale: float = 1.0
 
 
@@ -240,6 +247,7 @@ def solve_inverse_kinematics(
         alignment=alignment,
         body_plan=plan,
         chain_scales=plan.chain_scales,
+        chain_offsets=plan.chain_offsets,
         body_scale=float(plan.body_sim[1]),
     )
 
@@ -319,13 +327,23 @@ def _plan_for(
             "needs at least three of the six thorax-coxa keypoints "
             f"({', '.join(reference.coxa_points)}) triangulated in some frame"
         )
-    scales = {}
+    scales: dict[str, float] = {}
+    offsets: dict[str, np.ndarray] = {}
     if articulation is not None:
+        offsets = _chain_offsets(pts3d, index, articulation, sim)
         scales = _chain_scales(pts3d, index, articulation, sim)
         if scales:
             log.info(
                 "inverse kinematics: estimated chain scale %s",
                 {k: round(v, 3) for k, v in scales.items()},
+            )
+        for name, shift in offsets.items():
+            log.info(
+                "inverse kinematics: %s chain placed on its measured base, %.3f model "
+                "units off the registered one (%s)",
+                name,
+                float(np.linalg.norm(shift)),
+                np.round(shift, 3).tolist(),
             )
     return build_body_plan(
         template,
@@ -334,8 +352,72 @@ def _plan_for(
         sim,
         articulation=articulation,
         chain_scales=scales,
+        chain_offsets=offsets,
         fixed_body=fixed_body,
     )
+
+
+def _chain_offsets(
+    pts3d: np.ndarray,
+    index: dict[str, int],
+    articulation: Articulation,
+    sim: tuple[np.ndarray, float, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Each chain's measured base, as a model-frame shift from the model's own.
+
+    A chain that names a base point (the head's ``neck``) is placed where that landmark
+    was actually measured, the way each leg is placed on its measured median thorax-coxa
+    -- and for the same reason. Left on the model's anchor, a chain's base is wherever
+    the body registration put it, and that registration is a similarity fit to six
+    thorax-coxa keypoints which are very nearly coplanar: on the standard rig their
+    singular values run 0.693 / 0.325 / **0.085**, so the dorsal direction is barely
+    determined, and the head pivot sits 0.404 above their centroid -- a 4.7x
+    extrapolation along the worst-conditioned axis. Measured across a 55-recording
+    corpus that lands the pivot a median 0.125 model units too dorsal, 29% of the head's
+    own radius, with the same sign in every single recording. The antennae then absorb it
+    as ~11 degrees of spurious pitch: the median fitted head pitch was 54.7 degrees
+    against a +/- 60 limit, close enough to the ceiling that one recording spent 21% of
+    its frames pinned there. Placed on the neck instead it reads 44.4 degrees, and
+    nothing pins.
+
+    The shift is a **median over the recording**, not per frame: the chain base is a
+    body landmark on a tethered fly, so it is one point per recording and the median is
+    what rejects the per-frame detection noise around it.
+
+    The abdomen gets no shift, and deliberately not the head's. Its root anchor sits at
+    almost exactly the head pivot's dorsal height (1.300 against 1.301), which invites
+    reusing the ``neck``'s measurement -- but the two anchors are on *opposite sides* of
+    the coxa centroid in x (+0.53 and -0.36), and the registration's ill-determined mode
+    is a pitch about that centroid, which tilts them opposite ways. Measured: searching
+    the abdomen root over a grid at the fitted size, applying the neck's shift makes the
+    marker residual **worse** than no shift in every recording tried (0.091 -> 0.149,
+    0.082 -> 0.132, 0.061 -> 0.079, 0.226 -> 0.247), and the abdomen's own optimum is at
+    *positive* dz. Its root is genuinely misplaced, but nothing in the pose measures it:
+    no keypoint sits on it, and fitting it would be three free parameters trading against
+    five angles on five near-collinear markers.
+
+    Returns ``{}`` unless a chain both names a base point and had it triangulated.
+    """
+    rot, scale, trans = sim
+    out: dict[str, np.ndarray] = {}
+    for chain in articulation.chains:
+        col = chain.marker_index(chain.base_point or "")
+        row = index.get(chain.base_point or "", -1)
+        if col is None or row < 0:
+            continue
+        local = ((pts3d[:, row] - trans) @ rot) / max(scale, 1e-12)
+        with np.errstate(all="ignore"):
+            measured = np.nanmedian(local, axis=0)
+        if not np.all(np.isfinite(measured)):
+            log.warning(
+                "inverse_kinematics: the %s chain's base point %r was never "
+                "triangulated; leaving the chain on the registered base",
+                chain.name,
+                chain.base_point,
+            )
+            continue
+        out[chain.name] = measured - np.asarray(chain.marker_neutral[col], dtype=float)
+    return out
 
 
 def _coxa_world(pts3d: np.ndarray, index: dict[str, int], reference: Articulation):
@@ -451,15 +533,23 @@ def unfittable_branches(
     coordinates, 3 head DOFs) qualifies; a leg amputated down to a single coxa (3
     coordinates, 7 DOFs) does not, and stays unfittable rather than reporting the
     neutral-biased answer QuickIK would return for it.
+
+    A chain's **base landmark** is not counted at all, however well observed it is
+    (:attr:`~deeperfly.inverse_kinematics.bodyplan.BodyPlan.joint_is_base`). The head's
+    ``neck`` sits on the rotation center the three head DOFs turn about, so no angle can
+    move it and its residual carries no gradient; counting it would let the head pass
+    this test on evidence that cannot constrain a single one of its angles. It is why
+    declaring both antennae absent leaves the head unfitted rather than "fitted" from
+    the neck alone.
     """
     branches = np.asarray(plan.joint_branch)
-    observed = np.asarray(obs_weights) > 0
     # A joint can contribute an observation only if it maps to a keypoint at all
-    # (`joint_row < 0` is a pure kinematic joint, e.g. two of the three head DOFs) and
-    # that keypoint is on this animal.
-    n_frames = observed.shape[0]
+    # (`joint_row < 0` is a pure kinematic joint, e.g. two of the three head DOFs), it is
+    # not its chain's base landmark, and that keypoint is on this animal.
+    n_frames = np.asarray(obs_weights).shape[0]
     rows = np.asarray(plan.joint_row)
-    tracked = rows >= 0  # (N,) a joint with no keypoint can never be observed
+    tracked = (rows >= 0) & ~plan.joint_is_base
+    observed = (np.asarray(obs_weights) > 0) & tracked[None, :]
     fittable_joint = np.broadcast_to(tracked, (n_frames, tracked.size)).copy()
     if absent_points is not None:
         absent = np.asarray(absent_points, dtype=bool)

@@ -570,3 +570,111 @@ def test_stream_frames_image_sequence_blocks(tmp_path):
 def test_read_images_missing_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         io.open_reader(tmp_path / "empty")
+
+
+# --- CursorFrames: a clip's array surface without the clip in memory -------------------
+
+
+def test_cursor_frames_matches_the_eager_decode_in_any_order(tmp_path):
+    # The whole contract: `frames[t]` must be `reader[:][t]`, for reads in any order --
+    # forward runs, out-of-order reads inside the window, and jumps backwards out of it,
+    # which is where it has to let the cursor re-seek.
+    frames = _indexed_clip(20, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    full = io.VideoReader(path)[:]
+    lazy = io.CursorFrames(io.VideoReader(path), window=4)
+    try:
+        assert lazy.shape == full.shape  # states the clip it stands for
+        assert len(lazy) == len(full)
+        assert lazy.dtype == full.dtype
+        for i in [0, 1, 2, 3, 4, 9, 8, 7, 19, 0, 10, 11, 12, 2]:
+            np.testing.assert_array_equal(lazy[i], full[i])
+        np.testing.assert_array_equal(lazy[-1], full[-1])  # negative index
+    finally:
+        lazy.close()
+
+
+def test_cursor_frames_holds_only_its_window(tmp_path):
+    # The reason this class exists: a walk of the whole clip must never accumulate it.
+    frames = _indexed_clip(40, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    lazy = io.CursorFrames(io.VideoReader(path), window=6)
+    try:
+        for i in range(40):
+            lazy[i]
+            assert len(lazy._cache) <= 6
+    finally:
+        lazy.close()
+
+
+def test_cursor_frames_walks_forward_instead_of_seeking(tmp_path):
+    # A near-sequential consumer must not pay a seek per frame: a gap inside the window is
+    # closed by stepping (and every frame stepped over is cached, so the consumer's
+    # out-of-order look-ahead reads are free). Counting `_seek_to` counts seeks.
+    frames = _indexed_clip(30, 32, 32)
+    path = _write_clip(tmp_path, frames)
+    lazy = io.CursorFrames(io.VideoReader(path), window=4)
+    seeks = []
+    cursor = lazy._cursor
+    real = cursor._seek_to
+    cursor._seek_to = lambda idx: (seeks.append(idx), real(idx))[1]
+    try:
+        for i in range(1, 20):  # strictly forward
+            lazy[i]
+        assert seeks == []  # priming already decoded frame 0; the rest are steps
+        # An out-of-order read still inside the window is served from the cache.
+        lazy[17]
+        assert seeks == []
+        # A jump FURTHER than the window seeks once, rather than decoding everything
+        # in between -- 19 -> 29 is a gap of 10 against a window of 4.
+        lazy[29]
+        assert seeks == [29]
+        # A gap within the window walks instead, and caches what it steps over.
+        seeks.clear()
+        lazy[2]  # backwards, long since evicted: one seek
+        lazy[5]  # gap of 3 <= 4: stepped, so 3 and 4 land in the cache too
+        assert seeks == [2]
+        assert {3, 4}.issubset(lazy._cache)
+    finally:
+        cursor._seek_to = real
+        lazy.close()
+
+
+def test_cursor_frames_refuses_slices_and_out_of_range(tmp_path):
+    # It serves one frame at a time on purpose; a slice would rebuild what it avoids.
+    frames = _indexed_clip(5, 16, 16)
+    lazy = io.CursorFrames(io.VideoReader(_write_clip(tmp_path, frames)))
+    try:
+        with pytest.raises(TypeError, match="one frame at a time"):
+            lazy[0:2]
+        with pytest.raises(IndexError, match="out of range"):
+            lazy[5]
+        with pytest.raises(IndexError, match="out of range"):
+            lazy[-6]
+    finally:
+        lazy.close()
+
+
+def test_cursor_frames_needs_a_known_frame_count(tmp_path):
+    # `shape` has to state a count, so an unknown one is refused rather than guessed --
+    # unlike `count()` itself, which is a progress-bar hint and may be None.
+    class _NoCount(io.VideoReader):
+        def count(self):
+            return None
+
+    path = _write_clip(tmp_path, _indexed_clip(4, 16, 16))
+    with pytest.raises(ValueError, match="frame count is unknown"):
+        io.CursorFrames(_NoCount(path))
+    # ... but a caller who knows it from elsewhere may supply it.
+    lazy = io.CursorFrames(_NoCount(path), n_frames=4)
+    try:
+        assert lazy.shape[0] == 4
+    finally:
+        lazy.close()
+
+
+def test_cursor_frames_is_a_context_manager(tmp_path):
+    path = _write_clip(tmp_path, _indexed_clip(4, 16, 16))
+    with io.CursorFrames(io.VideoReader(path)) as lazy:
+        assert lazy[0].shape == (16, 16, 3)
+    assert lazy._cache == {}  # closing releases the window too

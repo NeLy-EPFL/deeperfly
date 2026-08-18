@@ -1606,6 +1606,7 @@ def _render_mesh_png(session: Session, camera: str, t: int) -> bytes | None:
         s.result.nmf_angle_names,
         head_scale=s.result.nmf_head_scale,
         abdomen_scale=s.result.nmf_abdomen_scale,
+        chain_offsets=s.result.nmf_chain_offsets,
         body_scale=s.result.nmf_body_scale,
     )
     valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.nmf_hide_parts)

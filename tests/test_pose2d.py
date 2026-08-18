@@ -210,9 +210,21 @@ def _model_list():
     ]
 
 
+def _fly38() -> dict:
+    """The ``fly38`` skeleton table, spelled out.
+
+    These plans are the SPARSE 19-channel ones: a pathway detects one body side and a
+    mirrored twin supplies the other, which only makes sense against a skeleton whose 38
+    points are two mirrored 19-point halves. That is ``fly38`` specifically, not "whatever
+    the package ships" -- the packaged default is now the midline ``fly38b``, where points
+    19..37 are not the mirror of 0..18 and the plan's own mirror check says so.
+    """
+    return Config.from_dict({"skeleton": {"name": "fly38"}}).data["skeleton"]
+
+
 def _mini_plan():
     """A 2-source / 2-pathway / 2-view plan: rh (plain) and lf (mirrored)."""
-    skel = Config.default().data["skeleton"]
+    skel = _fly38()
     point_names = skel["point_names"]
     data = {
         "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
@@ -260,7 +272,7 @@ def _mini_plan():
 
 def _front_plan():
     """A 1-source / 2-pathway / 1-view plan: the front source bridges both sides."""
-    skel = Config.default().data["skeleton"]
+    skel = _fly38()
     point_names = skel["point_names"]
     data = {
         "sources": [{"name": "fcam", "filename": "f"}],

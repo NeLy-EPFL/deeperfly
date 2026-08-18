@@ -126,14 +126,20 @@ def dense_config(
         typer.Option("--crop", help="view=x,y,w,h (repeatable; overrides --crop-plan)"),
     ] = None,
     precision: Annotated[
-        str, typer.Option("--precision", help="float32 / float16 / bfloat16")
-    ] = "float16",
+        str | None,
+        typer.Option(
+            "--precision",
+            help="float32 / float16 / bfloat16; omitted, the key is left out of the "
+            "config and the run takes the default",
+        ),
+    ] = None,
     batch_size: Annotated[
         int | None,
         typer.Option(
             "--batch-size",
-            help="forward batch; defaults per detector, because the unit differs (an "
-            "hrnet item is one image, an mvt item is one whole moment)",
+            help="forward batch, in IMAGES; detection forwards batch_size // pathways "
+            "whole frames at a time, so anything below the view count is one frame per "
+            "forward",
         ),
     ] = None,
     overwrite: Annotated[

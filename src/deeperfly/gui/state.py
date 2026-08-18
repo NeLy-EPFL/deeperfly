@@ -1132,6 +1132,7 @@ class EditorState:
             names,
             head_scale=self.result.nmf_head_scale,
             abdomen_scale=self.result.nmf_abdomen_scale,
+            chain_offsets=self.result.nmf_chain_offsets,
             body_scale=self.result.nmf_body_scale,
         )
 

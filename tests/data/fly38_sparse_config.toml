@@ -1,0 +1,296 @@
+# The 19-channel SPARSE plan -- the config deeperfly shipped before the dense detector.
+#
+# Kept as a test fixture, not as a recommendation: it is the only plan in the repo where
+# a view is PARTIALLY observed, so it is what the tests about per-view visibility, the
+# mirrored-pathway left/right check and [pose2d.output_points] are written against. The
+# packaged config and every example are dense (`class = "mvt"`, no mapping table), and a
+# new recording should start from one of those.
+#
+# The detector predicts ONE BODY SIDE, so each side camera runs once and the front camera
+# runs twice (once through a `fliplr`), and the 132 rows below say where each pass's 19
+# channels land. Half of every side view is NaN by construction: there is no channel that
+# could have filled it.
+
+
+# == Footage =================================================================
+[[sources]]
+name = "vid_rh"
+filename = ["camera_RH.mp4", "camera_0.mp4"]
+[[sources]]
+name = "vid_rm"
+filename = ["camera_RM.mp4", "camera_1.mp4"]
+[[sources]]
+name = "vid_rf"
+filename = ["camera_RF.mp4", "camera_2.mp4"]
+[[sources]]
+name = "vid_f"
+filename = ["camera_F.mp4", "camera_3.mp4"]
+[[sources]]
+name = "vid_lf"
+filename = ["camera_LF.mp4", "camera_4.mp4"]
+[[sources]]
+name = "vid_lm"
+filename = ["camera_LM.mp4", "camera_5.mp4"]
+[[sources]]
+name = "vid_lh"
+filename = ["camera_LH.mp4", "camera_6.mp4"]
+
+
+# == Skeleton ================================================================
+# `fly38`: two mirrored 19-point halves, so the partner of point i is point i + 19. That
+# block layout is what makes a side-agnostic 19-channel detector expressible at all.
+[skeleton]
+name = "fly38"
+
+
+# == Views ===================================================================
+[cameras.defaults]
+focal_length_px = 22388.125
+distance = 107.463
+
+[cameras.rh]
+azimuth_deg = -120
+[cameras.rm]
+azimuth_deg = -90
+[cameras.rf]
+azimuth_deg = -45
+[cameras.f]
+azimuth_deg = 0
+[cameras.lf]
+azimuth_deg = 45
+[cameras.lm]
+azimuth_deg = 90
+[cameras.lh]
+azimuth_deg = 120
+
+
+# == Pipeline ================================================================
+[pipeline]
+do_pose2d               = true
+do_bundle_adjustment    = true
+do_pictorial_structures = false
+do_triangulation        = true
+do_eks                  = false
+do_postprocess          = false
+do_inverse_kinematics   = false
+do_visualization        = true
+
+
+# == 2D detection ============================================================
+# The plan this file exists for. `weights = ""` is the one class that needs no
+# checkpoint: the published DeepFly2D weights are downloaded and cached on first use.
+[pose2d]
+precision = "float16"
+model = "deepfly2d"
+models = [
+    { name = "deepfly2d", class = "hourglass", weights = "", input_size = [256, 512], mean = 0.22, n_out_channels = 19 },
+]
+
+# The left side reaches the detector's one-sided convention through a mirror; which side
+# a channel then means is decided ONLY by the tables below, so a single typo there swaps
+# a body side. `check_mirror_consistency` holds them against [skeleton].symmetries at load.
+preprocessors = [
+    { name = "flip", ops = [{ op = "fliplr" }] },
+]
+
+pathways = [
+    { name = "rh", source = "vid_rh" },
+    { name = "rm", source = "vid_rm" },
+    { name = "rf", source = "vid_rf" },
+    { name = "f", source = "vid_f" },
+    { name = "f_flip", source = "vid_f", preprocessor = "flip" },
+    { name = "lf_flip", source = "vid_lf", preprocessor = "flip" },
+    { name = "lm_flip", source = "vid_lm", preprocessor = "flip" },
+    { name = "lh_flip", source = "vid_lh", preprocessor = "flip" },
+]
+
+# Where each pass's channels land: `point = { pathway, out_channel }` fills that
+# point of the view. A (view, point) no row names stays NaN, and that union IS the
+# visibility mask. The front view is filled by two pathways -- the un-flipped pass
+# supplies the right distal joints, the mirrored pass the left.
+[pose2d.output_points.rh]
+rf_thorax_coxa     = { pathway = "rh", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rh", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rh", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rh", out_channel = 3  }
+rf_claw            = { pathway = "rh", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rh", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rh", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rh", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rh", out_channel = 8  }
+rm_claw            = { pathway = "rh", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rh", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rh", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rh", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rh", out_channel = 13 }
+rh_claw            = { pathway = "rh", out_channel = 14 }
+r_antenna          = { pathway = "rh", out_channel = 15 }
+r_abdomen0         = { pathway = "rh", out_channel = 16 }
+r_abdomen1         = { pathway = "rh", out_channel = 17 }
+r_abdomen2         = { pathway = "rh", out_channel = 18 }
+
+[pose2d.output_points.rm]
+rf_thorax_coxa     = { pathway = "rm", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rm", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rm", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rm", out_channel = 3  }
+rf_claw            = { pathway = "rm", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rm", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rm", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rm", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rm", out_channel = 8  }
+rm_claw            = { pathway = "rm", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rm", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rm", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rm", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rm", out_channel = 13 }
+rh_claw            = { pathway = "rm", out_channel = 14 }
+r_antenna          = { pathway = "rm", out_channel = 15 }
+r_abdomen0         = { pathway = "rm", out_channel = 16 }
+r_abdomen1         = { pathway = "rm", out_channel = 17 }
+r_abdomen2         = { pathway = "rm", out_channel = 18 }
+
+[pose2d.output_points.rf]
+rf_thorax_coxa     = { pathway = "rf", out_channel = 0  }
+rf_coxa_trochanter = { pathway = "rf", out_channel = 1  }
+rf_femur_tibia     = { pathway = "rf", out_channel = 2  }
+rf_tibia_tarsus    = { pathway = "rf", out_channel = 3  }
+rf_claw            = { pathway = "rf", out_channel = 4  }
+rm_thorax_coxa     = { pathway = "rf", out_channel = 5  }
+rm_coxa_trochanter = { pathway = "rf", out_channel = 6  }
+rm_femur_tibia     = { pathway = "rf", out_channel = 7  }
+rm_tibia_tarsus    = { pathway = "rf", out_channel = 8  }
+rm_claw            = { pathway = "rf", out_channel = 9  }
+rh_thorax_coxa     = { pathway = "rf", out_channel = 10 }
+rh_coxa_trochanter = { pathway = "rf", out_channel = 11 }
+rh_femur_tibia     = { pathway = "rf", out_channel = 12 }
+rh_tibia_tarsus    = { pathway = "rf", out_channel = 13 }
+rh_claw            = { pathway = "rf", out_channel = 14 }
+r_antenna          = { pathway = "rf", out_channel = 15 }
+
+[pose2d.output_points.f]
+rf_femur_tibia  = { pathway = "f", out_channel = 2  }
+rf_tibia_tarsus = { pathway = "f", out_channel = 3  }
+rf_claw         = { pathway = "f", out_channel = 4  }
+rm_femur_tibia  = { pathway = "f", out_channel = 7  }
+rm_tibia_tarsus = { pathway = "f", out_channel = 8  }
+rm_claw         = { pathway = "f", out_channel = 9  }
+r_antenna       = { pathway = "f", out_channel = 15 }
+lf_femur_tibia  = { pathway = "f_flip", out_channel = 2  }
+lf_tibia_tarsus = { pathway = "f_flip", out_channel = 3  }
+lf_claw         = { pathway = "f_flip", out_channel = 4  }
+lm_femur_tibia  = { pathway = "f_flip", out_channel = 7  }
+lm_tibia_tarsus = { pathway = "f_flip", out_channel = 8  }
+lm_claw         = { pathway = "f_flip", out_channel = 9  }
+l_antenna       = { pathway = "f_flip", out_channel = 15 }
+
+[pose2d.output_points.lf]
+lf_thorax_coxa     = { pathway = "lf_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lf_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lf_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lf_flip", out_channel = 3  }
+lf_claw            = { pathway = "lf_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lf_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lf_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lf_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lf_flip", out_channel = 8  }
+lm_claw            = { pathway = "lf_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lf_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lf_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lf_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lf_flip", out_channel = 13 }
+lh_claw            = { pathway = "lf_flip", out_channel = 14 }
+l_antenna          = { pathway = "lf_flip", out_channel = 15 }
+
+[pose2d.output_points.lm]
+lf_thorax_coxa     = { pathway = "lm_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lm_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lm_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lm_flip", out_channel = 3  }
+lf_claw            = { pathway = "lm_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lm_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lm_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lm_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lm_flip", out_channel = 8  }
+lm_claw            = { pathway = "lm_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lm_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lm_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lm_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lm_flip", out_channel = 13 }
+lh_claw            = { pathway = "lm_flip", out_channel = 14 }
+l_antenna          = { pathway = "lm_flip", out_channel = 15 }
+l_abdomen0         = { pathway = "lm_flip", out_channel = 16 }
+l_abdomen1         = { pathway = "lm_flip", out_channel = 17 }
+l_abdomen2         = { pathway = "lm_flip", out_channel = 18 }
+
+[pose2d.output_points.lh]
+lf_thorax_coxa     = { pathway = "lh_flip", out_channel = 0  }
+lf_coxa_trochanter = { pathway = "lh_flip", out_channel = 1  }
+lf_femur_tibia     = { pathway = "lh_flip", out_channel = 2  }
+lf_tibia_tarsus    = { pathway = "lh_flip", out_channel = 3  }
+lf_claw            = { pathway = "lh_flip", out_channel = 4  }
+lm_thorax_coxa     = { pathway = "lh_flip", out_channel = 5  }
+lm_coxa_trochanter = { pathway = "lh_flip", out_channel = 6  }
+lm_femur_tibia     = { pathway = "lh_flip", out_channel = 7  }
+lm_tibia_tarsus    = { pathway = "lh_flip", out_channel = 8  }
+lm_claw            = { pathway = "lh_flip", out_channel = 9  }
+lh_thorax_coxa     = { pathway = "lh_flip", out_channel = 10 }
+lh_coxa_trochanter = { pathway = "lh_flip", out_channel = 11 }
+lh_femur_tibia     = { pathway = "lh_flip", out_channel = 12 }
+lh_tibia_tarsus    = { pathway = "lh_flip", out_channel = 13 }
+lh_claw            = { pathway = "lh_flip", out_channel = 14 }
+l_antenna          = { pathway = "lh_flip", out_channel = 15 }
+l_abdomen0         = { pathway = "lh_flip", out_channel = 16 }
+l_abdomen1         = { pathway = "lh_flip", out_channel = 17 }
+l_abdomen2         = { pathway = "lh_flip", out_channel = 18 }
+
+
+# == Bundle adjustment =======================================================
+[bundle_adjustment]
+points_to_use = [
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+]
+fixed = ["*.intr"]
+weigh_by_confidence = false
+max_frames = 200
+max_nfev = 2000
+loss = "linear"
+
+
+# == Visualization ===========================================================
+[visualization]
+background = "black"
+
+[visualization.kwargs]
+imshow       = { width = 480, height = 240 }
+skeleton_2d  = { width = 480, height = 240, line_thickness = 2 }
+skeleton_3d  = { width = 480, height = 240, line_thickness = 2 }
+skeleton_nmf = { width = 480, height = 240, line_thickness = 2 }
+mesh_nmf     = { width = 480, height = 240, alpha = 0.55 }
+
+[[visualization.videos]]
+video_name = "pose2d"
+plot  = "skeleton_2d"
+stage = "pose2d"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
+
+[[visualization.videos]]
+video_name = "pose3d"
+plot  = "skeleton_3d"
+stage = "triangulation"
+grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "", "lh"]]
+
+[[visualization.videos]]
+video_name = "pose_nmf"
+plot  = "skeleton_nmf"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
+
+[[visualization.videos]]
+video_name = "pose_mesh"
+plot  = "mesh_nmf"
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]

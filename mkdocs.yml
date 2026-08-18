@@ -45,6 +45,7 @@ nav:
       - Pipeline walkthrough: examples/pipeline_walkthrough.ipynb
   - How it works:
       - Pipeline stages: explanation/pipeline.md
+      - The dense-38 detectors: explanation/detectors.md
       - Keypoint locations: explanation/keypoints.md
       - Conventions & glossary: explanation/conventions.md
   - Reference:
