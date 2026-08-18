@@ -267,6 +267,47 @@ def _make_fly_recording(d):
     return d
 
 
+def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monkeypatch):
+    """A resume with no ``-c`` gets its OWN config's cameras, not the packaged default's.
+
+    Discovery has to recognize recording directories before output dirs exist, so with no
+    ``-c`` it uses the packaged default -- a seven-camera rig. The run then resolves its
+    own config (here the output dir's snapshot, an eight-camera rig), and the two
+    disagreed: the footage handed to the run was discovery's short map, silently missing
+    the eighth camera.
+
+    Nothing notices until a frame is wanted. With ``pose2d`` cached nothing opens the
+    videos at all, so the loss surfaced only in the visualization stage as "the run
+    resolved no footage", advising you to pass the recording as the input -- which is what
+    you had done.
+    """
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    for i in range(len(FLY_CAMERAS) + 1):  # one more camera than the default declares
+        (rec / f"camera_{i}.mp4").write_bytes(b"")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / "config.toml").write_text(
+        DEFAULT_CONFIG_PATH.read_text()
+        + '\n[[sources]]\nname = "vid_h"\nfilename = ["camera_7.mp4"]\n'
+    )
+
+    seen = {}
+
+    def capture(config, out, *, sources, **kwargs):
+        seen["sources"] = sources
+
+    monkeypatch.setattr(cli.run, "run_recording", capture)
+    cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
+
+    assert "vid_h" in seen["sources"], (
+        "the run got discovery's cameras, not its own config's"
+    )
+    assert [f.name for f in seen["sources"]["vid_h"]] == ["camera_7.mp4"]
+    assert len(seen["sources"]) == len(FLY_CAMERAS) + 1
+
+
 def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
     """pose2d on, every later stage off -> a 2D-only result + snapshot."""
     cfg = _default_cfg(
