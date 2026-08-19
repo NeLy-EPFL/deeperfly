@@ -1,4 +1,4 @@
-"""Stacked-hourglass 2D pose detector for DeepFly2D (PyTorch).
+"""The 2D pose detectors: dense per-view and multiview (PyTorch).
 
 The detector is a faithful copy of the original DeepFly2D network in PyTorch
 (:mod:`~deeperfly.pose2d.model`); it loads the released DeepFly2D weights

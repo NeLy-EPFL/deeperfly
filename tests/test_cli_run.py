@@ -382,7 +382,7 @@ def _footage_cfg(tmp_path):
     cfg.write_text(
         '[[sources]]\nname = "cam0"\n[[sources]]\nname = "cam1"\n'
         '[[pose2d.preprocessors]]\nname = "plain"\nops = []\n'
-        '[[pose2d.models]]\nname = "m"\nclass = "hourglass"\n'
+        '[[pose2d.models]]\nname = "m"\nclass = "hrnet"\n'
         "input_size = [256, 512]\nn_out_channels = 19\n"
         '[[pose2d.pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
         '[[pose2d.pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
@@ -1285,33 +1285,31 @@ def test_verbose_logs_image_sizes_and_batch(tmp_path, monkeypatch, caplog):
 # -- automatic weight provisioning -------------------------------------------
 
 
-def test_model_load_downloads_cached(tmp_path, monkeypatch):
-    # With no explicit weights, an hourglass model downloads the cached torch
-    # weights and loads the detector from them.
-    from deeperfly.pose2d import detector, download, models
+def test_model_load_with_no_weights_refuses_and_says_how_to_set_them(tmp_path):
+    """Nothing auto-provisions any more, so an omitted `weights` is a hard error.
+
+    The message has to BE the setup instructions: it is the entire first-run experience of
+    a fresh install, and "no weights" is not actionable on its own.
+    """
+    from deeperfly.pose2d import models
     from deeperfly.pose2d.models import ModelSpec
 
-    sentinel = tmp_path / "sh8_deepfly.pth"
-    monkeypatch.setattr(download, "download_torch_weights", lambda: sentinel)
-    monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
-    lm = models.load_model(ModelSpec(name="m", cls="hourglass", weights=None))
-    assert lm.module == ("loaded", sentinel)
+    with pytest.raises(SystemExit) as excinfo:
+        models.load_model(ModelSpec(name="m", cls="mvt", weights=None))
+    message = str(excinfo.value)
+    assert "DEEPERFLY_MODELS" in message
+    assert "trained per project" in message
 
 
-def test_model_load_explicit_weights(tmp_path, monkeypatch):
-    from deeperfly.pose2d import detector, download, models
+def test_model_load_hands_the_loader_a_resolved_path(tmp_path, monkeypatch):
+    """The config writes a string; the loader is given a Path it can open."""
+    from deeperfly.pose2d import hrnet, models
     from deeperfly.pose2d.models import ModelSpec
 
-    monkeypatch.setattr(
-        download,
-        "download_torch_weights",
-        lambda: pytest.fail("should not download when weights are given"),
-    )
-    monkeypatch.setattr(detector, "load_detector", lambda path: ("loaded", path))
+    monkeypatch.setattr(hrnet, "load_hrnet", lambda path, **kw: ("loaded", path))
     ckpt = tmp_path / "custom.pth"
     ckpt.write_bytes(b"weights")
-    lm = models.load_model(ModelSpec(name="m", cls="hourglass", weights=str(ckpt)))
-    # The loader is handed a resolved Path, not the config's raw string.
+    lm = models.load_model(ModelSpec(name="m", cls="hrnet", weights=str(ckpt)))
     assert lm.module == ("loaded", ckpt)
 
 
@@ -1321,7 +1319,7 @@ def test_model_load_missing_weights_raises(tmp_path):
 
     with pytest.raises(SystemExit, match="no detector checkpoint"):
         models.load_model(
-            ModelSpec(name="m", cls="hourglass", weights=str(tmp_path / "nope.pth"))
+            ModelSpec(name="m", cls="hrnet", weights=str(tmp_path / "nope.pth"))
         )
 
 
@@ -1335,17 +1333,20 @@ def test_fmt_bytes_units():
 
 
 def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
-    """`deeperfly doctor` prints each section and reflects the weights cache.
+    """`deeperfly doctor` prints each section, and answers the weights question.
 
-    The weights cache is redirected to a temp dir with the detector checkpoint
-    present, so the report shows it downloaded. COLUMNS is widened so rich does
-    not wrap the lines we assert on.
+    Nothing auto-provisions, so "is it downloaded" is not the question a stuck user has --
+    "where does deeperfly look, and does the checkpoint my config names turn up there" is.
+    A temp dir on ``$DEEPERFLY_MODELS`` holds the packaged default's checkpoint, so the
+    report has to find it. COLUMNS is widened so rich does not wrap the asserted lines.
     """
+    from deeperfly.config import Config
     from deeperfly.pose2d import download
 
+    wanted = next(iter(Config.default().detection_plan().models.values())).weights
+    (tmp_path / str(wanted)).write_bytes(b"x" * 2048)
     monkeypatch.setenv("COLUMNS", "200")
-    monkeypatch.setattr(download, "cache_dir", lambda: tmp_path)
-    (tmp_path / download.TORCH_WEIGHTS_NAME).write_bytes(b"x" * 2048)
+    monkeypatch.setenv(download.MODELS_ENV, str(tmp_path))
 
     cli.main(["doctor"])
     out = capsys.readouterr().out
@@ -1360,9 +1361,9 @@ def test_doctor_reports_install_details(tmp_path, monkeypatch, capsys):
     ):
         assert section in out
     assert "video read" in out and "image read" in out  # the new I/O rows
-    assert "GPU inference" in out and "detector" in out
-    assert "downloaded" in out  # the detector checkpoint we created
-    assert download.TORCH_WEIGHTS_NAME in out
+    assert "GPU inference" in out
+    assert download.MODELS_ENV in out and str(tmp_path) in out
+    assert str(wanted) in out and "found at" in out
     assert str(DEFAULT_CONFIG_PATH) in out
 
 

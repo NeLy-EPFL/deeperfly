@@ -4,7 +4,7 @@ deeperfly is a Python library as well as a CLI. The public API lives at the top
 level (`from deeperfly import ...`): `Config`, `Camera`, `CameraGroup`,
 `Skeleton`, `PoseResult`, `Recording`, `bundle_adjust`,
 `bundle_adjust_from_config`, `run_from_points2d`, `run_recording`,
-`resolve_recordings`, `detect_2d`, `load_detector`, and the `geometry`,
+`resolve_recordings`, `detect_2d`, `load_models`, and the `geometry`,
 `triangulation`, `pictorial`, `pipeline`, `recordings`, and `io` submodules. This
 guide shows the common tasks; the [API reference](../reference/api.md) documents
 every symbol.
@@ -79,8 +79,8 @@ for src, sources in resolve_recordings(["recordings/fly1"], config=config):
     run_recording(None, src / "deeperfly_outputs", sources=sources)
 ```
 
-To run detection yourself, `load_detector` loads the PyTorch model and
-`detect_2d` streams 2D detection over a recording given a detection plan.
+To run detection yourself, `load_models` loads the detection plan's models and
+`detect_2d` streams 2D detection over a recording given that plan.
 
 ## Inspecting a result
 

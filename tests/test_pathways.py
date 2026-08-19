@@ -43,7 +43,7 @@ def _config(pathways, output_points, cameras=None, models=None):
             or [
                 {
                     "name": "m",
-                    "class": "hourglass",
+                    "class": "hrnet",
                     "input_size": [256, 512],
                     "n_out_channels": 19,
                 }
@@ -234,7 +234,7 @@ def test_footage_by_view_rekeys_source_footage_to_view_names():
                 "models": [
                     {
                         "name": "m",
-                        "class": "hourglass",
+                        "class": "hrnet",
                         "input_size": [256, 512],
                         "n_out_channels": 19,
                     }
@@ -400,7 +400,7 @@ def test_an_explicit_table_and_the_identity_default_agree_for_a_dense_pathway():
 def _model(**over):
     m = {
         "name": "m",
-        "class": "hourglass",
+        "class": "hrnet",
         "input_size": [256, 512],
         "n_out_channels": 19,
     }
@@ -455,7 +455,7 @@ def _mirror_config(left_point, *, symmetries=None, mirror_left=True):
             "sources": [{"name": "vid", "filename": "vid*.mp4"}],
             "pose2d": {
                 "preprocessors": [{"name": "flip", "ops": [{"op": "fliplr"}]}],
-                "models": [{"name": "m", "class": "hourglass", "n_out_channels": 2}],
+                "models": [{"name": "m", "class": "hrnet", "n_out_channels": 2}],
                 "pathways": [
                     {"name": "plain", "source": "vid", "model": "m"},
                     {
@@ -547,7 +547,7 @@ def test_an_even_number_of_reflections_is_not_a_mirror():
                 "preprocessors": [
                     {"name": "half_turn", "ops": [{"op": "fliplr"}, {"op": "flipud"}]}
                 ],
-                "models": [{"name": "m", "class": "hourglass", "n_out_channels": 1}],
+                "models": [{"name": "m", "class": "hrnet", "n_out_channels": 1}],
                 "pathways": [
                     {"name": "plain", "source": "vid", "model": "m"},
                     {

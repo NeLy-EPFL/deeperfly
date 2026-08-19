@@ -86,7 +86,7 @@ do_visualization        = true
 precision = "float16"
 model = "deepfly2d"
 models = [
-    { name = "deepfly2d", class = "hourglass", weights = "", input_size = [256, 512], mean = 0.22, n_out_channels = 19 },
+    { name = "deepfly2d", class = "hrnet", weights = "unused-in-tests.pth", input_size = [256, 512], n_out_channels = 19 },
 ]
 
 # The left side reaches the detector's one-sided convention through a mirror; which side

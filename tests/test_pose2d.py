@@ -15,94 +15,7 @@ from helpers import DEEPFLY3D_SKELETON_PATH, output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d import detector, inference
-from deeperfly.pose2d.model import HourglassNet
 from deeperfly.pose2d.models import LoadedModel, ModelSpec
-from deeperfly.pose2d.weights import load_model
-
-
-@pytest.fixture
-def model() -> HourglassNet:
-    # A small 2-stack model keeps these mechanics tests fast; the published
-    # config is 8 stacks (see test_default_is_sh8).
-    return HourglassNet(num_stacks=2).eval()
-
-
-# -- model -------------------------------------------------------------------
-
-
-def test_forward_shapes(model):
-    x = torch.randn(1, 3, 256, 512)
-    with torch.inference_mode():
-        outs = model(x)
-    assert len(outs) == 2  # one heatmap stack per hourglass
-    assert tuple(outs[-1].shape) == (1, 19, 64, 128)
-
-
-def test_forward_view_axis_folds_into_batch(model):
-    # The standard input is (B, V, C, H, W): the V views run in parallel and
-    # independent, so the result must equal folding them into one (B*V) batch.
-    x = torch.randn(2, 4, 3, 256, 512)
-    with torch.inference_mode():
-        out5 = model(x)[-1]
-        out4 = model(x.reshape(8, 3, 256, 512))[-1]
-    assert tuple(out5.shape) == (2, 4, 19, 64, 128)
-    np.testing.assert_allclose(
-        np.asarray(out5).reshape(8, 19, 64, 128), np.asarray(out4), atol=1e-6
-    )
-
-
-def test_default_is_sh8():
-    # The shipped DeepFly2D checkpoint is "sh8": the default must be 8 stacks so
-    # load_model builds a matching architecture for the published weights.
-    assert HourglassNet().num_stacks == 8
-
-
-def test_batched_inference(model):
-    inputs = torch.randn(3, 3, 256, 512)
-    hm = detector.predict_heatmaps(model, inputs)
-    assert hm.shape == (3, 19, 64, 128)
-    assert isinstance(hm, np.ndarray)  # backend always returns host NumPy
-
-
-def test_predict_view_axis_matches_folded(model):
-    # predict_* carry the (B, V) axes through to their outputs and must match the
-    # equivalent flat (B*V, ...) batch to float32 epsilon.
-    inputs = torch.randn(2, 3, 3, 256, 512)
-    hm = detector.predict_heatmaps(model, inputs)
-    pts, conf = detector.predict_points(model, inputs)
-    assert hm.shape == (2, 3, 19, 64, 128)
-    assert pts.shape == (2, 3, 19, 2)
-    assert conf.shape == (2, 3, 19)
-    hm_flat = detector.predict_heatmaps(model, inputs.reshape(6, 3, 256, 512))
-    np.testing.assert_allclose(hm.reshape(6, 19, 64, 128), hm_flat, atol=1e-6)
-
-
-# -- weight I/O --------------------------------------------------------------
-
-
-def test_infer_num_stacks_counts_score_heads(model):
-    sd = {k: v.detach().numpy() for k, v in model.state_dict().items()}
-    assert detector.infer_num_stacks(sd) == 2
-
-
-def test_infer_num_stacks_rejects_foreign_state_dict():
-    with pytest.raises(KeyError, match="not a HourglassNet"):
-        detector.infer_num_stacks({"conv.weight": np.zeros((1,))})
-
-
-def test_checkpoint_save_load(model, tmp_path):
-    # The torch backend loads the original DeepFly2D state_dict directly; saving
-    # and reloading must reproduce the same forward (architecture inferred from
-    # the checkpoint's score heads).
-    path = tmp_path / "model.pth"
-    torch.save(model.state_dict(), path)
-    loaded = load_model(path, dev="cpu")  # match the CPU fixture for comparison
-    x = torch.randn(1, 3, 256, 512)
-    with torch.inference_mode():
-        np.testing.assert_allclose(
-            np.asarray(model(x)[-1]), np.asarray(loaded(x)[-1]), atol=1e-6
-        )
-
 
 # -- heatmap decoding --------------------------------------------------------
 
@@ -120,20 +33,54 @@ def test_heatmap_to_points_argmax_and_conf():
         np.testing.assert_allclose(conf[0], [5.0, 3.0])
 
 
-def test_predict_points_matches_heatmaps_decode(model):
-    # The fused forward+decode (arg-max on the forward's device) must match the
-    # reference "predict_heatmaps then heatmap_to_points" path to float32 epsilon,
-    # for every sub-pixel method. Exercised on the CPU here, so no GPU is required.
-    inputs = torch.randn(3, 3, 256, 512)
-    hm = detector.predict_heatmaps(model, inputs)
-    for method in ("argmax", "weighted", "taylor"):
-        ref_pts, ref_conf = inference.heatmap_to_points(hm, method=method)
-        pts, conf = detector.predict_points(model, inputs, method=method)
-        np.testing.assert_allclose(pts, ref_pts, atol=1e-4)
-        np.testing.assert_allclose(conf, ref_conf, atol=1e-4)
+@pytest.fixture
+def module() -> "torch.nn.Module":
+    """A minimal stand-in for a detector module.
+
+    What the tests below exercise is the plumbing every class shares -- the recorded
+    forward precision, `LoadedModel.prepare`'s resize-and-normalize, and the pathway
+    fan-out -- none of which depends on an architecture. A real network here would make
+    them slow and would tie them to whichever one happened to be shipping.
+    """
+    import torch.nn as nn
+
+    from deeperfly.pose2d import inference as _inf
+
+    class _Impl:
+        """The `impl` seam a real class attaches at load time: prepare/forward/decode."""
+
+        @staticmethod
+        def predict_heatmaps(module, inputs):
+            import numpy as _np
+
+            x = (
+                inputs
+                if isinstance(inputs, torch.Tensor)
+                else torch.as_tensor(_np.asarray(inputs))
+            )
+            with torch.inference_mode():
+                return module(x.float())[-1].cpu().numpy()
+
+        @classmethod
+        def predict_points(cls, module, inputs, *, method="weighted", radius=2):
+            hm = cls.predict_heatmaps(module, inputs)
+            return _inf.heatmap_to_points(hm, method=method, radius=radius)
+
+    class _Stub(nn.Module):
+        impl = _Impl
+
+        def forward(self, x):  # (..., C, H, W) -> one heatmap stack, stride 4
+            lead = x.shape[:-3]
+            h, w = x.shape[-2] // 4, x.shape[-1] // 4
+            hm = torch.zeros(*lead, 19, h, w)
+            hm[..., h // 2, w // 2] = 1.0  # one peak, so a decode has something to find
+            return [hm]
+
+    return _Stub().eval()
 
 
-def test_set_precision_accepts_and_rejects(model):
+def test_set_precision_accepts_and_rejects(module):
+    model = module
     for p in ("float32", "float16", "bfloat16"):
         detector.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
     with pytest.raises(ValueError, match="unknown detector precision"):
@@ -166,10 +113,10 @@ def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():
 # -- model input preparation -------------------------------------------------
 
 
-def _loaded(model, n_out_channels=19, input_size=(256, 512), mean=0.22):
+def _loaded(model, n_out_channels=19, input_size=(256, 512), mean=0.0):
     spec = ModelSpec(
         name="m",
-        cls="hourglass",
+        cls="hrnet",
         weights=None,
         input_size=input_size,
         mean=mean,
@@ -178,14 +125,16 @@ def _loaded(model, n_out_channels=19, input_size=(256, 512), mean=0.22):
     return LoadedModel(spec, model)
 
 
-def test_model_prepare_shape_and_mean(model):
+def test_model_prepare_shape_and_mean(module):
+    model = module
     gray = np.full((200, 100, 3), 128, dtype=np.uint8)  # 128/255 ~ 0.502
     out = _loaded(model).prepare(gray)
     assert tuple(out.shape) == (3, 256, 512)
-    np.testing.assert_allclose(np.asarray(out), 128 / 255 - 0.22, atol=1e-4)
+    np.testing.assert_allclose(np.asarray(out), 128 / 255, atol=1e-4)
 
 
-def test_model_prepare_accepts_on_device_tensor(model):
+def test_model_prepare_accepts_on_device_tensor(module):
+    model = module
     # A caller may hand frames in as a torch.Tensor (e.g. already on the GPU);
     # prepare must keep them on the tensor's device and match the NumPy path.
     rng = np.random.default_rng(0)
@@ -203,7 +152,7 @@ def _model_list():
     return [
         {
             "name": "m",
-            "class": "hourglass",
+            "class": "hrnet",
             "input_size": [256, 512],
             "n_out_channels": 19,
         }
@@ -322,7 +271,8 @@ def _models(plan, model):
     return {name: LoadedModel(spec, model) for name, spec in plan.models.items()}
 
 
-def test_detect_sequence_shapes_and_scatter(model):
+def test_detect_sequence_shapes_and_scatter(module):
+    model = module
     plan = _mini_plan()
     models = _models(plan, model)
     rng = np.random.default_rng(0)
@@ -340,7 +290,8 @@ def test_detect_sequence_shapes_and_scatter(model):
     assert np.isnan(pts[1, :, 19:]).all()
 
 
-def test_detect_sequence_chunking_is_equivalent(model):
+def test_detect_sequence_chunking_is_equivalent(module):
+    model = module
     # Detection is per-frame independent, so processing a clip in windows and
     # concatenating along time must equal one full pass.
     plan = _mini_plan()
@@ -362,7 +313,9 @@ def test_detect_sequence_chunking_is_equivalent(model):
     np.testing.assert_allclose(np.concatenate([c0, c1], axis=1), full_conf, atol=1e-5)
 
 
-def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
+def test_detect_sequence_batched_matches_per_frame(module, monkeypatch):
+    model = module
+
     # Batching the forward over more frames per call only regroups inputs, so it must
     # yield the same skeletons as the per-frame path. Stub the fused forward+decode
     # with a deterministic peak keyed on each input's content (identical however the
@@ -377,7 +330,7 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
             pts[i, :, 0], pts[i, :, 1] = c / 128, r / 64
         return pts.reshape(*lead, 19, 2), conf.reshape(*lead, 19)
 
-    monkeypatch.setattr(detector, "predict_points", fake_predict_points)
+    monkeypatch.setattr(model.impl, "predict_points", fake_predict_points)
     plan = _mini_plan()
     models = _models(plan, model)
     rng = np.random.default_rng(3)
@@ -392,7 +345,8 @@ def test_detect_sequence_batched_matches_per_frame(model, monkeypatch):
         np.testing.assert_array_equal(c, ref_conf)
 
 
-def test_prepared_inputs_passed_in_match_preparing_them_inline(model):
+def test_prepared_inputs_passed_in_match_preparing_them_inline(module):
+    model = module
     # A streaming caller prepares the NEXT window while this one is in the network, so it
     # hands detect_sequence the result. Same arithmetic, only moved: passing `prepared` must
     # give exactly what preparing inline gives.
@@ -412,7 +366,8 @@ def test_prepared_inputs_passed_in_match_preparing_them_inline(model):
     np.testing.assert_array_equal(got_conf, ref_conf)
 
 
-def test_prepare_pathways_is_order_stable_with_and_without_a_pool(model):
+def test_prepare_pathways_is_order_stable_with_and_without_a_pool(module):
+    model = module
     # The pathways are prepared concurrently, so the results must still line up with
     # plan.pathways -- a pool that returned them out of order would attach every view's
     # detections to the wrong camera and never raise.
@@ -433,7 +388,8 @@ def test_prepare_pathways_is_order_stable_with_and_without_a_pool(model):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
 
 
-def test_a_host_preparing_model_is_not_handed_a_device_window(model):
+def test_a_host_preparing_model_is_not_handed_a_device_window(module):
+    model = module
     # The upload a host-side preparation would immediately undo is skipped. Declared by the
     # model, so a plan mixing one with a device-side model still uploads the shared source.
     plan = _mini_plan()
@@ -468,7 +424,8 @@ def test_a_host_preparing_model_is_not_handed_a_device_window(model):
             del m.module.prepares_on_host, m.module.owns_prepare
 
 
-def test_front_source_two_pathways_bridge_both_sides(model):
+def test_front_source_two_pathways_bridge_both_sides(module):
+    model = module
     # One front source feeds two pathways (one mirrored) into a single view, so the
     # front row carries BOTH body halves with no NaN.
     plan = _front_plan()
@@ -482,7 +439,8 @@ def test_front_source_two_pathways_bridge_both_sides(model):
     assert np.isfinite(conf[0]).all()
 
 
-def test_detect_single_frame_matches_sequence(model):
+def test_detect_single_frame_matches_sequence(module):
+    model = module
     plan = _mini_plan()
     models = _models(plan, model)
     rng = np.random.default_rng(4)
@@ -550,16 +508,27 @@ def test_load_refuses_the_same_points_in_a_different_order():
         )
 
 
-def test_load_accepts_the_matching_skeleton_and_ignores_a_model_without_names():
-    """The hourglass records no point names -- its channels are one side of the animal and
-    mean different points in different views, which is why such a config declares an
-    explicit table instead of taking the identity default. Nothing to compare, so no
-    refusal."""
+def test_load_accepts_the_matching_skeleton():
+    from deeperfly.pose2d.stream import _check_channel_names
+
+    names = list(Config.default().data["skeleton"]["point_names"])
+    _check_channel_names("dense", _model_with_points(names), _plan_with_points(names))
+
+
+def test_a_checkpoint_recording_no_channel_names_is_refused():
+    """The permissive branch here existed for one retired network, and is now a hole.
+
+    Every class this build ships records its point names, so a nameless artifact is either
+    not one of ours or was stripped -- and skipping the check is skipping the one thing
+    standing between a mis-stamped config and a fly with its limbs on the wrong joints. A
+    count check cannot substitute: two 38-point skeletons in different orders load each
+    other's files happily.
+    """
     import types
 
     from deeperfly.pose2d.stream import _check_channel_names
 
     names = list(Config.default().data["skeleton"]["point_names"])
-    _check_channel_names("dense", _model_with_points(names), _plan_with_points(names))
     nameless = types.SimpleNamespace(module=types.SimpleNamespace())
-    _check_channel_names("hourglass", nameless, _plan_with_points(names))
+    with pytest.raises(SystemExit, match="records no channel names"):
+        _check_channel_names("stripped", nameless, _plan_with_points(names))

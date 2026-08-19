@@ -1,7 +1,7 @@
 """The multiview transformer: 38 channels in every view, computed from all views at once.
 
 Two detector kinds already live here. :mod:`deeperfly.pose2d.model` is the shipped
-19-channel hourglass, one side of the animal per pass. :mod:`deeperfly.pose2d.hrnet` is
+retired 19-channel detector, one side of the animal per pass. :mod:`deeperfly.pose2d.hrnet` is
 the dense-38 HRNet: every point in every view, but each view predicted **alone**. This is
 the third and it is the first that is not a per-view function at all -- the views of one
 frame are encoded together, and a joint that only one camera can see informs the cameras
@@ -716,7 +716,7 @@ def load_mvt(
 
     if dev is None:
         # Imported only when the caller did not choose: the backend's auto-selection lives
-        # in the hourglass module, and this class has no other reason to pull it in.
+        # in the shared runtime module, and this class has no other reason to pull it in.
         from .runtime import device as _default_device
 
         target = _default_device()

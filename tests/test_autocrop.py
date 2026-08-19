@@ -351,7 +351,7 @@ def _auto_config(*, seed=None, extra_view=False, shared=False):
             "models": [
                 {
                     "name": "m",
-                    "class": "hourglass",
+                    "class": "hrnet",
                     "input_size": [32, 64],
                     "n_out_channels": len(names),
                 }

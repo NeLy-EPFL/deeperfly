@@ -130,7 +130,7 @@ def build(
     """The dense-38 detector as an ``nn.Module``: ``(N,3,H,W) -> [ (N,K,96,192) ]``.
 
     Returns a one-element list so the shared ``_forward_last`` seam (which takes the
-    LAST stack of a stacked-hourglass output) works unchanged.
+    LAST element of a multi-stack output) works unchanged.
     """
     import timm
     import torch

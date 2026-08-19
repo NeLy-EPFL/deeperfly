@@ -5,7 +5,7 @@ becomes an on-device tensor, and what precision the convolutions are allowed to 
 the same questions for the multiview transformer, for HRNet and for anything a project
 plugs in later. They live here rather than inside one network's module so that adding or
 retiring a detector does not move them -- which is exactly what happened before: these
-four helpers were written for the stacked hourglass, both dense detectors then imported
+four helpers were written for a network since retired, both dense detectors imported
 them out of it, and deleting that network meant relocating them first.
 
 The only piece deliberately left out is ``torch.compile``: whether a forward is worth

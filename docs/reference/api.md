@@ -50,7 +50,7 @@ coordinate conventions these functions share, see
 
 ## 2D detection
 
-::: deeperfly.pose2d.detector.load_detector
+::: deeperfly.pose2d.stream.load_models
 
 ::: deeperfly.pose2d.stream.detect_2d
 

@@ -1,22 +1,19 @@
-"""Find the detector's weights: the auto-provisioned DeepFly2D cache, and everything else.
+"""Find a detector's weights on this machine.
 
-Two jobs. The published DeepFly2D checkpoint is downloaded on first use and cached
-per-user (the detector loads it directly, no conversion). Every other detector is trained
-per project, so there is nothing to download -- for those, :func:`resolve_weights` turns
-what a config wrote into a file on disk, and says exactly what is missing when it cannot.
+Every detector deeperfly runs is trained per project, so there is nothing to download:
+:func:`resolve_weights` turns what a config wrote into a file on disk, and says exactly
+what it searched when it cannot.
 
 The point of the search path is that a *recording's* config should not have to carry a
-machine's directory layout. ``weights = "mvt_alt8_fly38b.pth"`` is a fact about which
-model a run used and travels with the recording; ``/mnt/upramdya_data/TL/...`` is a fact
+machine's directory layout. ``weights = "mvt_alt8_gray_fly38.pth"`` is a fact about which
+model a run used and travels with the recording; ``/mnt/upramdya/data/TL/...`` is a fact
 about one mount on one machine and breaks the moment the config is opened anywhere else.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-import urllib.request
 from pathlib import Path
 
 import platformdirs
@@ -28,63 +25,17 @@ log = logging.getLogger("deeperfly")
 #: ``weights`` value written as a bare filename.
 MODELS_ENV = "DEEPERFLY_MODELS"
 
-# Original DeepFly2D stacked-hourglass weights (from df2d/inference.py). The
-# upstream release is a legacy PyTorch pickle the file name calls ``.tar`` (it is
-# not a tar archive); we cache it locally as ``.pth`` to match torch convention.
-TORCH_WEIGHTS_URL = "https://www.dropbox.com/s/csgon8uojr3gdd9/sh8_front_j8.tar?dl=1"
-TORCH_WEIGHTS_NAME = "sh8_deepfly.pth"
-
 
 def cache_dir() -> Path:
-    """Per-user cache directory for deeperfly weights (created on demand)."""
+    """Per-user cache directory for deeperfly weights (created on demand).
+
+    Nothing writes here any more -- no detector auto-provisions -- but it stays on the
+    search path so a checkpoint dropped in it is found, which is the one place a user can
+    put one without setting an environment variable.
+    """
     d = Path(platformdirs.user_cache_dir("deeperfly")) / "weights"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def download_torch_weights(*, force: bool = False, sha256: str | None = None) -> Path:
-    """Download the original PyTorch checkpoint to the cache and return its path.
-
-    Parameters
-    ----------
-    force
-        Re-download even when the cached file already exists.
-    sha256
-        Optional expected checksum to verify the download against.
-
-    Returns
-    -------
-    Path
-        The cached checkpoint path.
-
-    Raises
-    ------
-    ValueError
-        If ``sha256`` is given and the download fails verification.
-    """
-    dest = cache_dir() / TORCH_WEIGHTS_NAME
-    if dest.exists() and not force:
-        return dest
-    tmp = dest.with_suffix(".part")
-    urllib.request.urlretrieve(TORCH_WEIGHTS_URL, tmp)
-    if sha256 is not None and _sha256(tmp) != sha256:
-        tmp.unlink(missing_ok=True)
-        raise ValueError("downloaded weights failed checksum verification")
-    tmp.replace(dest)
-    return dest
-
-
-def torch_weights_path() -> Path:
-    """Expected path of the cached PyTorch checkpoint (``.pth``)."""
-    return cache_dir() / TORCH_WEIGHTS_NAME
 
 
 def search_path() -> list[Path]:
@@ -103,9 +54,9 @@ def resolve_weights(value: str | None, *, cls: str, model_name: str) -> Path | N
 
     Three forms, and the distinction is whether the value looks like a *path*:
 
-    * empty / absent -> ``None``. The caller's class decides what that means: the
-      hourglass auto-provisions its published checkpoint, a per-project class refuses.
-    * a bare filename (``mvt_alt8_fly38b.pth``) -> searched along :func:`search_path`.
+    * empty / absent -> ``None``, which every class refuses (see
+      :func:`missing_weights`) -- there is no checkpoint to fall back to.
+    * a bare filename (``mvt_alt8_gray_fly38.pth``) -> searched along :func:`search_path`.
     * anything with a separator, or absolute, or ``~`` -> used as written.
 
     Parameters
@@ -159,21 +110,19 @@ def resolve_weights(value: str | None, *, cls: str, model_name: str) -> Path | N
 def missing_weights(cls: str, model_name: str) -> SystemExit:
     """The failure for a per-project class whose ``weights`` is empty.
 
-    Its own function because all three dense loaders raise it and the message is the
-    entire user experience of a fresh install: there is no checkpoint to download, so the
-    error has to *be* the setup instructions.
+    Its own function because both loaders raise it and the message is the entire user
+    experience of a fresh install: nothing downloads, so the error has to *be* the setup
+    instructions.
     """
     return SystemExit(
-        f"[[pose2d.models]] {model_name!r} (class {cls!r}) has no 'weights', and there "
-        "is no auto-provisioned checkpoint for this class -- it is trained per project.\n"
-        "  Either name a file on the search path:\n"
+        f"[[pose2d.models]] {model_name!r} (class {cls!r}) has no 'weights'. Every "
+        "detector deeperfly runs is trained per project, so there is nothing to "
+        "auto-provision -- name a checkpoint.\n"
+        "  Either put it on the search path:\n"
         f"    export {MODELS_ENV}=/path/to/models\n"
         '    weights = "my_detector.pth"     # in [[pose2d.models]]\n'
         "  ...or write the path outright:\n"
         '    weights = "/path/to/my_detector.pth"\n'
-        '  (The one detector needing no checkpoint is `class = "hourglass"`, whose '
-        "published DeepFly2D weights are downloaded and cached on first use -- but it "
-        "predicts 19 channels, one body side per pass, so switching to it also means the "
-        "`fly38` skeleton and an explicit [pose2d.output_points] table. See the "
-        "configuration reference.)"
+        "  See docs/reference/configuration.md#weights for where the released "
+        "checkpoints live."
     )

@@ -142,10 +142,24 @@ def test_every_registered_class_has_defaults(alias):
 
 
 def test_dense_classes_take_their_channel_count_from_the_skeleton():
+    """Every shipped class is dense, so its channel count IS the skeleton's point count."""
     assert class_defaults("hrnet", 38)["n_out_channels"] == 38
     assert class_defaults("mvt", 12)["n_out_channels"] == 12
-    # ...while the 19-channel one-side detector keeps its own count.
-    assert class_defaults("hourglass", 38)["n_out_channels"] == 19
+    # An alias resolves to the same defaults as its canonical name.
+    assert class_defaults("multiview_transformer", 38) == class_defaults("mvt", 38)
+
+
+def test_an_unknown_class_is_refused_and_lists_the_real_ones():
+    """Refused here rather than left to a fallback.
+
+    A fallback's defaults are some other network's: a typo'd class used to inherit
+    DeepFly2D's 19 channels and 0.22 mean, then fail at load with a channel-count
+    mismatch -- which says nothing about the word that was actually wrong.
+    """
+    with pytest.raises(ValueError, match="unknown detector class 'hrnett'"):
+        class_defaults("hrnett", 38)
+    with pytest.raises(ValueError, match="mvt"):
+        class_defaults("hourglass", 38)  # retired in 0.2
 
 
 def test_mvt_pins_float32_without_the_config_saying_so():
@@ -258,11 +272,18 @@ def test_multiple_search_directories_are_honored_in_order(tmp_path, monkeypatch)
     )
 
 
-def test_a_dense_class_with_no_weights_explains_the_setup():
+def test_a_class_with_no_weights_explains_the_setup():
+    """Nothing auto-provisions, so this message IS the first-run experience.
+
+    It has to name the environment variable, the model whose table is short, and where the
+    released checkpoints are documented -- "no weights" alone leaves a new user with
+    nothing to do next.
+    """
     message = str(download.missing_weights("mvt", "dense38mv"))
     assert download.MODELS_ENV in message
     assert "dense38mv" in message
-    assert "hourglass" in message, "the zero-setup alternative has to be named"
+    assert "trained per project" in message
+    assert "configuration.md" in message
 
 
 # -- the visualization grid ---------------------------------------------------

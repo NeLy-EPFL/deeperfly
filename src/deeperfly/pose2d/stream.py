@@ -83,14 +83,27 @@ def _check_channel_names(name: str, model, plan) -> None:
     ``[skeleton]`` swapped underneath, or a mapping line edited by hand. Those are exactly
     the cases where the channel order silently stops meaning what the config says.
 
-    Only checkpoints that RECORD their channel names can be checked. The shipped
-    19-channel hourglass does not carry any -- its channels are one side of the animal and
-    mean different points in different views, which is why such a config declares an
-    explicit ``[pose2d.output_points]`` table instead of relying on the identity default.
+    A checkpoint that records NO channel names is refused outright. Every detector class
+    this build ships records them, so a nameless artifact is either not one of ours or was
+    stripped -- and the alternative to refusing is skipping the one check standing between a
+    mis-stamped config and a fly with its limbs on the wrong joints. The permissive branch
+    that used to be here existed for exactly one network, the retired 19-channel detector,
+    whose channels were one body side and meant different points in different views (which
+    is why such a config declared an explicit ``[pose2d.output_points]`` table rather than
+    taking the identity default).
     """
     names = list(getattr(model.module, "point_names", None) or [])
-    if not names or not plan.point_names:
+    if not plan.point_names:  # a plan with no skeleton has nothing to check against
         return
+    if not names:
+        raise SystemExit(
+            f"model {name!r} records no channel names, so there is no way to tell whether "
+            "its channels are this config's skeleton -- and a count check cannot: two "
+            "38-point skeletons in different orders load each other's files happily and "
+            "mean something different by every index.\n"
+            "  Every detector deeperfly ships records its point names. Re-export the "
+            "checkpoint with them, or point 'weights' at one that has them."
+        )
     skeleton = list(plan.point_names)
     if names == skeleton:
         return

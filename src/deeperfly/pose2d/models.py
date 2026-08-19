@@ -21,17 +21,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-#: DeepFly2D subtracts this scalar from the ``[0, 1]`` image.
-DEFAULT_MEAN = 0.22
-#: DeepFly2D network input ``(height, width)``.
+#: The input ``(height, width)`` every shipped detector is trained at. A class may still
+#: be asked for another size, and its loader refuses if the checkpoint disagrees.
 DEFAULT_INPUT_SIZE = (256, 512)
-#: DeepFly2D body-side detector channels.
-DEFAULT_N_OUT_CHANNELS = 19
 
 #: Every ``class`` spelling -> its canonical name, so aliases share one set of defaults.
 CLASS_ALIASES: dict[str, str] = {
-    "hourglass": "hourglass",
-    "deepfly2d": "hourglass",
     "hrnet": "hrnet",
     "hrnet_timm": "hrnet",
     "mvt": "mvt",
@@ -48,10 +43,10 @@ CLASS_ALIASES: dict[str, str] = {
 #: everywhere -- so the class states them and a table only speaks up to *disagree*.
 #:
 #: ``n_out_channels = None`` means "as many channels as the skeleton has points", which is
-#: what DENSE means. It is resolved against the skeleton in :func:`class_defaults`, so a
-#: dense config stops restating its own skeleton's size (and cannot get it wrong).
+#: what DENSE means -- and it is what every shipped detector is. It is resolved against the
+#: skeleton in :func:`class_defaults`, so a config stops restating its own skeleton's size
+#: (and cannot get it wrong).
 CLASS_DEFAULTS: dict[str, dict] = {
-    "hourglass": {"mean": DEFAULT_MEAN, "n_out_channels": DEFAULT_N_OUT_CHANNELS},
     "hrnet": {"mean": 0.0, "n_out_channels": None},
     "mvt": {"mean": 0.0, "n_out_channels": None, "precision": "float32"},
 }
@@ -65,26 +60,38 @@ def class_defaults(cls: str, n_points: int | None = None) -> dict:
     cls
         The ``class`` key from a ``[[pose2d.models]]`` table (an alias is fine).
     n_points
-        The skeleton's point count, used for a class whose channel count is "dense".
-        When ``None`` (no skeleton in hand) the dense entry falls back to
-        :data:`DEFAULT_N_OUT_CHANNELS`.
+        The skeleton's point count. Every shipped class is dense, so this is what its
+        channel count resolves to; ``None`` leaves it unresolved for a caller with no
+        skeleton in hand (``deeperfly config show``), which never loads a model.
 
     Returns
     -------
     dict
         ``input_size`` / ``mean`` / ``n_out_channels`` / ``precision`` for the class.
-        An unknown class gets the DeepFly2D defaults -- it will fail at load with a
-        message about the class itself, which is the useful error.
+
+    Raises
+    ------
+    ValueError
+        On a class this build has no loader for. Refused HERE rather than left to fall
+        back, because a fallback's defaults are another network's: a typo'd class used to
+        inherit DeepFly2D's 19 channels and 0.22 mean and then fail at load with a
+        channel-count mismatch, which says nothing about the word that was wrong.
     """
+    canonical = CLASS_ALIASES.get(cls)
+    if canonical is None:
+        raise ValueError(
+            f"unknown detector class {cls!r}; this build has "
+            f"{sorted(set(CLASS_ALIASES))}"
+        )
     out = {
         "input_size": DEFAULT_INPUT_SIZE,
-        "mean": DEFAULT_MEAN,
-        "n_out_channels": DEFAULT_N_OUT_CHANNELS,
+        "mean": 0.0,
+        "n_out_channels": None,
         "precision": None,
-        **CLASS_DEFAULTS.get(CLASS_ALIASES.get(cls, cls), {}),
+        **CLASS_DEFAULTS[canonical],
     }
-    if out["n_out_channels"] is None:
-        out["n_out_channels"] = DEFAULT_N_OUT_CHANNELS if n_points is None else n_points
+    if out["n_out_channels"] is None and n_points is not None:
+        out["n_out_channels"] = n_points
     return out
 
 
@@ -97,7 +104,7 @@ class ModelSpec:
     name
         The model's name, referenced by a pathway's ``model`` key.
     cls
-        The registry key selecting the model class (e.g. ``"hourglass"``).
+        The registry key selecting the model class (e.g. ``"mvt"``).
     weights
         Path to a checkpoint, or ``None`` to use the auto-provisioned cache.
     input_size
@@ -120,26 +127,17 @@ class ModelSpec:
     cls: str
     weights: str | None
     input_size: tuple[int, int] = DEFAULT_INPUT_SIZE
-    mean: float = DEFAULT_MEAN
-    n_out_channels: int = DEFAULT_N_OUT_CHANNELS
+    mean: float = 0.0
+    n_out_channels: int | None = None
     precision: str | None = None
     kwargs: dict = field(default_factory=dict)
-
-
-def _load_hourglass(spec: "ModelSpec"):
-    """Load the DeepFly2D stacked-hourglass detector from a ``.pth`` (or the cache)."""
-    from . import detector
-    from .download import download_torch_weights, resolve_weights
-
-    path = resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
-    return detector.load_detector(path or download_torch_weights(), **spec.kwargs)
 
 
 def _load_hrnet(spec: "ModelSpec"):
     """Load the dense-38 HRNet detector (see :mod:`deeperfly.pose2d.hrnet`).
 
-    Unlike the hourglass there is no auto-provisioned cache: this network is trained
-    per-project, so ``weights`` is required -- as a bare filename on
+    There is no auto-provisioned cache: this network is trained per project, so
+    ``weights`` is required -- as a bare filename on
     ``$DEEPERFLY_MODELS`` or an outright path (see
     :func:`~deeperfly.pose2d.download.resolve_weights`). ``spec.mean`` is passed through
     to be REFUSED unless it is 0.0 -- the checkpoint carries its own normalization.
@@ -171,8 +169,7 @@ def _load_mvt(spec: "ModelSpec"):
     return mvt.load_mvt(path, mean=spec.mean, precision=spec.precision, **spec.kwargs)
 
 
-#: ``class`` name -> loader(spec) -> torch module. New detector architectures register
-#: here; ``"deepfly2d"`` is an alias for ``"hourglass"``.
+#: ``class`` name -> loader(spec) -> torch module. New detector architectures register here.
 #:
 #: ``"hrnet"`` is the DENSE-38 detector: every tracked point in every view, so a camera
 #: needs one pathway rather than a pathway and a mirrored twin, and a contralateral
@@ -184,8 +181,6 @@ def _load_mvt(spec: "ModelSpec"):
 #: that cannot. It is the first class here that is not a per-view function, and it owns
 #: its input preparation as well as its decode.
 MODEL_CLASSES = {
-    "hourglass": _load_hourglass,
-    "deepfly2d": _load_hourglass,
     "hrnet": _load_hrnet,
     "hrnet_timm": _load_hrnet,
     "mvt": _load_mvt,
@@ -218,7 +213,7 @@ class LoadedModel:
     def joint_views(self) -> bool:
         """Whether this model's ``V`` axis is COUPLED -- views computed together, not apart.
 
-        ``False`` for a per-view detector (the hourglass, the dense HRNet): its ``V`` axis
+        ``False`` for a per-view detector (the dense HRNet): its ``V`` axis
         is just more batch, so a caller may put anything there -- other cameras, other
         candidate crops of one camera -- and the results are unchanged. ``True`` for the
         multiview transformer, where attention runs across views: a view's output depends
@@ -235,7 +230,7 @@ class LoadedModel:
         ``True`` when the heatmap covers more than the input -- the dense HRNet pads the
         field by 25% a side, so a joint the crop cuts off still has a cell and decodes to a
         coordinate beyond ``[0, 1]``. ``False`` when the field spans the input exactly (the
-        hourglass, and the multiview transformer whose soft-argmax cannot leave it): there
+        dense HRNet, and the multiview transformer whose soft-argmax cannot leave it): there
         a cut-off joint has nowhere to go and piles up *against* the border instead.
 
         The distinction matters to anything asking "does this crop cut the animal?" --
@@ -280,7 +275,7 @@ class LoadedModel:
     def peak_convention(self) -> str:
         """How this model's normalized peaks map back through a resize.
 
-        ``"half-pixel"`` (the default, and what the hourglass and the dense HRNet want) is
+        ``"half-pixel"`` (the default, and what the dense HRNet wants) is
         ``x' = (x + 0.5) * s - 0.5``, the geometrically correct inverse of a cv2/torch
         resize to a target size, and the convention dfpose's exporter wrote their labels
         with. A model trained on labels written as a pure scale declares ``"pure-scale"``
@@ -349,15 +344,17 @@ class LoadedModel:
         Returns normalized ``(B, V, C_out, 2)`` peaks and ``(B, V, C_out)`` conf (plain 4D
         ``(N, 3, H, W)`` input gives ``(N, C_out, 2)`` / ``(N, C_out)``).
 
-        A model whose heatmap does not span its input -- the dense-38 HRNet pads the
-        field by 25% a side so an off-frame joint still has a cell -- cannot use the
-        shared decode, whose normalization assumes it does. Such a module declares
-        ``owns_decode`` and is asked for the points itself. The returned coordinates are
-        still input-normalized, so a pathway inverts them exactly as before; they may
-        fall outside ``[0, 1]``, which is an off-frame joint and not an error.
-        """
-        from . import detector
+        Every shipped detector owns its own decode, and for the same reason in two
+        flavours: the dense HRNet pads its heatmap field 25% a side so an off-frame joint
+        still has a cell, and the multiview transformer's soft-argmax cannot leave its
+        module. So there is no shared decode left to fall back to -- a class that declares
+        neither is a class this build cannot read points from, and says so rather than
+        guessing a normalization.
 
+        The returned coordinates are input-normalized, so a pathway inverts them exactly
+        as before; they may fall outside ``[0, 1]``, which is an off-frame joint and not
+        an error.
+        """
         impl = self._impl()
         if impl is not None:
             return impl.predict_points(
@@ -369,8 +366,10 @@ class LoadedModel:
             return hrnet.predict_points(
                 self.module, inputs, method=method, radius=radius
             )
-        return detector.predict_points(
-            self.module, inputs, method=method, radius=radius
+        raise TypeError(
+            f"model {self.spec.name!r} (class {self.spec.cls!r}) neither owns its decode "
+            "nor provides one; a heatmap cannot be decoded without knowing whether its "
+            "field spans the input"
         )
 
     def predict_points_for_views(

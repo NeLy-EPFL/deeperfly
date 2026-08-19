@@ -47,7 +47,7 @@ def _cfg(extra: dict | None = None) -> Config:
             "models": [
                 {
                     "name": "m",
-                    "class": "hourglass",
+                    "class": "hrnet",
                     "input_size": [256, 512],
                     "n_out_channels": 19,
                 }

@@ -7,7 +7,7 @@ pipeline logic lives in the library and is callable without importing the CLI:
 - footage discovery -- :mod:`deeperfly.recordings`
   (:func:`~deeperfly.recordings.resolve_recordings`).
 - detector loading and streaming 2D detection -- :mod:`deeperfly.pose2d.stream`
-  (:func:`~deeperfly.pose2d.stream.load_detector`,
+  (:func:`~deeperfly.pose2d.stream.load_models`,
   :func:`~deeperfly.pose2d.stream.detect_2d`).
 - the per-stage wrappers and the cached/resume run -- :mod:`deeperfly.pipeline`
   (:func:`~deeperfly.pipeline.run_recording`).

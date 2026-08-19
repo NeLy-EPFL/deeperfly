@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -173,6 +174,33 @@ def _fmt_bytes(n: int) -> str:
     return f"{size:.1f} TiB"
 
 
+def _default_model_specs() -> list[tuple[str, str]]:
+    """``(weights name, whether it resolves)`` for each model the default config names.
+
+    The one question a stuck user actually has, answered against the config that will
+    actually run rather than against a cache nothing writes to any more.
+    """
+    from ..config import Config
+    from ..pose2d.download import resolve_weights
+
+    try:
+        specs = Config.default().detection_plan().models.values()
+    except Exception as exc:  # a broken packaged config is its own, louder problem
+        return [("(default config)", f"could not be read: {exc}")]
+    out: list[tuple[str, str]] = []
+    for spec in specs:
+        if not spec.weights:
+            out.append((f"{spec.name} (class {spec.cls})", "no 'weights' named"))
+            continue
+        try:
+            path = resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
+        except SystemExit:
+            out.append((str(spec.weights), "NOT FOUND on the search path above"))
+        else:
+            out.append((str(spec.weights), f"found at {path}"))
+    return out
+
+
 def _doctor_header(title: str) -> None:
     """Print a blank line then a section title (its own colored line).
 
@@ -316,14 +344,20 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         else "missing -- core deps absent, reinstall deeperfly",
     )
 
+    # Nothing auto-provisions, so what a stuck user needs is not "is it downloaded" but
+    # "where does deeperfly look, and does the checkpoint my config names turn up there".
     _doctor_header("weights")
-    _doctor_row("cache dir", download.cache_dir())
-    path = download.torch_weights_path()
-    if path.exists():
-        state = f"downloaded ({_fmt_bytes(path.stat().st_size)}) -- {path.name}"
-    else:
-        state = f"not downloaded -- would cache as {path.name}"
-    _doctor_row("detector", state)
+    raw = os.environ.get(download.MODELS_ENV, "")
+    _doctor_row(
+        download.MODELS_ENV,
+        raw if raw else "unset -- set it to the directory holding the checkpoints",
+    )
+    for i, d in enumerate(download.search_path()):
+        found = sorted(p.name for p in d.glob("*.pth")) if d.is_dir() else []
+        state = f"{len(found)} .pth" if found else ("empty" if d.is_dir() else "absent")
+        _doctor_row(f"searched [{i}]", f"{d}  ({state})")
+    for name, state in _default_model_specs():
+        _doctor_row("default wants", f"{name}  --  {state}")
 
     _doctor_header("config")
     _doctor_row("default config", DEFAULT_CONFIG_PATH)
