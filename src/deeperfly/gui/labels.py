@@ -193,7 +193,7 @@ LABELS_FORMAT_VERSION = 8
 #: The instance column is reserved *now*, while there is exactly one animal, because this
 #: is the one dataset in the project that cannot be regenerated -- and widening a stored
 #: index later would mean a second migration of it. Writing it costs one column; deferring
-#: it costs the migration twice. See ``docs/project-system-plan.md`` §10.1.
+#: it costs the migration twice. See ``design/project-system-plan.md`` §10.1.
 #:
 #: This build is single-animal: every row is written with ``instance = 0``, and a row
 #: carrying a different instance is **refused on load** rather than collapsed into animal
