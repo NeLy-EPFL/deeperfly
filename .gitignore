@@ -15,6 +15,12 @@ wheels/
 
 # Images and videos
 *.png
+# ...except the GUI's own shipped assets. The blanket rule above hid
+# `apple-touch-icon.png` for months: it is served by `deeperfly gui`, so a wheel built on a
+# machine that happened to have it worked while one built from a clean clone 404'd the
+# asset at runtime -- and the test that catches it passed locally for the same reason.
+# Any raster the GUI grows belongs here too.
+!src/deeperfly/gui/web/static/*.png
 *.jpg
 *.jpeg
 *.mp4
