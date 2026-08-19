@@ -569,32 +569,3 @@ def test_every_config_is_dense_over_the_whole_skeleton(path):
     assert "output_points" not in cfg.data["pose2d"]
     assert plan.visibility_mask().all()
     assert cfg.skeleton().name == "fly38"
-
-
-@pytest.mark.parametrize(
-    "path", sorted(REPO.glob("examples/*/config.toml")), ids=lambda p: p.parent.name
-)
-def test_a_staged_example_is_exactly_what_dense_config_would_write(path):
-    """Re-rendering each example's own plan reproduces the file, byte for byte.
-
-    `deeperfly dense-config` rewrites this section for every new recording, so the
-    checked-in files have to BE its output -- otherwise the first regeneration silently
-    reformats a file nobody meant to touch, and the diff hides whatever else changed.
-    """
-    from deeperfly.pose2d.dense_plan import pose2d_toml, replace_pose2d_section
-
-    text = Path(path).read_text()
-    p2 = tomllib.loads(text)["pose2d"]
-    rendered = pose2d_toml(
-        {
-            "precision": p2.get("precision"),
-            "batch_size": p2.get("batch_size", 16),
-            "decode_buffer": p2.get("decode_buffer", 4),
-            "preprocessors": p2.get("preprocessors", []),
-            "models": p2["models"],
-            "model": p2["model"],
-            "pathways": p2["pathways"],
-            "n_out_channels": len(Config.from_toml(path).skeleton().point_names),
-        }
-    )
-    assert replace_pose2d_section(text, rendered) == text

@@ -78,7 +78,7 @@ def _check_channel_names(name: str, model, plan) -> None:
     points to the wrong joints and shifts the rest -- a wrong limb, not a crash.
 
     This runs on EVERY run, which is the point. The same comparison exists in
-    ``deeperfly dense-config``, but a generator only ever sees the moment it writes the
+    a generator, but a generator only ever sees the moment it writes the
     file; it cannot see a ``weights`` path later repointed at a different checkpoint, a
     ``[skeleton]`` swapped underneath, or a mapping line edited by hand. Those are exactly
     the cases where the channel order silently stops meaning what the config says.
@@ -104,7 +104,8 @@ def _check_channel_names(name: str, model, plan) -> None:
         f"  only in model   : {extra or 'none (the ORDER differs)'}\n"
         f"  only in config  : {gone or 'none (the ORDER differs)'}\n"
         f"Stamp the matching skeleton into the config "
-        f"(`deeperfly dense-config --skeleton <skeleton.toml>`) or point 'weights' at a "
+        f"([skeleton] name, or file = the skeleton.toml the model was trained on) or "
+        f"point 'weights' at a "
         f"checkpoint trained on this one."
     )
 

@@ -516,7 +516,7 @@ def test_load_refuses_a_model_trained_on_another_skeleton():
 
     `fly38` and `fly38b` are both 38 points and share 32 of them in a different order, so
     routing one through the other's config attaches six points to the wrong joints and
-    shifts the rest. `deeperfly dense-config` compares them when it writes a config, but a
+    shifts the rest. A config is written against one skeleton's order, but a
     generator never sees a `weights` path later repointed, a `[skeleton]` swapped
     underneath, or a hand-edited mapping -- so the comparison has to happen on every load.
     """

@@ -230,9 +230,9 @@ winning. Video frames are read and written with PyAV.
 `crop = "pose2d"` is worth reaching for on any rig with a camera the detector crops
 (an axial view, typically): it resolves *per view* from `[[pose2d.pathways]]`, so a
 single line frames each panel the way its own detector saw it and leaves the
-full-frame views alone. That keeps the box in one place — `deeperfly dense-config`
-regenerates the `[pose2d]` crops per recording, and a copy of the numbers under
-`[visualization]` would silently keep showing the previous recording's window. See the
+full-frame views alone. That keeps the box in one place — the `[pose2d]` crop is
+searched per recording, and a copy of the numbers under `[visualization]` would silently
+keep showing the previous recording's window. See the
 [configuration reference](../reference/configuration.md#visualization) for the
 full panel and kwargs schema.
 

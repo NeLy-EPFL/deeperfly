@@ -73,7 +73,7 @@ def _detector_cfg(panels, *, crops, spare=None, viz=None, **video):
     ``crops`` maps a view name to a preprocessor ``ops`` list; a view absent from it runs
     full-frame, which is this rig's policy for its six side cameras. One dense pathway per
     camera, so the channel mapping is the identity and no ``[pose2d.output_points]`` table
-    is needed -- the same shape ``deeperfly dense-config`` writes. ``spare`` adds named
+    is needed -- the shape every dense plan has. ``spare`` adds named
     preprocessors no pathway uses, for the panels that borrow one by name.
     """
     preprocessors = [{"name": f"crop_{v}", "ops": ops} for v, ops in crops.items()]
@@ -171,7 +171,7 @@ def test_crop_is_not_forwarded_to_the_draw_op():
 
 # -- a crop borrowed from the detector ----------------------------------------
 #
-# `crop = "pose2d"` exists because the boxes are GENERATED: `deeperfly dense-config`
+# `crop = "pose2d"` exists because the boxes are per RECORDING: an auto crop
 # restamps [pose2d] per recording from a crop plan, and a hand-copied panel box then keeps
 # showing the previous recording's window under a perfectly well-formed overlay. So the
 # tests below pin that the borrowed window is byte-for-byte the written one, that it

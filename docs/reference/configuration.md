@@ -146,9 +146,9 @@ Packaged presets live in `src/deeperfly/data/skeletons/`:
     labeling-scheme decision, and the packaged placements are tabulated in
     [Keypoint locations](../explanation/keypoints.md).
 
-A preset file is a complete `[skeleton]` table in exactly the format
-`deeperfly dense-config --skeleton` takes, so a preset and a project's own
-`skeleton.toml` are interchangeable.
+A preset file is a complete `[skeleton]` table, in exactly the format a project's own
+`skeleton.toml` is written in — which is what makes the two interchangeable, and what lets
+a project be handed a skeleton by copying one file.
 
 Keys written in the config **override the referenced ones wholesale, per key** — a
 `limb_palette` here replaces the referenced palette rather than merging into it. A table
@@ -1269,12 +1269,13 @@ cannot answer. `crop` resolves across the same three levels as the draw-op kwarg
 (`[visualization]` → the video entry → the panel), most specific winning, so an explicit
 box on one panel still overrides a global setting.
 
-Prefer the reference to a copy of the box. `deeperfly dense-config` **regenerates**
-`[[pose2d.preprocessors]]` from a crop plan for each new recording, and a hand-copied panel
-box then keeps showing the *previous* recording's window under an overlay that still looks
-perfectly well-formed — a rendering bug that reads as a calibration error. The reference
-also travels into the visualization fingerprint, so moving the detector's crop re-renders
-the videos instead of reusing stale MP4s.
+Prefer the reference to a copy of the box. `[[pose2d.preprocessors]]` is **per
+recording** — `{ op = "crop", auto = true }` searches its own window, so the numbers differ
+from one recording to the next — and a hand-copied panel box then keeps showing the
+*previous* recording's window under an overlay that still looks perfectly well-formed: a
+rendering bug that reads as a calibration error. The reference also travels into the
+visualization fingerprint, so moving the detector's crop re-renders the videos instead of
+reusing stale MP4s.
 
 Only the *region* transfers, not the orientation: a chain that also mirrors or turns the
 frame is logged, and the panel shows that region in the view's own orientation (the overlay

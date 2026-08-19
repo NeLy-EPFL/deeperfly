@@ -60,7 +60,7 @@ __all__ = [
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "data" / "default_config.toml"
 
 #: Packaged skeletons, referenced by ``[skeleton] name``. Each file holds a complete
-#: ``[skeleton]`` table in the same format ``deeperfly dense-config --skeleton`` takes, so
+#: ``[skeleton]`` table in the same format a project's own ``skeleton.toml`` is written in, so
 #: a preset and a project's own ``skeleton.toml`` are interchangeable.
 SKELETON_PRESET_DIR = Path(__file__).parent / "data" / "skeletons"
 
@@ -831,7 +831,7 @@ def _resolve_skeleton(data: dict, source: Path | None) -> dict:
     if not isinstance(loaded, dict) or "point_names" not in loaded:
         raise ValueError(
             f"{path} carries no [skeleton] table with 'point_names'; it is not a skeleton "
-            "file (the format is the one `deeperfly dense-config --skeleton` takes)"
+            "file (the format is a project's own skeleton.toml, or a packaged preset)"
         )
     log.info("skeleton %r from %s", loaded.get("name", path.stem), path)
     return {**data, "skeleton": {**loaded, **skel}}

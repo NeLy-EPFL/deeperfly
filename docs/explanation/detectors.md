@@ -383,29 +383,35 @@ Latency and VRAM are RTX 4090, bf16, 256 × 512. The held-out figures come from 
 
 ## Selecting one in a config
 
-The dense plan is generated, not hand-written — 304 channel-to-point entries for an
-8-view rig is not an edit a human should be doing:
-
-```console
-$ deeperfly dense-config -c config.toml \
-    --weights .../hgnetv2_b4_fly38b.pth \
-    --skeleton fly38b.toml \
-    --detector hrnet            # or --detector mvt
-```
-
-The model table it stamps out:
+Two lines, because dense is what a plan *is*:
 
 ```toml
-[[pose2d.models]]
-name = "dense38"
-class = "hrnet"          # "mvt" for the multiview transformer
-weights = ".../hgnetv2_b4_fly38b.pth"
-input_size = [256, 512]
-mean = 0.0               # the checkpoint carries its own mean/std and applies them
-n_out_channels = 38
+[pose2d]
+model = "dense38"
+models = [
+    { name = "dense38", class = "hrnet", weights = "hgnetv2_b4_r27_gray_fly38.pth" },
+]
 ```
 
-`mean` must be `0.0` for all three — each carries its own normalization constants, and
-a config that also subtracted DeepFly2D's 0.22 would shift every input by a quarter of
-its range with nothing to notice. The MVT additionally requires
-`precision = "float32"`. Both are refused at load time rather than honored.
+`class` picks the network — `"hrnet"` runs both single-view detectors (see [why the same
+loader runs HGNetV2](#why-the-same-loader-runs-hgnetv2)), `"mvt"` the multiview
+transformer — and `weights` names the checkpoint. Nothing else is needed, and that is the
+point of a dense plan: **channel *i* is point *i* of the pathway's view**, so there is
+nothing to map. `n_out_channels` defaults to the skeleton's point count, `input_size` and
+the normalization come from the checkpoint, and there is no `[pose2d.output_points]` table
+at all.
+
+It was not always two lines. The 19-channel detector predicted one body side, so each
+side camera ran twice and the config carried a mapping row per channel per pass — 122 of
+them for a 7-view rig, 304 for an 8-view one — which is why a command existed to generate
+them. A contralateral point now arrives as a prediction to correct rather than a gap to
+author, and the table it was authoring is gone.
+
+Anything a table *does* still say has to agree with the checkpoint, and is refused rather
+than honored if it does not: `mean` must be `0.0` for all three detectors, since each
+carries its own normalization constants and a config that also subtracted DeepFly2D's 0.22
+would shift every input by a quarter of its range with nothing to notice; the MVT
+additionally requires `precision = "float32"`. The channel order is checked too — against
+the ordered point *names* the checkpoint records, not against the skeleton's name, so a
+config pointed at a detector trained on different points stops before it can attach them
+to the wrong joints.

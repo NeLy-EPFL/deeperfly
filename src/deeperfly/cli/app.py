@@ -17,7 +17,6 @@ from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .config import _cmd_config_set, _cmd_config_show
 from .console import _configure_logging
-from .dense import _cmd_dense_config
 from .gui import _cmd_gui, _cmd_labels_absent, _cmd_labels_export
 from .merge import _cmd_labels_merge
 from .project import (
@@ -80,90 +79,6 @@ app = typer.Typer(
     "pose, reconstructs 3D and renders a video; 'deeperfly inspect' summarizes a "
     "result file; 'deeperfly doctor' reports the installation/runtime.",
 )
-
-
-@app.command(name="dense-config")
-def dense_config(
-    config: Annotated[
-        Path, typer.Argument(help="the recording's config.toml to rewrite")
-    ],
-    weights: Annotated[
-        Path,
-        typer.Option(
-            "--weights",
-            "-w",
-            help="dense-38 weights: a dfpose checkpoint (.pt) for --detector hrnet, or "
-            "an exported artifact for --detector mvt",
-        ),
-    ],
-    detector: Annotated[
-        str,
-        typer.Option(
-            "--detector",
-            help="which dense detector: 'hrnet' (each view predicted alone) or 'mvt' "
-            "(the views of a frame encoded together, so a contralateral joint is "
-            "informed by the cameras that can see it)",
-        ),
-    ] = "hrnet",
-    output: Annotated[
-        Path | None,
-        typer.Option("--output", "-o", help="write here instead of in place"),
-    ] = None,
-    crop_plan: Annotated[
-        Path | None,
-        typer.Option("--crop-plan", help="crop-plan JSON for this recording"),
-    ] = None,
-    skeleton: Annotated[
-        Path | None,
-        typer.Option(
-            "--skeleton",
-            help="stamp this skeleton.toml in the same edit (the checkpoint's channel "
-            "order must match it)",
-        ),
-    ] = None,
-    crop: Annotated[
-        list[str] | None,
-        typer.Option("--crop", help="view=x,y,w,h (repeatable; overrides --crop-plan)"),
-    ] = None,
-    precision: Annotated[
-        str | None,
-        typer.Option(
-            "--precision",
-            help="float32 / float16 / bfloat16; omitted, the key is left out of the "
-            "config and the run takes the default",
-        ),
-    ] = None,
-    batch_size: Annotated[
-        int | None,
-        typer.Option(
-            "--batch-size",
-            help="forward batch, in IMAGES; detection forwards batch_size // pathways "
-            "whole frames at a time, so anything below the view count is one frame per "
-            "forward",
-        ),
-    ] = None,
-    overwrite: Annotated[
-        bool, typer.Option("--overwrite", help="replace an existing --output")
-    ] = False,
-    log_level: LogLevelOption = LogLevel.info,
-) -> None:
-    """Rewrite a config's [pose2d] to run a DENSE detector: every point, every view."""
-    _configure_logging(log_level.value)
-    _cmd_dense_config(
-        argparse.Namespace(
-            config=config,
-            weights=weights,
-            detector=detector,
-            output=output,
-            crop_plan=crop_plan,
-            crop=crop,
-            skeleton=skeleton,
-            precision=precision,
-            batch_size=batch_size,
-            overwrite=overwrite,
-            source_map=None,
-        )
-    )
 
 
 @app.command(name="auto-crop")

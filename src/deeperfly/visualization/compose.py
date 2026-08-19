@@ -29,7 +29,7 @@ Two panel keys shape what a cell contains rather than what is drawn in it:
 - ``crop = "pose2d"`` takes that window from the detector instead of restating it: the
   panel shows what the ``[[pose2d.pathways]]`` feeding this view detected through. Set it
   once under ``[visualization]`` and every panel follows its own view, so the crop lives
-  in exactly one place in the config -- which matters because ``deeperfly dense-config``
+  in exactly one place in the config -- which matters because a crop is per RECORDING
   *regenerates* the ``[pose2d]`` crops per recording, and a hand-copied panel box would
   silently keep showing the old window. ``crop = "<preprocessor name>"`` borrows one
   named ``[[pose2d.preprocessors]]`` chain explicitly. Settable at all three levels
