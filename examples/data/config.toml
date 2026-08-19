@@ -110,7 +110,7 @@ do_visualization        = true
 [pose2d]
 model = "dense38mv"
 models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" },
+    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" },
 ]
 
 pathways = [

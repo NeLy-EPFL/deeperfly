@@ -77,7 +77,7 @@ registry key (`"mvt"` cross-view dense, `"hrnet"` per-view dense, `"hourglass"` 
 19-channel DeepFly2D), and `weights`, the checkpoint.
 
 ```toml
-models = [{ name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" }]
+models = [{ name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" }]
 ```
 
 `input_size`, `mean`, `n_out_channels` and (for `mvt`) `precision` are properties of

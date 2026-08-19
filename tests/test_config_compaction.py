@@ -472,12 +472,12 @@ def test_the_packaged_config_names_its_checkpoint_portably():
     """The shipped `weights` is a bare FILENAME, never a path.
 
     There is no dense model to auto-download, so the config has to name one -- but naming
-    `/mnt/.../mvt_alt8_fly38b.pth` would make the packaged default a fact about one
+    `/mnt/.../mvt_alt8_r27_gray_fly38.pth` would make the packaged default a fact about one
     machine's mount. A bare name is a fact about which model to use, resolved per machine
     against $DEEPERFLY_MODELS, and the failure when it is not there is the actionable one.
     """
     spec = Config.default().detection_plan().models["dense38mv"]
-    assert spec.weights == "mvt_alt8_fly38b.pth"
+    assert spec.weights == "mvt_alt8_r27_gray_fly38.pth"
     assert "/" not in spec.weights and not Path(spec.weights).is_absolute()
     with pytest.raises(SystemExit) as e:
         download.resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)

@@ -499,7 +499,7 @@ single entry above it. It is hoisted instead:
 [pose2d]
 model = "dense38mv"                  # the default for every pathway below
 models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" },
+    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" },
 ]
 pathways = [
     { name = "rh", source = "vid_rh" },
