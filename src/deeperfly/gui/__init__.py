@@ -2,7 +2,7 @@
 
 FastAPI + uvicorn are core deps, but importing :mod:`deeperfly.gui` only pulls in
 the dependency-free core -- :class:`~deeperfly.gui.state.EditorState`, the
-corrections sidecar, footage resolution and the
+label store, footage resolution and the
 :class:`~deeperfly.gui.session.Session`. :func:`serve` imports FastAPI/uvicorn
 lazily so the web stack is loaded only when the ``gui`` command actually runs,
 keeping startup cheap for every other command.
@@ -10,7 +10,7 @@ keeping startup cheap for every other command.
 The GUI is a browser app: a local server (FastAPI) serves the result's frames
 and 2D overlays to a canvas front-end and applies edits over a WebSocket. It
 shows every camera view with its 2D skeleton overlay and lets keypoints be
-dragged. Corrections are written to a ``corrections.h5`` sidecar and never
+dragged. Labels are written to a ``labels.h5`` sidecar and never
 overwrite ``results.h5``. In *Edit 3D* mode the triangulated points are
 reprojected into each view; dragging one re-solves the 3D point and every other
 view's reprojection updates live. Because it is a web app it runs headless and
@@ -32,13 +32,11 @@ from pathlib import Path
 
 from ..acquisition import SUGGESTIONS_FILENAME
 from ..results import PoseResult, StageStore
-from .corrections import Corrections, load_corrections, save_corrections
 from .labels import (
     Labels,
     labels_identity,
     load_labels,
     load_landmark_labels,
-    migrate_from_corrections,
     save_labels,
 )
 from .readers import FrameSource, resolve_camera_files, resolve_footage
@@ -52,10 +50,6 @@ __all__ = [
     "load_labels",
     "save_labels",
     "labels_identity",
-    "migrate_from_corrections",
-    "Corrections",
-    "load_corrections",
-    "save_corrections",
     "FrameSource",
     "resolve_footage",
     "resolve_camera_files",
@@ -271,7 +265,7 @@ def build_session(
     """Load a ``results.h5`` into an editing :class:`Session` (no web deps).
 
     Loads the result, resolves each camera's footage (from the paths recorded in
-    ``results.h5``, then ``footage_dir``), loads any existing ``corrections.h5``
+    ``results.h5``, then ``footage_dir``), loads any existing ``labels.h5``
     sidecar, and assembles the :class:`Session`. Cameras whose footage cannot be
     found fall back to blank frames (logged), so the overlays still draw.
 
@@ -321,7 +315,7 @@ def build_session(
         image_sizes=image_sizes,
         footage=footage,
     )
-    labels = _load_or_migrate_labels(labels_path, results_dir, result, identity)
+    labels = load_labels(labels_path, identity=identity)
     mesh_hide, template, articulation, ann, tri = _ik_config(results_dir)
     # The pristine detections (result.pts2d is the most-derived stage's pose, which the
     # smoother and the correction chain make dense and no longer the detector's pixels --
@@ -349,38 +343,6 @@ def build_session(
         image_sizes=image_sizes,
         nmf_hide_parts=mesh_hide,
     )
-
-
-def _load_or_migrate_labels(labels_path, results_dir, result, identity):
-    """Load ``labels.h5`` if present, else migrate a legacy ``corrections.h5`` (if any).
-
-    A one-time migration keeps existing manual corrections usable: the legacy dense
-    sidecar is converted to sparse labels in memory (its file is left untouched), and
-    the lossy drops are logged. Returns ``None`` (an empty overlay) when neither
-    sidecar exists.
-    """
-    labels = load_labels(labels_path, identity=identity)
-    if labels is not None:
-        return labels
-    corrections_path = results_dir / "corrections.h5"
-    corrections = load_corrections(
-        corrections_path, result.n_views, result.n_frames, int(result.pts2d.shape[2])
-    )
-    if corrections is None:
-        return None
-    labels, report = migrate_from_corrections(corrections, result.pts2d)
-    log.warning(
-        "migrated %s -> sparse labels (%d GT, %d occluded; dropped %d ambiguous "
-        "occlusion(s), %d pure-3D edit(s)); saving writes %s",
-        corrections_path.name,
-        report["gt"],
-        report["occluded"],
-        report["dropped_ambiguous_occluded"],
-        report["dropped_pts3d_only"],
-        labels_path.name,
-    )
-    labels.dirty = True  # so the operator is prompted to persist the migrated labels
-    return labels
 
 
 def _ik_config(results_dir: Path):

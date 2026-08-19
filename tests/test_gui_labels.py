@@ -7,7 +7,6 @@ import json
 import numpy as np
 import pytest
 
-from deeperfly.gui.corrections import Corrections
 from deeperfly.gui.labels import (
     LABELS_FORMAT_VERSION,
     Labels,
@@ -15,7 +14,6 @@ from deeperfly.gui.labels import (
     export_gt,
     labels_identity,
     load_labels,
-    migrate_from_corrections,
     resolve_point_names,
     save_labels,
 )
@@ -322,43 +320,6 @@ def test_load_keeps_a_cell_that_is_both_gt_and_occluded(tmp_path, result):
     assert loaded is not None
     assert loaded.has_gt[0, 0, 1] and loaded.occluded[0, 0, 1]
     np.testing.assert_allclose(loaded.gt[0, 0, 1], [5.0, 6.0])
-
-
-# -- migration from the legacy corrections.h5 ---------------------------------
-
-
-def test_migration_maps_edits_and_confident_occlusions(result):
-    corr = Corrections.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    # a dragged 2D edit on a view the detector saw -> GT
-    corr.set_pts2d(0, 0, 4, (5.0, 6.0))
-    # a "finalized" (fixed) pixel -> GT too
-    corr.set_pts2d(1, 0, 4, (7.0, 8.0), fixed=True)
-    # obscuring a view the detector DID see (finite prediction) -> confident occlusion
-    corr.set_invisible(2, 0, 5, True)
-
-    lab, report = migrate_from_corrections(corr, result.pts2d)
-    assert lab.has_gt[0, 0, 4] and np.allclose(lab.gt[0, 0, 4], [5.0, 6.0])
-    assert lab.has_gt[1, 0, 4] and np.allclose(lab.gt[1, 0, 4], [7.0, 8.0])
-    assert lab.occluded[2, 0, 5]
-    assert report["gt"] == 2
-    assert report["occluded"] == 1
-
-
-def test_migration_drops_ambiguous_occlusions_on_nan_predictions(result):
-    # A view the detector MISSED (NaN prediction) that is invisible is ambiguous
-    # (seed vs human), so it is dropped by default and re-derives as absent.
-    result.pts2d[3, 0, 6] = np.nan
-    corr = Corrections.empty(result.n_views, result.n_frames, result.pts2d.shape[2])
-    corr.set_invisible(3, 0, 6, True)
-
-    lab, report = migrate_from_corrections(corr, result.pts2d)
-    assert not lab.occluded[3, 0, 6]
-    assert report["dropped_ambiguous_occluded"] == 1
-
-    lab_keep, _ = migrate_from_corrections(
-        corr, result.pts2d, keep_ambiguous_occluded=True
-    )
-    assert lab_keep.occluded[3, 0, 6]
 
 
 # -- export (training/eval seam) ----------------------------------------------

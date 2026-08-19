@@ -172,7 +172,6 @@ __all__ = [
     "load_labels",
     "load_landmark_labels",
     "labels_identity",
-    "migrate_from_corrections",
     "export_gt",
     "export_absent",
     "resolve_point_names",
@@ -1236,65 +1235,6 @@ def load_labels(path: str | Path, *, identity: dict) -> Labels | None:
     labels.subject_id = subject_id
     labels.dirty = False
     return labels
-
-
-# -- migration from the legacy corrections.h5 ---------------------------------
-
-
-def migrate_from_corrections(
-    corrections,
-    result_pts2d: np.ndarray,
-    *,
-    keep_ambiguous_occluded: bool = False,
-) -> tuple[Labels, dict]:
-    """Convert a legacy dense :class:`~deeperfly.gui.corrections.Corrections` to labels.
-
-    This preserves the operator's authored 2D *pixels* as GT but not the old solve
-    semantics -- the 3D re-derives under the new policy. The mapping (and what it
-    drops) is:
-
-    - ``pts2d_edited`` (incl. the old ``fixed`` finalized pixels) with a finite pixel
-      -> **GT**. ``fixed`` collapses into GT.
-    - ``pts2d_invisible`` on a view the detector *did* see (``isfinite`` prediction)
-      -> **occluded** (a confident human "delete this view").
-    - ``pts2d_invisible`` where the detector *also* missed is ambiguous: the fresh
-      overlay seeded ``invisible`` from NaN predictions, so it cannot be told from a
-      real human occlusion. Dropped by default (re-derives as *unset*); set
-      ``keep_ambiguous_occluded`` to keep them and un-occlude the false positives by
-      hand.
-    - ``pts3d_edited`` with no fixed 2D cannot be expressed as a 2D label and is
-      dropped.
-
-    Returns ``(labels, report)`` where ``report`` counts each bucket.
-    """
-    pts2d = np.asarray(result_pts2d, dtype=float)
-    pred_finite = np.isfinite(pts2d).all(axis=-1)  # (V, T, P)
-    n_views, n_frames, n_points = pred_finite.shape
-    labels = Labels.empty(n_views, n_frames, n_points)
-
-    gt_mask = corrections.pts2d_edited & np.isfinite(corrections.pts2d).all(axis=-1)
-    for v, t, pt in zip(*np.nonzero(gt_mask)):
-        labels.gt[v, t, pt] = corrections.pts2d[v, t, pt]
-
-    occ_confident = corrections.pts2d_invisible & pred_finite & ~gt_mask
-    occ_ambiguous = corrections.pts2d_invisible & ~pred_finite & ~gt_mask
-    occ_mask = occ_confident | (occ_ambiguous if keep_ambiguous_occluded else False)
-    labels.occluded = np.asarray(occ_mask, dtype=bool)
-
-    # A pure-3D edit with no fixed 2D pixel cannot become a 2D label.
-    fixed = getattr(corrections, "pts2d_fixed", np.zeros_like(gt_mask))
-    pts3d_only = corrections.pts3d_edited & ~fixed.any(axis=0)  # (T, P)
-
-    labels.dirty = False
-    report = {
-        "gt": int(gt_mask.sum()),
-        "occluded": int(labels.occluded.sum()),
-        "dropped_ambiguous_occluded": 0
-        if keep_ambiguous_occluded
-        else int(occ_ambiguous.sum()),
-        "dropped_pts3d_only": int(pts3d_only.sum()),
-    }
-    return labels, report
 
 
 # -- export (the training/eval consumer seam) ---------------------------------
