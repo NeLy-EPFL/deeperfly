@@ -40,7 +40,6 @@ from .geometry import (
 
 if TYPE_CHECKING:
     from .config import Config
-    from .preprocessing import FrameTransform
 
 __all__ = ["Camera", "CameraGroup", "resolve_extrinsics"]
 
@@ -198,16 +197,15 @@ def resolve_extrinsics(spec: dict) -> tuple[np.ndarray, np.ndarray]:
 def _parse_intrinsics(
     spec: dict,
     image_size: tuple[int, int] | None = None,
-    transform: "FrameTransform | None" = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a spec dict to packed ``intr = [fx, fy, cx, cy]`` and ``dist``.
 
-    The spec's intrinsics describe the *raw* footage frame. ``principal_point_px``
-    is optional: when the spec omits it, the principal point is placed at the
-    raw image center ``((w - 1) / 2, (h - 1) / 2)`` using ``image_size``. When
-    the camera has a preprocess ``transform``, the resolved intrinsics are then
-    mapped through it into the canonical (transformed) frame (see
-    :meth:`~deeperfly.preprocessing.FrameTransform.map_intrinsics`).
+    The spec's intrinsics describe the *raw* footage frame, and stay there. That is the
+    whole reason a camera needs no notion of the detector's cropping: a pathway's frame ops
+    are inverted on the way back (:class:`~deeperfly.preprocessing.FrameTransform`), so
+    every detection meets a camera in raw pixels however it was windowed to reach the
+    model. ``principal_point_px`` is optional: when the spec omits it, the principal point
+    is placed at the raw image center ``((w - 1) / 2, (h - 1) / 2)`` using ``image_size``.
 
     Parameters
     ----------
@@ -217,24 +215,19 @@ def _parse_intrinsics(
         raw-frame pixels.
     image_size
         Raw footage ``(height, width)`` (as in a NumPy image array) used to
-        infer the principal point when ``principal_point_px`` is absent, and to
-        anchor the preprocess affine.
-    transform
-        The camera's preprocess :class:`~deeperfly.preprocessing.FrameTransform`
-        (or ``None`` for the identity).
+        infer the principal point when ``principal_point_px`` is absent.
 
     Returns
     -------
     intr, dist : np.ndarray
-        Packed canonical-frame intrinsics ``[fx, fy, cx, cy]`` and the
-        distortion coefficients.
+        Packed raw-frame intrinsics ``[fx, fy, cx, cy]`` and the distortion
+        coefficients.
 
     Raises
     ------
     ValueError
-        If a required intrinsic is missing (and cannot be inferred),
-        ``focal_length_px`` is not a scalar or 2-vector, or a non-identity
-        ``transform`` comes without an ``image_size`` to anchor it.
+        If a required intrinsic is missing (and cannot be inferred), or
+        ``focal_length_px`` is not a scalar or 2-vector.
     """
     try:
         focal = np.atleast_1d(np.asarray(spec["focal_length_px"], dtype=float))
@@ -258,14 +251,6 @@ def _parse_intrinsics(
         raise ValueError("focal_length_px must be a scalar or [fx, fy]")
     intr = np.array([fx, fy, cx, cy])
     dist = np.asarray(spec.get("distortion_coefficients", []), dtype=float)
-    if transform is not None and not transform.is_identity():
-        if image_size is None:
-            raise ValueError(
-                "camera has a preprocess transform but no raw image size to "
-                "map its intrinsics through (the op affines need the frame's "
-                "height/width)"
-            )
-        intr = transform.map_intrinsics(intr, dist, image_size)
     return intr, dist
 
 
@@ -290,7 +275,6 @@ class Camera:
         spec: dict,
         name: str | None = None,
         image_size: tuple[int, int] | None = None,
-        transform: "FrameTransform | None" = None,
     ) -> Camera:
         """Build a camera from a config dict (see :func:`resolve_extrinsics`).
 
@@ -304,11 +288,7 @@ class Camera:
         image_size
             Optional raw-footage ``(height, width)`` pair used to infer the
             principal point (image center) when the spec omits
-            ``principal_point_px``, and to anchor ``transform``'s affine.
-        transform
-            The camera's preprocess transform; when given and non-identity, the
-            spec's raw-frame intrinsics are mapped through it (see
-            :func:`_parse_intrinsics`).
+            ``principal_point_px``.
 
         Returns
         -------
@@ -316,7 +296,7 @@ class Camera:
             The constructed camera.
         """
         rvec, tvec = resolve_extrinsics(spec)
-        intr, dist = _parse_intrinsics(spec, image_size=image_size, transform=transform)
+        intr, dist = _parse_intrinsics(spec, image_size=image_size)
         return cls(rvec=rvec, tvec=tvec, intr=intr, dist=dist, name=name)
 
     @property

@@ -228,10 +228,24 @@ guessed at. To use raw, solved extrinsics, point at a calibration file instead
 **Non-geometry keys.** A `[cameras.<name>]` table also carries per-view keys owned
 by other stages, which are stripped before the rig is parsed:
 
+!!! warning "`preprocess` was retired in 0.2 and is now refused"
+
+    A per-camera `preprocess` list used to crop and turn a view's frames. Frame ops belong
+    to the detection [pathway](#pose2d) instead, and the difference decides which of the two
+    a run can have: a pathway's ops are **inverted on the way back**, so a detection reaches
+    its camera in raw footage pixels however it was windowed to get to the model, and the
+    camera's intrinsics go on describing the raw frame. The retired key moved the *camera*
+    into cropped-pixel space. Honoring both would double-correct by exactly the crop offset
+    — a fly reprojecting off with nothing in the output to point at.
+
+    It was accepted and silently ignored for several releases, which is the worst place for
+    it: a crop is exactly what a badly-framed axial camera needs, so the key that did
+    nothing was the one to reach for where being wrong costs most. It is now a hard error
+    naming its replacement.
+
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `input` | str | *unset* | Footage glob for this view. |
-| `preprocess` | list[table] | `[]` | Frame ops applied to this view (see [`[[pose2d.preprocessors]]`](#pose2d)). |
 | `mirror` | str | *unset* | The view that sees **this view's mirror image**. |
 
 `mirror` is what makes flip augmentation honest. The animal is bilaterally

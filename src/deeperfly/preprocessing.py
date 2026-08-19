@@ -21,7 +21,7 @@ Configured per camera as an ordered list under ``[cameras.<camera>]``::
         { op = "resize", scale = 0.5 },
     ]
 
-(see :func:`parse_frame_transforms`).
+(see :class:`FrameTransform`).
 
 One op is a *placeholder* rather than a transform: ``{ op = "crop", auto = true }`` (see
 :class:`AutoCrop`) declares a crop whose window is **searched per recording** by
@@ -41,7 +41,7 @@ import numpy as np
 from .io.base import to_numpy
 
 if TYPE_CHECKING:
-    from .config import Config
+    pass
 
 __all__ = [
     "Fliplr",
@@ -53,7 +53,6 @@ __all__ = [
     "Resize",
     "FrameTransform",
     "frame_transform_from_ops",
-    "parse_frame_transforms",
 ]
 
 _OP_NAMES = ("fliplr", "flipud", "rot90", "crop", "resize")
@@ -681,63 +680,6 @@ class FrameTransform:
             int(round(float(y1 - y0))),
         )
 
-    def map_intrinsics(
-        self, intr: np.ndarray, dist: np.ndarray, raw_size: tuple[int, int]
-    ) -> np.ndarray:
-        """Map raw-frame intrinsics ``[fx, fy, cx, cy]`` into the canonical frame.
-
-        The principal point maps as a pixel through :meth:`affine`; the focal
-        lengths are *magnitudes*: they swap under an odd quarter-turn count and
-        scale under a resize, but a mirror never makes them negative -- the
-        config's orbit extrinsics describe the *canonical* (already corrected)
-        view, so no reflection is folded into the camera model.
-
-        Parameters
-        ----------
-        intr
-            Packed raw-frame intrinsics ``[fx, fy, cx, cy]``.
-        dist
-            The camera's distortion coefficients (only inspected, never
-            changed): radial terms are rotation/mirror-symmetric, but
-            tangential/thin-prism terms are not.
-        raw_size
-            The raw footage ``(height, width)``.
-
-        Returns
-        -------
-        np.ndarray
-            Packed canonical-frame intrinsics ``[fx, fy, cx, cy]``.
-
-        Raises
-        ------
-        ValueError
-            If a nonzero tangential/thin-prism distortion coefficient is
-            combined with a mirroring or rotating op (the coefficients would
-            silently describe the wrong lens).
-        """
-        fx, fy, cx, cy = (float(v) for v in intr)
-        a = self.affine(raw_size)
-        lin, off = a[:2, :2], a[:2, 2]
-        diag_positive = (
-            lin[0, 1] == 0 and lin[1, 0] == 0 and lin[0, 0] > 0 and lin[1, 1] > 0
-        )
-        if not diag_positive:
-            bad = [
-                i
-                for i in _NON_RADIAL_DIST_IDX
-                if i < len(dist) and float(dist[i]) != 0.0
-            ]
-            if bad:
-                raise ValueError(
-                    f"non-radial distortion coefficients (index {bad}) do not "
-                    f"survive a flip/rot90 preprocess op; supply distortion "
-                    f"coefficients valid for the flipped/rotated frame or drop "
-                    f"the tangential/thin-prism terms"
-                )
-        new_c = lin @ np.array([cx, cy]) + off
-        new_f = np.abs(lin) @ np.array([fx, fy])
-        return np.array([new_f[0], new_f[1], new_c[0], new_c[1]])
-
     def to_json(self) -> list[dict]:
         """The chain as a canonical JSON-able op list (fingerprints, logs)."""
         return [op.to_json() for op in self.ops]
@@ -856,9 +798,8 @@ def _parse_op(step, where: str) -> FrameOp:
 def frame_transform_from_ops(ops, where: str) -> FrameTransform:
     """Build a :class:`FrameTransform` from a list of ``{ op = ... }`` tables.
 
-    The shared parser behind ``[cameras.<name>].preprocess`` and the named
-    ``[[pose2d.preprocessors]]`` of the detection plan, so both accept the exact same
-    op grammar (and fail the same way on a typo).
+    The parser behind a detection plan's named ``[[pose2d.preprocessors]]``: one op
+    grammar, one set of refusals, so a typo fails the same way wherever it is written.
 
     Parameters
     ----------
@@ -884,65 +825,3 @@ def frame_transform_from_ops(ops, where: str) -> FrameTransform:
     return FrameTransform(
         tuple(_parse_op(step, f"{where}[{i}]") for i, step in enumerate(ops))
     )
-
-
-def parse_frame_transforms(
-    config: "Config",
-) -> dict[str, FrameTransform]:
-    """Build ``camera name -> FrameTransform`` from the per-camera preprocess lists.
-
-    Each ``[cameras.<camera>]`` table may carry ``preprocess``, an ordered list
-    of op tables applied in the order written::
-
-        preprocess = [
-            { op = "rot90", k = 1 },          # CCW quarter-turns, any sign
-            { op = "fliplr" },                  # also: flipud
-            { op = "crop", x = 0, y = 0, width = 100, height = 100 },
-            { op = "resize", scale = 0.5 },     # or width = .. , height = ..
-        ]
-
-    (equivalently ``[[cameras.<camera>.preprocess]]`` blocks).
-
-    Parameters
-    ----------
-    config
-        A :class:`~deeperfly.config.Config`.
-
-    Returns
-    -------
-    dict of str to FrameTransform
-        ``camera_name -> FrameTransform`` for cameras with a preprocess list;
-        cameras without one are absent (callers treat them as the identity).
-
-    Raises
-    ------
-    ValueError
-        If ``preprocess`` is not an ordered list of op tables, or names an
-        unknown op or op key, or carries a malformed op parameter (so config
-        typos fail loudly).
-    """
-    defaults, cameras = config.camera_table()
-    if "preprocess" in defaults:
-        raise ValueError(
-            "[cameras.defaults] does not take preprocess; frames are corrected "
-            "per camera -- set preprocess on each camera that needs it"
-        )
-    out: dict[str, FrameTransform] = {}
-    for name, cam in cameras.items():
-        spec = cam.get("preprocess")
-        if not spec:
-            continue
-        if not isinstance(spec, list):
-            raise ValueError(
-                f"[cameras.{name}].preprocess must be an ordered list of op "
-                f'tables, e.g.\n  preprocess = [{{ op = "fliplr" }}, '
-                f'{{ op = "rot90", k = 1 }}]\n'
-                f"(or [[cameras.{name}.preprocess]] blocks), applied in the "
-                f"order written; got {spec!r}"
-            )
-        ops = tuple(
-            _parse_op(step, f"[cameras.{name}].preprocess[{i}]")
-            for i, step in enumerate(spec)
-        )
-        out[name] = FrameTransform(ops)
-    return out

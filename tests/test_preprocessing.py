@@ -10,12 +10,9 @@ mapping, and the config parser's validation.
 
 from __future__ import annotations
 
-import tomllib
-
 import numpy as np
 import pytest
 
-from deeperfly.config import Config
 from deeperfly.preprocessing import (
     Crop,
     Fliplr,
@@ -23,7 +20,7 @@ from deeperfly.preprocessing import (
     FrameTransform,
     Resize,
     Rot90,
-    parse_frame_transforms,
+    frame_transform_from_ops,
 )
 
 
@@ -302,75 +299,6 @@ def test_torch_resize_nearest_bitexact_with_numpy(resize):
     np.testing.assert_array_equal(out_t.numpy(), out_np)
 
 
-# -- intrinsics mapping ---------------------------------------------------------
-
-
-def test_map_intrinsics_crop_shifts_principal_point():
-    # The acceptance example: 100x100 raw frame, principal point at the raw
-    # center (49.5, 49.5), crop at (10, 10) -> (39.5, 39.5); focals untouched.
-    t = FrameTransform((Crop(x=10, y=10, width=80, height=80),))
-    intr = t.map_intrinsics([200.0, 210.0, 49.5, 49.5], np.array([]), (100, 100))
-    assert np.allclose(intr, [200.0, 210.0, 39.5, 39.5])
-
-
-def test_map_intrinsics_rot90_swaps_focals_and_maps_pp():
-    # (x, y) -> (y, w-1-x) on a (h=100, w=200) frame.
-    t = FrameTransform((Rot90(k=1),))
-    intr = t.map_intrinsics([300.0, 400.0, 10.0, 20.0], np.array([]), (100, 200))
-    assert np.allclose(intr, [400.0, 300.0, 20.0, 189.0])
-
-
-def test_map_intrinsics_fliplr_reflects_pp_keeps_focals():
-    t = FrameTransform((Fliplr(),))
-    intr = t.map_intrinsics([300.0, 400.0, 10.0, 20.0], np.array([]), (50, 60))
-    assert np.allclose(intr, [300.0, 400.0, 49.0, 20.0])
-
-
-def test_map_intrinsics_resize_scales():
-    t = FrameTransform((Resize(scale=0.5),))
-    intr = t.map_intrinsics([300.0, 400.0, 49.5, 49.5], np.array([]), (100, 100))
-    assert np.allclose(intr, [150.0, 200.0, 24.5, 24.5])
-
-
-@pytest.mark.parametrize(
-    "ops",
-    [
-        (Fliplr(),),
-        (Flipud(),),
-        (Rot90(k=1),),
-        (Rot90(k=2),),
-        (Fliplr(), Rot90(k=3)),
-    ],
-)
-def test_raw_center_maps_to_canonical_center(ops):
-    # Flip/rot90 chains keep the image center at the image center, so the
-    # default principal point lands at the center of the transformed frame.
-    h, w = 100, 200
-    t = FrameTransform(ops)
-    oh, ow = t.output_size((h, w))
-    intr = t.map_intrinsics(
-        [300.0, 300.0, (w - 1) / 2, (h - 1) / 2], np.array([]), (h, w)
-    )
-    assert np.allclose(intr[2:], [(ow - 1) / 2, (oh - 1) / 2])
-
-
-def test_map_intrinsics_distortion_guard():
-    radial_only = np.array([0.1, -0.05, 0.0, 0.0, 0.02])  # k1, k2, k3 nonzero
-    tangential = np.array([0.1, -0.05, 0.01, 0.0])  # p1 nonzero
-    intr = [300.0, 300.0, 50.0, 50.0]
-    # radial terms survive mirrors/rotations
-    FrameTransform((Fliplr(),)).map_intrinsics(intr, radial_only, (100, 100))
-    # tangential terms survive crops and resizes (positive-diagonal maps)
-    FrameTransform(
-        (Crop(x=1, y=1, width=50, height=50), Resize(scale=2.0))
-    ).map_intrinsics(intr, tangential, (100, 100))
-    # ... but not mirrors or any rotation (180 deg included)
-    with pytest.raises(ValueError, match="non-radial"):
-        FrameTransform((Fliplr(),)).map_intrinsics(intr, tangential, (100, 100))
-    with pytest.raises(ValueError, match="non-radial"):
-        FrameTransform((Rot90(k=2),)).map_intrinsics(intr, tangential, (100, 100))
-
-
 # -- raw_window ----------------------------------------------------------------
 #
 # The window is what a consumer that can only express a box -- a visualization panel --
@@ -466,87 +394,46 @@ def test_raw_window_rejects_a_crop_that_does_not_fit():
         t.raw_window((96, 128))
 
 
-# -- config parsing ----------------------------------------------------------
-
-
-def test_parse_frame_transforms_reads_lists():
-    cfg = {
-        "cameras": {
-            "rh": {"preprocess": [{"op": "fliplr"}, {"op": "rot90", "k": 3}]},
-            "lf": {"preprocess": [{"op": "flipud"}]},
-            "rm": {},  # a camera with no preprocess list
-        }
-    }
-    d = parse_frame_transforms(Config.from_dict(cfg))
-    assert d["rh"] == FrameTransform((Fliplr(), Rot90(k=3)))
-    assert d["lf"] == FrameTransform((Flipud(),))
-    assert "rm" not in d  # cameras with no list are simply absent (-> identity)
-
-
-def test_parse_frame_transforms_array_of_tables_form():
-    text = """
-    [[cameras.rh.preprocess]]
-    op = "rot90"
-    k = 1
-
-    [[cameras.rh.preprocess]]
-    op = "crop"
-    x = 10
-    y = 10
-    width = 80
-    height = 80
-
-    [[cameras.rh.preprocess]]
-    op = "resize"
-    scale = 0.5
-    """
-    d = parse_frame_transforms(Config.from_dict(tomllib.loads(text)))
-    assert d["rh"] == FrameTransform(
-        (Rot90(k=1), Crop(x=10, y=10, width=80, height=80), Resize(scale=0.5))
-    )
-
-
-def test_parse_frame_transforms_empty_when_section_missing():
-    assert parse_frame_transforms(Config.from_dict({})) == {}
-    cfg = {"cameras": {"rh": {"preprocess": []}}}
-    assert parse_frame_transforms(Config.from_dict(cfg)) == {}
-
-
-def test_parse_frame_transforms_rejects_table_form():
-    cfg = {"cameras": {"rh": {"preprocess": {"fliplr": True, "rot90": 3}}}}
-    with pytest.raises(ValueError, match="ordered list of op tables"):
-        parse_frame_transforms(Config.from_dict(cfg))
-
-
-def test_parse_frame_transforms_rejects_defaults_preprocess():
-    cfg = {"cameras": {"defaults": {"preprocess": [{"op": "fliplr"}]}, "rh": {}}}
-    with pytest.raises(ValueError, match="defaults"):
-        parse_frame_transforms(Config.from_dict(cfg))
+# -- op parsing ----------------------------------------------------------------
+#
+# Every case here is one a config could hit. They go through `frame_transform_from_ops`,
+# which is what `[[pose2d.preprocessors]] ops` is parsed by -- the per-camera
+# `[cameras.*].preprocess` spelling these once covered was retired in 0.2 (the pathway's
+# chain is the one whose transform is inverted on the way back).
 
 
 @pytest.mark.parametrize(
-    "steps",
+    "ops",
     [
-        "fliplr",  # not a list
-        ["fliplr"],  # bare string step (must be a table)
-        [{"op": "rotate"}],  # unknown op
-        [{"op": "fliplr", "k": 1}],  # key not allowed for this op
-        [{"op": "rot90", "k": 1.5}],  # non-integer k
-        [{"op": "rot90", "k": True}],  # bool is not a quarter-turn count
-        [{"op": "crop", "x": 0, "y": 0, "width": 10}],  # missing height
-        [{"op": "crop", "x": -1, "y": 0, "width": 10, "height": 10}],
-        [{"op": "crop", "x": 0, "y": 0, "width": 10, "height": True}],
-        [{"op": "resize"}],  # neither scale nor width/height
+        [{"op": "nope"}],  # unknown op
+        [{"op": "rot90", "k": 1, "extra": 2}],  # unknown key
+        [{"op": "crop", "x": 0, "y": 0, "width": 10}],  # incomplete crop
+        [{"op": "crop", "x": 0, "y": 0, "width": 0, "height": 10}],  # empty crop
+        [{"op": "resize"}],  # nothing to resize by
         [{"op": "resize", "scale": 0.5, "width": 10, "height": 10}],  # both
         [{"op": "resize", "width": 10}],  # width without height
         [{"op": "resize", "scale": 0.0}],
         [{"op": "resize", "scale": 0.5, "interpolation": "bicubic"}],
+        [{"k": 1}],  # no op name at all
+        "fliplr",  # not a list of tables
     ],
 )
-def test_parse_frame_transforms_rejects_bad_config(steps):
+def test_bad_ops_are_refused(ops):
     with pytest.raises(ValueError):
-        parse_frame_transforms(
-            Config.from_dict({"cameras": {"rh": {"preprocess": steps}}})
+        frame_transform_from_ops(ops, "[[pose2d.preprocessors]] 'x' ops")
+
+
+def test_an_empty_or_absent_op_list_is_the_identity():
+    """A preprocessor may legally declare no ops -- that is a named identity, not an error."""
+    assert frame_transform_from_ops(None, "where").is_identity()
+    assert frame_transform_from_ops([], "where").is_identity()
+
+
+def test_the_refusal_names_where_it_came_from():
+    """A config with several preprocessors needs to know WHICH one failed, and at which op."""
+    with pytest.raises(ValueError, match=r"crop_h.*ops\[1\]"):
+        frame_transform_from_ops(
+            [{"op": "fliplr"}, {"op": "nope"}], "[[pose2d.preprocessors]] 'crop_h' ops"
         )
 
 

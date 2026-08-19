@@ -22,7 +22,6 @@ from helpers import (
 from deeperfly import geometry as geom
 from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
 from deeperfly.config import Config
-from deeperfly.preprocessing import Crop, Fliplr, FrameTransform, Resize, Rot90
 
 
 @pytest.fixture
@@ -192,69 +191,6 @@ def test_from_spec_missing_principal_point_without_image_size_raises():
         Camera.from_spec({"distance": 1.0, "focal_length_px": 700.0})
 
 
-# -- Camera + preprocess transform --------------------------------------------
-
-
-def test_from_spec_crop_shifts_default_principal_point():
-    # The acceptance example: 100x100 raw, default pp = raw center (49.5, 49.5),
-    # crop at (10, 10) -> canonical pp (39.5, 39.5).
-    cam = Camera.from_spec(
-        {"distance": 1.0, "focal_length_px": 700.0},
-        image_size=(100, 100),
-        transform=FrameTransform((Crop(x=10, y=10, width=80, height=80),)),
-    )
-    assert cam.intr.tolist() == [700.0, 700.0, 39.5, 39.5]
-
-
-def test_from_spec_explicit_principal_point_is_raw_and_mapped():
-    # Explicit pp is in raw-footage coordinates and rides through the chain.
-    cam = Camera.from_spec(
-        {
-            "distance": 1.0,
-            "focal_length_px": [700.0, 710.0],
-            "principal_point_px": [10.0, 20.0],
-        },
-        image_size=(100, 200),
-        transform=FrameTransform((Rot90(k=1),)),
-    )
-    # (x, y) -> (y, w-1-x); odd quarter-turns swap fx and fy.
-    assert cam.intr.tolist() == [710.0, 700.0, 20.0, 189.0]
-
-
-def test_from_spec_resize_scales_intrinsics():
-    cam = Camera.from_spec(
-        {"distance": 1.0, "focal_length_px": 700.0},
-        image_size=(100, 100),
-        transform=FrameTransform((Resize(scale=0.5),)),
-    )
-    assert cam.intr.tolist() == [350.0, 350.0, 24.5, 24.5]
-
-
-def test_from_spec_transform_without_image_size_raises():
-    # Even with an explicit pp: the op affines need the raw height/width.
-    with pytest.raises(ValueError, match="raw image size"):
-        Camera.from_spec(
-            {
-                "distance": 1.0,
-                "focal_length_px": 700.0,
-                "principal_point_px": [10.0, 20.0],
-            },
-            transform=FrameTransform((Fliplr(),)),
-        )
-
-
-def test_from_spec_identity_transform_is_inert():
-    cam = Camera.from_spec(
-        {
-            "distance": 1.0,
-            "focal_length_px": 700.0,
-            "principal_point_px": [10.0, 20.0],
-        },
-        transform=FrameTransform(),
-    )
-    assert cam.intr.tolist() == [700.0, 700.0, 10.0, 20.0]
-
-
 # -- CameraGroup -------------------------------------------------------------
 
 
@@ -314,22 +250,64 @@ def test_group_from_config_infers_principal_point_per_view():
 
 
 def test_group_from_config_ignores_non_rig_keys():
-    # A view is pure geometry now: footage/preprocess keys (if present) are not
-    # part of the rig and its intrinsics describe the raw source frame.
+    """A view is pure geometry: a footage glob beside it is not part of the rig.
+
+    And its intrinsics describe the RAW source frame, which is what lets the detector
+    window a view however it likes -- a pathway's frame ops are inverted on the way back,
+    so a detection meets its camera in raw pixels regardless.
+    """
     config = {
         "cameras": {
             "defaults": {"focal_length_px": 800.0, "distance": 5.0},
-            "left": {
-                "azimuth_deg": 0.0,
-                "input": "cam0.mp4",
-                "preprocess": [{"op": "fliplr"}],
-            },
+            "left": {"azimuth_deg": 0.0, "input": "cam0.mp4"},
         },
     }
     image_sizes = {"left": (100, 100)}
     group = CameraGroup.from_config(Config.from_dict(config), image_sizes=image_sizes)
-    # Principal point is the raw image center, unaffected by the (ignored) keys.
+    # Principal point is the raw image center, unaffected by the (ignored) footage key.
     assert np.allclose(group["left"].intr, [800.0, 800.0, 49.5, 49.5])
+
+
+def test_a_retired_per_camera_preprocess_key_is_refused_not_ignored():
+    """The key cropped a view once; the pathway does it now, and both cannot.
+
+    A pathway's ops are inverted on the way back, so its detections land in raw footage
+    pixels and the camera keeps raw intrinsics. The retired key instead moved the CAMERA
+    into cropped-pixel space -- so honoring both would double-correct by exactly the crop
+    offset, with nothing in the output to point at.
+
+    It has to REFUSE rather than ignore, and that is the whole point of the test: a crop is
+    what a badly-framed axial camera needs, so a silently-dropped crop key is wrong in the
+    one situation where it costs most. The message has to carry the replacement, because
+    "your crop did nothing" is not actionable on its own.
+    """
+    config = {
+        "cameras": {
+            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
+            "left": {"azimuth_deg": 0.0, "preprocess": [{"op": "fliplr"}]},
+        },
+    }
+    with pytest.raises(
+        ValueError, match=r"\[cameras\.left\] carries 'preprocess'"
+    ) as e:
+        Config.from_dict(config).camera_table()
+    assert "[pose2d]" in str(e.value) and "preprocessor" in str(e.value)
+
+
+def test_the_retired_key_is_refused_under_defaults_too():
+    """`[cameras.defaults]` is where someone would put it to crop every view."""
+    config = {
+        "cameras": {
+            "defaults": {
+                "focal_length_px": 800.0,
+                "distance": 5.0,
+                "preprocess": [{"op": "fliplr"}],
+            },
+            "left": {"azimuth_deg": 0.0},
+        },
+    }
+    with pytest.raises(ValueError, match=r"\[cameras\.defaults\] carries 'preprocess'"):
+        Config.from_dict(config).camera_table()
 
 
 def test_group_from_config_missing_principal_point_no_sizes_raises():

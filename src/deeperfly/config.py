@@ -7,10 +7,10 @@ through a typed accessor (:attr:`Config.pose2d`, :attr:`Config.triangulation`, .
 whose defaults live in the small frozen ``*Params`` dataclasses below -- the single
 source of truth, so a default is written exactly once.
 
-The dynamic sections (cameras, skeleton, visualization, per-camera preprocessing)
+The dynamic sections (cameras, skeleton, visualization, the detection plan)
 are returned as the domain objects their own parsers already build
 (:class:`~deeperfly.cameras.CameraGroup`, :class:`~deeperfly.skeleton.Skeleton`,
-``list[VideoSpec]``, ``dict[str, FrameTransform]``); only genuinely open-ended leaf
+``list[VideoSpec]``, :class:`~deeperfly.pose2d.pathways.DetectionPlan`); only open-ended leaf
 kwargs (a draw op's options, scipy's ``least_squares`` kwargs) stay dicts, carried
 inside their typed parent.
 
@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .cameras import CameraGroup
     from .pose2d.pathways import DetectionPlan
-    from .preprocessing import FrameTransform
     from .skeleton import Skeleton
     from .visualization.compose import VideoSpec
 
@@ -715,6 +714,53 @@ def _source_filename(filename, name: str) -> str | list[str]:
     )
 
 
+#: Per-camera keys that a config may no longer carry, ``key -> what to write instead``.
+#:
+#: A key that was quietly dropped is worse than one that errors. ``preprocess`` cropped and
+#: turned a view's frames, and was superseded by the detection pathway's own op chain --
+#: which is the better mechanism for a reason worth stating, because it decides which of the
+#: two a run can have: a pathway's ops are **inverted on the way back**, so a detection
+#: reaches its camera in RAW footage pixels however it was windowed to get to the model, and
+#: the camera's intrinsics go on describing the raw frame. The retired key instead moved the
+#: CAMERA into cropped-pixel space. Both live at once is a silent double correction -- a fly
+#: reprojecting off by exactly the crop offset, with nothing to point at -- so there is no
+#: version of this where the key is honored alongside the pathway.
+#:
+#: It survived as accepted-and-ignored, which is the worst place for it to be: a crop is
+#: exactly what a wrongly-framed axial camera needs, so the key that did nothing was the one
+#: a reader of the docs reached for in the situation where being wrong costs most.
+RETIRED_CAMERA_KEYS = {
+    "preprocess": (
+        "frame ops moved to the detection pathway, where the transform is inverted on the "
+        "way back so the detections still land in raw footage pixels:\n"
+        "    [pose2d]\n"
+        '    preprocessors = [{ name = "crop_f", ops = [{ op = "crop", x = 400, y = 290, '
+        "width = 800, height = 400 }] }]\n"
+        '    pathways = [{ name = "f", source = "vid_f", preprocessor = "crop_f" }]\n'
+        "  ...or `auto = true` in place of the box to search one per recording; see "
+        "docs/reference/configuration.md#autocrop"
+    ),
+}
+
+
+def _refuse_retired_camera_keys(defaults: dict, views: dict[str, dict]) -> None:
+    """Raise on a ``[cameras.*]`` key this release no longer honors.
+
+    Checked here rather than at the rig parser because the rig parser never sees these:
+    they are stripped as non-geometry before a spec reaches
+    :meth:`~deeperfly.cameras.Camera.from_spec`, which is exactly how one went on being
+    accepted and ignored.
+    """
+    for where, spec in [("defaults", defaults), *views.items()]:
+        for key, advice in RETIRED_CAMERA_KEYS.items():
+            if key in spec:
+                raise ValueError(
+                    f"[cameras.{where}] carries {key!r}, which this release no longer "
+                    f"honors -- it was accepted and silently ignored before, so a config "
+                    f"relying on it was already running without it.\n  {advice}"
+                )
+
+
 # -- skeleton presets ---------------------------------------------------------
 
 
@@ -1163,12 +1209,6 @@ class Config:
 
         return Skeleton.from_config(self) if "skeleton" in self.data else Skeleton.fly()
 
-    def frame_transforms(self) -> "dict[str, FrameTransform]":
-        """Per-camera frame preprocessing (the ``[cameras.<name>]`` ``preprocess`` lists)."""
-        from .preprocessing import parse_frame_transforms
-
-        return parse_frame_transforms(self)
-
     def mirror_views(self) -> dict[str, str]:
         """``view -> the view that sees this view's mirror image`` (``[cameras.<n>].mirror``).
 
@@ -1255,7 +1295,9 @@ class Config:
         cams.pop("calibration", None)  # a path, not a camera -- see calibration_path
         # A non-table value under [cameras] is a key, not a view; keeping one would
         # reach Camera.from_spec as a spec and fail with a confusing message.
-        return defaults, {k: v for k, v in cams.items() if isinstance(v, dict)}
+        views = {k: v for k, v in cams.items() if isinstance(v, dict)}
+        _refuse_retired_camera_keys(defaults, views)
+        return defaults, views
 
     def calibration_path(self) -> Path | None:
         """The solved rig this config points at (``[cameras].calibration``), if any.
