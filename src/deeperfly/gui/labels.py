@@ -99,7 +99,7 @@ wants the precedence GT -> detection -> projection. Migrating a v5/v6 file keeps
 except the invented placeholder seeds, which were never exportable.
 
 On disk (schema v2) the deltas are stored **sparsely** (COO), which is tiny next to
-``results.h5`` and, unlike the old dense ``corrections.h5``, carries no copy of the
+``results.h5`` and, being sparse rather than a dense overlay array, carries no copy of the
 prediction NaN pattern:
 
 .. code-block:: text

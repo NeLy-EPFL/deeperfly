@@ -171,7 +171,7 @@ Opens the interactive web viewer for a result and lets you author the ground-tru
 2D pose (with the run's prediction as a starting point): every camera view with its
 2D skeleton overlay, drag-to-place / confirm keypoints, mark cells **Hidden** (held out of
 the training loss), and the live NeuroMechFly overlays. Labels go to a `labels.h5` sidecar and never modify
-`results.h5` (an older `corrections.h5` is migrated on open). See the
+`results.h5`. See the
 [annotation GUI guide](gui.md) for the editor itself.
 
 | Argument / option | Default | Meaning |

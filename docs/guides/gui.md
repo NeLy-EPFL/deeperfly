@@ -5,8 +5,7 @@
 overlay to a browser canvas and lets you author the ground-truth 2D pose, with the
 run's prediction as a starting point. Your labels are written to a `labels.h5`
 sidecar next to the result and **never modify `results.h5`** — re-running the
-pipeline is always safe (an older `corrections.h5` is migrated to `labels.h5` on
-open).
+pipeline is always safe.
 
 Because it is a browser app it needs no GUI toolkit, runs headless, and can be
 reached from another machine (see [Remote use](#remote-use)).

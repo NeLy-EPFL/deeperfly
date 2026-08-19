@@ -321,8 +321,8 @@ it excludes the predictions and `created_utc`, so re-running detection/triangula
 on the same recording keeps the labels valid (ground truth is absolute, not relative
 to what the network predicted). It deliberately excludes `absent`, which is
 point-indexed and so already domain-checked by the `point_names` match — which is also
-what lets one animal's declaration be copied across all of its recordings. A legacy
-`corrections.h5` is migrated to this schema on open. A file written by a *newer*
+what lets one animal's declaration be copied across all of its recordings. A file
+written by a *newer*
 deeperfly is refused rather than silently misread. Export the labels as a training/eval `.npz` with
 [`deeperfly labels-export`](../guides/cli.md#deeperfly-labels-export).
 

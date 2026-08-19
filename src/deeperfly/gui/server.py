@@ -6,8 +6,8 @@ fetches metadata and per-frame overlays as JSON, pulls each camera's frame as a
 JPEG, and streams edits over ``/ws`` -- every edit maps one-to-one onto an
 :class:`~deeperfly.gui.state.EditorState` method and replies with the refreshed
 per-view points so the canvases repaint (the same flow the old Qt window drove
-with signals). Corrections live only in memory until ``POST /api/save`` writes
-the ``corrections.h5`` sidecar.
+with signals). Edits live only in memory until ``POST /api/save`` writes
+the ``labels.h5`` sidecar.
 
 Unsaved work is **project-wide**, not per recording: :func:`create_app` keeps every
 session the operator has opened this run (see ``opened`` in the closure), so switching

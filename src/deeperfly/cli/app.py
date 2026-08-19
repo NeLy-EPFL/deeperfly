@@ -331,7 +331,7 @@ def gui(
     2D skeleton overlay and drag keypoints to annotate the ground-truth 2D pose;
     the 3D point is re-derived live from your labels and every view updates.
     Ground-truth labels are written to a labels.h5 sidecar and never modify
-    results.h5 (an older corrections.h5 is migrated on open). It runs headless and
+    results.h5. It runs headless and
     can be reached from another machine's browser (default-bound to localhost;
     tunnel with 'ssh -L' for remote use).
 
