@@ -505,13 +505,15 @@ class InverseKinematicsParams:
     sides' joint angles stay independent, which they must, because a leg's left/right
     asymmetry at any instant is the behavior.
 
-    Off by default because it is a prior that **costs**, measurably. Every point of a leg
-    chain is tracked, so the chain is over-determined and the per-leg lengths already are
-    the best fit to the keypoints -- on that recording, sharing them raised the 3D
-    residual 22%, the reprojection 0.14 px in 7 of 8 views, and the left/right gap in
-    each DOF's median angle from 4.7 to 6.4 degrees. Turn it on for what it makes true of
-    the model, not for accuracy; see
-    :func:`~deeperfly.inverse_kinematics.align.symmetrize_seglens`.
+    **On by default, and it costs a little accuracy against your own keypoints.** Every
+    point of a leg chain is tracked, so the chain is over-determined and the per-leg
+    lengths already are the best fit to those keypoints -- on the 8-view example recording,
+    sharing them raised the 3D residual 22%, the reprojection 0.14 px in 7 of 8 views, and
+    the left/right gap in each DOF's median angle from 4.7 to 6.4 degrees. It is the
+    default anyway because the fitted model is a statement about an ANIMAL: one fly with
+    two of each bone, whose angles are comparable across sides and whose morphology can be
+    reported. Set it false to fit whatever the keypoints say, two half-animals included.
+    See :func:`~deeperfly.inverse_kinematics.align.symmetrize_seglens`.
 
     ``weigh_by_confidence`` feeds the detector's per-keypoint confidence to the solver
     as observation weights instead of weighting every observed point equally.
@@ -1033,6 +1035,12 @@ class Config:
         the stages whose parameters changed. With neither, the packaged default
         is used.
 
+        Any automatic crop window a previous run recorded in ``outdir`` is loaded
+        into :attr:`auto_crops`, so a resume that reuses the cached 2D pose still
+        knows which window the detector looked through -- the visualization panels
+        that borrow it, in particular, are drawn in a later process than the
+        search.
+
         Parameters
         ----------
         cli_config
@@ -1040,11 +1048,6 @@ class Config:
         outdir
             The run's output directory, which may already hold a ``config.toml``
             snapshot.
-
-        Any automatic crop window a previous run recorded in ``outdir`` is loaded into
-        :attr:`auto_crops`, so a resume that reuses the cached 2D pose still knows which
-        window the detector looked through -- the visualization panels that borrow it, in
-        particular, are drawn in a later process than the search.
 
         Returns
         -------
@@ -1560,6 +1563,65 @@ class Config:
                 "holds the rest of the cameras."
             )
         return narrowed
+
+    def narrowed_to_covered_views(self, covered) -> "Config":
+        """A copy of this config with the views a solved rig does not cover dropped.
+
+        The sibling of :meth:`narrowed_to_sources`, for the other way a view can turn out to
+        be unusable. A calibration is a measurement of which cameras exist, so a view it
+        never covered has no extrinsics to project through -- and one config routinely
+        describes more rig than one solve covers (a project whose recordings predate a
+        camera being added, say).
+
+        Both narrowings are needed, and neither substitutes: footage without a rig cannot be
+        placed, and a rig without footage has nothing to place. Dropping the view from the
+        RIG alone is what left ``pts2d`` with more view rows than the rig had cameras, and
+        the first thing to notice was a bare einsum shape error naming no camera at all.
+
+        Parameters
+        ----------
+        covered
+            The camera names the rig actually covers.
+
+        Returns
+        -------
+        Config
+            A narrowed copy, or ``self`` when the rig covers every declared view.
+        """
+        keep = set(covered)
+        declared = [
+            v
+            for v, spec in (self.data.get("cameras") or {}).items()
+            if isinstance(spec, dict) and v != "defaults"
+        ]
+        dropped = [v for v in declared if v not in keep]
+        if not dropped:
+            return self
+
+        # Translate views back into sources, because that is the axis the narrowing is
+        # expressed on: a source survives while any pathway reading it feeds a view that
+        # survives. A source feeding only dropped views has nothing left to detect for.
+        pose2d = self.data.get("pose2d") or {}
+        pathways = [p for p in (pose2d.get("pathways") or []) if isinstance(p, dict)]
+        out_points = pose2d.get("output_points")
+        alive: set[str] = set()
+        for pw in pathways:
+            views = {str(pw.get("name"))}
+            if isinstance(out_points, dict):
+                for view, table in out_points.items():
+                    if isinstance(table, dict) and any(
+                        isinstance(e, dict) and str(e.get("pathway")) == str(pw.get("name"))
+                        for e in table.values()
+                    ):
+                        views.add(str(view))
+            if views & keep:
+                alive.add(str(pw.get("source")))
+        log.warning(
+            "the rig does not cover view(s) %s, so this run drops them: a view with no "
+            "measured camera cannot be projected through",
+            dropped,
+        )
+        return self.narrowed_to_sources(alive)
 
     def source_patterns(self) -> dict[str, str | list[str]]:
         """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).

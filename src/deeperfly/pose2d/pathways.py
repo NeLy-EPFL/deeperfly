@@ -464,8 +464,7 @@ def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
 def _parse_models(raw, *, n_points: int | None = None) -> dict[str, ModelSpec]:
     """Parse ``[[pose2d.models]]``, filling omitted keys from the model class.
 
-    Only ``name``, ``class`` and (for the classes with no auto-provisioned cache)
-    ``weights`` are irreducible. ``input_size`` / ``mean`` / ``n_out_channels`` /
+    Only ``name``, ``class`` and ``weights`` are irreducible. ``input_size`` / ``mean`` / ``n_out_channels`` /
     ``precision`` come from :func:`~deeperfly.pose2d.models.class_defaults` when the table
     does not state them -- with the dense classes' channel count resolved against
     ``n_points``, the skeleton this plan routes into.

@@ -100,6 +100,11 @@ def run_recording(
     # run would reuse it.
     if enabled_footage := _resolved_sources(config, sources=sources, input=input):
         config = config.narrowed_to_sources(enabled_footage)
+    # And by the rig, for the other way a view can be unusable: a calibration is a
+    # measurement of which cameras exist, so a view it does not cover has no extrinsics to
+    # project through. Narrowing the rig alone left `pts2d` with more view rows than the rig
+    # had cameras, which surfaced as an einsum shape error naming no camera.
+    config = config.narrowed_to_covered_views(_rig_coverage(config))
     enabled = config.stage_flags()  # config validated at construction
     overwrite_set: set[str] = stages.overwrite_stages(overwrite)
 
@@ -197,6 +202,31 @@ def _resolved_sources(
     from ..recordings import source_sources
 
     return dict(source_sources(config, input=input))
+
+
+def _rig_coverage(config: Config) -> list[str]:
+    """The views the config's rig can place, which is every declared one unless a solved
+    calibration says otherwise.
+
+    An orbit describes whatever the config declares, so there is nothing to narrow; a
+    calibration is a measurement, and it can cover fewer. An unreadable one is left to the
+    stage that actually needs it, so a config error is reported once, where it belongs.
+    """
+    declared = [
+        v
+        for v, spec in (config.data.get("cameras") or {}).items()
+        if isinstance(spec, dict) and v != "defaults"
+    ]
+    path = config.calibration_path()
+    if path is None:
+        return declared
+    try:
+        from ..calibration import Calibration
+
+        have = set(Calibration.load(path).cameras.cameras)
+    except Exception:  # noqa: BLE001 -- not this function's error to report
+        return declared
+    return [v for v in declared if v in have]
 
 
 def _refuse_a_foreign_skeleton(config: Config, store: StageStore) -> None:

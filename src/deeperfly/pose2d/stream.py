@@ -47,9 +47,9 @@ def _null_progress(total, description):
 def load_models(plan) -> dict:
     """Load every model the plan references -> ``name -> LoadedModel``.
 
-    Each model's weights are loaded once (downloading the cached DeepFly2D
-    checkpoint on demand for a model with no explicit ``weights``); a pathway
-    then forwards through the model named in its ``model`` key.
+    Each model's weights are loaded once, from the checkpoint its ``weights`` names --
+    nothing auto-provisions, so a model with no ``weights`` is refused with the setup
+    instructions. A pathway then forwards through the model named in its ``model`` key.
 
     Parameters
     ----------

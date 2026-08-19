@@ -1,15 +1,14 @@
 """The dense-38 HRNet detector: one channel per tracked point, in every view.
 
-The shipped DeepFly2D network (:mod:`deeperfly.pose2d.model`) is a **19-channel,
-one-side** detector: a side camera is run twice -- once mirrored -- and the two passes
-are packaged into the near-side points of the two views that face it. That is why
-``[pose2d.output_points]`` in the packaged config names a ``*_flip`` pathway for every
-left camera, and why the far side of a side camera is simply absent from the result
-(``NaN``, which is how visibility is encoded).
+**38 channels, all of them, in every view**: one pathway per camera, and a contralateral
+point gets a prediction rather than a ``NaN``.
 
-This module is the other kind of detector: **38 channels, all of them, in every view**.
-One pathway per camera, no mirrored twin, and a contralateral point gets a prediction
-instead of a ``NaN``. It is the architecture trained in the ``dfpose`` repo -- an ImageNet
+That is worth stating against what it replaced. deeperfly's original detector was
+19-channel and predicted ONE BODY SIDE, so a side camera ran twice -- once mirrored -- and
+the two passes were packaged into the near-side points of the two views facing it. Every
+left camera therefore needed a ``*_flip`` pathway named in ``[pose2d.output_points]``, and
+the far side of a side camera was simply absent from the result. A dense plan needs no
+mapping table at all, because channel *i* is point *i* of the pathway's view. It is the architecture trained in the ``dfpose`` repo -- an ImageNet
 HRNet backbone (``timm``) with a multi-scale stride-4 heatmap head -- and this module
 exists so a checkpoint from there is *runnable from a config*, through the same
 sources -> preprocessors -> models -> pathways plan as everything else.

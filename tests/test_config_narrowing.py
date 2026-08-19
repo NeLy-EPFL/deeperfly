@@ -189,3 +189,78 @@ def test_the_warning_names_the_source_the_pathway_and_the_views(caplog):
         cfg.narrowed_to_sources(_have(cfg, source))
     text = caplog.text
     assert source in text and view in text and "narrowing" in text
+
+
+# -- the other way a view becomes unusable: no measured camera -----------------
+
+
+def _config_with_partial_calibration(tmp_path, drop="h"):
+    """The packaged config pointed at a calibration that covers every view but ``drop``."""
+    from deeperfly.cameras import CameraGroup
+
+    cfg = Config.default()
+    sizes = {n: (512, 1024) for n in cfg.camera_table()[1]}
+    full = cfg.camera_group(image_sizes=sizes)
+    partial = CameraGroup({k: v for k, v in full.cameras.items() if k != drop})
+    cal = tmp_path / "rig.toml"
+    partial.to_calibration(
+        name="rig", image_sizes={k: (512, 1024) for k in partial.names}
+    ).save(cal)
+    text = cfg.snapshot_text().replace(
+        "[cameras.defaults]",
+        f'[cameras]\ncalibration = "{cal}"\n\n[cameras.defaults]',
+        1,
+    )
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    return Config.from_toml(path), sizes
+
+
+def test_a_rig_that_covers_fewer_views_narrows_the_plan_too(tmp_path):
+    """The rig and the ``V`` axis have to shorten TOGETHER.
+
+    A calibration covering fewer cameras than the config declares already subsetted the
+    rig -- but the detection plan kept every view, so ``pts2d`` came out with more view rows
+    than the rig had cameras. The first thing to notice was an einsum shape error naming no
+    camera at all, several stages downstream of the cause.
+    """
+    from deeperfly.pipeline.run import _rig_coverage
+
+    cfg, sizes = _config_with_partial_calibration(tmp_path)
+    assert cfg.detection_plan().n_views == 8, "the un-narrowed config declares eight"
+
+    narrowed = cfg.narrowed_to_covered_views(_rig_coverage(cfg))
+    rig = narrowed.camera_group(image_sizes=sizes)
+    plan = narrowed.detection_plan()
+
+    assert plan.n_views == len(rig.names)
+    assert "h" not in plan.view_names and "h" not in rig.names
+
+
+def test_a_rig_covering_every_view_narrows_nothing(tmp_path):
+    """An orbit is not a measurement, so there is nothing for it to fail to cover."""
+    from deeperfly.pipeline.run import _rig_coverage
+
+    cfg = Config.default()
+    assert cfg.narrowed_to_covered_views(_rig_coverage(cfg)) is cfg
+
+
+def test_an_unreadable_calibration_is_left_to_the_stage_that_needs_it(tmp_path):
+    """Not this narrowing's error to report -- and it must not silently drop every view."""
+    from deeperfly.pipeline.run import _rig_coverage
+
+    cal = tmp_path / "rig.toml"
+    cal.write_text("this is not toml {{{")
+    text = (
+        Config.default()
+        .snapshot_text()
+        .replace(
+            "[cameras.defaults]",
+            f'[cameras]\ncalibration = "{cal}"\n\n[cameras.defaults]',
+            1,
+        )
+    )
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    cfg = Config.from_toml(path)
+    assert cfg.narrowed_to_covered_views(_rig_coverage(cfg)) is cfg

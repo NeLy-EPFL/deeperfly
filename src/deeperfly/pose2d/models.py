@@ -106,7 +106,7 @@ class ModelSpec:
     cls
         The registry key selecting the model class (e.g. ``"mvt"``).
     weights
-        Path to a checkpoint, or ``None`` to use the auto-provisioned cache.
+        Path to a checkpoint. ``None`` is refused at load: nothing auto-provisions.
     input_size
         The network input ``(height, width)``.
     mean

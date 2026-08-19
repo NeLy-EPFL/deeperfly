@@ -68,7 +68,7 @@ name = "fly38"
 
 
 # == Views ===================================================================
-# The geometric cameras a pathway maps its points back into: seven views orbiting an
+# The geometric cameras a pathway maps its points back into: eight views orbiting an
 # object near the world origin. A view holds only geometry -- its footage comes from the
 # pathway's source, and its intrinsics describe that source's RAW frame, since detections
 # are mapped back to raw pixels before they meet a camera. `defaults` merges into each.
@@ -165,10 +165,11 @@ do_visualization        = true
 # camera twice, and needed 132 hand-written mapping rows. A contralateral point now
 # arrives as a prediction to correct, not a gap to author from nothing.)
 #
-# `class` picks the network: "mvt" encodes a frame's views TOGETHER, so a joint only one
-# camera can see informs the ones that cannot; "hrnet" is the dense per-view detector;
-# "hourglass" is DeepFly2D, the only class whose weights download automatically -- but
-# 19-channel, so it needs `fly38` and an explicit mapping table.
+# `class` picks the network, and there are two. "mvt" encodes a frame's views TOGETHER, so a
+# joint only one camera can see informs the ones that cannot -- which is why it is the
+# default. "hrnet" predicts each view alone, and runs both single-view checkpoints
+# (hrnet_w32 and hgnetv2_b4), selecting its feature maps by STRIDE rather than by index.
+# Both take ONE grayscale plane and emit one channel per tracked point.
 #
 # `weights` is a bare filename found on $DEEPERFLY_MODELS, or an outright path; a dense
 # detector is trained per project, so there is nothing to download and the run stops with
@@ -264,27 +265,29 @@ inflate_threshold = 15.0
 # inverse_kinematics`). Three things about the packaged model are worth knowing:
 #
 # The leg segment lengths are MEASURED per leg, which fits this fly rather than a generic
-# one but measures each side on its own. `symmetric_segments = true` gives each mirror
-# pair the mean of the two -- one animal rather than two half-animals. It constrains the
-# ANIMAL only: the two sides' joint angles stay independent, because a leg's left/right
-# asymmetry at any instant is the behavior. It is OFF by default because it costs, and
-# measurably: all five points of a leg are tracked, so the chain is over-determined and
-# the per-leg lengths already ARE the best fit to the data. On the 8-view example
-# recording the femurs measure 4-6% apart on all three pairs (always left-longer, a
-# stable offset), and sharing them made every score worse -- 3D residual +22%, 2D
-# reprojection +0.14 px in 7 of 8 views, and the left/right gap in each DOF's median
-# angle 4.7 -> 6.4 deg, which is the opposite of what sharing was supposed to fix. Turn
-# it on when you want one animal (comparing angles across sides, driving a simulation),
-# knowing what it costs -- and see docs/reference/configuration.md#ik-symmetric-segments.
+# one but measures each side on its own. `symmetric_segments` (ON by default) gives each
+# mirror pair the mean of the two -- one animal rather than two half-animals. It constrains
+# the ANIMAL only: the two sides' joint angles stay independent, because a leg's left/right
+# asymmetry at any instant is the behavior.
+#
+# It costs a little, and measurably: all five points of a leg are tracked, so the chain is
+# over-determined and the per-leg lengths already ARE the best fit to the data. On the
+# 8-view example recording the femurs measure 4-6% apart on all three pairs (always
+# left-longer, a stable offset), and sharing them made every score worse -- 3D residual
+# +22%, 2D reprojection +0.14 px in 7 of 8 views, and the left/right gap in each DOF's
+# median angle 4.7 -> 6.4 deg, which is the opposite of what sharing was supposed to fix.
+# It is the default anyway because the fit is a statement about an animal: set it false to
+# fit whatever the keypoints say, two half-animals included. The numbers are in
+# docs/reference/configuration.md#ik-symmetric-segments.
 #
 # Both chains are targeted at THIS skeleton, so a body plan covers all 38 points. The
 # abdomen's five markers are the dorsal-midline tergite stripes, placed on the model at
 # the same body + offset the docs keypoint viewer draws them at -- so what the labeling
 # reference shows and what the IK fits are the same choice, read from the same file. The
-# other side of that: a `fly38` run gets NO abdomen fit at all (its two side chains have
-# no marker on the model any more) and no head or abdomen SIZE, because neither of that
-# skeleton's marker sets contains a separation the size estimate can use. Both are
-# warned about, not silent.
+# other side of that: a skeleton whose points the baked chains have no marker for gets NO
+# fit for that chain, and no chain SIZE either when its marker set contains no separation
+# the size estimate can use. Both are warned about rather than silent -- which is what the
+# retired DeepFly3D point set, with its two abdomen side chains and no neck, would hit.
 #
 # Retarget a chain with a marker table if your labeling scheme differs (`body` names a
 # baked body; the abdomen chain is c_abdomen12 / c_abdomen3 / c_abdomen4 / c_abdomen5 /

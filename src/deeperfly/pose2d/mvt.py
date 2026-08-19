@@ -43,8 +43,9 @@ biases every point by ``0.5 * (crop_w / model_w - 1)`` -- about 0.44 px in x and
 y on this rig, a uniform skeleton shift that looks like a calibration error. So the module
 declares ``peak_convention`` and the pathway inversion honors it.
 
-**4. The normalization is per-channel ImageNet, on a grayscale frame repeated to 3
-channels**, and the resize is ``cv2.INTER_AREA``. Not the shared
+**4. The normalization is carried by the artifact, per input plane** (the shipped
+one-plane artifacts record ``mean = [0.0]``, ``std = [1.0]``, i.e. nothing is subtracted),
+and the resize is ``cv2.INTER_AREA``. Not the shared
 :meth:`~deeperfly.pose2d.models.LoadedModel.prepare`, whose antialiased bilinear differs
 from INTER_AREA by up to 10/255 on ~35% of pixels -- enough to move 1.8% of cells more
 than a model pixel and the worst by 65. So this module owns its input preparation too.
@@ -139,7 +140,7 @@ def _build_modules(arch: dict[str, Any]):
         )
     qkv_bias = bool(arch.get("qkv_bias", True))
 
-    # 3 for a `deeperfly-mvt-1` artifact (grayscale replicated to RGB, per-channel
+    # One plane, and one normalization constant per plane (the artifact carries them;
     # ImageNet), 1 for a folded `-2`. Read from the artifact rather than assumed, so the
     # two cannot be silently interchanged.
     in_ch = int(arch.get("in_channels", 3))
@@ -302,7 +303,7 @@ def _make_net(arch: dict[str, Any]):
 
     class Net(nn.Module):
         #: This module decodes its own heatmaps (soft-argmax, upsampled field) and
-        #: prepares its own inputs (INTER_AREA + per-channel ImageNet).
+        #: prepares its own inputs (INTER_AREA + the artifact's own normalization).
         owns_decode = True
         owns_prepare = True
         #: The preparation is PIL and cv2, i.e. host libraries, so a device tensor handed
@@ -608,8 +609,9 @@ def load_mvt(
     a future checkpoint with a different width or schedule either works or says why not.
 
     ``mean`` is the :class:`~deeperfly.pose2d.models.ModelSpec`'s declared mean and must be
-    ``0.0``: this network's normalization is per-channel ImageNet and lives in the
-    artifact, so a config that also subtracts DeepFly2D's 0.22 would shift every input.
+    ``0.0``: this network's normalization constants live in the ARTIFACT, one per input
+    plane, so a config that also subtracted a mean of its own would shift every input by it
+    with nothing to notice.
 
     ``precision`` must be ``float32`` if given. bf16 autocast moved 99.6% of cells against
     fp32 on the held-out project and put 183 of 12,464 more than a pixel out -- a subpixel
@@ -621,7 +623,7 @@ def load_mvt(
     if float(mean) != 0.0:
         raise SystemExit(
             f"a multiview-transformer model must declare mean = 0.0, got {mean}. Its "
-            "normalization is per-channel ImageNet and is applied by the model."
+            "normalization constants are in the artifact and are applied by the model."
         )
     if precision is not None and str(precision) != "float32":
         raise SystemExit(
