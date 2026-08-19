@@ -23,6 +23,61 @@ AZIMUTHS_DEG = [-120, -90, -45, 0, 45, 90, 120]
 CAMERA_NAMES = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
 
 
+def seven_camera_default() -> Config:
+    """The packaged default narrowed to the six side cameras plus the front one.
+
+    The packaged rig is EIGHT views -- the six side cameras, the front one and the axial
+    hind one, which is the rig's only left/right bridge and what the shipped detector was
+    trained on. :data:`CAMERA_NAMES` is the seven-camera rig these tests are written
+    against, and narrowing is exactly how a seven-camera recording runs under that default,
+    so a test asking for seven views asks for it the same way a run does.
+
+    Deliberately NOT by extending :data:`CAMERA_NAMES` to eight. That list also drives
+    :func:`rig_arrays` / :func:`make_cameras`, which build every camera from one
+    :data:`FOCAL_PX` and one :data:`DISTANCE_MM` -- and the axial view is on a different
+    lens, with a different focal AND a different distance. An eighth entry there would
+    fabricate a wrong camera for dozens of unrelated geometry, bundle-adjustment and
+    chirality tests.
+    """
+    cfg = Config.default()
+    keep = [n for n in cfg.source_patterns() if n != "vid_h"]
+    return cfg.narrowed_to_sources(keep)
+
+
+def seven_camera_default_text() -> str:
+    """The packaged default as TEXT, with the axial hind view removed.
+
+    :func:`seven_camera_default` narrows the parsed ``data`` and deliberately leaves
+    ``text`` alone -- the snapshot has to keep saying which rig was configured. A test that
+    writes a config FILE and reloads it therefore needs the text narrowed too, which is
+    what a seven-camera user's own config would literally look like.
+
+    Line-based rather than a TOML round-trip because the packaged file is also the
+    user-facing tutorial: re-emitting it would strip every comment.
+    """
+    out, skip = [], False
+    for line in Config.default().snapshot_text().splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[cameras.h]"):
+            skip = True
+            continue
+        if skip:
+            # The table ends at the next header or the next blank line run.
+            if stripped.startswith("[") or not stripped:
+                skip = False
+            else:
+                continue
+        if stripped in ('name = "vid_h"',):
+            out.pop()  # the [[sources]] header just written
+            skip = True
+            continue
+        out.append(line)
+    text = "".join(out)
+    text = text.replace('    { name = "h",  source = "vid_h"  },\n', "")
+    text = text.replace('["rh", "h", "lh"]', '["rh", "", "lh"]')
+    return text
+
+
 def leg_indices(skeleton, side: str) -> np.ndarray:
     """Point indices of one body side's leg points (``side`` is ``"r"`` or ``"l"``).
 

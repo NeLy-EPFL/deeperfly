@@ -155,7 +155,16 @@ def _intrinsics(project: Project, args, obs) -> tuple[np.ndarray, np.ndarray, st
     n_views = obs.n_views
     if args.from_calibration:
         cal = Calibration.load(args.from_calibration)
-        cal.check_camera_names(obs.view_names)
+        # Strict here, unlike a run: this is where the intrinsics to SOLVE with come from,
+        # and a view seeded from nothing is not a narrower rig, it is an unsolvable one.
+        covered = cal.check_camera_names(obs.view_names)
+        if missing := [n for n in obs.view_names if n not in covered]:
+            raise SystemExit(
+                f"--from-calibration {args.from_calibration} has no camera(s) {missing}, "
+                "and their intrinsics are what this solve would start from. Supply a "
+                "calibration covering every view being solved, or pass the intrinsics "
+                "another way (--optics / --focal)."
+            )
         intrs = np.stack([cal.cameras[n].intr for n in obs.view_names])
         dists = np.stack(
             [

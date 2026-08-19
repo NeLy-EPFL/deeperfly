@@ -373,7 +373,7 @@ class Calibration:
                 "rig for this footage, or point at the calibration that matches it."
             )
 
-    def check_camera_names(self, names) -> None:
+    def check_camera_names(self, names) -> list[str]:
         """Raise if the rig does not cover exactly the cameras ``names`` asks for.
 
         A calibration missing a camera cannot project it; a calibration carrying an
@@ -385,17 +385,38 @@ class Calibration:
         names
             The camera names the caller needs.
 
+        Returns
+        -------
+        list of str
+            The requested cameras this calibration actually covers, in the order asked
+            for. A run uses THAT set: a view the rig never measured cannot be placed, so
+            it is dropped like a view with no footage rather than refused -- one config
+            routinely describes more rig than one solve covers (a project whose recordings
+            predate a camera being added, say).
+
         Raises
         ------
         ValueError
-            If any requested camera is absent from the calibration.
+            If the calibration covers NONE of the requested cameras. That is the
+            wrong-rig case, and it is the one a subset cannot explain away.
         """
         wanted, have = list(names), set(self.cameras.cameras)
         missing = [n for n in wanted if n not in have]
-        if missing:
+        kept = [n for n in wanted if n in have]
+        if missing and not kept:
             raise ValueError(
-                f"calibration {self.name!r} has no camera(s) {missing} "
-                f"(it covers {sorted(have)}) -- it belongs to a different rig"
+                f"calibration {self.name!r} covers none of the cameras this run needs "
+                f"({wanted}); it covers {sorted(have)} -- it belongs to a different rig"
+            )
+        if missing:
+            log.warning(
+                "calibration %s does not cover camera(s) %s (it covers %s), so this run "
+                "drops them and uses %d view(s): %s",
+                self.name,
+                missing,
+                sorted(have),
+                len(kept),
+                kept,
             )
         extra = sorted(have - set(wanted))
         if extra:
@@ -404,6 +425,7 @@ class Calibration:
                 self.name,
                 extra,
             )
+        return kept
 
     def summary(self) -> str:
         """A human-readable report (what ``deeperfly calibration show`` prints)."""

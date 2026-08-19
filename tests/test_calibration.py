@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import CAMERA_NAMES, HEIGHT, WIDTH
+from helpers import (
+    CAMERA_NAMES,
+    HEIGHT,
+    WIDTH,
+    seven_camera_default,
+    seven_camera_default_text,
+)
 
 from deeperfly.calibration import (
     CALIBRATION_FILENAME,
@@ -133,10 +139,29 @@ def test_matching_footage_and_unknown_cameras_pass_the_size_check(calibration):
     calibration.check_image_sizes({"nobody": (1, 1)})  # not in the calibration
 
 
-def test_a_missing_camera_is_refused_by_name(cameras, tmp_path):
+def test_a_partly_covering_calibration_narrows_the_rig_and_names_what_it_dropped(
+    cameras, tmp_path, caplog
+):
+    """A view the rig never measured cannot be placed, so it is dropped like a view with
+    no footage -- one config routinely describes more rig than one solve covers.
+
+    Named in the warning rather than counted: "6 of 7" is not actionable and "dropped:
+    ['f']" is.
+    """
     partial = CameraGroup({k: v for k, v in cameras.cameras.items() if k != "f"})
     path = partial.to_calibration(name="partial").save(tmp_path)
-    with pytest.raises(ValueError, match=r"no camera\(s\) \['f'\]"):
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        rig = CameraGroup.from_calibration(path, names=CAMERA_NAMES)
+    assert rig.names == [n for n in CAMERA_NAMES if n != "f"]
+    assert "'f'" in caplog.text and "partial" in caplog.text
+
+
+def test_a_calibration_covering_no_requested_camera_is_refused(cameras, tmp_path):
+    """A subset is a narrower rig; NO overlap is the wrong rig, and cannot be narrowed to
+    anything."""
+    renamed = CameraGroup({f"other_{k}": v for k, v in cameras.cameras.items()})
+    path = renamed.to_calibration(name="elsewhere").save(tmp_path)
+    with pytest.raises(ValueError, match="covers none of the cameras"):
         CameraGroup.from_calibration(path, names=CAMERA_NAMES)
 
 
@@ -247,7 +272,7 @@ def _config_with_calibration(tmp_path, cameras, *, sizes=SIZES) -> Config:
     # `deeperfly project` injects its solved rig as a `calibration` key there and two
     # headers would collide -- so enabling one by hand means adding the table.
     marker = "[cameras.defaults]"
-    base = Config.default().snapshot_text()
+    base = seven_camera_default_text()
     assert marker in base, "the packaged config no longer has [cameras.defaults]"
     text = base.replace(
         marker, f'[cameras]\ncalibration = "{CALIBRATION_FILENAME}"\n\n{marker}', 1
@@ -270,7 +295,7 @@ def test_a_relative_calibration_path_resolves_beside_the_config(cameras, tmp_pat
 
 
 def test_a_config_without_a_calibration_still_uses_the_orbit(cameras):
-    config = Config.default()
+    config = seven_camera_default()
     assert config.calibration_path() is None
     assert config.camera_group(image_sizes=SIZES).names == CAMERA_NAMES
 

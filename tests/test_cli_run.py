@@ -26,7 +26,11 @@ from deeperfly.config import DEFAULT_CONFIG_PATH, STAGE_DEFAULTS, STAGES
 from deeperfly.pose2d import stream as pose2d_stream
 from deeperfly.results import PoseResult
 
-FLY_CAMERAS = ["rh", "rm", "rf", "f", "lf", "lm", "lh"]
+#: The packaged rig's views, read from the packaged config rather than restated. These
+#: tests are about caching and CLI plumbing; how many cameras the default declares is
+#: incidental to them, and a copy here is a copy that goes stale (it did, when the default
+#: grew its axial hind view).
+FLY_CAMERAS = list(Config.default().camera_table()[1])
 
 
 def _default_cfg(tmp_path, *, name="config.toml", **flags):
@@ -271,10 +275,9 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
     """A resume with no ``-c`` gets its OWN config's cameras, not the packaged default's.
 
     Discovery has to recognize recording directories before output dirs exist, so with no
-    ``-c`` it uses the packaged default -- a seven-camera rig. The run then resolves its
-    own config (here the output dir's snapshot, an eight-camera rig), and the two
-    disagreed: the footage handed to the run was discovery's short map, silently missing
-    the eighth camera.
+    ``-c`` it uses the packaged default. The run then resolves its own config (here the
+    output dir's snapshot, which declares one camera MORE), and the two disagreed: the
+    footage handed to the run was discovery's short map, silently missing that camera.
 
     Nothing notices until a frame is wanted. With ``pose2d`` cached nothing opens the
     videos at all, so the loss surfaced only in the visualization stage as "the run
@@ -288,9 +291,11 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
 
     outdir = tmp_path / "out"
     outdir.mkdir()
+    # A source the packaged default does NOT declare, so discovery cannot find it and only
+    # the run's own config can.
     (outdir / "config.toml").write_text(
-        DEFAULT_CONFIG_PATH.read_text()
-        + '\n[[sources]]\nname = "vid_h"\nfilename = ["camera_7.mp4"]\n'
+        DEFAULT_CONFIG_PATH.read_text() + f'\n[[sources]]\nname = "vid_extra"\n'
+        f'filename = ["camera_{len(FLY_CAMERAS)}.mp4"]\n'
     )
 
     seen = {}
@@ -301,10 +306,12 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
     monkeypatch.setattr(cli.run, "run_recording", capture)
     cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
 
-    assert "vid_h" in seen["sources"], (
+    assert "vid_extra" in seen["sources"], (
         "the run got discovery's cameras, not its own config's"
     )
-    assert [f.name for f in seen["sources"]["vid_h"]] == ["camera_7.mp4"]
+    assert [f.name for f in seen["sources"]["vid_extra"]] == [
+        f"camera_{len(FLY_CAMERAS)}.mp4"
+    ]
     assert len(seen["sources"]) == len(FLY_CAMERAS) + 1
 
 
@@ -323,7 +330,7 @@ def test_pose2d_only_writes_2d_result(tmp_path, monkeypatch):
 
     res = PoseResult.load(outdir / "results.h5")
     assert res.pts3d is None  # 2D only (no triangulation/pictorial)
-    assert res.pts2d.shape == (7, T, 38, 2)
+    assert res.pts2d.shape == (len(FLY_CAMERAS), T, 38, 2)
     # the config used is snapshotted next to the results for reproducibility.
     assert (outdir / "config.toml").read_text() == cfg.read_text()
 

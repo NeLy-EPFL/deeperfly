@@ -45,6 +45,9 @@ filename = ["camera_LM.mp4", "camera_5.mp4"]
 [[sources]]
 name = "vid_lh"
 filename = ["camera_LH.mp4", "camera_6.mp4"]
+[[sources]]
+name = "vid_h"
+filename = ["camera_H.mp4", "camera_7.mp4"]
 
 
 # == Skeleton ================================================================
@@ -114,14 +117,23 @@ mirror = "rm"
 azimuth_deg = 120
 mirror = "rh"
 
-# An 8th, axial hind view (the rig's only left/right bridge) is added like this. A
-# different lens changes BOTH focal and distance, and no residual can afterwards detect
-# it: bundle adjustment holds the intrinsics fixed, so it absorbs a focal error into the
-# distance instead of reporting it.
-# [cameras.h]
-# azimuth_deg = 180
-# focal_length_px = 24168.591
-# distance = 158.9168
+# The axial hind view: the rig's only left/right BRIDGE, and the reason the shipped
+# detector was trained on eight. Without it no camera sees both body sides, so a
+# contralateral joint is triangulated from one side's cameras alone.
+#
+# Its numbers are not the side cameras': this view is on a different lens, which changes
+# BOTH focal length and distance, and no residual can afterwards detect that -- bundle
+# adjustment holds the intrinsics fixed, so it absorbs a focal error into the distance and
+# reports a clean solve. Measure them per rig (the foam ball is a ruler for exactly this);
+# these are the 8-view example rig's.
+#
+# A recording WITHOUT this camera needs no edit here: the run narrows itself to the footage
+# it finds, drops this view, and says so. Below two views it refuses instead.
+[cameras.h]
+azimuth_deg = 180
+focal_length_px = 24168.591
+distance = 158.9168
+mirror = "h"                              # a midline camera is its own mirror image
 
 
 # == Pipeline ================================================================
@@ -181,30 +193,36 @@ pathways = [
     { name = "lf", source = "vid_lf" },
     { name = "lm", source = "vid_lm" },
     { name = "lh", source = "vid_lh" },
+    { name = "h",  source = "vid_h"  },
 ]
 # Preprocessors: an ordered op list applied to a pathway's frames before the model and
 # inverted on the way back, so a mirror here never moves the reconstructed skeleton.
 # Ops: fliplr / flipud / rot90(k) / crop(x,y,width,height) / resize(scale).
 #
 # A detector is trained through a box, and a differently framed camera puts the animal at
-# the wrong apparent SCALE -- the one thing no augmentation undoes. On this rig the six
-# side cameras match training full-frame and the axial ones do not, so only those need a
-# box; `auto = true` searches one per recording (255 px -> 2.9 px blind on a 1600x1008
-# axial camera, against 3.4 hand-tuned -- configuration.md#autocrop).
+# the wrong apparent SCALE -- the one thing no augmentation undoes. On this rig the six side
+# cameras match training full-frame and the two AXIAL ones (front and hind, 1600x1008
+# against the side cameras' 960x512) do not: dropped in whole, the fly lands too small and
+# detection collapses (255 px). So those two get a box, and it is MEASURED per recording
+# rather than copied -- `auto = true` reaches 2.9 px blind, against 3.4 px hand-tuned.
 #
-# Off here, deliberately: the search needs a SOLVED rig ([cameras].calibration) and enough
-# recording to spread its sample frames over, and against a nominal orbit the gate refuses
-# and the fallback comes out ~1.7x too wide. Run once, export the calibration, then:
-#
-#   preprocessors = [
-#       { name = "crop_f", ops = [{ op = "crop", auto = true }] },                # blind
-#       { name = "crop_h", ops = [{ op = "crop", auto = true, x = 400, y = 290,
-#                                   width = 800, height = 400 }] },               # seeded
-#   ]
-#   # ...then on the pathway:  { name = "f", source = "vid_f", preprocessor = "crop_f" }
+# It improves once the rig is solved, and is worth having before that. The search is a grid
+# over (centre, width) scored by detector CONFIDENCE, which needs nothing; what needs a rig
+# is the accept GATE, which is reprojection agreement with the other cameras' 3D -- because
+# confidence decouples from accuracy once the centre is free (a recording that went
+# 0.338 -> 0.403 confidence went 30.9 -> 37.5 px WORSE, and the two signals are uncorrelated
+# on this rig's hind view at r = +0.17). The gate self-checks: against a nominal orbit it
+# measures its own reference ~250 px out, refuses rather than choose with a broken ruler, and
+# falls back to confidence alone -- a box ~1.7x too wide, which is still far better than the
+# whole frame. Run once, `deeperfly calibration export`, point [cameras].calibration at it,
+# and the gate engages.
 #
 # The searched box lands in <outdir>/autocrop.json and is reused, so a resume neither
-# re-searches nor re-detects; `deeperfly auto-crop` runs it alone and prints the TOML.
+# re-searches nor re-detects; `deeperfly auto-crop` runs it alone and prints the TOML that
+# freezes it. Seed the search when a recording's framing is unusual:
+#
+#   { name = "crop_h", ops = [{ op = "crop", auto = true, x = 400, y = 290,
+#                               width = 800, height = 400 }] }   # searched near this box
 
 
 # == Bundle adjustment =======================================================
@@ -374,20 +392,20 @@ mesh_nmf     = { width = 480, height = 240, alpha = 0.55 }
 video_name = "pose2d"       # camera frames with the raw 2D detections
 plot  = "skeleton_2d"
 stage = "pose2d"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
 
 [[visualization.videos]]
 video_name = "pose3d"       # the triangulated 3D reprojected back into each view
 plot  = "skeleton_3d"
 stage = "triangulation"
-grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "", "lh"]]
+grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
 
 [[visualization.videos]]
 video_name = "pose_nmf"     # the fitted NeuroMechFly skeleton (needs do_inverse_kinematics)
 plot  = "skeleton_nmf"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
 
 [[visualization.videos]]
 video_name = "pose_mesh"    # the fitted NeuroMechFly mesh (needs do_inverse_kinematics)
 plot  = "mesh_nmf"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "", "lh"]]
+grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]

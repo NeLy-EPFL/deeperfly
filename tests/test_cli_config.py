@@ -28,6 +28,9 @@ def test_init_writes_parseable_config(tmp_path):
     cameras = {n: spec for n, spec in config["cameras"].items() if n != "defaults"}
     sizes = {n: (512, 1024) for n in cameras}
     cfg = Config.from_dict(config)
+    # The six side cameras, the front one, and the axial hind view -- which is the rig's
+    # only left/right bridge and what the shipped detector was trained on. Asserted in
+    # ORDER, because that order is the V axis of every (V, T, P, ...) array a run writes.
     assert CameraGroup.from_config(cfg, image_sizes=sizes).names == [
         "rh",
         "rm",
@@ -36,12 +39,15 @@ def test_init_writes_parseable_config(tmp_path):
         "lf",
         "lm",
         "lh",
+        "h",
     ]
     assert Skeleton.from_config(cfg).n_points == 38
     # Footage globs live on the sources; the detection plan parses end to end.
     assert all("filename" in s for s in config["sources"])
     plan = cfg.detection_plan()
-    assert len(plan.sources) == 7 and len(plan.pathways) == 7  # dense: one per camera
+    # Dense: one pathway per camera, and one source per pathway.
+    assert len(plan.sources) == len(cameras)
+    assert len(plan.pathways) == len(cameras)
 
 
 def test_init_refuses_to_clobber(tmp_path, capsys):

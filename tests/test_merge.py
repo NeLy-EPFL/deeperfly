@@ -328,9 +328,8 @@ def test_the_summary_is_serializable(tmp_path):
 
 def _project_with(tmp_path, dest_cells, source_cells, *, dest_labels=True):
     """A project whose recording has ``dest_cells``, plus a separate source labels.h5."""
-    from helpers import CAMERA_NAMES
+    from helpers import CAMERA_NAMES, seven_camera_default
 
-    from deeperfly.config import Config
     from deeperfly.gui.labels import labels_identity, save_labels
     from deeperfly.project import Project
     from deeperfly.results import StageStore
@@ -339,7 +338,7 @@ def _project_with(tmp_path, dest_cells, source_cells, *, dest_labels=True):
     n_views, n_frames = len(CAMERA_NAMES), 4
     sizes = {n: (64, 80) for n in CAMERA_NAMES}
     fly = Skeleton.fly()
-    cameras = Config.default().camera_group(image_sizes=sizes)
+    cameras = seven_camera_default().camera_group(image_sizes=sizes)
 
     project = Project.create(tmp_path / "proj", skeleton="fly38")
     rec = tmp_path / "flyA"

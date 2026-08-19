@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import CAMERA_NAMES, HEIGHT, WIDTH
+from helpers import CAMERA_NAMES, HEIGHT, WIDTH, seven_camera_default
 
 from deeperfly.calibration_solve import (
     MIN_EQUATION_RATIO,
@@ -28,15 +28,14 @@ from deeperfly.calibration_solve import (
     solve_rig,
 )
 from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config
 
 SIZES = {name: (HEIGHT, WIDTH) for name in CAMERA_NAMES}
 
 
 @pytest.fixture
 def truth() -> CameraGroup:
-    """The packaged 7-camera orbit rig, used as ground truth to recover."""
-    return Config.default().camera_group(image_sizes=SIZES)
+    """The packaged orbit rig narrowed to seven cameras, as ground truth to recover."""
+    return seven_camera_default().camera_group(image_sizes=SIZES)
 
 
 def _scene(truth, *, n_static=8, n_frames=6, n_kp=12, noise=0.4, seed=0):

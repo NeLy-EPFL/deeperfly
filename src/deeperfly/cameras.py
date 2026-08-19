@@ -505,8 +505,8 @@ class CameraGroup:
         cal.check_image_sizes(image_sizes)
         if names is None:
             return cal.cameras
-        cal.check_camera_names(names)
-        return cls({name: cal.cameras[name] for name in names})
+        covered = cal.check_camera_names(names)
+        return cls({name: cal.cameras[name] for name in covered})
 
     def to_calibration(
         self,

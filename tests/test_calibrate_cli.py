@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import CAMERA_NAMES
+from helpers import CAMERA_NAMES, seven_camera_default
 
 from deeperfly import cli
 from deeperfly.calibration import Calibration
-from deeperfly.config import Config
 from deeperfly.gui.labels import (
     Labels,
     LandmarkLabels,
@@ -32,7 +31,7 @@ FOCAL = "22388.125"
 
 @pytest.fixture
 def truth():
-    return Config.default().camera_group(image_sizes=SIZES)
+    return seven_camera_default().camera_group(image_sizes=SIZES)
 
 
 def _labelled_project(

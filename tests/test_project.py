@@ -27,6 +27,7 @@ import pytest
 from helpers import CAMERA_NAMES, HEIGHT, WIDTH
 
 from deeperfly import cli
+from deeperfly.config import Config
 from deeperfly.gui.labels import Labels, labels_identity, save_labels
 from deeperfly.project import (
     PROJECT_FILENAME,
@@ -39,6 +40,10 @@ from deeperfly.results import StageStore
 from deeperfly.skeleton import Skeleton
 
 SIZES = {name: (HEIGHT, WIDTH) for name in CAMERA_NAMES}
+
+#: How many views the packaged rig declares. Read rather than restated: a copy here is a
+#: copy that goes stale, and these tests are about project composition, not about the rig.
+_N_VIEWS = len(Config.default().camera_table()[1])
 
 
 # -- fixtures ------------------------------------------------------------------
@@ -758,28 +763,24 @@ def test_composition_yields_a_valid_run_config(project):
     """The whole point: one resolved text a run can consume, built from the parts."""
     import tomllib
 
-    from deeperfly.config import Config
-
     text = project.compose_config()
     config = Config.from_dict(tomllib.loads(text))
     assert config.skeleton().n_points == 38
-    assert len(config.source_patterns()) == 7
+    assert len(config.source_patterns()) == _N_VIEWS
     # The open-ended parts come from the base, so a project never restates the detection
     # plan to change one knob. One pathway per camera: the packaged plan is dense.
-    assert len(config.detection_plan().pathways) == 7
+    assert len(config.detection_plan().pathways) == _N_VIEWS
 
 
 def test_a_profile_overrides_only_what_it_names(project):
     import tomllib
-
-    from deeperfly.config import Config
 
     project.profile_path().write_text('[triangulation]\nmethod = "dlt"\n')
     config = Config.from_dict(tomllib.loads(project.compose_config()))
     assert config.triangulation.method == "dlt"
     # Everything the profile did not mention still defaults.
     assert config.triangulation.min_inliers == 2
-    assert len(config.detection_plan().pathways) == 7
+    assert len(config.detection_plan().pathways) == _N_VIEWS
 
 
 def test_a_fresh_project_seeds_an_empty_profile(project):
@@ -797,7 +798,7 @@ def test_the_rig_can_be_lifted_into_the_project(project):
 
     path = project.write_rig()
     parsed = tomllib.loads(path.read_text())
-    assert len(parsed["sources"]) == 7
+    assert len(parsed["sources"]) == _N_VIEWS
     assert set(parsed["cameras"]) >= set(CAMERA_NAMES)
     # A bare [cameras] would collide with the calibration key composition injects.
     assert not any(
@@ -819,8 +820,6 @@ def test_the_current_calibration_is_injected_into_the_composition(cameras, proje
     parsed = tomllib.loads(project.compose_config())
     assert parsed["cameras"]["calibration"].endswith("calibrations/rig.toml")
     # ...and the composed config actually resolves the rig through it.
-    from deeperfly.config import Config
-
     text = project.compose_config()
     written = project.root / "composed.toml"
     written.write_text(text)
@@ -849,7 +848,6 @@ def test_a_rig_with_a_bare_cameras_table_is_refused(cameras, project):
 
 def test_cli_config_writes_and_validates(tmp_path, capsys):
     from deeperfly import cli
-    from deeperfly.config import Config
 
     root = tmp_path / "proj"
     cli.main(["project", "new", str(root), "--log-level", "error"])
