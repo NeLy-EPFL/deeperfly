@@ -61,7 +61,7 @@ def solve_with_defaults(pts3d: np.ndarray, overrides: dict | None = None):
     """Solve ``pts3d`` exactly as a default `deeperfly run` would.
 
     Goes through the stage rather than the library entry point so the comparison covers
-    the ``constant_points`` pin and the config plumbing too.
+    the config plumbing too.
     """
     cfg = Config.from_dict({"inverse_kinematics": dict(overrides or {})})
     return stages.stage_inverse_kinematics(cfg, deepfly3d_skeleton(), pts3d)

@@ -53,7 +53,17 @@ IK_SOLVER = "quickik"
 #: pose, a different observation weighting). Deliberately *not* the solver's package
 #: version: that would force a full recompute on any dependency bump, and it cannot be
 #: read at all on an install without the optional extra.
-IK_SOLVER_REVISION = 1
+#:
+#: 2 -- the leg chains are parameterised in flygym's own frame. Two DOF axes were swapped
+#: and each leg subtree was rotated by the wrong body frame, so EVERY stored leg angle
+#: changes convention: a right-leg angle is no longer the negation of flygym's, and the
+#: fit that used to saturate the thorax-coxa yaw wall on four of six legs just to
+#: represent rest now sits at the rigid-segment floor. An output directory holding
+#: revision-1 angles is not a worse fit of the same quantity, it is a different quantity,
+#: and it has to recompute rather than validate. (Bumping this here rather than at the
+#: commit that made the change is a correction: nothing else in the fingerprint moved, so
+#: those trees have been validating ever since.)
+IK_SOLVER_REVISION = 2
 
 #: Bumped by hand when the ensemble Kalman smoother's numerics change the fitted
 #: trajectory without any ``[eks]`` key changing (a different objective, a different
@@ -427,7 +437,6 @@ def stage_fingerprint(
                 "parallel": p.parallel,
                 "segment_len": p.segment_len,
                 "overlap_len": p.overlap_len,
-                "constant_points": list(p.constant_points),
                 "skeleton": _skeleton_digest(config),
                 "pts3d_from": pts3d_source(enabled, store),
             }
@@ -458,7 +467,21 @@ def _ik_template_digest(config: Config) -> dict:
 
 
 def _ik_articulation_digest(config: Config) -> dict | None:
-    """The fitted head/abdomen chains + their resolved per-DOF bounds, or ``None``."""
+    """The fitted head/abdomen chains: their per-DOF bounds AND their marker placement.
+
+    The markers belong here as much as the bounds do. A ``[inverse_kinematics.head]`` or
+    ``[inverse_kinematics.abdomen]`` table says *where* each tracked keypoint sits on the
+    model -- which body it rides and at what offset -- and that decides what the fit is
+    fitting. Retargeting a chain and re-running with only the bounds recorded reused the
+    previous fit, silently, while the config on disk described a different one; the default
+    config's own retarget instructions were a way to hit exactly that.
+
+    Recorded as the resolved neutral positions rather than as the config table, so a
+    retarget expressed any of the three ways it can be -- a config table, a rebuilt
+    articulation asset, a different base-point nomination -- is one comparison. Rounded
+    because these are floats that came from an asset and a config, not from arithmetic: an
+    exact compare would make the digest sensitive to a re-export that moved nothing.
+    """
     art = config.ik_articulation()
     if art is None:
         return None
@@ -466,8 +489,16 @@ def _ik_articulation_digest(config: Config) -> dict | None:
     for chain in art.chains:
         lo, hi = chain.bounds
         chains[chain.name] = {
-            name: [float(blo), float(bhi)]
-            for name, blo, bhi in zip(chain.dof_names, lo, hi)
+            "bounds": {
+                name: [float(blo), float(bhi)]
+                for name, blo, bhi in zip(chain.dof_names, lo, hi)
+            },
+            "markers": {
+                name: [round(float(v), 6) for v in neutral]
+                for name, neutral in zip(chain.marker_names, chain.marker_neutral)
+            },
+            "marker_depth": list(chain.marker_depth),
+            "base_point": chain.base_point,
         }
     return chains
 

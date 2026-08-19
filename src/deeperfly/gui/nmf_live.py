@@ -9,10 +9,9 @@ from the result (see :meth:`deeperfly.gui.state.EditorState.nmf_posed_verts`).
 It re-solves on **the pipeline's own body plan**, read back from ``results.h5``. That
 matters for more than tidiness: the plan carries the measured segment lengths and the coxa
 registration, and the pipeline measures those from a pose whose static keypoints have
-already been collapsed to one position (the ``[postprocess]`` chain, and/or
-``[inverse_kinematics].constant_points``) -- so re-deriving them here from the editor's
-un-collapsed pose would quietly fit a slightly different animal than the stored result
-did.
+already been collapsed to one position by the ``[postprocess]`` chain -- so re-deriving
+them here from the editor's un-collapsed pose would quietly fit a slightly different
+animal than the stored result did.
 
 Only the frame's joint angles are re-solved, which is cheap: about half a millisecond,
 against the tens of milliseconds the previous per-limb scipy fit took (the reason the

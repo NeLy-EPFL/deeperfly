@@ -621,58 +621,6 @@ def stage_postprocess(
     return pts2d, pts3d, reproj, reports
 
 
-def _pin_for_fit(config: Config, skeleton, pts3d, names: list[str]):
-    """``[inverse_kinematics].constant_points`` -- the solver's own private pin.
-
-    **Superseded by** ``{ op = "static" }`` in ``[postprocess]``, and kept only for
-    configs that predate it. The difference is commitment, not behavior: this collapses
-    the listed points to their temporal median for the fit alone, so no stage output
-    records it and the videos, the editor and ``results.h5`` all still show the
-    un-pinned pose. The op does the same thing to the *result*.
-
-    It also does less than it looks like it does, in three ways worth knowing before
-    relying on it. QuickIK has no constant-point concept at all -- the pin is array
-    preprocessing the solver never learns about, so it buys no speed (measured: 0.77 s
-    vs 0.76 s over 2007 frames). Under ``fixed_body`` the leg roots are already held at
-    the median coxae by the body plan's own registration. And with a ``static`` op
-    configured, the 3D handed to the fit arrives collapsed already.
-
-    So the warnings below are the point of this function: pinning a point the chain
-    already froze is a no-op worth saying out loud, and pinning one it did *not* means
-    the fit runs on a pose no stage output records -- which is the case that silently
-    puts the stored angles and the stored pose out of agreement.
-    """
-    from ..postprocess import freeze_3d
-
-    cols = _columns_for(names, skeleton, "[inverse_kinematics].constant_points")
-    already = {
-        str(n)
-        for spec in config.postprocess.ops
-        if str(spec.get("op")) == "static"
-        for n in spec.get("points", [])
-    }
-    overlap = sorted(set(names) & already)
-    private = sorted(set(names) - already)
-    if overlap:
-        log.info(
-            "inverse_kinematics: %d of the %d constant_points are already frozen by a "
-            "[postprocess] static op (%s) -- pinning them again is a no-op; the key is "
-            "superseded and can be left empty",
-            len(overlap),
-            len(names),
-            ", ".join(overlap),
-        )
-    if private:
-        log.warning(
-            "inverse_kinematics: constant_points pins %s, which no [postprocess] static "
-            "op freezes -- the fit will run on a pose that NO stage output records, so "
-            "the stored angles and the stored 3D will disagree for those points. Move "
-            "them into [postprocess].ops to make the correction visible",
-            ", ".join(private),
-        )
-    return freeze_3d(pts3d, cols)
-
-
 def _columns_for(names, skeleton, where: str) -> list[int]:
     """Skeleton point names -> column indices, erroring with the config key that failed."""
     from ..postprocess import _columns
@@ -748,8 +696,6 @@ def stage_inverse_kinematics(
     template = config.ik_template()
     articulation = config.ik_articulation()
     p = config.inverse_kinematics
-    if p.constant_points:
-        pts3d = _pin_for_fit(config, skeleton, pts3d, p.constant_points)
     extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
         "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r, %s body)",

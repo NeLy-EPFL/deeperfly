@@ -464,43 +464,11 @@ def test_body_scale_comes_from_the_one_registration(template, fly, articulation)
 # -- the stage ---------------------------------------------------------------
 
 
-def test_stage_ik_pins_constant_points(fly):
-    """``constant_points`` collapses a jittering keypoint to its median before the fit.
-
-    With a free body the pinned coxa no longer drags the fitted root around frame to
-    frame, so the fitted leg root is markedly steadier. (Under the default
-    ``fixed_body`` the leg roots are already held at their measured medians by
-    construction, so there is nothing left for this to change.)
-    """
-    from deeperfly.pipeline.stages import stage_inverse_kinematics
-
-    template = KinematicTemplate.load("neuromechfly")
-    rng = np.random.default_rng(12)
-    pts3d, _ = synth_leg_pose(template, fly, rng, n_frames=8)
-    index = _index(fly)
-    coxa = index["rf_thorax_coxa"]
-    pts3d[:, coxa] += rng.normal(scale=0.05, size=(8, 3))
-
-    common = {"fit_head": False, "fit_abdomen": False, "fixed_body": False}
-    off = stage_inverse_kinematics(
-        Config.from_dict({"inverse_kinematics": common}), fly, pts3d.copy()
-    )
-    on = stage_inverse_kinematics(
-        Config.from_dict(
-            {"inverse_kinematics": {**common, "constant_points": ["rf_thorax_coxa"]}}
-        ),
-        fly,
-        pts3d.copy(),
-    )
-    wobble = lambda r: np.ptp(r.model_pts3d[:, coxa], axis=0).max()  # noqa: E731
-    assert wobble(on) < wobble(off)
-
-
 def test_stage_ik_fixed_body_holds_the_leg_roots_at_their_median(fly):
     """Under ``fixed_body`` a leg root is constant over the recording, at its median.
 
-    The physical claim for a tethered fly, and what makes the leg-root pinning
-    ``constant_points`` was invented for automatic.
+    The physical claim for a tethered fly, and what makes any separate leg-root pin
+    unnecessary: the body plan registers from the median coxae by construction.
     """
     from deeperfly.pipeline.stages import stage_inverse_kinematics
 

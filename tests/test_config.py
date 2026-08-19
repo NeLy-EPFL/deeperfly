@@ -190,7 +190,6 @@ def test_inverse_kinematics_defaults_when_absent():
         and ik.segment_len == 200
         and ik.overlap_len == 10
         and ik.bounds == {}
-        and ik.constant_points == []
     )
 
 
@@ -261,17 +260,6 @@ def test_inverse_kinematics_allowed_keys_are_derived_from_the_dataclass():
 
     parsed = {f.name for f in InverseKinematicsParams.__dataclass_fields__.values()}
     assert IK_KEYS == (parsed - {"markers"}) | {"head", "abdomen"}
-
-
-def test_inverse_kinematics_reads_constant_points():
-    ik = Config.from_dict(
-        {
-            "inverse_kinematics": {
-                "constant_points": ["lf_thorax_coxa", "rf_thorax_coxa"]
-            }
-        }
-    ).inverse_kinematics
-    assert ik.constant_points == ["lf_thorax_coxa", "rf_thorax_coxa"]
 
 
 def test_gui_mesh_hide_defaults_to_wings_and_reads_overrides():

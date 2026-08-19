@@ -256,40 +256,6 @@ def test_freeze_3d_all_nan_column_stays_nan():
     assert np.isnan(out[:, 2]).all()
 
 
-def test_the_ik_pin_says_when_it_is_redundant_and_when_it_is_invisible(fly, caplog):
-    """The two things a reader of a config cannot see for themselves.
-
-    ``[inverse_kinematics].constant_points`` is superseded by ``{ op = "static" }``, and
-    the interesting cases are the two ways the two lists can disagree. A point in both is
-    pinned twice, which is a harmless no-op (the median of a constant is that constant)
-    but worth saying. A point in the IK list ALONE means the fit runs on a pose no stage
-    output records -- so the stored angles and the stored 3D disagree for it, silently,
-    which is the case this warning exists for.
-    """
-    from deeperfly.config import Config
-    from deeperfly.pipeline.stages import _pin_for_fit
-
-    pts3d = np.zeros((6, len(fly.point_names), 3))
-    config = Config.from_dict(
-        {"postprocess": {"ops": [{"op": "static", "points": ["lf_thorax_coxa"]}]}}
-    )
-    with caplog.at_level("INFO", logger="deeperfly"):
-        _pin_for_fit(config, fly, pts3d, ["lf_thorax_coxa", "rf_thorax_coxa"])
-    text = caplog.text
-    assert "already frozen" in text and "lf_thorax_coxa" in text
-    assert "NO stage output records" in text and "rf_thorax_coxa" in text
-
-
-def test_the_ik_pin_names_its_own_key_on_a_typo(fly):
-    """Two config keys carry a held-still list; the error has to say which one."""
-    from deeperfly.config import Config
-    from deeperfly.pipeline.stages import _pin_for_fit
-
-    pts3d = np.zeros((4, len(fly.point_names), 3))
-    with pytest.raises(ValueError, match=r"\[inverse_kinematics\]\.constant_points"):
-        _pin_for_fit(Config.from_dict({}), fly, pts3d, ["not_a_point"])
-
-
 # -- confidence weights ------------------------------------------------------
 
 

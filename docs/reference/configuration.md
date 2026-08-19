@@ -787,15 +787,15 @@ properties exactly. Fitted per frame the plane wobbles with the estimate, so sym
 after a freeze un-freezes it. Turn it on only for a preparation whose body genuinely moves
 in the world frame.
 
-!!! note "Not the same as `[inverse_kinematics].constant_points`"
+!!! note "This replaces the IK solver's old private pin"
 
-    That key is the IK solver's own **private** pin: it collapses the listed points before
-    the fit and affects nothing else, so no stage output records it. `{ op = "static" }`
-    applies the same idea to the **result**, in both 2D and 3D. With the op configured the
-    IK key is redundant and the run says so in its log — and it is redundant two further
-    ways: under `fixed_body` the body plan registers from the median coxae anyway, and
-    QuickIK has no constant-point concept at all, so the pin is array preprocessing the
-    solver never learns about (measured: no speed difference over 2007 frames).
+    Up to 0.2, `[inverse_kinematics]` had a `constant_points` key that collapsed the
+    listed points before the fit and affected nothing else — so no stage output recorded
+    it, and the stored angles could disagree with the stored 3D for exactly those points.
+    `{ op = "static" }` applies the same idea to the **result**, in both 2D and 3D, which
+    is what makes it checkable: the op logs how far it moved what it touched, and a point
+    that had been drifting tens of pixels was moving and belongs out of the list. The key
+    is gone; if you carry it in a config, move its points here.
 
 ## `[inverse_kinematics]` — joint angles { #inverse_kinematics }
 
@@ -918,12 +918,6 @@ Two things it deliberately does **not** do:
     morphology — and know that you are buying that with a little accuracy against your own
     keypoints. Note that this cuts the other way too: a 5% femur difference that is *not*
     anatomy is a detector bias you are otherwise reporting as biology.
-
-`constant_points` names skeleton points whose 3D position is physically fixed over the
-recording; each is replaced by its temporal median before the fit, so it stops jittering
-with per-frame detection noise (and occluded frames get filled in). Under `fixed_body`
-the leg roots are already held at their measured medians **by construction**, so this
-mainly matters when the body is free.
 
 !!! warning "Joint limits, and why `damping` is large"
 

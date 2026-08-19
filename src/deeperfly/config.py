@@ -514,13 +514,6 @@ class InverseKinematicsParams:
     Because a table replaces its chain's whole marker set, a config that redeclares the
     head has to carry the nomination over or the chain silently reverts to the
     registered base.
-
-    ``constant_points`` names skeleton points whose 3D position is physically fixed
-    over the recording. Before the fit, each listed point is replaced by its temporal
-    median across all frames, so it stops jittering with per-frame detection noise (and
-    occluded frames get filled in). Empty = off. Note that under ``fixed_body`` the leg
-    roots are already held at their measured medians *by construction*, so this mainly
-    matters when the body is free.
     """
 
     template: str = "neuromechfly"
@@ -540,7 +533,6 @@ class InverseKinematicsParams:
     overlap_len: int = 10
     bounds: dict[str, list[float]] = field(default_factory=dict)
     markers: dict[str, dict] = field(default_factory=dict)
-    constant_points: list[str] = field(default_factory=list)
 
 
 #: Every key ``[inverse_kinematics]`` accepts. Derived from
@@ -1042,7 +1034,6 @@ class Config:
         parallel = ik.pop("parallel", defaults.parallel)
         segment_len = ik.pop("segment_len", defaults.segment_len)
         overlap_len = ik.pop("overlap_len", defaults.overlap_len)
-        constant_points = ik.pop("constant_points", [])
         if ik:  # any leftover key is a typo -- match _params' strict validation
             raise ValueError(
                 f"[inverse_kinematics] has unknown key(s) {sorted(ik)}; "
@@ -1066,7 +1057,6 @@ class Config:
             overlap_len=int(overlap_len),
             bounds=bounds,
             markers=markers,
-            constant_points=[str(n) for n in constant_points],
         )
 
     @property

@@ -372,8 +372,19 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
         {"inverse_kinematics.bounds.rf_trochanterfemur-rf_tibia-pitch": [10, 160]}
     )
     legs = _cfg({"inverse_kinematics.legs": ["rf", "lf"]})
-    const = _cfg({"inverse_kinematics.constant_points": ["rf_thorax_coxa"]})
-    # a bounds override, a leg restriction and a constant-point list each change it
+    # A retarget: the head chain's markers, redeclared at a different offset. It has to
+    # invalidate for the same reason a bounds override does -- it changes what the fit is
+    # fitting -- and it did not until the marker placement joined the digest.
+    retarget = _cfg(
+        {
+            "inverse_kinematics.head": {
+                "neck": {"body": "c_head", "offset": [0.0, 0.0, 0.0], "base": True},
+                "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.05]},
+                "r_antenna": {"body": "r_pedicel", "offset": [0.0, 0.0, 0.05]},
+            }
+        }
+    )
+    # a bounds override, a leg restriction and a marker retarget each change it
     assert fingerprint_diff(
         stage_fingerprint("inverse_kinematics", base, enabled, store),
         stage_fingerprint("inverse_kinematics", bounds, enabled, store),
@@ -384,7 +395,7 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
     )
     assert fingerprint_diff(
         stage_fingerprint("inverse_kinematics", base, enabled, store),
-        stage_fingerprint("inverse_kinematics", const, enabled, store),
+        stage_fingerprint("inverse_kinematics", retarget, enabled, store),
     )
     # an identical config is cache-valid
     assert not fingerprint_diff(
