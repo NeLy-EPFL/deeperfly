@@ -57,7 +57,7 @@ filename = ["camera_LH.mp4", "camera_6.mp4"]
 # It must be the skeleton the detector was TRAINED on: a dense detector's channels ARE a
 # skeleton, so the wrong one attaches points to the wrong joints. That is checked against
 # the checkpoint every run, by the ordered point NAMES and not by this label -- which is
-# what makes it a real check: this file was called `fly38b` before the 1.0 release (that
+# what makes it a real check: this file was called `fly38b` before 0.2 (that
 # spelling still resolves), and the DeepFly3D set that `fly38` named until then was also
 # 38 points, sharing 32 of these in a different order. A count could not tell them apart.
 [skeleton]

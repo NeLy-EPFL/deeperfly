@@ -1,6 +1,6 @@
 [project]
 name = "deeperfly"
-version = "0.1.0"
+version = "0.2.0"
 description = "Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig, in JAX"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

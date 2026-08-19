@@ -132,7 +132,7 @@ def sparse_config() -> Config:
     return Config.from_toml(SPARSE_CONFIG_PATH)
 
 
-#: The historical DeepFly3D 38-point set, retired as a packaged skeleton by the 1.0
+#: The historical DeepFly3D 38-point set, retired as a packaged skeleton by the 0.2
 #: release and kept here as TEST DATA (the file says why).
 DEEPFLY3D_SKELETON_PATH = Path(__file__).parent / "data" / "fly38_deepfly3d.toml"
 

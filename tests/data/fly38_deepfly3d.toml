@@ -2,7 +2,7 @@
 # (L = 0..18, R = 19..37), three 5-point legs plus one antenna and three abdominal
 # markers per side.
 #
-# TEST DATA, not a packaged skeleton. It shipped as `fly38` until the 1.0 release
+# TEST DATA, not a packaged skeleton. It shipped as `fly38` until the 0.2 release
 # retired it in favour of the midline-abdomen set that now owns that name, and it is
 # kept here because two things in the suite are defined against it and cannot be
 # restated on the current skeleton:

@@ -1,7 +1,7 @@
 # fly38 -- the 38 tracked points: six 5-point legs, two antennae, the neck, and a
 # 5-point dorsal-midline abdomen chain (the tergite stripes).
 #
-# This file was called `fly38b` up to the 1.0 release, when it became the only packaged
+# This file was called `fly38b` up to the 0.2 release, when it became the only packaged
 # skeleton and took the plain name. `name = "fly38b"` still resolves here, so a config or
 # an output directory written before the rename keeps working.
 #
