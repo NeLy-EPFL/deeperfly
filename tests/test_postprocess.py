@@ -501,9 +501,12 @@ def test_run_recording_freezes_and_then_reuses_the_cache(
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
+        # Every stage named, including the ones that are on by default: this test asserts
+        # WHICH stage the correction chain read from, so leaving the smoother at its default
+        # would silently change the answer from triangulation to eks.
         "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_postprocess = true\n"
-        "do_visualization = false\n"
+        "do_triangulation = true\ndo_eks = false\ndo_postprocess = true\n"
+        "do_inverse_kinematics = false\ndo_visualization = false\n"
         '[[postprocess.ops]]\nop = "static"\npoints = '
         + repr(list(RIGID)).replace("'", '"')
         + "\n"

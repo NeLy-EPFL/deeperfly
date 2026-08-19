@@ -413,7 +413,7 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
         {"inverse_kinematics.position_tolerance": 1e-5},
         {"inverse_kinematics.angle_tolerance": 1e-5},
         {"inverse_kinematics.fixed_body": False},
-        {"inverse_kinematics.symmetric_segments": True},
+        {"inverse_kinematics.symmetric_segments": False},
         {"inverse_kinematics.weigh_by_confidence": True},
         {"inverse_kinematics.parallel": True},
         {"inverse_kinematics.segment_len": 64},

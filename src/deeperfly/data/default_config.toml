@@ -151,8 +151,9 @@ do_triangulation        = true
 do_eks                  = true   # ensemble Kalman smoother over the 3D (de-jitters, repairs)
 # Assumes a TETHERED animal (see the chain below). Turn off for a freely-moving one.
 do_postprocess          = true   # the corrections below, from knowing the animal
-do_inverse_kinematics   = false  # fit NeuroMechFly joint angles (needs `deeperfly[ik]`;
-                                 # see the note under == Inverse kinematics below)
+# Needs `deeperfly[ik]`; without it the stage SKIPS with the reason logged rather than
+# failing the run, so a plain install still gets everything else.
+do_inverse_kinematics   = true   # fit NeuroMechFly joint angles
 do_visualization        = true
 
 
@@ -185,15 +186,20 @@ model = "dense38mv"
 models = [
     { name = "dense38mv", class = "mvt", weights = "mvt_alt8_fly38b.pth" },
 ]
+# The two AXIAL views get a searched crop; the six side cameras match training full-frame.
+preprocessors = [
+    { name = "crop_f", ops = [{ op = "crop", auto = true }] },
+    { name = "crop_h", ops = [{ op = "crop", auto = true }] },
+]
 pathways = [
     { name = "rh", source = "vid_rh" },
     { name = "rm", source = "vid_rm" },
     { name = "rf", source = "vid_rf" },
-    { name = "f",  source = "vid_f"  },
+    { name = "f",  source = "vid_f",  preprocessor = "crop_f" },
     { name = "lf", source = "vid_lf" },
     { name = "lm", source = "vid_lm" },
     { name = "lh", source = "vid_lh" },
-    { name = "h",  source = "vid_h"  },
+    { name = "h",  source = "vid_h",  preprocessor = "crop_h" },
 ]
 # Preprocessors: an ordered op list applied to a pathway's frames before the model and
 # inverted on the way back, so a mirror here never moves the reconstructed skeleton.

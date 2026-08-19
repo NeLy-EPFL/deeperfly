@@ -125,9 +125,8 @@ def build(
     lat: int = 96,
     mid: int = 128,
     head: str = "concat",
-    gray_input: bool = False,
 ):
-    """The dense-38 detector as an ``nn.Module``: ``(N,3,H,W) -> [ (N,K,96,192) ]``.
+    """The dense-38 detector as an ``nn.Module``: ``(N,1,H,W) -> [ (N,K,96,192) ]``.
 
     Returns a one-element list so the shared ``_forward_last`` seam (which takes the
     LAST element of a multi-stack output) works unchanged.
@@ -149,7 +148,7 @@ def build(
             kw = dict(
                 pretrained=pretrained,
                 features_only=True,
-                in_chans=1 if gray_input else 3,
+                in_chans=1,
             )
             try:
                 self.backbone = timm.create_model(model_name, img_size=(256, 512), **kw)
@@ -162,7 +161,6 @@ def build(
                     f"{model_name} exposes feature strides {red}; the stride-4 heatmap "
                     f"head needs {WANT_REDUCTIONS} and {missing} are absent"
                 )
-            self.gray_input = bool(gray_input)
             self._sel = tuple(red.index(r) for r in WANT_REDUCTIONS)
             all_chs = tuple(self.backbone.feature_info.channels())
             chs = tuple(all_chs[i] for i in self._sel)
@@ -248,18 +246,19 @@ def build(
             #: peak may land outside [0, 1], which is a joint the crop cut off rather
             #: than an error. See `LoadedModel.padded_field`.
             self.padded_field = True
+            #: One input plane, always -- see :meth:`forward`. Lets the decode path skip
+            #: the YUV->RGB conversion, which is ~90% of what a frame costs.
+            #: :attr:`deeperfly.pose2d.models.LoadedModel.accepts_gray`.
+            self.accepts_gray = True
 
         def forward(self, x: "torch.Tensor") -> list["torch.Tensor"]:
-            # The pathway hands us (N, 3, H, W) already resized. The three channels are
-            # a grayscale frame expanded by `LoadedModel.prepare`; the network was
-            # trained on one channel repeated back to three, so take one and repeat --
-            # NOT a luminance mix, which would be a different input than training saw.
+            # One plane in. `x[:, :1]` takes the FIRST channel, not a luminance mix: on
+            # monochrome full-range footage R == G == B == Y, so the first plane IS the
+            # luma, and a proper RGB->gray conversion would be a different input than
+            # training saw. It is a no-op when the pathway already handed us one plane.
             g = x[:, :1]
             g = (g - self.norm_mean) / self.norm_std
-            # One plane when the checkpoint's stem takes one. The fold that produced it is
-            # a plain sum of the RGB filters, which is EXACT here because the mean/std
-            # above are scalars shared by all three planes -- the three were identical.
-            raw = list(self.backbone(g if self.gray_input else g.repeat(1, 3, 1, 1)))
+            raw = list(self.backbone(g))
             fs = [raw[i] for i in self._sel]
             if fs[0].shape[1] != (
                 self.laterals[0].in_channels
@@ -377,16 +376,14 @@ def load_hrnet(weights: str | Path, *, dev: str | None = None, mean: float = 0.0
         sd["decoder.out.3.weight" if head == "unet" else "head.3.weight"].shape[0]
     )
     backbone = ck.get("backbone", "")
-    # Read back for the same reason `head` is: a gray checkpoint rebuilt as 3-channel
-    # fails load_state_dict on the stem, and the reverse would feed three planes to a
-    # one-plane stem. Both are silent in a filtered log.
-    gray_input = bool(ck.get("args", {}).get("gray_input", False))
     model = build(
         n_kp,
         MODEL_NAMES.get(backbone, backbone or "hrnet_w18_small_v2"),
         head=head,
-        gray_input=gray_input,
     )
+    # strict, so a three-channel checkpoint fails HERE, on the stem, rather than running.
+    # Its `args.gray_input` is not consulted: the network takes one plane now, and a
+    # checkpoint that disagrees is not a configuration to honour but an old artifact.
     model.load_state_dict(sd, strict=True)
     model.norm_mean = float(ck.get("mean", 0.0))
     model.norm_std = float(ck.get("std", 1.0))

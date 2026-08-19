@@ -57,6 +57,8 @@ def test_the_two_preparations_agree_on_the_underlying_image():
     assert torch.allclose(rgb[:, 0] * 0.229 + 0.485, gray[:, 0], atol=1e-6)
 
 
-def test_both_artifact_formats_are_known():
-    assert mvt.ARTIFACT_FORMAT in mvt.ARTIFACT_FORMATS
-    assert "deeperfly-mvt-2" in mvt.ARTIFACT_FORMATS
+def test_only_the_one_plane_artifact_format_is_accepted():
+    """The three-channel `-1` is retired: it is the same function as the `-2` folded from
+    it, so dropping it costs no accuracy -- only the ability to load an artifact nobody
+    should still be running."""
+    assert mvt.ARTIFACT_FORMATS == ("deeperfly-mvt-2",)

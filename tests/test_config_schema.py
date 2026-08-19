@@ -9,6 +9,7 @@ section reflects, every field is accounted for, and validation is still ``Config
 from __future__ import annotations
 
 import json
+import tomllib
 
 import pytest
 
@@ -239,25 +240,80 @@ def test_cli_set_will_not_edit_the_packaged_default():
         )
 
 
-def test_cli_set_refuses_when_the_table_already_exists(tmp_path):
-    """Appending a bare key after an existing table would reparent it silently."""
+def test_cli_set_rewrites_a_key_the_file_already_states(tmp_path):
+    """An existing key is edited in place, not appended.
+
+    Appending a bare key after an existing table header would reparent whatever follows it,
+    so the old behaviour was to refuse -- which left no way to change a key the file already
+    states. The packaged config states every `[pipeline]` flag, so that was also no way to
+    turn a default-on stage off.
+    """
+    from deeperfly import cli
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[triangulation]\nmethod = "ransac"\nmin_inliers = 2\n\n[eks]\ninflate_threshold = 15.0\n'
+    )
+    cli.main(
+        [
+            "config",
+            "set",
+            "triangulation.method",
+            "dlt",
+            "-c",
+            str(cfg),
+            "--log-level",
+            "error",
+        ]
+    )
+    text = cfg.read_text()
+    assert 'method = "dlt"' in text
+    # Nothing moved: the keys after it still belong to their own tables.
+    assert tomllib.loads(text)["triangulation"]["min_inliers"] == 2
+    assert tomllib.loads(text)["eks"]["inflate_threshold"] == 15.0
+
+
+def test_cli_set_refuses_a_new_key_under_an_existing_table(tmp_path):
+    """The case the refusal is actually for: appending here WOULD reparent."""
     from deeperfly import cli
 
     cfg = tmp_path / "c.toml"
     cfg.write_text('[triangulation]\nmethod = "ransac"\n')
-    with pytest.raises(SystemExit, match="already exists"):
+    with pytest.raises(SystemExit, match="does not state"):
         cli.main(
             [
                 "config",
                 "set",
-                "triangulation.method",
-                "dlt",
+                "triangulation.min_inliers",
+                "3",
                 "-c",
                 str(cfg),
                 "--log-level",
                 "error",
             ]
         )
+
+
+def test_cli_set_can_turn_a_default_on_stage_off(tmp_path):
+    """The packaged config states every stage flag, so this is the only route to editing one."""
+    from deeperfly import cli
+    from deeperfly.config import DEFAULT_CONFIG_PATH
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(DEFAULT_CONFIG_PATH.read_text())
+    cli.main(
+        [
+            "config",
+            "set",
+            "pipeline.do_eks",
+            "false",
+            "-c",
+            str(cfg),
+            "--log-level",
+            "error",
+        ]
+    )
+    assert Config.from_toml(cfg).stage_flags()["eks"] is False
 
 
 def test_cli_set_needs_a_dotted_key(tmp_path):

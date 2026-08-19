@@ -33,15 +33,25 @@ from deeperfly.results import PoseResult
 FLY_CAMERAS = list(Config.default().camera_table()[1])
 
 
+#: What `_default_cfg` writes ON when the caller names nothing: the reconstruction spine.
+_HELPER_STAGES = frozenset(
+    {"pose2d", "bundle_adjustment", "triangulation", "visualization"}
+)
+
+
 def _default_cfg(tmp_path, *, name="config.toml", **flags):
     """Write the packaged default config with an explicit, fully-stated pipeline.
 
-    Pass any subset of stage names as keyword booleans; every stage the caller does not
-    name is written at its ``STAGE_DEFAULTS`` value, NOT at whatever the packaged config
-    happens to recommend. The packaged config turns the smoother and the correction chain
-    on because they are the right thing for a tethered recording -- a *test* asking for
-    "pose2d and nothing after it" means that literally, and should not have to keep a list
-    of the recommendations in sync to get it.
+    Pass any subset of stage names as keyword booleans; every stage the caller does not name
+    is written at this helper's OWN baseline (:data:`_HELPER_STAGES`), not at
+    ``STAGE_DEFAULTS`` and not at whatever the packaged config recommends.
+
+    The baseline is the reconstruction spine -- detection, bundle adjustment, triangulation,
+    visualization -- and nothing else. The shipped defaults turn the smoother, the correction
+    chain and the joint-angle fit on as well, because those are right for a tethered
+    recording; a *test* asking for "pose2d and nothing after it" means that literally, and
+    should not silently acquire three more stages (and a solver dependency) because the
+    product's recommendations grew.
 
     The full default is needed by tests that run the ``pose2d`` stage (it builds the
     camera rig from ``[cameras]``); tests that resume from a cached result use small
@@ -49,9 +59,17 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
     """
     unknown = set(flags) - set(STAGES)
     assert not unknown, f"not pipeline stages: {sorted(unknown)}"
+    baseline = {n: n in _HELPER_STAGES for n in STAGES}
     text = DEFAULT_CONFIG_PATH.read_text()
+    # Drop the axial crops. The packaged config searches them per recording, which needs
+    # real footage to sample and a rig to gate with; these tests stub detection entirely and
+    # write zero-byte videos, so a search here would fail on "cannot tell how long this
+    # recording is" -- a failure about the fixture, in tests about caching and CLI
+    # plumbing. tests/test_autocrop.py is where the search itself is exercised.
+    text = re.sub(r"(?m)^preprocessors = \[\n(?:.*\n)*?\]\n", "", text, count=1)
+    text = re.sub(r',\s*preprocessor = "crop_[fh]"', "", text)
     for stage in STAGES:
-        on = flags.get(stage, STAGE_DEFAULTS[stage])
+        on = flags.get(stage, baseline[stage])
         # Anchor to the start of a line so a `do_<stage> = ...` example inside a
         # comment is not matched ahead of the real [pipeline] flag.
         text, n = re.subn(
@@ -146,6 +164,14 @@ def _stub_detect(monkeypatch, tmp_path):
     sizes = {f"vid_{view}": (H, W) for view in FLY_CAMERAS}
     monkeypatch.setattr(
         pipeline.stages, "source_image_sizes", lambda config, **kw: sizes
+    )
+    # The packaged config searches a crop for each axial view, which needs real footage to
+    # sample. A test that stubs detection has none, so the plan is taken as written --
+    # tests/test_autocrop.py is where the search itself is exercised.
+    monkeypatch.setattr(
+        pipeline.stages.autocrop,
+        "ensure_resolved",
+        lambda config, plan, **kw: (plan, False),
     )
     monkeypatch.setattr(
         pipeline.stages,

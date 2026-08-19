@@ -605,17 +605,28 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
             "[pipeline].do_triangulation (or do_pictorial_structures)"
         )
         return False
+    # The solver is an optional extra, and it is now on by DEFAULT -- so a plain install
+    # without it has to lose the joint angles, not the run. Skipping matters more than it
+    # looks: `inverse_kinematics` precedes `visualization` in STAGES, so an exception here
+    # also costs the videos, after detection, bundle adjustment, triangulation, the smoother
+    # and the correction chain have all been computed and committed.
+    from ..inverse_kinematics._quickik import MissingQuickIK
+
     conf = None
     if ctx.config.inverse_kinematics.weigh_by_confidence:
         pose2d = ctx.store.read_pose2d()
         conf = None if pose2d is None else pose2d[1]
-    result = stages.stage_inverse_kinematics(
-        ctx.config,
-        ctx.store.read_skeleton(),
-        pts3d,
-        conf,
-        absent=ctx.store.read_animal()[0],
-    )
+    try:
+        result = stages.stage_inverse_kinematics(
+            ctx.config,
+            ctx.store.read_skeleton(),
+            pts3d,
+            conf,
+            absent=ctx.store.read_animal()[0],
+        )
+    except MissingQuickIK as exc:
+        log.warning("skipping inverse_kinematics: %s", exc)
+        return False
     ctx.store.truncate_from("inverse_kinematics")
     ctx.store.write_ik(
         angles=result.angles,

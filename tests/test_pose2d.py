@@ -129,7 +129,8 @@ def test_model_prepare_shape_and_mean(module):
     model = module
     gray = np.full((200, 100, 3), 128, dtype=np.uint8)  # 128/255 ~ 0.502
     out = _loaded(model).prepare(gray)
-    assert tuple(out.shape) == (3, 256, 512)
+    # ONE plane out: every shipped detector takes one, so nothing is replicated to three.
+    assert tuple(out.shape) == (1, 256, 512)
     np.testing.assert_allclose(np.asarray(out), 128 / 255, atol=1e-4)
 
 

@@ -295,12 +295,17 @@ class LoadedModel:
         return getattr(self.module, "impl", None)
 
     def prepare(self, frames):
-        """``(..., H, W, 3)`` frame(s) -> ``(..., 3, H_out, W_out)`` normalized model input.
+        """``(..., H, W[, C])`` frame(s) -> ``(..., 1, H_out, W_out)`` normalized input.
 
-        Accepts a NumPy array or an on-device torch tensor and keeps it on its
-        device (a GPU-decoded frame is resized and normalized on the GPU). The
-        resize is bilinear + anti-aliased to match the original DeepFly2D
-        skimage resize closely; ``mean`` is subtracted last.
+        Accepts a NumPy array or an on-device torch tensor and keeps it on its device (a
+        GPU-decoded frame is resized and normalized on the GPU). The resize is bilinear +
+        anti-aliased; ``mean`` is subtracted last.
+
+        **One plane.** The corpus is monochrome, so every shipped detector is trained on a
+        single channel, and a frame arrives either as ``(..., H, W)`` from the decoder's
+        gray fast path or as ``(..., H, W, C)`` whose planes are identical -- the decoder
+        only takes the gray path when they are. So the first channel is the image; nothing
+        is replicated to three to feed a network that would only take one back.
         """
         import torch
         import torch.nn.functional as F
@@ -322,10 +327,15 @@ class LoadedModel:
 
         img = _to_torch_image(frames)
         img = img.float() / 255.0 if not torch.is_floating_point(img) else img.float()
-        if img.ndim == 2:  # a single grayscale frame -> 3 channels
-            img = img.unsqueeze(-1).expand(-1, -1, 3)
-        img = img[..., :3]
-        chw = img.movedim(-1, -3).contiguous()  # (..., 3, H, W)
+        # One plane in, one plane out. A decoded frame arrives either as (..., H, W) from
+        # the gray fast path or as (..., H, W, C) with the planes identical (the decoder
+        # only takes the gray path when they are -- see `io.video._frame_array`), so the
+        # first channel IS the image and nothing is expanded to feed it.
+        if img.ndim >= 3 and img.shape[-1] in (1, 3, 4):
+            img = img[..., :1]
+        else:
+            img = img.unsqueeze(-1)
+        chw = img.movedim(-1, -3).contiguous()  # (..., 1, H, W)
         lead = chw.shape[:-3]
         flat = chw.reshape(-1, *chw.shape[-3:])
         resized = F.interpolate(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 
 from rich.table import Table
 from rich.text import Text
@@ -133,25 +134,42 @@ def _cmd_config_set(args: argparse.Namespace) -> None:
         f"\n# set by 'deeperfly config set {args.key}'\n"
         f"[{section}]\n{_toml.key(key)} = {_toml.value(value)}\n"
     )
-    # A section may already exist, and TOML forbids declaring one twice -- so append the
-    # bare key under the existing header when there is one, and a new table otherwise.
+    # Three cases, and the middle one is why this is not just an append. TOML forbids
+    # declaring a table twice, so a new key can only be appended when its table is absent.
+    # When the table AND the key are already there, the operation is an in-place value
+    # rewrite -- which reorders nothing, and is the only way to change a key the packaged
+    # config states. (It states every `[pipeline]` flag, so without this there is no way to
+    # turn a default-on stage off.) A table that exists without the key is still refused:
+    # appending a bare key after an existing header would reparent whatever follows it.
     if _has_table(text, section):
-        addition = (
-            f"\n# set by 'deeperfly config set {args.key}' -- move this under "
-            f"[{section}] if you reorganize the file\n"
+        candidate, n = re.subn(
+            rf"(?m)^(\s*{re.escape(key)}\s*=\s*)\S.*$",
+            lambda m: f"{m.group(1)}{_toml.value(value)}",
+            text,
+            count=1,
         )
-        raise SystemExit(
-            f"[{section}] already exists in {path}. Editing an existing table in place "
-            "would risk reordering keys past their table header, which silently reparents "
-            f"them. Change {key} there by hand -- 'deeperfly config show --config {path} "
-            f"{section} -v' prints what it means"
-        )
-    candidate = text + addition
+        if n != 1:
+            raise SystemExit(
+                f"[{section}] already exists in {path} but does not state {key!r}. "
+                "Appending a bare key after an existing table header would reparent the "
+                f"keys below it, so add it under [{section}] by hand -- "
+                f"'deeperfly config show --config {path} {section} -v' prints what it means"
+            )
+    else:
+        candidate = text + addition
     try:
         parsed = tomllib.loads(candidate)
-        Config.from_dict(parsed).__getattribute__(
-            {"pictorial_structures": "pictorial"}.get(section, section)
-        )
+        cfg = Config.from_dict(parsed)
+        # `[pipeline]` is not a params dataclass -- it is the stage toggles, read through
+        # `stage_flags()`. Validating it through the accessor table would have looked up a
+        # `Config.pipeline` that does not exist, which is the other half of why setting a
+        # stage flag could never work.
+        if section == "pipeline":
+            cfg.stage_flags()
+        else:
+            cfg.__getattribute__(
+                {"pictorial_structures": "pictorial"}.get(section, section)
+            )
     except Exception as exc:
         raise SystemExit(f"{args.key} = {args.value!r} is not valid: {exc}") from None
 

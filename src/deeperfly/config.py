@@ -81,18 +81,31 @@ STAGES = (
     "visualization",
 )
 
-#: Default for each ``do_<stage>`` when the key is omitted: detection,
-#: bundle adjustment, triangulation and visualization run by default; pictorial
-#: structures, the ensemble Kalman smoother, the postprocess chain and
-#: inverse kinematics are opt-in.
+#: Default for each ``do_<stage>`` when the key is omitted. Everything runs except
+#: ``pictorial_structures``.
+#:
+#: The smoother, the correction chain and the joint-angle fit are on because they are what
+#: a tethered recording wants, and leaving them off meant every user rediscovering that:
+#: the smoother is worth -39% 3D jitter, the chain applies what is known about the ANIMAL
+#: (a thorax plate that does not move, a body that is bilaterally symmetric), and the fit is
+#: the thing most downstream analysis actually reads. Each still degrades rather than
+#: fails -- a stage whose input is unavailable is skipped with the reason logged, and the
+#: fit skips rather than raising when its optional solver is absent.
+#:
+#: ``pictorial_structures`` stays off, and not for symmetry. It recovers a joint from the
+#: top-K peaks of a detector that predicted one body side; a dense detector already predicts
+#: every point in every view. Switching it on rewires triangulation AND the smoother onto its
+#: committed 2D, which is NaN in every view with no candidate within 15 px -- so it would
+#: silently un-densify a dense run -- and it adds a ``candidates`` key to the pose2d
+#: fingerprint, re-detecting every cached tree in existence.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
     "pictorial_structures": False,
     "triangulation": True,
-    "eks": False,
-    "postprocess": False,
-    "inverse_kinematics": False,
+    "eks": True,
+    "postprocess": True,
+    "inverse_kinematics": True,
     "visualization": True,
 }
 
@@ -537,7 +550,7 @@ class InverseKinematicsParams:
     position_tolerance: float = 1e-3
     angle_tolerance: float = 1e-3
     fixed_body: bool = True
-    symmetric_segments: bool = False
+    symmetric_segments: bool = True
     weigh_by_confidence: bool = False
     parallel: bool = False
     segment_len: int = 200

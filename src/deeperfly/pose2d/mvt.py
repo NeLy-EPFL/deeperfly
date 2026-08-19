@@ -67,20 +67,19 @@ import numpy as np
 
 log = logging.getLogger("deeperfly")
 
-#: Artifact format this loader understands.
-ARTIFACT_FORMAT: str = "deeperfly-mvt-1"
-#: Formats this loader runs. ``-2`` is the same network with its patch-embedding stem
-#: FOLDED onto one grayscale plane: the corpus is monochrome, so two thirds of that
-#: convolution's input weights were three copies of one filter. The fold is exact -- see
-#: dfpose's ``scripts/gray_stem.py`` -- so a ``-2`` artifact is the same function as the
-#: ``-1`` it was folded from, not a retrained model.
+#: Formats this loader runs. ``-2`` is a ONE-PLANE artifact: the corpus is monochrome, so
+#: the three-channel ``-1`` its patch-embedding stem was folded from carried three copies
+#: of one filter in two thirds of that convolution's input weights. The fold is exact (see
+#: dfpose's ``scripts/gray_stem.py``), so a ``-2`` is the same function as the ``-1`` it
+#: came from rather than a retrained model -- which is why dropping ``-1`` here costs no
+#: accuracy, only the ability to load an artifact nobody should still be running.
 #:
-#: The version is the guard, and it has to be: a ``-1`` artifact fed one plane and a ``-2``
-#: fed three are both shape errors PyTorch would raise, but a ``-2`` whose scalar
-#: normalization was applied as if it were ImageNet's would run and be quietly wrong. The
-#: channel count is therefore read from the artifact's own ``normalization.mean`` and
-#: cross-checked against the stem it actually carries.
-ARTIFACT_FORMATS: tuple[str, ...] = ("deeperfly-mvt-1", "deeperfly-mvt-2")
+#: The version is the guard, and it has to be. A ``-1`` fed one plane is a shape error
+#: PyTorch would raise, but a ``-2`` whose scalar normalization was applied as if it were
+#: ImageNet's per-channel one would RUN and be quietly wrong. So the channel count is read
+#: from the artifact's own ``normalization.mean`` and cross-checked against the stem it
+#: actually carries.
+ARTIFACT_FORMATS: tuple[str, ...] = ("deeperfly-mvt-2",)
 
 #: Soft-argmax temperature. Not in the state dict -- LP holds it as a plain attribute
 #: (``self.temperature = torch.tensor(1000.0)``), so it is a property of the decode rather
