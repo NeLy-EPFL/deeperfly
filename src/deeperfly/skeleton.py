@@ -24,7 +24,7 @@ each fails differently without it:
     equivalent of SLEAP's ``Skeleton.get_flipped_node_inds()``. Mirroring an image
     without applying it trains every left channel on a right joint, which costs no
     error, emits no warning, and looks exactly like a model that will not converge.
-    See :mod:`deeperfly.training.mirror`.
+    Read by flip augmentation, which lives outside this package.
 :mod:`deeperfly.pose2d.pathways`
     Validates that a mirrored detection pathway lands on the *mirrored* points.
     Without the pairs a one-word typo in ``[pose2d.output_points]`` silently swaps
@@ -227,7 +227,7 @@ class Skeleton:
         exactly right for points that carry no side.
 
         Because each point is in at most one pair, the permutation is an **involution**:
-        applying it twice is the identity. :mod:`deeperfly.training.mirror` relies on
+        applying it twice is the identity. Flip augmentation relies on
         that, and so does the round-trip test.
 
         This is the same lookup table SLEAP exposes as

@@ -82,12 +82,6 @@ coordinate conventions these functions share, see
 
 ::: deeperfly.pictorial
 
-## Training (`deeperfly[train]`)
-
-::: deeperfly.training.heatmaps
-
-::: deeperfly.training.mirror
-
 ## Frame I/O
 
 ::: deeperfly.io

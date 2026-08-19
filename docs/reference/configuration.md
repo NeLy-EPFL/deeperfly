@@ -179,7 +179,7 @@ Three things read the pairs, and two of them fail *silently* without them:
 | Consumer | What it does with them | What its absence costs |
 | --- | --- | --- |
 | [`[pose2d.output_points]`](#output_points) validation | Checks that a pathway whose preprocessor **mirrors** the frame lands on the *mirrored* points | A one-word typo in one of 132 rows swaps a body side. The detector still fires and triangulation still converges — the reconstruction is just a fly with its legs crossed. |
-| Flip augmentation (`deeperfly.training.mirror`) | Permutes the point channels by `Skeleton.flip_perm()` | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
+| Flip augmentation (out of tree; see [`mirror`](#cameras)) | Permutes the point channels by `Skeleton.flip_perm()` and relabels the sample with the mirrored camera | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
 | The chirality check (`deeperfly.chirality`) | Flags a pose whose left/right identities look swapped. A library call, not part of any stage — run it over a 3D pose when you want the sweep | The one labeling error that costs nothing in any point-cloud metric has nothing that can find it. |
 
 Omitting the key switches all three off — correct for an asymmetric subject, wrong

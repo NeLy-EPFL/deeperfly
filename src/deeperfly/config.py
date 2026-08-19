@@ -1183,7 +1183,7 @@ class Config:
         """``view -> the view that sees this view's mirror image`` (``[cameras.<n>].mirror``).
 
         Only the views that declare it; empty when none do. Consumed by flip augmentation
-        (:mod:`deeperfly.training.mirror`): a mirrored training sample must be told which
+        (which lives outside this package): a mirrored training sample must be told which
         camera it now *looks like*, or any metric that splits by camera side -- ipsilateral
         versus contralateral error, the one that matters most on this rig -- silently calls
         every swapped channel by the wrong side.
