@@ -409,26 +409,28 @@ def test_run_errors_on_missing_recording_before_creating_outdir(tmp_path):
     assert not outdir.exists()  # validated before any deeperfly_outputs was made
 
 
-def test_run_errors_on_missing_camera_footage_before_creating_outdir(tmp_path, caplog):
-    """A recording that exists but lacks a configured camera's footage is warned
-    (naming the camera) at discovery and fails before the output dir is created."""
+def test_run_refuses_below_two_views_before_creating_outdir(tmp_path, caplog):
+    """Narrowing has a floor, and it is where a run stops rather than degrades.
+
+    This config declares two views, so losing one leaves ONE -- and one view fails
+    silently everywhere downstream: triangulation returns all-NaN without raising, RANSAC
+    gives a lone observation zero inliers and then erases it, and bundle adjustment reports
+    success at a cost near zero. There is no "too few views" diagnostic outside the
+    smoother, so the refusal has to happen here.
+
+    Before the output dir exists, which is the point of checking this early: a run that
+    cannot proceed should not leave an empty `deeperfly_outputs` behind.
+    """
     rec = tmp_path / "rec"
     rec.mkdir()
     (rec / "cam0.mp4").write_bytes(b"")  # cam0 present, cam1 missing
     outdir = tmp_path / "out"
     with caplog.at_level("WARNING", logger="deeperfly"):
-        with pytest.raises(SystemExit, match="needs footage for pose2d"):
+        with pytest.raises(SystemExit, match=r"only 1 view\(s\) have footage"):
             cli.main(
-                [
-                    "run",
-                    str(rec),
-                    "-c",
-                    str(_footage_cfg(tmp_path)),
-                    "-o",
-                    str(outdir),
-                ]
+                ["run", str(rec), "-c", str(_footage_cfg(tmp_path)), "-o", str(outdir)]
             )
-    assert any("missing ['cam1']" in r.message for r in caplog.records)
+    assert any("cam1" in r.message for r in caplog.records)
     assert not outdir.exists()
 
 
@@ -575,7 +577,8 @@ def test_resolve_single_literal_invalid_warns_but_keeps(tmp_path, caplog):
     assert out[0].sources == {}
     assert out[0].outdir == recordings.default_outdir(bad)
     assert any(
-        str(bad.resolve()) in r.message and "not a valid recording" in r.message
+        str(bad.resolve()) in r.message
+        and "footage for none of the configured sources" in r.message
         for r in caplog.records
     )
 
@@ -587,15 +590,15 @@ def test_resolve_image_sequence_recording(tmp_path):
     assert out[0].sources["cam0"] == [rec / f"cam0_{i}.png" for i in range(3)]
 
 
-def test_resolve_partial_cameras_warns_and_skips(tmp_path, caplog):
-    """A directory with footage for only some cameras is warned and skipped."""
+def test_resolve_partial_cameras_keeps_what_is_present(tmp_path, caplog):
+    """A directory with footage for only some sources is reported, with what it has."""
     rec = tmp_path / "rec"
     rec.mkdir()
     (rec / "cam0.mp4").write_bytes(b"")  # cam1 missing
     with caplog.at_level("WARNING", logger="deeperfly"):
         out = _resolve(["rec"], tmp_path)
-    assert out[0].sources == {}  # not a valid recording -> kept empty for resume
-    assert any("missing ['cam1']" in r.message for r in caplog.records)
+    assert set(out[0].sources) == {"cam0"}
+    assert any("cam1" in r.message for r in caplog.records)
 
 
 def test_resolve_uneven_file_count_warns_and_skips(tmp_path, caplog):

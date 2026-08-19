@@ -23,6 +23,7 @@ the stages whose parameters changed.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 import tomllib
@@ -94,6 +95,17 @@ STAGE_DEFAULTS = {
     "inverse_kinematics": False,
     "visualization": True,
 }
+
+
+#: Fewest views a run can reconstruct 3D from, below which it refuses rather than degrades.
+#:
+#: Two, and the reason is that one view fails *silently*: ``triangulate`` and
+#: ``triangulate_ransac`` both return all-NaN without raising, RANSAC gives a single
+#: observation ZERO inliers and then erases it (``np.where(inliers, pts2d, nan)``), and
+#: bundle adjustment -- with the shipped ``points_to_use``, whose NaN initial guess is
+#: replaced by zeros -- reports success at a cost near 1e-26. Nothing outside the smoother
+#: has a "too few views" diagnostic, so a one-view run produces a confident-looking nothing.
+MIN_VIEWS_FOR_3D = 2
 
 
 # -- typed per-stage params: the single source of truth for every default ----
@@ -761,6 +773,54 @@ def _refuse_retired_camera_keys(defaults: dict, views: dict[str, dict]) -> None:
                 )
 
 
+def _declares_auto_crop(prep: dict) -> bool:
+    """Whether a ``[[pose2d.preprocessors]]`` table carries an ``auto = true`` crop.
+
+    Such a table is the one kind that cannot be left orphaned: an automatic crop with no
+    pathway using it is a hard error (the search would have nothing to search *for*), while
+    an unused explicit box is merely an unused table -- and may still be borrowed by name by
+    a visualization panel's ``crop``, so it is kept.
+    """
+    for op in prep.get("ops") or []:
+        if isinstance(op, dict) and str(op.get("op")) == "crop" and op.get("auto"):
+            return True
+    return False
+
+
+def _narrow_videos(data: dict, dropped: set[str]) -> None:
+    """Blank dropped views out of every ``[[visualization.videos]]`` grid, in place.
+
+    A grid cell is set to ``""`` rather than removed, because a grid's shape is a layout: the
+    montage reads as the animal from above, and closing the gap would slide every remaining
+    camera into a neighbour's place. ``""`` is already the config's own spelling for "leave a
+    gap here". Explicit ``panels`` are removed instead -- they carry their own ``x0``/``y0``,
+    so there is no row to keep aligned.
+    """
+    if not dropped:
+        return
+    viz = data.get("visualization")
+    if not isinstance(viz, dict):
+        return
+    for entry in viz.get("videos") or []:
+        if not isinstance(entry, dict):
+            continue
+        grid = entry.get("grid")
+        if isinstance(grid, list):
+            entry["grid"] = [
+                [("" if cell in dropped else cell) for cell in row]
+                if isinstance(row, list)
+                else row
+                for row in grid
+            ]
+        panels = entry.get("panels")
+        if isinstance(panels, list):
+            entry["panels"] = [
+                pan
+                for pan in panels
+                if not isinstance(pan, dict) or pan.get("view") not in dropped
+            ]
+
+
 # -- skeleton presets ---------------------------------------------------------
 
 
@@ -1321,6 +1381,172 @@ class Config:
         if path.is_absolute() or self.source is None:
             return path
         return self.source.parent / path
+
+    def narrowed_to_sources(self, available) -> "Config":
+        """A copy of this config describing only what a recording actually has.
+
+        One config routinely describes more rig than one recording holds -- the packaged
+        default declares the eight-camera rig, and a seven-camera recording under it is not
+        malformed. Rather than refuse the recording or invent the missing footage, the run
+        narrows itself: a source with no files invalidates the pathways that read it, a
+        view no surviving pathway feeds leaves the rig, and everything keyed on that view
+        follows.
+
+        What is dropped, in dependency order:
+
+        * ``[[sources]]`` -- the ones with no footage;
+        * ``[[pose2d.pathways]]`` -- those whose ``source`` is gone. A source may feed
+          several pathways, so this is not one-to-one;
+        * ``[cameras.<name>]`` -- views no surviving pathway feeds. This is the one that
+          shortens the ``V`` axis, because ``view_names`` comes from the camera table
+          (:meth:`~deeperfly.pose2d.pathways.DetectionPlan.from_config`) and not from the
+          pathways -- dropping a pathway alone leaves a view whose 2D is all-NaN, which
+          reads as a detected-and-empty camera rather than an absent one, and which
+          bundle adjustment would then export into ``calibration.toml`` at its unrefined
+          nominal pose with nothing marking it as unmeasured;
+        * ``[pose2d.output_points.<view>]`` -- tables naming a dropped view or pathway;
+        * ``[[pose2d.preprocessors]]`` -- an ``auto = true`` one no surviving pathway uses,
+          because an orphaned automatic crop is a hard error rather than an unused table;
+        * ``[visualization.videos]`` grid cells and ``panels`` naming a dropped view -- a
+          grid cell is blanked (``""``) rather than removed, so the montage keeps its shape
+          and the remaining cameras stay where the reader expects them.
+
+        Point-name sections (``[bundle_adjustment].points_to_use``, ``[postprocess].ops``,
+        ``[inverse_kinematics]``) are view-agnostic and untouched.
+
+        Only :attr:`data` narrows. :attr:`text` -- what the snapshot records -- keeps
+        saying what was *asked for*, exactly as a ``[skeleton]`` preset reference does
+        (see :func:`_resolve_skeleton`). That split is what keeps the cache honest: the
+        narrowed plan is what reaches the fingerprints, so a run that proceeded on seven
+        views records a seven-view fingerprint and recomputes when the eighth camera turns
+        up, while the snapshot still describes the rig the operator configured.
+
+        Parameters
+        ----------
+        available
+            The resolved ``source name -> footage files`` map, or any container of source
+            names. A source absent from it, or present with an empty list, is absent.
+
+        Returns
+        -------
+        Config
+            A narrowed copy, or ``self`` when nothing is missing (so the common case
+            allocates nothing and is byte-identical).
+
+        Raises
+        ------
+        SystemExit
+            If fewer than :data:`MIN_VIEWS_FOR_3D` views survive. Below two views
+            nothing downstream means anything and nothing says so: triangulation returns
+            all-NaN without raising, RANSAC gives a single observation zero inliers and
+            *erases* it, and bundle adjustment reports success at a cost near zero. A
+            refusal is the only honest answer there.
+        """
+        if isinstance(available, dict):
+            have = {n for n, files in available.items() if files}
+        else:
+            have = set(available or ())
+        declared = list(self.source_patterns())
+        gone = [n for n in declared if n not in have]
+        if not gone:
+            return self
+
+        data = copy.deepcopy(self.data)
+        pose2d = data.get("pose2d") if isinstance(data.get("pose2d"), dict) else {}
+
+        data["sources"] = [
+            src
+            for src in (data.get("sources") or [])
+            if not isinstance(src, dict) or src.get("name") in have
+        ]
+
+        pathways = [p for p in (pose2d.get("pathways") or []) if isinstance(p, dict)]
+        kept_pw = [p for p in pathways if p.get("source") in have]
+        dropped_pw = {
+            str(p.get("name")) for p in pathways if p.get("source") not in have
+        }
+        if pathways:
+            pose2d["pathways"] = kept_pw
+
+        # A view survives if a surviving pathway maps into it. For the dense plan that is
+        # the pathway's own name; an [pose2d.output_points] table can name others, so both
+        # are consulted rather than assuming the identity.
+        fed: set[str] = {str(p.get("name")) for p in kept_pw}
+        # `[pose2d.output_points.<view>]` is a table keyed by POINT name, each entry
+        # `{ pathway, out_channel }` -- so the pathways a view depends on are the entries'
+        # values, not the table's keys.
+        out_points = pose2d.get("output_points")
+        if isinstance(out_points, dict):
+            for view, table in out_points.items():
+                if not isinstance(table, dict):
+                    continue
+                if any(
+                    isinstance(entry, dict) and str(entry.get("pathway")) in fed
+                    for entry in table.values()
+                ):
+                    fed.add(str(view))
+            pose2d["output_points"] = {
+                view: {
+                    point: entry
+                    for point, entry in table.items()
+                    if not isinstance(entry, dict) or str(entry.get("pathway")) in fed
+                }
+                if isinstance(table, dict)
+                else table
+                for view, table in out_points.items()
+                if view in fed
+            }
+
+        cams = data.get("cameras")
+        dropped_views: list[str] = []
+        if isinstance(cams, dict):
+            for view in [
+                v
+                for v, spec in cams.items()
+                if isinstance(spec, dict) and v != "defaults" and v not in fed
+            ]:
+                cams.pop(view)
+                dropped_views.append(view)
+
+        used_preps = {p.get("preprocessor") for p in kept_pw}
+        preps = pose2d.get("preprocessors")
+        if isinstance(preps, list):
+            pose2d["preprocessors"] = [
+                pr
+                for pr in preps
+                if not isinstance(pr, dict)
+                or pr.get("name") in used_preps
+                or not _declares_auto_crop(pr)
+            ]
+
+        _narrow_videos(data, set(dropped_views))
+
+        narrowed = Config(data, text=self.text, source=self.source)
+        narrowed.auto_crops = dict(self.auto_crops)
+        surviving = [
+            v
+            for v, spec in (narrowed.data.get("cameras") or {}).items()
+            if isinstance(spec, dict) and v != "defaults"
+        ]
+        log.warning(
+            "narrowing this run to the footage present: source(s) %s resolved no files, "
+            "so pathway(s) %s and view(s) %s are dropped -- running on %d view(s): %s",
+            gone,
+            sorted(dropped_pw) or ["(none)"],
+            dropped_views or ["(none)"],
+            len(surviving),
+            surviving,
+        )
+        if len(surviving) < MIN_VIEWS_FOR_3D:
+            raise SystemExit(
+                f"only {len(surviving)} view(s) have footage ({surviving}), and "
+                f"{MIN_VIEWS_FOR_3D} are needed for 3D -- a single view triangulates to "
+                "nothing without saying so.\n"
+                f"  source(s) with no files: {gone}\n"
+                "  Check the [[sources]] `filename` globs, or pass the recording that "
+                "holds the rest of the cameras."
+            )
+        return narrowed
 
     def source_patterns(self) -> dict[str, str | list[str]]:
         """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).

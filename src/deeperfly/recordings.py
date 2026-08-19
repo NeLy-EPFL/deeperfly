@@ -286,6 +286,13 @@ def source_sources(
     per-source ``input`` globs (a library caller). With neither, every source
     resolves to an empty list.
 
+    A source the map does not mention resolves to an empty list, PER SOURCE. It used to
+    take all-or-nothing -- one absent key and the whole map was discarded, so a recording
+    holding seven of eight cameras resolved to *zero* footage rather than to seven. An
+    empty list is already the established encoding for "this source has nothing"
+    (:func:`camera_files` returns one, and says so), which is what lets a caller narrow
+    the run to what is present instead of refusing the recording.
+
     Parameters
     ----------
     config
@@ -302,8 +309,8 @@ def source_sources(
         the list passed to :func:`deeperfly.io.open_reader`.
     """
     patterns = config.source_patterns()
-    if sources and all(name in sources for name in patterns):
-        return [(name, sources[name]) for name in patterns]
+    if sources is not None:
+        return [(name, list(sources.get(name) or [])) for name in patterns]
     if input is None:
         return [(name, []) for name in patterns]
     return [(name, camera_files(Path(input), pat)) for name, pat in patterns.items()]
@@ -328,15 +335,23 @@ def source_image_sizes(
     input
         Optional recording root (see :func:`source_sources`).
 
+    A source with no footage is **absent from the result** rather than an error: there is
+    no frame to read a size from, and the caller decides what that means. That is what
+    makes the map "the sizes we know" -- which is how a run narrowed to the cameras it has
+    still resolves intrinsics for those.
+
     Returns
     -------
     dict of str to tuple of int
-        ``source_name -> (height, width)`` of the raw frame.
+        ``source_name -> (height, width)`` of the raw frame, for the sources that
+        resolved footage.
     """
     from . import io
 
     sizes: dict[str, tuple[int, int]] = {}
     for name, src in source_sources(config, sources=sources, input=input):
+        if not src:  # nothing to open; `io.open_reader([])` would raise
+            continue
         head = io.open_reader(src)[[0]]
         sizes[name] = (int(head.shape[1]), int(head.shape[2]))
     return sizes
@@ -444,16 +459,27 @@ def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
 def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     """``root``'s ``camera -> footage-files`` map if it is a recording, else ``None``.
 
-    A *recording* is a directory holding footage for every configured camera (its
-    ``input`` glob); the footage is a single video file or an image sequence. A
-    directory matching *no* camera is silently not a recording (an intermediate or
-    output dir); the rest warn and skip:
+    A *recording* is a directory holding footage for at least one configured source (its
+    ``input`` glob); the footage is a single video file or an image sequence. A directory
+    matching *no* source is silently not a recording (an intermediate or output dir).
 
-    - footage for only some cameras (a malformed recording, or a wrong ``input``);
+    **A partial recording is a recording.** Footage for only some of the configured
+    sources is reported, with a warning naming what is absent, and the run narrows itself
+    to what is present (:meth:`~deeperfly.config.Config.narrowed_to_sources`). One config
+    describing a superset of rigs is the normal case -- the packaged default declares the
+    eight-camera rig, and a seven-camera recording under it is not malformed, it is a
+    seven-camera recording. Refusing the whole directory for a camera nobody has meant the
+    config had to be edited per rig, and the failure named every camera rather than the one
+    that was missing.
+
+    These still warn and skip, because each is a directory that cannot be read coherently
+    rather than one that is merely short a camera:
+
     - files matched but none with a known footage extension;
     - several footage extensions in one folder (the highest-priority one is kept,
-      and any camera then left with nothing counts as missing);
-    - an unequal file or frame count across cameras (see :func:`_frame_counts_match`).
+      and any source then left with nothing counts as absent);
+    - an unequal file or frame count across the sources that ARE present (see
+      :func:`_frame_counts_match`).
 
     Parameters
     ----------
@@ -465,8 +491,9 @@ def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     Returns
     -------
     dict of str to list of Path or None
-        ``camera -> footage files`` if ``root`` is a valid recording, else
-        ``None``.
+        ``source -> footage files`` for the sources that resolved, if ``root`` is a
+        recording at all; else ``None``. A source with no footage is absent from the
+        map, which is what every consumer reads as "this source has nothing".
     """
     if not root.is_dir():
         return None
@@ -482,13 +509,19 @@ def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
         return None  # nothing here looks like a camera's files: not a recording
     missing = [name for name in patterns if name not in present]
     if missing:
+        # Not a refusal: the run narrows to the sources that are here. Logged at WARNING
+        # rather than INFO because the usual cause is a wrong `filename` glob, which looks
+        # exactly like a camera that was never recorded.
         log.warning(
-            "recording %s has footage for only %s (missing %s); skipping it",
+            "recording %s has footage for %d of %d configured source(s) -- absent: %s. "
+            "The run will use the %s it has; check the [[sources]] `filename` globs if "
+            "that is not what you expect",
             root,
-            sorted(present),
+            len(present),
+            len(patterns),
             missing,
+            sorted(present),
         )
-        return None
     sources = {
         name: [p for p in ps if p.suffix.lower() in exts]
         for name, ps in present.items()
@@ -741,9 +774,8 @@ def resolve_recordings(
         src = find_recording(path, config)
         if src is None:
             log.warning(
-                "%s is not a valid recording directory -- it does not hold footage "
-                "for every configured camera (it can still resume from a cached "
-                "result in its output dir)",
+                "%s holds footage for none of the configured sources (it can still "
+                "resume from a cached result in its output dir)",
                 path.resolve(),
             )
             src = {}
@@ -758,8 +790,8 @@ def resolve_recordings(
     )
     if not found:
         log.warning(
-            "none of the inputs is a valid recording directory (a directory holding "
-            "footage for every configured camera)",
+            "none of the inputs is a recording directory (a directory holding footage "
+            "for at least one configured source)",
         )
         raise SystemExit("no valid recording directories among the inputs")
     return found
@@ -769,6 +801,11 @@ def require_input_footage(
     config: Config, *, sources: dict[str, list[Path]] | None = None, input=None
 ) -> None:
     """Fail (before any output dir is created) if the run's recording is unreadable.
+
+    "Unreadable" means nothing at all resolved, not "short a camera". A recording holding
+    some of the configured sources is a narrower recording, and the run adapts to it; this
+    gate exists for the case where the path is simply wrong, where failing before an empty
+    ``deeperfly_outputs`` is created is the whole point.
 
     Checked only when ``pose2d`` will actually decode frames; a resume that reuses
     a cached 2D pose needs no footage. The footage was resolved up front by
@@ -789,8 +826,11 @@ def require_input_footage(
     Raises
     ------
     SystemExit
-        If the recording is missing, not a directory, or has no footage for some
-        camera.
+        If the recording is missing, not a directory, or holds footage for **no**
+        configured source. Footage for *some* of them is not an error: the run narrows
+        itself to what is present
+        (:meth:`~deeperfly.config.Config.narrowed_to_sources`), which is also where the
+        floor of two views is enforced.
     """
     patterns = source_patterns(config)
     if sources is None and input is not None:
@@ -805,16 +845,20 @@ def require_input_footage(
                 f"input recording {root} is not a directory -- the run input is a "
                 "directory of per-camera footage, not a single file"
             )
-        for name, pat in patterns.items():
-            if not camera_files(root, pat):
-                raise SystemExit(f"no video or images for camera {name!r} under {root}")
+        found = {name: camera_files(root, pat) for name, pat in patterns.items()}
+        if not any(found.values()):
+            raise SystemExit(
+                f"no video or images for ANY of the {len(patterns)} configured "
+                f"source(s) under {root}\n  looked for: {dict(patterns)}"
+            )
         return
 
     sources = sources or {}
-    missing = [name for name in patterns if not sources.get(name)]
-    if missing:
+    if not any(sources.get(name) for name in patterns):
         raise SystemExit(
-            f"this run needs footage for pose2d but the recording resolved no files "
-            f"for camera(s) {missing} (see the warning above) -- pass a recording that "
-            "holds video/images for every camera, or resume from a cached results.h5"
+            "this run needs footage for pose2d but the recording resolved no files for "
+            f"ANY of its {len(patterns)} configured source(s) (see the warning above) -- "
+            "pass a recording holding the per-camera video/images, or resume from a "
+            "cached results.h5.\n"
+            f"  looked for: {dict(patterns)}"
         )

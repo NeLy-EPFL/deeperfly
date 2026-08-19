@@ -90,6 +90,16 @@ def run_recording(
     """
     outdir = Path(outdir)
     config = Config.read_for_run(config_path, outdir)
+
+    # Narrow to the footage this recording actually has, BEFORE anything is fingerprinted.
+    # The fingerprints are computed from the config and never see footage, so this ordering
+    # is what keeps the cache honest: a run that proceeded on seven views records a
+    # seven-view fingerprint, and the eighth camera turning up later narrows differently and
+    # recomputes. Narrowing any later -- inside `stage_pose2d`, where `auto_crops` is applied
+    # -- would store the full fingerprint against the short result, and the next complete
+    # run would reuse it.
+    if enabled_footage := _resolved_sources(config, sources=sources, input=input):
+        config = config.narrowed_to_sources(enabled_footage)
     enabled = config.stage_flags()  # config validated at construction
     overwrite_set: set[str] = stages.overwrite_stages(overwrite)
 
@@ -169,6 +179,24 @@ def run_recording(
         if _RUNNERS[name](ctx):
             record.set(name, expected)
             recomputed = True
+
+
+def _resolved_sources(
+    config: Config, *, sources: dict[str, list[Path]] | None, input=None
+) -> dict[str, list[Path]] | None:
+    """What footage this run has, per source, or ``None`` when that cannot be known yet.
+
+    ``None`` is not "nothing": a resume that reuses a cached 2D pose is handed neither a
+    resolved map nor a recording root, and must NOT be narrowed -- there is no evidence of
+    absence, and narrowing on no evidence would silently drop every view.
+    """
+    if sources is not None:
+        return sources
+    if input is None:
+        return None
+    from ..recordings import source_sources
+
+    return dict(source_sources(config, input=input))
 
 
 def _refuse_a_foreign_skeleton(config: Config, store: StageStore) -> None:

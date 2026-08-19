@@ -137,8 +137,29 @@ def test_find_recording_none_when_no_camera_matches(tmp_path):
     assert rec.find_recording(tmp_path, _cfg("cam_a", "cam_b")) is None
 
 
-def test_find_recording_none_when_some_cameras_missing(tmp_path):
+def test_find_recording_reports_a_partial_recording_rather_than_refusing_it(
+    tmp_path, caplog
+):
+    """A recording short a camera is a narrower recording, not a malformed one.
+
+    One config routinely describes more rig than one recording holds. Refusing the whole
+    directory meant the config had to be edited per rig; now the sources that ARE present
+    come back and the run narrows to them.
+
+    Still WARNING rather than INFO: the usual cause is a wrong `filename` glob, which looks
+    exactly like a camera that was never recorded, and the operator has to be able to tell.
+    """
     _seq(tmp_path, "cam_a", 3)  # cam_b has no footage
+    with caplog.at_level("WARNING", logger="deeperfly"):
+        found = rec.find_recording(tmp_path, _cfg("cam_a", "cam_b"))
+    assert found is not None
+    assert set(found) == {"cam_a"}, "the absent source is absent from the map"
+    assert "cam_b" in caplog.text and "1 of 2" in caplog.text
+
+
+def test_find_recording_still_refuses_a_directory_matching_nothing(tmp_path):
+    """No source at all is not a narrow recording -- it is not a recording."""
+    (tmp_path / "notes.txt").write_text("x")
     assert rec.find_recording(tmp_path, _cfg("cam_a", "cam_b")) is None
 
 
@@ -238,12 +259,33 @@ def test_resolve_single_invalid_kept_with_empty_sources(tmp_path):
     assert found == [(rec_dir, {})]
 
 
-def test_resolve_batch_wildcard_keeps_only_valid(tmp_path):
+def test_resolve_batch_wildcard_keeps_partial_recordings(tmp_path):
+    """A wildcard batch takes the narrow recordings too, and says what each has.
+
+    Dropping them was the behavior that made one mixed-rig directory unrunnable: the
+    seven-camera recordings in it were silently not there, and the batch reported fewer
+    recordings than the operator could see.
+    """
+    full = tmp_path / "rec_full"
+    _seq(full, "cam_a", 2)
+    _seq(full, "cam_b", 2)
+    partial = tmp_path / "rec_partial"
+    _seq(partial, "cam_a", 2)  # no cam_b
+    found = rec.resolve_recordings(
+        [tmp_path / "rec_*"], recursive=False, config=_cfg("cam_a", "cam_b")
+    )
+    assert [p for p, _ in found] == [full, partial]
+    by_path = dict(found)
+    assert set(by_path[full]) == {"cam_a", "cam_b"}
+    assert set(by_path[partial]) == {"cam_a"}
+
+
+def test_resolve_batch_wildcard_still_drops_a_non_recording(tmp_path):
     good = tmp_path / "rec_good"
     _seq(good, "cam_a", 2)
     _seq(good, "cam_b", 2)
-    bad = tmp_path / "rec_bad"
-    _seq(bad, "cam_a", 2)  # missing cam_b -> dropped silently for a wildcard
+    (tmp_path / "rec_notes").mkdir()
+    (tmp_path / "rec_notes" / "notes.txt").write_text("x")
     found = rec.resolve_recordings(
         [tmp_path / "rec_*"], recursive=False, config=_cfg("cam_a", "cam_b")
     )
@@ -282,9 +324,15 @@ def test_require_input_footage_not_a_directory(tmp_path):
         rec.require_input_footage(_cfg("cam_a"), input=f)
 
 
-def test_require_input_footage_camera_missing_files(tmp_path):
+def test_require_input_footage_accepts_a_partial_recording_root(tmp_path):
+    """Same rule down the library path, which globs the root itself."""
     _seq(tmp_path, "cam_a", 2)  # cam_b absent
-    with pytest.raises(SystemExit, match="no video or images for camera 'cam_b'"):
+    assert rec.require_input_footage(_cfg("cam_a", "cam_b"), input=tmp_path) is None
+
+
+def test_require_input_footage_refuses_a_root_holding_nothing(tmp_path):
+    (tmp_path / "notes.txt").write_text("x")
+    with pytest.raises(SystemExit, match="ANY of the 2 configured"):
         rec.require_input_footage(_cfg("cam_a", "cam_b"), input=tmp_path)
 
 
@@ -294,9 +342,21 @@ def test_require_input_footage_valid_input_passes(tmp_path):
     assert rec.require_input_footage(_cfg("cam_a", "cam_b"), input=tmp_path) is None
 
 
-def test_require_input_footage_sources_missing_camera():
+def test_require_input_footage_accepts_a_partial_map():
+    """The gate is "is this readable at all", not "is every camera here".
+
+    Which camera set a run uses is decided by narrowing the config, and the floor of two
+    views is enforced there -- so a partial map has to get past this gate to reach it.
+    """
     sources = {"cam_a": [Path("cam_a_0000.jpg")], "cam_b": []}
-    with pytest.raises(SystemExit, match="needs footage"):
+    assert rec.require_input_footage(_cfg("cam_a", "cam_b"), sources=sources) is None
+
+
+def test_require_input_footage_refuses_when_nothing_resolved():
+    """Nothing at all means the path is wrong, and failing before an outdir exists is why
+    this gate runs where it does."""
+    sources = {"cam_a": [], "cam_b": []}
+    with pytest.raises(SystemExit, match="no files for ANY"):
         rec.require_input_footage(_cfg("cam_a", "cam_b"), sources=sources)
 
 
