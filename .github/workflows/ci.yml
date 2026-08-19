@@ -80,3 +80,26 @@ jobs:
         run: uv sync --group test
       - name: Pyright
         run: uv run --with pyright pyright
+
+  docs:
+    name: docs (strict build)
+    runs-on: ubuntu-latest
+    # A PR gate, which the deploy workflow cannot be. `docs.yml` runs only on pushes to
+    # main, so until now a docs break landed on main and failed the DEPLOY -- after review,
+    # with the site left at its previous build and nothing in the PR having said so.
+    #
+    # `--strict` earns the gate: mkdocstrings resolves every `:::` identifier at build time,
+    # so deleting or renaming a documented symbol fails here rather than silently publishing
+    # a page with a hole in it, and a dangling internal anchor fails the same way.
+    #
+    # What it does NOT catch: a broken mermaid fence. Material fetches mermaid from a CDN at
+    # page-view time, so a malformed diagram renders as nothing and builds clean. Check a
+    # touched diagram by eye.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build the site strictly
+        run: uv run --group docs mkdocs build --strict

@@ -52,6 +52,7 @@ nav:
       - Configuration: reference/configuration.md
       - Output format: reference/output-format.md
       - Library API: reference/api.md
+  - Changelog: changelog.md
   - Contributing: https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md
 
 markdown_extensions:
@@ -70,7 +71,11 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.highlight:
       anchor_linenums: true
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      # The repo root, so docs/changelog.md can include the CHANGELOG that a clone and the
+      # release page show, instead of the site carrying a second copy to drift from it.
+      base_path: ["."]
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         # Render ```mermaid blocks as diagrams (the data-flow diagrams in

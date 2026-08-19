@@ -12,7 +12,10 @@ on:
       - "docs/**"
       - "examples/**"          # the example notebooks are rendered into the site
       - "mkdocs.yml"
-      - "src/**"
+      - "src/**"               # mkdocstrings renders the API reference from it
+      - "CHANGELOG.md"         # included into docs/changelog.md
+      - "pyproject.toml"       # the `docs` dependency group, and the version
+      - "uv.lock"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
