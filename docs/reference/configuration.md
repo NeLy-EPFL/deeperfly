@@ -36,11 +36,11 @@ sources = [...]        # footage globs (shared input); or [[sources]] blocks
 [pipeline]             # which stages run
 [pose2d]               # 2D detection: knobs + detection plan sub-tables
 [bundle_adjustment]    # camera refinement
-[pictorial_structures] # opt-in peak recovery
+[pictorial_structures] # peak recovery -- the one stage off by default
 [triangulation]        # 2D -> 3D
-[eks]                  # opt-in: ensemble Kalman smoother over the 3D pose
-[postprocess]          # opt-in: corrections that come from knowing the animal
-[inverse_kinematics]   # opt-in: 3D -> NeuroMechFly joint angles
+[eks]                  # ensemble Kalman smoother over the 3D pose
+[postprocess]          # corrections that come from knowing the animal
+[inverse_kinematics]   # 3D -> NeuroMechFly joint angles (needs the `ik` extra)
 [visualization]        # output videos
 ```
 
@@ -78,8 +78,9 @@ Video files use PyAV; image sequences use OpenCV. The only knob:
 
 ## `[skeleton]` — tracked points { #skeleton }
 
-The tracked points and their structure. Omit the section entirely to use the
-default 38-point fly skeleton.
+The tracked points and their structure. Omit the section entirely to use `fly38`, the
+one packaged skeleton: 38 points — six 5-point legs, two antennae, `neck`, and a
+5-point dorsal-midline abdomen chain (`abdomen0`…`abdomen4`).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -92,7 +93,7 @@ default 38-point fly skeleton.
 
 ```toml
 [skeleton]
-name = "fly38b"
+name = "fly38"
 point_names = ["lf_thorax_coxa", "lf_coxa_trochanter", "..."]
 
 symmetries = [
@@ -118,7 +119,7 @@ and when they do differ they differ completely. So a table that declares **no
 
 ```toml
 [skeleton]
-name = "fly38b"          # a packaged skeleton
+name = "fly38"           # the packaged skeleton
 ```
 
 ```toml
@@ -126,21 +127,43 @@ name = "fly38b"          # a packaged skeleton
 file = "skeleton.toml"   # a project's own, resolved next to this config
 ```
 
-Packaged presets live in `src/deeperfly/data/skeletons/`:
+Packaged presets live in `src/deeperfly/data/skeletons/`, and as of 0.2 there is exactly
+one:
 
 | Preset | Points |
 | --- | --- |
-| `fly38` | The historical DeepFly3D set: three 5-point legs, an antenna and three abdominal markers **per side**. |
-| `fly38b` | Same legs and antennae, but the abdomen is one 5-point **dorsal-midline** chain plus a `neck`. Also 38 points, in a different order. |
+| `fly38` | Six 5-point legs (`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `claw`), `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain `abdomen0`…`abdomen4`. 16 [symmetry pairs](#symmetries). |
 
-!!! warning "`fly38` and inverse kinematics"
-    The packaged NeuroMechFly articulation targets **`fly38b`**: a body plan built
-    against it covers **38 of 38 points**, both chains fit, and both are sized from
-    measurement. Against `fly38` it covers 27 — that skeleton labels neither the head's
-    `neck` nor the midline `abdomen0..4`, so **the abdomen is not fitted at all** (its
-    five DOFs come back NaN in every frame) and neither chain's size can be measured, so
-    both are drawn at the model's own size. Nothing fails, and both are warned about
-    rather than silent.
+!!! note "`fly38b` still resolves — it is the same 38 points under the former name"
+
+    Until 0.2 this point set was called `fly38b`, and `fly38` named the historical
+    DeepFly3D set (two 3-marker abdomen **side** chains `l_abdomen0..2` / `r_abdomen0..2`,
+    no `neck`). The rename kept one alias, `config.SKELETON_ALIASES`: `name = "fly38b"`
+    resolves to `fly38` and logs that it did, so old configs and old run snapshots keep
+    loading with their point order unchanged.
+
+    The alias is deliberately **not** symmetric. `fly38` now means the midline set, and an
+    old config naming `fly38` means the DeepFly3D one — the same word for two different
+    point orders, which no alias can disentangle. What stands in its place is a check on
+    the points themselves rather than on the label: the detector refuses a checkpoint whose
+    channels are another skeleton's, and a run refuses an output directory whose stored pose
+    is (`deeperfly.pipeline.run._refuse_a_foreign_skeleton`) — both by the ordered names.
+
+    The retired DeepFly3D set is no longer packaged. It survives as test data,
+    `tests/data/fly38_deepfly3d.toml`, which is a complete skeleton file: point
+    `file = ".../fly38_deepfly3d.toml"` at it to keep running a config written against it.
+
+!!! warning "A skeleton the packaged articulation cannot fully reach"
+
+    The packaged NeuroMechFly articulation targets **`fly38`**: a body plan built against
+    it covers **38 of 38 points**, both the head and the abdomen chain fit, and both are
+    sized from measurement. A skeleton that labels neither the head's `neck` nor the
+    midline `abdomen0`…`abdomen4` — the retired DeepFly3D set is exactly that case, covering
+    **32 of 38**, its six abdomen side markers having nothing on the model to attach to —
+    gets **no abdomen fit at all** (all ten of that chain's DOFs come back NaN in every
+    frame, since a chain with no fittable marker is left unset rather than reported at the
+    neutral pose) and no measured head or abdomen size, so both chains are drawn at the
+    model's own. Nothing fails, and both are warned about rather than silent.
     Retarget either chain with [`[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]`](#ik-markers)
     if your labeling scheme differs — where a point sits on the model is a
     labeling-scheme decision, and the packaged placements are tabulated in
@@ -161,11 +184,20 @@ The reference is what the run snapshot records, and the *resolved* point names r
 rather than silently passing.
 
 !!! warning "The skeleton must be the one the detector was trained on"
-    A dense detector's channels **are** a skeleton. `fly38` and `fly38b` are both 38
-    points sharing 32 of them in a different order, so routing one through the other's
-    config attaches six points to the wrong joints and shifts the rest — a wrong limb,
-    not a crash. The checkpoint's own recorded channel names are compared against
-    `[skeleton]` on **every run** (`deeperfly.pose2d.stream.load_models`).
+    A dense detector's channels **are** a skeleton, and a count check cannot tell two
+    skeletons apart: `fly38` and the retired DeepFly3D set are both 38 points sharing 32
+    of them in a different order, so routing one through the other's config attaches six
+    points to the wrong joints and shifts the rest — a wrong limb, not a crash. The
+    checkpoint's own recorded channel names are compared against `[skeleton]` on **every
+    run** (`deeperfly.pose2d.stream.load_models`), which is the point: a generator only
+    ever sees the moment it writes the file, and cannot see a `weights` path later
+    repointed or a `[skeleton]` swapped underneath.
+
+    A checkpoint that records **no** channel names is refused outright rather than trusted.
+    Every detector class this build ships records them, so a nameless artifact is either
+    not one of ours or was stripped — and the alternative to refusing is skipping the one
+    check standing between a mis-stamped config and a fly with its limbs on the wrong
+    joints.
 
 ### `symmetries` — left/right pairs { #symmetries }
 
@@ -178,16 +210,17 @@ Three things read the pairs, and two of them fail *silently* without them:
 
 | Consumer | What it does with them | What its absence costs |
 | --- | --- | --- |
-| [`[pose2d.output_points]`](#output_points) validation | Checks that a pathway whose preprocessor **mirrors** the frame lands on the *mirrored* points | A one-word typo in one of 132 rows swaps a body side. The detector still fires and triangulation still converges — the reconstruction is just a fly with its legs crossed. |
+| [`[pose2d.output_points]`](#output_points) validation | Checks that a pathway whose preprocessor **mirrors** the frame lands on the *mirrored* points | A one-word typo in one of 122 rows swaps a body side. The detector still fires and triangulation still converges — the reconstruction is just a fly with its legs crossed. |
 | Flip augmentation (out of tree; see [`mirror`](#cameras)) | Permutes the point channels by `Skeleton.flip_perm()` and relabels the sample with the mirrored camera | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
 | The chirality check (`deeperfly.chirality`) | Flags a pose whose left/right identities look swapped. A library call, not part of any stage — run it over a 3D pose when you want the sweep | The one labeling error that costs nothing in any point-cloud metric has nothing that can find it. |
 
 Omitting the key switches all three off — correct for an asymmetric subject, wrong
 for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
-tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged skeletons write out
-the pairs that inference proposes (16 for `fly38b`, 19 for `fly38` — the difference is
-the abdomen, which `fly38b` puts on the midline where it has no mirror partner), rather
-than relying on it, so that renaming a point cannot quietly re-pair the skeleton.
+tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged skeleton writes out the
+pairs that inference proposes (16 for `fly38`, against the retired DeepFly3D set's 19 —
+the difference is the abdomen, which `fly38` puts on the midline where it has no mirror
+partner) rather than relying on it, so that renaming a point cannot quietly re-pair the
+skeleton.
 
 Editing the pairs is a **non-destructive** skeleton migration: no label moves and no
 sidecar is rewritten, but the change is still reported, because it changes what the
@@ -197,8 +230,27 @@ three consumers above do.
 
 Each `[cameras.<name>]` is a geometric view: pure intrinsics + extrinsics, no
 footage. `[cameras.defaults]` is merged into every view; per-view tables override
-it (the default rig sets just `azimuth_deg` per view). A view's intrinsics
-describe the raw frame of the source feeding it.
+it. A view's intrinsics describe the raw frame of the source feeding it.
+
+The packaged rig declares **eight** views as of 0.2: `rh`, `rm`, `rf`, `f`, `lf`, `lm`,
+`lh` — each setting just its `azimuth_deg` over the shared defaults — and `h`, the axial
+**hind** camera, which sets its own focal length and distance as well.
+
+!!! warning "The eighth view, `h`, is on a different lens — measure its numbers per rig"
+
+    `h` is the rig's only left/right **bridge**, and the reason the shipped detector was
+    trained on eight views: without it no camera sees both body sides, so a contralateral
+    joint is triangulated from one side's cameras alone.
+
+    Being on a different lens changes **both** its focal length and its distance. The
+    packaged numbers are 24168.591 px at 158.9168, against the side cameras' 22388.125 at
+    107.463 — the example rig's, and yours will differ. No residual will find the error for
+    you: bundle adjustment holds the intrinsics fixed, so it absorbs a focal error into the
+    distance and then reports a clean solve. (The foam ball in the frame is a ruler for
+    exactly this.)
+
+    A recording **without** this camera needs no edit here — see
+    [narrowing](#narrowing-to-the-footage-present) below.
 
 **Intrinsics:**
 
@@ -255,10 +307,10 @@ be relabeled with the *mirrored* camera: a metric that splits ipsilateral from
 contralateral error reads the camera id, so without the remap it reports every
 swapped channel under the wrong side.
 
-The relation must be **symmetric**, and a camera on the midline (the front view,
-whose mirror is still a front view) names itself. A half-declared pairing is
-rejected rather than tolerated — it reads as correct and behaves as a silent side
-swap on one camera. A view that declares no `mirror` is left unremapped.
+The relation must be **symmetric**, and a camera on the midline names itself — on the
+packaged rig both `f` and `h` do, a flipped axial view still being an axial view. A
+half-declared pairing is rejected rather than tolerated — it reads as correct and behaves
+as a silent side swap on one camera. A view that declares no `mirror` is left unremapped.
 
 It is declared rather than derived from the extrinsics because which camera mirrors
 which is a fact about how the rig was built, and it stays true before there is a
@@ -290,6 +342,13 @@ A calibration records the footage frame its intrinsics describe, so pointing a r
 with differently-sized footage at it **fails** rather than silently misprojecting.
 See [Output format](output-format.md#calibrationtoml).
 
+A calibration that covers only **some** of this config's cameras is not an error either: a
+view the rig never measured cannot be placed, so it is dropped like a view with no footage
+and the run says which and how many are left. One config routinely describes more rig than
+one solve covers — a project whose earlier recordings predate a camera being added, say.
+Covering **none** of them still refuses: that is the wrong-rig case, and it is the one a
+subset cannot explain away. Extra cameras the run does not use are reported and ignored.
+
 ```toml
 [cameras.defaults]
 focal_length_px = [22388.125, 22388.125]
@@ -302,39 +361,124 @@ roll_deg = 0.0
 [cameras.rh]
 azimuth_deg = -120
 mirror = "lh"
+
+[cameras.h]                       # the axial hind view, on its own lens
+azimuth_deg = 180
+focal_length_px = 24168.591
+distance = 158.9168
+mirror = "h"
 ```
+
+#### A run narrows itself to the footage present { #narrowing-to-the-footage-present }
+
+One config also routinely describes more rig than one *recording* holds, and a recording
+missing a camera is not malformed. Rather than refuse it or invent the footage,
+`Config.narrowed_to_sources` narrows the run, in dependency order:
+
+- a `[[sources]]` entry that resolves **no files** is dropped, and with it every
+  `[[pose2d.pathways]]` reading that source (a source may feed several, so this is not
+  one-to-one);
+- a `[cameras.<name>]` view **no surviving pathway feeds** leaves the rig. This is the one
+  that shortens the `V` axis, and it has to: dropping a pathway alone would leave a view
+  whose 2D is all-NaN, which reads as a detected-and-empty camera rather than an absent
+  one — and which bundle adjustment would then export into `calibration.toml` at its
+  unrefined nominal pose with nothing marking it unmeasured;
+- `[pose2d.output_points.<view>]` rows naming a dropped view or pathway go with them;
+- an `{ auto = true }` `[[pose2d.preprocessors]]` no surviving pathway uses is dropped,
+  because an orphaned automatic crop is otherwise a hard error;
+- `[[visualization.videos]]` grid cells naming a dropped view are **blanked** (`""`) rather
+  than removed, so the montage keeps its shape and the remaining cameras stay in the cells
+  the reader expects; explicit `panels` naming one are dropped.
+
+Point-name sections (`[bundle_adjustment].points_to_use`, `[postprocess].ops`,
+`[inverse_kinematics]`) are view-agnostic and untouched. One warning names the sources, the
+pathways and the views, and the view count it is proceeding on.
+
+Narrowing happens **before** the snapshot and the fingerprints, and only the parsed data
+narrows — the snapshot goes on recording what was *asked for*, exactly as a `[skeleton]`
+preset reference does. That split is what keeps the cache honest: a run that proceeded on
+seven views records a **seven-view** fingerprint and recomputes when the eighth camera
+turns up.
+
+Below **two** views it refuses (`config.MIN_VIEWS_FOR_3D`). One view fails *silently*
+otherwise: `triangulate` and `triangulate_ransac` both return all-NaN without raising,
+RANSAC gives a single observation zero inliers and then erases it, and bundle adjustment
+reports success at a cost near `1e-26`. A one-view run produces a confident-looking
+nothing, so a refusal is the only honest answer.
 
 ## `[pipeline]` — which stages run { #pipeline }
 
 One `do_<stage>` boolean per stage. Each enabled stage reads its own `[<stage>]`
 table.
 
+The **Default** column below is `deeperfly.config.STAGE_DEFAULTS` — what a config that
+omits the flag gets — and as of 0.2 the packaged `default_config.toml` states every flag at
+exactly that value. So the two agree: the packaged file is explicit for readability, not
+because it changes anything.
+
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `do_pose2d` | bool | `true` | Detect 2D pose in every view. |
 | `do_bundle_adjustment` | bool | `true` | Refine the cameras. |
-| `do_pictorial_structures` | bool | `false` | DeepFly3D-style peak recovery (opt-in). |
+| `do_pictorial_structures` | bool | `false` | DeepFly3D-style peak recovery — the one stage off by default ([why](#pictorial_structures)). |
 | `do_triangulation` | bool | `true` | Triangulate 2D → 3D. |
-| `do_eks` | bool | `false` | Smooth the 3D pose with the ensemble Kalman smoother (opt-in). |
-| `do_postprocess` | bool | `false` | Apply the `[postprocess].ops` correction chain to the 3D pose (opt-in). |
-| `do_inverse_kinematics` | bool | `false` | Fit NeuroMechFly joint angles to the 3D pose (opt-in). |
+| `do_eks` | bool | `true` | Smooth the 3D pose with the ensemble Kalman smoother. |
+| `do_postprocess` | bool | `true` | Apply the `[postprocess].ops` correction chain to the 3D pose. |
+| `do_inverse_kinematics` | bool | `true` | Fit NeuroMechFly joint angles to the 3D pose. Skips with a logged reason when the optional [`ik` extra](#inverse_kinematics) is absent. |
 | `do_visualization` | bool | `true` | Render the videos. |
+
+`do_pose2d = false` reconstructs from a **cached** 2D pose without re-detecting. The 2D
+cache always feeds downstream, while a derived stage's cached output is used only while
+that stage is on. An enabled stage whose input is unavailable is skipped, with the reason
+logged, rather than failing the run.
+
+!!! note "Turning a stage off from the command line"
+
+    `deeperfly config set pipeline.do_<stage> false` works as of 0.2, and did not before:
+    the writer appended an override table, TOML forbids declaring a table twice, and the
+    packaged config states every `[pipeline]` flag — so every stage flag was unsettable in
+    exactly the file people edit. An **existing** key is now rewritten in place, which
+    reorders nothing and preserves the comments.
+
+    A genuinely *new* key under an already-declared table is still refused, and that is not
+    the same bug: appending a bare `key = value` after an existing `[section]` header would
+    reparent every key below it. The error says to add it by hand.
 
 ## `[pose2d]` — 2D detection { #pose2d }
 
 The `[pose2d]` table holds the detector's performance knobs *and* (as sub-tables)
 the detection plan — what to detect and how.
 
+**A plan is DENSE.** Both remaining detector classes emit every tracked point for every
+view, so channel `i` is point `i` of the pathway's view and **no mapping table is needed**:
+one pathway per camera, `n_out_channels` defaulting to the skeleton's point count, and
+`input_size` plus the normalization coming from the checkpoint. Selecting a detector is two
+lines:
+
+```toml
+[pose2d]
+model = "dense38mv"
+models = [
+    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" },
+]
+```
+
+The [`[pose2d.output_points]`](#output_points) mapping table still exists and is still
+supported — it is how one view can be fed by several pathways — but the shipped configs
+declare none. (The historical 19-channel detector predicted one body side, ran each side
+camera twice and needed 122 hand-written mapping rows; a contralateral point now arrives as
+a prediction to correct rather than a gap to author from nothing.)
+
 **Performance knobs:**
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `precision` | str | `"bfloat16"` | Forward precision: `"float32"` (reference), `"float16"` (CUDA autocast, ~1.5–2× faster), `"bfloat16"` (default, wider range). Ignored on CPU/MPS. |
+| `precision` | str | `"float16"` | Forward precision *default*, overridable per model: `"float32"` (reference), `"float16"` (CUDA autocast, ~1.5–2× faster), `"bfloat16"` (wider range). Ignored on CPU/MPS, and ignored by a class that pins its own — `mvt` runs in float32 and refuses anything else. |
 | `batch_size` | int | `16` | GPU forward batch (images per forward). Clamped to ≥ 1; throughput plateaus by ~16 on a fast GPU. |
 | `decode_buffer` | int | `4` | Decode queue depth, in multiples of `batch_size`. Clamped to ≥ 1. Peak frames/camera ≈ `(decode_buffer + 2) * batch_size`. |
 
 **`batch_size` is in images, not frames.** `detect_sequence` forwards
-`batch_size // pathways` whole frames at a time, so on a seven- or eight-camera rig
+`batch_size // pathways` whole frames at a time, so on the packaged eight-camera rig
 anything below 8 is **one frame per forward** — which is why the default is not smaller.
 Measured on an RTX 4090, 8 views at 256×512, multiview transformer:
 
@@ -376,7 +520,8 @@ preprocessor never moves the stored 2D or the reconstructed 3D.
 A detector is trained through a box, and a differently framed camera puts the animal at the
 wrong apparent scale — the one thing no augmentation in the recipe undoes. On this rig the six
 side cameras match training full-frame and the two **axial** ones (front and hind, 1600×1008
-against the side cameras' 960×512) do not, so those are the two that usually need a box. `auto`
+against the side cameras' 960×512) do not, so those are the two that usually need a box. The
+packaged config gives both `f` and `h` a `{ op = "crop", auto = true }` preprocessor. `auto`
 says the box should be *measured* for this recording rather than copied from the last one:
 
 ```toml
@@ -390,10 +535,10 @@ ops = [{ op = "crop", auto = true, x = 400, y = 290, width = 800, height = 400 }
 ```
 
 The four box keys become a **seed** when `auto = true` — all four or none. A seed is not the
-answer, it is where the search starts, and it narrows the search to its neighbourhood.
+answer, it is where the search starts, and it narrows the search to its neighborhood.
 
 The `pose2d` stage resolves it before detecting anything: the detector's own confidence covers
-the `(centre, width)` space at ~11 ms a probe, then **agreement with the other cameras' 3D** —
+the `(center, width)` space at ~11 ms a probe, then **agreement with the other cameras' 3D** —
 the target view held out of the triangulation — chooses among what confidence proposed and
 refuses a box that is confidently wrong. Measured blind on a 1600×1008 hind camera: 255 px
 from the other cameras' 3D at full frame, **2.9 px** after the search, against 3.4 px for a box
@@ -401,21 +546,40 @@ tuned by hand. The searched box is recorded in `<outdir>/autocrop.json` and reus
 runs, so a resume neither re-searches nor re-detects; `deeperfly auto-crop` runs the search on
 its own and prints the TOML that freezes it permanently.
 
-**It needs a solved rig.** Against the nominal orbit rig the reference is ~120 px out; the gate
-detects that (it checks whether the rig can reproject into the views the reference was built
-*from*), says so, and refuses to run rather than choosing with a broken ruler. The fallback —
-confidence alone — comes out ~1.7× too wide, because confidence and accuracy are uncorrelated
-once the centre is free. So run once with bundle adjustment and point `[cameras].calibration`
-at the exported `calibration.toml` before relying on this.
+**The SEARCH needs no rig; the ACCEPT GATE does.** These are worth keeping apart, because the
+short version ("auto-crop needs a solved rig") is wrong and has been stated that way before.
+The grid over `(center, width)` is scored by detector **confidence**, which needs nothing but
+footage — so `auto = true` is worth turning on from the first run. What needs a solved rig is
+the gate that *chooses* among what confidence proposed: reprojection agreement with the other
+cameras' 3D.
+
+Confidence cannot be the accept criterion on its own. Once the center is free it decouples from
+accuracy: one recording went 0.338 → 0.403 confidence and 30.9 → 37.5 px **worse**, and over a
+center-y × width grid on this rig's hind view the two signals are uncorrelated (`r = +0.17`).
+The `r = -0.92` that would justify optimizing confidence holds only along a width ladder at a
+fixed good center.
+
+The gate self-checks rather than trusting whatever rig it is handed. Against a **nominal orbit**
+rig the reference for this recording's hind view measured ~250 px out, where a solved one
+measured 3 — so before using it, the rig is asked to explain the views the reference was
+triangulated *from* (`autocrop.RIG_RESIDUAL_LIMIT`, 25 px). A rig that cannot reproject into the
+cameras it was built from cannot be believed about a held-out one. Failing that check, the
+search says so and falls back to **confidence alone**, which comes out a box ~1.7× too wide —
+still far better than dropping the whole frame in, which is the 255 px collapse above.
+
+So: run once, `deeperfly calibration export`, point [`[cameras].calibration`](#cameras) at the
+result, and the gate engages on the next run. `gate = false` in
+[`[pose2d.autocrop]`](#pose2d-autocrop) takes confidence's box unchecked, for a rig that will
+never have a calibration.
 
 Anything that asks an unresolved automatic crop for its geometry raises
 `UnresolvedAutoCrop` rather than quietly falling back to the whole frame — including a
 visualization panel with `crop = "pose2d"` in a run where `pose2d` never ran and no box was
 recorded.
 
-### `[pose2d.autocrop]`
+### `[pose2d.autocrop]` { #pose2d-autocrop }
 
-Knobs for the search above. Its stencil (how many widths, how many centres, how many rounds)
+Knobs for the search above. Its stencil (how many widths, how many centers, how many rounds)
 is measured and fixed in code; these are the parts a recording can genuinely need to differ on.
 
 | Key | Type | Default | Description |
@@ -436,12 +600,26 @@ A detector network and its input contract. In practice only `name`, `class` and
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | str | *required* | Model identifier (referenced by pathways). |
-| `class` | str | *required* | Network registry key: `"hourglass"` (= `"deepfly2d"`, the 19-channel DeepFly2D), `"hrnet"` (= `"hrnet_timm"`, dense per-view), `"mvt"` (= `"multiview_transformer"`, dense cross-view). |
-| `weights` | str | *see below* | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. |
+| `class` | str | *required* | Network registry key: `"hrnet"` (= `"hrnet_timm"`) or `"mvt"` (= `"multiview_transformer"`). Both dense; see below. An unrecognized spelling is **refused** by `class_defaults`. |
+| `weights` | str | *required* | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. Nothing downloads. |
 | `input_size` | [int, int] | from the class | `(height, width)` the network expects; frames are resized to it and peaks scaled back. |
 | `mean` | float | from the class | Scalar subtracted after `/255` normalization. |
 | `n_out_channels` | int | from the class | Output heatmap count (validated against the weights). |
 | `precision` | str | from the class, then `[pose2d].precision` | `float32` / `float16` / `bfloat16`. |
+
+#### The two classes { #model-classes }
+
+| `class` | What it is |
+| --- | --- |
+| `"hrnet"` | The dense **per-view** detector: each camera is predicted on its own, 38 heatmaps out. The same loader also runs the HGNetV2-B4 checkpoint, selecting its feature maps by **stride** rather than by index — a hard-coded `out_indices` is wrong for any backbone that does not start at stride 2, and would hand the head strides 8/16/32/32 and then evaluate a plausible, wrong model. |
+| `"mvt"` | The **multiview transformer**: it encodes a frame's views *together*, so a joint only one camera can see informs the cameras that cannot. Zero per-view parameters, so any `V` in any order. Pinned to float32. |
+
+The stacked-hourglass DeepFly2D detector is **gone** in 0.2 — no `class = "hourglass"` /
+`"deepfly2d"`, no `deeperfly.pose2d.model`, no `pose2d.weights`, no public
+`deeperfly.load_detector`, and no auto-download of any kind. An unknown `class` is now
+refused where it is named rather than left to fall back: a typo used to inherit DeepFly2D's
+19 channels and 0.22 mean, then fail at load with a channel-count mismatch that said nothing
+about the word that was actually wrong.
 
 #### What the class already knows { #model-class-defaults }
 
@@ -450,11 +628,10 @@ The last four keys are not preferences: each is a property of the network whose 
 restating the artifact under threat of rejection, so the class states them instead
 (`deeperfly.pose2d.models.CLASS_DEFAULTS`) and a table only speaks up to override.
 
-| class | `mean` | `n_out_channels` | `precision` |
-| --- | --- | --- | --- |
-| `hourglass` | `0.22` | `19` | inherits `[pose2d].precision` |
-| `hrnet` | `0.0` (the checkpoint carries its own) | the skeleton's point count | inherits |
-| `mvt` | `0.0` | the skeleton's point count | `float32` (bf16 moved 99.6% of cells) |
+| class | `input_size` | `mean` | `n_out_channels` | `precision` |
+| --- | --- | --- | --- | --- |
+| `hrnet` | `(256, 512)` | `0.0` (the checkpoint carries its own) | the skeleton's point count | inherits `[pose2d].precision` |
+| `mvt` | `(256, 512)` | `0.0` | the skeleton's point count | `float32` (bf16 moved 99.6% of cells) |
 
 `n_out_channels` defaulting to the skeleton's point count *is* what "dense" means, so a
 dense config stops restating its own skeleton's size and cannot get it wrong. A
@@ -462,21 +639,106 @@ checkpoint that records the input size it was trained at also contradicts a disa
 `input_size` at load, because a mis-resized fly arrives at the wrong scale rather than
 crashing.
 
+#### One grayscale input plane { #one-plane }
+
+Every shipped detector is trained on a **single** channel — the corpus is monochrome — and
+`LoadedModel.prepare` emits `(..., 1, H, W)`. A frame arrives either as `(..., H, W)` from
+the decoder's gray fast path or as `(..., H, W, C)` whose planes are identical (the decoder
+only takes the gray path when they are), so the first channel *is* the image and nothing is
+replicated to three to feed a network that would only take one back. HRNet's `in_chans` is
+`1` unconditionally, and a three-channel checkpoint therefore fails on the stem at load
+rather than running.
+
+`mvt.ARTIFACT_FORMATS` is `("deeperfly-mvt-2",)` only. The three-channel `deeperfly-mvt-1`
+is retired, and dropping it costs no accuracy: a `-2` is its patch-embedding stem folded
+onto one plane, which is an **exact** fold — the same function, not a retrained model. The
+format version has to be the guard, because a `-1` fed one plane is a shape error PyTorch
+would raise, while a `-2` whose scalar normalization was applied as if it were ImageNet's
+per-channel one would *run* and be quietly wrong.
+
+!!! note "`accepts_gray` on `_HRNetPose` was a bug fix, not a new feature"
+
+    The gray decode path is only taken when **every** model in a plan declares it accepts
+    one plane — one model that needs color forces the whole plan to decode color, since the
+    models share the decoded window. `_HRNetPose` did not declare it, so grayscale was in
+    effect for *no* `hrnet`/`hgnet` plan: every such run paid a YUV→RGB conversion, ~90% of
+    what a decoded frame costs, to produce three identical planes and then use one.
+
 #### Where `weights` is looked up { #weights-resolution }
 
-Dense detectors are trained per project, so there is nothing to download and `weights` is
-required for them. Three forms:
+**Nothing auto-provisions.** Every detector deeperfly runs is trained per project, so
+`weights` is required and there is no checkpoint to fall back to. Three forms, and the
+distinction is whether the value looks like a *path*:
 
 | Value | Meaning |
 | --- | --- |
-| `""` / omitted | `hourglass` downloads and caches its published DeepFly2D checkpoint. Any other class stops, with setup instructions. |
-| `my_detector.pth` (a bare filename) | Searched along `$DEEPERFLY_MODELS` (`os.pathsep`-separated, like `PATH`), then the download cache. |
-| `/path/to/x.pth`, `./x.pth`, `~/x.pth` | Used as written. |
+| `""` / omitted | Refused, and the error *is* the setup instructions — it prints both the `$DEEPERFLY_MODELS` form and the explicit-path form. |
+| `my_detector.pth` (a bare filename) | Searched along `$DEEPERFLY_MODELS` (`os.pathsep`-separated, like `PATH`), then the per-user cache directory. |
+| `/path/to/x.pth`, `./x.pth`, `~/x.pth` | Used as written. Anything containing a path separator, absolute, or starting `~`. |
 
 Prefer the bare filename: *which model a run used* is a fact about the recording and
-travels with it, where `/mnt/upramdya_data/...` is a fact about one mount on one machine
-and breaks the moment the config is opened anywhere else. A failed lookup prints every
-directory it searched.
+travels with it, where `/mnt/...` is a fact about one mount on one machine and breaks the
+moment the config is opened anywhere else. A failed lookup prints every directory it
+searched, because "which of these did you mean" is the only question at that moment.
+
+The per-user cache (`platformdirs.user_cache_dir("deeperfly")/weights`) is no longer written
+to by anything, but it stays on the search path — it is the one place a checkpoint can be
+dropped without setting an environment variable.
+
+#### The released checkpoints { #weights }
+
+Three checkpoints ship for 0.2. All are **one-channel**, all record the **`fly38`** point
+order, all take 256×512 input and emit 38 heatmaps per view, and all were trained on the
+same corpus — **55 recordings / 465 moments / 138,708 label cells**, every recording
+carrying a camera rig traceable to hand labels.
+
+| Checkpoint | `class` | Bytes | sha256 (first 8) |
+| --- | --- | --- | --- |
+| `mvt_alt8_r27_gray_fly38.pth` | `"mvt"` | 86,082,077 | `d4ca455b` |
+| `hrnet_w32_r27_gray_fly38.pth` | `"hrnet"` | 127,076,045 | `13ceb937` |
+| `hgnetv2_b4_r27_gray_fly38.pth` | `"hrnet"` | 62,452,371 | `fa427062` |
+
+```
+d4ca455b9d26d8972da38061e1a49e8e170cb029a97bdbb6b48dc477561a208b  mvt_alt8_r27_gray_fly38.pth
+13ceb93793655f6e974083072629a10e242608ab0d839e1f60659050c5926c9b  hrnet_w32_r27_gray_fly38.pth
+fa4270628f5766461ad3ac358730d6835cd39bd86cba6b45b98303609c4e7932  hgnetv2_b4_r27_gray_fly38.pth
+```
+
+They live at `/mnt/upramdya/data/TL/deeperfly-models/260819_*` — one directory each, holding
+the `.pth` plus a `README.md`, a `SHA256SUMS` (so `sha256sum -c SHA256SUMS` verifies the
+file before you trust a whole project to it) and the `fly38.toml` the model was trained on.
+That last one is byte-identical to the packaged skeleton, which is what lets the load-time
+channel-name check be a real check rather than a ritual.
+
+The packaged config names **`mvt_alt8_r27_gray_fly38.pth`**: the transformer sees a frame's
+views together, which is what recovers a contralateral joint no single camera resolves. The
+two `hrnet` checkpoints are per-view and interchangeable with it in a config — only the
+`class` and the filename change.
+
+**Install them by pointing at them, not by copying paths into the config:**
+
+```console
+$ export DEEPERFLY_MODELS=/mnt/upramdya/data/TL/deeperfly-models/260819_mvt_alt8_r27_gray_fly38
+$ deeperfly doctor
+```
+
+`doctor` prints `$DEEPERFLY_MODELS`, every directory on the search path with how many `.pth`
+files are in it (or that it is empty or absent), and whether the checkpoint the default
+config names actually resolves — which is the question a stuck user has, now that "is it
+downloaded" is not a question any more. Several directories can be listed, separated by
+`os.pathsep`, exactly like `PATH`.
+
+!!! note "There is no held-out accuracy number behind a ship model, on purpose"
+
+    A ship checkpoint trains on **every** labeled recording, and the trainer selects its
+    epoch on the probe — so the probe *is* the validation set and its numbers read as "did
+    it train", not as accuracy. What stands between a broken checkpoint and a whole project
+    is the gate each one passed, recorded in its `README.md`: probe mean 4.677 px / median
+    1.808 / PCK@10 93.85% over 13,040 cells for `hrnet_w32`, 4.968 / 1.923 / 93.49% for
+    `hgnetv2_b4`, and for the transformer three structural gates instead — permuting the
+    views permutes the outputs and nothing else (worst 2.3e-06, 0.008% of range), a real
+    view's output is bit-identical whatever the padding holds (and the mask is load-bearing:
+    1.8e-03 leaks without it), and the exported artifact rebuilds the same detector.
 
 ### `[[pose2d.pathways]]`
 
@@ -524,8 +786,16 @@ declares 2 models (['axial', 'dense38mv']), so write 'model' on the pathway, or
 
 ### `[pose2d.output_points.<view>]` { #output_points }
 
-For each view, where every tracked point's data comes from. A table keyed by
-point name:
+For each view, where every tracked point's data comes from.
+
+**Optional, and omitted by every shipped config.** A dense plan needs no mapping — channel
+`i` is point `i` of the pathway's own view — so the table's default *is* the identity. It is
+still parsed and still supported, because it says one thing the identity cannot: that a
+single view is fed by **several** pathways. `tests/data/fly38_sparse_config.toml` keeps a
+worked example (a 19-channel one-body-side plan, 122 rows) as the fixture the per-view
+visibility and mirror-check tests are written against.
+
+A table keyed by point name:
 
 ```toml
 [pose2d.output_points.rh]
@@ -540,7 +810,7 @@ stays unobserved (`NaN`). That union is the visibility.
 **The mirror check.** These tables are also where the plan's left/right identities
 are decided. The side cameras all feed one *side-agnostic* model and the left-side
 views reach its convention through a `fliplr` preprocessor, so whether a channel
-means a left or a right joint is settled here and nowhere else — 132 hand-written
+means a left or a right joint is settled here and nowhere else — 122 hand-written
 rows with, historically, nothing checking them.
 
 When the skeleton declares [`symmetries`](#symmetries) the invariant becomes
@@ -552,9 +822,10 @@ preprocessor reverses handedness — an *odd* number of `fliplr`/`flipud` ops, s
 
 ```
 ValueError: [pose2d.output_points] disagrees with [skeleton].symmetries about left/right:
-  - model 'deepfly2d' channel 2: un-mirrored -> 'rf_femur_tibia' ('rf' -> view 'rf')
+  - model 'sided19' channel 2: un-mirrored -> 'rf_femur_tibia' ('rf' -> view 'rf')
     but mirrored -> 'rf_femur_tibia' ('f_flip' -> view 'f'). Mirroring the frame
-    mirrors the animal, so the mirrored pathway must land on 'lf_femur_tibia'.
+    mirrors the animal, so the mirrored pathway must land on 'lf_femur_tibia' --
+    as declared in [skeleton].symmetries.
 ```
 
 The check is skipped when the skeleton declares no pairs (there is nothing to check
@@ -569,7 +840,7 @@ Fly-as-target bundle adjustment over `scipy.optimize.least_squares`.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `points_to_use` | list[str] or omitted | the 30 leg points | Skeleton point names that drive BA. Omit the key to use all keypoints. |
+| `points_to_use` | list[str] or omitted | *unset* → all keypoints | Skeleton point names that drive BA. The packaged config names the 30 leg points: they sit at sharp limb corners and detect most reliably. |
 | `fixed` | list[str] | `[]` | Parameters held constant (grammar below); anchors the world gauge. |
 | `shared` | list[list[str]] | `[]` | Groups of parameters tied together, e.g. `[["lf.tvec[2]", "rf.tvec[2]"]]`. |
 | `weigh_by_confidence` | bool | `true` | Scale each reprojection residual by `sqrt(confidence)`; zero/non-finite confidences drop the observation (all-zero falls back to uniform). |
@@ -595,14 +866,23 @@ indexing, and `*` wildcards the camera:
 
 ## `[pictorial_structures]` — peak recovery { #pictorial_structures }
 
-Runs only when `do_pictorial_structures = true`. Operates on the detector's top-K
-candidates (extracted and cached during detection).
+Runs only when `do_pictorial_structures = true`, and it is the **one** stage still off by
+default. Operates on the detector's top-K candidates (extracted and cached during
+detection).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `k` | int | `5` | Candidate peaks per joint. |
 | `temporal` | bool | `false` | Add a temporal-consistency term. |
 | `lam` | float | `1.0` | Bone-length prior weight. |
+
+**Why it stays off, and it is not for symmetry with the others.** It recovers a joint from
+the top-K peaks of a detector that predicted **one body side**; a dense detector already
+predicts every point in every view, so there is nothing to recover. Switching it on rewires
+triangulation *and* the smoother onto its committed 2D, which is `NaN` in every view with
+no candidate within 15 px (`deeperfly.pictorial.DEFAULT_INLIER_PX`) — so on a dense run it
+would silently *un-densify* the result. It also adds a `candidates` key to the `pose2d`
+fingerprint, re-detecting every cached tree in existence.
 
 ## `[triangulation]` — 2D → 3D { #triangulation }
 
@@ -619,9 +899,9 @@ How the per-view 2D points become one 3D point.
 
 ## `[eks]` — ensemble Kalman smoother { #eks }
 
-Runs only when `do_eks = true`, after triangulation and starting from its 3D. Where
-triangulation solves each frame on its own, this fits **one 3D trajectory per keypoint
-to the whole recording at once**, with the rig's own projection as the observation
+**On by default** as of 0.2 (`do_eks = true`), after triangulation and starting from its
+3D. Where triangulation solves each frame on its own, this fits **one 3D trajectory per
+keypoint to the whole recording at once**, with the rig's own projection as the observation
 model — the nonlinear multi-view EKS of Lightning Pose 3D (Aharon, Whiteway et al.
 2026), implemented natively in deeperfly's JAX (see
 [`deeperfly.eks`](api.md#ensemble-kalman-smoother)).
@@ -634,8 +914,8 @@ has its observation variance inflated until the smoother stops believing it — 
 reprojected. On a synthetic seven-camera rig with 2% gross outliers, the inflation
 alone cuts the worst-case 3D error by more than 30×.
 
-Its output supersedes triangulation's for inverse kinematics, the rendered videos and
-`PoseResult.load`. Cost is roughly 20 s per 5000 frames × 38 keypoints on a CPU.
+Its output supersedes triangulation's for `[postprocess]`, inverse kinematics, the rendered
+videos and `PoseResult.load`. Cost is roughly 20 s per 5000 frames × 38 keypoints on a CPU.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -682,9 +962,11 @@ rather than the bulk.
 
 ## `[postprocess]` — corrections from knowing the animal { #postprocess }
 
-Runs only when `do_postprocess = true`, after the smoother. Everything upstream estimates
-the pose from **pixels**; this stage applies what is known about the **animal** instead —
-that some keypoints do not move, that the body is bilaterally symmetric. Those are priors
+**On by default** as of 0.2 (`do_postprocess = true`), after the smoother — and the packaged
+config declares the two ops below, which assume a **tethered** animal, so turn the stage off
+for a freely-moving one. Everything upstream estimates the pose from **pixels**; this stage
+applies what is known about the **animal** instead — that some keypoints do not move, that
+the body is bilaterally symmetric. Those are priors
 rather than measurements, and keeping them out of the estimating stages is deliberate: an
 estimator already told the answer cannot be checked against it.
 
@@ -692,9 +974,6 @@ The chain is an array of tables, applied in the order written — the same shape
 [`[[pose2d.preprocessors]]`](#pose2d):
 
 ```toml
-[pipeline]
-do_postprocess = true
-
 [[postprocess.ops]]
 op = "static"
 method = "median"
@@ -783,8 +1062,8 @@ sense in which two *different cameras'* pixels mirror each other.
       symmetrizing it would be a serious corruption wearing the costume of a correction.
       Only body-fixed pairs belong here.
     - "Has no mirror partner" does not imply "on the midline". A fly's abdomen bends
-      laterally, so `abdomen0..4` are unpaired and still off-plane. On fly38b the honest
-      midline set is `neck` alone.
+      laterally, so `abdomen0`…`abdomen4` are unpaired and still off-plane. On `fly38` the
+      honest midline set is `neck` alone.
 
 The plane is fitted from `pairs` **only** — each pair's midpoint lies on it, each pair's
 difference vector is normal to it — so a point named in `midline` never votes on where the
@@ -803,20 +1082,24 @@ in the world frame.
 
 !!! note "This replaces the IK solver's old private pin"
 
-    Up to 0.2, `[inverse_kinematics]` had a `constant_points` key that collapsed the
+    Before 0.2, `[inverse_kinematics]` had a `constant_points` key that collapsed the
     listed points before the fit and affected nothing else — so no stage output recorded
     it, and the stored angles could disagree with the stored 3D for exactly those points.
     `{ op = "static" }` applies the same idea to the **result**, in both 2D and 3D, which
     is what makes it checkable: the op logs how far it moved what it touched, and a point
     that had been drifting tens of pixels was moving and belongs out of the list. The key
-    is gone; if you carry it in a config, move its points here.
+    is **gone** in 0.2 and is an unknown-key error; if you carry it in a config, move its
+    points here. `[postprocess]` is on by default now, so for the packaged point set that
+    is a move into a table that already runs.
 
 ## `[inverse_kinematics]` — joint angles { #inverse_kinematics }
 
-Runs only when `do_inverse_kinematics = true`. Fits a NeuroMechFly-style
-articulated model to the triangulated 3D pose: the six legs (with segment lengths
-**measured from the data**, so the fitted model matches this fly's proportions), plus
-the **head** (yaw/pitch/roll, reaching the two antenna tips) and the **abdomen** (a
+**On by default** as of 0.2 (`do_inverse_kinematics = true`). Fits a NeuroMechFly-style
+articulated model to the **most-derived** 3D pose available — with the default stage set
+that is the `postprocess` chain's output, else the smoother's, else triangulation's. It fits
+the six legs (with segment lengths **measured from the data**, so the fitted model matches
+this fly's proportions), plus the **head** (yaw/pitch/roll, reaching the two antenna tips)
+and the **abdomen** (a
 five-segment chain reaching the abdomen markers, each segment bending **vertically and
 laterally** — and never twisting about the abdomen's own long axis). The head and abdomen
 use fixed model geometry baked from the NeuroMechFly MJCF, sized to this fly by a
@@ -835,9 +1118,14 @@ panels and the GUI's NMF overlays) to `results.h5`.
     pip install "quickik @ git+https://github.com/NeLy-EPFL/quickik#subdirectory=python"
     ```
 
-    Without it, `do_inverse_kinematics = true` fails with an explanatory error. A result
-    file that *already* holds a fit needs nothing extra: its overlays, videos and the
-    GUI's static fit all work on a plain install.
+    Without it the stage **skips**, with the reason logged, rather than raising — which
+    matters more than it looks now that the stage is on by default: `inverse_kinematics`
+    precedes `visualization` in the stage order, so an exception here would also cost the
+    videos, after detection, bundle adjustment, triangulation, the smoother and the
+    correction chain had all been computed and committed.
+
+    A result file that *already* holds a fit needs nothing extra: its overlays, videos and
+    the GUI's static fit all work on a plain install.
 
 deeperfly assembles a body plan for the recording and QuickIK fits the whole body at
 once against every tracked keypoint, rather than solving each limb on its own. The plan
@@ -856,7 +1144,7 @@ scale the camera rig happens to be gauged at.
 | `position_tolerance` | float | `0.001` | Early stop: largest root-position step, in model units. Inert under `fixed_body` (the root does not move). |
 | `angle_tolerance` | float | `0.001` | Early stop: largest joint-angle step, in radians. |
 | `fixed_body` | bool | `true` | Fix the body in the model frame — right for a **tethered** fly, whose body does not move: the leg roots sit at their measured medians and only the joint angles vary. Set `false` for a freely-moving preparation, to give QuickIK a 6-DOF root to fit per frame. |
-| `symmetric_segments` | bool | `false` | Give each leg and its mirror image **one shared length per segment** (the mean of the two sides' measurements) instead of measuring the two sides independently — see below. |
+| `symmetric_segments` | bool | `true` | Give each leg and its mirror image **one shared length per segment** (the mean of the two sides' measurements) instead of measuring the two sides independently. On by default, and it **costs** measured accuracy — see below. |
 | `weigh_by_confidence` | bool | `false` | Weigh each observation by the detector's confidence instead of treating every observed keypoint equally. |
 | `parallel` | bool | `false` | Solve in overlapping segments across worker threads. Off by default: each segment restarts from the neutral pose and only warm-starts within itself, so the angle traces can step at a seam — a poor trade for a joint-angle time series unless the recording is long enough to need the speed. |
 | `segment_len` | int | `200` | Frames per segment (includes the overlap); `parallel` only. |
@@ -867,9 +1155,9 @@ scale the camera rig happens to be gauged at.
 The leg segment lengths are **measured from the data**: each is the median, over the
 recording, of the distance between two triangulated joints. That is right in principle —
 it fits *this* fly rather than the generic model — but it measures each leg on its own,
-and a fly's left and right femurs are the same bone measured twice. `symmetric_segments
-= true` gives each mirror pair the **mean of the two measurements**, which is the
-combination that does not privilege a side (the same argument
+and a fly's left and right femurs are the same bone measured twice. `symmetric_segments`
+(**on** by default as of 0.2) gives each mirror pair the **mean of the two measurements**,
+which is the combination that does not privilege a side (the same argument
 [`{ op = "symmetrize" }`](#op-symmetrize) makes for the body-fixed points, and the reason
 it is a mean rather than a median pooled over both sides' frames: pooling would weight
 the side with more triangulated frames). A segment measured on **one** side only adopts
@@ -893,12 +1181,16 @@ Two things it deliberately does **not** do:
     that its subject is not bilaterally symmetric, so nothing is shared and the stage
     says so in a warning rather than silently doing nothing.
 
-!!! warning "It is a prior, and it costs accuracy against your own data"
+!!! warning "What the default costs, measured"
 
-    Off by default, and the reason is measured rather than conservative. On the eight-view
-    example recording the two sides genuinely disagree — the femurs come out **4–6% apart
-    on all three pairs, always with the left longer**, as a stable offset whose 10th–90th
-    percentile bands do not overlap:
+    This is a **prior**, and it is the one default in this table that makes every score
+    slightly worse. It is on anyway, because a fly has one pair of femurs rather than two
+    independent bones and most uses of a fitted model want that to be true of the model —
+    but the cost is real and is worth knowing before quoting a residual.
+
+    On the eight-view example recording the two sides genuinely disagree — the femurs come
+    out **4–6% apart on all three pairs, always with the left longer**, as a stable offset
+    whose 10th–90th percentile bands do not overlap:
 
     | pair | measured left | measured right | gap |
     | --- | --- | --- | --- |
@@ -906,7 +1198,7 @@ Two things it deliberately does **not** do:
     | `lm`/`rm` femur | 0.741 | 0.704 | 5.2% |
     | `lh`/`rh` femur | 0.730 | 0.701 | 4.1% |
 
-    But sharing them made **every** measurable score worse on that recording:
+    But sharing them makes **every** measurable score worse on that recording:
 
     | score | free lengths | shared | |
     | --- | --- | --- | --- |
@@ -914,12 +1206,12 @@ Two things it deliberately does **not** do:
     | 2D reprojection vs the `pose2d` detections (median px) | 4.45 | 4.59 | +0.14 px, worse in 7 of 8 views |
     | left/right gap in each DOF's median angle (mean over 24) | 4.7° | 6.4° | +1.7° |
 
-    The third row is the one that settles it. The hope was that a length error the solve
-    cannot express as length comes out as *angle*, so sharing the bones should make the
-    two sides' angle statistics more comparable. Measured over 2007 frames it does the
-    opposite. All five points of a leg are tracked, so the chain is over-determined and
-    the per-leg measured lengths already *are* the best fit to the data; any shared length
-    can only move the model away from it.
+    The third row is the one that hurts. The hope was that a length error the solve cannot
+    express as length comes out as *angle*, so sharing the bones should make the two sides'
+    angle statistics more comparable — the very thing sharing is for. Measured over 2007
+    frames it does the opposite. All five points of a leg are tracked, so the chain is
+    over-determined and the per-leg measured lengths already *are* the best fit to the data;
+    any shared length can only move the model away from it.
 
     Nor is the gap a per-side rig artifact, which would have been the case for imposing
     symmetry regardless. Within-side body-fixed distances are symmetric to under 2%
@@ -927,11 +1219,13 @@ Two things it deliberately does **not** do:
     coxa and tibia segments (0.98–1.01) — it is the **femur specifically**, on all three
     pairs. A per-side scale error would have inflated all of them together.
 
-    So turn it on when you have a reason to want one animal rather than two half-animals —
-    comparing joint angles between sides, driving a simulation, or reporting a
-    morphology — and know that you are buying that with a little accuracy against your own
-    keypoints. Note that this cuts the other way too: a 5% femur difference that is *not*
-    anatomy is a detector bias you are otherwise reporting as biology.
+    So: leave it on when you want one animal rather than two half-animals — comparing joint
+    angles between sides, driving a simulation, reporting a morphology — and set
+    `symmetric_segments = false` when the number you are quoting *is* the fit's accuracy
+    against your own keypoints, or when a per-side length difference is itself the
+    measurement. Note that this cuts the other way too: a 5% femur difference that is *not*
+    anatomy is a detector bias you would otherwise be reporting as biology, and the
+    free-length fit absorbs it silently.
 
 !!! warning "Joint limits, and why `damping` is large"
 
@@ -1348,7 +1642,7 @@ The same layering puts a skeleton over a `mesh_nmf` grid, where the order is not
 optional: a skeleton drawn *under* a translucent surface is a smear.
 
 `clip` exists because the draw ops honour `x0`/`y0` but do not stop at the panel edge, so
-in a grid a limb projecting out of its cell would be painted over the neighbouring
+in a grid a limb projecting out of its cell would be painted over the neighboring
 camera's picture. Turn it off for a panel that is meant to spill. A panel placed at a
 negative offset is never clipped to its own footprint (only to the canvas).
 

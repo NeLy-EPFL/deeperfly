@@ -1,8 +1,9 @@
 # Library API reference
 
-The complete public API, generated from the source docstrings. Everything here is
-importable from the top level (`from deeperfly import ...`). For task-oriented
-examples see the [library guide](../guides/library.md); for the array and
+The public API, generated from the source docstrings. Most of it is re-exported at the
+top level (`from deeperfly import Config, run_recording, ...` — `deeperfly.__all__` is
+the list); the rest is imported from the module named in its heading below. For
+task-oriented examples see the [library guide](../guides/library.md); for the array and
 coordinate conventions these functions share, see
 [Conventions & glossary](../explanation/conventions.md).
 
@@ -15,6 +16,13 @@ coordinate conventions these functions share, see
 ::: deeperfly.cameras.Camera
 
 ::: deeperfly.cameras.CameraGroup
+
+## Camera calibration files
+
+The portable form of a solved rig — see
+[`calibration.toml`](output-format.md#calibrationtoml) for the file itself.
+
+::: deeperfly.calibration.Calibration
 
 ## Skeleton
 
@@ -29,6 +37,10 @@ coordinate conventions these functions share, see
 ## Results
 
 ::: deeperfly.results.PoseResult
+
+::: deeperfly.results.StageStore
+
+::: deeperfly.results.repack
 
 ## Recordings
 
@@ -49,6 +61,8 @@ coordinate conventions these functions share, see
 ::: deeperfly.pipeline.run_recording
 
 ## 2D detection
+
+::: deeperfly.pose2d.pathways.DetectionPlan
 
 ::: deeperfly.pose2d.stream.load_models
 
@@ -73,6 +87,25 @@ coordinate conventions these functions share, see
 ::: deeperfly.eks.smooth
 
 ::: deeperfly.eks.EksResult
+
+## Pose corrections
+
+The `postprocess` stage's op chain — one pure function per correction, registered in
+`OPS`; see [`[postprocess]`](configuration.md#postprocess) for the config side.
+
+::: deeperfly.postprocess
+
+## Inverse kinematics
+
+Fitting NeuroMechFly's joint angles to a 3D pose. Needs the optional `deeperfly[ik]`
+extra (QuickIK); without it `solve_inverse_kinematics` raises `MissingQuickIK`, which
+is what the pipeline stage catches to skip rather than fail the run.
+
+::: deeperfly.inverse_kinematics.solve_inverse_kinematics
+
+::: deeperfly.inverse_kinematics.IKResult
+
+::: deeperfly.inverse_kinematics.KinematicTemplate
 
 ## Acquisition (active learning)
 

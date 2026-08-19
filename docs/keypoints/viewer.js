@@ -365,7 +365,7 @@ function setupInteraction(ctx) {
     return dofs;
   };
 
-  // Some keypoints sit exactly ON the hinge of their own chain — fly38b's `neck` is the
+  // Some keypoints sit exactly ON the hinge of their own chain — fly38's `neck` is the
   // c_thorax-c_head pivot — so every DoF above them rotates *about* them and no drag can
   // move them anywhere. The damped solve already degrades to a no-op there, but offering
   // a "grab" cursor that then does nothing is worse than not offering it. Mark them once
@@ -687,8 +687,9 @@ function buildSliders(pose, keypoints, mj, model, data, qpos, onChange) {
   // A slider group is a chain of the MODEL; a limb is a chain of the SKELETON, and the
   // two only mostly line up. Where a group carries keypoints, it takes their color: the
   // head group is swatched with the neck, the one point rigidly attached to it, and the
-  // abdomen with fly38b's midline chain, falling back to fly38's left side chain. Either
-  // may be missing — a group with no keypoints at all gets the neutral grey below.
+  // abdomen with fly38's midline chain, falling back to the retired DeepFly3D set's
+  // left side chain. Either may be missing — a group with no keypoints at all gets the
+  // neutral gray below.
   const limbColor = Object.fromEntries(keypoints.limbs.map((l) => [l.name, l.color]));
   const groupSwatch = {
     lf_leg: limbColor.lf_leg, lm_leg: limbColor.lm_leg, lh_leg: limbColor.lh_leg,

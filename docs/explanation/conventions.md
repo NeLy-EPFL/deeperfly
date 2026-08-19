@@ -17,7 +17,10 @@ Arrays are **view-leading**: the camera/view axis comes first.
 
 The axes are referred to throughout by these letters:
 
-- **`V`** — camera **views** (7 in the default rig).
+- **`V`** — camera **views** (8 in the default rig: `rh`, `rm`, `rf`, `f`, `lf`, `lm`,
+  `lh` and the axial `h`). A run [narrows itself to the footage
+  present](pipeline.md#narrowing), so a recording missing a camera shortens `V` rather than
+  padding it — below two views (`config.MIN_VIEWS_FOR_3D`) it refuses.
 - **`T`** — **frames** (time).
 - **`P`** — skeleton **points** / keypoints (38 in the default skeleton).
 
@@ -29,8 +32,10 @@ Single-image helpers (e.g. `CameraGroup.project`) drop the `T` axis and use
 There is no separate visibility mask. A keypoint that a view does not observe is
 stored as `NaN`, and the same convention carries through:
 
-- The detector's `[pose2d.output_points]` scatter leaves an unfilled
-  `(view, point)` as `NaN` — the union of the per-view tables *is* the visibility.
+- A `(view, point)` no pathway's mapping writes stays `NaN`. Every shipped detector is
+  dense — channel *i* is point *i* of the pathway's view — so the packaged plan writes
+  every cell and the detector's own 2D has no missing entries; where a plan *does* declare
+  `[pose2d.output_points]` tables, their union is the visibility.
 - Triangulation ignores `NaN` views and returns `NaN` for a point seen by fewer
   than `min_inliers` views.
 - The HDF5 datasets preserve `NaN`, so it round-trips through `results.h5`. Point arrays
@@ -64,7 +69,13 @@ Metal/MPS) automatically. Detector forward precision is configurable
 
 ## Confidence
 
-`conf` is the detector's heatmap-peak confidence for each 2D observation.
+`conf` is each detector's own peak score, and the two classes do not compute it the same
+way: the per-view `hrnet` arms take the raw arg-max cell value of the padded field, while
+the multiview transformer sums the softmax mass in a 5×5 window around its soft-argmax
+(its targets were rendered at sigma 1.25, so a correct prediction spreads over neighbors
+and the single cell under-reports it). So the scale is a property of the detector, not of
+the rig: compare confidences within a run, never across two classes.
+
 `weigh_by_confidence` (in `[bundle_adjustment]` and `[triangulation]`) scales each
 observation's least-squares contribution by `sqrt(confidence)`, so surer
 detections pull harder; non-positive or non-finite confidences drop the
@@ -78,14 +89,19 @@ cameras and pathways, which reference it by name, so one source can feed several
 pathways.
 
 **Pathway** — one `source → preprocessor → model` inference run
-(`[[pose2d.pathways]]`). It says *what to detect on*; where its outputs land is in
-`[pose2d.output_points]`.
+(`[[pose2d.pathways]]`). It says *what to detect on*. Where its outputs land is
+`[pose2d.output_points]` when that table names it, and otherwise the dense identity:
+channel *i* → point *i* of the view the pathway is *named after*. The mapping stays
+required for a model whose channel count is not the skeleton's point count.
 
 **Preprocessor** — a named, reusable list of frame ops (flip/crop/rotate/resize)
 applied to a pathway's frames before the model (`[[pose2d.preprocessors]]`).
 
 **Model** — a detector network plus its weights and input contract
-(`[[pose2d.models]]`); `class = "hourglass"` is the DeepFly2D stacked hourglass.
+(`[[pose2d.models]]`). Two classes ship, both dense: `class = "hrnet"` is the per-view
+detector (and the loader that also runs the HGNetV2 checkpoint), `class = "mvt"` the
+multiview transformer, which encodes a frame's views together. Anything else is refused
+rather than defaulted — see [the dense-38 detectors](detectors.md).
 
 **Detection plan** — the parsed whole of `[[sources]]` + the `[pose2d]`
 sub-tables: the mapping of footage through pathways into the skeleton's per-view
@@ -98,7 +114,10 @@ frame.
 **Rig / `CameraGroup`** — the set of named cameras as one object.
 
 **Skeleton** — the tracked points and their structure (`[skeleton]`):
-`point_names`, the `limb_points` kinematic chains, and the plotting palette.
+`point_names`, the `limb_points` kinematic chains, the `limb_palette`, and the
+`symmetries` (mirror pairs, which is what makes a left/right check decidable). `fly38` is
+the one packaged skeleton — 38 points: six 5-point legs, two antennae, `neck`, and the
+5-point dorsal-midline `abdomen0..4` chain. `name = "fly38b"` still resolves to it.
 
 **Limb** — a named chain of points (e.g. a 5-joint leg) used for the bone-length
 prior and for drawing.
@@ -107,9 +126,10 @@ prior and for drawing.
 `pose2d` when `pictorial_structures` is enabled; the input the peak-recovery stage
 reconsiders.
 
-**Stage** — one step of the linear pipeline (`pose2d`, `bundle_adjustment`,
-`pictorial_structures`, `triangulation`, `visualization`), toggled by
-`[pipeline].do_<stage>` and configured by its `[<stage>]` table.
+**Stage** — one step of the linear pipeline (`config.STAGES`: `pose2d`,
+`bundle_adjustment`, `pictorial_structures`, `triangulation`, `eks`, `postprocess`,
+`inverse_kinematics`, `visualization`), toggled by `[pipeline].do_<stage>` and configured
+by its `[<stage>]` table. All are on by default except `pictorial_structures`.
 
 **Fingerprint** — the result-affecting config subset recorded per stage in
 `run.json`; a stage's cache is reused only while its fingerprint still matches

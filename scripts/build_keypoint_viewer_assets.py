@@ -24,7 +24,7 @@ committed ``model/`` byte for byte, so a run that only changes the skeleton show
 up as a one-file diff in ``keypoints.json``.
 
 By default the skeleton is whichever one the packaged ``default_config.toml``
-names (``fly38b``); ``--skeleton fly38`` builds the page for another packaged one.
+names (``fly38``); ``--skeleton <name>`` builds the page for another packaged one.
 
 Outputs (all under ``docs/keypoints/assets/``):
 
@@ -88,7 +88,7 @@ MODEL_DIR = OUT_DIR / "model"
 def load_skeleton(name: str | None = None) -> dict:
     """The ``[skeleton]`` table, presets expanded -- ``deeperfly.config`` without importing it.
 
-    A run config only *names* its skeleton (``[skeleton] name = "fly38b"``); the point
+    A run config only *names* its skeleton (``[skeleton] name = "fly38"``); the point
     names, mirror pairs, limb chains and colors live in ``data/skeletons/<name>.toml``.
     This mirrors :func:`deeperfly.config._resolve_skeleton`: a table that already spells
     out ``point_names`` is self-contained and used as it is, otherwise the named preset is
@@ -137,7 +137,8 @@ ABDOMEN_POINTS = {
     "r_abdomen2": ("c_abdomen6", [-0.23, -0.05, 0.20]),
 }
 
-# fly38b's dorsal-midline abdomen chain, replacing fly38's two lateral ones. Each point
+# fly38's dorsal-midline abdomen chain, which replaced the DeepFly3D set's two lateral
+# ones. Each point
 # sits on the sagittal plane (y = 0) directly above an abdominal hinge -- `abdomen_k` over
 # the hinge at the head of its own segment -- except `abdomen4`, which is the tip marker
 # on the last segment, there being no sixth hinge. Attaching a point to the segment it
@@ -149,10 +150,10 @@ ABDOMEN_POINTS = {
 # 0.3303) bunches `abdomen3` against `abdomen2` on this model and sinks it ~0.049 below
 # the dorsal crest. These were set by eye against the crest instead, and land at an even
 # spacing with a uniform ~0.03 gap under it. `abdomen0` and `abdomen4` are still exactly
-# the fly38 side-pair midpoints; `abdomen2` is the fly38 marker moved onto the hinge.
+# the DeepFly3D side-pair midpoints; `abdomen2` is that marker moved onto the hinge.
 #
 # Each stripe hangs off the segment BEHIND its intersegmental fold, one body proximal of
-# where the first fly38b retarget put it -- hence the -x in every offset. The earlier
+# where the first midline retarget put it -- hence the -x in every offset. The earlier
 # anchoring had `abdomen3` and `abdomen4` on the SAME body (`c_abdomen6`), so no joint lay
 # between them and the model held them rigidly 0.234 apart while a real fly measured 0.287:
 # 18% short and unreachable by any angle, which was the largest single abdomen residual.
@@ -249,7 +250,7 @@ def map_keypoint(model: mj.MjModel, name: str) -> tuple[str, np.ndarray, bool]:
         # The c_thorax-c_head pivot, i.e. the origin of the head body. Exact, like a leg
         # joint -- it is a joint of the model, not a placement convention.
         return "c_head", np.zeros(3), False
-    if name in MIDLINE_POINTS:  # fly38b's abdomen0..4
+    if name in MIDLINE_POINTS:  # fly38's abdomen0..4
         body, offset = MIDLINE_POINTS[name]
         return body, np.array(offset), True
     if "abdomen" in name:  # fly38's l_abdomen0..2 / r_abdomen0..2

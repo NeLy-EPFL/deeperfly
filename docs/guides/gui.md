@@ -42,16 +42,18 @@ configurable (`[annotation]`, default "ground truth wins"); see
 ## Launch
 
 ```bash
-deeperfly gui RESULT            # a results.h5, or a dir containing one
+deeperfly gui RESULT                     # a results.h5, or a dir containing one
 deeperfly gui recording/deeperfly_outputs
+deeperfly gui myproject/                 # a project: every recording, plus Jobs and Bundle adjust
 ```
 
-`RESULT` is a `results.h5` file or a directory holding one (e.g. a recording's
-`deeperfly_outputs/`). The footage is resolved from the paths recorded in
-`results.h5`; if those no longer exist, pass `--footage-dir` to point at it (views
-with no footage still draw their overlays on blank frames). A browser opens
-automatically; the server stops a few seconds after the last tab closes. See the
-[CLI reference](cli.md#deeperfly-gui) for every flag (`--host`, `--port`,
+`RESULT` is a `results.h5` file, a directory holding one (e.g. a recording's
+`deeperfly_outputs/`), or a **project** directory — which is what puts the project's other
+recordings, the pipeline Jobs and the Bundle-adjust tab in the side panel. The footage is
+resolved from the paths recorded in `results.h5`; if those no longer exist, pass
+`--footage-dir` to point at it (views with no footage still draw their overlays on blank
+frames). A browser opens automatically; the server stops a few seconds after the last tab
+closes. See the [CLI reference](cli.md#deeperfly-gui) for every flag (`--host`, `--port`,
 `--no-browser`, `--keep-alive`).
 
 ## Layout
@@ -73,11 +75,11 @@ tells you where it came from** so you know at a glance what still needs attentio
 | --- | --- | --- |
 | Filled disc, **lime** ring | **Ground truth** | you authored it (dragged or confirmed) — trusted |
 | Filled disc, thin **dark** ring (fill fades when faint) | **Prediction** | the detector's raw 2D; the fainter the fill, the lower its confidence |
-| **Hollow** circle in the point's limb colour | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
+| **Hollow** circle in the point's limb color | **Projection** | no direct observation in this view — the 3D reprojected here (a suggestion) |
 | A **bar struck through** any of the above | **Hidden** | this cell is held out of the training loss — see below. It *annotates* the marker rather than replacing it, because it says nothing about where the keypoint is |
 
 The **`?` button** (or the `?` key) opens the **Help panel**, which carries the full
-legend — the keypoint colours (one swatch per limb, taken from your skeleton's
+legend — the keypoint colors (one swatch per limb, taken from your skeleton's
 `limb_palette`, so it matches whatever config you loaded), the marker vocabulary above,
 and the reference-overlay line styles — alongside the keyboard shortcuts. The displayed
 point resolves by precedence **ground truth → prediction → projection**, and the Hidden
@@ -121,7 +123,7 @@ be pressed at the same time**, which is the whole shape of the data.
 
 - **GT** (`Enter` places, `Backspace` clears) — place a ground-truth pixel for each
   selected cell at the position already drawn there, so the joint becomes yours and can be
-  nudged. Cells whose position the editor *invented* (a neighbour mean, the view centre —
+  nudged. Cells whose position the editor *invented* (a neighbor mean, the view center —
   see **Invented** in the Help legend) are skipped rather than recorded as your pixel.
 - **Hidden** (`e`) — hold each selected cell **out of the training loss**, or put it back
   (a toggle). That is the entire effect. The joint does not move, keeps its marker and its
@@ -135,7 +137,7 @@ be pressed at the same time**, which is the whole shape of the data.
 
 - **Absent** (`x`, or `Shift`+`X` for the whole recording) — mark the selected
   keypoint(s) **not on this animal**: an amputated leg, an ablated antenna. Unlike every
-  other action it is not per *view* — an amputated joint is missing from all seven cameras
+  other action it is not per *view* — an amputated joint is missing from every camera
   at once, which is exactly what separates it from Hidden. `x` marks the current frame;
   **`Shift`+`X` applies it to every frame**, which is what almost every real declaration
   wants (an animal that arrives with a leg already missing). Per-frame exists for the case
@@ -258,10 +260,15 @@ the frame the edit was on.
 
 ## Frame lists
 
-A retractable side panel holds a strip of tabs showing one pane at a time, of which the
-first two are the frame lists below. (The rest — this frame's skeleton, the calibration
-landmarks, the pipeline jobs, the project's settings and its other recordings — belong to a
-project session.) Which tab you left it on is remembered, as is whether it was open.
+A retractable side panel holds a strip of tabs showing one pane at a time, of which
+**Labeled** and **Suggested** are the frame lists below. The rest are **Instance** (this
+frame's annotation skeleton), **Landmarks** ([calibration landmarks](#calibration-landmarks)),
+**Jobs** ([pipeline commands](#running-the-pipeline-from-the-editor)), **Bundle adjust**
+(solve the rig from the ground truth you placed, save it as a new calibration, and choose
+which calibration the editor derives from), **Settings** (generated from the pipeline's own
+parameter dataclasses) and **Recording** (the project's others) — the last of which appear
+only in a project session. Which tab you left it on is remembered, as is whether it was
+open.
 
 `j` toggles the whole panel. Otherwise the ✕ in its head closes it and the slim rail down
 the right edge — which is there only while it is closed — opens it again; the rail also
@@ -304,9 +311,9 @@ says so instead of quietly navigating a list that no longer applies.
 
 ## NeuroMechFly overlays
 
-When the result carries a fitted inverse-kinematics model (the run enabled
-[`do_inverse_kinematics`](../reference/configuration.md#inverse_kinematics)), three
-extra overlays are available:
+When the result carries a fitted inverse-kinematics model — which
+[`do_inverse_kinematics`](../reference/configuration.md#inverse_kinematics) now produces by
+default — three extra overlays are available:
 
 - **NMF skeleton** (`m`) — the fitted model joints, reprojected onto each view.
 - **NMF mesh** (`Shift+M`) — the posed NeuroMechFly mesh, smooth-shaded on the client
@@ -319,9 +326,10 @@ Both overlays **re-fit to your labels**: as the derived 3D moves under your edit
 model is re-solved for that frame. The live re-fit runs on the **body plan the pipeline
 solved**, read back from `results.h5` — this recording's measured segment lengths and its
 registration to the model, so the live overlay and the rendered one describe the same
-animal. (Older result files carry no plan; one is rebuilt from the `config.toml` snapshot
-beside `results.h5` instead.) Which parts the mesh draws is set by
-[`[gui].mesh_hide`](../reference/configuration.md#gui).
+animal. (An older result file carries no plan, and one whose stored plan cannot be read
+says so; either way one is rebuilt from the `config.toml` snapshot beside `results.h5`, and
+the live overlay may then differ slightly from the rendered one.) Which parts the mesh
+draws is set by [`[gui].mesh_hide`](../reference/configuration.md#gui).
 
 Re-fitting a frame depends only on that frame and its labels, so scrubbing away and back,
 or undoing and redoing, always returns the same pose. It also needs the optional
@@ -357,10 +365,21 @@ act that can lose hand work, so it is the only thing that prompts: it names the 
 still unsaved and offers to save them all first. (Closing the browser tab gets the
 browser's own "leave site?" dialog for the same reason.)
 
-Each sidecar is stamped with its recording's fingerprint (skeleton, cameras, frame count,
-image sizes, footage) so it is refused if pointed at a different recording — but a re-run
-of the *same* recording (new detector weights, retuned triangulation) keeps your labels
-valid, since ground truth is absolute.
+Each sidecar is stamped with its recording's fingerprint — the **index domain** its
+`(view, frame, point)` keys are keys into (`point_names`, `camera_names`, the frame count)
+plus a **recording fingerprint** (each view's image size, since ground truth is stored in
+footage pixels, and the footage file basenames). Predictions are deliberately not part of
+it, so a re-run of the *same* recording — new detector weights, retuned triangulation —
+keeps your labels valid: ground truth is absolute.
+
+`point_names` and the frame count must match **exactly**. A point reorder is a project-wide
+migration (`deeperfly project skeleton`) with its own dry run and confirmation, and remapping
+it silently here would bypass both. The camera axis is the one that gets remapped rather than
+refused: this rig names the same cameras three ways — file stems from a bare directory, source
+names from a config, view names from a detection plan — so labels authored *before* a
+recording was ever run used to be refused after its first run, which walked the
+label-first-then-calibrate workflow into a wall. Sizes and footage are compared per camera
+*through* that correspondence, so a rename is not mistaken for a different recording.
 
 Two consequences worth knowing:
 
@@ -420,7 +439,7 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | `s` / `n` / `p` | Toggle skeleton / labels / 3D estimate |
 | `w` / `u` | Toggle the two checks: reprojection distance / under-labeled joints |
 | `m` / `Shift+M` / `c` | Toggle NMF skeleton / NMF mesh / 3D view |
-| `j` | Show / hide the labelled-frames list |
+| `j` | Show / hide the labeled-frames list |
 | `Ctrl`/`Cmd`+`S` | Save labels — every recording holding unsaved work |
 | `?` / `Esc` | Show shortcuts / close an overlay |
 
@@ -444,8 +463,8 @@ Declare them in the project's `landmarks.toml`, then place them in the **Landmar
 3. Click the row again — or leave the tab — to disarm.
 
 Landmarks draw as **amber diamonds**, deliberately a different *shape* from keypoints rather
-than just a different colour: a landmark is a different kind of thing, and shape survives
-colour blindness and a busy frame.
+than just a different color: a landmark is a different kind of thing, and shape survives
+color blindness and a busy frame.
 
 The gesture is a click, not a drag, for a structural reason: a landmark has no detection to
 grab and no reprojection to nudge, so until one exists there is nothing on the canvas to
@@ -465,7 +484,7 @@ Open a **project** (`deeperfly gui myproject/`) and the **Jobs** tab can run pip
 commands: suggest frames, export labels, check or solve the calibration.
 
 Each row *is* the CLI command, printed verbatim and click-to-copy — so a GUI action that fails
-is reproducible in a terminal, and there is no behaviour only the GUI can reach. Jobs run one
+is reproducible in a terminal, and there is no behavior only the GUI can reach. Jobs run one
 at a time in their own process (two stages writing one `results.h5` would corrupt it, and a
 CUDA OOM must not take your unsaved labels with it).
 
