@@ -30,9 +30,10 @@ Same element count, so reading it the other way attributes every view's channels
 wrong view. Channel ``c`` is view ``c // K``, keypoint ``c % K``.
 
 **2. The decode is a soft-argmax over an UPSAMPLED heatmap**, not an argmax with a
-parabolic refinement. The 64x128 field is upsampled twice to the full 256x512 input,
-softmaxed with temperature 1000, and reduced by spatial expectation, then shifted by
--1.5. Substituting an argmax decode moves every point.
+parabolic refinement. The field is upsampled twice to the full network input -- 88x152 to
+352x608 on the shipped padded artifact, 64x128 to 256x512 on an unpadded one -- softmaxed
+with temperature 1000, and reduced by spatial expectation, then shifted by -1.5 and by the
+margin. Substituting an argmax decode moves every point.
 
 **3. The peaks are in the PURE-SCALE convention, not the half-pixel one.** LP wrote the
 labels this model was trained on as ``model_px * crop_wh / model_wh``, with no half-pixel
@@ -103,11 +104,23 @@ _PYRAMID_KERNEL: tuple[tuple[float, ...], ...] = (
     (1.0, 4.0, 6.0, 4.0, 1.0),
 )
 
-#: Channels decoded at once. The decode upsamples 64x128 to 256x512, which is 16x the
-#: cells: all 304 channels of an 8-view frame at once is ~160 MB for the upsampled field
-#: and as much again for the softmax. Chunking is exact -- every channel is decoded
-#: independently -- and keeps the peak bounded regardless of view count.
+#: Channels decoded at once. The decode upsamples the field 4x on each axis -- 88x152 to
+#: 352x608 on the shipped padded artifact -- which is 16x the cells: all 304 channels of an
+#: 8-view frame at once is ~260 MB for the upsampled field and as much again for the
+#: softmax (~160 MB apiece on an unpadded 64x128 one). Chunking is exact -- every channel is
+#: decoded independently -- and keeps the peak bounded regardless of view count.
 DECODE_CHUNK: int = 38
+
+#: Grayscale value the MARGIN of a padded input is filled with, before normalization.
+#:
+#: A constant and not ``BORDER_REPLICATE``: the margin's only job is to be the same at
+#: training time and at inference time, and a replicated edge is not -- it smears whatever
+#: happens to touch the border, so a leg leaving the frame grows a streaked copy of itself
+#: that a detector can learn to chase. A flat fill carries no content to chase, which
+#: leaves the visible part of the limb (and the other views) as the only evidence for where
+#: the joint went. Recorded in the artifact as ``arch.hm_margin_fill`` so a checkpoint
+#: trained against a different fill cannot be served with this one.
+MARGIN_FILL_U8: int = 0
 
 
 def _torch():
@@ -263,7 +276,9 @@ def _build_modules(arch: dict[str, Any]):
         def __init__(self) -> None:
             super().__init__()
             # PixelShuffle(2) doubles the token grid and quarters the channels; one
-            # stride-2 ConvTranspose2d doubles it again. 16x32 tokens -> 64x128 cells.
+            # stride-2 ConvTranspose2d doubles it again, so the field is the token grid x4
+            # whatever its size: 22x38 tokens -> 88x152 cells on the shipped padded
+            # artifact, 16x32 -> 64x128 on an unpadded one.
             self.upsampling_layers = nn.Sequential(
                 nn.PixelShuffle(2),
                 nn.ConvTranspose2d(
@@ -281,7 +296,7 @@ def _build_modules(arch: dict[str, Any]):
             if final_softmax:
                 # A spatial softmax at temperature 1 IS part of this head: LP's
                 # `final_softmax` defaults to True and nothing overrides it, so the
-                # network's output is a normalized map (peaks ~0.03 over 64x128) and not
+                # network's output is a normalized map (peaks ~0.03 over the field) and not
                 # logits. Omitting it leaves the decode's own temperature-1000 softmax to
                 # act on raw logits, which moves every point -- measured 251 px at the
                 # worst, i.e. half the frame.
@@ -319,9 +334,13 @@ def _make_net(arch: dict[str, Any]):
         #: a view's output depends on which others were in the tensor. See
         #: :attr:`deeperfly.pose2d.models.LoadedModel.joint_views`.
         joint_views = True
-        #: The decode's field is upsampled to EXACTLY the input, so a peak can never land
-        #: outside it -- a joint the crop cuts off saturates toward the border instead of
-        #: leaving the box, as it would in the dense HRNet's padded field.
+        #: Whether a peak may land outside the REPORTED frame. Overridden per artifact by
+        #: `load_mvt`: false when the field is upsampled to exactly the reported frame (every
+        #: artifact through r27), where a joint the crop cuts off saturates toward the border
+        #: instead of leaving the box; true when the artifact declares `hm_margin_px`, which
+        #: pads the network's input so the field covers ground outside the reported frame and
+        #: a coordinate beyond [0, 1] is a location rather than an error -- the same contract
+        #: the dense HRNet's padded field has.
         padded_field = False
         #: LP's labels were written with no half-pixel term; see the module docstring.
         peak_convention = "pure-scale"
@@ -478,8 +497,22 @@ def _confidence_at(prob, locs):
     return total
 
 
-def decode_points(heatmaps, input_hw: tuple[int, int], downsample_factor: int):
+def decode_points(
+    heatmaps,
+    input_hw: tuple[int, int],
+    downsample_factor: int,
+    *,
+    margin: int = 0,
+):
     """``(B, C, Hm, Wm)`` heatmaps -> input-normalized ``(B, C, 2)`` peaks and conf.
+
+    ``input_hw`` is the **reported frame** -- the coordinate system the returned points are
+    normalized into, and the one the pathway inverts. ``margin`` is how many model pixels of
+    field lie outside it on every side, so the upsampled field is
+    ``(h + 2 * margin, w + 2 * margin)`` and a returned coordinate outside ``[0, 1]`` is a
+    joint outside the reported frame rather than an error. With ``margin = 0`` (the shipped
+    r27 artifact) the field spans the reported frame exactly and the soft-argmax saturates
+    against its border, which is the behavior this decode has always had.
 
     Channels are decoded independently, so this chunks them (see :data:`DECODE_CHUNK`):
     upsampling to the input size costs 16x the cells, and an 8-view frame is 304 channels.
@@ -497,7 +530,14 @@ def decode_points(heatmaps, input_hw: tuple[int, int], downsample_factor: int):
             f"downsample_factor {downsample_factor} has no grid-offset correction; "
             f"known: {sorted(offsets)}"
         )
-    h_in, w_in = input_hw
+    h_rep, w_rep = input_hw
+    if int(margin) < 0:
+        raise ValueError(f"margin must be >= 0, got {margin}")
+    # The FIELD's extent in model px. The upsample below must land on exactly this, which is
+    # the one check that catches a margin disagreeing with the checkpoint it decodes: a
+    # 48 px margin decoded as 0 puts every point 48 px up and left, a whole antenna's worth,
+    # with nothing else to notice.
+    h_in, w_in = h_rep + 2 * int(margin), w_rep + 2 * int(margin)
     xs, cs = [], []
     for lo in range(0, heatmaps.shape[1], DECODE_CHUNK):
         hm = heatmaps[:, lo : lo + DECODE_CHUNK].float()
@@ -505,24 +545,32 @@ def decode_points(heatmaps, input_hw: tuple[int, int], downsample_factor: int):
             hm = _pyr_up(hm)
         if hm.shape[-2:] != (h_in, w_in):
             raise RuntimeError(
-                f"the upsampled field is {tuple(hm.shape[-2:])}, not the input "
-                f"{(h_in, w_in)}; the decode's coordinates would not be input pixels"
+                f"the upsampled field is {tuple(hm.shape[-2:])}, not the "
+                f"{(h_in, w_in)} this reported frame {(h_rep, w_rep)} plus margin "
+                f"{margin} describes; the decode's coordinates would not be model pixels"
             )
         prob = _spatial_softmax(hm, SOFTARGMAX_TEMPERATURE)
         pts = _spatial_expectation(prob)
         # ORDER MATTERS. LP evaluates the confidence window at the RAW expectation and
-        # applies the grid-offset correction afterwards, so the window is centred on the
+        # applies the grid-offset correction afterwards, so the window is centered on the
         # cell the peak actually occupies in this tensor. Subtracting first moves the 5x5
         # window one to two cells off: harmless on a broad peak and not at all on a sharp
         # one -- measured up to 0.37 of a confidence that tops out near 0.1.
         cs.append(_confidence_at(prob, pts))
-        xs.append(pts - offsets[downsample_factor])
+        # `- margin` moves the origin from the padded field's top-left corner to the
+        # REPORTED frame's, so x < 0 means "left of the frame". It comes after
+        # `_confidence_at` for the reason stated there: the window has to be centered on the
+        # cell the peak occupies in THIS tensor, which is still the padded one.
+        xs.append(pts - offsets[downsample_factor] - float(margin))
     pts = torch.cat(xs, dim=1)
     conf = torch.cat(cs, dim=1)
-    # Input-normalized, as every other detector class here returns. Values outside [0, 1]
-    # are a joint outside the frame; unlike the dense HRNet there is no padded field to
-    # represent one, so the soft-argmax simply saturates toward the border.
-    norm = torch.tensor([w_in, h_in], dtype=pts.dtype, device=pts.device)
+    # Normalized into the REPORTED frame, as every other detector class here returns.
+    # Values outside [0, 1] are a joint outside that frame. With `margin > 0` they are
+    # meaningful and must not be clipped -- that is what the padded field exists to
+    # represent, exactly as in `hrnet.cells_to_input_normalized`. With `margin == 0` the
+    # field spans the frame and the soft-argmax can only saturate toward the border, so the
+    # values stay within about a pixel and a half of it.
+    norm = torch.tensor([w_rep, h_rep], dtype=pts.dtype, device=pts.device)
     return pts / norm, conf
 
 
@@ -531,8 +579,22 @@ def decode_points(heatmaps, input_hw: tuple[int, int], downsample_factor: int):
 # ---------------------------------------------------------------------------------------
 
 
-def prepare_images(frames, input_hw: tuple[int, int], mean, std, device):
-    """Oriented ``(T, H, W, 3)`` uint8 frames -> ``(T, 3, h, w)`` normalized model input.
+def prepare_images(
+    frames, input_hw: tuple[int, int], mean, std, device, *, margin: int = 0
+):
+    """Oriented ``(T, H, W, 3)`` uint8 frames -> ``(T, C, h, w)`` normalized model input.
+
+    ``input_hw`` is the **reported frame**: the frame the crop is resized to and the one the
+    returned coordinates are normalized against. ``margin`` then pads that resized frame by
+    the given number of model pixels on every side with :data:`MARGIN_FILL_U8`, so the
+    network's actual input is ``(h + 2m, w + 2m)`` and its field covers ground the reported
+    frame does not. The resize is unchanged by the margin, which is the point: the animal
+    lands on exactly the pixels it lands on today, and the margin is added around it, so a
+    padded checkpoint and an unpadded one share a coordinate system.
+
+    The pad happens on the uint8 plane, BEFORE normalization, so the fill is a grayscale
+    value and not a post-normalization number that would change meaning with the artifact's
+    mean and std.
 
     Reproduces the training pipeline rather than an equivalent-looking one, because the
     difference was measured and it is not small: the exporter wrote PNGs via PIL's
@@ -565,6 +627,8 @@ def prepare_images(frames, input_hw: tuple[int, int], mean, std, device):
     if arr.ndim != 4:
         raise ValueError(f"expected (T, H, W, C) frames, got shape {arr.shape}")
 
+    if int(margin) < 0:
+        raise ValueError(f"margin must be >= 0, got {margin}")
     h_out, w_out = input_hw
     out = np.empty((arr.shape[0], h_out, w_out), dtype=np.uint8)
     for t in range(arr.shape[0]):
@@ -581,6 +645,14 @@ def prepare_images(frames, input_hw: tuple[int, int], mean, std, device):
     # equivalent. The artifact states which, so this never has to guess -- and a mismatch
     # between the plane count and the stem is a shape error at the first conv rather than a
     # silent broadcast.
+    if int(margin):
+        m = int(margin)
+        out = np.pad(
+            out,
+            ((0, 0), (m, m), (m, m)),
+            mode="constant",
+            constant_values=MARGIN_FILL_U8,
+        )
     c = len(tuple(mean))
     x = torch.from_numpy(out).to(device=device, dtype=torch.float32) / 255.0
     x = x.unsqueeze(1).expand(-1, c, -1, -1)
@@ -706,7 +778,49 @@ def load_mvt(
 
     norm = art["normalization"]
     net.point_names = list(art["point_names"])
-    net.input_hw = tuple(int(v) for v in art["input_size"])
+    # `input_size` is what the NETWORK takes. `hm_margin_px` says how much of that is
+    # margin, so the REPORTED frame -- the coordinate system every returned point is
+    # normalized into, and the one `ModelSpec.input_size` must declare -- is the network
+    # input less twice the margin. Absent (every artifact through r27) means no margin, so
+    # the two are the same and nothing about this model's behavior changes.
+    net.model_input_hw = tuple(int(v) for v in art["input_size"])
+    net.hm_margin_px = int(arch.get("hm_margin_px", 0) or 0)
+    _m, _patch = net.hm_margin_px, int(arch["patch_size"])
+    if _m < 0:
+        raise SystemExit(
+            f"{path}: arch.hm_margin_px is {_m}; a margin cannot be negative"
+        )
+    if _m % _patch:
+        # The margin is realized by padding the network's INPUT, so it moves the token grid.
+        # A margin that is not a whole number of patches gives a fractional grid, which the
+        # backbone resolves by truncating -- the field then covers less than the margin says
+        # and every decoded point is shifted by the difference.
+        raise SystemExit(
+            f"{path}: arch.hm_margin_px={_m} is not a multiple of the patch size "
+            f"{_patch}. A margin has to be a whole number of patches on each side, so the "
+            f"token grid stays integral: {_patch * (_m // _patch)} or "
+            f"{_patch * (_m // _patch + 1)}."
+        )
+    net.input_hw = tuple(int(v) - 2 * _m for v in net.model_input_hw)
+    if min(net.input_hw) <= 0:
+        raise SystemExit(
+            f"{path}: a margin of {_m} px leaves nothing of a "
+            f"{net.model_input_hw[0]}x{net.model_input_hw[1]} input"
+        )
+    _fill = int(arch.get("hm_margin_fill", MARGIN_FILL_U8))
+    if _m and _fill != MARGIN_FILL_U8:
+        raise SystemExit(
+            f"{path}: the artifact's margin was trained against a fill of {_fill}, but "
+            f"this module pads with {MARGIN_FILL_U8}. The fill is a train/test contract "
+            f"(see MARGIN_FILL_U8), not a cosmetic choice."
+        )
+    #: A joint may land OUTSIDE the reported frame exactly when there is field out there to
+    #: land in. See `LoadedModel.padded_field`.
+    net.padded_field = _m > 0
+    #: Confidence below which a point is reported as NaN rather than as a location. Zero
+    #: (no gate) unless the artifact sets one, because it is only meaningful for a
+    #: checkpoint trained to answer "not here" with a flat map -- see `predict_points`.
+    net.conf_floor = float(arch.get("conf_floor", 0.0) or 0.0)
     net.norm_mean = tuple(float(v) for v in norm["mean"])
     net.norm_std = tuple(float(v) for v in norm["std"])
     net.downsample_factor = int(arch["downsample_factor"])
@@ -730,12 +844,16 @@ def load_mvt(
         if "view_embed" in n or "view_proj" in n
     )
     log.info(
-        "multiview transformer: %s, %d channels, input %dx%d, scopes %s "
+        "multiview transformer: %s, %d channels, input %dx%d (margin %d px -> reported "
+        "frame %dx%d, padded field %s), scopes %s "
         "(%d view-local, %d global), %d per-view parameters -- view order and camera "
         "names are not read",
         arch.get("backbone"),
         net.num_classes,
+        *net.model_input_hw,
+        net.hm_margin_px,
         *net.input_hw,
+        net.padded_field,
         arch.get("attn_scopes"),
         str(arch["attn_scopes"]).count("l"),
         str(arch["attn_scopes"]).count("g"),
@@ -797,7 +915,24 @@ def predict_points(
             # channels are one contiguous run. Slice before the decode, not after.
             hm = torch.cat([hm[:, i * k : (i + 1) * k] for i in wanted], dim=1)
             v = len(wanted)
-        xy, conf = decode_points(hm, model.input_hw, model.downsample_factor)
+        xy, conf = decode_points(
+            hm,
+            model.input_hw,
+            model.downsample_factor,
+            margin=int(getattr(model, "hm_margin_px", 0)),
+        )
+        # A joint the frame cut off has no location to report. Where the checkpoint was
+        # trained to answer that with a FLAT map (see dfpose's `off_frame_target=uniform`),
+        # the confidence separates the two answers by ~500x, so a floor turns "a confident
+        # point pinned to the border" -- which RANSAC and the bundle adjustment both believe
+        # -- into NaN, which `deeperfly.triangulation` already means by "this camera cannot
+        # see this point". Zero, i.e. off, unless the artifact sets a floor: on a checkpoint
+        # trained without flat targets the confidence does NOT track off-frame-ness, and a
+        # floor would drop good points on the strength of a number that does not mean what
+        # it would need to mean.
+        floor = float(getattr(model, "conf_floor", 0.0))
+        if floor > 0.0:
+            xy = xy.masked_fill(conf[..., None] < floor, float("nan"))
     if dev.type == "cuda":
         torch.cuda.synchronize()
     return (

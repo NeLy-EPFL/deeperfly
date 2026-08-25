@@ -227,11 +227,15 @@ class LoadedModel:
     def padded_field(self) -> bool:
         """Whether a peak may legitimately land OUTSIDE the model input.
 
-        ``True`` when the heatmap covers more than the input -- the dense HRNet pads the
-        field by 25% a side, so a joint the crop cuts off still has a cell and decodes to a
-        coordinate beyond ``[0, 1]``. ``False`` when the field spans the input exactly (the
-        dense HRNet, and the multiview transformer whose soft-argmax cannot leave it): there
-        a cut-off joint has nowhere to go and piles up *against* the border instead.
+        ``True`` when the field covers more than the reported frame, so a joint the crop
+        cuts off still has a cell and decodes to a coordinate beyond ``[0, 1]``. Both shipped
+        classes are: the dense HRNet pads the head's output by 25% a side, and an ``mvt``
+        artifact declaring ``arch.hm_margin_px`` pads the network's INPUT instead.
+
+        ``False`` when the field spans the reported frame exactly -- an ``mvt`` artifact with
+        no margin, which is every one through r27. There a cut-off joint has nowhere to go:
+        the soft-argmax is an expectation over in-image pixels, so it piles up *against* the
+        border instead.
 
         The distinction matters to anything asking "does this crop cut the animal?" --
         :mod:`deeperfly.pose2d.autocrop` needs a different test in each case, and reading
@@ -317,12 +321,35 @@ class LoadedModel:
             # The model reproduces its own training pipeline. The shared path below is a
             # resize kernel and a scalar mean; a model trained through a different kernel
             # cannot be served by "an equivalent" one -- see mvt.prepare_images.
+            kw = {}
+            margin = int(getattr(self.module, "hm_margin_px", 0) or 0)
+            if margin:
+                import inspect
+
+                # Asked of the signature, as `predict_points_for_views` does: a module whose
+                # preparation predates the margin would otherwise take it as a positional
+                # surprise, and silently preparing a padded checkpoint's input without the
+                # pad is a shift of `margin` px on every point rather than an error.
+                try:
+                    takes = (
+                        "margin" in inspect.signature(impl.prepare_images).parameters
+                    )
+                except (TypeError, ValueError):
+                    takes = False
+                if not takes:
+                    raise TypeError(
+                        f"model {self.spec.name!r} declares hm_margin_px={margin} but "
+                        f"{impl.__name__}.prepare_images takes no margin; its input would "
+                        "be prepared without the pad its field expects"
+                    )
+                kw["margin"] = margin
             return impl.prepare_images(
                 frames,
                 self.input_size,
                 self.module.norm_mean,
                 self.module.norm_std,
                 next(self.module.parameters()).device,
+                **kw,
             )
 
         img = _to_torch_image(frames)

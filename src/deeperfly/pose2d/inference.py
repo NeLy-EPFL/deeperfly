@@ -527,6 +527,24 @@ def detect_candidates_sequence(
 
     from .. import pictorial
 
+    # A PADDED field cannot be decoded by `heatmap_to_points`, whose normalization assumes
+    # the field spans the input. It does not: the field is larger, so a peak at the center
+    # still lands about right while one at the frame edge comes out tens of model pixels
+    # off -- far outside the 15 px (`pictorial.DEFAULT_INLIER_PX`) a candidate must reach to
+    # support a hypothesis. Refused rather than decoded wrongly: the numbers this produced
+    # were never usable, so there is nothing here to keep working.
+    padded = sorted(
+        name for name, m in models.items() if getattr(m, "padded_field", False)
+    )
+    if padded:
+        raise SystemExit(
+            "the candidate (top-K) path cannot decode a PADDED heatmap field, and "
+            f"model(s) {padded} have one. Its shared decode normalizes by the input size, "
+            "which is not the field's extent, so every candidate would be displaced -- "
+            "most at the frame edge, which is where candidates matter. Turn "
+            "[pose3d].pictorial_structures off for this run, or use a model whose field "
+            "spans its input."
+        )
     device = _plan_device(models)
     windows = _windows_to_device(plan, models, windows, device)
     source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
