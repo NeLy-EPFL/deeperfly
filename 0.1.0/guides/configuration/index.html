@@ -1,0 +1,1531 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/deeperfly/0.1.0/guides/configuration/">
+      
+      
+        <link rel="prev" href="../cli/">
+      
+      
+        <link rel="next" href="../library/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Writing configs - deeperfly</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#writing-configs" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="deeperfly" class="md-header__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            deeperfly
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Writing configs
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="deeperfly" class="md-nav__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    deeperfly
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-detection-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The detection plan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choose-which-stages-run-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose which stages run — [pipeline]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tune-the-opt-in-stage-pictorial-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tune the opt-in stage — pictorial structures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-videos-visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output videos — [visualization]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triangulation-triangulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triangulation — [triangulation]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#detector-precision-and-memory-pose2d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detector precision and memory — [pose2d]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frame-io-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame I/O — [io]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#preprocessor-op-grammar-pose2dpreprocessors-ops" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preprocessor op grammar — [[pose2d.preprocessors]] ops
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundle-adjustment-bundle_adjustment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bundle adjustment — [bundle_adjustment]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#camera-rig-geometry-camerasdefaults-and-cameras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera rig geometry — [cameras.defaults] and [cameras.*]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skeleton — [skeleton]
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/bundle_adjustment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundle adjustment of a multi-camera rig
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/pipeline_walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The deeperfly pipeline, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How it works
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline stages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/keypoints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keypoint locations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/conventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions & glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/output-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-detection-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The detection plan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choose-which-stages-run-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose which stages run — [pipeline]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tune-the-opt-in-stage-pictorial-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tune the opt-in stage — pictorial structures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-videos-visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output videos — [visualization]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triangulation-triangulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triangulation — [triangulation]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#detector-precision-and-memory-pose2d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detector precision and memory — [pose2d]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frame-io-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame I/O — [io]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#preprocessor-op-grammar-pose2dpreprocessors-ops" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preprocessor op grammar — [[pose2d.preprocessors]] ops
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundle-adjustment-bundle_adjustment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bundle adjustment — [bundle_adjustment]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#camera-rig-geometry-camerasdefaults-and-cameras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera rig geometry — [cameras.defaults] and [cameras.*]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skeleton — [skeleton]
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="writing-configs">Writing configs<a class="headerlink" href="#writing-configs" title="Permanent link">&para;</a></h1>
+<p>A run is driven by a single self-contained <code>config.toml</code>. <code>deeperfly init
+config.toml</code> writes a fully commented copy to edit in place; <code>deeperfly run
+recording/</code> with no <code>-c</code> falls back to the packaged defaults. A single file
+carries everything a run needs — the camera rig, which file belongs to which
+camera, the detector, the pipeline and the visualization.</p>
+<p>This guide walks through customizing a config, ordered roughly by how often
+you'll touch each section: the first few you'll set for almost every recording,
+the last few you can usually leave at their defaults. For an exhaustive
+parameter-by-parameter listing (every key, its type and default), see the
+<a href="../../reference/configuration/">configuration reference</a>.</p>
+<h2 id="the-detection-plan">The detection plan<a class="headerlink" href="#the-detection-plan" title="Permanent link">&para;</a></h2>
+<p>2D detection is described by the top-level <code>[[sources]]</code> footage list plus the
+detector's own machinery under <code>[pose2d]</code> — <code>[[pose2d.preprocessors]]</code>,
+<code>[[pose2d.models]]</code>, <code>[[pose2d.pathways]]</code> — and a <code>[pose2d.output_points]</code>
+mapping table. A neural network turns a preprocessed image into output channels;
+the plan says which footage feeds which model (the pathways) and where each
+output channel lands in the skeleton (<code>[pose2d.output_points]</code>). The default fly
+rig is <strong>7 sources → 8 pathways → 7 views</strong> (the front camera is read twice, once
+mirrored).</p>
+<p><strong>Sources</strong> name the footage, the one setting almost every recording needs. Each
+<code>filename</code> is a glob matched inside the recording directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[[sources]]</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">name</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vid_rh&quot;</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;camera_0.mp4&quot;</span><span class="w">   </span><span class="c1"># a named file, used as-is</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">[[sources]]</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">name</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vid_rm&quot;</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;camera_1&quot;</span><span class="w">       </span><span class="c1"># a bare prefix -&gt; &quot;camera_1*&quot;: a video or an image sequence</span>
+</code></pre></div>
+<p>A source's footage is one video file or a naturally-sorted image sequence
+(<code>camera_1_000123.jpg ...</code>). A directory is a valid recording only when every
+source matches footage with the same file and frame count. A source with no
+<code>filename</code> defaults to its own name.</p>
+<p><strong>Preprocessors</strong> are named, reusable frame-op pipelines that a pathway
+references by name (full op grammar in the <em>Preprocessor op grammar</em> section
+below):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[[pose2d.preprocessors]]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;plain&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">ops</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="p">[]</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">[[pose2d.preprocessors]]</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;mirror&quot;</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">ops</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;fliplr&quot;</span><span class="w"> </span><span class="p">}]</span>
+</code></pre></div>
+<p><strong>Models</strong> select a detector network: <code>class</code> is the registry key
+(<code>"hourglass"</code> = DeepFly2D), <code>weights</code> a checkpoint (<code>""</code>/omitted uses the cached
+download), <code>input_size</code> the <code>(height, width)</code> it expects, <code>mean</code> the scalar
+subtracted after <code>/255</code>, and <code>n_out_channels</code> the output heatmap count.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[[pose2d.models]]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;deepfly2d&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">class</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;hourglass&quot;</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">weights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">input_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mi">256</span><span class="p">,</span><span class="w"> </span><span class="mi">512</span><span class="p">]</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">mean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.22</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">n_out_channels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">19</span>
+</code></pre></div>
+<p><strong>Pathways</strong> are named <code>source -&gt; preprocessor -&gt; model</code> inference runs. A
+pathway only says <em>what to detect on</em>; each needs a unique <code>name</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[[pose2d.pathways]]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;rh&quot;</span><span class="err">;</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vid_rh&quot;</span><span class="err">;</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;deepfly2d&quot;</span><span class="w">            </span><span class="c1"># no preprocessor = identity</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">[[pose2d.pathways]]</span><span class="w">                                            </span><span class="c1"># the front source, mirrored pass</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;f_flip&quot;</span><span class="err">;</span><span class="w">  </span><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vid_f&quot;</span><span class="err">;</span><span class="w">  </span><span class="n">preprocessor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;flip&quot;</span><span class="err">;</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;deepfly2d&quot;</span>
+</code></pre></div>
+<p><strong><code>[pose2d.output_points.&lt;view&gt;]</code></strong> says <em>where the outputs land</em>: for each view,
+a table keyed by point name where <code>point = { pathway, out_channel }</code> fills that
+point from output channel <code>out_channel</code> of the named pathway. Keying on <code>(view,
+point)</code> makes every point's data come from exactly one place (a duplicate is a
+config error); a <code>(view, point)</code> no entry names is left unobserved (NaN) — that
+union <em>is</em> the visibility, with no separate table.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[pose2d.output_points.rh]</span><span class="w">                 </span><span class="c1"># right-side view: 19 channels of one pathway</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">rf_thorax_coxa</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">pathway</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;rh&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">out_channel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># ... through ...</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">r_abdomen2</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">pathway</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;rh&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">out_channel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">18</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">[pose2d.output_points.f]</span><span class="w">                  </span><span class="c1"># one view fed by two pathways, disjoint points</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">rf_femur_tibia</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">pathway</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;f&quot;</span><span class="p">,</span><span class="w">      </span><span class="n">out_channel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1"># right, un-flipped</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">lf_femur_tibia</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">pathway</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;f_flip&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">out_channel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1"># left, mirrored</span>
+</code></pre></div>
+<p>This modularity supports a range of setups: a single front model predicting both
+legs, per-view or per-side specialized models, or a different <code>model</code> per
+pathway.</p>
+<h2 id="choose-which-stages-run-pipeline">Choose which stages run — <code>[pipeline]</code><a class="headerlink" href="#choose-which-stages-run-pipeline" title="Permanent link">&para;</a></h2>
+<p>The pipeline is a linear sequence of stages, each an on/off <code>do_&lt;stage&gt;</code> switch:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[pipeline]</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">do_pose2d</span><span class="w">               </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1"># detect 2D pose in every camera view</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">do_bundle_adjustment</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1"># refine the cameras (bundle adjustment)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">do_pictorial_structures</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">  </span><span class="c1"># DeepFly3D-style peak recovery (opt-in)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">do_triangulation</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1"># triangulate 2D -&gt; 3D</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">do_visualization</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1"># render the videos</span>
+</code></pre></div>
+<p>Each enabled stage has its own top-level <code>[&lt;stage&gt;]</code> parameter table (below).
+Pictorial structures is the opt-in stage most commonly flipped on.</p>
+<p>Editing the config and re-running recomputes exactly the stages you changed (and
+the ones after them); the slow <code>pose2d</code> cache is reused untouched. That
+resume/recompute behavior — and <code>--overwrite</code> — is covered in the
+<a href="../cli/#resuming-and-recomputing">CLI guide</a>.</p>
+<h2 id="tune-the-opt-in-stage-pictorial-structures">Tune the opt-in stage — pictorial structures<a class="headerlink" href="#tune-the-opt-in-stage-pictorial-structures" title="Permanent link">&para;</a></h2>
+<p>This runs only when its <code>do_pictorial_structures</code> switch is on.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[pictorial_structures]</span><span class="w">   </span><span class="c1"># peak recovery before triangulation</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">k</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="w">       </span><span class="c1"># candidate peaks per joint</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">temporal</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">   </span><span class="c1"># add a temporal-consistency term</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">lam</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span><span class="w">     </span><span class="c1"># bone-length prior weight</span>
+</code></pre></div>
+<p>Candidate peaks are extracted during detection and cached in <code>results.h5</code> when this
+stage is enabled. Enabling it on an existing output directory therefore re-runs
+<code>pose2d</code> once (announced loudly); after that, tweaking <code>temporal</code> / <code>lam</code> re-runs
+only the recovery from the cached candidates. Resuming with <code>do_pose2d = false</code>
+from a 2D result that stored no candidates skips the stage with a notice.</p>
+<h2 id="output-videos-visualization">Output videos — <code>[visualization]</code><a class="headerlink" href="#output-videos-visualization" title="Permanent link">&para;</a></h2>
+<p>Each <code>[[visualization.videos]]</code> is one output MP4, composited from an ordered
+list of <code>panels</code>; each panel draws one op (<code>imshow</code>, <code>skeleton_2d</code>,
+<code>skeleton_3d</code>) for one camera view at a pixel offset. Common edits:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[visualization]</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">background</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;black&quot;</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># output_fps = 30    # explicit output fps for every video</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># speed      = 0.5   # or scale the input fps instead (0.5 = slow motion)</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="k">[visualization.kwargs]</span><span class="w">   </span><span class="c1"># draw-op defaults shared by every video</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">imshow</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">width</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="n">height</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">240</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">skeleton_2d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">line_thickness</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">width</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="n">height</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">240</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">skeleton_3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">line_thickness</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">width</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">480</span><span class="p">,</span><span class="w"> </span><span class="n">height</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">240</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>The generated config ships two montage videos (<code>pose2d</code>, <code>pose3d</code>) wired to the
+7-camera rig; reorder, drop, or add <code>panels</code> to change the layout. Draw-op kwargs
+merge across three levels (global → per-video → per-panel), most specific
+winning. Video frames are read and written with PyAV. See the
+<a href="../../reference/configuration/#visualization">configuration reference</a> for the
+full panel and kwargs schema.</p>
+<h2 id="triangulation-triangulation">Triangulation — <code>[triangulation]</code><a class="headerlink" href="#triangulation-triangulation" title="Permanent link">&para;</a></h2>
+<p>How the per-view 2D points become one 3D point:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[triangulation]</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">method</span><span class="w">              </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;ransac&quot;</span><span class="w">   </span><span class="c1"># ransac (default, robust) | greedy | dlt</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">ransac_threshold</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="mf">15.0</span><span class="w">       </span><span class="c1"># inlier reprojection cutoff (px), method = ransac</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">min_inliers</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="w">          </span><span class="c1"># min agreeing views to accept a point (ransac)</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># reproj_threshold  = 40.0       # method = greedy: per-view reprojection cutoff (px)</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># max_drops         = 5          # method = greedy: max views dropped per point</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">weigh_by_confidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">      </span><span class="c1"># weight the DLT by detector confidence</span>
+</code></pre></div>
+<p><code>ransac</code> keeps the largest multi-view consensus; <code>greedy</code> drops the
+worst-reprojecting view; <code>dlt</code> is plain least-squares with no outlier handling
+(the <a href="../../explanation/pipeline/#3d-reconstruction-triangulation-pictorial">pipeline explainer</a>
+compares them).</p>
+<p><code>weigh_by_confidence</code> scales each view's contribution to the DLT by
+<code>sqrt(confidence)</code>, so surer detections pull the 3D point harder (non-positive or
+non-finite confidences drop the view). For <code>ransac</code> it weights the candidate fits
+and the final refit but not the inlier vote, which stays a geometric reprojection
+test so a confidently-wrong detection cannot vote itself into the consensus.</p>
+<h2 id="detector-precision-and-memory-pose2d">Detector precision and memory — <code>[pose2d]</code><a class="headerlink" href="#detector-precision-and-memory-pose2d" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">[pose2d]</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">precision</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;bfloat16&quot;</span><span class="w">  </span><span class="c1"># the default: as fast as float16 under CUDA autocast</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">                            </span><span class="c1"># (~1.5-2x over float32) with a wider range (no overflow).</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">                            </span><span class="c1"># &quot;float32&quot; is the reference; ignored on CPU/MPS</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="n">batch_size</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="mi">16</span><span class="w">          </span><span class="c1"># GPU forward batch (images/forward); throughput plateaus</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">                            </span><span class="c1"># by ~16 on a fast GPU</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="n">decode_buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="w">           </span><span class="c1"># decode queue depth, in multiples of batch_size</span>
+</code></pre></div>
+<p>These are the <code>[pose2d]</code> table's performance knobs; <em>what</em> to detect (sources,
+models, pathways — including per-model <code>weights</code>) is the detection plan, which
+shares the same <code>[pose2d]</code> table (and the top-level <code>[[sources]]</code>) and is
+documented above. <code>batch_size</code> is the GPU forward batch; <code>decode_buffer</code> is a
+<em>memory</em> knob (peak frames per camera is <code>~(decode_buffer + 2) * batch_size</code>) —
+raise it to keep the GPU fed when decode is jittery, lower it to shave memory.
+These knobs never invalidate a cache.</p>
+<h2 id="frame-io-io">Frame I/O — <code>[io]</code><a class="headerlink" href="#frame-io-io" title="Permanent link">&para;</a></h2>
+<p>Video files are read and written with PyAV (in-process FFmpeg, on the CPU); image
+sequences are decoded with OpenCV. The only knob is the image-decode thread
+count:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">[io.image]</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">workers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">   </span><span class="c1"># decode threads (0 = one per CPU)</span>
+</code></pre></div>
+<p>The reader/writer API is in the <a href="../library/#frame-io">library guide</a>.</p>
+<h2 id="preprocessor-op-grammar-pose2dpreprocessors-ops">Preprocessor op grammar — <code>[[pose2d.preprocessors]]</code> <code>ops</code><a class="headerlink" href="#preprocessor-op-grammar-pose2dpreprocessors-ops" title="Permanent link">&para;</a></h2>
+<p>A preprocessor is an ordered list of frame ops applied to a pathway's frames
+before the model — to feed the detector a mirrored/cropped/rotated view. Steps
+run in the order written (flips and rotations do not commute, so the order is
+yours):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">[[pose2d.preprocessors]]</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;corrected&quot;</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">ops</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;rot90&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">},</span><span class="w">                                  </span><span class="c1"># k CCW quarter-turns (any sign)</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;fliplr&quot;</span><span class="w"> </span><span class="p">},</span><span class="w">                                         </span><span class="c1"># left-right flip; also: flipud</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;crop&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="n">width</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">80</span><span class="p">,</span><span class="w"> </span><span class="n">height</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">80</span><span class="w"> </span><span class="p">},</span><span class="w">  </span><span class="c1"># keep a window</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;resize&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">scale</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mf">0.5</span><span class="w"> </span><span class="p">},</span><span class="w">                            </span><span class="c1"># or width/height; optional</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="p">]</span><span class="w">                                                              </span><span class="c1"># interpolation = &quot;bilinear&quot;|&quot;nearest&quot;</span>
+</code></pre></div>
+<p>A pathway's detections are mapped back into its view frame by inverting these ops
+(plus the model's resize to its <code>input_size</code>), so the points always land in the
+raw source frame the view's intrinsics describe. The flip is therefore a
+detector-input concern only — it never reflects the reconstructed 3D skeleton.</p>
+<h2 id="bundle-adjustment-bundle_adjustment">Bundle adjustment — <code>[bundle_adjustment]</code><a class="headerlink" href="#bundle-adjustment-bundle_adjustment" title="Permanent link">&para;</a></h2>
+<p>Bundle adjustment uses the fly itself as the target, solved with
+<code>scipy.optimize.least_squares</code> — its kwargs (<code>max_nfev</code>, <code>loss</code>, ...) sit
+directly in the table. The defaults suit the standard rig; you rarely need to
+change them.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">[bundle_adjustment]</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">points_to_use</span><span class="w">       </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="w"> </span><span class="p">]</span><span class="w">   </span><span class="c1"># skeleton point names that drive bundle adjustment (default: the 30 leg points)</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="n">fixed</span><span class="w">               </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;*.intr&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;f.rvec&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;f.tvec&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;rm.tvec[2]&quot;</span><span class="p">]</span><span class="w">   </span><span class="c1"># held constant; fixes the world gauge</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="n">shared</span><span class="w">              </span><span class="o">=</span><span class="w"> </span><span class="p">[]</span><span class="w">          </span><span class="c1"># e.g. [[&quot;lf.tvec[2]&quot;, &quot;rf.tvec[2]&quot;]] to tie cameras&#39; z distances</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="n">weigh_by_confidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">       </span><span class="c1"># scale each reprojection residual by sqrt(confidence)</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">max_frames</span><span class="w">          </span><span class="o">=</span><span class="w"> </span><span class="mi">200</span><span class="w">         </span><span class="c1"># bundle-adjust on at most this many frames (subsampled)</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="n">frame_sampling</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;even&quot;</span><span class="w">      </span><span class="c1"># even | confidence | coverage | diversity</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="n">max_nfev</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span><span class="w">         </span><span class="c1"># forwarded to scipy.optimize.least_squares</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="n">loss</span><span class="w">                </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;linear&quot;</span>
+</code></pre></div>
+<p>The <code>fixed</code> / <code>shared</code> grammar (<code>"*.intr"</code>, <code>"f.rvec"</code>, <code>"rm.tvec[2]"</code>, tying
+<code>[["lf.tvec[2]", "rf.tvec[2]"]]</code>) anchors the world gauge and ties parameters
+between cameras; the <a href="../../reference/configuration/#bundle_adjustment">reference</a>
+gives the full grammar and the <code>frame_sampling</code> strategies. See the
+<a href="../library/#geometry-and-bundle-adjustment">library guide</a> for calling the bundle
+adjuster directly.</p>
+<h2 id="camera-rig-geometry-camerasdefaults-and-cameras">Camera rig geometry — <code>[cameras.defaults]</code> and <code>[cameras.*]</code><a class="headerlink" href="#camera-rig-geometry-camerasdefaults-and-cameras" title="Permanent link">&para;</a></h2>
+<p>A <code>[cameras.&lt;name&gt;]</code> is a geometric <strong>view</strong> that a pathway maps its points back
+into — pure geometry (intrinsics + orbit extrinsics), no footage or
+preprocessing. The cameras orbit an object near the world origin;
+<code>[cameras.defaults]</code> is merged into every view, and each <code>[cameras.&lt;name&gt;]</code>
+overrides it (the default rig sets just <code>azimuth_deg</code> per view). A view's
+intrinsics describe the raw frame of the source feeding it. The shipped values
+describe the standard DeepFly3D 7-camera rig — leave them unless your rig differs.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">[cameras.defaults]</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">focal_length_px</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">22388.125</span><span class="p">,</span><span class="w"> </span><span class="mf">22388.125</span><span class="p">]</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">distance</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mf">107.463</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">elevation_deg</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="c1"># principal_point_px = [479.5, 239.5]   # omit to use each view&#39;s image center</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="k">[cameras.f]</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="n">azimuth_deg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span>
+</code></pre></div>
+<p>The orbit parameters (<code>look_at</code>, <code>distance</code>, <code>azimuth_deg</code>, <code>elevation_deg</code>,
+<code>roll_deg</code>) and intrinsics are detailed in the
+<a href="../../reference/configuration/#cameras">reference</a>.</p>
+<h2 id="skeleton-skeleton">Skeleton — <code>[skeleton]</code><a class="headerlink" href="#skeleton-skeleton" title="Permanent link">&para;</a></h2>
+<p>The tracked points and their structure (38-point, 7-camera <em>Drosophila</em> rig):
+<code>point_names</code>, <code>limb_points</code> kinematic chains (each a list of point names), and
+the plotting <code>limb_palette</code>. Which view sees which point is not set here — it is
+the union of the <code>[pose2d.output_points]</code> tables. Edit this only to track a
+different animal — see the
+<a href="../../reference/configuration/#skeleton">reference</a> and the
+<a href="../../explanation/pipeline/">pipeline explainer</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      GPL-3.0-only
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "toc.follow", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

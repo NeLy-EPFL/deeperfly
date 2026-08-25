@@ -1,0 +1,12 @@
+# Model attribution
+
+The fly model (`model/fly.xml` and `model/*.stl`) is the **NeuroMechFly v2**
+biomechanical model, generated from **flygym** (https://github.com/NeLy-EPFL/flygym),
+which is distributed under the **Apache License 2.0**. The meshes are the
+simplified (<=2000 faces) set. The flattened MJCF and the keypoint/pose metadata
+in this directory are produced by `scripts/build_keypoint_viewer_assets.py`.
+
+If you use the NeuroMechFly model, please cite the NeuroMechFly v2 publication
+(see https://neuromechfly.org/). Approximate keypoint placements (antennae and
+abdomen markers, listed under `approximate` in `keypoints.json`) have no exact
+NeuroMechFly counterpart and are positioned for illustration only.

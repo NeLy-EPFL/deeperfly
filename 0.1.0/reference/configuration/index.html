@@ -1,0 +1,2134 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/deeperfly/0.1.0/reference/configuration/">
+      
+      
+        <link rel="prev" href="../../explanation/conventions/">
+      
+      
+        <link rel="next" href="../output-format/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Configuration - deeperfly</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#configuration-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="deeperfly" class="md-header__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            deeperfly
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Configuration
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="deeperfly" class="md-nav__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    deeperfly
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/bundle_adjustment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundle adjustment of a multi-camera rig
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/pipeline_walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The deeperfly pipeline, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How it works
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline stages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/keypoints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keypoint locations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/conventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions & glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[sources]] — footage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [io.image] — image decode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [skeleton] — tracked points
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cameras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [cameras.*] — rig geometry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pipeline] — which stages run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pose2d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pose2d] — 2D detection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[pose2d] — 2D detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pose2dpreprocessors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.preprocessors]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose2dmodels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.models]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose2dpathways" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.pathways]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output_points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pose2d.output_points.&lt;view&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundle_adjustment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [bundle_adjustment] — camera refinement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pictorial_structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pictorial_structures] — peak recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triangulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [triangulation] — 2D → 3D
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [visualization] — output videos
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../output-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[sources]] — footage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [io.image] — image decode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [skeleton] — tracked points
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cameras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [cameras.*] — rig geometry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pipeline] — which stages run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pose2d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pose2d] — 2D detection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[pose2d] — 2D detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pose2dpreprocessors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.preprocessors]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose2dmodels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.models]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose2dpathways" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [[pose2d.pathways]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output_points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pose2d.output_points.&lt;view&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundle_adjustment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [bundle_adjustment] — camera refinement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pictorial_structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [pictorial_structures] — peak recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triangulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [triangulation] — 2D → 3D
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [visualization] — output videos
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="configuration-reference">Configuration reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h1>
+<p>Every key of the <code>config.toml</code>, by section. For a task-oriented walkthrough of
+how to customize a config, start with <a href="../../guides/configuration/">Writing configs</a>;
+this page is the exhaustive listing.</p>
+<p>A config is one TOML file. Each stage reads its parameters through a typed
+accessor whose <strong>defaults are the single source of truth</strong> (the frozen <code>*Params</code>
+dataclasses in <code>src/deeperfly/config.py</code>); the packaged
+<code>default_config.toml</code> mirrors them exactly. An unknown key in a stage table is a
+hard error that names the allowed keys. Performance-only knobs (<code>batch_size</code>,
+<code>decode_buffer</code>, <code>[io.image]</code>) never invalidate a stage's cache; everything else
+that affects a result does.</p>
+<p>The top-level layout:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[[sources]]</span><span class="w">            </span><span class="c1"># footage globs (shared input)</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">[io.image]</span><span class="w">             </span><span class="c1"># image-sequence decode</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[skeleton]</span><span class="w">             </span><span class="c1"># tracked points and limbs</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">[cameras.defaults]</span><span class="w">     </span><span class="c1"># rig geometry: shared defaults</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">[cameras.</span><span class="err">&lt;</span><span class="k">name</span><span class="err">&gt;</span><span class="k">]</span><span class="w">       </span><span class="c1"># rig geometry: per-view overrides</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">[pipeline]</span><span class="w">             </span><span class="c1"># which stages run</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="k">[pose2d]</span><span class="w">               </span><span class="c1"># 2D detection: knobs + detection plan sub-tables</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">[bundle_adjustment]</span><span class="w">    </span><span class="c1"># camera refinement</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="k">[pictorial_structures]</span><span class="w"> </span><span class="c1"># opt-in peak recovery</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="k">[triangulation]</span><span class="w">        </span><span class="c1"># 2D -&gt; 3D</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="k">[visualization]</span><span class="w">        </span><span class="c1"># output videos</span>
+</code></pre></div>
+<h2 id="sources"><code>[[sources]]</code> — footage<a class="headerlink" href="#sources" title="Permanent link">&para;</a></h2>
+<p>An array of tables; each names a footage glob matched inside the recording
+directory. A source can feed several pathways and a visualization <code>imshow</code> panel.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>str</td>
+<td><em>required</em></td>
+<td>Source identifier (referenced by pathways and views).</td>
+</tr>
+<tr>
+<td><code>filename</code></td>
+<td>str</td>
+<td>the <code>name</code></td>
+<td>Glob inside the recording dir: a named file (<code>camera_0.mp4</code>), a bare prefix (<code>camera_1</code> → <code>camera_1*</code>, a video or image sequence), or a wildcard.</td>
+</tr>
+</tbody>
+</table>
+<p>A source's footage is one video file or a naturally-sorted image sequence. A
+directory is a valid recording only when every source matches footage with the
+same file/frame count.</p>
+<h2 id="io"><code>[io.image]</code> — image decode<a class="headerlink" href="#io" title="Permanent link">&para;</a></h2>
+<p>Video files use PyAV; image sequences use OpenCV. The only knob:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workers</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td>Image-decode threads. <code>0</code> = auto (one per CPU).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="skeleton"><code>[skeleton]</code> — tracked points<a class="headerlink" href="#skeleton" title="Permanent link">&para;</a></h2>
+<p>The tracked points and their structure. Omit the section entirely to use the
+default 38-point fly skeleton.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>str</td>
+<td><code>"skeleton"</code></td>
+<td>Skeleton identifier (e.g. <code>"fly38"</code>).</td>
+</tr>
+<tr>
+<td><code>point_names</code></td>
+<td>list[str]</td>
+<td><em>required</em></td>
+<td>Ordered tracked-point names; the length is <code>P</code>.</td>
+</tr>
+<tr>
+<td><code>limb_points</code></td>
+<td>table</td>
+<td><code>{}</code></td>
+<td><code>[skeleton.limb_points]</code>: each limb name → its points in kinematic-chain order.</td>
+</tr>
+<tr>
+<td><code>limb_palette</code></td>
+<td>table</td>
+<td><code>{}</code></td>
+<td><code>[skeleton.limb_palette]</code>: each limb name → a hex plotting color. Limbs without an entry fall back to a default colormap.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[skeleton]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;fly38&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">point_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;lf_thorax_coxa&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;lf_coxa_trochanter&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">]</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">[skeleton.limb_points]</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">lf_leg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;lf_thorax_coxa&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;lf_coxa_trochanter&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;lf_femur_tibia&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;lf_tibia_tarsus&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;lf_claw&quot;</span><span class="p">]</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">[skeleton.limb_palette]</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">lf_leg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;#0f7399&quot;</span>
+</code></pre></div>
+<p>Which view sees which point is <strong>not</strong> set here — it is the union of the
+<a href="#output_points"><code>[pose2d.output_points]</code></a> tables.</p>
+<h2 id="cameras"><code>[cameras.*]</code> — rig geometry<a class="headerlink" href="#cameras" title="Permanent link">&para;</a></h2>
+<p>Each <code>[cameras.&lt;name&gt;]</code> is a geometric view: pure intrinsics + extrinsics, no
+footage. <code>[cameras.defaults]</code> is merged into every view; per-view tables override
+it (the default rig sets just <code>azimuth_deg</code> per view). A view's intrinsics
+describe the raw frame of the source feeding it.</p>
+<p><strong>Intrinsics:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>focal_length_px</code></td>
+<td>float or [float, float]</td>
+<td><em>required</em></td>
+<td><code>[fx, fy]</code> in raw-frame pixels (a scalar is allowed when <code>fx == fy</code>).</td>
+</tr>
+<tr>
+<td><code>principal_point_px</code></td>
+<td>[float, float]</td>
+<td>image center <code>((w-1)/2, (h-1)/2)</code></td>
+<td>Principal point <code>[cx, cy]</code>. Omit to use each view's image center.</td>
+</tr>
+<tr>
+<td><code>distortion_coefficients</code></td>
+<td>list[float]</td>
+<td><code>[]</code></td>
+<td>OpenCV-ordered distortion coefficients; empty means no distortion.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Extrinsics (orbit / look-at):</strong> the cameras orbit a target near the world
+origin. World up is <code>+z</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>look_at</code></td>
+<td>[float, float, float]</td>
+<td><code>[0, 0, 0]</code></td>
+<td>World point the camera looks at.</td>
+</tr>
+<tr>
+<td><code>distance</code></td>
+<td>float</td>
+<td><em>required</em></td>
+<td>Distance from <code>look_at</code> to the camera center.</td>
+</tr>
+<tr>
+<td><code>azimuth_deg</code></td>
+<td>float</td>
+<td><code>0.0</code></td>
+<td>Longitude around <code>look_at</code>.</td>
+</tr>
+<tr>
+<td><code>elevation_deg</code></td>
+<td>float</td>
+<td><code>0.0</code></td>
+<td>Latitude above the horizon (±90 is undefined — the roll becomes ambiguous).</td>
+</tr>
+<tr>
+<td><code>roll_deg</code></td>
+<td>float</td>
+<td><code>0.0</code></td>
+<td>Rotation about the optical axis.</td>
+</tr>
+</tbody>
+</table>
+<p>Explicit <code>rvec</code> / <code>tvec</code> / <code>rotation_matrix</code> / <code>position</code> keys are <strong>not</strong>
+accepted in the config (they are rejected with a pointer to the orbit keys); use
+the orbit parameters. The internal <code>CameraGroup</code> still uses <code>rvec</code> / <code>tvec</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[cameras.defaults]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">focal_length_px</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">22388.125</span><span class="p">,</span><span class="w"> </span><span class="mf">22388.125</span><span class="p">]</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">distortion_coefficients</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">look_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">]</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">distance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">107.463</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">elevation_deg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">roll_deg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="k">[cameras.rh]</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">azimuth_deg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">-120</span>
+</code></pre></div>
+<h2 id="pipeline"><code>[pipeline]</code> — which stages run<a class="headerlink" href="#pipeline" title="Permanent link">&para;</a></h2>
+<p>One <code>do_&lt;stage&gt;</code> boolean per stage. Each enabled stage reads its own <code>[&lt;stage&gt;]</code>
+table.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>do_pose2d</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Detect 2D pose in every view.</td>
+</tr>
+<tr>
+<td><code>do_bundle_adjustment</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Refine the cameras.</td>
+</tr>
+<tr>
+<td><code>do_pictorial_structures</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>DeepFly3D-style peak recovery (opt-in).</td>
+</tr>
+<tr>
+<td><code>do_triangulation</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Triangulate 2D → 3D.</td>
+</tr>
+<tr>
+<td><code>do_visualization</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Render the videos.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pose2d"><code>[pose2d]</code> — 2D detection<a class="headerlink" href="#pose2d" title="Permanent link">&para;</a></h2>
+<p>The <code>[pose2d]</code> table holds the detector's performance knobs <em>and</em> (as sub-tables)
+the detection plan — what to detect and how.</p>
+<p><strong>Performance knobs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>precision</code></td>
+<td>str</td>
+<td><code>"bfloat16"</code></td>
+<td>Forward precision: <code>"float32"</code> (reference), <code>"float16"</code> (CUDA autocast, ~1.5–2× faster), <code>"bfloat16"</code> (default, wider range). Ignored on CPU/MPS.</td>
+</tr>
+<tr>
+<td><code>batch_size</code></td>
+<td>int</td>
+<td><code>16</code></td>
+<td>GPU forward batch (images per forward). Clamped to ≥ 1; throughput plateaus by ~16 on a fast GPU.</td>
+</tr>
+<tr>
+<td><code>decode_buffer</code></td>
+<td>int</td>
+<td><code>4</code></td>
+<td>Decode queue depth, in multiples of <code>batch_size</code>. Clamped to ≥ 1. Peak frames/camera ≈ <code>(decode_buffer + 2) * batch_size</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pose2dpreprocessors"><code>[[pose2d.preprocessors]]</code><a class="headerlink" href="#pose2dpreprocessors" title="Permanent link">&para;</a></h3>
+<p>Named, reusable frame-op pipelines, referenced by a pathway's <code>preprocessor</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>str</td>
+<td>Preprocessor identifier.</td>
+</tr>
+<tr>
+<td><code>ops</code></td>
+<td>list[table]</td>
+<td>Ordered frame ops (below); <code>[]</code> = identity.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ops</strong> (run in written order; flips/rotations do not commute):</p>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>Fields</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fliplr</code></td>
+<td>—</td>
+<td>Left–right flip.</td>
+</tr>
+<tr>
+<td><code>flipud</code></td>
+<td>—</td>
+<td>Up–down flip.</td>
+</tr>
+<tr>
+<td><code>rot90</code></td>
+<td><code>k</code> (int)</td>
+<td><code>k</code> counter-clockwise quarter-turns (any sign).</td>
+</tr>
+<tr>
+<td><code>crop</code></td>
+<td><code>x</code>, <code>y</code>, <code>width</code>, <code>height</code></td>
+<td>Keep a window.</td>
+</tr>
+<tr>
+<td><code>resize</code></td>
+<td><code>scale</code>, or <code>width</code>/<code>height</code>; optional <code>interpolation</code> (<code>"bilinear"</code>/<code>"nearest"</code>)</td>
+<td>Rescale.</td>
+</tr>
+</tbody>
+</table>
+<p>Detections are mapped back into the raw frame by inverting these ops, so a
+preprocessor never moves the stored 2D or the reconstructed 3D.</p>
+<h3 id="pose2dmodels"><code>[[pose2d.models]]</code><a class="headerlink" href="#pose2dmodels" title="Permanent link">&para;</a></h3>
+<p>A detector network and its input contract.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>str</td>
+<td>Model identifier (referenced by pathways).</td>
+</tr>
+<tr>
+<td><code>class</code></td>
+<td>str</td>
+<td>Network registry key (<code>"hourglass"</code> = DeepFly2D).</td>
+</tr>
+<tr>
+<td><code>weights</code></td>
+<td>str</td>
+<td>Checkpoint path; <code>""</code> / omitted uses the auto-provisioned cache.</td>
+</tr>
+<tr>
+<td><code>input_size</code></td>
+<td>[int, int]</td>
+<td><code>(height, width)</code> the network expects; frames are resized to it and peaks scaled back.</td>
+</tr>
+<tr>
+<td><code>mean</code></td>
+<td>float</td>
+<td>Scalar subtracted after <code>/255</code> normalization.</td>
+</tr>
+<tr>
+<td><code>n_out_channels</code></td>
+<td>int</td>
+<td>Output heatmap count (validated against the weights).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pose2dpathways"><code>[[pose2d.pathways]]</code><a class="headerlink" href="#pose2dpathways" title="Permanent link">&para;</a></h3>
+<p>A named <code>source → preprocessor → model</code> inference run. Says <em>what to detect on</em>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>str</td>
+<td>yes</td>
+<td>Unique pathway identifier (referenced by <code>output_points</code>).</td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td>str</td>
+<td>yes</td>
+<td>The <code>[[sources]]</code> name to detect on.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>str</td>
+<td>yes</td>
+<td>The <code>[[pose2d.models]]</code> name to use.</td>
+</tr>
+<tr>
+<td><code>preprocessor</code></td>
+<td>str</td>
+<td>no</td>
+<td>A <code>[[pose2d.preprocessors]]</code> name; omit for identity.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="output_points"><code>[pose2d.output_points.&lt;view&gt;]</code><a class="headerlink" href="#output_points" title="Permanent link">&para;</a></h3>
+<p>For each view, where every tracked point's data comes from. A table keyed by
+point name:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[pose2d.output_points.rh]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">rf_thorax_coxa</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">pathway</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;rh&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">out_channel</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p><code>point = { pathway, out_channel }</code> fills that point of the view from output
+channel <code>out_channel</code> of the named pathway. Keying by <code>(view, point)</code> means each
+point has exactly one source (a repeat is an error); a <code>(view, point)</code> left out
+stays unobserved (<code>NaN</code>). That union is the visibility.</p>
+<h2 id="bundle_adjustment"><code>[bundle_adjustment]</code> — camera refinement<a class="headerlink" href="#bundle_adjustment" title="Permanent link">&para;</a></h2>
+<p>Fly-as-target bundle adjustment over <code>scipy.optimize.least_squares</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>points_to_use</code></td>
+<td>list[str] or omitted</td>
+<td>the 30 leg points</td>
+<td>Skeleton point names that drive BA. Omit the key to use all keypoints.</td>
+</tr>
+<tr>
+<td><code>fixed</code></td>
+<td>list[str]</td>
+<td><code>[]</code></td>
+<td>Parameters held constant (grammar below); anchors the world gauge.</td>
+</tr>
+<tr>
+<td><code>shared</code></td>
+<td>list[list[str]]</td>
+<td><code>[]</code></td>
+<td>Groups of parameters tied together, e.g. <code>[["lf.tvec[2]", "rf.tvec[2]"]]</code>.</td>
+</tr>
+<tr>
+<td><code>weigh_by_confidence</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Scale each reprojection residual by <code>sqrt(confidence)</code>; zero/non-finite confidences drop the observation (all-zero falls back to uniform).</td>
+</tr>
+<tr>
+<td><code>max_frames</code></td>
+<td>int or omitted</td>
+<td><code>100</code></td>
+<td>Bundle-adjust on at most this many frames (subsampled). Omit / <code>null</code> for all.</td>
+</tr>
+<tr>
+<td><code>frame_sampling</code></td>
+<td>str</td>
+<td><code>"even"</code></td>
+<td>Which frames to keep (below).</td>
+</tr>
+<tr>
+<td><em>other keys</em></td>
+<td>—</td>
+<td>—</td>
+<td>Any remaining flat key (<code>max_nfev</code>, <code>loss</code>, <code>f_scale</code>, <code>tr_solver</code>, …) is forwarded to <code>scipy.optimize.least_squares</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>fixed</code> / <code>shared</code> grammar</strong> — a reference is <code>&lt;camera&gt;.&lt;param&gt;</code> with optional
+indexing, and <code>*</code> wildcards the camera:</p>
+<ul>
+<li><code>"*.intr"</code> — every camera's intrinsics.</li>
+<li><code>"f.rvec"</code>, <code>"f.tvec"</code> — the front camera's orientation / position.</li>
+<li><code>"rm.tvec[2]"</code> — one component (the z distance) of a camera's translation.</li>
+</ul>
+<p><strong><code>frame_sampling</code> strategies:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Keeps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"even"</code></td>
+<td>Evenly spaced over the recording (temporal spread).</td>
+</tr>
+<tr>
+<td><code>"confidence"</code></td>
+<td>The highest-confidence frame in each time bin.</td>
+</tr>
+<tr>
+<td><code>"coverage"</code></td>
+<td>The frame in each bin with the most points seen by ≥ 2 cameras.</td>
+</tr>
+<tr>
+<td><code>"diversity"</code></td>
+<td>Frames whose postures are most spread apart.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pictorial_structures"><code>[pictorial_structures]</code> — peak recovery<a class="headerlink" href="#pictorial_structures" title="Permanent link">&para;</a></h2>
+<p>Runs only when <code>do_pictorial_structures = true</code>. Operates on the detector's top-K
+candidates (extracted and cached during detection).</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>k</code></td>
+<td>int</td>
+<td><code>5</code></td>
+<td>Candidate peaks per joint.</td>
+</tr>
+<tr>
+<td><code>temporal</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Add a temporal-consistency term.</td>
+</tr>
+<tr>
+<td><code>lam</code></td>
+<td>float</td>
+<td><code>1.0</code></td>
+<td>Bone-length prior weight.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="triangulation"><code>[triangulation]</code> — 2D → 3D<a class="headerlink" href="#triangulation" title="Permanent link">&para;</a></h2>
+<p>How the per-view 2D points become one 3D point.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>method</code></td>
+<td>str</td>
+<td><code>"ransac"</code></td>
+<td><code>"ransac"</code> (largest multi-view consensus, robust), <code>"greedy"</code> (drop the worst-reprojecting view), or <code>"dlt"</code> (plain least-squares).</td>
+</tr>
+<tr>
+<td><code>ransac_threshold</code></td>
+<td>float</td>
+<td><code>15.0</code></td>
+<td>Inlier reprojection cutoff (px) for <code>method = "ransac"</code>.</td>
+</tr>
+<tr>
+<td><code>min_inliers</code></td>
+<td>int</td>
+<td><code>2</code></td>
+<td>Minimum agreeing views to accept a point (<code>ransac</code>).</td>
+</tr>
+<tr>
+<td><code>reproj_threshold</code></td>
+<td>float</td>
+<td><code>40.0</code></td>
+<td>Per-view reprojection cutoff (px) for <code>method = "greedy"</code>.</td>
+</tr>
+<tr>
+<td><code>max_drops</code></td>
+<td>int</td>
+<td><code>5</code></td>
+<td>Max views dropped per offending point (<code>greedy</code>).</td>
+</tr>
+<tr>
+<td><code>weigh_by_confidence</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Scale the DLT by <code>sqrt(confidence)</code> (the mirror of the BA knob, which defaults <code>true</code>).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="visualization"><code>[visualization]</code> — output videos<a class="headerlink" href="#visualization" title="Permanent link">&para;</a></h2>
+<p>Global settings plus one <code>[[visualization.videos]]</code> per output MP4.</p>
+<p><strong>Global (<code>[visualization]</code>):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>background</code></td>
+<td>str or [r, g, b]</td>
+<td><code>"black"</code></td>
+<td>Canvas fill (overridable per video / per panel).</td>
+</tr>
+<tr>
+<td><code>output_fps</code></td>
+<td>float</td>
+<td>input fps</td>
+<td>Explicit output frame rate for every video.</td>
+</tr>
+<tr>
+<td><code>speed</code></td>
+<td>float</td>
+<td><code>1.0</code></td>
+<td>Scale the input fps instead (<code>0.5</code> = slow motion). <code>output_fps</code> wins if both are set.</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>[visualization.kwargs]</code></strong> — draw-op defaults shared by every video, keyed by
+the <code>plot</code> op name (<code>imshow</code>, <code>skeleton_2d</code>, <code>skeleton_3d</code>). Kwargs merge across
+three levels — global → per-video <code>kwargs</code> → per-panel extra keys — most specific
+winning.</p>
+<p><strong><code>[[visualization.videos]]</code>:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>video_name</code></td>
+<td>str</td>
+<td><em>required</em></td>
+<td>Output filename (<code>&lt;video_name&gt;.mp4</code>).</td>
+</tr>
+<tr>
+<td><code>panels</code></td>
+<td>list[table]</td>
+<td><em>required</em></td>
+<td>Ordered panels (below); they draw in order, so a skeleton panel over an <code>imshow</code> at the same offset overlays it.</td>
+</tr>
+<tr>
+<td><code>width</code>, <code>height</code></td>
+<td>int</td>
+<td>auto-size</td>
+<td>Canvas size in pixels; omit to fit all panels.</td>
+</tr>
+<tr>
+<td><code>background</code></td>
+<td>str or [r, g, b]</td>
+<td>inherits global</td>
+<td>Per-video canvas fill.</td>
+</tr>
+<tr>
+<td><code>kwargs</code></td>
+<td>table</td>
+<td><code>{}</code></td>
+<td>Per-video draw-op kwargs (merges over the global).</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Panel</strong> — one draw op for one view at a pixel offset:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plot</code></td>
+<td>str</td>
+<td><em>required</em></td>
+<td><code>"imshow"</code> (the view's frame), <code>"skeleton_2d"</code> (its 2D detections), or <code>"skeleton_3d"</code> (the 3D skeleton reprojected into the view).</td>
+</tr>
+<tr>
+<td><code>view</code></td>
+<td>str</td>
+<td><em>required</em></td>
+<td>Camera/view name.</td>
+</tr>
+<tr>
+<td><code>x0</code>, <code>y0</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td>Top-left pixel of the panel.</td>
+</tr>
+<tr>
+<td><code>scale</code></td>
+<td>float</td>
+<td><code>1.0</code></td>
+<td>Uniform scale.</td>
+</tr>
+<tr>
+<td><code>width</code>, <code>height</code></td>
+<td>int</td>
+<td>from <code>scale</code></td>
+<td>Target box (priority over <code>scale</code>); one given → the other follows to keep aspect.</td>
+</tr>
+<tr>
+<td><code>background</code></td>
+<td>str or [r, g, b]</td>
+<td>inherits</td>
+<td>Per-panel fill.</td>
+</tr>
+<tr>
+<td><em>extra keys</em></td>
+<td>—</td>
+<td>—</td>
+<td>Forwarded as draw-op kwargs (<code>point_radius</code>, <code>line_thickness</code>, <code>palette</code>, …).</td>
+</tr>
+</tbody>
+</table>
+<p>A <code>skeleton_3d</code> panel needs a 3D pose; a video that requires 3D is skipped (with
+a logged reason) when the result has none. Videos are encoded H.264 / libx264 via
+PyAV on the CPU.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      GPL-3.0-only
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "toc.follow", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
