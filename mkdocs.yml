@@ -84,6 +84,16 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
 
+extra:
+  version:
+    # Draws the version selector from the `versions.json` mike writes at the site
+    # root. Without this the site still deploys per version, but every version
+    # looks like the only one and there is no way to get from dev to stable.
+    provider: mike
+    # `stable` is an ALIAS on whatever main last published, so this default
+    # survives a release without an edit here.
+    default: stable
+
 extra_javascript:
   # MathJax config + library, loaded for the LaTeX math in "How it works".
   - javascripts/mathjax.js
