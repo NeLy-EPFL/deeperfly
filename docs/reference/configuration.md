@@ -19,7 +19,7 @@ a measured opinion about. To see a key without opening a file:
 ```console
 $ deeperfly config show                          # every section
 $ deeperfly config show eks                      # one section, with its docs
-$ deeperfly config set eks.inflate_threshold 15  # validated as a run would
+$ deeperfly config set eks.inflate_threshold 30  # validated as a run would
 ```
 
 `config show` marks which values were *set* versus inherited, which is the question a
@@ -921,7 +921,7 @@ videos and `PoseResult.load`. Cost is roughly 20 s per 5000 frames × 38 keypoin
 | --- | --- | --- | --- |
 | `smooth_param` | float | *(fitted)* | Process-noise scale: smaller smooths harder. Omitted, it is fitted per keypoint by maximum marginal likelihood — usually the right call, since a claw and a thorax do not move alike. |
 | `inflate_vars` | bool | `true` | Test each view against the other views and down-weight the ones that disagree. Needs two **views**, not two models, so it is fully active with a single detector. This is the component that repairs outliers; leave it on. |
-| `inflate_threshold` | float | `5.0` | Mahalanobis distance at which a view is called inconsistent. Lower is more suspicious. See the calibration caveat below. |
+| `inflate_threshold` | float | `5.0` | Mahalanobis distance at which a view is called inconsistent. Lower is more suspicious — and 5 over-flags, so the packaged config raises it to `30.0`. See the calibration caveat and the measured sweep below. |
 | `inflate_factor` | float | `10.0` | Variance multiplier per inflation round (the paper describes doubling; the reference CLI ships 10). |
 | `ensemble` | list[str] | `[]` | Other `results.h5` files holding a **different detector's** 2D for this same recording (paths relative to the output dir). |
 | `avg_mode` | str | `"median"` | How ensemble members combine: `"median"` (robust) or `"mean"`. |
@@ -954,11 +954,35 @@ Against that, 779 cells (0.13%) reproject more than 100 px from the detector's 2
 every one of them is a **claw**: exactly the lag above, not a tuning failure. Turn the
 stage off if claw timing is the measurement.
 
-A sweep of `inflate_threshold` over 5 / 10 / 15 / 20 / 30 on the same recording moves the
-flag rate from 68% to 21% while the reprojection distribution barely shifts (median
-2.90–3.01 px, p99 ≈ 26.6 throughout) — so the threshold is not what shapes the result.
-The packaged config raises it to **15.0**, the best median of the sweep, which flags 37%
-rather than the bulk.
+**Choosing `inflate_threshold`.** Reprojection cannot tell you: a sweep over
+5 / 10 / 15 / 20 / 30 on one recording moves the flag rate from 68% to 21% while the
+reprojection distribution barely shifts (median 2.90–3.01 px, p99 ≈ 26.6 throughout).
+That is by design — the smoother is *supposed* to leave the 2D where it judges the 2D
+unreliable — so the threshold has to be judged against ground truth instead.
+
+Measured against hand labels on 54 recordings (63,921 labeled cells, paired per
+recording), 2D accuracy improves monotonically as the threshold rises and then collapses
+when the inflation is switched off entirely:
+
+| `inflate_threshold` | mean px | p90 px | cells > 50 px | jitter | frame-to-frame jumps |
+| --- | --- | --- | --- | --- | --- |
+| 5 (field default) | 4.916 | 9.103 | 426 | **0.0040** | **0.0171** |
+| 15 | 4.746 | 8.648 | 394 | 0.0046 | 0.0179 |
+| **30** (packaged) | 4.628 | **8.343** | 376 | 0.0047 | 0.0190 |
+| 60 | 4.617 | 8.546 | **368** | 0.0044 | 0.0200 |
+| 100 | **4.583** | 8.416 | 373 | 0.0044 | 0.0201 |
+| off | 5.848 | 10.974 | 609 | 0.0049 | 0.0258 |
+| *raw detector* | 4.927 | 8.541 | 532 | — | — |
+
+Two things follow. The inflation itself is load-bearing — turning it off is worse than
+any threshold, and worse than not smoothing at all. But 5 **over-flags**: a blown
+detection sits at Mahalanobis ≈ 1e4, so every threshold here still catches it, and
+lowering the bar only down-weights cells the detector had right. Accuracy is flat from 30
+to 100 (the 30/60/100 differences are not significant), while frame-to-frame jumps grow
+monotonically — so the packaged config takes **30.0**, the point where the accuracy gain
+is fully realized and the temporal cost is smallest. Raise it toward 60 if outlier repair
+matters more than jump rate; lower it toward 5 if the 3D feeds inverse kinematics and
+smoothness matters more than pixels.
 
 ## `[postprocess]` — corrections from knowing the animal { #postprocess }
 

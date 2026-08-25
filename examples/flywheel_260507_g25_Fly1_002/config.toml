@@ -179,9 +179,12 @@ loss = "linear"
 # One 3D trajectory per keypoint fitted to the whole recording against every view, with
 # the rig's own projection as the observation model.
 [eks]
-# Raised from the shipped 5.0: over a 5..30 sweep this is the best reprojection median,
-# and it flags 37% of observations rather than two thirds of everything.
-inflate_threshold = 15.0
+# Raised from the shipped 5.0, which over-flags: measured against hand labels on 54
+# recordings (63,921 labeled cells), 30 beats both 5 and 15 on 2D accuracy and leaves
+# fewer blown cells, while keeping the frame-to-frame jumps 5 and 15 are better at than
+# 60+. A blown detection sits at Mahalanobis ~1e4, so every threshold in this range still
+# catches it; raising it only stops down-weighting cells the detector had right.
+inflate_threshold = 30.0
 
 
 # == Postprocess =============================================================

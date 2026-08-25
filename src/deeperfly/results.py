@@ -27,7 +27,7 @@ be re-run later from pristine upstream outputs:
         reproj_error         (V, T, P)
     eks/
         points3d             (T, P, 3) the smoothed 3D
-        posterior_var        (T, P) the smoother's posterior variance
+        posterior_var        (T, P, 3) the smoother's per-axis posterior variance
         smooth_param         (P,) the fitted per-keypoint process-noise scale
     postprocess/
         points3d             (T, P, 3) 3D after the correction chain

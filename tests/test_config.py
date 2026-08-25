@@ -77,7 +77,7 @@ def test_a_section_the_template_omits_resolves_to_the_python_defaults():
     assert c.pose2d == Pose2dParams()
 
     # What it DOES state, it states because it differs from the default:
-    assert c.eks.inflate_threshold == 15.0  # measured; the shipped default is 5.0
+    assert c.eks.inflate_threshold == 30.0  # measured; the shipped default is 5.0
     recommended = {**STAGE_DEFAULTS, "eks": True, "postprocess": True}
     assert c.stage_flags() == recommended
 

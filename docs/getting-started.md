@@ -291,7 +291,7 @@ deeperfly run examples/data/ -c config.toml
 INFO  reusing cached pose2d (pass --overwrite pose2d to force a recompute)
 INFO  reusing cached bundle_adjustment ...
 INFO  reusing cached triangulation ...
-INFO  recomputing eks (config changed: inflate_threshold: 15.0 -> 20)
+INFO  recomputing eks (config changed: inflate_threshold: 30.0 -> 20)
 INFO  recomputing postprocess (an upstream stage recomputed ...)
 INFO  recomputing inverse_kinematics (an upstream stage recomputed ...)
 INFO  recomputing visualization (an upstream stage recomputed ...)
