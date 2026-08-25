@@ -12,7 +12,78 @@ API. A version that says so is more useful than one that flatters.
 
 ## [Unreleased]
 
-Nothing yet. The one thing the tree names as planned is the **trainer**: `deeperfly.training`
+### Changed
+
+- **The default 2D detector now has a PADDED heatmap field.** `[pose2d].models` names
+  `mvt_r28_pad48_gray_fly38.pth` (sha `ae482d3a…`, 86,082,205 bytes) in place of
+  `mvt_alt8_r27_gray_fly38.pth`. Every earlier MVT was structurally unable to report a joint
+  outside the frame — its decode is a soft-argmax, an expectation over in-image pixel
+  coordinates, so a joint the crop cut off saturated against the border and came back at high
+  confidence up to 200 px from the truth, straight into RANSAC and the bundle adjustment. The
+  new checkpoint declares `arch.hm_margin_px = 48` and gets that margin by padding the
+  network's *input* (352×608, field 88×152 at unchanged stride 4), so the extra cells are
+  computed from real tokens rather than from zeros.
+
+  **Nothing a config can see has changed.** `input_size` still reports the 256×512 reported
+  frame; the margin lives inside `pose2d/mvt.py`, which pads in `prepare_images` and subtracts
+  it again in `decode_points`. What is new is that a returned coordinate may legitimately fall
+  outside `[0, 1]` — an off-frame joint, not an error, and it must not be clipped.
+  `deeperfly.triangulation` already consumes such points.
+
+  Costs and caveats, stated because they are real: the padded model runs at **24.4 frames/s
+  against 46.3** for r27 on an RTX 4080 (1.9×), and its **accuracy has not yet been
+  evaluated** — the mechanism is confirmed to fire (0.13% of detections on a full recording
+  land outside the box, reaching 43 model px, where r27 produces exactly zero) and no in-frame
+  regression was detected, but there is no measurement yet that off-frame points land in the
+  *right* place. Pin `weights = "mvt_alt8_r27_gray_fly38.pth"` to stay on the previous
+  detector.
+
+- `inference.detect_candidates_sequence` (the top-K path, `pictorial_structures = true`) now
+  **refuses** a model with a padded field instead of decoding it through a normalization that
+  assumes the field spans the input. That path was already silently wrong for the dense HRNet.
+
+- `pose2d.models.LoadedModel.prepare` passes a margin through to a class that declares one, and
+  raises if the class cannot accept it — preparing a padded checkpoint without its pad would
+  shift every point by the margin with nothing to notice.
+
+- **`pose2d/autocrop.py` now applies its exact clipping test to the MVT.** `LoadedModel.padded_field`
+  is what picks the test, and it is now true for the packaged detector, so "does this crop cut the
+  animal?" is answered by counting detections outside `[0, 1]` rather than by counting ones within
+  3 px of the border (`BORDER_BAND_PX`). The band was a stand-in for a field that could not
+  represent an off-frame joint; a searched crop (`{op = "crop", auto = true}`) may therefore pick a
+  different box than it did on r27.
+
+- **The packaged `[eks].inflate_threshold` is `30.0`**, up from `15.0` (the dataclass default is
+  still `5.0`). Reprojection cannot choose this number — the smoother is *supposed* to leave the 2D
+  where it judges the 2D unreliable, and a 5→30 sweep barely moves the reprojection distribution —
+  so it was chosen against ground truth instead: on 54 recordings and 63,921 labeled cells, mean 2D
+  error falls 4.916 → 4.628 px and p90 9.103 → 8.343 going from 5 to 30, while frame-to-frame jumps
+  grow monotonically. Accuracy is flat from 30 to 100, so 30 is where the gain is realized at the
+  smallest temporal cost. Turning the inflation *off* is worse than any threshold. The full table is
+  in the configuration reference's `[eks]` section. The five `examples/*/config.toml`
+  move with it.
+
+### Added
+
+- **A confidence floor, off unless the artifact asks for it.** `mvt.predict_points` reads
+  `arch.conf_floor` and reports a point below it as `NaN` — which is what `deeperfly.triangulation`
+  already means by "this camera cannot see this point" — instead of as a confident location pinned
+  to the border. It is meaningful only for a checkpoint trained to answer "not here" with a flat
+  map, where the confidence separates the two answers by ~500×; on one that was not, confidence does
+  not track off-frame-ness and a floor would drop good points. The packaged `mvt_r28_pad48` ships
+  `conf_floor = 0.0`, i.e. the gate is **off**.
+
+- `load_mvt` refuses an artifact whose `arch.hm_margin_px` is negative, is not a whole number of
+  patches (a fractional token grid is truncated by the backbone, shifting every point), or whose
+  `arch.hm_margin_fill` disagrees with what this module pads with — the fill is a train/test
+  contract, not a cosmetic choice.
+
+### Fixed
+
+- `results.py`'s schema docstring described `eks/posterior_var` as `(T, P)`. It is `(T, P, 3)` —
+  the smoother's variance is per axis.
+
+The one thing the tree names as planned is the **trainer**: `deeperfly.training`
 was removed here (see below) and training will return written directly rather than absorbed.
 The multiview transformer is trained today through a patched Lightning Pose fork pinned to
 python 3.12 in a 7.5 GB environment of its own, which is why it is not an extra — behind one,

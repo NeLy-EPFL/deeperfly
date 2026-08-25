@@ -620,7 +620,7 @@ $ deeperfly doctor
 weights
   DEEPERFLY_MODELS  unset -- set it to the directory holding the checkpoints
   searched [0]      /home/you/.cache/deeperfly/weights  (absent)
-  default wants     mvt_alt8_r27_gray_fly38.pth  --  NOT FOUND on the search path above
+  default wants     mvt_r28_pad48_gray_fly38.pth  --  NOT FOUND on the search path above
 ```
 
 **Nothing downloads.** Every detector deeperfly ships is trained per project, so there is

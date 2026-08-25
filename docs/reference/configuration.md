@@ -459,7 +459,7 @@ lines:
 [pose2d]
 model = "dense38mv"
 models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" },
+    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
 ]
 ```
 
@@ -480,7 +480,9 @@ a prediction to correct rather than a gap to author from nothing.)
 **`batch_size` is in images, not frames.** `detect_sequence` forwards
 `batch_size // pathways` whole frames at a time, so on the packaged eight-camera rig
 anything below 8 is **one frame per forward** — which is why the default is not smaller.
-Measured on an RTX 4090, 8 views at 256×512, multiview transformer:
+Measured on an RTX 4090, 8 views at 256×512, on the **r27** multiview transformer — the
+packaged r28 default pads its input and is slower by about 1.9× throughout (24.4 fps against
+46.3 at batch 16, measured on an RTX 4080):
 
 | `batch_size` | 2 | 8 | 16 | 32 | 64 |
 | --- | --- | --- | --- | --- | --- |
@@ -602,7 +604,7 @@ A detector network and its input contract. In practice only `name`, `class` and
 | `name` | str | *required* | Model identifier (referenced by pathways). |
 | `class` | str | *required* | Network registry key: `"hrnet"` (= `"hrnet_timm"`) or `"mvt"` (= `"multiview_transformer"`). Both dense; see below. An unrecognized spelling is **refused** by `class_defaults`. |
 | `weights` | str | *required* | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. Nothing downloads. |
-| `input_size` | [int, int] | from the class | `(height, width)` the network expects; frames are resized to it and peaks scaled back. |
+| `input_size` | [int, int] | from the class | `(height, width)` of the **reported frame**: frames are resized to it and peaks scaled back against it. Not always the network's own input — an `mvt` artifact declaring `arch.hm_margin_px` is fed `input_size + 2 × margin` (352×608 for the packaged default), padded inside the class. |
 | `mean` | float | from the class | Scalar subtracted after `/255` normalization. |
 | `n_out_channels` | int | from the class | Output heatmap count (validated against the weights). |
 | `precision` | str | from the class, then `[pose2d].precision` | `float32` / `float16` / `bfloat16`. |
@@ -688,29 +690,34 @@ dropped without setting an environment variable.
 #### The released checkpoints { #weights }
 
 Three checkpoints ship for 0.2. All are **one-channel**, all record the **`fly38`** point
-order, all take 256×512 input and emit 38 heatmaps per view, and all were trained on the
-same corpus — **55 recordings / 465 moments / 138,708 label cells**, every recording
-carrying a camera rig traceable to hand labels.
+order, all report points in a 256×512 frame and emit 38 heatmaps per view. The two
+single-view detectors take that 256×512 directly; the multiview transformer pads it to
+352×608 internally for its 48 px margin, which changes nothing a config can see.
+
+The single-view pair were trained on **55 recordings / 465 moments / 138,708 label
+cells**; `mvt_r28_pad48_gray_fly38` on **55 / 485 / 144,775** — the same corpus after a
+later round of labeling — every recording carrying a camera rig traceable to hand labels.
 
 | Checkpoint | `class` | Bytes | sha256 (first 8) |
 | --- | --- | --- | --- |
-| `mvt_alt8_r27_gray_fly38.pth` | `"mvt"` | 86,082,077 | `d4ca455b` |
+| `mvt_r28_pad48_gray_fly38.pth` | `"mvt"` | 86,082,205 | `ae482d3a` |
 | `hrnet_w32_r27_gray_fly38.pth` | `"hrnet"` | 127,076,045 | `13ceb937` |
 | `hgnetv2_b4_r27_gray_fly38.pth` | `"hrnet"` | 62,452,371 | `fa427062` |
 
 ```
-d4ca455b9d26d8972da38061e1a49e8e170cb029a97bdbb6b48dc477561a208b  mvt_alt8_r27_gray_fly38.pth
+ae482d3a3c117dc48562394fd33b04710e8fa530fc13899c5fe0933061e7e14d  mvt_r28_pad48_gray_fly38.pth
 13ceb93793655f6e974083072629a10e242608ab0d839e1f60659050c5926c9b  hrnet_w32_r27_gray_fly38.pth
 fa4270628f5766461ad3ac358730d6835cd39bd86cba6b45b98303609c4e7932  hgnetv2_b4_r27_gray_fly38.pth
 ```
 
-They live at `/mnt/upramdya/data/TL/deeperfly-models/260819_*` — one directory each, holding
+They live at `/mnt/upramdya/data/TL/deeperfly-models/260819_*`, except the MVT under
+`260825_mvt_r28_pad48_gray_fly38` — one directory each, holding
 the `.pth` plus a `README.md`, a `SHA256SUMS` (so `sha256sum -c SHA256SUMS` verifies the
 file before you trust a whole project to it) and the `fly38.toml` the model was trained on.
 That last one is byte-identical to the packaged skeleton, which is what lets the load-time
 channel-name check be a real check rather than a ritual.
 
-The packaged config names **`mvt_alt8_r27_gray_fly38.pth`**: the transformer sees a frame's
+The packaged config names **`mvt_r28_pad48_gray_fly38.pth`**: the transformer sees a frame's
 views together, which is what recovers a contralateral joint no single camera resolves. The
 two `hrnet` checkpoints are per-view and interchangeable with it in a config — only the
 `class` and the filename change.
@@ -718,7 +725,7 @@ two `hrnet` checkpoints are per-view and interchangeable with it in a config —
 **Install them by pointing at them, not by copying paths into the config:**
 
 ```console
-$ export DEEPERFLY_MODELS=/mnt/upramdya/data/TL/deeperfly-models/260819_mvt_alt8_r27_gray_fly38
+$ export DEEPERFLY_MODELS=/mnt/upramdya/data/TL/deeperfly-models/260825_mvt_r28_pad48_gray_fly38
 $ deeperfly doctor
 ```
 
@@ -761,7 +768,7 @@ single entry above it. It is hoisted instead:
 [pose2d]
 model = "dense38mv"                  # the default for every pathway below
 models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" },
+    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
 ]
 pathways = [
     { name = "rh", source = "vid_rh" },
@@ -1439,7 +1446,7 @@ measurement that this fly matches the model.
     null direction, so it is well posed either way. For a **midline** chain the root's
     lateral component is deliberately not fitted: a sideways root and the chain's own
     lateral joints express the same displacement, so freeing both attributes the animal's
-    lateral bend to whichever the optimiser reaches first.
+    lateral bend to whichever the optimizer reaches first.
 
 ### Marker placement — `[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]` { #ik-markers }
 

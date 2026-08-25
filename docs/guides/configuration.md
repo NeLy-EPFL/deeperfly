@@ -91,7 +91,7 @@ ops  = [{ op = "fliplr" }]
 `weights`.
 
 ```toml
-models = [{ name = "dense38mv", class = "mvt", weights = "mvt_alt8_r27_gray_fly38.pth" }]
+models = [{ name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" }]
 ```
 
 Two classes, both dense — every tracked point in every view:
@@ -120,9 +120,10 @@ used as written. Prefer the bare name: *which model a run used* is a fact about 
 and travels with it, where `/mnt/...` is a fact about one mount on one machine.
 `deeperfly doctor` prints the variable, every directory searched with what is in it, and
 whether the default config's checkpoint resolves. Three checkpoints ship with 0.2 — all
-one-channel, all recording the `fly38` point order, all trained on the same 55 recordings /
-465 moments / 138,708 label cells; the packaged config names
-`mvt_alt8_r27_gray_fly38.pth`. Their sizes, checksums and location are in
+one-channel, all recording the `fly38` point order, all trained on the same 55 recordings
+(465 moments / 138,708 label cells for the two `hrnet` arms, 485 / 144,775 for the MVT);
+the packaged config names
+`mvt_r28_pad48_gray_fly38.pth`. Their sizes, checksums and location are in
 [the released checkpoints](../reference/configuration.md#weights).
 
 **One input plane.** Every shipped detector takes a single grayscale channel, so
@@ -445,7 +446,8 @@ re-detects.
 `batch_size` is in **images, not frames**: a forward takes `batch_size // pathways` whole
 frames, so on the packaged eight-camera rig anything below 8 is one frame per forward, which
 is why the default is not smaller. It plateaus by 32 (measured on an RTX 4090, 8 views at
-256×512: 52.9 fps at 8, 59.4 at 16, 60.1 at 32, 58.9 at 64). `decode_buffer` is a *memory*
+256×512, on the r27 transformer: 52.9 fps at 8, 59.4 at 16, 60.1 at 32, 58.9 at 64 — the
+packaged r28 default pads its input and is about 1.9× slower at every value). `decode_buffer` is a *memory*
 knob (peak frames per camera is `~(decode_buffer + 2) * batch_size`) — raise it to keep the
 GPU fed when decode is jittery, lower it to shave memory. Neither ever invalidates a cache.
 

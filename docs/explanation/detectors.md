@@ -24,22 +24,28 @@ That is deliberate. A class that fell back inherited *another* network's default
 19-channel count and a 0.22 mean — and then failed at load with a channel-count mismatch,
 which says nothing about the word that was actually wrong.
 
-Diagrams below are for the 256 × 512, **one-plane** model input every one of them takes.
+Diagrams below are for the 256 × 512, **one-plane** *reported frame* every one of them
+works in. The shipped MVT pads that to 352 × 608 inside its own preparation (see
+[Two fields, two readouts](#two-fields-two-readouts)); the padding is internal, so the
+coordinate system in the diagrams is unchanged.
 
 ## What ships { #checkpoints }
 
 Three checkpoints, all one-channel, all recording the `fly38` point order, all trained on the
-same corpus — **55 recordings / 465 moments / 138,708 label cells**, every recording carrying
-a rig traceable to hand labels:
+same **55 recordings** — the two `hrnet` arms on **465 moments / 138,708 label cells**, the
+MVT on those recordings after a further round of labeling, **485 / 144,775** — every
+recording carrying a rig traceable to hand labels:
 
 | file | class · head | bytes | sha256 |
 | --- | --- | --- | --- |
-| `mvt_alt8_r27_gray_fly38.pth` | `mvt` | 86,082,077 | `d4ca455b…` |
+| `mvt_r28_pad48_gray_fly38.pth` | `mvt` | 86,082,205 | `ae482d3a…` |
 | `hrnet_w32_r27_gray_fly38.pth` | `hrnet` · `concat` | 127,076,045 | `13ceb937…` |
 | `hgnetv2_b4_r27_gray_fly38.pth` | `hrnet` · `unet` | 62,452,371 | `fa427062…` |
 
-Each lives in its own directory under `/mnt/upramdya/data/TL/deeperfly-models/260819_*`,
-beside a `README.md`, a `SHA256SUMS` and the `fly38.toml` it was trained against — so
+Each lives in its own directory — the two `hrnet` checkpoints under
+`/mnt/upramdya/data/TL/deeperfly-models/260819_*`, the MVT under
+`260825_mvt_r28_pad48_gray_fly38` — beside a `README.md`, a `SHA256SUMS` and the
+`fly38.toml` it was trained against, so
 `sha256sum -c SHA256SUMS` is the check, and the skeleton travels with the weights rather
 than being asserted about them.
 
@@ -53,7 +59,7 @@ what is in it, and whether the checkpoint the default config names turns up:
 weights
   DEEPERFLY_MODELS  unset -- set it to the directory holding the checkpoints
   searched [0]      /home/tlam/.cache/deeperfly/weights  (2 .pth)
-  default wants     mvt_alt8_r27_gray_fly38.pth  --  NOT FOUND on the search path above
+  default wants     mvt_r28_pad48_gray_fly38.pth  --  NOT FOUND on the search path above
 ```
 
 **The MVT is the default because it computes the views together**, so a joint only one camera
@@ -369,14 +375,14 @@ flowchart LR
   g11["block 11<br>GLOBAL"]
   l12["block 12<br>view-local"]
 
-  l1 -->|"reshape to (B, V·512, 384)"| g9
-  g9 -->|"reshape to (B·V, 512, 384)"| l10
+  l1 -->|"reshape to (B, V·836, 384)"| g9
+  g9 -->|"reshape to (B·V, 836, 384)"| l10
   l10 -->|"reshape"| g11
   g11 -->|"reshape"| l12
 ```
 
-`attn_scopes = "llllllllglgl"`. A view-local block sees `(B·V, 512, 384)` — one view
-attending to itself. A global block sees `(B, V·512, 384)`, which is 4096 tokens at
+`attn_scopes = "llllllllglgl"`. A view-local block sees `(B·V, 836, 384)` — one view
+attending to itself. A global block sees `(B, V·836, 384)`, which is 6688 tokens at
 V = 8. No parameters change between the two; the schedule *is* the tensor's shape,
 and the `(B·V)` axis is batch-major so the reshape groups a frame's own views.
 
@@ -391,41 +397,42 @@ flowchart TD
   subgraph PREP["prepare — on the HOST"]
     direction LR
     p1["take the luma plane<br>(3-plane frame:<br>PIL convert('L'))"]
-    p2["cv2.INTER_AREA → 256×512"]
+    p2["cv2.INTER_AREA → 256×512<br>the REPORTED frame"]
+    p2b["pad 48 px a side<br>constant fill 0<br>→ 352×608"]
     p3["/255 → one plane"]
     p4["the artifact's mean/std<br>this one: 0 and 1"]
-    p1 --> p2 --> p3 --> p4
+    p1 --> p2 --> p2b --> p3 --> p4
   end
 
   subgraph ENC["encode"]
     direction LR
-    e1["patch embed 16×16 s16<br>16×32 = 512 tokens × 384"]
-    e2["+ position embedding<br>14×14 ⇢ 16×32, bicubic"]
+    e1["patch embed 16×16 s16<br>22×38 = 836 tokens × 384"]
+    e2["+ position embedding<br>14×14 ⇢ 22×38, bicubic"]
     e3["12 blocks · alt8"]
-    e4["final LayerNorm → 384 × 16×32"]
+    e4["final LayerNorm → 384 × 22×38"]
     e1 --> e2 --> e3 --> e4
   end
 
   subgraph HEAD["head"]
     direction LR
-    h1["PixelShuffle(2)<br>96 ch · 32×64"]
-    h2["ConvT 3×3 s2 → 38<br>38 ch · 64×128"]
+    h1["PixelShuffle(2)<br>96 ch · 44×76"]
+    h2["ConvT 3×3 s2 → 38<br>38 ch · 88×152"]
     h3["spatial softmax T = 1"]
     h1 --> h2 --> h3
   end
 
   subgraph DEC["decode"]
     direction LR
-    d1["pyr_up ×2 → 256×512<br>bicubic + 5×5 gaussian"]
+    d1["pyr_up ×2 → 352×608<br>bicubic + 5×5 gaussian"]
     d2["softmax T = 1000"]
     d3["E[x], E[y]<br>conf = 5×5 window mass"]
-    d4["− 1.5 · ÷ (512, 256)"]
+    d4["− 1.5, − margin 48<br>÷ (512, 256)"]
     d1 --> d2 --> d3 --> d4
   end
 
   PREP --> ENC
   ENC --> HEAD
-  HEAD -->|"(B, V·38, 64, 128)"| DEC
+  HEAD -->|"(B, V·38, 88, 152)"| DEC
   DEC --> out(["normalized (B, V, 38, 2) + conf"])
 ```
 
@@ -483,10 +490,30 @@ evidence there is about where the joint went. The readout is a hard argmax plus 
 parabolic fit clamped to half a cell, with **no half-cell term** — these targets were
 rendered at continuous cell coordinates.
 
-**Unpadded — the MVT.** The 64 × 128 field is upsampled twice to exactly 256 × 512, so
-a peak can never leave the input; a cut-off joint saturates toward the border instead.
-The readout is a soft-argmax: softmax at temperature 1000 over the whole upsampled map,
-spatial expectation, then a fixed −1.5 grid-offset correction.
+**Padded, differently — the MVT.** The shipped `mvt_r28_pad48_gray_fly38` declares
+`arch.hm_margin_px = 48`, and it gets that margin by padding the network's **input**
+rather than the head's output: the model takes 352 × 608 and its field is 88 × 152 at
+the same stride 4. A joint the crop cuts off therefore has real cells to peak in, and
+`x` decodes to −0.09 or 1.09 the same way the HRNet's does.
+
+The distinction from the HRNet's pad is where the extra cells come from. Zero-padding a
+convolutional head gives cells computed from zeros — measured reach is exactly one cell
+(4 model px on the left and top, **zero** on the right and bottom), so beyond that the
+pad is a per-channel constant. Padding the input instead moves the *token grid*, so every
+added cell is computed from real tokens that passed through every attention block, and
+attention has no kernel-width limit. Measured on a full recording: off-frame predictions
+reach 43 model px, against the head-pad's 4.77 px ceiling.
+
+None of this changes the coordinate system. `input_size` still reports the 256 × 512
+**reported frame** — the margin is internal to `pose2d/mvt.py`, which pads inside
+`prepare_images` and subtracts it again in `decode_points` — so the pathway crop, the crop
+plan and every config are untouched. The readout is still a soft-argmax: softmax at
+temperature 1000 over the whole upsampled map, spatial expectation, then a fixed −1.5
+grid-offset correction, less the margin.
+
+An artifact that declares no margin (every MVT through r27) behaves exactly as before: the
+field spans the reported frame, and a cut-off joint saturates against the border about a
+pixel and a half outside it.
 
 `LoadedModel.padded_field` is what tells `pose2d/autocrop.py` which test to run when
 asking "does this crop cut the animal?". Read the wrong one and a clipping box looks
@@ -498,23 +525,25 @@ border instead of leaving the box.
     The top-K path (`inference.detect_candidates_sequence`, reached only with
     `pictorial_structures` on) decodes through the shared `heatmap_to_points`, whose
     normalization assumes the field spans the input. For a padded field it does not: the
-    field is 1.5× the input on each axis, so a peak at the center still lands about right
-    while one at the frame edge comes out ~85 model pixels off — far outside the 15 px
-    (`pictorial.DEFAULT_INLIER_PX`) a candidate must reach to support a hypothesis. It is one
+    HRNet's field is 1.5× its input on each axis, so a peak at the center still lands about
+    right while one at the frame edge comes out ~85 model pixels off — far outside the 15 px
+    (`pictorial.DEFAULT_INLIER_PX`) a candidate must reach to support a hypothesis. The MVT's
+    352 × 608 against a 256 × 512 reported frame displaces less, but in the same way. It is one
     more reason that stage stays off on a dense run; `hrnet.cells_to_input_normalized` is the
-    mapping it would need.
+    mapping it would need. `detect_candidates_sequence` now **refuses** outright when any
+    model in the plan has a padded field, rather than decoding it wrongly.
 
 ## Side by side
 
 | | HRNet-W32 | HGNetV2-B4 | MVT (alt8) |
 | --- | --- | --- | --- |
 | class · head | `hrnet` · `concat` | `hrnet` · `unet` | `mvt` |
-| checkpoint | `hrnet_w32_r27_gray_fly38` | `hgnetv2_b4_r27_gray_fly38` | `mvt_alt8_r27_gray_fly38` |
+| checkpoint | `hrnet_w32_r27_gray_fly38` | `hgnetv2_b4_r27_gray_fly38` | `mvt_r28_pad48_gray_fly38` |
 | parameters | 31.5 M | 15.5 M | 21.5 M |
 | views per forward | 1, `V` is spare batch | 1, `V` is spare batch | all of them, coupled |
-| field | 96×192, +25% padded | 96×192, +25% padded | 64×128, unpadded |
-| off-frame joint | gets a cell | gets a cell | saturates at the border |
-| readout | argmax + parabola | argmax + parabola | soft-argmax on 256×512 |
+| field | 96×192, +25% padded | 96×192, +25% padded | 88×152, +48 px padded |
+| off-frame joint | gets a cell (reach 4 px) | gets a cell (reach 4 px) | gets a cell (reach 43 px measured) |
+| readout | argmax + parabola | argmax + parabola | soft-argmax on 352×608, less the margin |
 | `peak_convention` | half-pixel | half-pixel | pure-scale |
 | precision | fp16 / bf16 ok | fp16 / bf16 ok | float32, enforced |
 | input prep runs | on the device | on the device | on the host |

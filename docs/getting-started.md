@@ -76,18 +76,21 @@ uv tool install ./ --editable --python 3.13 --torch-backend=auto   # only if dep
 
 ## 2. Get the detector weights
 
-Three checkpoints ship with 0.2.0. All three take **one grayscale channel**, predict
-**all 38 points of the `fly38` skeleton in every view**, and were trained on the same
-corpus — 55 recordings, 465 labeled moments, 138,708 label cells:
+Three checkpoints ship with 0.2.0. All three take **one grayscale channel** and predict
+**all 38 points of the `fly38` skeleton in every view**, and all were trained on the same 55
+recordings. The two `hrnet` arms saw 465 labeled moments / 138,708 label cells; the MVT saw
+those recordings after a further round of labeling, 485 moments / 144,775 label cells:
 
 | checkpoint | `class` | bytes | sha256 |
 | --- | --- | --- | --- |
-| `mvt_alt8_r27_gray_fly38.pth` | `mvt` | 86,082,077 | `d4ca455b…` |
+| `mvt_r28_pad48_gray_fly38.pth` | `mvt` | 86,082,205 | `ae482d3a…` |
 | `hrnet_w32_r27_gray_fly38.pth` | `hrnet` | 127,076,045 | `13ceb937…` |
 | `hgnetv2_b4_r27_gray_fly38.pth` | `hrnet` | 62,452,371 | `fa427062…` |
 
-Each lives in its own directory under `/mnt/upramdya/data/TL/deeperfly-models/260819_*`,
-holding the `.pth` plus a `README.md` (what it was trained on and the gates it passed),
+Each lives in its own directory: the two `hrnet` checkpoints under
+`/mnt/upramdya/data/TL/deeperfly-models/260819_*`, the MVT under
+`260825_mvt_r28_pad48_gray_fly38`. Each directory holds the `.pth` plus a `README.md` (what
+it was trained on and the gates it passed),
 `SHA256SUMS`, and `fly38.toml` — the point order the checkpoint was trained in. The
 checkpoint records that order inside itself too, and every run checks it against the
 config's skeleton: a dense detector's channels *are* a skeleton, and two 38-point
@@ -102,21 +105,21 @@ sha256sum -c SHA256SUMS
 export DEEPERFLY_MODELS=/path/to/models     # several dirs allowed, separated like PATH
 ```
 
-The packaged default config names `mvt_alt8_r27_gray_fly38.pth` as a **bare filename**,
+The packaged default config names `mvt_r28_pad48_gray_fly38.pth` as a **bare filename**,
 looked up along `$DEEPERFLY_MODELS`. Keep it bare rather than an absolute path: the
 filename is a fact about which model a run used and travels with the recording, where
 `/mnt/...` is a fact about one machine. An outright path
-(`weights = "/path/to/mvt_alt8_r27_gray_fly38.pth"`) works too when you want one.
+(`weights = "/path/to/mvt_r28_pad48_gray_fly38.pth"`) works too when you want one.
 
 If the checkpoint is not found, the run stops before any detection, naming every
 directory it searched:
 
 ```
-[[pose2d.models]] 'dense38mv' (class 'mvt'): no checkpoint named 'mvt_alt8_r27_gray_fly38.pth'.
+[[pose2d.models]] 'dense38mv' (class 'mvt'): no checkpoint named 'mvt_r28_pad48_gray_fly38.pth'.
   Searched ($DEEPERFLY_MODELS, then the download cache):
     /home/you/.cache/deeperfly/weights
   Set DEEPERFLY_MODELS=/path/to/models, or write an explicit path:
-    weights = "/path/to/mvt_alt8_r27_gray_fly38.pth"
+    weights = "/path/to/mvt_r28_pad48_gray_fly38.pth"
 ```
 
 That per-user cache directory is always last on the search path even though nothing
@@ -156,10 +159,10 @@ what is in it, and whether the default config's checkpoint resolves:
 
 ```
 weights
-  DEEPERFLY_MODELS  /data/deeperfly-models/260819_mvt_alt8_r27_gray_fly38
-  searched [0]      /data/deeperfly-models/260819_mvt_alt8_r27_gray_fly38  (1 .pth)
+  DEEPERFLY_MODELS  /data/deeperfly-models/260825_mvt_r28_pad48_gray_fly38
+  searched [0]      /data/deeperfly-models/260825_mvt_r28_pad48_gray_fly38  (1 .pth)
   searched [1]      /home/you/.cache/deeperfly/weights  (empty)
-  default wants     mvt_alt8_r27_gray_fly38.pth  --  found at /data/…/mvt_alt8_r27_gray_fly38.pth
+  default wants     mvt_r28_pad48_gray_fly38.pth  --  found at /data/…/mvt_r28_pad48_gray_fly38.pth
 ```
 
 With the variable unset the first line reads

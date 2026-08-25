@@ -77,7 +77,7 @@ config then names the checkpoint as a bare filename, which travels with the reco
 where a mount point would not.
 
 Three one-channel checkpoints ship, all predicting the `fly38` point order:
-`mvt_alt8_r27_gray_fly38.pth` (`class = "mvt"`, the packaged default),
+`mvt_r28_pad48_gray_fly38.pth` (`class = "mvt"`, the packaged default),
 `hrnet_w32_r27_gray_fly38.pth` and `hgnetv2_b4_r27_gray_fly38.pth` (both
 `class = "hrnet"`). If none resolves, the run stops with every searched directory printed,
 and `deeperfly doctor` reports the same thing before you start.

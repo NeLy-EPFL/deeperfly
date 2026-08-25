@@ -58,17 +58,18 @@ tracked point for every view.
 | $T$ | total frames | — |
 | $V$ | camera views | 8 |
 | $H_\text{raw}$, $W_\text{raw}$ | raw frame size (per source) | 960 × 512 side, 1600 × 1008 axial (example rig) |
-| $H_\text{in}$, $W_\text{in}$ | network input size | 256 × 512 |
+| $H_\text{in}$, $W_\text{in}$ | reported frame size | 256 × 512 (the MVT pads to 352 × 608 internally) |
 | $C_\text{in}$ | input planes | 1 (grayscale) |
 | $C_\text{out}$ | output channels / heatmaps per view | 38 |
-| $H_\text{out}$, $W_\text{out}$ | the detector's field (per class) | 96 × 192 padded (`hrnet`), 64 × 128 (`mvt`) |
+| $H_\text{out}$, $W_\text{out}$ | the detector's field (per class) | 96 × 192 padded (`hrnet`), 88 × 152 padded (`mvt`) |
 | $P$ | skeleton keypoints (the `P` axis in code) | 38 |
 
 $C_\text{out} = P$ is what **dense** means, and it is why there is no routing table to
 write: channel *i* is point *i* of the pathway's view. What the field *covers* is a property
-of the detector class rather than of the pipeline — the single-view detectors pad it 25% a
-side so a joint the crop cut off still has a cell, the transformer's cannot leave the input
-at all — see [the dense-38 detectors](detectors.md#two-fields-two-readouts).
+of the detector class rather than of the pipeline — the single-view detectors pad the head's
+output by 25% a side, the transformer pads its own input by 48 px a side, and either way a
+joint the crop cut off still has a cell to peak in — see
+[the dense-38 detectors](detectors.md#two-fields-two-readouts).
 
 ### Raw frames → 2D keypoints
 

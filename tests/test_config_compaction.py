@@ -468,16 +468,25 @@ def test_the_packaged_config_still_snapshots_byte_exactly(tmp_path):
     ).read_text()
 
 
-def test_the_packaged_config_names_its_checkpoint_portably():
+def test_the_packaged_config_names_its_checkpoint_portably(tmp_path, monkeypatch):
     """The shipped `weights` is a bare FILENAME, never a path.
 
     There is no dense model to auto-download, so the config has to name one -- but naming
-    `/mnt/.../mvt_alt8_r27_gray_fly38.pth` would make the packaged default a fact about one
+    `/mnt/.../mvt_r28_pad48_gray_fly38.pth` would make the packaged default a fact about one
     machine's mount. A bare name is a fact about which model to use, resolved per machine
     against $DEEPERFLY_MODELS, and the failure when it is not there is the actionable one.
+
+    The search path is EMPTIED first. What is under test is a property of the config and of
+    the failure message, not of whether this machine happens to have the checkpoint: without
+    this the test passes only for a developer who has never installed the default model, and
+    fails the moment someone does.
     """
+    monkeypatch.setenv(download.MODELS_ENV, str(tmp_path / "nowhere"))
+    monkeypatch.setattr(download, "cache_dir", lambda: tmp_path / "empty-cache")
+    (tmp_path / "empty-cache").mkdir()
+
     spec = Config.default().detection_plan().models["dense38mv"]
-    assert spec.weights == "mvt_alt8_r27_gray_fly38.pth"
+    assert spec.weights == "mvt_r28_pad48_gray_fly38.pth"
     assert "/" not in spec.weights and not Path(spec.weights).is_absolute()
     with pytest.raises(SystemExit) as e:
         download.resolve_weights(spec.weights, cls=spec.cls, model_name=spec.name)
