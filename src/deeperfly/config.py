@@ -1610,7 +1610,8 @@ class Config:
             if isinstance(out_points, dict):
                 for view, table in out_points.items():
                     if isinstance(table, dict) and any(
-                        isinstance(e, dict) and str(e.get("pathway")) == str(pw.get("name"))
+                        isinstance(e, dict)
+                        and str(e.get("pathway")) == str(pw.get("name"))
                         for e in table.values()
                     ):
                         views.add(str(view))
