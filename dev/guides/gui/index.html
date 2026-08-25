@@ -1,0 +1,2170 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/deeperfly/dev/guides/gui/">
+      
+      
+        <link rel="prev" href="../configuration/">
+      
+      
+        <link rel="next" href="../library/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Correction GUI - deeperfly</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#annotation-gui" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="deeperfly" class="md-header__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            deeperfly
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Correction GUI
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="deeperfly" class="md-nav__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    deeperfly
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Correction GUI
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Correction GUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-idea-2d-is-the-source-3d-is-derived" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The idea: 2D is the source, 3D is derived
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-the-markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading the markers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#annotating-the-pose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Annotating the pose
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Annotating the pose">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#selecting-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting points
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acting-on-the-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acting on the selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hidden-vs-absent-vs-unplaced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hidden vs Absent vs Unplaced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-reprojection-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The reprojection check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-label-coverage-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The label-coverage check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#undo-redo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Undo / redo
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frame-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame lists
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frame lists">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#labeled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labeled
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suggested" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggested
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#neuromechfly-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NeuroMechFly overlays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other overlays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-exporting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving &amp; exporting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remote-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote use
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keyboard-shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keyboard shortcuts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calibration-landmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration landmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-the-pipeline-from-the-editor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the pipeline from the editor
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/bundle_adjustment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundle adjustment of a multi-camera rig
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/pipeline_walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The deeperfly pipeline, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How it works
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline stages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/detectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The dense-38 detectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/keypoints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keypoint locations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../explanation/conventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions & glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/output-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-idea-2d-is-the-source-3d-is-derived" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The idea: 2D is the source, 3D is derived
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-the-markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading the markers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#annotating-the-pose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Annotating the pose
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Annotating the pose">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#selecting-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting points
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acting-on-the-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acting on the selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hidden-vs-absent-vs-unplaced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hidden vs Absent vs Unplaced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-reprojection-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The reprojection check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-label-coverage-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The label-coverage check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#undo-redo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Undo / redo
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frame-lists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame lists
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frame lists">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#labeled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labeled
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suggested" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggested
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#neuromechfly-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NeuroMechFly overlays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other overlays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-exporting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving &amp; exporting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remote-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote use
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keyboard-shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keyboard shortcuts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calibration-landmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration landmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-the-pipeline-from-the-editor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the pipeline from the editor
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="annotation-gui">Annotation GUI<a class="headerlink" href="#annotation-gui" title="Permanent link">&para;</a></h1>
+<p><code>deeperfly gui</code> opens an interactive <strong>web</strong> viewer for a result and turns it into a
+<strong>ground-truth annotation</strong> tool. It serves every camera view with its 2D skeleton
+overlay to a browser canvas and lets you author the ground-truth 2D pose, with the
+run's prediction as a starting point. Your labels are written to a <code>labels.h5</code>
+sidecar next to the result and <strong>never modify <code>results.h5</code></strong> — re-running the
+pipeline is always safe.</p>
+<p>Because it is a browser app it needs no GUI toolkit, runs headless, and can be
+reached from another machine (see <a href="#remote-use">Remote use</a>).</p>
+<h2 id="the-idea-2d-is-the-source-3d-is-derived">The idea: 2D is the source, 3D is derived<a class="headerlink" href="#the-idea-2d-is-the-source-3d-is-derived" title="Permanent link">&para;</a></h2>
+<p>The 2D observations are the only source of truth; the 3D pose is a <em>pure function</em> of
+them (triangulation over the cameras). The 3D that <code>deeperfly run</code> wrote is a cache —
+the editor recomputes it live from whatever 2D you settle on. So you never edit 3D
+directly: you author <strong>2D ground truth</strong>, and the 3D follows.</p>
+<p>Per <code>(view, point)</code> — one <em>cell</em> — you author two things, on two <strong>independent</strong> axes:</p>
+<ul>
+<li><strong>Where the keypoint is.</strong> Either <strong>ground truth</strong> (a 2D pixel you placed, by dragging or
+  by confirming what is drawn) or nothing, in which case the cell follows the detector's
+  prediction, or the 3D reprojection where the detector fired nothing, as a <em>suggestion</em>
+  you can accept or move. This is what a future training run learns from.</li>
+<li><strong>Whether the cell is included in the training loss.</strong> That is the <strong>Hidden</strong> flag
+  (<code>e</code>) and it is all it means: marked = held out, unmarked = used. It is a binary switch
+  of its own, not a third value of the first axis.</li>
+</ul>
+<p>Because they are separate axes, all four combinations are meaningful, and the useful one
+is the pair: place the pixel <em>and</em> mark it Hidden when you are confident where a joint is —
+inferred from the views that can see it, say — but do not want the detector trained on
+pixels that do not show it. Hiding a cell does exactly one thing. It does <strong>not</strong> move the
+joint, remove its marker, break its bones, make it undraggable, or change the 3D by a single
+coordinate; the joint is drawn exactly as it would be, with a bar struck through it.</p>
+<p>The displayed point resolves by precedence <strong>ground truth → prediction →
+reprojection</strong>. How ground truth and predictions combine into the live 3D is
+configurable (<code>[annotation]</code>, default "ground truth wins"); see
+<a href="../../reference/configuration/#annotation">configuration</a>.</p>
+<h2 id="launch">Launch<a class="headerlink" href="#launch" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>deeperfly<span class="w"> </span>gui<span class="w"> </span>RESULT<span class="w">                     </span><span class="c1"># a results.h5, or a dir containing one</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>deeperfly<span class="w"> </span>gui<span class="w"> </span>recording/deeperfly_outputs
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>deeperfly<span class="w"> </span>gui<span class="w"> </span>myproject/<span class="w">                 </span><span class="c1"># a project: every recording, plus Jobs and Bundle adjust</span>
+</code></pre></div>
+<p><code>RESULT</code> is a <code>results.h5</code> file, a directory holding one (e.g. a recording's
+<code>deeperfly_outputs/</code>), or a <strong>project</strong> directory — which is what puts the project's other
+recordings, the pipeline Jobs and the Bundle-adjust tab in the side panel. The footage is
+resolved from the paths recorded in <code>results.h5</code>; if those no longer exist, pass
+<code>--footage-dir</code> to point at it (views with no footage still draw their overlays on blank
+frames). A browser opens automatically; the server stops a few seconds after the last tab
+closes. See the <a href="../cli/#deeperfly-gui">CLI reference</a> for every flag (<code>--host</code>, <code>--port</code>,
+<code>--no-browser</code>, <code>--keep-alive</code>).</p>
+<h2 id="layout">Layout<a class="headerlink" href="#layout" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Views.</strong> Every camera is shown with its overlay. Two arrangements share the same
+  canvases: <strong>Grid</strong> (all cameras equally, the default) and <strong>Focus</strong> (one big view
+  plus thumbnails) — toggle with the layout switch or <code>l</code>. In Focus, <code>[</code> / <code>]</code>
+  cycle which camera is enlarged.</li>
+<li><strong>Frame strip + slider.</strong> Scrub with the slider, the <code>←</code> / <code>→</code> keys (<code>Shift</code> for
+  ±10), or type a frame number. The slider drives the whole editor, including the 3D
+  view, so everything stays on the same frame.</li>
+</ul>
+<h2 id="reading-the-markers">Reading the markers<a class="headerlink" href="#reading-the-markers" title="Permanent link">&para;</a></h2>
+<p>There is no 2D/3D mode to choose — each keypoint is drawn once, and its <strong>marker style
+tells you where it came from</strong> so you know at a glance what still needs attention:</p>
+<table>
+<thead>
+<tr>
+<th>Marker</th>
+<th>Source</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Filled disc, <strong>lime</strong> ring</td>
+<td><strong>Ground truth</strong></td>
+<td>you authored it (dragged or confirmed) — trusted</td>
+</tr>
+<tr>
+<td>Filled disc, thin <strong>dark</strong> ring (fill fades when faint)</td>
+<td><strong>Prediction</strong></td>
+<td>the detector's raw 2D; the fainter the fill, the lower its confidence</td>
+</tr>
+<tr>
+<td><strong>Hollow</strong> circle in the point's limb color</td>
+<td><strong>Projection</strong></td>
+<td>no direct observation in this view — the 3D reprojected here (a suggestion)</td>
+</tr>
+<tr>
+<td>A <strong>bar struck through</strong> any of the above</td>
+<td><strong>Hidden</strong></td>
+<td>this cell is held out of the training loss — see below. It <em>annotates</em> the marker rather than replacing it, because it says nothing about where the keypoint is</td>
+</tr>
+</tbody>
+</table>
+<p>The <strong><code>?</code> button</strong> (or the <code>?</code> key) opens the <strong>Help panel</strong>, which carries the full
+legend — the keypoint colors (one swatch per limb, taken from your skeleton's
+<code>limb_palette</code>, so it matches whatever config you loaded), the marker vocabulary above,
+and the reference-overlay line styles — alongside the keyboard shortcuts. The displayed
+point resolves by precedence <strong>ground truth → prediction → projection</strong>, and the Hidden
+bar rides on top of whichever of those the cell landed on.</p>
+<h2 id="annotating-the-pose">Annotating the pose<a class="headerlink" href="#annotating-the-pose" title="Permanent link">&para;</a></h2>
+<p><strong>Dragging</strong> a keypoint <strong>creates ground truth</strong> at the drop pixel — one gesture,
+whatever the marker was. When the result carries a 3D pose the 3D <strong>re-solves live</strong> as
+you drag, so every view's projection markers follow; the dragged view is authored as
+ground truth and lands exactly under the cursor. (With a 2D-only result there is no 3D
+to re-solve — the drop is simply that view's ground-truth pixel.)</p>
+<p>Most predictions are already good — you don't need to drag them, just <strong>select</strong> the
+points you want and <strong>act</strong> on them. Annotation is two steps: build a selection, then
+apply one verb to all of it.</p>
+<h3 id="selecting-points">Selecting points<a class="headerlink" href="#selecting-points" title="Permanent link">&para;</a></h3>
+<p>A selection is a set of <code>(point, view)</code> cells; the <strong>Selection</strong> toolbar group shows the
+live count. Build one with:</p>
+<ul>
+<li><strong>Click</strong> a point — select just that one (replaces the selection).</li>
+<li><strong>Shift+click</strong> a point — add it to (or remove it from) the selection.</li>
+<li><strong>Double-click</strong> a point — select that keypoint in <strong>every</strong> view.</li>
+<li><strong>Shift+drag</strong> a box (a rubber-band marquee) — add every point inside it. A plain drag
+  still moves a point / pans the view, so hold Shift to box-select.</li>
+<li><strong><code>a</code></strong> (or <code>Ctrl</code>/<code>Cmd</code>+<code>A</code>) — select every point in every view.</li>
+<li><strong><code>v</code></strong> — select every point in the view under the cursor.</li>
+<li><strong><code>Esc</code></strong> — clear the selection.</li>
+</ul>
+<p>The selection persists as you step between frames (the indices are the same), so you can
+act on the same joints frame after frame.</p>
+<h3 id="acting-on-the-selection">Acting on the selection<a class="headerlink" href="#acting-on-the-selection" title="Permanent link">&para;</a></h3>
+<p>The verbs act on whatever is selected — the <strong>GT</strong> / <strong>Hidden</strong> / <strong>Absent</strong> toggles and
+<strong>Reset</strong>, or their keys. Each is a <strong>single undo step</strong>, however large the selection. Each
+toggle is also its own readout: it is <em>pressed</em> when the fact is set, and <strong>GT and Hidden can
+be pressed at the same time</strong>, which is the whole shape of the data.</p>
+<ul>
+<li><strong>GT</strong> (<code>Enter</code> places, <code>Backspace</code> clears) — place a ground-truth pixel for each
+  selected cell at the position already drawn there, so the joint becomes yours and can be
+  nudged. Cells whose position the editor <em>invented</em> (a neighbor mean, the view center —
+  see <strong>Invented</strong> in the Help legend) are skipped rather than recorded as your pixel.</li>
+<li><strong>Hidden</strong> (<code>e</code>) — hold each selected cell <strong>out of the training loss</strong>, or put it back
+  (a toggle). That is the entire effect. The joint does not move, keeps its marker and its
+  bones, stays draggable and hoverable, and the 3D does not change — a bar is struck through
+  it, and the export reports it in its own mask beside the ground truth. It is available on
+  cells that already carry your pixel, and that pairing is the point: <em>"this is where the
+  joint is"</em> and <em>"do not train on it here"</em> are two separate things worth recording.</li>
+<li>
+<p><strong>Reset</strong> (<code>r</code>, or <code>Delete</code>) — retract <strong>both</strong> facts for each selected cell, back to
+  nothing authored. The only verb that spans both axes, which is why it is named for
+  starting over rather than for either of them.</p>
+</li>
+<li>
+<p><strong>Absent</strong> (<code>x</code>, or <code>Shift</code>+<code>X</code> for the whole recording) — mark the selected
+  keypoint(s) <strong>not on this animal</strong>: an amputated leg, an ablated antenna. Unlike every
+  other action it is not per <em>view</em> — an amputated joint is missing from every camera
+  at once, which is exactly what separates it from Hidden. <code>x</code> marks the current frame;
+  <strong><code>Shift</code>+<code>X</code> applies it to every frame</strong>, which is what almost every real declaration
+  wants (an animal that arrives with a leg already missing). Per-frame exists for the case
+  where it genuinely changes: a leg lost to autotomy part-way through a recording.
+  The joint then draws as a dim grey ✕ with no bones, drops out of the 3D solve, and is
+  excluded from the training export in <em>both</em> directions (it is neither ground truth nor
+  hidden). A header badge lists what is declared and says whether it covers the whole
+  recording or just this frame. Press <code>x</code> again or <code>Ctrl</code>/<code>Cmd</code>+<code>Z</code> to lift it — nothing
+  you labeled underneath is lost, it is only vetoed while the declaration stands.</p>
+</li>
+</ul>
+<p>Everyday flows: click a point and press <code>Enter</code> to place one keypoint everywhere; <code>a</code>
+then <code>Enter</code> for the whole frame; double-click a mislocated joint and press <code>r</code> to
+reset it across all views; Shift+drag a box around the far-side joints and press <code>e</code> to hold
+them out of the loss; double-click an amputated joint and press <code>Shift</code>+<code>X</code> once for the
+whole recording.</p>
+<h3 id="hidden-vs-absent-vs-unplaced">Hidden vs Absent vs Unplaced<a class="headerlink" href="#hidden-vs-absent-vs-unplaced" title="Permanent link">&para;</a></h3>
+<p>Three different things, and they must not be confused. Note that only <strong>Absent</strong> removes a
+keypoint's <em>position</em>:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>means</th>
+<th>scope</th>
+<th>position</th>
+<th>on export</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Hidden</strong> (<code>e</code>)</td>
+<td>do not include this cell in the training loss</td>
+<td>one (view, frame, point)</td>
+<td>unchanged — still drawn, still draggable</td>
+<td>its own mask, beside the GT one</td>
+</tr>
+<tr>
+<td><strong>Absent</strong> (<code>x</code> / <code>Shift</code>+<code>X</code>)</td>
+<td>it is not on this animal</td>
+<td>every view; this frame, or the whole recording</td>
+<td>gone — no 2D, no 3D, no bones</td>
+<td>excluded from GT <em>and</em> from hidden</td>
+</tr>
+<tr>
+<td><strong>Unplaced</strong> (<code>i</code>)</td>
+<td>nobody has placed it yet</td>
+<td>one (view, frame, point)</td>
+<td>the editor's guess, so you can grab it</td>
+<td>nothing (unlabeled)</td>
+</tr>
+</tbody>
+</table>
+<p>So <strong>Absent is not a bulk Hidden</strong>. Both keep a cell out of the loss, but Absent also
+deletes the keypoint from the reconstruction, in every view, and (for the IK body plan and
+bundle adjustment) for the whole recording. Declaring a joint absent because it is awkward to
+see in a few frames throws away its position too; marking an amputated joint hidden view by
+view leaves a phantom limb standing in every canvas, reconstructed from detector peaks that
+fire on whatever looks leg-like. Absence is a claim about the <strong>animal</strong>; Hidden is a claim
+about <strong>what to train on</strong>.</p>
+<p>The <strong>Hidden</strong> flag is deliberately <em>only</em> that claim. It is not read by the 3D solve — a bad
+observation is down-weighted on its merits by the robust estimator, so there is nothing to
+exclude by hand — and it is not read by the display beyond drawing its own bar. That
+independence is what makes it safe to mark a whole frame at once (<code>a</code> then <code>e</code>): nothing on
+screen moves.</p>
+<h3 id="the-reprojection-check">The reprojection check<a class="headerlink" href="#the-reprojection-check" title="Permanent link">&para;</a></h3>
+<p><strong>Reproj. warning</strong> (<code>w</code>, under <strong>Checks</strong>) flags a keypoint whose 2D disagrees with the
+multi-view 3D: an amber→red ring on the point plus a connector to where the 3D reprojects
+it — amber at the threshold (<strong>Warn above</strong>, 8 px by default), full red at twice it.</p>
+<p>What it measures is the position a view <em>claims</em>, which is what makes it actionable:</p>
+<ul>
+<li><strong>A view you labeled</strong> claims your pixel. Two labels can always be satisfied exactly by
+  some 3D point, so it takes a <strong>third</strong> disagreeing view to light up — and then the rings
+  sit on your own labels, which is the one error no other view can reveal.</li>
+<li><strong>A view you have not labeled</strong> is drawn <em>at</em> the reprojection, so it has nothing to
+  disagree with and is never flagged. Label a joint in two views and the other cameras move
+  onto the geometry, quietly. (Switch the unplaced joints to their <strong>seeds</strong> with <code>s</code> and the
+  check comes back — a frozen seed is a claim of its own.)</li>
+<li><strong>Before the frame has a skeleton</strong> the detections are what is on screen, so the
+  detector's pixel is what gets checked.</li>
+</ul>
+<p>It deliberately does <strong>not</strong> flag the <em>detector</em> for disagreeing with the geometry once you
+are annotating. A keypoint on the far side of the animal — a left-hind joint in a right-side
+camera — is routinely a hundred pixels out there, and no amount of labeling moves it: that
+is a red flag you could never clear. Turn the <strong>Detected</strong> layer on (<code>t</code>) when the detector's
+opinion is what you want to see.</p>
+<h3 id="the-label-coverage-check">The label-coverage check<a class="headerlink" href="#the-label-coverage-check" title="Permanent link">&para;</a></h3>
+<p><strong>Under-labeled</strong> (<code>u</code>, under <strong>Checks</strong>) flags every keypoint you have labeled in fewer than
+<strong>two</strong> views of this frame. It draws a violet gauge ring outside the joint's own marker: a
+dashed track for the two labels it needs, and a solid arc for the ones it has. So <em>nothing
+labeled</em> reads as an empty dashed ring, <em>one of two</em> as a half-swept one, and a joint that has
+its two views is drawn nothing at all — the rings empty out as you work, which is what makes it
+usable as a "what is left here?" pass rather than permanent decoration.</p>
+<p>Off by default, and deliberately: a ring on all 38 joints of an untouched frame would bury the
+skeleton it is describing. Turn it on when you want the audit.</p>
+<p>Two is not an arbitrary bar. A single pixel fixes only a <em>viewing ray</em> — it says where the joint
+is on a line through the camera, not where it is in space — so until a second view lands, the
+joint's depth still comes from the detector rather than from you, and that is precisely where
+the annotation solve hands the point over: at
+<a href="../../reference/configuration/#annotation"><code>min_gt_for_exclusive</code></a> labeled views (2 by default) your pixels
+become authoritative for the whole point. Raise <strong>Want at least</strong> if you want redundancy beyond
+the minimum; it is capped at the number of cameras, since more than that could never be satisfied.</p>
+<p>Two labeled views is the floor, though, not always enough — and <em>which</em> two matters. A camera
+cannot see distance along its own optical axis, so two cameras that face each other leave that
+one direction nearly free: their viewing rays are almost the same line, and two nearly identical
+lines have no sharp crossing point. <code>rm</code> and <code>lm</code> of the standard rig are exactly opposed, and
+labeling only those two used to leave the joint hundreds of microns out and tens of pixels off in
+every view you had <em>not</em> labeled. By default the editor now lets the unlabeled views supply that
+one direction and nothing else, so your pixels still decide everything they have an opinion about
+— see <strong>Skeleton ▸ Derive the 3D from</strong>, which also offers the older <em>My pixels only</em> behavior.
+Flipping between the two is the quickest read on what the other views are contributing: the
+joints whose two labels have a poor baseline visibly move, and the rest do not budge. If a joint
+does move a lot, the real fix is a third label in a view that looks from a different direction —
+worth roughly 89× on the test rig.</p>
+<p>What it does and does not count:</p>
+<ul>
+<li><strong>Your pixels, wherever they are.</strong> The count is over the whole frame, so the ring shows in
+  every view — including the one you already labeled, whose own label is the arc you can see.
+  The joint's problem is not local to a camera.</li>
+<li><strong>Hidden cells still count.</strong> <a href="#hidden-vs-absent-vs-unplaced">Hidden</a> decides what the
+  <em>training loss</em> reads; a pixel
+  you placed is a pixel you placed, and it constrains the 3D either way.</li>
+<li><strong>Absent joints are never flagged.</strong> They are not on the animal, so there is nothing to label —
+  a coverage flag there would be a demand you could never meet.</li>
+</ul>
+<p>Unlike the reprojection check it needs no rig, no detections and no 3D — only a second camera to
+count over. On a fresh uncalibrated project it is the only check there is, and "nothing labeled
+in two views yet" is exactly the state such a project is in.</p>
+<h3 id="undo-redo">Undo / redo<a class="headerlink" href="#undo-redo" title="Permanent link">&para;</a></h3>
+<p>Every edit is undoable: <code>Ctrl</code>/<code>Cmd</code>+<code>Z</code> undoes, <code>Ctrl</code>/<code>Cmd</code>+<code>Y</code> (or
+<code>Ctrl</code>/<code>Cmd</code>+<code>Shift</code>+<code>Z</code>) redoes; the ↶ / ↷ buttons do the same. A whole drag — and a
+whole batched GT / Hidden / Reset — is a single undo step, and undo jumps back to
+the frame the edit was on.</p>
+<h2 id="frame-lists">Frame lists<a class="headerlink" href="#frame-lists" title="Permanent link">&para;</a></h2>
+<p>A retractable side panel holds a strip of tabs showing one pane at a time, of which
+<strong>Labeled</strong> and <strong>Suggested</strong> are the frame lists below. The rest are <strong>Instance</strong> (this
+frame's annotation skeleton), <strong>Landmarks</strong> (<a href="#calibration-landmarks">calibration landmarks</a>),
+<strong>Jobs</strong> (<a href="#running-the-pipeline-from-the-editor">pipeline commands</a>), <strong>Bundle adjust</strong>
+(solve the rig from the ground truth you placed, save it as a new calibration, and choose
+which calibration the editor derives from), <strong>Settings</strong> (generated from the pipeline's own
+parameter dataclasses) and <strong>Recording</strong> (the project's others) — the last of which appear
+only in a project session. Which tab you left it on is remembered, as is whether it was
+open.</p>
+<p><code>j</code> toggles the whole panel. Otherwise the ✕ in its head closes it and the slim rail down
+the right edge — which is there only while it is closed — opens it again; the rail also
+carries the count of labeled frames, so that number stays visible with the panel shut.</p>
+<p>Click a row in either list to jump to that frame; <code>↑</code> / <code>↓</code> step through the list on
+screen, wrapping at the ends — from a tab that is not a list they keep stepping the last
+one you used. The current frame stays highlighted as you scrub.</p>
+<h3 id="labeled">Labeled<a class="headerlink" href="#labeled" title="Permanent link">&para;</a></h3>
+<p>Every frame carrying a label, in time order, with a per-frame <strong>Reviewed</strong> tick box —
+your "I have finished checking this" flag, which persists with the labels and keeps the
+frame listed even if its point labels are later reset. The list updates live and includes
+labels loaded from a previous session; the blue badge on the tab (and on the right-edge
+rail, when the panel is shut) shows the total from wherever you are.</p>
+<h3 id="suggested">Suggested<a class="headerlink" href="#suggested" title="Permanent link">&para;</a></h3>
+<p>The ranked queue of frames worth correcting <strong>next</strong>, written by
+<a href="../cli/#deeperfly-labels-suggest"><code>deeperfly labels-suggest</code></a>. The panel only <em>reads</em> that
+sidecar — ranking triangulates the whole recording, so it is a command you run, not a
+button — and the tab is empty (showing the exact command to run) until you have.</p>
+<p>Each entry gives its rank, frame, time, disagreement score, and <strong>why</strong> it was picked: a
+<code>most wrong</code> chip for a frame the cameras disagree about most, or <code>diversity</code> for one
+drawn from a uniform time grid so the round still sees typical poses. A frame you have
+since labeled is struck through and chipped <code>labeled</code> the moment you drag its first
+point, so <code>↓</code> walks you through what is left. The amber badge reads <em>done / total</em>.</p>
+<p>Scores rank <strong>within one recording only</strong> — the absolute level tracks how many keypoints
+the detector fired, not how bad the recording is — so never compare them across files.</p>
+<p>The strip above the list carries the queue's own caveats, and they are worth reading: how
+many frames it actually delivered against what was requested (the minimum spacing between
+picks routinely runs out of room), whether it is stale, and whether the scores may be
+tracking calibration error rather than the detector's mistakes. If the queue was computed
+for a different recording, or from predictions that have since been replaced, the panel
+says so instead of quietly navigating a list that no longer applies.</p>
+<h2 id="neuromechfly-overlays">NeuroMechFly overlays<a class="headerlink" href="#neuromechfly-overlays" title="Permanent link">&para;</a></h2>
+<p>When the result carries a fitted inverse-kinematics model — which
+<a href="../../reference/configuration/#inverse_kinematics"><code>do_inverse_kinematics</code></a> now produces by
+default — three extra overlays are available:</p>
+<ul>
+<li><strong>NMF skeleton</strong> (<code>m</code>) — the fitted model joints, reprojected onto each view.</li>
+<li><strong>NMF mesh</strong> (<code>Shift+M</code>) — the posed NeuroMechFly mesh, smooth-shaded on the client
+  GPU at the view's resolution.</li>
+<li><strong>3D view</strong> (<code>c</code>) — a floating panel showing the cameras, the derived pose, and the
+  NMF skeleton/mesh together in 3D. Drag to orbit, <code>Shift</code>/right-drag to pan, scroll to
+  zoom; it overlays the editor without blocking it, so the frame slider still scrubs.</li>
+</ul>
+<p>Both overlays <strong>re-fit to your labels</strong>: as the derived 3D moves under your edits the
+model is re-solved for that frame. The live re-fit runs on the <strong>body plan the pipeline
+solved</strong>, read back from <code>results.h5</code> — this recording's measured segment lengths and its
+registration to the model, so the live overlay and the rendered one describe the same
+animal. (An older result file carries no plan, and one whose stored plan cannot be read
+says so; either way one is rebuilt from the <code>config.toml</code> snapshot beside <code>results.h5</code>, and
+the live overlay may then differ slightly from the rendered one.) Which parts the mesh
+draws is set by <a href="../../reference/configuration/#gui"><code>[gui].mesh_hide</code></a>.</p>
+<p>Re-fitting a frame depends only on that frame and its labels, so scrubbing away and back,
+or undoing and redoing, always returns the same pose. It also needs the optional
+<a href="../../reference/configuration/#inverse_kinematics"><code>ik</code> extra</a>, since it is the same
+solver the pipeline uses: without it the overlays still draw the stored fit, they just
+stop following your edits (the editor says so once, on startup).</p>
+<h2 id="other-overlays">Other overlays<a class="headerlink" href="#other-overlays" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Toggle</th>
+<th>Key</th>
+<th>Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Skeleton</td>
+<td><code>s</code></td>
+<td>The editable 2D skeleton overlay.</td>
+</tr>
+<tr>
+<td>Labels</td>
+<td><code>n</code></td>
+<td>Each keypoint's name.</td>
+</tr>
+<tr>
+<td>3D estimate</td>
+<td><code>p</code></td>
+<td>The derived 3D ghosted onto each view.</td>
+</tr>
+<tr>
+<td>Keypoints ↗</td>
+<td><code>k</code></td>
+<td>The reference <a href="../../explanation/keypoints/">keypoint viewer</a> (new tab).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="saving-exporting">Saving &amp; exporting<a class="headerlink" href="#saving-exporting" title="Permanent link">&para;</a></h2>
+<p>Edits live in memory until you save, and <strong>they live there for the whole project</strong>:
+switching to another recording keeps the one you left open behind the scenes, with its
+unsaved labels and its undo history intact, so you can move between a project's
+recordings the way you move between one recording's frames. Nothing asks you to save on
+the way.</p>
+<p>While anything is unsaved the toolbar shows an amber <strong>● unsaved</strong> cue (with a count when
+more than one recording is involved), the Save button matches it, the browser tab's title
+gains a <code>*</code>, and every affected recording is dotted in the <strong>Recording</strong> pane's list. The
+cue is clickable: it does what Save does.</p>
+<p><strong>Save</strong> (<code>Ctrl</code>/<code>Cmd</code>+<code>S</code>, or the cue) writes the <code>labels.h5</code> sidecar of <em>every</em> recording
+holding unsaved labels — not just the open one. <strong>Close</strong> stops the server and is the only
+act that can lose hand work, so it is the only thing that prompts: it names the recordings
+still unsaved and offers to save them all first. (Closing the browser tab gets the
+browser's own "leave site?" dialog for the same reason.)</p>
+<p>Each sidecar is stamped with its recording's fingerprint — the <strong>index domain</strong> its
+<code>(view, frame, point)</code> keys are keys into (<code>point_names</code>, <code>camera_names</code>, the frame count)
+plus a <strong>recording fingerprint</strong> (each view's image size, since ground truth is stored in
+footage pixels, and the footage file basenames). Predictions are deliberately not part of
+it, so a re-run of the <em>same</em> recording — new detector weights, retuned triangulation —
+keeps your labels valid: ground truth is absolute.</p>
+<p><code>point_names</code> and the frame count must match <strong>exactly</strong>. A point reorder is a project-wide
+migration (<code>deeperfly project skeleton</code>) with its own dry run and confirmation, and remapping
+it silently here would bypass both. The camera axis is the one that gets remapped rather than
+refused: this rig names the same cameras three ways — file stems from a bare directory, source
+names from a config, view names from a detection plan — so labels authored <em>before</em> a
+recording was ever run used to be refused after its first run, which walked the
+label-first-then-calibrate workflow into a wall. Sizes and footage are compared per camera
+<em>through</em> that correspondence, so a rename is not mistaken for a different recording.</p>
+<p>Two consequences worth knowing:</p>
+<ul>
+<li>A recording listed with unsaved labels shows its <strong>live</strong> counts, not its sidecar's — the
+  numbers already include what is only in memory. That is what the dot is telling you.</li>
+<li>A <strong>job</strong> (the Jobs pane, or any <code>deeperfly</code> command) reads the files on disk. Save before
+  running one over labels you have just placed, in whichever recording they are in.</li>
+</ul>
+<p>To use the labels as training/eval data, export them to an <code>.npz</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>deeperfly<span class="w"> </span>labels-export<span class="w"> </span>RESULT<span class="w">           </span><span class="c1"># writes labels_gt.npz beside results.h5</span>
+</code></pre></div>
+<p>This writes the ground-truth pixels in footage pixel space, plus two masks that are
+<strong>separate axes, not filters already applied</strong>: <code>occluded</code> (the <strong>Hidden</strong> flag — the cells
+you held out of the loss; the array keeps its old name) and <code>absent</code> (the keypoints that are
+not on this animal). Your loss mask is <code>gt_mask &amp; ~occluded</code>, and absent channels should be
+<strong>masked</strong> — contributing no gradient. (Supervising them with an all-zero target heatmap is
+the stronger claim, "learn that nothing is here"; it needs a decode that can abstain and
+enough amputee animals to calibrate one.)</p>
+<p>To declare absence without opening the editor — across every clip of one animal at once,
+before any labeling — use
+<a href="../cli/#deeperfly-labels-absent"><code>deeperfly labels-absent</code></a>.</p>
+<h2 id="remote-use">Remote use<a class="headerlink" href="#remote-use" title="Permanent link">&para;</a></h2>
+<p>The server binds loopback by default, so the editor is private. To annotate on a
+remote machine, tunnel the port over SSH and open the browser locally:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ssh<span class="w"> </span>-L<span class="w"> </span><span class="m">8000</span>:localhost:8000<span class="w"> </span>user@host
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># on the remote host:</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>deeperfly<span class="w"> </span>gui<span class="w"> </span>RESULT<span class="w"> </span>--no-browser
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># then open http://localhost:8000/ in your local browser</span>
+</code></pre></div>
+<p>Binding a routable address (<code>--host 0.0.0.0</code>) is possible but the server is
+<strong>unauthenticated</strong> — only do so behind a trusted network. Prefer the tunnel.</p>
+<h2 id="keyboard-shortcuts">Keyboard shortcuts<a class="headerlink" href="#keyboard-shortcuts" title="Permanent link">&para;</a></h2>
+<p>Press <code>?</code> in the editor for the full, context-aware list. The essentials:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>←</code> / <code>→</code> (<code>Shift</code> ±10)</td>
+<td>Previous / next frame</td>
+</tr>
+<tr>
+<td><code>l</code>, <code>[</code> / <code>]</code></td>
+<td>Toggle Grid / Focus layout; cycle the focused camera</td>
+</tr>
+<tr>
+<td>Click / <code>Shift</code>+click / double-click</td>
+<td>Select a point / add-remove / that keypoint in every view</td>
+</tr>
+<tr>
+<td><code>Shift</code>+drag</td>
+<td>Rubber-band box: add every enclosed point</td>
+</tr>
+<tr>
+<td><code>a</code> (<code>Ctrl</code>/<code>Cmd</code>+<code>A</code>) / <code>v</code> / <code>Esc</code></td>
+<td>Select all / all in the current view / clear the selection</td>
+</tr>
+<tr>
+<td><code>Enter</code> / <code>Backspace</code></td>
+<td>Place / clear the selection's ground-truth pixels</td>
+</tr>
+<tr>
+<td><code>e</code> / <code>r</code></td>
+<td>Hidden (hold out of the training loss) / Reset both facts</td>
+</tr>
+<tr>
+<td><code>x</code> / <code>Shift</code>+<code>X</code></td>
+<td>Absent, this frame / the whole recording</td>
+</tr>
+<tr>
+<td><code>Ctrl</code>/<code>Cmd</code>+<code>Z</code> / <code>Ctrl</code>/<code>Cmd</code>+<code>Y</code></td>
+<td>Undo / redo</td>
+</tr>
+<tr>
+<td><code>s</code> / <code>n</code> / <code>p</code></td>
+<td>Toggle skeleton / labels / 3D estimate</td>
+</tr>
+<tr>
+<td><code>w</code> / <code>u</code></td>
+<td>Toggle the two checks: reprojection distance / under-labeled joints</td>
+</tr>
+<tr>
+<td><code>m</code> / <code>Shift+M</code> / <code>c</code></td>
+<td>Toggle NMF skeleton / NMF mesh / 3D view</td>
+</tr>
+<tr>
+<td><code>j</code></td>
+<td>Show / hide the labeled-frames list</td>
+</tr>
+<tr>
+<td><code>Ctrl</code>/<code>Cmd</code>+<code>S</code></td>
+<td>Save labels — every recording holding unsaved work</td>
+</tr>
+<tr>
+<td><code>?</code> / <code>Esc</code></td>
+<td>Show shortcuts / close an overlay</td>
+</tr>
+</tbody>
+</table>
+<h2 id="calibration-landmarks">Calibration landmarks<a class="headerlink" href="#calibration-landmarks" title="Permanent link">&para;</a></h2>
+<p>A from-scratch project has no camera rig, and the rig is solved from labels — but <em>which</em>
+labels decides whether it converges:</p>
+<blockquote>
+<p>A skeleton keypoint at frame <em>t</em> is a <strong>different 3D point</strong> from the same keypoint at
+<em>t+1</em>, because the animal moved. So <em>N</em> labeled frames of <em>P</em> keypoints add <code>3·N·P</code>
+unknowns, all inside a 3 mm blob near the middle of the field. A <strong>static</strong> landmark — a
+scratch on the coverslip, the tip of the tether, a dust speck on the glass — is <strong>one</strong> 3D
+point observed in <code>V·N</code> images, spread through the scene <em>volume</em>. That is what conditions
+the solve.</p>
+</blockquote>
+<p>Declare them in the project's <code>landmarks.toml</code>, then place them in the <strong>Landmarks</strong> tab:</p>
+<ol>
+<li>Click a landmark row to <strong>arm</strong> it (the row highlights and the cursor becomes a crosshair
+   over every view).</li>
+<li>Click the same feature in as many views as can see it. Each click places one observation.</li>
+<li>Click the row again — or leave the tab — to disarm.</li>
+</ol>
+<p>Landmarks draw as <strong>amber diamonds</strong>, deliberately a different <em>shape</em> from keypoints rather
+than just a different color: a landmark is a different kind of thing, and shape survives
+color blindness and a busy frame.</p>
+<p>The gesture is a click, not a drag, for a structural reason: a landmark has no detection to
+grab and no reprojection to nudge, so until one exists there is nothing on the canvas to
+start a drag from.</p>
+<p>A <strong>static</strong> landmark keeps one 3D position for the whole recording, so re-placing it in more
+frames sharpens it — but always on <em>the same feature</em>. <code>deeperfly calibrate</code> reports each
+static landmark's pixel <strong>scatter</strong>, and a large value means it was not actually static, or
+was placed on a different speck in a different frame. Both corrupt the solve.</p>
+<p>Landmarks live in their own namespace in <code>labels.h5</code> and never touch the skeleton: they cannot
+reach the detector, the IK body plan, the bone-length priors or the training export.</p>
+<h2 id="running-the-pipeline-from-the-editor">Running the pipeline from the editor<a class="headerlink" href="#running-the-pipeline-from-the-editor" title="Permanent link">&para;</a></h2>
+<p>Open a <strong>project</strong> (<code>deeperfly gui myproject/</code>) and the <strong>Jobs</strong> tab can run pipeline
+commands: suggest frames, export labels, check or solve the calibration.</p>
+<p>Each row <em>is</em> the CLI command, printed verbatim and click-to-copy — so a GUI action that fails
+is reproducible in a terminal, and there is no behavior only the GUI can reach. Jobs run one
+at a time in their own process (two stages writing one <code>results.h5</code> would corrupt it, and a
+CUDA OOM must not take your unsaved labels with it).</p>
+<p>There is no progress percentage, on purpose: these commands emit human log lines, and a number
+synthesized from those would be a fiction with a spinner attached. The last log line is shown
+instead, which is the honest signal.</p>
+<p>A session opened on a bare <code>results.h5</code> has no queue and says so — jobs need a project to run
+in.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      GPL-3.0-only
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "toc.follow", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

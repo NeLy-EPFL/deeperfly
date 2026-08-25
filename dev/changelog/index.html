@@ -1,0 +1,1589 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/deeperfly/dev/changelog/">
+      
+      
+        <link rel="prev" href="../reference/api/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Changelog - deeperfly</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#changelog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="deeperfly" class="md-header__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            deeperfly
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="deeperfly" class="md-nav__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    deeperfly
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Correction GUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/bundle_adjustment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundle adjustment of a multi-camera rig
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/pipeline_walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The deeperfly pipeline, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How it works
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline stages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/detectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The dense-38 detectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/keypoints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keypoint locations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/conventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions & glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/output-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<!-- Included from the repository root rather than copied: a changelog with two versions is
+     a changelog with a wrong one, and the root file is what a clone and a release page
+     show. `pymdownx.snippets` resolves the path against `base_path` (see mkdocs.yml). -->
+
+<h1 id="changelog_1">Changelog<a class="headerlink" href="#changelog_1" title="Permanent link">&para;</a></h1>
+<p>Notable changes to <code>deeperfly</code>, newest first. The format follows
+<a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>; versions are
+<a href="https://semver.org/spec/v2.0.0.html">semantic</a>.</p>
+<p><strong>0.2.0 is the first release.</strong> <code>0.1.0</code> was a version number in <code>pyproject.toml</code> and never
+a git tag, so it has no entry of its own and 0.2.0 spans the whole distance from it. It is
+deliberately not 1.0: the release is a real one, but 1.0 is a promise about stability and
+this one breaks the skeleton name, the detector registry, three config keys and the public
+API. A version that says so is more useful than one that flatters.</p>
+<h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="changed">Changed<a class="headerlink" href="#changed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>The default 2D detector now has a PADDED heatmap field.</strong> <code>[pose2d].models</code> names
+  <code>mvt_r28_pad48_gray_fly38.pth</code> (sha <code>ae482d3a…</code>, 86,082,205 bytes) in place of
+  <code>mvt_alt8_r27_gray_fly38.pth</code>. Every earlier MVT was structurally unable to report a joint
+  outside the frame — its decode is a soft-argmax, an expectation over in-image pixel
+  coordinates, so a joint the crop cut off saturated against the border and came back at high
+  confidence up to 200 px from the truth, straight into RANSAC and the bundle adjustment. The
+  new checkpoint declares <code>arch.hm_margin_px = 48</code> and gets that margin by padding the
+  network's <em>input</em> (352×608, field 88×152 at unchanged stride 4), so the extra cells are
+  computed from real tokens rather than from zeros.</li>
+</ul>
+<p><strong>Nothing a config can see has changed.</strong> <code>input_size</code> still reports the 256×512 reported
+  frame; the margin lives inside <code>pose2d/mvt.py</code>, which pads in <code>prepare_images</code> and subtracts
+  it again in <code>decode_points</code>. What is new is that a returned coordinate may legitimately fall
+  outside <code>[0, 1]</code> — an off-frame joint, not an error, and it must not be clipped.
+  <code>deeperfly.triangulation</code> already consumes such points.</p>
+<p>Costs and caveats, stated because they are real: the padded model runs at <strong>24.4 frames/s
+  against 46.3</strong> for r27 on an RTX 4080 (1.9×), and its <strong>accuracy has not yet been
+  evaluated</strong> — the mechanism is confirmed to fire (0.13% of detections on a full recording
+  land outside the box, reaching 43 model px, where r27 produces exactly zero) and no in-frame
+  regression was detected, but there is no measurement yet that off-frame points land in the
+  <em>right</em> place. Pin <code>weights = "mvt_alt8_r27_gray_fly38.pth"</code> to stay on the previous
+  detector.</p>
+<ul>
+<li>
+<p><code>inference.detect_candidates_sequence</code> (the top-K path, <code>pictorial_structures = true</code>) now
+  <strong>refuses</strong> a model with a padded field instead of decoding it through a normalization that
+  assumes the field spans the input. That path was already silently wrong for the dense HRNet.</p>
+</li>
+<li>
+<p><code>pose2d.models.LoadedModel.prepare</code> passes a margin through to a class that declares one, and
+  raises if the class cannot accept it — preparing a padded checkpoint without its pad would
+  shift every point by the margin with nothing to notice.</p>
+</li>
+<li>
+<p><strong><code>pose2d/autocrop.py</code> now applies its exact clipping test to the MVT.</strong> <code>LoadedModel.padded_field</code>
+  is what picks the test, and it is now true for the packaged detector, so "does this crop cut the
+  animal?" is answered by counting detections outside <code>[0, 1]</code> rather than by counting ones within
+  3 px of the border (<code>BORDER_BAND_PX</code>). The band was a stand-in for a field that could not
+  represent an off-frame joint; a searched crop (<code>{op = "crop", auto = true}</code>) may therefore pick a
+  different box than it did on r27.</p>
+</li>
+<li>
+<p><strong>The packaged <code>[eks].inflate_threshold</code> is <code>30.0</code></strong>, up from <code>15.0</code> (the dataclass default is
+  still <code>5.0</code>). Reprojection cannot choose this number — the smoother is <em>supposed</em> to leave the 2D
+  where it judges the 2D unreliable, and a 5→30 sweep barely moves the reprojection distribution —
+  so it was chosen against ground truth instead: on 54 recordings and 63,921 labeled cells, mean 2D
+  error falls 4.916 → 4.628 px and p90 9.103 → 8.343 going from 5 to 30, while frame-to-frame jumps
+  grow monotonically. Accuracy is flat from 30 to 100, so 30 is where the gain is realized at the
+  smallest temporal cost. Turning the inflation <em>off</em> is worse than any threshold. The full table is
+  in the configuration reference's <code>[eks]</code> section. The five <code>examples/*/config.toml</code>
+  move with it.</p>
+</li>
+</ul>
+<h3 id="added">Added<a class="headerlink" href="#added" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p><strong>A confidence floor, off unless the artifact asks for it.</strong> <code>mvt.predict_points</code> reads
+  <code>arch.conf_floor</code> and reports a point below it as <code>NaN</code> — which is what <code>deeperfly.triangulation</code>
+  already means by "this camera cannot see this point" — instead of as a confident location pinned
+  to the border. It is meaningful only for a checkpoint trained to answer "not here" with a flat
+  map, where the confidence separates the two answers by ~500×; on one that was not, confidence does
+  not track off-frame-ness and a floor would drop good points. The packaged <code>mvt_r28_pad48</code> ships
+  <code>conf_floor = 0.0</code>, i.e. the gate is <strong>off</strong>.</p>
+</li>
+<li>
+<p><code>load_mvt</code> refuses an artifact whose <code>arch.hm_margin_px</code> is negative, is not a whole number of
+  patches (a fractional token grid is truncated by the backbone, shifting every point), or whose
+  <code>arch.hm_margin_fill</code> disagrees with what this module pads with — the fill is a train/test
+  contract, not a cosmetic choice.</p>
+</li>
+</ul>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>results.py</code>'s schema docstring described <code>eks/posterior_var</code> as <code>(T, P)</code>. It is <code>(T, P, 3)</code> —
+  the smoother's variance is per axis.</li>
+</ul>
+<p>The one thing the tree names as planned is the <strong>trainer</strong>: <code>deeperfly.training</code>
+was removed here (see below) and training will return written directly rather than absorbed.
+The multiview transformer is trained today through a patched Lightning Pose fork pinned to
+python 3.12 in a 7.5 GB environment of its own, which is why it is not an extra — behind one,
+<code>nvidia-dali-cuda110</code> (linux-x86_64 only) would have to resolve in metadata that also
+installs on macOS.</p>
+<h2 id="020-2026-08-19">[0.2.0] - 2026-08-19<a class="headerlink" href="#020-2026-08-19" title="Permanent link">&para;</a></h2>
+<h3 id="upgrading-from-010">Upgrading from 0.1.0<a class="headerlink" href="#upgrading-from-010" title="Permanent link">&para;</a></h3>
+<p>Ten things a 0.1.0 tree can trip over. Most configs need one edit or none.</p>
+<ol>
+<li><strong><code>[skeleton]</code>, if it spells out <code>point_names</code>: nothing to do.</strong> A self-contained skeleton
+   table is left exactly as written, and <code>name</code> goes on being a free-text label for it — so a
+   0.1.0 config keeps its own point order and means what it always meant. Only a table that
+   <em>references</em> a skeleton resolves a packaged one, which 0.1.0 had no way to write.
+   <code>name = "fly38b"</code> (written by any dev build) still resolves, with an INFO line saying so.
+   A reference reading <code>name = "fly38"</code> now gets the <strong>midline-abdomen</strong> set, not the
+   DeepFly3D one — spell the old points out, or point <code>file</code> at <code>tests/data/fly38_deepfly3d.toml</code>.</li>
+<li><strong><code>class = "hourglass"</code> / <code>"deepfly2d"</code> is refused.</strong> Two classes remain, both dense:
+   <code>"mvt"</code> and <code>"hrnet"</code>. Selecting one is two lines and one of them is the filename:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[pose2d]</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;dense38mv&quot;</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;dense38mv&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">class</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;mvt&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;mvt_alt8_r27_gray_fly38.pth&quot;</span><span class="w"> </span><span class="p">}]</span>
+</code></pre></div>
+<p>Then delete every <code>[pose2d.output_points]</code> row — a dense plan needs no mapping (channel <em>i</em>
+   is point <em>i</em> of the pathway's view), and each view needs one pathway rather than a pathway
+   and a mirrored twin. <strong>Nothing downloads.</strong> Set <code>$DEEPERFLY_MODELS</code> to the directory holding
+   the checkpoints (several, <code>os.pathsep</code>-separated, like <code>PATH</code>), name the weights as a bare
+   filename, and run <code>deeperfly doctor</code> — it prints the variable, each search directory with
+   what is in it, and whether the default config's checkpoint resolves. A dev-build config
+   naming the RGB <code>mvt_alt8_fly38b.pth</code> must be repointed; that artifact no longer loads.
+3. <strong><code>[cameras.&lt;name&gt;].preprocess</code> is a hard error</strong>, and the message names its replacement.
+   It had been parsed, validated and thrown away for several releases, so a config cropping a
+   view this way was already detecting on the uncropped frame. Move the ops to the detection
+   pathway, where they are inverted on the way back:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[pose2d]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">preprocessors</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;crop_f&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">ops</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;crop&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">400</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">290</span><span class="p">,</span><span class="w"> </span><span class="n">width</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">800</span><span class="p">,</span><span class="w"> </span><span class="n">height</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">400</span><span class="w"> </span><span class="p">}]</span><span class="w"> </span><span class="p">}]</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">pathways</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;f&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;vid_f&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">preprocessor</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;crop_f&quot;</span><span class="w"> </span><span class="p">}]</span>
+</code></pre></div>
+<p>…or <code>auto = true</code> in place of the box to have one measured per recording.
+4. <strong><code>[inverse_kinematics].constant_points</code> is removed.</strong> Move its points into the
+   <code>[postprocess]</code> chain, which is on by default now:
+   <code>[[postprocess.ops]]</code> with <code>op = "static"</code>, <code>method = "median"</code>, <code>points = [...]</code>. The old
+   key was the solver's private pin — it collapsed the listed points for the fit alone, so the
+   stored angles and the stored 3D disagreed about exactly those points, silently. The op
+   applies the correction to the <em>result</em>, in 2D and 3D, and logs how far it moved what it
+   touched.
+5. <strong><code>[inverse_kinematics]</code> scipy knobs are rejected, not ignored</strong>: <code>max_nfev</code>, <code>loss</code>,
+   <code>f_scale</code> and <code>regularization</code> tuned a solver that no longer exists. The QuickIK knobs are
+   <code>n_iterations</code>, <code>neutral_weight</code>, <code>damping</code>, <code>position_tolerance</code>, <code>angle_tolerance</code>,
+   <code>fixed_body</code>, <code>weigh_by_confidence</code>, <code>parallel</code>, <code>segment_len</code>, <code>overlap_len</code>.
+6. <strong>Three more stages now run by default</strong> — <code>eks</code>, <code>postprocess</code>, <code>inverse_kinematics</code> — and
+   <code>symmetric_segments</code> with them. To decline one, <code>deeperfly config set pipeline.do_eks false</code>
+   now works on any config that already states the key. A 0.1.0 <code>[pipeline]</code> table does not
+   state these three, and appending a bare key after an existing header would reparent the keys
+   below it, so <code>config set</code> refuses and tells you to add the line by hand.
+7. <strong>Public API removals</strong> (each has an entry under <em>Removed</em>): <code>deeperfly.load_detector</code>,
+   <code>deeperfly.pose2d.model</code>, <code>deeperfly.pose2d.weights</code>, <code>deeperfly.training</code>,
+   <code>deeperfly.gui.corrections</code>, <code>deeperfly.inverse_kinematics.core</code> / <code>.kinematics</code>,
+   <code>Config.frame_transforms</code>, <code>preprocessing.parse_frame_transforms</code>,
+   <code>FrameTransform.map_intrinsics</code> and <code>Camera.from_spec(transform=…)</code>.
+   <code>solve_inverse_kinematics</code> keeps its name and changes its keywords.
+8. <strong>Caches.</strong> The skeleton's <em>name</em> left every stage fingerprint (the ordered <code>point_names</code>
+   and the <code>bones</code> are what decide a stage's answer), so the rename alone re-detects nothing.
+   Two things do recompute on purpose, and both matter to anyone who has been tracking dev
+   builds rather than to a 0.1.0 tree, which had no IK stage at all: any stored <strong>leg or
+   abdomen angle</strong>, because <code>IK_SOLVER_REVISION</code> went 1 → 2 for a convention change that used
+   to slip through the digest; and a fit whose <strong>marker placement</strong> changed, now that
+   <code>[inverse_kinematics.head]</code> / <code>[inverse_kinematics.abdomen]</code> retargets digest. A run also refuses an output directory
+   whose stored pose is on a different point set, naming the points each side has that the
+   other does not, and calling out a pure reordering explicitly.
+9. <strong><code>results.h5</code> from 0.1.0 (schema v2) still reads.</strong> New writes are v3; <code>deeperfly repack</code>
+   converts an existing file without recomputing anything.
+10. <strong><code>corrections.h5</code> has no reader any more.</strong> The editor stopped writing one in the rewrite
+    and the migration-on-open is gone, so anything still held in that format has to be read
+    with an older checkout.</p>
+<h3 id="added_1">Added<a class="headerlink" href="#added_1" title="Permanent link">&para;</a></h3>
+<p><strong>Detectors, both dense</strong> — every tracked point in every view, so a contralateral point
+arrives as a prediction to correct rather than a gap to author from nothing (measured
+visibility 1.000 against the retired plan's ~0.5).</p>
+<ul>
+<li><code>class = "hrnet"</code>, the per-view detector, which also runs the HGNetV2-B4 checkpoint.</li>
+<li><code>class = "mvt"</code>, the multiview transformer: the views of a frame are encoded together, so a
+  joint only one camera can see informs the cameras that cannot. Verified against the
+  Lightning Pose route on a real recording at 0.0000 px in footage pixels, and permutation-
+  equivariant with its views to 4.8e-05 of output range.</li>
+<li>Three checkpoints ship, one generation, trained on 55 recordings / 465 moments / 138,708
+  label cells, each recording the <code>fly38</code> point order and taking one grayscale plane:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>file</th>
+<th>class</th>
+<th>sha256</th>
+<th>bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mvt_alt8_r27_gray_fly38.pth</code></td>
+<td><code>mvt</code></td>
+<td><code>d4ca455b…</code></td>
+<td>86,082,077</td>
+</tr>
+<tr>
+<td><code>hrnet_w32_r27_gray_fly38.pth</code></td>
+<td><code>hrnet</code></td>
+<td><code>13ceb937…</code></td>
+<td>127,076,045</td>
+</tr>
+<tr>
+<td><code>hgnetv2_b4_r27_gray_fly38.pth</code></td>
+<td><code>hrnet</code></td>
+<td><code>fa427062…</code></td>
+<td>62,452,371</td>
+</tr>
+</tbody>
+</table>
+<p>They live at <code>/mnt/upramdya/data/TL/deeperfly-models/260819_*</code>, each a directory carrying
+  the <code>.pth</code>, a README, <code>SHA256SUMS</code> and <code>fly38.toml</code>. The packaged default names the MVT.
+- <code>{ op = "crop", auto = true }</code>: the detector's box, measured per recording. Fed a whole
+  1600×1008 axial frame the fly lands at a scale no detector saw — 255 px of error, a collapse
+  — and the search reaches 2.9 px, better than the 3.4 px a person placed by hand. The
+  <strong>search</strong> is a grid over (center, width) scored by detector confidence and needs no rig;
+  what needs a solved rig is the <strong>accept gate</strong>, which is reprojection agreement with the
+  other cameras' 3D. Against a nominal orbit the gate measures its own reference ~250 px out,
+  refuses rather than choose with a broken ruler, and falls back to confidence alone — a box
+  ~1.7× too wide, still far better than the whole frame. Export a calibration, point
+  <code>[cameras].calibration</code> at it, and the gate engages. <code>deeperfly auto-crop</code> runs the search
+  alone and prints the TOML that freezes it.</p>
+<p><strong>Two stages after triangulation</strong>, both on by default.</p>
+<ul>
+<li><code>[eks]</code> — the nonlinear multi-view ensemble Kalman smoother of Lightning Pose 3D, fitting one
+  3D trajectory per keypoint to the whole recording through the rig's own projection. Median
+  frame-to-frame acceleration drops <strong>39%</strong> (0.0062 → 0.0038), at the cost of lagging a claw
+  mid-swing on 0.13% of cells. Variance inflation — the component that repairs a blown
+  detection — needs two <em>views</em> rather than two models, so it is fully active with a single
+  detector. Omitting <code>smooth_param</code> fits it per keypoint by maximum marginal likelihood, which
+  is the right default: a fly's claw and its thorax do not move alike.</li>
+<li><code>[postprocess]</code> — an ordered chain of corrections that come from knowing the animal rather
+  than the pixels, applied where a reader can see them and each logging how far it moved what
+  it touched. <code>op = "static"</code> (five centers: <code>median</code>, <code>mean</code>, <code>trimmed_mean</code>, <code>mode</code>,
+  <code>geometric_median</code>) and <code>op = "symmetrize"</code>. The packaged config freezes the neck and the six
+  thorax-coxae and symmetrizes the three body-fixed pairs — never the legs, whose left/right
+  asymmetry at any instant <em>is</em> the behavior.</li>
+</ul>
+<p><strong>Inverse kinematics</strong>, now a default stage.</p>
+<ul>
+<li>QuickIK (Rust, PyO3) replaces the per-limb scipy/JAX fit: one solve for the whole body — six
+  legs, head and abdomen against every tracked keypoint at once, warm-started frame to frame —
+  at 0.5 ms/frame. Optional extra <code>deeperfly[ik]</code>, because quickik publishes no wheels; the
+  stage now <strong>skips with a logged reason</strong> when it is absent instead of raising, which also
+  costs the videos that come after it.</li>
+<li>Articulated head and abdomen chains, retargeted onto the packaged skeleton's five dorsal
+  midline stripes: a plan covers 38 of 38 points and the abdomen fits in 100% of frames (it
+  returned NaN for every DOF before). Each chain's size is measured with a ruler its own
+  posture cannot move.</li>
+<li><code>symmetric_segments = true</code> (default): each mirror pair of leg segments takes the mean of the
+  two data-measured lengths, derived from the skeleton's declared <code>symmetries</code> rather than from
+  an <code>l</code>/<code>r</code> prefix. It constrains the animal, not its pose. The cost is measured and real —
+  3D residual 0.0120 → 0.0146 (+22%), reprojection 4.45 → 4.59 px, worse in 7 of 8 views — and
+  what it buys is one animal with angles comparable across sides instead of two half-animals,
+  plus the knowledge that a 5% femur difference which is not anatomy is a detector bias
+  otherwise reported as biology.</li>
+<li>The posed NeuroMechFly mesh overlays the 2D views in rendered videos and in the editor,
+  with a headless moderngl rasterizer (~10× the numpy/OpenCV painter's-order path, exact
+  depth-buffer occlusion) and a software fallback where there is no GL context.</li>
+</ul>
+<p><strong>A run narrows itself to the footage present</strong> instead of refusing the recording. A source
+with no footage invalidates the pathways reading it; a view no surviving pathway feeds leaves
+the rig, so <code>V</code> shortens; grid cells naming it are blanked, an orphaned <code>auto = true</code>
+preprocessor and its <code>[pose2d.output_points]</code> rows are dropped; one warning names the source,
+the pathways and the views. <code>Config.narrowed_to_sources</code> does it in <code>run_recording</code> <strong>before</strong>
+the snapshot and the fingerprints, so a seven-view run records a seven-view fingerprint and
+recomputes when the eighth camera turns up, while the snapshot still describes the rig that was
+configured. Below <code>config.MIN_VIEWS_FOR_3D</code> (two) it refuses, because one view fails silently
+everywhere — RANSAC gives a lone observation zero inliers and then erases it, and bundle
+adjustment reports success at a cost near 1e-26.</p>
+<p><strong>The annotation editor, the project layer and the from-scratch rig.</strong> <code>deeperfly gui</code> is a
+ground-truth annotation tool: 2D is the source, 3D is derived live from it. Labels live in a
+sparse <code>labels.h5</code> sidecar (schema v8) whose unit is an <em>instance</em> — one skeleton, created in a
+frame, owning a position for every (view, point) — with <code>hidden</code> narrowed to a pure training-loss
+switch, orthogonal to <code>gt</code>, and <code>absent</code> for a keypoint that is not on this animal. Around it:</p>
+<ul>
+<li><code>deeperfly project</code> — group recordings under one skeleton and one rig <strong>without moving a
+  label</strong>: <code>results.h5</code> and <code>labels.h5</code> stay where they are, adopted by symlink. Plus
+  <code>project config</code> / <code>project rig</code> (compose a run config from fragments — the rig belongs to the
+  setup, so changing one triangulation knob no longer means copying a whole config per
+  recording), <code>project export|import</code> (one shareable <code>.dfpkg</code>), <code>project skeleton</code> (a
+  skeleton edit as a typed migration over every label), <code>project import-outputs</code>.</li>
+<li><code>deeperfly calibrate</code> — solve a rig from hand labels and calibration landmarks, with a
+  readiness meter (<code>--dry-run</code>) that phrases every shortfall as the labeling that would fix it.
+  Validated cold against a known rig: recovered to 0.01% of its radius from landmarks alone,
+  0.02% from keypoints alone, 0.00% from both. <code>calibration.toml</code> is a portable solved rig
+  (<code>deeperfly calibration show|export</code>), and <code>[cameras].calibration</code> wins over the orbit.</li>
+<li>In the editor: a Landmarks tab that places calibration points by hand, a Bundle adjust tab
+  that solves the rig from the labels in the session and writes it as a new calibration, a Jobs
+  panel that runs pipeline commands as isolated serialized subprocesses, and recording tabs
+  that switch in place (<code>deeperfly gui --recording</code> is retired; the picker answers it live).</li>
+<li><code>deeperfly labels-suggest</code> (a ranked queue of which frames to label next),
+  <code>deeperfly labels-merge</code> (reconcile label sets that ended up in two places),
+  <code>deeperfly labels-export</code>, <code>deeperfly labels-absent</code>.</li>
+<li><code>[skeleton].symmetries</code> — left/right mirror pairs, with <code>flip_perm()</code>, a chirality check that
+  flags hand labels whose left/right identities look swapped, and a refusal for a mirrored
+  pathway that lands on the wrong body side.</li>
+</ul>
+<p><strong>The eight-camera rig is the packaged default.</strong> <code>[cameras.h]</code>, the axial hind camera, is no
+longer a commented-out example: it is the rig's only left/right <strong>bridge</strong> — without it no
+camera sees both body sides, so a contralateral joint is triangulated from one side's cameras
+alone — and it is what the shipped detector was trained on (the MVT checkpoint records
+<code>provenance/view_names_at_training = [rh, rm, rf, f, lf, lm, lh, h]</code>). Its numbers are not the side
+cameras': that view is on a different lens, so <strong>both</strong> its focal length and its distance
+differ, and no residual can detect it afterwards — bundle adjustment holds the intrinsics fixed
+and absorbs a focal error into the distance while reporting a clean solve. The shipped values
+are the example rig's; measure them per rig. A seven-camera recording needs no edit (see the
+narrowing above).</p>
+<p><strong>Config discovery and visualization.</strong></p>
+<ul>
+<li><code>deeperfly config show</code> / <code>deeperfly config set</code> — every key, its default and its
+  documentation derived from the code, so they cannot drift from it, and one key settable
+  without reading the other four hundred lines.</li>
+<li><code>deeperfly doctor</code> reports the weights search path (see the upgrade note), and <code>deeperfly
+  repack</code> rewrites result files in the current schema.</li>
+<li>Videos: <code>grid</code> layouts, <code>stage = "…"</code> to pin which stage's points a panel draws (unset means
+  the most-derived stage present, so a video's meaning otherwise changes when a later stage is
+  enabled), <code>crop = [x, y, w, h]</code> or <code>crop = "pose2d"</code> to frame each panel through the window
+  its own view detected through, <code>view = "bird"</code> (a synthetic dorsal plan view fitted to the
+  animal's own body axes — the one viewpoint showing all six legs with no body in the way),
+  <code>line_dash</code> so a before/after pair reads as two skeletons rather than one thick one, and
+  joints drawn as a full-opacity ring whose fill opacity is the detector's confidence.</li>
+<li><code>[annotation]</code> — how the editor turns 2D labels into a live 3D estimate (<code>solve_policy</code>,
+  <code>min_gt_for_exclusive</code>, <code>gt_weight</code>, …).</li>
+</ul>
+<h3 id="changed_1">Changed<a class="headerlink" href="#changed_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>fly38</code> now names the midline-abdomen 38-point set</strong> — six 5-point legs, two antennae,
+  <code>neck</code> and <code>abdomen0..4</code> — and is the only packaged skeleton. <code>name = "fly38b"</code> resolves to
+  it (<code>config.SKELETON_ALIASES</code>), so every config and output snapshot written before the rename
+  goes on loading. The historical DeepFly3D set that <code>fly38</code> named before (two 3-marker abdomen
+  <em>side</em> chains, no neck) is retired to <code>tests/data/fly38_deepfly3d.toml</code>. The two are not
+  interchangeable: both are 38 points and they share 32 of them in a different order, every
+  right-side point shifted by three.</li>
+<li><strong>One input plane.</strong> The corpus is monochrome, so every shipped detector takes a single
+  channel and the three it used to be handed were three copies of one image.
+  <code>LoadedModel.prepare</code> emits <code>(…, 1, H, W)</code>, HRNet's <code>in_chans</code> is 1 unconditionally, and
+  <code>mvt.ARTIFACT_FORMATS</code> is <code>("deeperfly-mvt-2",)</code>. No accuracy is lost: a <code>-2</code> artifact is the
+  same <em>function</em> as the <code>-1</code> it was folded from, since the stem fold sums filters that were
+  three copies of each other.</li>
+<li><strong>Every stage on by default except <code>pictorial_structures</code></strong>, in both places that decide it
+  (<code>config.STAGE_DEFAULTS</code> and the packaged <code>[pipeline]</code>). <code>pictorial_structures</code> stays off and
+  not for symmetry: it recovers a joint from the top-K peaks of a one-body-side detector, and
+  switching it on rewires triangulation <em>and</em> the smoother onto its committed 2D — NaN in every
+  view with no candidate within 15 px — so it would silently un-densify a dense run.</li>
+<li><strong>A dense plan needs no <code>[pose2d.output_points]</code>.</strong> Channel <em>i</em> → point <em>i</em> of the pathway's
+  view is the default, <code>n_out_channels</code> resolves to the skeleton's point count, and
+  <code>input_size</code> plus the normalization come from the checkpoint, whose loader refuses a config
+  that disagrees. A generated <code>[pose2d]</code> section for a 7-camera rig went from 343 lines to 63;
+  what was deleted carried no information, and a single transposition in it was a wrong limb
+  rather than a crash. Verified as the same mapping unwritten and not a different one:
+  bit-identical 2D. The mapping table still exists and is still supported (it is how one view
+  can be fed by several pathways) and is required for anything not dense; the shipped configs
+  declare none.</li>
+<li><strong>An unknown detector class is refused</strong> by <code>class_defaults</code>, naming the classes the build
+  has, instead of inheriting DeepFly2D's 19 channels and <code>mean = 0.22</code> and failing later on a
+  channel-count mismatch that says nothing about the word that was wrong. <code>DEFAULT_MEAN</code> and
+  <code>DEFAULT_N_OUT_CHANNELS</code> go with it. <strong>A checkpoint recording no channel names is refused</strong>
+  too: that check is the one thing standing between a mis-stamped config and a fly with its
+  limbs on the wrong joints, and a count check cannot substitute.</li>
+<li><strong>A calibration covering only some of the config's cameras subsets, with a warning</strong>, rather
+  than refusing: a calibration is a measurement of which cameras exist, so an unmeasured view
+  is dropped like a view with no footage. Covering <em>none</em> still refuses — that is the wrong-rig
+  case, which a subset cannot explain away. <code>deeperfly calibrate --from-calibration</code> stays
+  strict, because that is where the intrinsics to solve <em>with</em> come from.</li>
+<li><strong><code>results.h5</code> schema v3</strong>: a stage stores only what cannot be rebuilt. The smoother's 2D
+  <em>is</em> the projection of its 3D, the correction chain's differs on columns it holds constant
+  over time, and every reprojection error is recomputable — so the classification is measured
+  per write (<code>derived</code> / <code>override</code> / <code>full</code>) rather than tabulated per stage. Point arrays are
+  float32, which resolves 6.1e-05 px against the ~1 px a detector can localize. An eight-view
+  2007-frame recording went 66 MB → <strong>15.6 MB (4.23×)</strong>, handing back the same pose to
+  1.7e-05 px. Triangulation keeps its <code>reproj_error</code> on purpose: it is the only witness when an
+  outside tool overwrites that stage's 2D, worth 6.4 MB not saved.</li>
+<li><strong>Triangulation defaults to RANSAC</strong> (<code>t15</code>, <code>min_inliers = 2</code>, unweighted). Each leg joint is
+  triangulated from only its 2–3 ipsilateral views, and on an occluded joint the 2D detector
+  emits confident wrong guesses that unweighted DLT averages in.</li>
+<li><strong>Forward precision defaults to <code>float16</code></strong> (was bfloat16): identical keypoint accuracy to
+  fp32 (&lt;0.02 px) with higher inference throughput on CUDA, and <code>[[pose2d.models]].precision</code>
+  overrides it per model.</li>
+<li><strong>Faster, at the same numbers.</strong> Decode and compositing run concurrently: on the 7-camera
+  4009-frame example, pose2d 40.7 → 107 fps, warm render 110.7 → 16.7 s, full run 313 → 105 s
+  (3.0×), bit-identical output. Monochrome full-range footage is read as its luma plane, a
+  memcpy against swscale's YUV→RGB — which is ~90% of what a frame costs — measured 100–300×;
+  TV-range footage still converts, because there the plane is a different set of numbers.
+  The next window is prepared on a worker thread while the GPU still has this one, and a
+  window's pathways prepare concurrently. In the editor a held-open <code>FrameCursor</code> takes a step
+  forward from 2224 ms to 5 ms and a jump from 2664 ms to 195 ms (the GOP walk itself).</li>
+<li>The test suite runs across processes with each worker's thread pools capped to one thread:
+  115 s serial → 39 s. <code>-n auto</code> alone is worthless and measurably so (120 s), because N
+  workers each ask torch for one intra-op thread per core.</li>
+<li>The three pre-implementation plan documents moved from <code>docs/</code> to <code>design/</code>. MkDocs publishes
+  every <code>.md</code> beneath <code>docs/</code> whether or not it is in the nav, and an unlisted page is an INFO
+  rather than a warning, so all three had been live on the public site — superseded designs
+  read as documentation.</li>
+</ul>
+<h3 id="removed">Removed<a class="headerlink" href="#removed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>The stacked-hourglass / DeepFly2D detector</strong>: <code>class = "hourglass"</code> / <code>"deepfly2d"</code>,
+  <code>deeperfly.pose2d.model</code> (HourglassNet), <code>deeperfly.pose2d.weights</code>, the public
+  <code>deeperfly.load_detector</code>, and the sh8 <strong>auto-download</strong> — with it, any auto-download at all.
+  It was already off every path that matters (the packaged config and all six examples are
+  dense) and was the last thing keeping several DeepFly2D-shaped assumptions alive in code the
+  dense detectors run through. <code>pose2d/detector.py</code> survives, trimmed to what every class
+  shares and no class owns; the device, input-coercion and precision plumbing moved to
+  <code>pose2d/runtime.py</code>.</li>
+<li><strong><code>deeperfly dense-config</code> and <code>deeperfly.pose2d.dense_plan</code>.</strong> The command existed to write
+  a table that no longer exists — 122 mapping rows for a 7-view rig, 304 for an 8-view one. Its
+  one remaining job, pointing a config at a newly trained checkpoint, is now editing <code>weights</code>;
+  the check behind it (a checkpoint's ordered point names against the config's skeleton) did
+  not go with it and runs on every run.</li>
+<li><strong><code>deeperfly.training</code></strong> — <code>mirror_decisions</code>, <code>mirror_sample</code>, <code>mirror_view_names</code> and the
+  heatmap-target helpers: a trainer's numeric contract with no trainer, 520 lines with zero
+  importers anywhere in the package, whose own documentation named a <code>deeperfly[train]</code> extra
+  that <code>pyproject.toml</code> has never declared.
+  <code>[cameras.&lt;name&gt;].mirror</code> and <code>Config.mirror_views()</code> stay — the key is a fact about how the
+  rig was built.</li>
+<li><strong><code>deeperfly.gui.corrections</code></strong> (<code>Corrections</code>, <code>load_corrections</code>, <code>save_corrections</code>,
+  <code>migrate_from_corrections</code>) and with it the dense <code>corrections.h5</code> format. The editor stopped
+  writing one in the rewrite; a <code>$HOME</code> sweep found no file left to read.</li>
+<li><strong><code>[inverse_kinematics].constant_points</code></strong> (item 4 above) and the scipy-era solver knobs
+  (item 5), plus <code>deeperfly.inverse_kinematics.core</code> / <code>.kinematics</code> — 502 lines of numerics —
+  and the legacy antenna-vector head method with its <code>c_head-&lt;side&gt;_pedicel-{pitch,yaw}</code> angles.</li>
+<li><strong><code>[cameras.&lt;name&gt;].preprocess</code></strong> (item 3), along with the dead machinery behind it:
+  <code>Config.frame_transforms</code>, <code>preprocessing.parse_frame_transforms</code>,
+  <code>FrameTransform.map_intrinsics</code> and <code>Camera.from_spec(transform=…)</code>. <code>map_intrinsics</code> — the
+  function that would have made the key correct — was reachable only from the dead path, so
+  that intrinsics-shifting capability has never run in production. Worth knowing before anyone
+  tries to revive the key rather than refuse it: a pathway's ops are inverted on the way back,
+  so a detection meets its camera in raw footage pixels; the retired key moved the camera into
+  cropped-pixel space instead, and honoring both would double-correct by exactly the crop
+  offset.</li>
+<li><strong>The <code>deeperfly-mvt-1</code> artifact format</strong> (three channels), and the packaged DeepFly3D
+  skeleton preset (moved to <code>tests/data/</code>, see <em>Changed</em>).</li>
+</ul>
+<h3 id="fixed_1">Fixed<a class="headerlink" href="#fixed_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>The heatmap decode was biased half a cell toward the origin.</strong> It divided the arg-max cell
+  index by the heatmap size, a top-left-corner convention, against training targets that peak
+  at <code>floor(keypoint * heatmap_size)</code> — about <strong>3.75 px up-and-left</strong> on this rig's 960×480
+  frames, on every decoded point, and not recoverable by sub-pixel refinement.</li>
+<li><strong>The leg chains are parameterized in flygym's own frame.</strong> The template had two DOF axes
+  swapped and the plan rotated each leg subtree by the wrong body frame (the coxa-centroid
+  frame, pitched ~23° away), which left the fit unable to reproduce NeuroMechFly's own resting
+  posture within NeuroMechFly's own joint limits. Fitting the model's neutral keypoints, the
+  residual goes 0.0340 → 0.0011 and the angles land 1.02° from the model's spring reference
+  (was 32.0°). On 287 frames of the example recording: all 24 leg DOFs 0.0334 → 0.0198
+  (<strong>−41%</strong>), reprojection 4.68 → 2.89 px, worst pinned DOF 71.1% → 0.7% of frames. The
+  residual now sits at the rigid-segment-length floor. <strong>Breaking:</strong> every stored leg angle
+  changes convention, which is what <code>IK_SOLVER_REVISION = 2</code> forces to recompute.</li>
+<li><strong>The abdomen markers ride the segment behind the fold.</strong> <code>abdomen3</code> and <code>abdomen4</code> used to
+  share a body, so no joint lay between them and the model held them 18% short of what the
+  animal measured. Re-anchoring one body proximal: <code>abdomen3</code> −72%, <code>abdomen4</code> −60%, the
+  five-marker chain 0.0170 → 0.0098 (−42%), legs unchanged as a control. <strong>Breaking:</strong> the
+  lateral DOF is flygym's <code>-roll</code>, not its <code>-yaw</code> — five stored angles and five
+  <code>[inverse_kinematics.bounds]</code> keys are renamed. The twist stays unfitted because it <em>aliases</em>
+  the lateral bend (displacement fields agreeing to cos 0.87–0.97), not because its lever arm
+  vanishes.</li>
+<li><strong>The committed <code>nmf_mesh.npz</code> was the old skeleton's asset</strong>, so the mesh overlay skinned the
+  right-side legs between the wrong keypoints and registered the body on three wrong points.
+  Both asset generators now reproduce their output, and the viewer table, the keypoints JSON
+  and the IK articulation are checked to agree.</li>
+<li><strong>Grayscale input was not actually in effect for any <code>hrnet</code>/<code>hgnet</code> plan.</strong> The gray decode
+  requires every model in a plan to declare <code>accepts_gray</code>, and <code>_HRNetPose</code> did not — so those
+  two paid the full YUV→RGB conversion, ~90% of what a frame costs, to feed a network that
+  immediately took one channel back.</li>
+<li><strong>A retarget could validate a stale fit.</strong> The IK fingerprint recorded per-DOF bounds and
+  nothing else, so retargeting a chain with <code>[inverse_kinematics.head]</code> /
+  <code>[inverse_kinematics.abdomen]</code> reused the previous fit while the config on disk described a
+  different one. Marker placement now digests, as resolved neutral positions, depths and base
+  point rather than as the config table, so a retarget expressed any of the three ways it can be
+  is one comparison.</li>
+<li><strong><code>deeperfly run</code> resolved a recording's footage against the discovery config</strong>, not against
+  the config the run would use. The packaged default was a seven-camera rig, so an eight-camera
+  recording came back missing its hind view — and nothing noticed until a frame was wanted,
+  which with a cached <code>pose2d</code> meant dying in visualization with advice to do what had just
+  been done.</li>
+<li>Three foundation bugs under the narrowing: <code>source_sources</code> was all-or-nothing, so one absent
+  key discarded the whole map and a seven-of-eight recording resolved to <em>zero</em> footage;
+  <code>source_image_sizes</code> opened every source unconditionally, and opening an empty one raises;
+  <code>find_recording</code> returned <code>None</code> for a partial directory, which is the gate that runs first.</li>
+<li><strong><code>deeperfly config set pipeline.do_&lt;stage&gt;</code></strong> never worked: it refused any file already
+  declaring the table — correctly, because appending a bare key after an existing header
+  reparents what follows — and the packaged config states every <code>[pipeline]</code> flag, so that
+  refusal was the whole surface. An existing key is now rewritten in place; a genuinely new key
+  under an existing table is still refused, with the reason. Its validation also looked up a
+  <code>Config.pipeline</code> attribute that does not exist.</li>
+<li><strong>Feature maps are selected by stride, not by index.</strong> <code>out_indices=(1,2,3,4)</code> is a fact
+  about HRNet (whose index 0 is a stride-2 stem), and on a ResNet or an HGNet the same tuple
+  hands the head strides 8/16/32/32 — a model that builds, runs and is quietly wrong. The head
+  type and keypoint count are likewise read from the checkpoint rather than defaulted; a <code>unet</code>
+  checkpoint rebuilt as <code>concat</code> used to lose every arm to a <code>load_state_dict</code> mismatch that a
+  caller saw as an arm with no rows.</li>
+<li><code>assemble_result</code> read the IK arrays but never the meta, so a run's videos drew the fit at
+  <code>body_scale = 1.0</code> with model-size head and abdomen while the editor on the same file used
+  the fitted ones.</li>
+<li>Fragment extraction read any continuation line of a multi-line array beginning with <code>[</code> as a
+  new table header, so <code>extract_section</code> cut a config off <em>inside</em> an array and produced a
+  fragment that did not parse at all.</li>
+<li><code>Project.create</code> defaulted to <code>fly38b</code> while <code>deeperfly project new --skeleton</code> defaulted to
+  <code>fly38</code> — the CLI seeded the old point set and the library the new one.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      GPL-3.0-only
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,586 @@
+{
+ "skeleton": "fly38",
+ "limbs": [
+  {
+   "name": "lf_leg",
+   "color": "#0f7399"
+  },
+  {
+   "name": "lm_leg",
+   "color": "#1a8daf"
+  },
+  {
+   "name": "lh_leg",
+   "color": "#75becb"
+  },
+  {
+   "name": "l_antenna",
+   "color": "#0a4f6b"
+  },
+  {
+   "name": "rf_leg",
+   "color": "#ba1e31"
+  },
+  {
+   "name": "rm_leg",
+   "color": "#c9564f"
+  },
+  {
+   "name": "rh_leg",
+   "color": "#d58579"
+  },
+  {
+   "name": "r_antenna",
+   "color": "#8c1525"
+  },
+  {
+   "name": "neck",
+   "color": "#15a315"
+  },
+  {
+   "name": "abdomen",
+   "color": "#61e47b"
+  }
+ ],
+ "points": [
+  {
+   "name": "lf_thorax_coxa",
+   "limb": "lf_leg",
+   "color": "#0f7399",
+   "body": "lf_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lf_coxa_trochanter",
+   "limb": "lf_leg",
+   "color": "#0f7399",
+   "body": "lf_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lf_femur_tibia",
+   "limb": "lf_leg",
+   "color": "#0f7399",
+   "body": "lf_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lf_tibia_tarsus",
+   "limb": "lf_leg",
+   "color": "#0f7399",
+   "body": "lf_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lf_claw",
+   "limb": "lf_leg",
+   "color": "#0f7399",
+   "body": "lf_tarsus5",
+   "offset": [
+    -0.002266803529699187,
+    -0.0067693715937270135,
+    -0.10259527491906369
+   ]
+  },
+  {
+   "name": "lm_thorax_coxa",
+   "limb": "lm_leg",
+   "color": "#1a8daf",
+   "body": "lm_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lm_coxa_trochanter",
+   "limb": "lm_leg",
+   "color": "#1a8daf",
+   "body": "lm_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lm_femur_tibia",
+   "limb": "lm_leg",
+   "color": "#1a8daf",
+   "body": "lm_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lm_tibia_tarsus",
+   "limb": "lm_leg",
+   "color": "#1a8daf",
+   "body": "lm_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lm_claw",
+   "limb": "lm_leg",
+   "color": "#1a8daf",
+   "body": "lm_tarsus5",
+   "offset": [
+    -0.009999042229524214,
+    0.008532684808572387,
+    -0.09792126961153744
+   ]
+  },
+  {
+   "name": "lh_thorax_coxa",
+   "limb": "lh_leg",
+   "color": "#75becb",
+   "body": "lh_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lh_coxa_trochanter",
+   "limb": "lh_leg",
+   "color": "#75becb",
+   "body": "lh_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lh_femur_tibia",
+   "limb": "lh_leg",
+   "color": "#75becb",
+   "body": "lh_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lh_tibia_tarsus",
+   "limb": "lh_leg",
+   "color": "#75becb",
+   "body": "lh_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "lh_claw",
+   "limb": "lh_leg",
+   "color": "#75becb",
+   "body": "lh_tarsus5",
+   "offset": [
+    -0.015300555081816483,
+    0.007863145180303871,
+    -0.0954928709753223
+   ]
+  },
+  {
+   "name": "l_antenna",
+   "limb": "l_antenna",
+   "color": "#0a4f6b",
+   "body": "l_pedicel",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rf_thorax_coxa",
+   "limb": "rf_leg",
+   "color": "#ba1e31",
+   "body": "rf_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rf_coxa_trochanter",
+   "limb": "rf_leg",
+   "color": "#ba1e31",
+   "body": "rf_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rf_femur_tibia",
+   "limb": "rf_leg",
+   "color": "#ba1e31",
+   "body": "rf_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rf_tibia_tarsus",
+   "limb": "rf_leg",
+   "color": "#ba1e31",
+   "body": "rf_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rf_claw",
+   "limb": "rf_leg",
+   "color": "#ba1e31",
+   "body": "rf_tarsus5",
+   "offset": [
+    -0.002266803529699187,
+    0.0067693715937270135,
+    -0.10259527491906369
+   ]
+  },
+  {
+   "name": "rm_thorax_coxa",
+   "limb": "rm_leg",
+   "color": "#c9564f",
+   "body": "rm_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rm_coxa_trochanter",
+   "limb": "rm_leg",
+   "color": "#c9564f",
+   "body": "rm_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rm_femur_tibia",
+   "limb": "rm_leg",
+   "color": "#c9564f",
+   "body": "rm_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rm_tibia_tarsus",
+   "limb": "rm_leg",
+   "color": "#c9564f",
+   "body": "rm_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rm_claw",
+   "limb": "rm_leg",
+   "color": "#c9564f",
+   "body": "rm_tarsus5",
+   "offset": [
+    -0.009999042229524214,
+    -0.008532684808572387,
+    -0.09792126961153745
+   ]
+  },
+  {
+   "name": "rh_thorax_coxa",
+   "limb": "rh_leg",
+   "color": "#d58579",
+   "body": "rh_coxa",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rh_coxa_trochanter",
+   "limb": "rh_leg",
+   "color": "#d58579",
+   "body": "rh_trochanterfemur",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rh_femur_tibia",
+   "limb": "rh_leg",
+   "color": "#d58579",
+   "body": "rh_tibia",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rh_tibia_tarsus",
+   "limb": "rh_leg",
+   "color": "#d58579",
+   "body": "rh_tarsus1",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "rh_claw",
+   "limb": "rh_leg",
+   "color": "#d58579",
+   "body": "rh_tarsus5",
+   "offset": [
+    -0.015300555081816481,
+    -0.007863145180303871,
+    -0.09549287097532227
+   ]
+  },
+  {
+   "name": "r_antenna",
+   "limb": "r_antenna",
+   "color": "#8c1525",
+   "body": "r_pedicel",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "neck",
+   "limb": "neck",
+   "color": "#15a315",
+   "body": "c_head",
+   "offset": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "abdomen0",
+   "limb": "abdomen",
+   "color": "#61e47b",
+   "body": "c_abdomen12",
+   "offset": [
+    -0.37,
+    0.0,
+    0.34
+   ]
+  },
+  {
+   "name": "abdomen1",
+   "limb": "abdomen",
+   "color": "#61e47b",
+   "body": "c_abdomen3",
+   "offset": [
+    -0.22,
+    0.0,
+    0.32
+   ]
+  },
+  {
+   "name": "abdomen2",
+   "limb": "abdomen",
+   "color": "#61e47b",
+   "body": "c_abdomen4",
+   "offset": [
+    -0.23,
+    0.0,
+    0.3
+   ]
+  },
+  {
+   "name": "abdomen3",
+   "limb": "abdomen",
+   "color": "#61e47b",
+   "body": "c_abdomen5",
+   "offset": [
+    -0.24,
+    0.0,
+    0.28
+   ]
+  },
+  {
+   "name": "abdomen4",
+   "limb": "abdomen",
+   "color": "#61e47b",
+   "body": "c_abdomen6",
+   "offset": [
+    -0.25,
+    0.0,
+    0.22
+   ]
+  }
+ ],
+ "bones": [
+  [
+   0,
+   1
+  ],
+  [
+   1,
+   2
+  ],
+  [
+   2,
+   3
+  ],
+  [
+   3,
+   4
+  ],
+  [
+   5,
+   6
+  ],
+  [
+   6,
+   7
+  ],
+  [
+   7,
+   8
+  ],
+  [
+   8,
+   9
+  ],
+  [
+   10,
+   11
+  ],
+  [
+   11,
+   12
+  ],
+  [
+   12,
+   13
+  ],
+  [
+   13,
+   14
+  ],
+  [
+   16,
+   17
+  ],
+  [
+   17,
+   18
+  ],
+  [
+   18,
+   19
+  ],
+  [
+   19,
+   20
+  ],
+  [
+   21,
+   22
+  ],
+  [
+   22,
+   23
+  ],
+  [
+   23,
+   24
+  ],
+  [
+   24,
+   25
+  ],
+  [
+   26,
+   27
+  ],
+  [
+   27,
+   28
+  ],
+  [
+   28,
+   29
+  ],
+  [
+   29,
+   30
+  ],
+  [
+   33,
+   34
+  ],
+  [
+   34,
+   35
+  ],
+  [
+   35,
+   36
+  ],
+  [
+   36,
+   37
+  ]
+ ],
+ "approximate": [
+  "abdomen0",
+  "abdomen1",
+  "abdomen2",
+  "abdomen3",
+  "abdomen4"
+ ]
+}

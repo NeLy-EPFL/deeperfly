@@ -1,0 +1,2129 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Markerless 3D pose estimation of tethered Drosophila from a multi-camera rig">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/deeperfly/dev/explanation/detectors/">
+      
+      
+        <link rel="prev" href="../pipeline/">
+      
+      
+        <link rel="next" href="../keypoints/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>The dense-38 detectors - deeperfly</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#the-dense-38-detectors" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="deeperfly" class="md-header__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            deeperfly
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              The dense-38 detectors
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="deeperfly" class="md-nav__button md-logo" aria-label="deeperfly" data-md-component="logo">
+      
+  <img src="../../assets/logo.svg" alt="logo">
+
+    </a>
+    deeperfly
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/deeperfly" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/deeperfly
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing configs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Correction GUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/bundle_adjustment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundle adjustment of a multi-camera rig
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/pipeline_walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The deeperfly pipeline, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How it works
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline stages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The dense-38 detectors
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The dense-38 detectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What ships
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-a-detector-plugs-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where a detector plugs in
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One input plane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hrnet-w32-concat-head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HRNet-W32, concat head
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="HRNet-W32, concat head">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-same-loader-runs-hgnetv2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the same loader runs HGNetV2
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hgnetv2-b4-unet-decoder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HGNetV2-B4, unet decoder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-multiview-transformer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The multiview transformer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-fields-two-readouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two fields, two readouts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#side-by-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Side by side
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Side by side">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-cross-validation-that-chose-the-two-per-view-arms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The cross-validation that chose the two per-view arms
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#selecting-one-in-a-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting one in a config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refusals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each class refuses at load
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../keypoints/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keypoint locations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions & glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/output-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/NeLy-EPFL/deeperfly/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What ships
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-a-detector-plugs-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where a detector plugs in
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One input plane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hrnet-w32-concat-head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HRNet-W32, concat head
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="HRNet-W32, concat head">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-same-loader-runs-hgnetv2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the same loader runs HGNetV2
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hgnetv2-b4-unet-decoder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HGNetV2-B4, unet decoder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-multiview-transformer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The multiview transformer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-fields-two-readouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two fields, two readouts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#side-by-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Side by side
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Side by side">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-cross-validation-that-chose-the-two-per-view-arms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The cross-validation that chose the two per-view arms
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#selecting-one-in-a-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting one in a config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refusals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each class refuses at load
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="the-dense-38-detectors">The dense-38 detectors<a class="headerlink" href="#the-dense-38-detectors" title="Permanent link">&para;</a></h1>
+<p>Two 2D detector classes ship, and both are <strong>dense-38</strong>: one heatmap channel per tracked
+point, in every view. That is what lets a camera be served by one pathway rather than a
+pathway and a mirrored twin, what gives a contralateral point a prediction instead of a
+<code>NaN</code>, and what removes the routing table — channel <em>i</em> is point <em>i</em> of the pathway's view.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>class</th>
+<th>head</th>
+<th>what it is for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>multiview transformer</td>
+<td><code>mvt</code></td>
+<td>—</td>
+<td>the packaged default: a frame's views are encoded <em>together</em></td>
+</tr>
+<tr>
+<td>HRNet-W32</td>
+<td><code>hrnet</code></td>
+<td><code>concat</code></td>
+<td>the accurate per-view arm</td>
+</tr>
+<tr>
+<td>HGNetV2-B4</td>
+<td><code>hrnet</code></td>
+<td><code>unet</code></td>
+<td>the cheap per-view arm</td>
+</tr>
+</tbody>
+</table>
+<p>The class name is <strong>refused rather than defaulted</strong>. <code>models.class_defaults</code> knows <code>hrnet</code>,
+<code>hrnet_timm</code>, <code>mvt</code> and <code>multiview_transformer</code>, and a config naming anything else stops with
+the list of what this build has:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ValueError: unknown detector class &#39;hourglass&#39;; this build has
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>[&#39;hrnet&#39;, &#39;hrnet_timm&#39;, &#39;multiview_transformer&#39;, &#39;mvt&#39;]
+</code></pre></div>
+<p>That is deliberate. A class that fell back inherited <em>another</em> network's defaults — a
+19-channel count and a 0.22 mean — and then failed at load with a channel-count mismatch,
+which says nothing about the word that was actually wrong.</p>
+<p>Diagrams below are for the 256 × 512, <strong>one-plane</strong> <em>reported frame</em> every one of them
+works in. The shipped MVT pads that to 352 × 608 inside its own preparation (see
+<a href="#two-fields-two-readouts">Two fields, two readouts</a>); the padding is internal, so the
+coordinate system in the diagrams is unchanged.</p>
+<h2 id="checkpoints">What ships<a class="headerlink" href="#checkpoints" title="Permanent link">&para;</a></h2>
+<p>Three checkpoints, all one-channel, all recording the <code>fly38</code> point order, all trained on the
+same <strong>55 recordings</strong> — the two <code>hrnet</code> arms on <strong>465 moments / 138,708 label cells</strong>, the
+MVT on those recordings after a further round of labeling, <strong>485 / 144,775</strong> — every
+recording carrying a rig traceable to hand labels:</p>
+<table>
+<thead>
+<tr>
+<th>file</th>
+<th>class · head</th>
+<th>bytes</th>
+<th>sha256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mvt_r28_pad48_gray_fly38.pth</code></td>
+<td><code>mvt</code></td>
+<td>86,082,205</td>
+<td><code>ae482d3a…</code></td>
+</tr>
+<tr>
+<td><code>hrnet_w32_r27_gray_fly38.pth</code></td>
+<td><code>hrnet</code> · <code>concat</code></td>
+<td>127,076,045</td>
+<td><code>13ceb937…</code></td>
+</tr>
+<tr>
+<td><code>hgnetv2_b4_r27_gray_fly38.pth</code></td>
+<td><code>hrnet</code> · <code>unet</code></td>
+<td>62,452,371</td>
+<td><code>fa427062…</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each lives in its own directory — the two <code>hrnet</code> checkpoints under
+<code>/mnt/upramdya/data/TL/deeperfly-models/260819_*</code>, the MVT under
+<code>260825_mvt_r28_pad48_gray_fly38</code> — beside a <code>README.md</code>, a <code>SHA256SUMS</code> and the
+<code>fly38.toml</code> it was trained against, so
+<code>sha256sum -c SHA256SUMS</code> is the check, and the skeleton travels with the weights rather
+than being asserted about them.</p>
+<p><strong>Nothing downloads.</strong> Every detector deeperfly runs is trained per project, so <code>weights</code> is
+required and is resolved on this machine: point <code>$DEEPERFLY_MODELS</code> at the directory (several,
+<code>os.pathsep</code>-separated, like <code>PATH</code>) and name the checkpoint as a bare filename.
+<code>deeperfly doctor</code> reports exactly that decision — the variable, every directory searched with
+what is in it, and whether the checkpoint the default config names turns up:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>weights
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  DEEPERFLY_MODELS  unset -- set it to the directory holding the checkpoints
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  searched [0]      /home/tlam/.cache/deeperfly/weights  (2 .pth)
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  default wants     mvt_r28_pad48_gray_fly38.pth  --  NOT FOUND on the search path above
+</code></pre></div>
+<p><strong>The MVT is the default because it computes the views together</strong>, so a joint only one camera
+can see informs the cameras that cannot. On this rig that is not a nicety: the axial <code>h</code>
+camera is the rig's only left/right bridge, so without cross-view coupling a contralateral
+joint is localized in each view alone and then triangulated from one side's cameras.</p>
+<p>Pick a per-view arm when a run detects one camera at a time, when latency matters more than
+the coupling, or when a view's result must not depend on which other views were in the
+tensor — with the MVT it does, by construction.</p>
+<div class="admonition note">
+<p class="admonition-title">Why the shipped checkpoints have no held-out number</p>
+<p>A ship model trains on every labeled recording, so there is no animal left to hold out —
+the MVT artifact records <code>held_out_measurement: null</code> on purpose. The two per-view arms do
+carry a <code>val</code> block, but the trainer <em>selects the epoch on it</em>, so read it as "did this
+train" and not as accuracy: <code>hrnet_w32</code> 4.677 px mean / 1.808 median / 93.85% PCK@10, and
+<code>hgnetv2_b4</code> 4.968 / 1.923 / 93.49%, over the same 13,040 cells. What stands in for a
+held-out figure is the export gates — for the MVT, that permuting the views permutes the
+outputs and nothing else, that a real view's output is unchanged by what the padding
+holds, and that the artifact rebuilds the same detector.</p>
+</div>
+<h2 id="where-a-detector-plugs-in">Where a detector plugs in<a class="headerlink" href="#where-a-detector-plugs-in" title="Permanent link">&para;</a></h2>
+<p>A detection plan is <code>sources → preprocessors → models → pathways</code>. Only three
+stations belong to the architecture — input preparation, the forward, and the decode.
+Everything either side is shared code in <code>pose2d/pathways.py</code> and
+<code>pose2d/inference.py</code>.</p>
+<pre class="mermaid"><code>flowchart LR
+  win(["footage window&lt;br&gt;(T, H_raw, W_raw, 1) uint8"])
+  tf["pathway transform&lt;br&gt;crop · mirror"]
+
+  subgraph OWN["owned by the model class"]
+    direction LR
+    prep["prepare&lt;br&gt;resize · normalize"]
+    net["the network"]
+    dec["decode&lt;br&gt;field → peaks"]
+  end
+
+  inv["invert the transform&lt;br&gt;peak_convention"]
+  out(["pts2d (V, T, P, 2)&lt;br&gt;conf (V, T, P)"])
+
+  win --&gt; tf
+  tf --&gt;|"oriented frames"| prep
+  prep --&gt;|"(B, V, 1, 256, 512)"| net
+  net --&gt;|"heatmaps"| dec
+  dec --&gt;|"(x, y) normalized"| inv
+  inv --&gt;|"footage pixels"| out</code></pre>
+<p><code>detect_sequence</code> stacks every pathway of one model for the same frame into
+<code>(T, Pm, 1, H, W)</code> and calls <code>predict_points</code> once. That is already the right input
+shape for both kinds of network: a per-view detector treats the <code>V</code> axis as spare
+batch, a cross-view detector treats it as meaningful. The plan needs no new concept
+for either.</p>
+<p><code>[pose2d].batch_size</code> counts <strong>images</strong> per forward, not frames — <code>bs_t = batch_size // Pm</code>
+— so the default 16 is sixteen frames for a per-view model and two eight-view frames for the
+MVT. It is numerically inert either way; only dispatch changes.</p>
+<h2 id="one-plane">One input plane<a class="headerlink" href="#one-plane" title="Permanent link">&para;</a></h2>
+<p>Every shipped detector takes one grayscale channel. The corpus is monochrome, so this is
+not a compromise: it is the frame with the redundant copies of the luma left out.</p>
+<ul>
+<li><code>LoadedModel.prepare</code> emits <code>(..., 1, H, W)</code>. A decoded frame arrives either as
+  <code>(..., H, W)</code> from the decoder's gray fast path or as <code>(..., H, W, C)</code> whose planes are
+  identical — the decoder only takes the gray path when they are — so the first channel <em>is</em>
+  the image and nothing is replicated to feed a network that would take one plane back.</li>
+<li>HRNet's backbone is built with <code>in_chans=1</code> unconditionally, and the checkpoint loads
+  <code>strict=True</code>, so a three-channel artifact fails <strong>on the stem</strong> rather than running.</li>
+<li><code>mvt.ARTIFACT_FORMATS</code> is <code>("deeperfly-mvt-2",)</code> alone. The three-channel
+  <code>deeperfly-mvt-1</code> is retired, and dropping it costs no accuracy: a <code>-2</code> is the <code>-1</code>'s
+  patch-embedding stem folded onto one plane, exactly, so it is the same <em>function</em> rather
+  than a retrained model.</li>
+</ul>
+<p>The version has to be the guard there. A <code>-1</code> fed one plane is a shape error PyTorch would
+raise; a <code>-2</code> whose scalar normalization was applied as if it were ImageNet's per-channel one
+would <strong>run</strong>, and be quietly wrong. So the plane count is read from the artifact's own
+<code>normalization.mean</code>, cross-checked against the <code>arch</code> entry, and cross-checked again against
+the stem the weights actually carry — three statements of one fact, because the failure they
+guard produces numbers instead of an exception.</p>
+<div class="admonition note">
+<p class="admonition-title"><code>accepts_gray</code> was a bug, and this is the fix</p>
+<p>Grayscale decode is a <em>permission</em>, granted by <code>stream.detect_2d</code> only when <strong>every</strong>
+model in the plan declares <code>accepts_gray</code> — a detector trained through a color image must
+keep seeing one. <code>_HRNetPose</code> never declared it, so the permission was never granted for
+any <code>hrnet</code>/<code>hgnet</code> plan and those runs paid the decoder's YUV→RGB conversion, which is
+the largest single cost in a decode and thirds every byte after it. It declares it now.</p>
+</div>
+<h2 id="hrnet-w32-concat-head">HRNet-W32, <code>concat</code> head<a class="headerlink" href="#hrnet-w32-concat-head" title="Permanent link">&para;</a></h2>
+<p>HRNet never throws a resolution away: four branches at strides 4, 8, 16 and 32 run
+concurrently from the stem to the end, fusing at every stage boundary. That is what makes
+it the more accurate of the two per-view arms, and also the more expensive at batch 1
+despite not being the largest network here — four parallel branches are latency-hostile in a
+way parameter count does not predict.</p>
+<pre class="mermaid"><code>flowchart LR
+  inp(["(N, 1, 256, 512)&lt;br&gt;one gray plane"])
+  bb["hrnet_w32 backbone&lt;br&gt;in_chans = 1&lt;br&gt;4 parallel branches&lt;br&gt;w = 32 / 64 / 128 / 256&lt;br&gt;fused at every stage boundary"]
+
+  inp --&gt;|"(g − 0.2361) / 0.2436"| bb
+
+  f4(["stride 4&lt;br&gt;128 ch · 64×128"])
+  f8(["stride 8&lt;br&gt;256 ch · 32×64"])
+  f16(["stride 16&lt;br&gt;512 ch · 16×32"])
+  f32(["stride 32&lt;br&gt;1024 ch · 8×16"])
+
+  bb --&gt; f4
+  bb --&gt; f8
+  bb --&gt; f16
+  bb --&gt; f32
+
+  t4["1×1 → 96"]
+  t8["1×1 → 96&lt;br&gt;bilinear ↑ 64×128"]
+  t16["1×1 → 96&lt;br&gt;bilinear ↑ 64×128"]
+  t32["1×1 → 96&lt;br&gt;bilinear ↑ 64×128"]
+
+  f4 --&gt;|"already stride 4"| t4
+  f8 --&gt; t8
+  f16 --&gt; t16
+  f32 --&gt; t32
+
+  cat["concat&lt;br&gt;384 ch · 64×128"]
+  t4 --&gt; cat
+  t8 --&gt; cat
+  t16 --&gt; cat
+  t32 --&gt; cat
+
+  pad["zero-pad&lt;br&gt;+16 / +32 cells"]
+  head["3×3 → 128 · BN · ReLU&lt;br&gt;1×1 → 38"]
+  hm(["heatmaps&lt;br&gt;(38, 96, 192)"])
+
+  cat --&gt; pad --&gt; head --&gt; hm</code></pre>
+<p>The <code>mean</code> and <code>std</code> on that first edge are the shipped checkpoint's own, and a
+<code>[[pose2d.models]]</code> table must declare <code>mean = 0.0</code> or be refused — the model normalizes its
+own input, and a config that also subtracted a second mean would shift every input by a
+quarter of its range with nothing to notice.</p>
+<p>The four feature maps are picked out of timm's <code>features_only</code> output <strong>by stride</strong>,
+not by index — see <a href="#why-the-same-loader-runs-hgnetv2">below</a> for why that distinction
+is load-bearing.</p>
+<p>The head is the cheap part: the four 1×1 laterals plus the head are 0.63 M of the model's
+31.5 M parameters. The zero-pad sits <strong>inside</strong> the head, before the last two convolutions,
+so the border cells are produced by a convolution that has seen real features — a joint the
+crop cut off gets a genuine prediction rather than an edge artifact. Zeros and not reflection:
+reflecting would paste a mirrored fly exactly where the off-image joint is supposed to be
+inferred.</p>
+<h3 id="why-the-same-loader-runs-hgnetv2">Why the same loader runs HGNetV2<a class="headerlink" href="#why-the-same-loader-runs-hgnetv2" title="Permanent link">&para;</a></h3>
+<p>Both per-view detectors load through <code>class = "hrnet"</code>. The loader is generic over timm
+backbones and selects the feature maps it needs <strong>by stride, not by index</strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">WANT_REDUCTIONS</span> <span class="o">=</span> <span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">32</span><span class="p">)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="bp">self</span><span class="o">.</span><span class="n">_sel</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">red</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="n">r</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">WANT_REDUCTIONS</span><span class="p">)</span>
+</code></pre></div>
+<p><code>out_indices=(1,2,3,4)</code> is a fact about HRNet, not about backbones — HRNet returns a
+stride-2 stem at index 0, and plenty of families do not:</p>
+<table>
+<thead>
+<tr>
+<th>backbone</th>
+<th>maps <code>features_only</code> returns</th>
+<th>index 1 is</th>
+<th><code>(1,2,3,4)</code> gives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hrnet_w32</code></td>
+<td>s2 · s4 · s8 · s16 · s32</td>
+<td>stride 4</td>
+<td>4 · 8 · 16 · 32 — correct</td>
+</tr>
+<tr>
+<td><code>hgnetv2_b4</code></td>
+<td>s4 · s8 · s16 · s32</td>
+<td>stride 8</td>
+<td><strong><code>IndexError</code></strong> — there is no index 4</td>
+</tr>
+</tbody>
+</table>
+<p>ResNet and EfficientNet expose the stem too and behave like HRNet; ConvNeXt and Swin start
+at stride 4 and behave like HGNetV2 (checked against timm 1.0.28). So the same index tuple
+means different strides on different families, and the shape of the mistake depends only on
+how it is written: off the end of the list it raises, and shifted back to fit it hands the
+head <strong>stride 8</strong> as its heatmap grid. That one does not crash. It loads, it runs, and it
+evaluates a plausible model at half the resolution the trained weights assume.</p>
+<p>Naming the map by what it <em>is</em> also makes the refusal precise. A backbone that does not
+expose all four strides is rejected at construction, saying which are missing:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>RuntimeError: &lt;backbone&gt; exposes feature strides (…); the stride-4 heatmap head needs
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>(4, 8, 16, 32) and [16, 32] are absent
+</code></pre></div>
+<p>and the pinned-channel assertion (<code>128 · 256 · 512 · 1024</code>) is narrowed to the two HRNet
+arms whose trained weights actually depend on those widths, so a new backbone is accepted on
+the strength of the stride check alone.</p>
+<h2 id="hgnetv2-b4-unet-decoder">HGNetV2-B4, <code>unet</code> decoder<a class="headerlink" href="#hgnetv2-b4-unet-decoder" title="Permanent link">&para;</a></h2>
+<p>HGNetV2 is Baidu's RT-DETR backbone, designed for GPU throughput rather than FLOPs.
+Its block is the opposite bet from HRNet's: instead of holding four resolutions open,
+it goes deep at one resolution with cheap depthwise convolutions and concatenates
+every intermediate result.</p>
+<pre class="mermaid"><code>flowchart LR
+  stem["StemV2&lt;br&gt;→ stride 4"]
+  s0["stage 0 · 1 block&lt;br&gt;128 ch · 64×128"]
+  s1["stage 1 · 1 block&lt;br&gt;512 ch · 32×64"]
+  s2["stage 2 · 3 blocks&lt;br&gt;1024 ch · 16×32"]
+  s3["stage 3 · 1 block&lt;br&gt;2048 ch · 8×16"]
+
+  stem --&gt; s0
+  s0 --&gt;|"3×3 dw s2"| s1
+  s1 --&gt;|"3×3 dw s2"| s2
+  s2 --&gt;|"3×3 dw s2"| s3</code></pre>
+<p>Inside one block of stage 2 — six <code>1×1 pointwise + 5×5 depthwise</code> units chained, with
+every output <em>and</em> the block input concatenated, then squeezed by two 1×1
+convolutions. There is no residual and no ESE: the concat is the shortcut.</p>
+<pre class="mermaid"><code>flowchart TD
+  bin(["in · 512 ch"])
+  l1["1×1 → 192&lt;br&gt;5×5 dw"]
+  l2["1×1 → 192&lt;br&gt;5×5 dw"]
+  l3["1×1 → 192&lt;br&gt;5×5 dw"]
+  l4["1×1 → 192&lt;br&gt;5×5 dw"]
+  l5["1×1 → 192&lt;br&gt;5×5 dw"]
+  l6["1×1 → 192&lt;br&gt;5×5 dw"]
+  agg["concat · 512 + 6 × 192 = 1664 ch"]
+  a1["1×1 → 512"]
+  a2["1×1 → 1024"]
+
+  bin --&gt; l1 --&gt; l2 --&gt; l3 --&gt; l4 --&gt; l5 --&gt; l6
+  bin --&gt; agg
+  l1 --&gt; agg
+  l2 --&gt; agg
+  l3 --&gt; agg
+  l4 --&gt; agg
+  l5 --&gt; agg
+  l6 --&gt; agg
+  agg --&gt; a1 --&gt; a2</code></pre>
+<p>Because HGNetV2's stride-4 map is stage-0 output — one block deep — flattening the
+four scales onto it the way the <code>concat</code> head does leaves no depth at heatmap
+resolution. So this checkpoint uses the <code>unet</code> decoder instead: coarse-to-fine with
+skips, two 3×3 convolutions per rung, 1.96 M parameters of the model's 15.5 M.</p>
+<pre class="mermaid"><code>flowchart TD
+  g32(["stride 32 · 2048 · 8×16"])
+  g16(["stride 16 · 1024 · 16×32"])
+  g8(["stride 8 · 512 · 32×64"])
+  g4(["stride 4 · 128 · 64×128"])
+
+  x0["1×1 → 128"]
+  c16["cat → 256"]
+  b16["3×3 · BN · ReLU ×2 → 128"]
+  c8["cat → 256"]
+  b8["3×3 · BN · ReLU ×2 → 128"]
+  c4["cat → 256"]
+  b4["3×3 · BN · ReLU ×2 → 128"]
+  pad["zero-pad → 96×192"]
+  outc["3×3 · 1×1 → 38"]
+  hm(["heatmaps (38, 96, 192)"])
+
+  g32 --&gt; x0
+  x0 --&gt;|"bilinear ↑ 16×32"| c16
+  g16 --&gt;|"1×1 → 128"| c16
+  c16 --&gt; b16
+  b16 --&gt;|"bilinear ↑ 32×64"| c8
+  g8 --&gt;|"1×1 → 128"| c8
+  c8 --&gt; b8
+  b8 --&gt;|"bilinear ↑ 64×128"| c4
+  g4 --&gt;|"1×1 → 128"| c4
+  c4 --&gt; b4 --&gt; pad --&gt; outc --&gt; hm</code></pre>
+<p>The stride-32 rung has no join — there is nothing coarser to upsample. Beyond that
+the field and the decode are the <code>concat</code> head's exactly; only the route to the
+stride-4 grid differs.</p>
+<p>That the two arms want <em>different</em> heads is measured, not assumed. Instrumenting the
+backbones in the training repo, 95% of <code>hrnet_w32</code>'s compute happens <strong>before</strong> its stride-4
+output, against 74% for <code>hrnet_w18_small_v2</code> and 0–4% for every other family — so the
+<code>concat</code> head (1×1 laterals → bilinear → concat → one 3×3) is HRNet's own head, handing
+HRNet a deep, already-high-resolution feature and handing everyone else first-stage edges.
+Swapping in the <code>unet</code> decoder splits perfectly: both HRNet arms neutral-to-worse (+0.003 and
++0.202 px) and all four other families better, from −0.141 to −1.336 px. Use <code>concat</code> only
+for the HRNet arms.</p>
+<div class="admonition warning">
+<p class="admonition-title">The head is read from the checkpoint, not defaulted</p>
+<p>A <code>unet</code> checkpoint rebuilt as <code>concat</code> fails <code>load_state_dict</code> on missing
+<code>laterals.*</code> — and a caller that filters output to result rows sees an arm with no
+rows rather than an error. The training repo lost every <code>unet</code> arm of a sweep to exactly
+this before it was caught, and the same bug then turned up a third time in one round —
+here, in <code>load_hrnet</code>, where it would have failed at inference after the weights were
+already published.</p>
+</div>
+<h2 id="the-multiview-transformer">The multiview transformer<a class="headerlink" href="#the-multiview-transformer" title="Permanent link">&para;</a></h2>
+<p>The one shipped detector that is not a per-view function. A frame's views are
+encoded <em>together</em>, so a joint only one camera can see informs the cameras that
+cannot. The remarkable part is how little machinery that takes: the cross-view mixing
+is a <strong>reshape</strong>, and the checkpoint has zero per-view parameters.</p>
+<pre class="mermaid"><code>flowchart LR
+  l1["blocks 1–8&lt;br&gt;view-local"]
+  g9["block 9&lt;br&gt;GLOBAL"]
+  l10["block 10&lt;br&gt;view-local"]
+  g11["block 11&lt;br&gt;GLOBAL"]
+  l12["block 12&lt;br&gt;view-local"]
+
+  l1 --&gt;|"reshape to (B, V·836, 384)"| g9
+  g9 --&gt;|"reshape to (B·V, 836, 384)"| l10
+  l10 --&gt;|"reshape"| g11
+  g11 --&gt;|"reshape"| l12</code></pre>
+<p><code>attn_scopes = "llllllllglgl"</code>. A view-local block sees <code>(B·V, 836, 384)</code> — one view
+attending to itself. A global block sees <code>(B, V·836, 384)</code>, which is 6688 tokens at
+V = 8. No parameters change between the two; the schedule <em>is</em> the tensor's shape,
+and the <code>(B·V)</code> axis is batch-major so the reshape groups a frame's own views.</p>
+<p>With <code>view_embed = off</code> there is no per-view table — the artifact is refused if it says
+otherwise — so the function is permutation-equivariant over views by construction and <code>V</code> is
+free: a seven-camera rig declares seven pathways and nothing else changes. No camera name is
+read anywhere in the module. Verified on the shipped artifact: permuting eight views and
+undoing the permutation moves a point by under <strong>0.005 model pixels</strong>.</p>
+<pre class="mermaid"><code>flowchart TD
+  subgraph PREP["prepare — on the HOST"]
+    direction LR
+    p1["take the luma plane&lt;br&gt;(3-plane frame:&lt;br&gt;PIL convert('L'))"]
+    p2["cv2.INTER_AREA → 256×512&lt;br&gt;the REPORTED frame"]
+    p2b["pad 48 px a side&lt;br&gt;constant fill 0&lt;br&gt;→ 352×608"]
+    p3["/255 → one plane"]
+    p4["the artifact's mean/std&lt;br&gt;this one: 0 and 1"]
+    p1 --&gt; p2 --&gt; p2b --&gt; p3 --&gt; p4
+  end
+
+  subgraph ENC["encode"]
+    direction LR
+    e1["patch embed 16×16 s16&lt;br&gt;22×38 = 836 tokens × 384"]
+    e2["+ position embedding&lt;br&gt;14×14 ⇢ 22×38, bicubic"]
+    e3["12 blocks · alt8"]
+    e4["final LayerNorm → 384 × 22×38"]
+    e1 --&gt; e2 --&gt; e3 --&gt; e4
+  end
+
+  subgraph HEAD["head"]
+    direction LR
+    h1["PixelShuffle(2)&lt;br&gt;96 ch · 44×76"]
+    h2["ConvT 3×3 s2 → 38&lt;br&gt;38 ch · 88×152"]
+    h3["spatial softmax T = 1"]
+    h1 --&gt; h2 --&gt; h3
+  end
+
+  subgraph DEC["decode"]
+    direction LR
+    d1["pyr_up ×2 → 352×608&lt;br&gt;bicubic + 5×5 gaussian"]
+    d2["softmax T = 1000"]
+    d3["E[x], E[y]&lt;br&gt;conf = 5×5 window mass"]
+    d4["− 1.5, − margin 48&lt;br&gt;÷ (512, 256)"]
+    d1 --&gt; d2 --&gt; d3 --&gt; d4
+  end
+
+  PREP --&gt; ENC
+  ENC --&gt; HEAD
+  HEAD --&gt;|"(B, V·38, 88, 152)"| DEC
+  DEC --&gt; out(["normalized (B, V, 38, 2) + conf"])</code></pre>
+<p>The whole normalization of the shipped artifact is that <code>/255</code>: it was trained on one plane
+with the dataset applying nothing further, so its recorded <code>mean</code>/<code>std</code> are <code>0.0</code> and <code>1.0</code>.
+They are still <em>read from the artifact</em> rather than assumed, which is what makes the
+plane-count cross-check above possible.</p>
+<p>With grayscale decode granted the first step is just taking the plane; PIL's <code>convert("L")</code>
+is the path a 3-plane frame takes, and the two agree here because the decoder only hands over
+one plane when the three were identical. The conversion is pointwise, so doing it after the
+pathway's crop rather than before is exactly equivalent.</p>
+<p>Two phases run outside the GPU's comfort zone, deliberately:</p>
+<ul>
+<li><strong>The preparation is PIL and cv2</strong>, so a device tensor handed to it is copied back
+  down first. torch's antialiased bilinear differs from <code>INTER_AREA</code> by up to 10/255
+  on ~35% of pixels — enough to move 1.8% of cells more than a model pixel, worst case</li>
+<li><code>LoadedModel.prepares_on_host</code> is what lets <code>detect_sequence</code> leave such a
+  source's window on the host instead of paying the round trip.</li>
+<li><strong>The decode is not a rounding error next to the forward.</strong> It upsamples every channel to
+  the full model input — 16× the cells — so for an eight-view frame it costs about as much as
+  the network itself, and a caller after one camera would pay that eight times over.
+  <code>predict_points</code> therefore accepts a <code>views</code> argument that narrows the <em>readout</em> while
+  leaving the forward untouched — bit-identical to slicing, because channels decode
+  independently, and the forward still sees every view.</li>
+</ul>
+<div class="admonition warning">
+<p class="admonition-title">Views ride the channel axis</p>
+<p><code>forward</code> returns <code>(batch, V · K, H, W)</code>, not the <code>(B·V, K, H, W)</code> the head
+produced one step earlier. Same element count, so reading it the other way
+attributes every view's channels to the wrong view: channel <code>c</code> is view <code>c // K</code>,
+keypoint <code>c % K</code>. Use <code>heatmaps_by_view</code>.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">float32 only</p>
+<p>The loader refuses any other precision. bf16 autocast moved 99.6% of cells against
+fp32 on the held-out project and put 183 of 12,464 points more than a pixel out — a
+subpixel expectation over a nearly-flat ridge picks a different local peak when the
+logits wobble in the third decimal. The class states <code>float32</code> for itself
+(<code>models.CLASS_DEFAULTS</code>), so it wins over <code>[pose2d].precision</code> without a config saying
+anything.</p>
+</div>
+<h2 id="two-fields-two-readouts">Two fields, two readouts<a class="headerlink" href="#two-fields-two-readouts" title="Permanent link">&para;</a></h2>
+<p>Both classes return input-normalized coordinates, so a pathway inverts them identically.
+What differs is what the field <em>covers</em>, and therefore what happens to a joint the
+crop cut off.</p>
+<p><strong>Padded — HRNet and HGNetV2.</strong> The heatmap covers the input extended by 25% on every
+side: 96 × 192 cells at stride 4 is 384 × 768 input px for a 256 × 512 input. A joint
+pushed out of frame still has a cell to peak in, so <code>x</code> legitimately decodes to −0.17
+or 1.12. That is an off-frame joint, not an error, and clamping it discards the only
+evidence there is about where the joint went. The readout is a hard argmax plus a
+parabolic fit clamped to half a cell, with <strong>no half-cell term</strong> — these targets were
+rendered at continuous cell coordinates.</p>
+<p><strong>Padded, differently — the MVT.</strong> The shipped <code>mvt_r28_pad48_gray_fly38</code> declares
+<code>arch.hm_margin_px = 48</code>, and it gets that margin by padding the network's <strong>input</strong>
+rather than the head's output: the model takes 352 × 608 and its field is 88 × 152 at
+the same stride 4. A joint the crop cuts off therefore has real cells to peak in, and
+<code>x</code> decodes to −0.09 or 1.09 the same way the HRNet's does.</p>
+<p>The distinction from the HRNet's pad is where the extra cells come from. Zero-padding a
+convolutional head gives cells computed from zeros — measured reach is exactly one cell
+(4 model px on the left and top, <strong>zero</strong> on the right and bottom), so beyond that the
+pad is a per-channel constant. Padding the input instead moves the <em>token grid</em>, so every
+added cell is computed from real tokens that passed through every attention block, and
+attention has no kernel-width limit. Measured on a full recording: off-frame predictions
+reach 43 model px, against the head-pad's 4.77 px ceiling.</p>
+<p>None of this changes the coordinate system. <code>input_size</code> still reports the 256 × 512
+<strong>reported frame</strong> — the margin is internal to <code>pose2d/mvt.py</code>, which pads inside
+<code>prepare_images</code> and subtracts it again in <code>decode_points</code> — so the pathway crop, the crop
+plan and every config are untouched. The readout is still a soft-argmax: softmax at
+temperature 1000 over the whole upsampled map, spatial expectation, then a fixed −1.5
+grid-offset correction, less the margin.</p>
+<p>An artifact that declares no margin (every MVT through r27) behaves exactly as before: the
+field spans the reported frame, and a cut-off joint saturates against the border about a
+pixel and a half outside it.</p>
+<p><code>LoadedModel.padded_field</code> is what tells <code>pose2d/autocrop.py</code> which test to run when
+asking "does this crop cut the animal?". Read the wrong one and a clipping box looks
+clean, because in the unpadded case the cut-off joints pile up neatly against the
+border instead of leaving the box.</p>
+<div class="admonition warning">
+<p class="admonition-title">The candidate path decodes as if no field were padded</p>
+<p>The top-K path (<code>inference.detect_candidates_sequence</code>, reached only with
+<code>pictorial_structures</code> on) decodes through the shared <code>heatmap_to_points</code>, whose
+normalization assumes the field spans the input. For a padded field it does not: the
+HRNet's field is 1.5× its input on each axis, so a peak at the center still lands about
+right while one at the frame edge comes out ~85 model pixels off — far outside the 15 px
+(<code>pictorial.DEFAULT_INLIER_PX</code>) a candidate must reach to support a hypothesis. The MVT's
+352 × 608 against a 256 × 512 reported frame displaces less, but in the same way. It is one
+more reason that stage stays off on a dense run; <code>hrnet.cells_to_input_normalized</code> is the
+mapping it would need. <code>detect_candidates_sequence</code> now <strong>refuses</strong> outright when any
+model in the plan has a padded field, rather than decoding it wrongly.</p>
+</div>
+<h2 id="side-by-side">Side by side<a class="headerlink" href="#side-by-side" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>HRNet-W32</th>
+<th>HGNetV2-B4</th>
+<th>MVT (alt8)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>class · head</td>
+<td><code>hrnet</code> · <code>concat</code></td>
+<td><code>hrnet</code> · <code>unet</code></td>
+<td><code>mvt</code></td>
+</tr>
+<tr>
+<td>checkpoint</td>
+<td><code>hrnet_w32_r27_gray_fly38</code></td>
+<td><code>hgnetv2_b4_r27_gray_fly38</code></td>
+<td><code>mvt_r28_pad48_gray_fly38</code></td>
+</tr>
+<tr>
+<td>parameters</td>
+<td>31.5 M</td>
+<td>15.5 M</td>
+<td>21.5 M</td>
+</tr>
+<tr>
+<td>views per forward</td>
+<td>1, <code>V</code> is spare batch</td>
+<td>1, <code>V</code> is spare batch</td>
+<td>all of them, coupled</td>
+</tr>
+<tr>
+<td>field</td>
+<td>96×192, +25% padded</td>
+<td>96×192, +25% padded</td>
+<td>88×152, +48 px padded</td>
+</tr>
+<tr>
+<td>off-frame joint</td>
+<td>gets a cell (reach 4 px)</td>
+<td>gets a cell (reach 4 px)</td>
+<td>gets a cell (reach 43 px measured)</td>
+</tr>
+<tr>
+<td>readout</td>
+<td>argmax + parabola</td>
+<td>argmax + parabola</td>
+<td>soft-argmax on 352×608, less the margin</td>
+</tr>
+<tr>
+<td><code>peak_convention</code></td>
+<td>half-pixel</td>
+<td>half-pixel</td>
+<td>pure-scale</td>
+</tr>
+<tr>
+<td>precision</td>
+<td>fp16 / bf16 ok</td>
+<td>fp16 / bf16 ok</td>
+<td>float32, enforced</td>
+</tr>
+<tr>
+<td>input prep runs</td>
+<td>on the device</td>
+<td>on the device</td>
+<td>on the host</td>
+</tr>
+<tr>
+<td>peak VRAM at <code>batch_size = 16</code></td>
+<td>1.42 GiB</td>
+<td>0.54 GiB</td>
+<td>0.26 GiB</td>
+</tr>
+<tr>
+<td>probe (selection-set) mean</td>
+<td>4.677 px</td>
+<td>4.968 px</td>
+<td>not measured</td>
+</tr>
+</tbody>
+</table>
+<p>Peak VRAM is <code>torch.cuda.max_memory_allocated</code> over a forward + decode at the packaged
+<code>[pose2d].batch_size = 16</code> on an RTX 4090 — sixteen 256 × 512 images for the per-view arms at
+<code>float16</code>, two eight-view frames for the MVT at <code>float32</code>. The probe column is the number the
+epoch was <em>selected</em> on; see the note in <a href="#checkpoints">What ships</a>.</p>
+<h3 id="the-cross-validation-that-chose-the-two-per-view-arms">The cross-validation that chose the two per-view arms<a class="headerlink" href="#the-cross-validation-that-chose-the-two-per-view-arms" title="Permanent link">&para;</a></h3>
+<p>Both come out of a 3-fold × 3-seed comparison of 12 backbones in the training repo — 108
+runs, 216 held-out evaluations, every fold holding out a whole animal. Those runs are the
+previous, three-channel generation of these two checkpoints, trained on 35 recordings rather
+than 55, so the numbers are facts about the <em>architectures</em> and not about the files that ship:</p>
+<table>
+<thead>
+<tr>
+<th>arm</th>
+<th>held-out mean</th>
+<th>batch-1 latency</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HRNet-W32 · <code>concat</code></td>
+<td><strong>5.815 px</strong></td>
+<td>10.10 ms</td>
+<td>687 img/s</td>
+</tr>
+<tr>
+<td>HGNetV2-B4 · <code>unet</code></td>
+<td>6.028 px</td>
+<td><strong>2.55 ms</strong></td>
+<td><strong>1462 img/s</strong></td>
+</tr>
+</tbody>
+</table>
+<p>HGNetV2 costs 0.21 px for 4× lower latency and 2.1× the throughput (RTX 4090, bf16,
+256 × 512), and the round-27 checkpoints order the same way on their probe — 4.677 px against
+4.968 px. Of the six families the head swap was run on, the two HRNet arms were the only ones
+<code>concat</code> suited, which is the measurement above and the reason one <code>class</code> runs two
+networks.</p>
+<h2 id="selecting-one-in-a-config">Selecting one in a config<a class="headerlink" href="#selecting-one-in-a-config" title="Permanent link">&para;</a></h2>
+<p>Two lines, because dense is what a plan <em>is</em>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[pose2d]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;dense38&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;dense38&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">class</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;hrnet&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">weights</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;hgnetv2_b4_r27_gray_fly38.pth&quot;</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">]</span>
+</code></pre></div>
+<p><code>class</code> picks the network — <code>"hrnet"</code> runs both per-view detectors (see <a href="#why-the-same-loader-runs-hgnetv2">why the same
+loader runs HGNetV2</a>), <code>"mvt"</code> the multiview
+transformer — and <code>weights</code> names the checkpoint. Nothing else is needed, and that is the
+point of a dense plan: <strong>channel <em>i</em> is point <em>i</em> of the pathway's view</strong>, so there is
+nothing to map. <code>n_out_channels</code> defaults to the skeleton's point count, and <code>input_size</code>,
+the normalization and (for the MVT) the precision come from the checkpoint.</p>
+<p>The identity default is claimed by <em>naming the pathway after its view</em>, and it is gated on
+the channel count: a model emitting something other than the skeleton's point count has no
+identity to fall back on and is told to write a table.</p>
+<p><code>[pose2d.output_points]</code> therefore still exists and is still supported — it is how one view
+can be fed by several pathways, and how a plan whose channels are not a whole skeleton says
+what they are. The shipped configs simply declare none. It was not always optional: the
+retired 19-channel detector predicted one body side, so each side camera ran twice and the
+config carried a mapping row per channel per pass — 122 of them for the 7-view rig — which is
+why a command existed to generate them. A contralateral point now arrives as a prediction to
+correct rather than a gap to author.</p>
+<h2 id="refusals">What each class refuses at load<a class="headerlink" href="#refusals" title="Permanent link">&para;</a></h2>
+<p>A wrong detector is not a crash unless someone makes it one — every check below exists
+because its failure otherwise comes out as <em>numbers</em>.</p>
+<p>Shared, whatever the class:</p>
+<ul>
+<li><strong>A checkpoint recording no channel names.</strong> A dense detector's channels <em>are</em> a skeleton,
+  and a count cannot tell two apart: <code>fly38</code> and the retired DeepFly3D set (kept as
+  <code>tests/data/fly38_deepfly3d.toml</code>) are both 38 points and share 32 of them, but at
+  different indices — the old set put <code>l_abdomen0..2</code> at 16–18, so from index 16 on every
+  channel means a different joint. Every class deeperfly ships records its names, so a
+  nameless artifact is either not ours or was stripped — and the alternative to refusing is
+  skipping the one check between a mis-stamped config and a fly with its limbs rearranged.</li>
+<li><strong>Channel names that are not this config's skeleton</strong>, order included. Checked on <em>every</em>
+  run, not once by a generator: a <code>weights</code> path repointed later, a <code>[skeleton]</code> swapped
+  underneath, or a mapping line edited by hand are exactly the cases where a config silently
+  stops meaning what it says.</li>
+<li>A channel count or an <code>input_size</code> disagreeing with the weights — the second because a
+  mis-resized fly arrives at the wrong apparent <em>scale</em>, which is the one thing no
+  augmentation undoes.</li>
+<li>A class that owns neither a decode nor a field description: a heatmap cannot be decoded
+  without knowing whether its field spans the input.</li>
+</ul>
+<p><code>class = "hrnet"</code> additionally refuses a <code>mean</code> other than <code>0.0</code>; a backbone that does not
+expose strides 4/8/16/32; the two HRNet arms if timm's feature widths ever stop being
+<code>128 · 256 · 512 · 1024</code>; a head that is not <code>concat</code> or <code>unet</code>; and — via <code>strict=True</code> — a
+three-channel stem. It also refuses a <strong>cross-view</strong> checkpoint outright (any <code>fusion.</code> /
+<code>fuse_in.</code> / <code>fuse_out.</code> keys): its residual is not the identity once trained, so running it
+one view at a time evaluates a different function than the one that was measured.</p>
+<p><code>class = "mvt"</code> additionally refuses any <code>precision</code> but <code>float32</code>; any <code>format</code> but
+<code>deeperfly-mvt-2</code> (a raw Lightning <code>.ckpt</code> is not an exported artifact, and carries no point
+names for the check above); a <code>view_embed</code> that is not <code>off</code>; an output layout this module does
+not implement; a plane count that the <code>arch</code>, the normalization and the stem do not all agree
+on; a point-name list whose length is not the channel count; and any missing or unexpected
+state-dict key, reported as what is wrong with the artifact rather than as a tensor name.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      GPL-3.0-only
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "toc.follow", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
