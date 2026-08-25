@@ -1,49 +1,86 @@
-# Build the MkDocs site and publish it to GitHub Pages.
+# Publish the MkDocs site to GitHub Pages, one version per branch.
 #
-# One-time setup: in the repository settings, set Pages -> "Build and deployment"
-# -> Source to "GitHub Actions". The site is then served at
-# https://nely-epfl.github.io/deeperfly/ and rebuilt on every push to main.
+# `main` publishes as the version in pyproject.toml (e.g. `0.2.0`) and takes the
+# `stable` alias, which the site's default redirect points at. `dev` publishes as
+# `dev`. Both live side by side under the site root, and Material's version
+# selector moves between them:
+#
+#     https://nely-epfl.github.io/deeperfly/          -> redirects to stable
+#     https://nely-epfl.github.io/deeperfly/stable/   -> the last release
+#     https://nely-epfl.github.io/deeperfly/dev/      -> the dev branch
+#     https://nely-epfl.github.io/deeperfly/0.2.0/    -> that release, pinned forever
+#
+# ONE-TIME SETUP, and the site will 404 until it is done: Settings -> Pages ->
+# "Build and deployment" -> Source must be **"Deploy from a branch"**, branch
+# `gh-pages`, folder `/ (root)`. This replaces the previous "GitHub Actions"
+# source: mike works by COMMITTING built sites to the gh-pages branch rather than
+# by uploading an artifact, which is what lets several versions coexist. The
+# branch is created by the first successful run of this workflow.
 name: docs
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "docs/**"
       - "examples/**"          # the example notebooks are rendered into the site
       - "mkdocs.yml"
-      - "src/**"
+      - "src/**"               # mkdocstrings renders the API reference from it
+      - "CHANGELOG.md"         # included into docs/changelog.md
+      - "pyproject.toml"       # the `docs` dependency group, and the version
+      - "uv.lock"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# mike PUSHES to gh-pages, so this needs write access to the repo rather than the
+# pages/id-token pair an artifact deploy needs.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Allow one concurrent deployment; don't cancel an in-progress run.
+# gh-pages is a single branch two branches can race to push. Serialize, and never
+# cancel a run that may be mid-push.
 concurrency:
-  group: pages
+  group: docs-gh-pages
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - name: Build site
-        run: uv run --group docs mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          # mike rewrites gh-pages history, so it needs the real history, not a
+          # depth-1 clone.
+          fetch-depth: 0
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Configure git for mike's commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # `mike deploy` builds without --strict, so the gate is run explicitly
+      # first: mkdocstrings resolves every ::: identifier at build time, so a
+      # renamed or deleted documented symbol fails here instead of publishing a
+      # page with a hole in it. A failure stops the deploy, leaving the currently
+      # published version untouched.
+      - name: Build (strict) as the gate
+        run: uv run --group docs mkdocs build --strict
+
+      - name: Publish dev
+        if: github.ref == 'refs/heads/dev'
+        run: uv run --group docs mike deploy --push --update-aliases dev
+
+      # The release version comes from pyproject.toml so a version bump publishes
+      # a new pinned version on its own. `stable` is re-pointed at it in the same
+      # command, and set-default keeps the site root redirecting at `stable`
+      # rather than at a version number that will age.
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          version=$(uv run --group docs python -c \
+            "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "publishing $version (alias: stable)"
+          uv run --group docs mike deploy --push --update-aliases "$version" stable
+          uv run --group docs mike set-default --push stable

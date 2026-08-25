@@ -100,6 +100,11 @@ docs = [
     # stored outputs (execute: false), so the Plotly figures stay interactive
     # without importing torch/jax at build time.
     "mkdocs-jupyter>=0.25",
+    # Publishes each branch as its OWN version under the site root (main -> the
+    # release number plus the `stable` alias, dev -> `dev`) by committing built
+    # sites to the gh-pages branch. Material reads the `versions.json` it writes
+    # to draw the version selector.
+    "mike>=2.1",
 ]
 
 [tool.pytest.ini_options]
