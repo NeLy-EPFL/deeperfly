@@ -297,3 +297,31 @@ def test_peak_candidates_honors_a_models_own_cell_geometry():
     assert owned[0, 0] == pytest.approx([1.0, 1.0])
     # The two really do disagree, and by much more than a rounding difference.
     assert abs(owned[0, 0, 0] - shared[0, 0, 0]) > 0.07
+
+
+def test_peak_candidates_relative_threshold_is_scale_free():
+    """The absolute gate is a claim about one detector's output scale; the relative is not.
+
+    Measured on the r28 multiview transformer, whose field peaks near 0.08: at the shipped
+    absolute 0.05 **no cell has a second candidate at all**, so recovery could only ever
+    return its own input. The relative gate judges each channel against its own peak, so
+    the same fraction survives whatever the field's scale.
+    """
+    hm = np.zeros((1, 9, 9))
+    hm[0, 2, 2] = 0.08  # a multiview-transformer-scale primary peak
+    hm[0, 6, 6] = 0.03  # a genuine secondary mode, 38% of it
+
+    absolute, _ = pictorial.peak_candidates(hm, k=3, radius=1, threshold=0.05)
+    assert np.isfinite(absolute[0, :, 0]).sum() == 1  # the secondary is gated away
+
+    relative, _ = pictorial.peak_candidates(
+        hm, k=3, radius=1, threshold=0.0, threshold_rel=0.2
+    )
+    assert np.isfinite(relative[0, :, 0]).sum() == 2
+
+    # Scale-free: the same field at 10x reports the same two candidates.
+    scaled, _ = pictorial.peak_candidates(
+        hm * 10.0, k=3, radius=1, threshold=0.0, threshold_rel=0.2
+    )
+    assert np.isfinite(scaled[0, :, 0]).sum() == 2
+    assert scaled[0, :2] == pytest.approx(relative[0, :2])

@@ -407,6 +407,8 @@ def detect_2d(
     input=None,
     want_candidates,
     k,
+    threshold=None,
+    threshold_rel=None,
     progress=None,
 ):
     """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
@@ -514,7 +516,17 @@ def detect_2d(
             for window, _ in stream:
                 windows = {name: window[i] for i, name in enumerate(src_names)}
                 p, c, cand = inference.detect_candidates_sequence(
-                    plan, models, windows, k=k, progress=wrap
+                    plan,
+                    models,
+                    windows,
+                    k=k,
+                    progress=wrap,
+                    **({} if threshold is None else {"threshold": float(threshold)}),
+                    **(
+                        {}
+                        if threshold_rel is None
+                        else {"threshold_rel": float(threshold_rel)}
+                    ),
                 )
                 cand_xy.append(cand.xy)
                 cand_score.append(cand.score)

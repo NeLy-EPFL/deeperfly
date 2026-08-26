@@ -351,7 +351,15 @@ def stage_fingerprint(
         if enabled["pictorial_structures"]:
             # Candidate extraction happens during detection, so needing
             # candidates (and their K) is part of pose2d's contract.
-            fp["candidates"] = {"k": config.pictorial.k}
+            fp["candidates"] = {
+                "k": config.pictorial.k,
+                # The peak gate runs during EXTRACTION, so changing it changes the cached
+                # candidate set and nothing downstream can recover from a set that was
+                # pruned too hard. It belongs to pose2d's contract for the same reason `k`
+                # does.
+                "peak_threshold": config.pictorial.peak_threshold,
+                "peak_threshold_rel": config.pictorial.peak_threshold_rel,
+            }
         return _norm(fp)
     if stage == "bundle_adjustment":
         return _norm(

@@ -196,6 +196,8 @@ def stage_pose2d(
         input=input,
         want_candidates=want_candidates,
         k=k,
+        threshold=config.pictorial.peak_threshold,
+        threshold_rel=config.pictorial.peak_threshold_rel,
         progress=progress,
     )
     # A (view, point) pair no pathway writes stays NaN from the scatter, so the

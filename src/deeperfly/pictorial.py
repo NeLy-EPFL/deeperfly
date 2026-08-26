@@ -53,7 +53,8 @@ DEFAULT_INLIER_PX = 15.0  # a view supports a 3D hypothesis if a candidate is th
 DEFAULT_LAMBDA = 1.0  # bone-length prior weight (relative to per-view evidence ~O(1))
 DEFAULT_HUBER = 0.5  # Huber knee for the bone-length residual, in units of bone length
 DEFAULT_MU = 5.0  # temporal weight (per unit squared 3D displacement / bone-scale^2)
-DEFAULT_PEAK_THRESHOLD = 0.05  # ignore heatmap peaks weaker than this
+DEFAULT_PEAK_THRESHOLD = 0.05  # ignore heatmap peaks weaker than this (RAW field units)
+DEFAULT_PEAK_THRESHOLD_REL = 0.0  # ... or than this fraction of the channel's own peak
 DEFAULT_PEAK_RADIUS = 2  # NMS / sub-pixel-window half-width (heatmap pixels)
 DEFAULT_SUBPIXEL = "weighted"  # peak refinement: "argmax" | "weighted" | "taylor"
 
@@ -90,6 +91,7 @@ def peak_candidates(
     *,
     radius: int = DEFAULT_PEAK_RADIUS,
     threshold: float = DEFAULT_PEAK_THRESHOLD,
+    threshold_rel: float = DEFAULT_PEAK_THRESHOLD_REL,
     method: str = DEFAULT_SUBPIXEL,
     normalize: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
@@ -110,7 +112,16 @@ def peak_candidates(
     radius
         NMS / sub-pixel-window half-width, in heatmap pixels.
     threshold
-        Ignore peaks weaker than this.
+        Ignore peaks weaker than this, in RAW field units. Absolute, so it is a statement
+        about a particular detector's output scale -- see ``threshold_rel``.
+    threshold_rel
+        Ignore peaks weaker than this fraction of the channel's OWN peak, which is the
+        scale-free version of the same gate and the only one portable across detectors.
+        The effective threshold is the larger of the two. It exists because the absolute
+        default was set on a detector whose heatmaps peak near 1.0, and the multiview
+        transformer's peak near 0.08: at ``threshold = 0.05`` an r28 field offers a second
+        candidate in **0.04%** of cells, so recovery is choosing from a set of one almost
+        everywhere and can only return its own input.
     method
         Sub-pixel refinement: ``"argmax"`` | ``"weighted"`` | ``"taylor"``.
     normalize
@@ -139,7 +150,13 @@ def peak_candidates(
     hh, ww = hm.shape[-2:]
     chan = hm.shape[:-2]
     size = (1,) * (hm.ndim - 2) + (2 * radius + 1, 2 * radius + 1)
-    is_peak = (hm == maximum_filter(hm, size=size)) & (hm > threshold)
+    thr = float(threshold)
+    if threshold_rel > 0.0:
+        # Per channel, so a weakly-detected joint is judged against its own peak rather
+        # than against the frame's strongest one.
+        chan_peak = hm.reshape(*chan, hh * ww).max(-1)[..., None, None]
+        thr = np.maximum(thr, float(threshold_rel) * chan_peak)
+    is_peak = (hm == maximum_filter(hm, size=size)) & (hm > thr)
     flat = np.where(is_peak, hm, -np.inf).reshape(*chan, hh * ww)
 
     k = min(k, flat.shape[-1])

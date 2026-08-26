@@ -489,6 +489,8 @@ def detect_candidates_sequence(
     k: int = 5,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
+    threshold: float | None = None,
+    threshold_rel: float | None = None,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ):
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
@@ -574,6 +576,8 @@ def detect_candidates_sequence(
                 k,
                 radius=radius,
                 method=method,
+                **({} if threshold is None else {"threshold": threshold}),
+                **({} if threshold_rel is None else {"threshold_rel": threshold_rel}),
                 normalize=lambda cells: model.cells_to_normalized(
                     cells, heatmaps.shape[-2:]
                 ),

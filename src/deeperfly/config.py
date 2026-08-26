@@ -429,6 +429,15 @@ class PictorialParams:
     k: int = 5
     temporal: bool = False
     lam: float = 1.0
+    #: Ignore heatmap peaks weaker than this in RAW field units. The shipped 0.05 was set
+    #: on a detector whose heatmaps peak near 1.0; the multiview transformer's peak near
+    #: 0.08, where it admits a second candidate in 0.04% of cells and recovery can only
+    #: return its own input. Absolute, so it is a claim about one detector's output scale.
+    peak_threshold: float = 5e-2
+    #: ... or than this fraction of the channel's OWN peak -- the scale-free form of the
+    #: same gate, and the portable one. The effective threshold is the larger of the two,
+    #: so leaving this at 0 is exactly today's behavior.
+    peak_threshold_rel: float = 0.0
 
 
 @dataclass(frozen=True)

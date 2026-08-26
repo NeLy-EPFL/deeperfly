@@ -218,10 +218,20 @@ def test_pose2d_fingerprint_candidates_iff_pictorial_enabled(store):
     assert "candidates" not in off
     enabled = dict(config.stage_flags(), pictorial_structures=True)
     on = stage_fingerprint("pose2d", config, enabled, store)
-    assert on["candidates"] == {"k": 7}
+    assert on["candidates"] == {
+        "k": 7,
+        "peak_threshold": 5e-2,
+        "peak_threshold_rel": 0.0,
+    }
     # subset rule: disabling pictorial again does not invalidate the stored fp
     assert fingerprint_diff(on, off) == []
     assert fingerprint_diff(off, on)  # but enabling it does
+    # The peak gate prunes during EXTRACTION, so a set pruned too hard cannot be repaired
+    # downstream: moving it has to re-detect, exactly as moving `k` does.
+    looser = _cfg(
+        {"pictorial_structures.k": 7, "pictorial_structures.peak_threshold_rel": 0.1}
+    )
+    assert fingerprint_diff(stage_fingerprint("pose2d", looser, enabled, store), on)
 
 
 def test_bundle_adjustment_fingerprint_is_geometry_only(store):

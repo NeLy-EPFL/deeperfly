@@ -80,6 +80,17 @@ API. A version that says so is more useful than one that flatters.
 
 ### Added
 
+- **`[pictorial_structures].peak_threshold_rel`**, a scale-free peak gate. The existing
+  `peak_threshold` is absolute, so it is a claim about one detector's output scale — it was set
+  on heatmaps peaking near 1.0, and the MVT's peak near 0.08. At the shipped `0.05` an r28 field
+  offers a second candidate in **0.04%** of cells, so recovery chooses from a set of one almost
+  everywhere and can only return its own input (measured end to end: 0 of 983 labeled cells
+  re-elected, −0.02 px [−0.08, +0.05]) — the stage was disabled in all but name. The relative
+  gate judges each channel against its *own* peak; the effective threshold is the larger of the
+  two, so the default `0.0` is exactly the previous behavior. Both keys join the `pose2d`
+  fingerprint's `candidates` entry, because the gate prunes during *extraction* and nothing
+  downstream can recover from a set pruned too hard.
+
 - **A confidence floor, off unless the artifact asks for it.** `mvt.predict_points` reads
   `arch.conf_floor` and reports a point below it as `NaN` — which is what `deeperfly.triangulation`
   already means by "this camera cannot see this point" — instead of as a confident location pinned
