@@ -260,6 +260,53 @@ def test_pictorial_requires_candidates(cameras, fly, rng):
         run_from_points2d(cameras, fly, proj, do_bundle_adjust=False, do_pictorial=True)
 
 
+def test_fallback_argmax_fills_abstentions(cameras, fly, rng):
+    """With the fallback on, a cell recovery declined keeps its arg-max, not a NaN."""
+    pts3d = fly_cloud(rng)
+    proj = np.asarray(cameras.project(pts3d))
+    xy, sc = candidates_from_proj(proj, k=1)
+    # Make joint 0 unsolvable: scatter its only candidate per view so far apart that no
+    # hypothesis finds cross-view support.
+    xy[:, 0, 0, 0] = proj[:, 0] + rng.normal(0.0, 500.0, size=(proj.shape[0], 2))
+    cands = pictorial.Candidates(xy=xy, score=sc)
+    argmax2d = xy[:, :, :, 0, :]
+
+    _, off, _ = pictorial.reconstruct(
+        cameras, fly, cands, argmax2d, fallback_argmax=False, bone_max_frames=None
+    )
+    _, on, _ = pictorial.reconstruct(
+        cameras, fly, cands, argmax2d, fallback_argmax=True, bone_max_frames=None
+    )
+    gap = ~np.isfinite(off).all(-1) & np.isfinite(argmax2d).all(-1)
+    assert gap.any(), "no abstention to fall back from -- the test would be vacuous"
+    np.testing.assert_array_equal(on[gap], argmax2d[gap])
+    keep = np.isfinite(off).all(-1)
+    np.testing.assert_array_equal(on[keep], off[keep])
+
+
+def test_the_stage_always_fills_abstentions(cameras, fly, rng):
+    """The pipeline never stores a 2D layer sparser than the detector it corrected."""
+    from deeperfly.config import Config
+    from deeperfly.pipeline import stages
+
+    pts3d = fly_cloud(rng)
+    proj = np.asarray(cameras.project(pts3d))
+    xy, sc = candidates_from_proj(proj, k=1)
+    xy[:, 0, 0, 0] = proj[:, 0] + rng.normal(0.0, 500.0, size=(proj.shape[0], 2))
+    argmax2d = xy[:, :, :, 0, :]
+
+    got2d, _, _ = stages.stage_pictorial_structures(
+        Config.default(),
+        cameras,
+        fly,
+        pictorial.Candidates(xy=xy, score=sc),
+        argmax2d,
+    )
+    assert np.isfinite(got2d).all() == np.isfinite(argmax2d).all()
+    finite_in = np.isfinite(argmax2d).all(-1)
+    assert np.isfinite(got2d[finite_in]).all(), "the stage dropped a detected point"
+
+
 # -- the padded field's candidate decode -------------------------------------------------
 
 

@@ -357,7 +357,9 @@ def stage_pictorial_structures(
         )
     ps = config.pictorial
     v, t = pts2d.shape[:2]
-    log.info("pictorial structures: recovering peaks (%d frames, %d views)", t, v)
+    log.info(
+        "pictorial structures: recovering peaks (%d frames, %d views, k=%d)", t, v, ps.k
+    )
     pts3d, pts2d, reproj = pictorial.reconstruct(
         cameras,
         skeleton,
@@ -365,6 +367,9 @@ def stage_pictorial_structures(
         pts2d,
         temporal=ps.temporal,
         lam=ps.lam,
+        # Unconditional: see `PictorialParams`. A correction stage must not
+        # return a 2D layer sparser than the detector it corrects.
+        fallback_argmax=True,
     )
     return pts2d, pts3d, reproj
 

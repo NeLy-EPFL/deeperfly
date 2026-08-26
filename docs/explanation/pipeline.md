@@ -39,13 +39,11 @@ already paid for detection.
 
 !!! note "Why `pictorial_structures` stays off"
 
-    Not for symmetry with the others. It recovers a joint from the top-K peaks of a
-    detector that predicted **one body side**; a dense detector already predicts every
-    point in every view. Switching it on rewires `triangulation` *and* the smoother onto
-    its committed 2D, which is `NaN` in every view with no candidate within 15 px
-    (`pictorial.DEFAULT_INLIER_PX`) — so it would silently *un-densify* a dense run — and
-    it adds a `candidates` key to the `pose2d` fingerprint, re-detecting every cached tree
-    in existence.
+    Not for symmetry with the others, and not because it is wrong. Switching it on rewires
+    `triangulation` *and* the smoother onto its committed 2D, and it adds a `candidates`
+    key to the `pose2d` fingerprint, re-detecting every cached tree in existence. It no
+    longer *un-densifies* a dense run — where recovery commits nothing the detector's
+    arg-max is kept rather than a `NaN` — so that is no longer among the reasons.
 
 ## Data flow
 
@@ -434,9 +432,13 @@ dynamic programming along each limb under bone-length priors (plus an optional t
 term). It can *recover* a joint when the arg-max landed on the wrong heatmap peak —
 something the triangulators can only *veto*. It needs the full-heatmap detect path (slower);
 its committed per-view 2D then feeds the chosen `triangulation` (a plain `dlt` pass keeps the
-PS estimate), and the smoother too. On a dense run that is a downgrade, not a no-op: a
-`(view, point)` with no candidate within 15 px comes out `NaN`, and a dense detector had a
-prediction there.
+PS estimate), and the smoother too. Where recovery commits nothing — no hypothesis had a
+candidate within 15 px (`pictorial.DEFAULT_INLIER_PX`) — the detector's arg-max is kept, so
+a dense run stays dense. That fill is unconditional and not a knob: measured, an abstention
+touches 1.5–2.2% of labeled cells, and on this eight-camera rig filling them is
+*3D-neutral*, because an abstention drops one view's observation and eight views trivially
+outvote its absence. It decides only whether the stored 2D layer may be sparser than the
+detector that produced it.
 
 ## Where the compute goes
 

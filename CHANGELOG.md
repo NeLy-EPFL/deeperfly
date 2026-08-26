@@ -57,6 +57,16 @@ API. A version that says so is more useful than one that flatters.
   point before recovery had considered anything. Both come from **one** forward
   (`predict_points_and_heatmaps`) rather than two.
 
+- **`pictorial_structures` no longer un-densifies a dense run.** Where recovery commits nothing
+  — no hypothesis had a candidate within `DEFAULT_INLIER_PX` — the detector's arg-max is kept
+  instead of `NaN`. Unconditional, with no config knob: measured, an abstention touches
+  1.5–2.2% of labeled cells and filling them is *3D-neutral* on this eight-camera rig (a finite
+  3D came back for 95/95 and 146/146 (frame, joint) pairs either way), because an abstention
+  drops one view's observation and eight views outvote its absence. So it decides only whether
+  the stored 2D may be sparser than the detector that produced it, and a *correction* stage
+  that deletes data is surprising. On a less redundant rig the same fill stops being free and
+  starts being protective.
+
 - `pose2d.models.LoadedModel.prepare` passes a margin through to a class that declares one, and
   raises if the class cannot accept it — preparing a padded checkpoint without its pad would
   shift every point by the margin with nothing to notice.

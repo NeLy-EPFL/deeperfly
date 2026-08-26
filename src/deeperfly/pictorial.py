@@ -643,6 +643,7 @@ def reconstruct(
     lam: float = DEFAULT_LAMBDA,
     huber: float = DEFAULT_HUBER,
     mu: float = DEFAULT_MU,
+    fallback_argmax: bool = False,
 ) -> tuple[
     Float[np.ndarray, "T P 3"], Float[np.ndarray, "V T P 2"], Float[np.ndarray, "V T P"]
 ]:
@@ -665,6 +666,13 @@ def reconstruct(
         Arg-max 2D of shape ``(V, T, P, 2)`` used to estimate the prior.
     bone_max_frames
         Frames subsampled to estimate the prior (``None`` uses all).
+    fallback_argmax
+        Where recovery committed no point, keep the arg-max instead of writing ``NaN``.
+        The pipeline always passes ``True`` and exposes no knob for it (see
+        ``deeperfly.config.PictorialParams``); this parameter stays here so the
+        pre-fill array remains reachable, which is what lets a regression test assert
+        recovery's own output bit-identically. Off by default for that reason, not as a
+        recommendation.
     temporal
         Whether to add the inter-frame temporal term.
     max_hyp, inlier_px, lam, huber, mu
@@ -721,5 +729,10 @@ def reconstruct(
         pts3d[f] = x3
         pts2d[:, f] = x2
         prev = x3
+    if fallback_argmax:
+        # An abstention is "no hypothesis had a candidate within inlier_px", which on a
+        # dense detector is a cell to leave alone rather than a cell to delete.
+        gap = ~np.isfinite(pts2d).all(-1) & np.isfinite(pts2d_argmax).all(-1)
+        pts2d = np.where(gap[..., None], pts2d_argmax, pts2d)
     reproj = reprojection_error(cameras, pts3d, pts2d)
     return pts3d, pts2d, reproj

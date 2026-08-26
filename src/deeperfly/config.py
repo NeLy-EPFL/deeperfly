@@ -92,12 +92,11 @@ STAGES = (
 #: fails -- a stage whose input is unavailable is skipped with the reason logged, and the
 #: fit skips rather than raising when its optional solver is absent.
 #:
-#: ``pictorial_structures`` stays off, and not for symmetry. It recovers a joint from the
-#: top-K peaks of a detector that predicted one body side; a dense detector already predicts
-#: every point in every view. Switching it on rewires triangulation AND the smoother onto its
-#: committed 2D, which is NaN in every view with no candidate within 15 px -- so it would
-#: silently un-densify a dense run -- and it adds a ``candidates`` key to the pose2d
-#: fingerprint, re-detecting every cached tree in existence.
+#: ``pictorial_structures`` stays off, and not for symmetry. Switching it on rewires
+#: triangulation AND the smoother onto its committed 2D, and it adds a ``candidates`` key to
+#: the pose2d fingerprint, re-detecting every cached tree in existence. It no longer
+#: un-densifies a dense run -- the pipeline keeps the arg-max wherever recovery abstained
+#: (see `PictorialParams`) -- so that is no longer among the reasons.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
@@ -424,7 +423,18 @@ class SymmetrizeParams:
 
 @dataclass(frozen=True)
 class PictorialParams:
-    """``[pictorial_structures]`` -- DeepFly3D peak-recovery knobs."""
+    """``[pictorial_structures]`` -- top-K peak-recovery knobs.
+
+    Wherever recovery commits nothing, the arg-max is kept rather than a NaN. That is
+    unconditional and not a knob: measured, recovery abstains on 1.5-2.2% of labeled
+    cells, and filling them is 3D-NEUTRAL on this rig -- of the (frame, joint) pairs an
+    abstention touches, a finite 3D came back for 95/95 and 146/146 either way, because
+    the abstention drops ONE VIEW's observation and eight views trivially outvote its
+    absence. So the choice only decides whether the stored 2D layer may be sparser than
+    the detector that produced it, and a *correction* stage that deletes data is
+    surprising. On a less redundant rig -- seven cameras, or a joint only two views see --
+    the same fill stops being free and starts being protective.
+    """
 
     k: int = 5
     temporal: bool = False
