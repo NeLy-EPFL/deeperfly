@@ -258,3 +258,42 @@ def test_pictorial_requires_candidates(cameras, fly, rng):
     proj = np.asarray(cameras.project(fly_cloud(rng)[None]))
     with pytest.raises(ValueError, match="requires candidates"):
         run_from_points2d(cameras, fly, proj, do_bundle_adjust=False, do_pictorial=True)
+
+
+# -- the padded field's candidate decode -------------------------------------------------
+
+
+def test_peak_candidates_honors_a_models_own_cell_geometry():
+    """A PADDED field must be placed by the model's transform, not the shared convention.
+
+    The regression this pins is silent and large: the shared ``(c + 0.5) / W_field``
+    convention normalizes by the field, which on a padded model is the PADDED input and
+    not the reported frame. On the r28 multiview transformer (48 px margin, 88x152 field,
+    256x512 reported frame) that misplaces the outermost candidate by ~46 model px --
+    three times the 15 px a candidate is allowed to sit from a hypothesis, so every edge
+    candidate would be dropped while looking like a clean run.
+    """
+    # A field of 12x20 stride-4 cells over a 32x64 reported frame padded by 8 px a side:
+    # 20 * 4 == 64 + 2 * 8. The peak sits at the far corner, where the two conventions
+    # disagree most -- and where a candidate is worth having.
+    hm = np.zeros((1, 12, 20))
+    hm[0, 10, 18] = 1.0
+
+    shared, _ = pictorial.peak_candidates(hm, k=1, radius=1)
+    # (18 + 0.5) / 20, (10 + 0.5) / 12 -- normalized by the FIELD's own extent, which on a
+    # padded model is the padded input and not the frame the coordinates claim to be in.
+    assert shared[0, 0] == pytest.approx([18.5 / 20, 10.5 / 12])
+
+    def cells_to_normalized(cells):
+        return np.stack(
+            [(cells[..., 0] * 4 - 8) / 64.0, (cells[..., 1] * 4 - 8) / 32.0], axis=-1
+        )
+
+    owned, _ = pictorial.peak_candidates(
+        hm, k=1, radius=1, normalize=cells_to_normalized
+    )
+    # Exactly 1.0 on both axes: the peak is on the reported frame's far edge, which the
+    # shared convention places at 0.925 -- 4.8 px in, on a 64 px frame.
+    assert owned[0, 0] == pytest.approx([1.0, 1.0])
+    # The two really do disagree, and by much more than a rounding difference.
+    assert abs(owned[0, 0, 0] - shared[0, 0, 0]) > 0.07

@@ -329,6 +329,43 @@ def cells_to_input_normalized(cells):
     return torch.stack([x, y], dim=-1)
 
 
+def cells_to_input_normalized_np(model, cells):
+    """:func:`cells_to_input_normalized` on NumPy, for the top-K candidate path.
+
+    ``model`` is accepted and ignored: this class's field geometry is fixed by the module
+    constants above, where the multiview transformer reads its margin off the artifact. The
+    uniform ``(model, cells)`` signature is what lets
+    :meth:`deeperfly.pose2d.models.LoadedModel.cells_to_normalized` dispatch on the class
+    without knowing which of the two it is holding.
+    """
+    cells = np.asarray(cells, dtype=float)
+    return np.stack(
+        [
+            (cells[..., 0] * STRIDE - HM_ORIGIN_XY[0]) / IMG_HW[1],
+            (cells[..., 1] * STRIDE - HM_ORIGIN_XY[1]) / IMG_HW[0],
+        ],
+        axis=-1,
+    )
+
+
+def points_from_heatmaps(model, heatmaps):
+    """Already-computed heatmaps -> the points :func:`predict_points` would have returned.
+
+    The candidate path's arg-max, decoded from the field it already holds rather than by a
+    second forward. ``model`` is unused for the same reason as in
+    :func:`cells_to_input_normalized_np`.
+    """
+    torch = _torch()
+    hm = (
+        heatmaps
+        if isinstance(heatmaps, torch.Tensor)
+        else torch.as_tensor(np.asarray(heatmaps))
+    )
+    with torch.inference_mode():
+        xy, conf = decode_points(hm.float())
+    return xy.cpu().numpy().astype(np.float32), conf.cpu().numpy().astype(np.float32)
+
+
 def decode_points(heatmaps):
     """``(..., K, H, W)`` heatmaps -> input-normalized ``(..., K, 2)`` peaks + conf."""
     cells = refined_argmax(heatmaps)

@@ -518,7 +518,7 @@ def decode_points(
     upsampling to the input size costs 16x the cells, and an 8-view frame is 304 channels.
 
     The ``-1.5`` is LP's grid-offset correction for ``downsample_factor=2`` and is not a
-    fudge: two ``align_corners=False`` upsamples put the cell centres half a cell off at
+    fudge: two ``align_corners=False`` upsamples put the cell centers half a cell off at
     each step, and the constant is what puts the expectation back on the input's pixel
     grid. It is indexed by the factor, so a checkpoint trained at another factor gets its
     own constant rather than this one.
@@ -572,6 +572,106 @@ def decode_points(
     # values stay within about a pixel and a half of it.
     norm = torch.tensor([w_rep, h_rep], dtype=pts.dtype, device=pts.device)
     return pts / norm, conf
+
+
+def cells_to_input_normalized(model, cells):
+    """Sub-pixel FIELD cells ``(..., 2)`` as ``(cx, cy)`` -> input-normalized ``(x, y)``.
+
+    The piece of this decode's geometry that :func:`decode_points` cannot expose, because
+    it reduces a whole channel to ONE soft-argmax: a caller keeping several peaks per
+    channel (the top-K candidate path, :func:`deeperfly.pictorial.peak_candidates`) has to
+    place the cells itself, and the shared ``(c + 0.5) / W_field`` convention is wrong here
+    twice over -- the field is the PADDED input's, not the reported frame's, so it is off by
+    both the margin and the ``(w + 2m) / w`` scale.
+
+    A cell ``c`` sits at padded-input pixel ``2**downsample_factor * c``: each
+    ``align_corners=False`` upsample puts cell centers half a cell off, which for two steps
+    lands cell ``c`` at index ``4c + 1.5`` -- and ``decode_points`` subtracts exactly that
+    same 1.5. Subtracting ``hm_margin_px`` then moves the origin from the padded field's
+    corner to the REPORTED frame's, so a negative coordinate means "left of / above the
+    frame" rather than an error, exactly as it does there.
+
+    Checked against :func:`decode_points` itself (``tests/test_mvt_candidates.py``): a lone
+    spike at any cell two or more in from the field's border decodes to this to within
+    1e-5 model px. Only the two border cells of each edge disagree -- the outermost by
+    0.50 px and the next by 0.014 -- which is the bicubic upsample having no data past the
+    edge to spread its mass into, so its expectation is pulled inward. That is the
+    upsample clamping, not a disagreement about the mapping, and it is bounded by half a
+    model pixel where a candidate is allowed 15 (:data:`deeperfly.pictorial.DEFAULT_INLIER_PX`).
+
+    Values outside ``[0, 1]`` are meaningful and must not be clipped -- representing them is
+    what the padded field is for (:attr:`deeperfly.pose2d.models.LoadedModel.padded_field`).
+    """
+    cells = np.asarray(cells, dtype=float)
+    scale = float(2 ** int(model.downsample_factor))
+    margin = float(getattr(model, "hm_margin_px", 0) or 0)
+    h_rep, w_rep = model.input_hw
+    return np.stack(
+        [
+            (cells[..., 0] * scale - margin) / float(w_rep),
+            (cells[..., 1] * scale - margin) / float(h_rep),
+        ],
+        axis=-1,
+    )
+
+
+def points_from_heatmaps(model, heatmaps):
+    """Already-computed heatmaps -> the points :func:`predict_points` would have returned.
+
+    Same decode, same ``conf_floor``, so the candidate path's arg-max is the production
+    arg-max rather than a second opinion about it. Takes a device tensor when it can get
+    one: the decode upsamples every channel 16x, which is the reason
+    :func:`predict_points_and_heatmaps` exists.
+    """
+    torch = _torch()
+    hm = (
+        heatmaps
+        if isinstance(heatmaps, torch.Tensor)
+        else torch.as_tensor(np.asarray(heatmaps))
+    )
+    lead = tuple(hm.shape[:-3])
+    flat = hm.reshape(-1, *hm.shape[-3:]).float()
+    with torch.inference_mode():
+        xy, conf = decode_points(
+            flat,
+            model.input_hw,
+            model.downsample_factor,
+            margin=int(getattr(model, "hm_margin_px", 0) or 0),
+        )
+        floor = float(getattr(model, "conf_floor", 0.0))
+        if floor > 0.0:
+            xy = xy.masked_fill(conf[..., None] < floor, float("nan"))
+    k = xy.shape[-2]
+    return (
+        xy.reshape(*lead, k, 2).cpu().numpy().astype(np.float32),
+        conf.reshape(*lead, k).cpu().numpy().astype(np.float32),
+    )
+
+
+def predict_points_and_heatmaps(model, inputs):
+    """One forward -> ``(points, conf, heatmaps)``: production points AND the host field.
+
+    The candidate path needs both, and running :func:`predict_points` and
+    :func:`predict_heatmaps` in turn would forward the network twice. It also keeps the
+    arg-max decode on the DEVICE, where the 16x upsample belongs -- decoding a host copy
+    costs more than the network does.
+    """
+    torch = _torch()
+    x = (
+        inputs
+        if isinstance(inputs, torch.Tensor)
+        else torch.as_tensor(np.asarray(inputs))
+    )
+    dev = next(model.parameters()).device
+    x = x.to(device=dev, dtype=torch.float32)
+    if x.ndim == 4:
+        x = x.unsqueeze(0)
+    with torch.inference_mode():
+        hm = model.heatmaps_by_view(x)  # (B, V, K, Hm, Wm)
+        xy, conf = points_from_heatmaps(model, hm)
+    if dev.type == "cuda":
+        torch.cuda.synchronize()
+    return xy, conf, hm.float().cpu().numpy()
 
 
 # ---------------------------------------------------------------------------------------

@@ -527,24 +527,13 @@ def detect_candidates_sequence(
 
     from .. import pictorial
 
-    # A PADDED field cannot be decoded by `heatmap_to_points`, whose normalization assumes
-    # the field spans the input. It does not: the field is larger, so a peak at the center
-    # still lands about right while one at the frame edge comes out tens of model pixels
-    # off -- far outside the 15 px (`pictorial.DEFAULT_INLIER_PX`) a candidate must reach to
-    # support a hypothesis. Refused rather than decoded wrongly: the numbers this produced
-    # were never usable, so there is nothing here to keep working.
-    padded = sorted(
-        name for name, m in models.items() if getattr(m, "padded_field", False)
-    )
-    if padded:
-        raise SystemExit(
-            "the candidate (top-K) path cannot decode a PADDED heatmap field, and "
-            f"model(s) {padded} have one. Its shared decode normalizes by the input size, "
-            "which is not the field's extent, so every candidate would be displaced -- "
-            "most at the frame edge, which is where candidates matter. Turn "
-            "[pose3d].pictorial_structures off for this run, or use a model whose field "
-            "spans its input."
-        )
+    # A PADDED field is decoded through the MODEL's own cell geometry
+    # (`LoadedModel.cells_to_normalized`), never `heatmap_to_points`' normalization, which
+    # assumes the field spans the input. It does not: the field is larger, so a peak at the
+    # center still lands about right while one at the frame edge comes out tens of model
+    # pixels off -- far outside the 15 px (`pictorial.DEFAULT_INLIER_PX`) a candidate must
+    # reach to support a hypothesis. This path used to refuse a padded model outright
+    # rather than decode it wrongly; the dispatch is what replaced the refusal.
     device = _plan_device(models)
     windows = _windows_to_device(plan, models, windows, device)
     source_sizes = {name: _image_hw(w[0]) for name, w in windows.items()}
@@ -572,12 +561,22 @@ def detect_candidates_sequence(
             # heatmaps decoded/peaked in a single batched call.
             batch = torch.stack([prepared[p][t] for p in pw_idxs])  # (Pm, 3, H, W)
             # Standard (B, V, ...) input: this frame is B=1 over Pm views; strip B back.
-            heatmaps = model.predict_heatmaps(batch.unsqueeze(0))[
-                0
-            ]  # (Pm, C_out, H_out, W_out)
-            pn, c = heatmap_to_points(heatmaps, method=method, radius=radius)
+            # ONE forward yields both, and the arg-max comes out of the model's OWN decode
+            # rather than the shared one, so this path's `pts2d` is bit-comparable with what
+            # `detect_sequence` would have written. It used not to be: for the multiview
+            # transformer the shared decode is a windowed centroid over the raw cells where
+            # the model's readout is a global soft-argmax over the 16x-upsampled field, so
+            # turning pictorial_structures on silently moved every point.
+            pn, c, heatmaps = model.predict_points_and_heatmaps(batch.unsqueeze(0))
+            pn, c, heatmaps = pn[0], c[0], heatmaps[0]  # (Pm, ...)
             cxy, csc = pictorial.peak_candidates(
-                heatmaps, k, radius=radius, method=method
+                heatmaps,
+                k,
+                radius=radius,
+                method=method,
+                normalize=lambda cells: model.cells_to_normalized(
+                    cells, heatmaps.shape[-2:]
+                ),
             )
             for local, pw_idx in enumerate(pw_idxs):
                 pw = pathways[pw_idx]

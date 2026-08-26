@@ -38,9 +38,24 @@ API. A version that says so is more useful than one that flatters.
   *right* place. Pin `weights = "mvt_alt8_r27_gray_fly38.pth"` to stay on the previous
   detector.
 
-- `inference.detect_candidates_sequence` (the top-K path, `pictorial_structures = true`) now
-  **refuses** a model with a padded field instead of decoding it through a normalization that
-  assumes the field spans the input. That path was already silently wrong for the dense HRNet.
+- **The top-K candidate path (`pictorial_structures = true`) decodes through the model's own
+  cell geometry.** `inference.detect_candidates_sequence` briefly *refused* a model with a
+  padded field rather than decode it through a normalization that assumes the field spans the
+  input; `LoadedModel.cells_to_normalized` replaces that refusal with a dispatch, so both
+  shipped classes work. The shared `(c + 0.5) / W_field` convention is right only when the
+  field spans the reported frame, which neither shipped class does — the dense HRNet pads its
+  head's output by 25% a side, the MVT pads the network's input by 48 model px — so it was off
+  by both the margin and the `(w + 2m) / w` scale, ~46 model px at the frame's edge on r28.
+  That is three times the 15 px a candidate may sit from its hypothesis
+  (`pictorial.DEFAULT_INLIER_PX`), so every edge candidate was silently discarded. This path
+  was already wrong this way for the dense HRNet before r28 existed.
+
+  The same path's *arg-max* also now comes from the model's own readout rather than the shared
+  decode, so it matches what `detect_sequence` writes. For the MVT the two genuinely differ —
+  its readout is a global soft-argmax over the 16×-upsampled field where the shared decode is a
+  windowed centroid over the raw cells — so enabling `pictorial_structures` used to move every
+  point before recovery had considered anything. Both come from **one** forward
+  (`predict_points_and_heatmaps`) rather than two.
 
 - `pose2d.models.LoadedModel.prepare` passes a margin through to a class that declares one, and
   raises if the class cannot accept it — preparing a padded checkpoint without its pad would

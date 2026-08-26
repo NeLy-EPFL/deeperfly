@@ -442,6 +442,84 @@ class LoadedModel:
         idx = list(views)
         return xy[:, idx], conf[:, idx]
 
+    def cells_to_normalized(self, cells, field_hw):
+        """Sub-pixel FIELD cells ``(..., 2)`` -> input-normalized ``(x, y)``, NumPy.
+
+        The candidate (top-K) path's counterpart to :meth:`predict_points`: it keeps several
+        peaks per channel, so it holds cells rather than one decoded point and has to place
+        them itself. **A model gets to say how**, because the shared
+        ``(c + 0.5) / W_field`` convention is only right when the field spans the reported
+        frame. Both shipped classes pad it -- the dense HRNet by 25% a side of its head's
+        output, the multiview transformer by padding the network's INPUT -- and for a padded
+        field that convention is wrong by the margin AND by the ``(w + 2m) / w`` scale. On
+        the r28 multiview transformer that is 46 model px at the frame's edge, which is
+        three times what a candidate is allowed to sit from its hypothesis
+        (:data:`deeperfly.pictorial.DEFAULT_INLIER_PX`), so every edge candidate would be
+        silently discarded. This dispatch is what the candidate path used to refuse rather
+        than guess.
+
+        ``field_hw`` is the heatmap's own ``(H_out, W_out)``, used only by the fallback --
+        a model owning its decode knows its field's geometry without being told.
+
+        Coordinates outside ``[0, 1]`` are meaningful and must not be clipped: on a padded
+        field they are a joint outside the reported frame (see :attr:`padded_field`).
+        """
+        impl = self._impl()
+        fn = getattr(impl, "cells_to_input_normalized", None) if impl else None
+        if fn is None and getattr(self.module, "owns_decode", False):
+            from . import hrnet
+
+            fn = hrnet.cells_to_input_normalized_np
+        if fn is not None:
+            return fn(self.module, cells)
+        # The shared half-pixel cell-center convention: the matched inverse of
+        # `inference.heatmap_to_points`, and correct exactly when the field spans the
+        # reported frame.
+        import numpy as np
+
+        cells = np.asarray(cells, dtype=float)
+        hh, ww = int(field_hw[0]), int(field_hw[1])
+        return np.stack(
+            [(cells[..., 0] + 0.5) / ww, (cells[..., 1] + 0.5) / hh], axis=-1
+        )
+
+    def points_from_heatmaps(
+        self, heatmaps, *, method: str = "weighted", radius: int = 2
+    ):
+        """Already-computed heatmaps -> the points :meth:`predict_points` would return.
+
+        So the candidate path reports the SAME arg-max as production instead of a second
+        opinion decoded a different way -- which for the multiview transformer it genuinely
+        would be, its readout being a global soft-argmax over the upsampled field where the
+        shared decode takes a windowed centroid over the raw cells.
+        """
+        impl = self._impl()
+        fn = getattr(impl, "points_from_heatmaps", None) if impl else None
+        if fn is None and getattr(self.module, "owns_decode", False):
+            from . import hrnet
+
+            fn = hrnet.points_from_heatmaps
+        if fn is not None:
+            return fn(self.module, heatmaps)
+        from .inference import heatmap_to_points
+
+        return heatmap_to_points(heatmaps, method=method, radius=radius)
+
+    def predict_points_and_heatmaps(self, inputs):
+        """One forward -> ``(points, conf, heatmaps)`` for the candidate path.
+
+        Fused where the class offers it, because the alternative is forwarding the network
+        twice (or decoding a host copy of a field the multiview transformer upsamples 16x,
+        which costs more than the forward). Otherwise the same two calls, in order.
+        """
+        impl = self._impl()
+        fn = getattr(impl, "predict_points_and_heatmaps", None) if impl else None
+        if fn is not None:
+            return fn(self.module, inputs)
+        hm = self.predict_heatmaps(inputs)
+        xy, conf = self.points_from_heatmaps(hm)
+        return xy, conf, hm
+
     def predict_heatmaps(self, inputs):
         """Final-stack heatmaps ``(B, V, C_out, H_out, W_out)`` (host NumPy) for the candidate path."""
         from . import detector

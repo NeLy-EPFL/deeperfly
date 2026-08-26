@@ -26,6 +26,7 @@ happen upstream; this module consumes only candidate peaks + bundle-adjusted cam
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -90,6 +91,7 @@ def peak_candidates(
     radius: int = DEFAULT_PEAK_RADIUS,
     threshold: float = DEFAULT_PEAK_THRESHOLD,
     method: str = DEFAULT_SUBPIXEL,
+    normalize: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
     """Top-``k`` local-maxima peaks per heatmap channel (normalized ``(x, y)`` + score).
 
@@ -111,12 +113,21 @@ def peak_candidates(
         Ignore peaks weaker than this.
     method
         Sub-pixel refinement: ``"argmax"`` | ``"weighted"`` | ``"taylor"``.
+    normalize
+        Maps sub-pixel field cells ``(..., 2)`` to input-normalized ``(x, y)``. Pass the
+        detector's own
+        (:meth:`deeperfly.pose2d.models.LoadedModel.cells_to_normalized`) -- the default
+        below is the half-pixel cell-center convention, which is correct only when the
+        field spans the reported frame. On a PADDED field it is wrong by the margin and by
+        the ``(w + 2m) / w`` scale, tens of model pixels at the frame's edge, which is
+        exactly where a candidate is worth having.
 
     Returns
     -------
     xy : np.ndarray
-        Peak coordinates of shape ``(*chan, K, 2)`` normalized to ``[0, 1]``
-        (NaN-padded).
+        Peak coordinates of shape ``(*chan, K, 2)`` normalized to the model's reported
+        frame (NaN-padded). Inside ``[0, 1]`` unless the field is padded, where a
+        coordinate outside it is a peak outside that frame.
     score : np.ndarray
         Raw peak values of shape ``(*chan, K)`` (``0`` where padded).
     """
@@ -147,10 +158,12 @@ def peak_candidates(
         method=method,
         radius=radius,
     )
-    # +0.5: cell-centre convention, matching inference.heatmap_to_points.
-    xy = np.stack(
-        [(cx.reshape(*chan, k) + 0.5) / ww, (cy.reshape(*chan, k) + 0.5) / hh], axis=-1
-    )
+    cells = np.stack([cx.reshape(*chan, k), cy.reshape(*chan, k)], axis=-1)
+    if normalize is not None:
+        xy = np.asarray(normalize(cells), dtype=float)
+    else:
+        # +0.5: cell-center convention, matching inference.heatmap_to_points.
+        xy = np.stack([(cells[..., 0] + 0.5) / ww, (cells[..., 1] + 0.5) / hh], axis=-1)
     valid = np.isfinite(val)
     xy = np.where(valid[..., None], xy, np.nan)
     score = np.where(valid, val, 0.0)
