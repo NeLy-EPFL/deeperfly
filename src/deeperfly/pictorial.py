@@ -43,6 +43,7 @@ __all__ = [
     "bone_length_targets",
     "skeleton_chains",
     "solve_frame",
+    "elect_frame",
     "reconstruct",
 ]
 
@@ -185,6 +186,113 @@ def peak_candidates(
     xy = np.where(valid[..., None], xy, np.nan)
     score = np.where(valid, val, 0.0)
     return xy, score
+
+
+# -- per-(view, joint) election (the cheap alternative to the hypothesis pool) ----
+
+
+def elect_frame(
+    cameras: CameraGroup,
+    cand_xy: Float[np.ndarray, "V P K 2"],
+    cand_score: Float[np.ndarray, "V P K"],
+    *,
+    threshold: float = 15.0,
+    min_views: int = 3,
+    max_reproj: float = 30.0,
+    max_move: float = np.inf,
+    min_margin: float = 0.0,
+    min_conf_ratio: float = 0.0,
+) -> Float[np.ndarray, "V P 2"]:
+    """Per ``(view, joint)``, re-elect among that cell's own candidates. 2D only.
+
+    **Not reachable from a config, on purpose.** It is the cheap research baseline the
+    recovery numbers were measured against, and measurement is why it is not an option:
+    over 12 held-out (detector, recording) pairs it swings 14.0-68.8% of the available
+    gain where :func:`solve_frame` holds 53.3-66.2%, so it is the higher-variance
+    estimator rather than a cheaper equivalent one. ``k`` is the production accuracy/cost
+    dial (``k = 3`` keeps 88-100% of ``k = 5``'s improvement at 1.7x less time).
+
+    A different estimator from :func:`solve_frame`, not a cheaper configuration of it, and
+    the distinction is what makes it work: this holds view ``v`` out, triangulates the
+    OTHER views' arg-max, reprojects into ``v``, and takes ``v``'s candidate nearest that
+    reprojection. :func:`solve_frame` instead commits ONE 3D hypothesis per joint to every
+    view at once. Measured on held-out animals, giving `solve_frame` this same
+    leave-one-out pool (``M = V``) while keeping its single-commitment rule captures only
+    24.7-46.8% of the available gain, where this rule captures 14.0-68.8% and the full
+    ``C(V,2)*K**2`` pair pool 53.3-68.9% -- so the commitment rule, not the pool, is what
+    separates them. That is why this is a function and not a parameter.
+
+    Chosen for cost: no hypothesis pool, so ~5.8x cheaper than `solve_frame` at ``K = 5``
+    (28.3 vs 163.6 ms/frame at V=8, P=38) and **flat in K** where the pair pool is
+    quadratic. It also never abstains -- every cell returns a real detected peak -- so
+    unlike `solve_frame` it cannot un-densify a dense run.
+
+    **Selection, never substitution.** The result is always one of ``cand_xy``, so the
+    +3.195 px this project measured for substituting a reprojection for a detection is
+    structurally unreachable.
+
+    Parameters
+    ----------
+    cameras
+        The bundle-adjusted rig.
+    cand_xy, cand_score
+        Per-frame candidates, ``(V, P, K, 2)`` / ``(V, P, K)``, rank 0 the arg-max.
+    threshold
+        RANSAC inlier threshold (px) for the leave-one-out triangulation.
+    min_views
+        Inlier views the triangulation needs before its vote counts. Measured nearly
+        inert (2/3/4 capture 93.4/93.4/91.6% of the gain); only 5-6 start costing.
+    max_reproj
+        Elect only if the winner lies within this many px of the reprojection. **The
+        load-bearing guard.** It bounds how far the GEOMETRY may be off, not how far the
+        detector's answer may move; 30 px chosen on a held-out animal.
+    max_move
+        Legacy guard on distance from the arg-max. Infinite by default because 40 px --
+        the value this rule shipped with -- excluded the 150-300 px moves that carry the
+        error mass, capturing 6.0% of the available gain instead of 93.4%.
+    min_margin
+        Elect only if the winner beats the arg-max by this margin in reprojection
+        distance; breaks near-ties toward the incumbent.
+    min_conf_ratio
+        Elect only if the winner's peak value is at least this fraction of the arg-max's.
+        Confidence here is a cliff rather than a gradient, so it is a gate, never a weight.
+
+    Returns
+    -------
+    np.ndarray
+        Elected 2D per view, ``(V, P, 2)``, in the same pixel frame as ``cand_xy``.
+        Never NaN where the arg-max was finite.
+    """
+    from .triangulation import triangulate_ransac
+
+    v, n, _k, _ = cand_xy.shape
+    arg = cand_xy[:, :, 0, :]  # (V, P, 2) -- the incumbent
+    out = arg.copy()
+    for vid in range(v):
+        held = arg.copy()
+        held[vid] = np.nan  # a view must not vote for itself
+        x3, inl = triangulate_ransac(cameras, held, threshold=threshold)
+        n_in = np.asarray(inl).sum(axis=0)
+        proj = np.asarray(cameras.project(x3))[vid]  # (P, 2)
+        for p in range(n):
+            if n_in[p] < min_views or not np.isfinite(proj[p]).all():
+                continue
+            cands = cand_xy[vid, p]  # (K, 2)
+            d = np.linalg.norm(cands - proj[p], axis=-1)
+            if not np.isfinite(d).any():
+                continue
+            c = int(np.nanargmin(d))
+            if c == 0 or not np.isfinite(d[c]) or d[c] > max_reproj:
+                continue
+            if np.linalg.norm(cands[c] - cands[0]) > max_move:
+                continue
+            if (d[0] - d[c]) < min_margin:
+                continue
+            sc = cand_score[vid, p]
+            if min_conf_ratio > 0.0 and sc[0] > 0 and sc[c] < min_conf_ratio * sc[0]:
+                continue
+            out[vid, p] = cands[c]
+    return out
 
 
 # -- bone-length prior (shared with bundle adjustment) -----------------------

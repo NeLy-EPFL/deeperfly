@@ -260,6 +260,41 @@ def test_pictorial_requires_candidates(cameras, fly, rng):
         run_from_points2d(cameras, fly, proj, do_bundle_adjust=False, do_pictorial=True)
 
 
+# -- election, and the arg-max fallback --------------------------------------
+#
+# `elect_frame` is the cheap research baseline, deliberately NOT reachable from a config:
+# measured on held-out animals it swings 14.0-68.8% of the available gain where the
+# shipped decoder holds 53.3-66.2%, so it is the higher-variance estimator, not a cheaper
+# equivalent. `k` is the production accuracy/cost dial.
+
+
+def test_elect_frame_recovers_a_decoyed_joint(cameras, fly, rng):
+    """Election finds the truth at rank 1 when rank 0 is a decoy."""
+    pts3d = fly_cloud(rng)
+    proj = np.asarray(cameras.project(pts3d))
+    xy, sc = candidates_from_proj(proj, k=3)
+    xy[:, 0, :, 1] = proj
+    sc[:, 0, :, 1] = 0.7
+    xy[:, 0, :, 0] = proj + rng.normal(0.0, 0.4, size=proj.shape)
+    sc[:, 0, :, 0] = 0.9
+
+    got = pictorial.elect_frame(cameras, xy[:, 0], sc[:, 0])
+    argmax_err = np.linalg.norm(xy[:, 0, :, 0] - proj, axis=-1)
+    got_err = np.linalg.norm(got - proj, axis=-1)
+    assert got_err.mean() < argmax_err.mean(), "election did not beat the arg-max"
+
+
+def test_elect_frame_never_abstains(cameras, fly, rng):
+    """Unlike recovery, election always returns a real detected peak."""
+    pts3d = fly_cloud(rng)
+    proj = np.asarray(cameras.project(pts3d))
+    xy, sc = candidates_from_proj(proj, k=2)
+    xy[:, 0, :, 1] = proj + rng.normal(0.0, 20.0, size=proj.shape)  # a useless 2nd peak
+    sc[:, 0, :, 1] = 0.1
+    got = pictorial.elect_frame(cameras, xy[:, 0], sc[:, 0])
+    assert np.isfinite(got).all(), "election must never write NaN over a finite arg-max"
+
+
 def test_fallback_argmax_fills_abstentions(cameras, fly, rng):
     """With the fallback on, a cell recovery declined keeps its arg-max, not a NaN."""
     pts3d = fly_cloud(rng)

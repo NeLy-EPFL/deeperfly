@@ -101,6 +101,14 @@ API. A version that says so is more useful than one that flatters.
   fingerprint's `candidates` entry, because the gate prunes during *extraction* and nothing
   downstream can recover from a set pruned too hard.
 
+- `pictorial.elect_frame`, a per-`(view, joint)` election: hold a view out, triangulate the
+  others' arg-max, reproject, and take that view's nearest candidate. Deliberately **not**
+  reachable from a config — it is the research baseline the recovery numbers were measured
+  against, and over 12 held-out (detector, recording) pairs it swings 14.0–68.8% of the
+  available gain where `solve_frame` holds 53.3–66.2%, so it is the higher-variance estimator
+  rather than a cheaper equivalent one. It is ~5.8× cheaper and flat in `K`, and it never
+  abstains.
+
 - **A confidence floor, off unless the artifact asks for it.** `mvt.predict_points` reads
   `arch.conf_floor` and reports a point below it as `NaN` — which is what `deeperfly.triangulation`
   already means by "this camera cannot see this point" — instead of as a confident location pinned
