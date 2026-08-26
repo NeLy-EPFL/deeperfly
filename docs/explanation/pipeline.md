@@ -45,6 +45,20 @@ already paid for detection.
     longer *un-densifies* a dense run — where recovery commits nothing the detector's
     arg-max is kept rather than a `NaN` — so that is no longer among the reasons.
 
+    What it is worth was measured (r28 multiview transformer, 7,838 hand-labeled cells
+    over four recordings of two animals): **−0.58 px of mean hand-label error on the final
+    pose**, which is a *gross-error repair* and not a general accuracy gain. Cells over
+    20 px fall 3.55% → 2.31%; the median barely moves; and the 62% of cells the detector
+    already placed within 5 px get 0.08 px **worse**. Whether that trade is worth taking
+    depends on whether the analysis downstream is hurt more by rare large errors or by
+    small systematic ones, which is why this is a switch and not a default.
+
+    Two caveats on those numbers. The r28 export trained on all 55 corpus recordings with
+    no holdout, so every labeled frame scored here is *in-sample* and none of it is
+    evidence the effect transfers to a new animal. And labeled frames over-sample fast
+    motion, which is where the gain lives — reweighting to each recording's own
+    motion-speed law halves it to −0.32 px.
+
 ## Data flow
 
 The two diagrams below show what happens when we run deeperfly on the example dataset with

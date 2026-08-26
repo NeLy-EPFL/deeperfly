@@ -97,6 +97,31 @@ STAGES = (
 #: the pose2d fingerprint, re-detecting every cached tree in existence. It no longer
 #: un-densifies a dense run -- the pipeline keeps the arg-max wherever recovery abstained
 #: (see `PictorialParams`) -- so that is no longer among the reasons.
+#:
+#: It is off rather than wrong, and what it is worth was measured (2026-08-25, r28 multiview
+#: transformer, 7,838 hand-labeled cells over 4 recordings of 2 animals): **-0.58 px of mean
+#: hand-label error on the FINAL pose**, which is a GROSS-ERROR REPAIR and not a general
+#: accuracy gain. Cells over 20 px fall 3.55% -> 2.31%; the median barely moves; and the 62%
+#: of cells the detector already placed within 5 px get 0.08 px WORSE. Whether that trade is
+#: worth taking depends on whether the analysis downstream is hurt more by rare large errors
+#: or by small systematic ones, which is why this is a switch and not a default.
+#:
+#: ``peak_threshold`` is the switch that actually matters, and the shipped value disables the
+#: stage in all but name: an r28 field yields a second candidate in 0.04% of cells at 0.05, so
+#: recovery has nothing to choose from and returns its own input (measured end to end: 0 of
+#: 983 labeled cells re-elected, -0.02 px [-0.08, +0.05]). Set ``peak_threshold_rel``.
+#:
+#: ``lam`` does NOT matter, which is worth knowing before anyone tunes it: swept over 0.02 to
+#: 1.0 -- a 50x range -- the result is flat to three decimals (-0.989/-0.992/-0.984/-0.981 px,
+#: re-election 2.454-2.457%). The bone-length prior, i.e. the thing that makes this DeepFly3D
+#: *pictorial structures* rather than plain multi-view candidate election, contributes nothing
+#: on this rig. The gain is the election.
+#:
+#: Two caveats on those numbers. The r28 export trained on all 55 corpus recordings with no
+#: holdout, so every labeled frame scored here is IN-SAMPLE and none of this is evidence the
+#: effect transfers to a new animal. And labeled frames over-sample fast motion, which is
+#: where the gain lives -- reweighting to each recording's own motion-speed law halves it to
+#: -0.32 px.
 STAGE_DEFAULTS = {
     "pose2d": True,
     "bundle_adjustment": True,
@@ -424,6 +449,12 @@ class SymmetrizeParams:
 @dataclass(frozen=True)
 class PictorialParams:
     """``[pictorial_structures]`` -- top-K peak-recovery knobs.
+
+    ``k`` is the accuracy/cost dial, and the only one: the hypothesis pool is
+    ``C(V, 2) * k**2`` per joint, so cost is quadratic in it (163.6 ms/frame at ``k = 5``
+    against 97.5 at 3 and V=8, P=38). Measured on held-out animals, ``k = 3`` keeps
+    88-100% of ``k = 5``'s improvement and ``k = 2`` keeps 54-91%, all still separating
+    from zero -- so 3 is the setting to reach for when a long recording makes 5 too slow.
 
     Wherever recovery commits nothing, the arg-max is kept rather than a NaN. That is
     unconditional and not a knob: measured, recovery abstains on 1.5-2.2% of labeled

@@ -319,6 +319,26 @@ def test_fallback_argmax_fills_abstentions(cameras, fly, rng):
     np.testing.assert_array_equal(on[keep], off[keep])
 
 
+def test_k_is_the_only_accuracy_cost_knob():
+    """The config exposes one dial, and it is the one that means accuracy vs cost.
+
+    Asserted because two richer surfaces were measured and rejected: a ``mode`` naming a
+    second estimator (election is the opposite corner of a pool x commitment 2x2, so no
+    single parameter honestly selects it) and a ``fallback_argmax`` switch (filling an
+    abstention is 3D-neutral here, so there is nothing to trade).
+    """
+    from deeperfly.config import Config
+
+    ps = Config.default().pictorial
+    assert ps.k == 5
+    assert not hasattr(ps, "mode"), "there is no second decoder to select"
+    assert not hasattr(ps, "fallback_argmax"), "filling abstentions is not a choice"
+
+    data = Config.default().data
+    data["pictorial_structures"] = {"k": 3}
+    assert Config.from_dict(data).pictorial.k == 3
+
+
 def test_the_stage_always_fills_abstentions(cameras, fly, rng):
     """The pipeline never stores a 2D layer sparser than the detector it corrected."""
     from deeperfly.config import Config
