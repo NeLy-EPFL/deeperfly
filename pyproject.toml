@@ -121,6 +121,12 @@ test = [
     # WebSocket in-process, no real server or browser needed. FastAPI/uvicorn
     # themselves are core deps; only the httpx test client is test-only.
     "httpx>=0.27",
+    # Drives the editor in a real headless browser (tests/test_gui_browser.py) -- the
+    # only gate over the GUI's JavaScript, and so the only test that can see a throw in
+    # a render path. The wheel is small; the chromium build it drives is NOT installed
+    # by a sync, so the file skips itself unless `playwright install chromium` has run
+    # (which is what the `test-gui-browser` CI job does).
+    "playwright>=1.49",
 ]
 docs = [
     # The documentation site (MkDocs + Material). The library API reference is

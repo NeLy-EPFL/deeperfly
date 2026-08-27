@@ -5,14 +5,16 @@ TypeError in ``app.js``'s render path passes the whole suite and breaks the edit
 it is opened. This boots the real app under uvicorn, loads it in headless chromium, and fails
 on any console error or uncaught exception.
 
-Skipped when playwright (or its browser download) is absent, so it costs nothing in an
-environment that cannot run it -- but where it CAN run, it is the only check that would catch
-a render-path throw before the operator does.
+`playwright` is a `test` dependency, but the chromium build it drives is a separate
+download, so a plain `uv sync --group test` cannot run this file and it skips itself.
+`playwright install chromium` (once) is what turns the gate on; CI has a job that does
+exactly that and runs this file alone.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
@@ -36,9 +38,9 @@ HEIGHT, WIDTH = 128, 160
 
 #: Where playwright caches browser builds. The pinned build number moves with the python
 #: package, so an environment that installed browsers once and later upgraded playwright has
-#: a perfectly good chromium under the OLD number and none under the new one -- which is
-#: exactly this machine (1223 present, 1234 wanted). Rather than skip the only render check
-#: in the suite over a version tag, fall back to any cached build that actually exists.
+#: a perfectly good chromium under the OLD number and none under the new one. Rather than skip
+#: the only render check in the suite over a version tag, fall back to any cached build that
+#: actually exists.
 _PW_CACHE = Path.home() / ".cache" / "ms-playwright"
 
 
@@ -61,14 +63,57 @@ def _cached_chromium() -> str | None:
 
 
 def _launch(pw):
-    """Launch chromium, preferring playwright's own pin and falling back to the cache."""
+    """Launch chromium, preferring playwright's own pin and falling back to the cache.
+
+    Skips rather than errors when no build is installed at all: `playwright` itself is a
+    `test` dependency, so the import above no longer gates this file -- the browser does.
+    """
     try:
         return pw.chromium.launch()
     except PWError:
         exe = _cached_chromium()
         if exe is None:
-            raise
+            pytest.skip(
+                "no chromium build installed; run `playwright install chromium`"
+            )
         return pw.chromium.launch(executable_path=exe)
+
+
+#: How long a keystroke gets to reach the canvas. Generous on purpose: a redraw is a
+#: websocket round trip plus a frame, and under `-n auto` this file shares the box with 31
+#: other workers, so the wait has to absorb contention rather than assume its absence.
+_REDRAW_TIMEOUT = 15.0
+
+
+def _settle(read, ok, timeout=_REDRAW_TIMEOUT):
+    """Poll ``read()`` until ``ok(value)``, and return the last value read either way.
+
+    Returning on timeout rather than raising is what keeps the caller's assertion message:
+    the test says what it expected, not that a wait expired.
+    """
+    deadline = time.monotonic() + timeout
+    value = read()
+    while not ok(value) and time.monotonic() < deadline:
+        time.sleep(0.05)
+        value = read()
+    return value
+
+
+def _quiesced(read, hold=0.3, timeout=_REDRAW_TIMEOUT):
+    """Poll ``read()`` until two reads ``hold`` seconds apart agree, and return that value.
+
+    For snapshotting a canvas *before* an edit, where there is no predicate to wait on --
+    only "whatever the last keystroke started has finished".
+    """
+    deadline = time.monotonic() + timeout
+    previous = read()
+    while time.monotonic() < deadline:
+        time.sleep(hold)
+        value = read()
+        if value == previous:
+            return value
+        previous = value
+    return previous
 
 
 @pytest.fixture
@@ -155,7 +200,10 @@ def page_and_errors(browser_session):
                 ),
             )
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
-            page.wait_for_timeout(1000)
+            # `App.init` registers its keydown listener after two awaits, so a page with
+            # its canvases drawn can still swallow every keystroke. Wait for the flag it
+            # sets last rather than for a guessed number of milliseconds.
+            page.wait_for_selector("body[data-ready]", timeout=30_000)
             yield page, errors
             browser.close()
     finally:
@@ -338,13 +386,11 @@ def test_l_toggles_the_camera_layout(page_and_errors):
     active = page.locator("#layout-switch .seg-btn.is-active")
     assert "layout-grid" in (views.get_attribute("class") or ""), "grid is the default"
     page.keyboard.press("l")
-    page.wait_for_timeout(300)
-    assert "layout-focus" in (views.get_attribute("class") or ""), "l did not focus"
-    assert active.inner_text() == "Focus", "the Layout segment did not follow the key"
+    expect(views).to_have_class(re.compile(r"\blayout-focus\b"))
+    expect(active).to_have_text("Focus")
     page.keyboard.press("l")
-    page.wait_for_timeout(300)
-    assert "layout-grid" in (views.get_attribute("class") or ""), "l did not go back"
-    assert active.inner_text() == "Grid"
+    expect(views).to_have_class(re.compile(r"\blayout-grid\b"))
+    expect(active).to_have_text("Grid")
     assert not errors, "JS errors pressing l:\n  " + "\n  ".join(errors)
 
 
@@ -484,24 +530,23 @@ def test_hidden_draws_a_mark_and_nothing_else_moves(page_and_errors):
     # sacrifice: it dirties the session and puts nothing on the canvas. (Wide enough to fit
     # one line, >=1024px, there is no wrap and no confound; the fixture is simply narrower.)
     page.keyboard.press("d")
-    page.wait_for_timeout(900)
-    assert not page.evaluate("() => document.getElementById('unsaved').hidden"), (
+    chip = _settle(
+        lambda: page.evaluate("() => !document.getElementById('unsaved').hidden"), bool
+    )
+    assert chip, (
         "the unsaved chip never appeared, so it is no longer what reflows the toolbar -- "
         "re-derive what this warm-up is protecting against before deleting it"
     )
     page.keyboard.press("a")  # select every point in every view
-    page.wait_for_timeout(400)
-    before = probe()
+    before = _quiesced(probe)
 
     page.keyboard.press("e")  # hold the whole frame out of the training loss
-    page.wait_for_timeout(700)
-    marked = probe()
+    marked = _settle(probe, lambda v: v["bar"] > before["bar"])
     assert marked["bar"] > before["bar"], "no Hidden mark was drawn"
     assert marked["hash"] != before["hash"]
 
     page.keyboard.press("e")  # ... and lift it again
-    page.wait_for_timeout(700)
-    after = probe()
+    after = _settle(probe, lambda v: v == before)
     assert after == before, "lifting Hidden did not restore the canvas exactly"
     assert not errors, "JS errors drawing the Hidden mark:\n  " + "\n  ".join(errors)
 

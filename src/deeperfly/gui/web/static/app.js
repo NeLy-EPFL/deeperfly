@@ -701,6 +701,13 @@ class App {
       this.overViews = false;
       this.updateAddingHint();
     });
+
+    // Boot is FINISHED -- keystrokes land from here, and not before: the keydown
+    // listener above is registered after two awaits, so a page whose canvases are
+    // already drawn can still drop every key. Nothing in the app reads this; it is the
+    // signal tests/test_gui_browser.py waits on instead of guessing a delay, which is
+    // what made two of its keystroke tests fail under a loaded box.
+    document.body.dataset.ready = "1";
   }
 
   // -- construction -----------------------------------------------------------
