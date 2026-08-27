@@ -980,7 +980,6 @@ def test_the_sidebar_ids_agree_across_the_assets(client):
         "labeled",
         "suggest",
         "instances",
-        "marks",
         "jobs",
         "settings",
     )
@@ -996,7 +995,6 @@ def test_the_sidebar_ids_agree_across_the_assets(client):
         "labeled-pane",
         "suggest-pane",
         "instances-pane",
-        "marks-pane",
         "jobs-pane",
         "settings-pane",
     ):

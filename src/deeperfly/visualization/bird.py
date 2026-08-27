@@ -86,8 +86,12 @@ def _unit(v: np.ndarray, what: str) -> np.ndarray:
     return np.asarray(v, dtype=float) / n
 
 
-def _landmarks(skeleton: "Skeleton") -> dict[str, list[int]]:
+def _orientation_groups(skeleton: "Skeleton") -> dict[str, list[int]]:
     """The anatomical groups the body frame is built from, resolved BY NAME.
+
+    Renamed from ``_landmarks`` in 0.3.0: calibration landmarks were removed, and the word
+    now means only one thing (a chain's base marker in the IK stage), so a local helper
+    that meant a third thing had to stop colliding with both.
 
     Resolved by name rather than by index so a skeleton change cannot silently
     re-point them -- this is exactly the region the DeepFly3D set and ``fly38`` differ in
@@ -115,7 +119,7 @@ def _landmarks(skeleton: "Skeleton") -> dict[str, list[int]]:
     if missing:
         raise ValueError(
             f"this skeleton has no points for {missing}, so the dorsal plan view cannot "
-            "be oriented. It needs an anterior landmark (neck/antenna), an abdomen "
+            "be oriented. It needs an anterior group (neck/antenna), an abdomen "
             "point, both sides' thorax-coxa joints, and claws (which is what fixes "
             f"dorsal from ventral). Points are: {names}"
         )
@@ -148,7 +152,7 @@ def dorsal_camera(
     pts3d
         ``(T, P, 3)`` world-coordinate 3D pose.
     skeleton
-        The skeleton naming those points (see :func:`_landmarks`).
+        The skeleton naming those points (see :func:`_orientation_groups`).
     like
         A rig camera to copy the distortion *shape* from; the synthetic camera is
         distortion-free, and this only keeps the coefficient vector the same length so
@@ -169,7 +173,7 @@ def dorsal_camera(
     pts3d = np.asarray(pts3d, dtype=float)
     if pts3d.ndim != 3 or pts3d.shape[-1] != 3:
         raise ValueError(f"pts3d must be (T, P, 3), got {pts3d.shape}")
-    g = _landmarks(skeleton)
+    g = _orientation_groups(skeleton)
 
     ref = np.nanmedian(pts3d, axis=0)  # (P, 3): the clip's median pose
     if not np.isfinite(ref).any():
@@ -180,7 +184,7 @@ def dorsal_camera(
         sel = sel[np.isfinite(sel).all(-1)]
         if not len(sel):
             raise ValueError(
-                "a landmark group is NaN in the median pose, so the dorsal view cannot "
+                "an orientation group is NaN in the median pose, so the dorsal view cannot "
                 "be oriented; the animal is not resolved in 3D"
             )
         return sel.mean(0)

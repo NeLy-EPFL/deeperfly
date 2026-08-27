@@ -246,9 +246,10 @@ def _tab(page, name):
 
 
 def _leave_tab(page, name):
-    """Move off the named tab -- the event that disarms a landmark and stops the jobs poll.
+    """Move off the named tab -- the event that stops the jobs poll.
 
-    Deliberately lands on a pane that fetches nothing, so what is under test is the leaving.
+    Deliberately lands on a pane that fetches nothing, so what is under test is the
+    leaving.
     """
     _tab(page, "instances" if name == "labeled" else "labeled")
     expect(page.locator(f"#tab-{name}")).to_have_attribute("aria-selected", "false")
@@ -875,103 +876,8 @@ def test_a_session_without_a_project_explains_the_empty_jobs_panel(page_and_erro
 # -- calibration landmarks ------------------------------------------------------
 
 
-@pytest.fixture
-def landmark_page_and_errors(result, tmp_path):
-    """The editor with landmarks declared, loaded in a real browser."""
-    from deeperfly.gui.labels import LandmarkLabels
-
-    sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
-    marks = LandmarkLabels.empty(
-        result.n_views, result.n_frames, ["tether_tip", "coverslip_ne"]
-    )
-    session = Session.build(
-        EditorState.from_result(result, landmarks=marks, image_sizes=sizes),
-        FrameSource({}, image_sizes=sizes),
-        results_path=str(tmp_path / "results.h5"),
-        labels_path=tmp_path / "labels.h5",
-        image_sizes=sizes,
-    )
-    server, port = _serve(session)
-    errors: list[str] = []
-    try:
-        with sync_playwright() as pw:
-            try:
-                browser = _launch(pw)
-            except PWError as exc:
-                pytest.skip(f"chromium unavailable: {exc}")
-            page = browser.new_page()
-            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
-            page.on(
-                "console",
-                lambda m: (
-                    errors.append(f"console.error: {m.text}")
-                    if m.type == "error"
-                    else None
-                ),
-            )
-            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
-            page.wait_for_timeout(900)
-            yield page, errors, session
-            browser.close()
-    finally:
-        server.should_exit = True
-
-
 def _open_marks(page):
     _tab(page, "marks")
-
-
-def test_the_landmarks_panel_lists_the_declared_landmarks(landmark_page_and_errors):
-    page, errors, _ = landmark_page_and_errors
-    _open_marks(page)
-    rows = page.locator(".mark-row")
-    assert rows.count() == 2
-    assert "tether_tip" in rows.first.inner_text()
-    assert "static" in rows.first.inner_text()
-    assert not errors
-
-
-def test_arming_a_landmark_then_clicking_a_view_places_it(landmark_page_and_errors):
-    """The whole gesture: a landmark has nothing on the canvas to drag until it exists,
-    so arming + clicking is the only interaction that works from an empty frame."""
-    page, errors, session = landmark_page_and_errors
-    _open_marks(page)
-    page.locator(".mark-row").first.click()  # arm
-    page.wait_for_timeout(200)
-    assert "armed" in (page.locator(".mark-row").first.get_attribute("class") or "")
-
-    canvas = page.locator("#stage canvas").first
-    canvas.click(position={"x": 40, "y": 30})
-    page.wait_for_timeout(700)
-
-    observed = session.state.landmarks.observed
-    assert observed[:, :, 0].sum() == 1, "the click did not place the armed landmark"
-    assert not errors, "JS errors placing a landmark:\n  " + "\n  ".join(errors)
-
-
-def test_leaving_the_landmarks_tab_disarms(landmark_page_and_errors):
-    """A click that placed a landmark because a panel was open earlier is a nasty surprise.
-
-    Leaving the tab is the event that has to do it: the pane that says WHICH landmark is
-    armed is no longer on screen, so nothing else would tell the operator why their next
-    click moved a calibration point instead of selecting a joint.
-    """
-    page, errors, session = landmark_page_and_errors
-    _open_marks(page)
-    page.locator(".mark-row").first.click()
-    _leave_tab(page, "marks")
-
-    page.locator("#stage canvas").first.click(position={"x": 55, "y": 45})
-    page.wait_for_timeout(500)
-    assert session.state.landmarks.observed.sum() == 0
-    assert not errors
-
-
-def test_a_project_with_no_landmarks_explains_the_empty_panel(page_and_errors):
-    page, errors = page_and_errors
-    _open_marks(page)
-    assert "no calibration landmarks" in page.locator("#marks-empty").inner_text()
-    assert not errors
 
 
 # -- the generated settings panel ------------------------------------------------
@@ -1363,20 +1269,19 @@ def test_the_rebuild_leaves_one_canvas_per_camera(recording_page_and_errors):
 
 # -- the tabbed sidebar -----------------------------------------------------------
 
-# The panel's seven tabs, in strip order, each with the pane it shows.
+# The panel's tabs, in strip order, each with the pane it shows.
 _TABS = [
     ("recordings", "recording-pane"),
     ("labeled", "labeled-pane"),
     ("suggest", "suggest-pane"),
     ("instances", "instances-pane"),
-    ("marks", "marks-pane"),
     ("jobs", "jobs-pane"),
     ("bundle", "ba-pane"),
     ("settings", "settings-pane"),
 ]
 
 
-def test_the_sidebar_holds_exactly_the_eight_tabs_and_panes_in_order(page_and_errors):
+def test_the_sidebar_holds_exactly_its_tabs_and_panes_in_order(page_and_errors):
     """The structural net for the DOM rewrite, mirroring ``test_the_toolbar_is_one_row``.
 
     A stray ``</div>`` in a nested rewrite like this does not throw and does not remove
@@ -1504,19 +1409,6 @@ def test_the_skeleton_menu_offers_only_the_verb_that_applies(page_and_errors):
     assert page.locator("#skeleton-create").is_disabled(), "offered a second skeleton"
     assert page.locator("#reseed").is_enabled(), "cannot reseed a frame that has one"
     assert not errors, "JS errors in the skeleton menu:\n  " + "\n  ".join(errors)
-
-
-def test_closing_the_panel_disarms(landmark_page_and_errors):
-    page, errors, session = landmark_page_and_errors
-    _tab(page, "marks")
-    page.locator(".mark-row").first.click()
-    page.wait_for_timeout(300)
-    _close_panel(page)
-
-    page.locator("#stage canvas").first.click(position={"x": 55, "y": 45})
-    page.wait_for_timeout(500)
-    assert session.state.landmarks.observed.sum() == 0, "a hidden panel still placed"
-    assert not errors
 
 
 def test_the_instance_pane_reports_this_frames_skeleton(page_and_errors):

@@ -396,7 +396,7 @@ export class BundleAdjustPanel {
     row("frame sampling", select("frame_sampling", this.plan.samplings),
       "Which labeled frames to keep when capped. 'coverage' prefers frames with the most multi-view cells, which are the best conditioned.");
     row("weigh by confidence", check("weigh_by_confidence"),
-      "Scale each residual by the detector's confidence. Irrelevant here unless landmarks or predictions are mixed in: these observations are hand-placed.");
+      "Scale each residual by the detector's confidence. Irrelevant here: these observations are hand-placed, so there is no per-point confidence to weigh by.");
     row("free focal length", check("free_focal"),
       "Off for a reason: focal error trades against depth, so freeing it can lower the residual while making the rig worse.");
     box.append(grid);

@@ -6,24 +6,23 @@ is that inversion, in five steps.
 
 .. code-block:: text
 
-    1  assemble    labels + landmarks   -> observations, one 3D unknown per "track"
+    1  assemble    hand labels          -> observations, one 3D unknown per "track"
     2  gate        conditioning check   -> refuse, with the reason, before solving
     3  initialize  orbit prior, else incremental SfM (essential matrix + PnP)
     4  bundle      deeperfly.bundle_adjustment, gauge-fixed, robust loss
     5  report      per-camera residuals, co-visibility, scatter -> accept or discard
 
-**What a "track" is.** One 3D unknown. A skeleton keypoint at frame *t* is its own track,
-because the animal moved between frames. A **static** landmark is a single track no matter
-how many frames observe it -- which is exactly why static landmarks are what make this
-converge (see :mod:`deeperfly.landmarks`).
+**What a "track" is.** One 3D unknown: a skeleton keypoint at one frame, because the animal
+moved between frames. Every track is one, which is why ``bundle_adjust``'s ``(V, N, 2)``
+shape -- one observation per ``(view, track)`` -- needs no collapsing.
 
-**Why a static landmark's observations are averaged.** ``bundle_adjust`` takes ``pts2d`` as
-``(V, N, 2)``: one observation per ``(view, track)``. A static landmark seen in *T* frames
-has up to ``V*T``. Rather than widen the solver, the per-view **mean** is used -- which for a
-point that does not move is the best estimate available -- and the per-view **scatter** is
-kept as a diagnostic. That scatter is worth more than the extra rows would have been: a
-static landmark whose pixel wanders is not static, or was labeled on a different speck in a
-different frame, and nothing else in the pipeline would have told you.
+**The animal is the calibration target.** Dedicated static landmarks went in 0.3.0: no
+project ever had any, so every rig solved here was already animal-as-target. What they
+would have bought is conditioning -- a static point spread through the scene volume, where
+keypoints sit in a ~3 mm blob near the middle of the field. What they were *also* claimed
+to buy, equation efficiency, was never binding on this rig: a track seen in V views
+contributes ``2V`` equations against 3 unknowns, which at ``V = 8`` is 5.33x against a
+:data:`MIN_EQUATION_RATIO` of 1.5.
 
 **What this refuses to do.** It will not invent intrinsics. Extrinsics are recoverable from
 correspondences; focal length essentially is not, from a few hundred hand labels on a 3 mm
@@ -73,18 +72,14 @@ MIN_BASELINE_DEG = 5.0
 class Track:
     """One 3D unknown and where it came from.
 
-    ``kind`` is ``"landmark"`` or ``"keypoint"``; ``label`` is human-facing and appears in
-    the report, so a bad residual names something the operator can navigate to.
+    ``label`` is human-facing and appears in the report, so a bad residual names something
+    the operator can navigate to. ``kind`` and ``static`` are gone with the landmarks:
+    every track is one keypoint at one frame, so both were constants.
     """
 
-    kind: str
     label: str
-    static: bool
     recording: str | None = None
     frame: int | None = None
-    #: Per-view pixel scatter (std, px) for a static landmark averaged over frames --
-    #: ``NaN`` for a single-frame track. A large value means the landmark is not static.
-    scatter_px: float = float("nan")
     n_observations: int = 0
 
 
@@ -119,9 +114,7 @@ class Observations:
             "views": self.n_views,
             "tracks": self.n_tracks,
             "observations": int(obs.sum()),
-            "landmark_tracks": sum(1 for t in self.tracks if t.kind == "landmark"),
-            "keypoint_tracks": sum(1 for t in self.tracks if t.kind == "keypoint"),
-            "static_tracks": sum(1 for t in self.tracks if t.static),
+            "keypoint_tracks": self.n_tracks,
             "frames": len({t.frame for t in self.tracks if t.frame is not None}),
         }
 
@@ -132,25 +125,17 @@ class Observations:
 def build_observations(
     *,
     view_names: list[str],
-    landmark_xy=None,
-    landmark_names=None,
-    landmark_static=None,
     keypoint_xy=None,
     keypoint_names=None,
     frames=None,
     recording: str | None = None,
-    use: str = "both",
 ) -> Observations:
-    """Turn one recording's labels into tracks.
+    """Turn one recording's hand labels into tracks.
 
     Parameters
     ----------
     view_names
         The ``V``-axis camera names.
-    landmark_xy
-        ``(V, T, L, 2)`` landmark observations (NaN where unobserved), or ``None``.
-    landmark_names, landmark_static
-        The ``L``-axis names and per-landmark static flags.
     keypoint_xy
         ``(V, T, P, 2)`` ground-truth keypoint pixels (NaN where unlabeled), or ``None``.
     keypoint_names
@@ -161,10 +146,7 @@ def build_observations(
         biased point, and no residual can reveal that.
     recording
         The recording's name, recorded on each track for the per-recording residual
-        breakdown (which is how a drifting rig-scoped landmark shows up).
-    use
-        ``"landmarks"``, ``"keypoints"`` or ``"both"`` -- the operator's choice of what
-        drives the solve.
+        breakdown.
 
     Returns
     -------
@@ -172,59 +154,12 @@ def build_observations(
         The tracks with at least :data:`MIN_VIEWS_PER_TRACK` observing views. Tracks with
         fewer are dropped here rather than passed to the solver, where they would add
         three unknowns and constrain nothing.
-
-    Raises
-    ------
-    ValueError
-        If ``use`` is unknown.
     """
-    if use not in ("landmarks", "keypoints", "both"):
-        raise ValueError(f"use must be 'landmarks', 'keypoints' or 'both', got {use!r}")
     n_views = len(view_names)
     columns: list[np.ndarray] = []
     tracks: list[Track] = []
 
-    if use in ("landmarks", "both") and landmark_xy is not None:
-        lm = np.asarray(landmark_xy, dtype=float)
-        names = list(landmark_names or [f"landmark{i}" for i in range(lm.shape[2])])
-        static = (
-            np.ones(lm.shape[2], dtype=bool)
-            if landmark_static is None
-            else np.asarray(landmark_static, dtype=bool)
-        )
-        rows = _frame_mask(lm.shape[1], frames)
-        for i, name in enumerate(names):
-            here = lm[:, rows, i, :]  # (V, T', 2)
-            if static[i]:
-                mean, scatter, count = _collapse_static(here)
-                columns.append(mean)
-                tracks.append(
-                    Track(
-                        kind="landmark",
-                        label=name,
-                        static=True,
-                        recording=recording,
-                        scatter_px=scatter,
-                        n_observations=count,
-                    )
-                )
-            else:
-                for j, t in enumerate(np.nonzero(rows)[0]):
-                    columns.append(here[:, j, :])
-                    tracks.append(
-                        Track(
-                            kind="landmark",
-                            label=f"{name}@{int(t)}",
-                            static=False,
-                            recording=recording,
-                            frame=int(t),
-                            n_observations=int(
-                                np.isfinite(here[:, j, :]).all(axis=-1).sum()
-                            ),
-                        )
-                    )
-
-    if use in ("keypoints", "both") and keypoint_xy is not None:
+    if keypoint_xy is not None:
         kp = np.asarray(keypoint_xy, dtype=float)
         names = list(keypoint_names or [f"point{i}" for i in range(kp.shape[2])])
         rows = np.nonzero(_frame_mask(kp.shape[1], frames))[0]
@@ -236,9 +171,7 @@ def build_observations(
                 columns.append(col)
                 tracks.append(
                     Track(
-                        kind="keypoint",
                         label=f"{name}@{int(t)}",
-                        static=False,
                         recording=recording,
                         frame=int(t),
                         n_observations=int(np.isfinite(col).all(axis=-1).sum()),
@@ -273,46 +206,23 @@ def _frame_mask(n_frames: int, frames) -> np.ndarray:
     return mask
 
 
-def _collapse_static(per_frame: np.ndarray) -> tuple[np.ndarray, float, int]:
-    """``(V, T, 2)`` observations of one static point -> ``(mean (V,2), scatter, count)``.
+def merge_observations(per_recording: list[Observations]) -> Observations:
+    """Combine several recordings' observations into one solve, by concatenation.
 
-    The mean is the best estimate for a point that does not move; the scatter (the mean
-    per-view standard deviation, in pixels) is the diagnostic that says whether it really
-    did not move. See the module docstring.
-    """
-    finite = np.isfinite(per_frame).all(axis=-1)  # (V, T)
-    mean = np.full((per_frame.shape[0], 2), np.nan)
-    spreads: list[float] = []
-    for v in range(per_frame.shape[0]):
-        pts = per_frame[v, finite[v]]
-        if pts.size == 0:
-            continue
-        mean[v] = pts.mean(axis=0)
-        if len(pts) > 1:
-            spreads.append(float(np.sqrt((pts.std(axis=0) ** 2).sum())))
-    scatter = float(np.mean(spreads)) if spreads else float("nan")
-    return mean, scatter, int(finite.sum())
-
-
-def merge_observations(
-    per_recording: list[Observations], *, share: set[str] | None = None
-) -> Observations:
-    """Combine several recordings' observations into one solve.
-
-    Tracks concatenate, **except** static landmarks named in ``share`` (the rig-scoped
-    ones): those become a *single* track whose per-view observation is the mean across
-    every recording that saw them. That sharing is the strongest constraint available --
-    it ties recordings into one rigid problem -- and the most dangerous, because it is
-    silently wrong the moment the rig is bumped between sessions. So the merged track keeps
-    the **spread across recordings** as its scatter, which is exactly the quantity that
-    reveals a moved camera, and the report breaks residuals down per recording.
+    Plain concatenation, which is all a multi-recording solve is now. The rig-scoped
+    cross-recording tie went with the static landmarks: it merged the recordings' views of
+    one named static point into a single track whose per-view observation was the mean
+    across sessions. That was the strongest constraint available -- it made several
+    recordings one rigid problem -- and the most dangerous, because it is silently wrong the
+    moment the rig is bumped between sessions; the merged track's cross-recording spread
+    was what revealed that. With no static point to share, there is nothing to tie and
+    nothing to be silently wrong about, and the per-recording residual breakdown in the
+    report stays.
 
     Parameters
     ----------
     per_recording
         One :class:`Observations` per recording. All must share the same view order.
-    share
-        Landmark labels to merge into one track (from ``scope = "rig"``).
 
     Returns
     -------
@@ -335,47 +245,9 @@ def merge_observations(
                 "cannot merge recordings with different view names/order "
                 f"({views} vs {other.view_names}) -- the view axis is positional"
             )
-    share = share or set()
 
-    columns: list[np.ndarray] = []
-    tracks: list[Track] = []
-    shared_cols: dict[str, list[np.ndarray]] = {}
-    shared_meta: dict[str, list[Track]] = {}
-
-    for obs in per_recording:
-        for i, track in enumerate(obs.tracks):
-            if track.kind == "landmark" and track.static and track.label in share:
-                shared_cols.setdefault(track.label, []).append(obs.pts2d[:, i])
-                shared_meta.setdefault(track.label, []).append(track)
-                continue
-            columns.append(obs.pts2d[:, i])
-            tracks.append(track)
-
-    for label, cols in shared_cols.items():
-        stack = np.stack(cols, axis=0)  # (R, V, 2)
-        with np.errstate(invalid="ignore"):
-            mean = np.nanmean(stack, axis=0)
-        # Spread ACROSS recordings, which is the drift signal a rig-scoped landmark exists
-        # to expose -- distinct from the within-recording scatter each track already has.
-        spread = float(np.nanmean(np.nanstd(stack, axis=0))) if len(cols) > 1 else 0.0
-        members = shared_meta[label]
-        columns.append(mean)
-        tracks.append(
-            Track(
-                kind="landmark",
-                label=label,
-                static=True,
-                recording="+".join(
-                    sorted({m.recording for m in members if m.recording})
-                )
-                or None,
-                scatter_px=spread,
-                n_observations=sum(m.n_observations for m in members),
-            )
-        )
-
-    if not columns:
-        return Observations(np.zeros((len(views), 0, 2)), [], list(views))
+    columns = [obs.pts2d[:, i] for obs in per_recording for i in range(obs.n_tracks)]
+    tracks = [t for obs in per_recording for t in obs.tracks]
     pts2d = np.stack(columns, axis=1)
     keep = np.isfinite(pts2d).all(axis=-1).sum(axis=0) >= MIN_VIEWS_PER_TRACK
     return Observations(
@@ -460,13 +332,15 @@ def conditioning(
             "the co-visibility graph is disconnected: "
             + " vs ".join(groups)
             + " share no tracks, so their relative pose is unknowable. Label the same "
-            "point in a view from each group (a static landmark both can see is ideal)"
+            "point in a view from each group -- one keypoint labeled in a camera from "
+            "each is enough to connect them"
         )
     if ratio < MIN_EQUATION_RATIO:
         reasons.append(
             f"only {equations} equations for {unknowns} unknowns ({ratio:.2f}x, need "
-            f"{MIN_EQUATION_RATIO}x) -- label more frames, or add a static landmark "
-            "(one static point observed in many frames is one unknown, not many)"
+            f"{MIN_EQUATION_RATIO}x) -- label more frames, or label more points per "
+            "frame: every track seen in V views contributes 2V equations against 3 "
+            "unknowns"
         )
 
     weakest = _weakest_pair(co, obs.view_names)
@@ -811,27 +685,26 @@ def solve_rig(
     tvecs: np.ndarray,
     free_focal: bool = False,
     free_k1: bool = False,
-    scale_pair: tuple[int, int] | None = None,
-    scale_distance: float | None = None,
     cold_start: bool = False,
     loss: str = "cauchy",
     f_scale: float = 4.0,
     max_nfev: int = 800,
 ) -> SolveResult:
-    """Bundle-adjust the rig, with the gauge fixed and the scale pinned if given.
+    """Bundle-adjust the rig, with the gauge fixed.
 
-    Reuses :func:`deeperfly.bundle_adjustment.bundle_adjust` unchanged. Two pieces of the
-    existing solver do exactly what this needs and are worth naming:
+    Scale is NOT pinned here, and cannot be: images cannot determine it -- a rig twice as
+    large viewing a fly twice as large produces pixel-identical images -- so a
+    correspondence-only solve leaves it free and the result is honestly
+    ``units = "arbitrary"``. Physical scale enters at inverse kinematics, where
+    ``body_scale`` fits the point cloud to the fitted model's defined dimensions. The
+    ``scale_pair`` / ``scale_distance`` pair that used to pin it from a measured
+    landmark-to-landmark distance went with the landmarks.
 
-    - ``fixed=["<view0>.rvec", "<view0>.tvec"]`` nails six of the seven gauge freedoms by
-      making the first view the world frame.
-    - the **bone-length prior** (``bone_pairs``/``bone_targets``/``bone_weight``) is
-      precisely a scale bar: "these two tracks are 1.8 mm apart". So a known distance needs
-      no new solver code at all.
-
-    With no scale reference the seventh freedom is left to the solver, which has no reason
-    to move along it -- the rig stays at whatever scale the initialization implied, and the
-    caller must record ``units = "arbitrary"``.
+    Reuses :func:`deeperfly.bundle_adjustment.bundle_adjust` unchanged.
+    ``fixed=["<view0>.rvec", "<view0>.tvec"]`` nails six of the seven gauge freedoms by
+    making the first view the world frame; the seventh -- scale -- is left to the solver,
+    which has no reason to move along it, so the rig stays at whatever scale the
+    initialization implied and the caller records ``units = "arbitrary"``.
 
     Parameters
     ----------
@@ -845,8 +718,6 @@ def solve_rig(
     free_focal, free_k1
         Whether to let the solver adjust focal length / ``k1``. Both default off: with
         sparse hand labels they are near-unidentifiable and absorb real extrinsic error.
-    scale_pair, scale_distance
-        Two track indices and the true distance between them, pinning the scale.
     loss, f_scale, max_nfev
         Robust loss settings forwarded to the solver. ``cauchy`` at 4 px is what this lab
         measured as the setting that helps a hard rig rather than one that flatters it.
@@ -899,12 +770,6 @@ def solve_rig(
         pts3d=np.asarray(pts3d_init, dtype=float),
     )
 
-    bone_pairs = bone_targets = None
-    if scale_pair is not None and scale_distance:
-        # The existing bone-length prior IS the scale bar; no new solver code.
-        bone_pairs = np.asarray([list(scale_pair)], dtype=int)
-        bone_targets = np.asarray([float(scale_distance)], dtype=float)
-
     result, solution = bundle_adjust(
         state.values,
         state.fixed,
@@ -917,9 +782,6 @@ def solve_rig(
         loss=loss,
         f_scale=f_scale,
         max_nfev=max_nfev,
-        bone_pairs=bone_pairs,
-        bone_targets=bone_targets,
-        bone_weight=100.0,  # a metric statement, not a soft preference
         # Jacobian-based variable scaling. Not optional here: a reprojection derivative
         # with respect to translation scales as fx/Z, so on a long-focal rig (this one is
         # ~22000 px) the translation columns are thousands of times larger than the
@@ -938,7 +800,7 @@ def solve_rig(
     quality = quality_from_errors(err[:, None, :], names)
     quality["gauge"] = {
         "fixed": fixed,
-        "scale_fixed_by": _scale_label(scale_distance),
+        "scale_fixed_by": "none",  # images cannot determine scale; see the docstring
         "init_rescaled_by": scale_applied,
     }
     return SolveResult(
@@ -957,11 +819,6 @@ def solve_rig(
             },
             "observations": obs.summary(),
             "per_track": _per_track_report(obs, err),
-            "static_scatter_px": {
-                t.label: t.scatter_px
-                for t in obs.tracks
-                if t.static and np.isfinite(t.scatter_px)
-            },
         },
         ok=bool(result.success),
     )
@@ -1083,10 +940,6 @@ def _normalize_initial_scale(rvecs, tvecs, obs, intrinsics, dists):
     return rvecs, tvecs * scale, np.nan_to_num(pts3d * scale), scale
 
 
-def _scale_label(scale_distance) -> str:
-    return "known_distance" if scale_distance else "none"
-
-
 def _per_track_report(obs: Observations, err: np.ndarray) -> list[dict]:
     """The worst-fitting tracks, named, so a bad residual is navigable.
 
@@ -1101,8 +954,6 @@ def _per_track_report(obs: Observations, err: np.ndarray) -> list[dict]:
     rows = [
         {
             "label": obs.tracks[i].label,
-            "kind": obs.tracks[i].kind,
-            "static": obs.tracks[i].static,
             "recording": obs.tracks[i].recording,
             "max_reproj_px": float(per_track[i]),
             "views": int(obs.observed[:, i].sum()),

@@ -181,12 +181,12 @@
       <!-- The side panel: ONE pane at a time behind a strip of tabs. The editor has a single
            aside and the camera grid is the scarce resource, so every pane gets the full
            column instead of a share of it -- and "leaving a tab" is a real event again,
-           which is what disarms a landmark and stops the jobs poll.
+           which is what stops the jobs poll.
            The strip WRAPS rather than scrolls: seven names in a 240-340px column need two
            rows, and a tab you cannot see is a panel nobody finds. Each tab carries its own
            count, so the numbers stay readable from whichever pane is open.
            Tab order is the order of the working day -- which recording, what you have
-           labeled, what to label next, this frame's skeleton, the calibration landmarks, the
+           labeled, what to label next, this frame's skeleton, the
            jobs you can run, the project's settings. Activating a tab IS the lazy-load
            trigger, so the three panes that cost real work to fill cost nothing until asked
            for: Recording opens every recording's labels.h5 (server.py:583-584), Settings
@@ -217,9 +217,6 @@
             <button type="button" class="side-tab" id="tab-instances" role="tab"
                     aria-selected="false" aria-controls="instances-pane"
                     title="This frame's annotation skeleton — whether it exists, and how much of it is yours">Instance</button>
-            <button type="button" class="side-tab" id="tab-marks" role="tab"
-                    aria-selected="false" aria-controls="marks-pane"
-                    title="Calibration landmarks — static points that make a from-scratch camera rig solvable">Landmarks <span id="marks-count" class="count-badge">0</span></button>
             <button type="button" class="side-tab" id="tab-jobs" role="tab"
                     aria-selected="false" aria-controls="jobs-pane"
                     title="Pipeline jobs — run one of the CLI commands and watch its log. Polls every two seconds while this tab is showing">Jobs <span id="jobs-count" class="count-badge" hidden>0</span></button>
@@ -288,16 +285,6 @@
             <div id="instances-list" class="inst-list"></div>
           </div>
 
-          <!-- Calibration landmarks. Non-skeleton points that make a from-scratch rig
-               solvable: a STATIC one (a coverslip scratch, the tether tip) is three unknowns
-               however many frames observe it, while a keypoint is three unknowns PER FRAME
-               because the animal moved. Arm one, then click it into place in each view --
-               and LEAVING this tab disarms, so an armed landmark cannot outlive the operator's
-               attention and turn the next canvas click into a silent placement. -->
-          <div class="sidebar-body" id="marks-pane" role="tabpanel" aria-labelledby="tab-marks" hidden>
-            <div id="marks-list" class="marks-list"></div>
-            <div id="marks-empty" class="frames-empty"></div>
-          </div>
 
           <!-- Pipeline jobs. Each row IS a CLI command, shown verbatim so a GUI action that
                fails is reproducible in a terminal without reverse-engineering what the GUI
@@ -344,7 +331,7 @@
            narrow, and it is on the Suggested tab, which is where a queue is worked. -->
       <button id="sidebar-rail" class="sidebar-rail" hidden
               aria-controls="sidebar" aria-expanded="false"
-              title="Show the side panel — labeled frames, the suggested queue, this frame's skeleton, the calibration landmarks, jobs, settings, and the project's other recordings (j)">
+              title="Show the side panel — labeled frames, the suggested queue, this frame's skeleton, jobs, settings, and the project's other recordings (j)">
         <span class="rail-caret" aria-hidden="true">‹</span>
         <span id="frames-count" class="count-badge is-rail" title="Frames carrying a ground-truth label">0</span>
         <span class="rail-label">Panels</span>

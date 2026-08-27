@@ -18,10 +18,8 @@ from helpers import CAMERA_NAMES
 
 from deeperfly.gui.labels import (
     Labels,
-    LandmarkLabels,
     labels_identity,
     load_labels,
-    load_landmark_labels,
     save_labels,
 )
 from deeperfly.import_outputs import find_outputs, identify, import_outputs
@@ -300,68 +298,6 @@ def test_a_reordered_source_skeleton_is_remapped_by_name(
     # Point index 0 in the source is the LAST name, so it lands at index 37.
     np.testing.assert_allclose(dest.gt[0, 2, 37], [11.0, 22.0])
     assert not dest.gt_authored[0, 2, 0]
-
-
-def test_the_destinations_landmarks_survive_the_rewrite(
-    tmp_path, project, cameras, fly
-):
-    """``save_labels`` is a whole-file rewrite: omitting them would delete the group."""
-    (project.root / "landmarks.toml").write_text(
-        '[[landmark]]\nname = "tether_tip"\nstatic = true\n'
-    )
-    entry = project.recording("flyA")
-    dest_path = project.labels_path(entry)
-    ident = json.loads(h5py.File(dest_path, "r").attrs["meta"])["identity"]
-    lm = LandmarkLabels.empty(len(CAMERA_NAMES), N_FRAMES, ["tether_tip"])
-    lm.xy[0, 0, 0] = (3.0, 4.0)
-    save_labels(
-        dest_path, load_labels(dest_path, identity=ident), identity=ident, landmarks=lm
-    )
-
-    other = _make_recording(tmp_path / "copies" / "flyA", seed=0)
-    outputs = _make_outputs(other, cameras, fly, gt={(0, 5, 1): (9.0, 9.0)})
-    import_outputs(project, find_outputs(outputs), apply=True)
-
-    after = load_landmark_labels(
-        dest_path, n_views=len(CAMERA_NAMES), n_frames=N_FRAMES
-    )
-    assert after is not None, "the landmark group was deleted by the import"
-    np.testing.assert_allclose(after.xy[0, 0, 0], [3.0, 4.0])
-
-
-def test_source_landmarks_arrive_by_name_and_undeclared_ones_are_dropped(
-    tmp_path, project, cameras, fly
-):
-    (project.root / "landmarks.toml").write_text(
-        '[[landmark]]\nname = "tether_tip"\nstatic = true\n'
-    )
-    other = _make_recording(tmp_path / "copies" / "flyA", seed=0)
-    outputs = _make_outputs(other, cameras, fly, gt={(0, 5, 1): (9.0, 9.0)})
-    src_ident = json.loads(h5py.File(outputs / "labels.h5", "r").attrs["meta"])[
-        "identity"
-    ]
-    lm = LandmarkLabels.empty(
-        len(CAMERA_NAMES), N_FRAMES, ["tether_tip", "not_declared"]
-    )
-    lm.xy[1, 2, 0] = (12.0, 13.0)
-    lm.xy[1, 2, 1] = (99.0, 99.0)
-    save_labels(
-        outputs / "labels.h5",
-        load_labels(outputs / "labels.h5", identity=src_ident),
-        identity=src_ident,
-        landmarks=lm,
-    )
-
-    (plan,) = import_outputs(project, find_outputs(outputs), apply=True)
-    assert plan.landmarks_taken == 1
-    assert plan.landmarks_only_source == ["not_declared"]
-    after = load_landmark_labels(
-        project.labels_path(project.recording("flyA")),
-        n_views=len(CAMERA_NAMES),
-        n_frames=N_FRAMES,
-    )
-    assert after.names == ("tether_tip",)
-    np.testing.assert_allclose(after.xy[1, 2, 0], [12.0, 13.0])
 
 
 # -- safety ---------------------------------------------------------------------

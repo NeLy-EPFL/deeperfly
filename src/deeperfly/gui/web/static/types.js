@@ -84,7 +84,6 @@
  * @property {boolean} has_jobs  whether this session can run pipeline commands
  * @property {string | null} project_root  the project this recording belongs to, if any
  * @property {string | null} recording  the project slug of the open recording
- * @property {any[]} landmarks  the calibration landmarks placed in this recording
  */
 
 /**

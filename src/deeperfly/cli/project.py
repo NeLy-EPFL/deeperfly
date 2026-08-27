@@ -529,7 +529,6 @@ def _print_import(plan) -> None:
         ("occlusions taken", report.occluded_taken),
         ("absence declarations added", report.absent_union),
         ("frames newly marked reviewed", report.reviewed_added),
-        ("landmark observations taken", plan.landmarks_taken),
         ("cells dropped (no destination point/camera)", report.dropped_cells),
         ("conflicts needing a human", len(report.unresolved)),
     ):
@@ -544,12 +543,6 @@ def _print_import(plan) -> None:
         )
     if len(report.unresolved) > 3:
         console.print(f"  ... and {len(report.unresolved) - 3} more", highlight=False)
-    if plan.landmarks_only_source:
-        console.print(
-            f"[yellow]note:[/yellow] landmark(s) {plan.landmarks_only_source} are in the "
-            "source but not declared in this project's landmarks.toml -- dropped",
-            highlight=False,
-        )
     if plan.subject_id_taken:
         console.print(
             f"  subject id {plan.subject_id_taken!r} taken from the source "

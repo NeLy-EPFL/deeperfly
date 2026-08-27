@@ -169,8 +169,6 @@ class BaSettings:
     frame_sampling: str = "even"
     weigh_by_confidence: bool = False
     points_to_use: list[str] | None = None
-    #: what to fit to: ``"gt"``, ``"gt+landmarks"``, or ``"landmarks"``
-    source: str = "gt"
     #: free the focal length. Off, and the tab warns when it is turned on.
     free_focal: bool = False
 
@@ -199,7 +197,6 @@ class BaSettings:
             "frame_sampling": self.frame_sampling,
             "weigh_by_confidence": self.weigh_by_confidence,
             "points_to_use": self.points_to_use,
-            "source": self.source,
             "free_focal": self.free_focal,
         }
 
@@ -215,9 +212,6 @@ class BaSettings:
             raise ValueError(
                 f"unknown frame_sampling {sampling!r}; choose from {list(SAMPLINGS)}"
             )
-        source = str(data.get("source", "gt"))
-        if source not in ("gt", "gt+landmarks", "landmarks"):
-            raise ValueError(f"unknown source {source!r}")
         raw_fixed = data.get("fixed") or {}
         fixed: dict[str, list[str]] = {}
         for cam in camera_names:
@@ -244,7 +238,6 @@ class BaSettings:
                 if data.get("points_to_use") in (None, "")
                 else [str(p) for p in data["points_to_use"]]
             ),
-            source=source,
             free_focal=bool(data.get("free_focal", False)),
         )
 
@@ -346,7 +339,6 @@ class Observations:
 def gather(
     state,
     *,
-    source: str = "gt",
     max_frames: int | None = None,
     frame_sampling: str = "even",
     point_indices=None,
@@ -362,8 +354,6 @@ def gather(
     has = np.asarray(labels.has_gt, dtype=bool)  # (V, T, P)
     notes: list[str] = []
 
-    if source == "landmarks":
-        has = np.zeros_like(has)
     keep_points = np.ones(gt.shape[2], dtype=bool)
     if point_indices is not None:
         keep_points[:] = False
@@ -752,7 +742,6 @@ def save_calibration(
     settings: BaSettings,
     report: dict,
     recording: str | None,
-    scale_distance: float | None = None,
 ) -> Path:
     """Write the solved rig as a new calibration file and return its path.
 
@@ -775,13 +764,13 @@ def save_calibration(
         solved,
         name=_slug(name),
         image_sizes=image_sizes or {},
-        units="mm" if scale_distance else "arbitrary",
-        scale_source="known_distance" if scale_distance else "none",
+        # Images cannot determine scale; physical units enter at inverse kinematics.
+        units="arbitrary",
+        scale_source="none",
         provenance={
             "solved_by": "deeperfly gui bundle adjustment",
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "recording": recording,
-            "source": settings.source,
             "n_tracks": obs.n_tracks,
             "n_frames": obs.n_frames,
             "per_view_labels": obs.per_view,

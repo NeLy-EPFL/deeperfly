@@ -761,7 +761,6 @@ def create_app(
             settings.max_frames = max_frames or None
         obs = ba.gather(
             session.state,
-            source=settings.source,
             max_frames=settings.max_frames,
             frame_sampling=settings.frame_sampling,
         )
@@ -802,7 +801,6 @@ def create_app(
             raise HTTPException(400, str(exc)) from None
         obs = ba.gather(
             session.state,
-            source=settings.source,
             max_frames=settings.max_frames,
             frame_sampling=settings.frame_sampling,
         )
@@ -839,7 +837,6 @@ def create_app(
         has_rig = bool(session.state.result.has_cameras)
         obs = ba.gather(
             session.state,
-            source=settings.source,
             max_frames=settings.max_frames,
             frame_sampling=settings.frame_sampling,
         )
@@ -1405,9 +1402,6 @@ def create_app(
             s.state.labels,
             identity=s.identity,
             subject_id=s.state.labels.subject_id,
-            # Passed back explicitly: save_labels rewrites the whole file, so omitting
-            # them would drop the landmarks group the solve reads.
-            landmarks=s.state.landmarks,
         )
         # Mirror the absence declaration into results.h5's `animal/` group. That is the
         # seam the pipeline and every results.h5-only consumer read, so a fact authored
@@ -1786,10 +1780,6 @@ def _meta_payload(
         if session.project_root is None
         else str(session.project_root),
         "recording": session.recording_slug,
-        # Calibration landmarks the project declares. Their own namespace, never the
-        # skeleton's: a landmark must not reach the detector, the IK plan or the training
-        # export, and must not perturb the fingerprinted point_names.
-        "landmarks": _landmarks_meta(session),
         "camera_names": list(s.camera_names),
         "image_sizes": {
             name: [int(h), int(w)] for name, (h, w) in session.image_sizes.items()
@@ -1881,13 +1871,9 @@ def _points_payload(
     # make a point solvable, which un-invents its cells.
     invented = s.invented_mask(t)
     proj = s.display_pts3d_projected(t) if s.has_3d else None
-    landmarks = s.display_landmarks(t)
     payload = {
         "frame": t,
         "mode": mode,
-        "landmarks": None
-        if landmarks is None
-        else _points_to_json(np.asarray(landmarks)),
         "points": _points_to_json(np.asarray(pts)),
         "instance": None if instance is None else _points_to_json(np.asarray(instance)),
         "has_instance": s.has_instance(t),
@@ -1939,27 +1925,6 @@ def _jsonable(value):
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
-
-
-def _landmarks_meta(session: Session) -> list[dict]:
-    """The project's landmark definitions, for the editor's landmark panel.
-
-    Empty when the project declares none, which is the common case for an established rig
-    -- so the panel hides itself rather than offering an empty list.
-    """
-    state = session.state
-    if not state.has_landmarks:
-        return []
-    counts = state.landmark_counts()
-    static = list(state.landmarks.static)  # type: ignore[union-attr]
-    return [
-        {
-            "name": name,
-            "static": bool(static[i]),
-            "observations": int(counts.get(name, 0)),
-        }
-        for i, name in enumerate(state.landmark_names())
-    ]
 
 
 def _conf_to_json(conf: np.ndarray | None, t: int) -> list | None:
@@ -2337,13 +2302,6 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         s.reset_point_view(int(msg["view"]), int(msg["point"]), t)
     elif typ == "reset_frame":
         s.reset_frame(t)
-    elif typ == "set_landmark":
-        # A landmark is authored exactly like a keypoint -- click a pixel in one view -- but
-        # into its own namespace, and it drives only the rig solve.
-        if not s.set_landmark(int(msg["view"]), int(msg["landmark"]), _xy(msg), t):
-            notice = "this project declares no calibration landmarks"
-    elif typ == "clear_landmark":
-        s.clear_landmark(int(msg["view"]), int(msg["landmark"]), t)
     elif typ == "set_reviewed":
         s.set_reviewed(bool(msg["reviewed"]), t)
     elif typ == "set_absent":

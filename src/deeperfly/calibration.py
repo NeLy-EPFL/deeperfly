@@ -79,18 +79,27 @@ CALIBRATION_FORMAT_VERSION = 1
 #: The conventional filename, so a directory can be handed around instead of a file.
 CALIBRATION_FILENAME = "calibration.toml"
 
-#: What a length in this rig means. ``"arbitrary"`` is not a defect -- it is the honest
-#: state of a rig solved from correspondences with nothing to fix the scale.
-#: ``"config"`` means "whatever unit ``[cameras] distance`` was written in": the scale is
-#: determined, but deeperfly has never been told what it measures, and claiming ``"mm"``
-#: on its behalf is exactly the kind of guess that turns into a wrong velocity later.
-UNITS = ("arbitrary", "mm", "config")
+#: What a length in this rig means, and there are only two answers.
+#: ``"arbitrary"`` is not a defect -- it is the honest state of a rig solved from
+#: correspondences, which cannot determine scale at all: a rig twice as large viewing a
+#: fly twice as large produces pixel-identical images. ``"config"`` means "whatever unit
+#: ``[default_camera] distance`` was written in": the scale is determined, but deeperfly
+#: has never been told what it measures.
+#:
+#: ``"mm"`` went in 0.3.0 with calibration-stage scale pinning. Physical scale is not a
+#: calibration-stage concern -- everything through triangulation is arbitrary units by
+#: design, and scale first becomes physical at inverse kinematics, where
+#: :attr:`~deeperfly.inverse_kinematics.IKResult.body_scale` fits the point cloud to the
+#: fitted model's defined dimensions. A calibration claiming millimeters was claiming
+#: something the images could not have told it.
+UNITS = ("arbitrary", "config")
 
 #: What fixed the scale (``"none"`` leaves ``units = "arbitrary"``). ``"orbit_prior"`` is
 #: bundle adjustment started from a hand-specified config rig: the seven gauge freedoms
 #: are unconstrained directions the solver has no reason to move along, so the scale
-#: stays where the orbit put it.
-SCALE_SOURCES = ("none", "orbit_prior", "bone_prior", "known_distance", "board")
+#: stays where the orbit put it. ``"known_distance"`` went with ``"mm"`` (see
+#: :data:`UNITS`).
+SCALE_SOURCES = ("none", "orbit_prior", "bone_prior", "board", "imported")
 
 #: How the rig was obtained. ``"orbit_prior"`` is an unrefined config rig promoted to a
 #: calibration; ``"labels_ba"`` is bundle adjustment over observations.

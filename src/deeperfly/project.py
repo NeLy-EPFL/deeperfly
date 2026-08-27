@@ -592,6 +592,16 @@ class Project:
             raise FileNotFoundError(
                 f"no project at {manifest} -- create one with 'deeperfly project new'"
             )
+        stale = manifest.parent / "landmarks.toml"
+        if stale.exists():
+            raise ValueError(
+                f"{stale} declares calibration landmarks, which this release no longer "
+                "honors -- the ANIMAL is the calibration target, and every rig ever "
+                "solved here already was. Nothing reads this file; move it aside (the "
+                "observations in each labels.h5 are ignored too).\n"
+                "  Refused rather than ignored because silence is what a reader of "
+                "landmarks.toml would take for 'still honored'."
+            )
         data = tomllib.loads(manifest.read_text())
         head = data.get("project")
         if not isinstance(head, dict):

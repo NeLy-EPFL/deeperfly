@@ -400,7 +400,7 @@ def _rewrite(path: Path, plan: MigrationPlan, new_skeleton) -> tuple[int, int]:
 
     import h5py
 
-    from .gui.labels import load_labels, load_landmark_labels, save_labels
+    from .gui.labels import load_labels, save_labels
     from .merge import SkeletonMapping, remap_labels
 
     with h5py.File(path, "r") as f:
@@ -410,7 +410,6 @@ def _rewrite(path: Path, plan: MigrationPlan, new_skeleton) -> tuple[int, int]:
         return 0, 0
     n_views = len(identity["camera_names"])
     n_frames = int(identity["n_frames"])
-    landmarks = load_landmark_labels(path, n_views=n_views, n_frames=n_frames)
 
     before = int(labels.gt_authored.sum())
     mapping = SkeletonMapping(
@@ -444,7 +443,6 @@ def _rewrite(path: Path, plan: MigrationPlan, new_skeleton) -> tuple[int, int]:
         migrated,
         identity=new_identity,
         subject_id=labels.subject_id,
-        landmarks=landmarks,
     )
     return moved, max(0, before - after)
 

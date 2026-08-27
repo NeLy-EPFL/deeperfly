@@ -59,8 +59,6 @@
  * @property {(view: number, points: number[], additive: boolean) => void} onSelectRegion  a marquee enclosed these joints in this view; additive (Ctrl/Cmd-drag) adds them, else (Shift-drag) replaces the selection
  * @property {(point: number, additive: boolean) => void} onSelectKeypointAllViews  a joint was double-clicked: select it across every view
  * @property {() => void} onBackground  the background was clicked (empty space, no drag): clear the selection
- * @property {((view: number, landmark: number, x: number, y: number) => void)} [onPlaceLandmark]
- *   a calibration landmark is armed and was clicked into place at image coords (x, y)
  * @property {(view: number) => void} onActiveView  the pointer entered/moved over this view (drives the "select all in this view" gesture)
  * @property {(point: number | null) => void} onHover  the hovered joint changed (cross-view)
  */
@@ -249,15 +247,6 @@ export class PoseView {
     // The "Unplaced" layer: faint, draggable ghost seeds for joints a view has nothing
     // to grab for (no GT / detected / reprojected point) -- e.g. a joint triangulation
     // rejected. On by default; dragging a ghost authors GT like any other seed.
-    // Calibration landmarks observed in THIS view at the current frame, or null. Their own
-    // layer because they are their own namespace: a landmark is not a skeleton joint, has no
-    // bones, no confidence and no 3D of its own here, and it drives only the rig solve.
-    this.landmarks = null;
-    this.landmarkNames = [];
-    this.landmarksVisible = true;
-    // Index of the landmark a click will place, or -1. Armed from the Landmarks panel, so a
-    // click means "place THIS landmark" rather than needing a separate drag target.
-    this.armedLandmark = -1;
     this.nmfVisible = false;
     this.meshVisible = false;
     this.labelsVisible = false;
@@ -540,7 +529,6 @@ export class PoseView {
     // Placeholder seeds depend on the frame's GT / detection / 3D state, so they ride
     // the verbose (settle / navigation) reply -- omitted (undefined) mid-drag, keep as-is.
     if (data.placeholder !== undefined) this.placeholder = data.placeholder;
-    if (data.landmarks !== undefined) this.landmarks = data.landmarks;
     this.draw();
   }
 
@@ -737,7 +725,6 @@ export class PoseView {
     // cell. That is also why the layer lost its toggle: the state it serves lasts from arriving
     // on a frame until the first keystroke.
     if (!this.instanceMode && this.placeholder) this.drawPlaceholders();
-    if (this.landmarksVisible && this.landmarks) this.drawLandmarks();
     // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the point colours own
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
     if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
@@ -829,62 +816,6 @@ export class PoseView {
     const p = this.latentPos(i);
     if (!p) return null;
     return this.projectedVisible ? p : null;
-  }
-
-  // Calibration landmarks: a diamond plus its name, in one warm colour distinct from every
-  // point colour. Deliberately a different SHAPE, not just a different hue -- a
-  // landmark is a different kind of thing from a keypoint, and shape survives colour
-  // blindness and a busy frame in a way hue does not.
-  drawLandmarks() {
-    const ctx = this.ctx;
-    // Sizes are CSS pixels, like every other marker pass -- the canvas transform is baked
-    // into toCanvas(), so a marker must NOT also divide by the zoom or it shrinks as you
-    // zoom in, which is exactly backwards.
-    const size = 5;
-    ctx.save();
-    ctx.lineWidth = 1.6;
-    for (let i = 0; i < this.landmarks.length; i++) {
-      const pt = this.landmarks[i];
-      if (!pt) continue;
-      const [cx, cy] = this.toCanvas(pt[0], pt[1]);
-      const armed = i === this.armedLandmark;
-      ctx.beginPath(); // a diamond
-      ctx.moveTo(cx, cy - size);
-      ctx.lineTo(cx + size, cy);
-      ctx.lineTo(cx, cy + size);
-      ctx.lineTo(cx - size, cy);
-      ctx.closePath();
-      ctx.fillStyle = armed ? "#ffd479" : "#e8a33d";
-      ctx.fill();
-      ctx.strokeStyle = "#1b1f24";
-      ctx.stroke();
-      const name = this.landmarkNames[i];
-      if (name && this.labelsVisible) {
-        ctx.fillStyle = "#e8a33d";
-        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
-        ctx.fillText(name, cx + size + 3, cy + 3);
-      }
-    }
-    ctx.restore();
-  }
-
-  /** @param {number} index  landmark a click places, or -1 to disarm */
-  setArmedLandmark(index) {
-    if (this.armedLandmark === index) return;
-    this.armedLandmark = index;
-    this.draw();
-  }
-
-  /** @param {string[]} names */
-  setLandmarkNames(names) {
-    this.landmarkNames = names || [];
-  }
-
-  /** @param {boolean} visible */
-  setLandmarksVisible(visible) {
-    if (this.landmarksVisible === visible) return;
-    this.landmarksVisible = visible;
-    this.draw();
   }
 
   // The "Unplaced" placeholder seed for joint `i` -- a faint draggable ghost for a joint the
@@ -1849,22 +1780,6 @@ export class PoseView {
 
   /** @param {PointerEvent} e */
   onPointerUp(e) {
-    // A landmark is armed: this click places it, and nothing else runs. Handled first and
-    // exclusively, because a landmark has no joint to grab and no bones to select -- letting
-    // the selection machinery also fire would make one click do two unrelated things.
-    if (
-      this.armedLandmark >= 0 &&
-      this.canGrab &&
-      !this.moved &&
-      !this.marqueeing &&
-      this.dragging === null &&
-      e.type !== "pointercancel"
-    ) {
-      e.preventDefault();
-      const [ix, iy] = this.toImage(...this.cssXY(e));
-      this.cb.onPlaceLandmark?.(this.viewIndex, this.armedLandmark, ix, iy);
-      return;
-    }
     if (this.marqueeing) {
       e.preventDefault();
       this.marqueeing = false;

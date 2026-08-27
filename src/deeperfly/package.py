@@ -5,7 +5,7 @@ right for working and wrong for sharing: a collaborator on another machine canno
 those paths, and neither can a merge run six months later on an archived recording.
 
 A package is the portable form. It carries everything the project *owns* -- the skeleton, the
-rig, the calibrations, the landmark definitions, the manifest -- plus, per recording, its
+rig, the calibrations, the manifest -- plus, per recording, its
 ``labels.h5`` verbatim and, optionally, **the frames those labels annotate**. That last part
 is what makes it self-contained, and it is affordable for exactly the reason SLEAP's
 ``.pkg.slp`` is: only the labeled frames matter. On this project's own corpus that is 50
@@ -16,7 +16,6 @@ frames out of 4,073 -- about 40 MB of JPEG against 5.5 GB of video.
     /meta                    attrs: format_version, project_toml, created_utc, provenance
     /skeleton                skeleton.toml text
     /rig                     rig.toml text            (when the project has one)
-    /landmarks               landmarks.toml text      (when it declares any)
     /profiles/<name>         profile text
     /calibrations/<name>     project-wide rig text
     /calibrations/<slug>/<name>  a rig solved for one recording
@@ -59,7 +58,11 @@ __all__ = [
 
 log = logging.getLogger("deeperfly")
 
-PACKAGE_FORMAT_VERSION = 1
+#: Bumped to 2 in 0.3.0: the archive no longer carries a ``/landmarks`` member or a
+#: ``has_landmarks`` manifest flag, and a per-recording ``landmarks/`` group is no longer
+#: extracted. `import_package` already refuses a version it does not understand, so a v1
+#: archive gets a named error rather than a silently missing member.
+PACKAGE_FORMAT_VERSION = 2
 PACKAGE_SUFFIX = ".dfpkg"
 
 #: Which frames get their pixels embedded.
@@ -145,7 +148,6 @@ def export_package(project, out: str | Path, *, embed: str = "user") -> PackageR
 
         _put_text(f, "skeleton", project.skeleton_path())
         _put_text(f, "rig", project.rig_path())
-        _put_text(f, "landmarks", project.root / "landmarks.toml")
         for profile in sorted((project.root / "profiles").glob("*.toml")):
             _put_text(f, f"profiles/{profile.stem}", profile)
         # TWO LAYOUTS live under calibrations/ and only the flat one was packaged.
@@ -266,9 +268,6 @@ def _frames_to_embed(project, entry, policy: str) -> list[int]:
                     frames.update(
                         int(t) for t in np.asarray(lf["reviewed/index"][()]).reshape(-1)
                     )
-                if "landmarks/index" in lf:
-                    rows = np.asarray(lf["landmarks/index"][()]).reshape(-1, 3)
-                    frames.update(int(r) for r in rows[:, 1])
         except Exception as exc:
             log.warning("could not read %s for frame selection: %s", labels_path, exc)
     if policy == "all":
@@ -380,7 +379,6 @@ def describe_package(path: str | Path) -> dict:
             "embed": str(meta.attrs.get("embed", "")),
             "provenance": json.loads(meta.attrs.get("provenance", "{}")),
             "has_rig": "rig" in f,
-            "has_landmarks": "landmarks" in f,
             "calibrations": _leaf_names(f.get("calibrations", {})),
             "profiles": sorted(f.get("profiles", {})),
             "recordings": recordings,
@@ -438,7 +436,6 @@ def import_package(
             for name, out in (
                 ("skeleton", "skeleton.toml"),
                 ("rig", "rig.toml"),
-                ("landmarks", "landmarks.toml"),
             ):
                 if name in f:
                     (target / out).write_text(_text(f[name][()]))

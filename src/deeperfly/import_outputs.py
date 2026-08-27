@@ -26,7 +26,7 @@ update one.
 **Safety.** The source is opened read-only and never written; ``results.h5`` is never
 written at all; every destination is snapshotted before the first write; the default is a dry
 run; and nothing is ever copied by index -- points and cameras go through
-:func:`deeperfly.merge.map_by_name`, landmarks by name against the project's own set.
+:func:`deeperfly.merge.map_by_name`.
 """
 
 from __future__ import annotations
@@ -109,8 +109,6 @@ class OutputsImport:
     entry: RecordingEntry | None = None
     matched_by: str = ""
     merge: MergeReport | None = None
-    landmarks_taken: int = 0
-    landmarks_only_source: list[str] = field(default_factory=list)
     quarantined_dest_gt: int = 0
     subject_id_taken: str | None = None
     snapshot: Path | None = None
@@ -118,7 +116,6 @@ class OutputsImport:
     # The loaded state, carried between the dry run and the write. Not part of the report.
     dest_identity: dict | None = field(default=None, repr=False)
     dest_labels: object | None = field(default=None, repr=False)
-    dest_landmarks: object | None = field(default=None, repr=False)
 
     @property
     def slug(self) -> str:
@@ -495,7 +492,7 @@ def _run_merge(
 ) -> None:
     """Load both sides, merge them, and record the outcome on ``plan``.
 
-    Fills ``plan.merge`` plus the landmark / subject / quarantine facts the report needs.
+    Fills ``plan.merge`` plus the subject / quarantine facts the report needs.
     Writes nothing; :func:`_write` does that.
     """
     import numpy as np
@@ -584,9 +581,6 @@ def _run_merge(
     if on_absent == "ours":
         plan.quarantined_dest_gt = 0
 
-    plan.landmarks_taken, plan.landmarks_only_source = _plan_landmarks(
-        project, plan, dest_identity, apply=apply
-    )
     if not dest.subject_id and source.subject_id:
         plan.subject_id_taken = source.subject_id
 
@@ -604,72 +598,11 @@ def _source_as_destination(plan: OutputsImport, source_identity: dict) -> dict:
     return dict(source_identity)
 
 
-def _plan_landmarks(
-    project: Project, plan: OutputsImport, dest_identity: dict, *, apply: bool
-) -> tuple[int, list[str]]:
-    """Merge the source's landmark observations by name, intersected with the project's set.
-
-    Landmarks are **project-scoped**: the names, and whether each is one fixed 3D point, come
-    from the project's ``landmarks.toml``, not from either label file. So a name the project
-    does not declare has nowhere to go, and ``static`` always comes from the project --
-    importing the source's flags would let one recording silently redefine the geometry of
-    every solve on the rig.
-
-    Observations are additive: taken only where the destination has none. A cell both sides
-    observed differently is left as the destination has it (there is no landmark conflict
-    queue, and an operator's own placement in *this* project outranks an imported one).
-    """
-    import numpy as np
-
-    from .gui.labels import LandmarkLabels, load_landmark_labels
-
-    n_views = len(dest_identity["camera_names"])
-    n_frames = int(dest_identity["n_frames"])
-    source_lm = load_landmark_labels(
-        plan.source.labels, n_views=n_views, n_frames=n_frames
-    )
-    if source_lm is None:
-        return 0, []
-
-    from .landmarks import LandmarkSet
-
-    declared = LandmarkSet.load(project.root)
-    if not len(declared):
-        # Nothing declared: the observations have no namespace to land in. Reported rather
-        # than dropped silently, because `deeperfly calibrate` is what wanted them.
-        return 0, list(source_lm.names)
-
-    dest_lm = load_landmark_labels(
-        project.labels_path(plan.entry), n_views=n_views, n_frames=n_frames
-    )
-    if dest_lm is None or list(dest_lm.names) != declared.names:
-        dest_lm = LandmarkLabels.empty(
-            n_views, n_frames, declared.names, declared.static_mask
-        )
-
-    taken = 0
-    only_source = [n for n in source_lm.names if n not in declared.names]
-    for j, name in enumerate(source_lm.names):
-        if name not in declared.names:
-            continue
-        k = declared.index(name)
-        src = source_lm.xy[:, :, j]
-        fresh = np.isfinite(src).all(axis=-1) & ~np.isfinite(dest_lm.xy[:, :, k]).all(
-            axis=-1
-        )
-        taken += int(fresh.sum())
-        if apply and fresh.any():
-            dest_lm.xy[:, :, k][fresh] = src[fresh]
-            dest_lm.dirty = True
-    plan.dest_landmarks = dest_lm
-    return taken, only_source
-
-
 def _write(
     project: Project, plan: OutputsImport, *, on_conflict: str, on_absent: str
 ) -> None:
     """Apply one planned import. The snapshot is already taken."""
-    from .gui.labels import load_landmark_labels, save_labels
+    from .gui.labels import save_labels
 
     _run_merge(project, plan, on_conflict=on_conflict, on_absent=on_absent, apply=True)
     if plan.merge is None or not plan.merge.ok:
@@ -681,21 +614,11 @@ def _write(
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest = plan.dest_labels
     identity = plan.dest_identity
-    landmarks = plan.dest_landmarks
-    if landmarks is None:
-        # Not merged (the project declares none), but still reloaded and passed back:
-        # save_labels is a whole-file rewrite, so omitting them deletes the group.
-        landmarks = load_landmark_labels(
-            dest_path,
-            n_views=len(identity["camera_names"]),
-            n_frames=int(identity["n_frames"]),
-        )
     save_labels(
         dest_path,
         dest,
         identity=identity,
         subject_id=dest.subject_id or plan.subject_id_taken,
-        landmarks=landmarks,
     )
 
 

@@ -1,6 +1,6 @@
 """``deeperfly calibrate`` -- solve a project's camera rig from its hand labels.
 
-Gathers each recording's ground-truth keypoints and calibration landmarks, checks whether
+Gathers each recording's ground-truth keypoints, checks whether
 they can determine a rig at all, solves, and prints a report the operator accepts or
 discards. Nothing is made *current* without an explicit ``--accept``: a calibration that
 silently replaced a good one would be the most destructive thing this feature could do.
@@ -29,7 +29,6 @@ from ..calibration_solve import (
     merge_observations,
     solve_rig,
 )
-from ..landmarks import LandmarkSet
 from ..project import Project
 from .console import _info_line, console
 
@@ -46,17 +45,15 @@ def _open(path: str | None) -> Project:
 # -- gathering -----------------------------------------------------------------
 
 
-def _gather(project: Project, args) -> tuple[list, LandmarkSet, dict]:
-    """``(per-recording observations, landmark set, notes)`` for the selected recordings.
+def _gather(project: Project, args) -> tuple[list, dict]:
+    """``(per-recording observations, notes)`` for the selected recordings.
 
     Only frames the operator marked **reviewed** are eligible unless
     ``--include-unreviewed``: a half-labeled frame contributes a systematically biased 3D
     point, and no residual can reveal that after the fact.
     """
-    from ..gui.labels import load_labels, load_landmark_labels
+    from ..gui.labels import load_labels
 
-    landmark_set = LandmarkSet.load(project.root)
-    rig_scoped = {lm.name for lm in landmark_set if lm.shared_across_recordings}
     wanted = args.recordings or [e.slug for e in project.recordings]
     notes: list[str] = []
     per_recording = []
@@ -79,12 +76,6 @@ def _gather(project: Project, args) -> tuple[list, LandmarkSet, dict]:
         if labels is None:
             notes.append(f"{entry.slug}: labels.h5 is empty")
             continue
-        n_views = len(identity["camera_names"])
-        n_frames = int(identity["n_frames"])
-        landmarks = load_landmark_labels(
-            labels_path, n_views=n_views, n_frames=n_frames
-        )
-
         frames = None
         if not args.include_unreviewed:
             frames = np.nonzero(labels.reviewed)[0].tolist()
@@ -99,17 +90,13 @@ def _gather(project: Project, args) -> tuple[list, LandmarkSet, dict]:
         per_recording.append(
             build_observations(
                 view_names=list(identity["camera_names"]),
-                landmark_xy=None if landmarks is None else landmarks.xy,
-                landmark_names=None if landmarks is None else list(landmarks.names),
-                landmark_static=None if landmarks is None else landmarks.static,
                 keypoint_xy=gt_xy,
                 keypoint_names=list(identity["point_names"]),
                 frames=frames,
                 recording=entry.slug,
-                use=args.points,
             )
         )
-    return per_recording, landmark_set, {"notes": notes, "rig_scoped": rig_scoped}
+    return per_recording, {"notes": notes}
 
 
 def _identity_for(project: Project, entry) -> dict | None:
@@ -250,7 +237,7 @@ def _widest(project: Project, obs) -> int:
 # -- readiness -----------------------------------------------------------------
 
 
-def _readiness(obs, cond: dict, notes: dict, *, scale_known: bool) -> list[tuple]:
+def _readiness(obs, cond: dict, notes: dict) -> list[tuple]:
     """``(ok, label, value, hint)`` rows -- the meter, phrased as what to label next."""
     summary = obs.summary()
     rows: list[tuple] = []
@@ -273,19 +260,8 @@ def _readiness(obs, cond: dict, notes: dict, *, scale_known: bool) -> list[tuple
             else " vs ".join("{" + ", ".join(c) + "}" for c in cond["components"]),
             ""
             if connected
-            else "label the same point in a view from each group -- a static "
-            "landmark both can see is ideal",
-        )
-    )
-    rows.append(
-        (
-            summary["static_tracks"] > 0,
-            "static landmarks",
-            str(summary["static_tracks"]),
-            ""
-            if summary["static_tracks"]
-            else "one static point (a coverslip scratch, the tether tip) is worth more "
-            "than many keypoint frames -- it is 3 unknowns, not 3 per frame",
+            else "label the same point in a view from each group -- one keypoint in a "
+            "camera from each is enough to connect them",
         )
     )
     rows.append((summary["frames"] > 0, "labeled frames", str(summary["frames"]), ""))
@@ -295,7 +271,7 @@ def _readiness(obs, cond: dict, notes: dict, *, scale_known: bool) -> list[tuple
             ratio_ok,
             "observations / unknowns",
             f"{cond['ratio']:.2f}x",
-            "" if ratio_ok else "label more frames, or add a static landmark",
+            "" if ratio_ok else "label more frames, or more points per frame",
         )
     )
     weakest = cond["weakest_pair"]
@@ -310,17 +286,10 @@ def _readiness(obs, cond: dict, notes: dict, *, scale_known: bool) -> list[tuple
                 else f"label a few more shared points in {' and '.join(weakest['views'])}",
             )
         )
-    rows.append(
-        (
-            scale_known,
-            "scale reference",
-            "known distance" if scale_known else "none",
-            ""
-            if scale_known
-            else "without one the rig is valid up to scale: angles yes, lengths no "
-            "(--scale-from A,B=1.8)",
-        )
-    )
+    # No scale row: images cannot determine scale, so a solved rig is ALWAYS valid up to
+    # it (angles yes, lengths no) and there is nothing for the operator to do about that
+    # here. Physical scale enters at inverse kinematics, from the fitted model's own
+    # dimensions.
     return rows
 
 
@@ -351,7 +320,7 @@ def _cmd_calibration_readiness(args: argparse.Namespace) -> None:
 def _cmd_calibrate(args: argparse.Namespace) -> None:
     """Solve a project's rig from its labels."""
     project = _open(args.project)
-    per_recording, landmark_set, notes = _gather(project, args)
+    per_recording, notes = _gather(project, args)
     for note in notes["notes"]:
         log.warning("%s", note)
     if not per_recording:
@@ -360,25 +329,20 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
             "some frames in 'deeperfly gui' and mark them reviewed"
         )
 
-    obs = merge_observations(per_recording, share=notes["rig_scoped"])
+    obs = merge_observations(per_recording)
     if not obs.n_tracks:
         raise SystemExit(
             "no track is observed by two or more views, so nothing can be triangulated -- "
             "label the same points in at least two cameras"
         )
 
-    scale_pair, scale_distance = _resolve_scale(args, obs)
     cond = conditioning(obs, free_focal=args.free_focal, free_k1=args.free_k1)
     _info_line("project:  ", f"{project.name}  ({project.root})")
     _info_line(
         "using:    ",
-        f"{args.points}  ({obs.summary()['landmark_tracks']} landmark + "
-        f"{obs.summary()['keypoint_tracks']} keypoint tracks, "
-        f"{obs.n_observations} observations)",
+        f"{obs.n_tracks} keypoint tracks, {obs.n_observations} observations",
     )
-    _print_readiness(
-        _readiness(obs, cond, notes, scale_known=scale_distance is not None), cond
-    )
+    _print_readiness(_readiness(obs, cond, notes), cond)
     if args.dry_run:
         return
     if not cond["ok"]:
@@ -421,8 +385,6 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         tvecs=tvecs,
         free_focal=args.free_focal,
         free_k1=args.free_k1,
-        scale_pair=scale_pair,
-        scale_distance=scale_distance,
         cold_start=cold,
         loss=args.loss,
         f_scale=args.f_scale,
@@ -434,12 +396,13 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         result.cameras,
         name=name,
         image_sizes=_image_sizes(project, obs),
-        units="mm" if scale_distance else "arbitrary",
-        scale_source="known_distance" if scale_distance else "none",
+        # Images cannot determine scale, so a correspondence-only solve is honestly
+        # arbitrary units. Physical scale enters at inverse kinematics.
+        units="arbitrary",
+        scale_source="none",
         provenance={
             "method": "labels_ba",
             "intrinsics": intr_source,
-            "points": args.points,
             "recordings": sorted(
                 {t.recording for t in obs.tracks if t.recording} or {"?"}
             ),
@@ -473,36 +436,6 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         )
 
 
-def _resolve_scale(args, obs):
-    """``(track pair, distance)`` from ``--scale-from A,B=1.8``, or ``(None, None)``.
-
-    Raises
-    ------
-    SystemExit
-        If the spec is malformed or names a track that is not in the solve.
-    """
-    if not args.scale_from:
-        return None, None
-    spec = str(args.scale_from)
-    try:
-        pair, distance = spec.split("=")
-        a, b = (s.strip() for s in pair.split(","))
-        value = float(distance)
-    except ValueError:
-        raise SystemExit(
-            f"could not read --scale-from {spec!r}; expected 'LANDMARK_A,LANDMARK_B=1.8'"
-        ) from None
-    labels = [t.label for t in obs.tracks]
-    try:
-        return (labels.index(a), labels.index(b)), value
-    except ValueError:
-        raise SystemExit(
-            f"--scale-from names {a!r} and {b!r}, but the solve's tracks are "
-            f"{labels[:12]}{' ...' if len(labels) > 12 else ''}. Use landmark names "
-            "(static landmarks keep their plain name; a per-frame track is 'name@frame')"
-        ) from None
-
-
 def _report(result, obs, cond) -> None:
     """Print the residual summary an operator accepts or discards on."""
     q = result.quality
@@ -517,16 +450,6 @@ def _report(result, obs, cond) -> None:
         f"rms {q['rms_reproj_px']:.3f} px   median {q['median_reproj_px']:.3f}   "
         f"p90 {q['p90_reproj_px']:.3f}   max {q['max_reproj_px']:.3f}",
     )
-    scatter = result.report.get("static_scatter_px") or {}
-    drifting = {k: v for k, v in scatter.items() if v > 2.0}
-    if drifting:
-        console.print(
-            "[yellow]static landmark(s) whose pixel wanders[/yellow] "
-            + ", ".join(f"{k} ({v:.1f} px)" for k, v in sorted(drifting.items()))
-            + " -- either it is not actually static, or it was labelled on a different "
-            "feature in different frames. Both corrupt the solve.",
-            highlight=False,
-        )
     worst = result.report["per_track"][:5]
     if worst:
         console.print(
@@ -555,7 +478,6 @@ def _write_report(path: Path, result, cond, obs) -> None:
                 "solver": result.report["solver"],
                 "observations": result.report["observations"],
                 "per_track": result.report["per_track"],
-                "static_scatter_px": result.report["static_scatter_px"],
                 "view_names": obs.view_names,
             },
             indent=2,

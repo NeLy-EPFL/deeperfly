@@ -37,8 +37,8 @@ def calibration(cameras) -> Calibration:
     return cameras.to_calibration(
         name="reference",
         image_sizes=SIZES,
-        units="mm",
-        scale_source="known_distance",
+        units="config",
+        scale_source="board",
         provenance={
             "method": "labels_ba",
             "frames": 42,
@@ -74,8 +74,8 @@ def test_round_trip_preserves_every_camera_parameter_exactly(calibration, tmp_pa
 def test_round_trip_preserves_the_metadata_blocks(calibration, tmp_path):
     loaded = Calibration.load(calibration.save(tmp_path))
     assert loaded.name == "reference"
-    assert loaded.units == "mm"
-    assert loaded.scale_source == "known_distance"
+    assert loaded.units == "config"
+    assert loaded.scale_source == "board"
     assert loaded.provenance["method"] == "labels_ba"
     assert loaded.provenance["solver"]["f_scale"] == 4.0
     assert loaded.provenance["recordings"] == ["rec_a91f4e07"]

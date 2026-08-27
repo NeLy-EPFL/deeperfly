@@ -20,7 +20,7 @@ from pathlib import Path
 
 from rich.table import Table
 
-from ..gui.labels import Labels, load_labels, load_landmark_labels, save_labels
+from ..gui.labels import Labels, load_labels, save_labels
 from ..merge import merge_labels
 from .console import _info_line, console
 
@@ -161,11 +161,6 @@ def _cmd_labels_merge(args: argparse.Namespace) -> None:
     # Only when there is something to snapshot: merging into a recording that has never
     # been labeled creates the file, and there is no prior state to preserve.
     snapshot = _snapshot(dest_path) if dest_path.exists() else None
-    landmarks = load_landmark_labels(
-        dest_path,
-        n_views=len(dest_identity["camera_names"]),
-        n_frames=int(dest_identity["n_frames"]),
-    )
     save_labels(
         dest_path,
         dest,
@@ -174,7 +169,6 @@ def _cmd_labels_merge(args: argparse.Namespace) -> None:
         # one specimen's several clips and shares an absence declaration between them, so
         # losing it costs that grouping -- but the destination's own answer wins.
         subject_id=dest.subject_id or source.subject_id,
-        landmarks=landmarks,
     )
     project.bump_iteration()
     console.print(f"[green]merged[/green] into {dest_path}")

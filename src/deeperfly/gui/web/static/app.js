@@ -63,7 +63,7 @@ import { Scene3D } from "./scene3d.js";
 /** @typedef {import("./types.js").CorrectedFrame} CorrectedFrame */
 /** @typedef {import("./types.js").Suggestion} Suggestion */
 /** @typedef {import("./types.js").SuggestionsPayload} SuggestionsPayload */
-/** @typedef {"recordings"|"labeled"|"suggest"|"instances"|"marks"|"bundle"|"jobs"|"settings"} TabId */
+/** @typedef {"recordings"|"labeled"|"suggest"|"instances"|"bundle"|"jobs"|"settings"} TabId */
 
 // The side panel's tabs, in strip order -- one pane on screen at a time. Activating a tab
 // IS the lazy-load trigger, which is what keeps the three expensive panes free until asked
@@ -75,7 +75,6 @@ const SIDEBAR_TABS = [
   { id: "labeled", pane: "labeled-pane" },
   { id: "suggest", pane: "suggest-pane" },
   { id: "instances", pane: "instances-pane" },
-  { id: "marks", pane: "marks-pane" },
   { id: "jobs", pane: "jobs-pane" },
   { id: "bundle", pane: "ba-pane" },
   { id: "settings", pane: "settings-pane" },
@@ -528,7 +527,6 @@ class App {
   /** @type {HTMLSpanElement} */
   suggestTallyEl = el("suggest-tally");
   /** @type {HTMLSpanElement} */
-  marksCountEl = el("marks-count");
   /** @type {HTMLSpanElement} */
   jobsCountEl = el("jobs-count");
   /** @type {HTMLSpanElement} */
@@ -546,11 +544,8 @@ class App {
   /** @type {HTMLDivElement} */
   jobsPane = el("jobs-pane");
   /** @type {HTMLDivElement} */
-  marksPane = el("marks-pane");
   /** @type {HTMLDivElement} */
-  marksList = el("marks-list");
   /** @type {HTMLDivElement} */
-  marksEmpty = el("marks-empty");
   /** @type {HTMLDivElement} */
   settingsPane = el("settings-pane");
   /** @type {HTMLDivElement} */
@@ -569,9 +564,6 @@ class App {
   // carries the single-writer EDITING stream, and a read-only tab must still see the
   // queue. A 2 s poll of a few JSON rows is cheaper than the alternative.
   jobsTimer = null;
-  // Index of the armed calibration landmark (-1 = none). Armed from the Landmarks tab;
-  // while armed, a click on any view PLACES it rather than selecting a joint.
-  armedLandmark = -1;
   /** @type {HTMLDivElement} */
   suggestStatusEl = el("suggest-status");
   /** @type {HTMLTableSectionElement} */
@@ -964,7 +956,6 @@ class App {
       onBackground: () => this.clearSelection(),
       onActiveView: (v) => this.onActiveView(v),
       onHover: (p) => this.onHover(p),
-      onPlaceLandmark: (v, i, x, y) => this.onPlaceLandmark(v, i, x, y),
     };
     this.meta.camera_names.forEach((name, v) => {
       const cell = document.createElement("div");
@@ -984,7 +975,6 @@ class App {
       const view = new PoseView(v, canvas, cb);
       view.setSkeleton(this.meta.bones, this.meta.point_colors);
       view.setPointNames(this.meta.point_names);
-      view.setLandmarkNames((this.meta.landmarks || []).map((l) => l.name));
       const size = this.meta.image_sizes[name];
       if (size) view.setImageSize(size[0], size[1]);
       this.views.push(view);
@@ -1241,9 +1231,6 @@ class App {
         placeholder: p.placeholder ? p.placeholder[v] : undefined,
         absent: p.absent ? p.absent[v] : undefined,
         nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
-        // Landmarks ride every reply: a handful of points per view, so there is no
-        // reason to make them a verbose-only field that could go stale mid-drag.
-        landmarks: p.landmarks ? p.landmarks[v] : undefined,
       });
     });
     // The NMF mesh follows the (re-fit) latent skeleton: refresh it after an edit
@@ -1806,7 +1793,6 @@ class App {
         this.closeSkeletonMenu();
         this.closeHelp();
         this.closeCloseConfirm();
-        this.armLandmark(-1); // fans out to the OLD views, and clears body.arming-landmark
 
         // 2 -- tear the canvases down. buildViews APPENDS, so without this both rigs
         // would be live: relayout re-attaches the old canvases and applyPoints indexes
@@ -1865,7 +1851,6 @@ class App {
         // 8 -- repaint. The lists are emptied before the fetch, so the old recording's
         // frame numbers are never on screen under the new recording's name.
         this.renderFrameList();
-        this.renderLandmarks();
         this.renderInstance();
         await this.goToFrame(0);
         this.updateSelected();
@@ -2622,9 +2607,6 @@ class App {
     this.sidebarRailBtn.setAttribute("aria-expanded", "false");
     this.framesOpen = false;
     localStorage.setItem(SIDEBAR_OPEN_KEY, "0");
-    // Hiding the panel disarms too: an armed landmark whose pane is no longer on screen is
-    // the same silent-placement surprise as one whose tab was left behind.
-    this.armLandmark(-1);
     this.syncTabEffects();
   }
 
@@ -2872,90 +2854,6 @@ class App {
       window.alert(`Could not set ${section}.${key}: ${err}`);
     }
     this.refreshSettings();
-  }
-
-  // -- calibration landmarks -------------------------------------------------
-  //
-  // Non-skeleton points that make a from-scratch rig solvable. The gesture is deliberately
-  // NOT a drag: a landmark has no detection to grab and no reprojection to nudge, so there
-  // is nothing on the canvas to start a drag from until one exists. Arming a landmark makes
-  // the next click place it, which is the only interaction that works from an empty frame.
-
-  renderLandmarks() {
-    const marks = this.meta.landmarks || [];
-    // The chip's badge, so whether this project declares any landmarks at all is readable
-    // from whichever pane is showing.
-    this.marksCountEl.textContent = String(marks.length);
-    this.marksCountEl.classList.toggle("is-zero", marks.length === 0);
-    this.marksList.replaceChildren();
-    if (!marks.length) {
-      this.marksEmpty.hidden = false;
-      this.marksEmpty.textContent =
-        "This project declares no calibration landmarks. Add them to landmarks.toml — " +
-        "a static point (a coverslip scratch, the tether tip) is worth far more to the " +
-        "rig solve than more keypoint frames.";
-      return;
-    }
-    this.marksEmpty.hidden = true;
-    marks.forEach((mark, i) => {
-      const row = document.createElement("div");
-      row.className = "mark-row" + (i === this.armedLandmark ? " armed" : "");
-      row.title = i === this.armedLandmark
-        ? "Armed — click in any view to place it here. Click this row again to disarm."
-        : "Click to arm, then click in each view where you can see this landmark.";
-      const dot = document.createElement("span");
-      dot.className = "mark-diamond";
-      const name = document.createElement("span");
-      name.className = "mark-name";
-      name.textContent = mark.name;
-      const kind = document.createElement("span");
-      kind.className = "mark-kind";
-      kind.textContent = mark.static ? "static" : "per-frame";
-      const count = document.createElement("span");
-      count.className = "mark-count";
-      count.textContent = `${mark.observations}`;
-      count.title = "Observations placed so far, across every view and frame";
-      row.append(dot, name, kind, count);
-      row.addEventListener("click", () =>
-        this.armLandmark(i === this.armedLandmark ? -1 : i),
-      );
-      this.marksList.append(row);
-    });
-    const hint = document.createElement("div");
-    hint.className = "marks-hint";
-    hint.textContent =
-      "Arm a landmark, then click the SAME feature in as many views as can see it. " +
-      "A static landmark keeps one 3D position for the whole recording, so re-placing it " +
-      "in more frames sharpens it — but always on the same feature.";
-    this.marksList.append(hint);
-  }
-
-  /** @param {number} index  landmark to arm, or -1 to disarm */
-  armLandmark(index) {
-    if (this.armedLandmark === index) return;
-    this.armedLandmark = index;
-    this.views.forEach((view) => view.setArmedLandmark(index));
-    document.body.classList.toggle("arming-landmark", index >= 0);
-    if (this.tabActive("marks")) this.renderLandmarks();
-  }
-
-  /** @param {number} view @param {number} landmark @param {number} x @param {number} y */
-  onPlaceLandmark(view, landmark, x, y) {
-    if (this.readOnly) return;
-    this.sendEdit({
-      type: "set_landmark",
-      view,
-      landmark,
-      x,
-      y,
-      frame: this.frame,
-      mode: this.mode,
-    });
-    // The count in the panel comes from meta, which is fetched once -- so bump it locally
-    // rather than refetching the whole payload for one number.
-    const mark = (this.meta.landmarks || [])[landmark];
-    if (mark) mark.observations += 1;
-    if (this.tabActive("marks")) this.renderLandmarks();
   }
 
   // -- pipeline jobs ---------------------------------------------------------
@@ -3328,7 +3226,7 @@ class App {
   //
   // One pane on screen at a time behind a wrapping strip of chips. Two consequences drive
   // everything below: activating a tab is the lazy-load trigger (a pane nobody opens costs
-  // nothing), and "leaving a tab" is a real event, which is where the landmark disarm and
+  // nothing), and "leaving a tab" is a real event, which is where
   // the jobs poll's stop belong.
 
   // One-time: bind each tab, restore the persisted one, and wire the panel-level controls.
@@ -3394,10 +3292,6 @@ class App {
   /** @param {TabId} id */
   setSidebarTab(id) {
     if (this.sidebarTab === id) return;
-    // Leaving Landmarks disarms. An armed landmark that outlives the operator's attention
-    // turns the next canvas click into a silent placement, and the pane that explains what
-    // is armed is no longer on screen to say so.
-    if (this.sidebarTab === "marks") this.armLandmark(-1);
     this.sidebarTab = id;
     this.paintTabs();
     localStorage.setItem(SIDEBAR_TAB_KEY, id);
@@ -3416,7 +3310,6 @@ class App {
   tabActivated(id) {
     if (id === "recordings") this.refreshRecordings();
     if (id === "suggest") this.refreshSuggestions();
-    if (id === "marks") this.renderLandmarks();
     if (id === "settings") this.refreshSettings();
     if (id === "bundle") this.refreshBundleAdjust();
     // Showing a list makes it the one ↑/↓ step, and scrolls the current frame into it.
@@ -3753,7 +3646,7 @@ class App {
     b.push({ key: "z", mod: true, shift: true, group: "hist", hidden: !IS_MAC, label: hint("Z", ["mod", "shift"]), desc: "Redo", run: () => this.redo() });
     b.push({ key: "s", mod: true, global: true, group: "hist", label: hint("S", ["mod"]), desc: "Save labels (every unsaved recording)", run: () => this.save() });
     b.push({ key: "c", group: "panel", label: "c", desc: "Show / hide the 3D scene", run: () => this.toggleScene() });
-    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — the recording, labeled frames, the suggested queue, landmarks, jobs and settings", run: () => this.toggleFrames() });
+    b.push({ key: "j", group: "panel", label: "j", desc: "Show / hide the side panel — the recording, labeled frames, the suggested queue, jobs and settings", run: () => this.toggleFrames() });
     // Only a project session has other recordings to browse, so the key is not
     // advertised in the help of a bare results.h5 session that could not honor it.
     if (this.meta.project_root) {
@@ -4030,10 +3923,6 @@ class App {
       } else if (this.sceneOpen) {
         this.closeScene();
         e.preventDefault();
-      } else if (this.armedLandmark >= 0) {
-        // Escape is the way out of an armed landmark that needs no aim: the others are
-        // clicking its row again, leaving the Landmarks tab, and `j`.
-        this.armLandmark(-1);
         e.preventDefault();
       } else if (this.selection.size) {
         this.clearSelection();

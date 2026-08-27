@@ -1817,7 +1817,7 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
         cal.cameras,
         name="board_mm",
         image_sizes=cal.image_sizes,
-        units="mm",
+        units="config",
         scale_source="board",
         provenance={"method": "board", "intrinsics": "board"},
     ).save(tmp_path / "b" / CALIBRATION_FILENAME)
@@ -1839,14 +1839,14 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
     )
 
     out_b = Calibration.load(tmp_path / "out_b" / CALIBRATION_FILENAME)
-    assert (out_b.units, out_b.scale_source) == ("mm", "board")
+    assert (out_b.units, out_b.scale_source) == ("config", "board")
     assert out_b.provenance["method"] == "labels_ba"  # it WAS refined, and says so
     assert out_b.provenance["refined_from"]["name"] == "board_mm"
     # And the rig inside results.h5 carries the same record, not just the sidecar.
     meta = StageStore(tmp_path / "out_b" / "results.h5").read_camera_meta(
         "bundle_adjustment"
     )
-    assert (meta["units"], meta["scale_source"]) == ("mm", "board")
+    assert (meta["units"], meta["scale_source"]) == ("config", "board")
 
 
 def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):

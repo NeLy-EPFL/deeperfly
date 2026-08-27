@@ -1140,23 +1140,12 @@ def calibration_export(
 @app.command()
 def calibrate(
     project: ProjectArg = None,
-    points: Annotated[
-        str,
-        typer.Option(
-            "--points",
-            help="what drives the solve: 'landmarks' (dedicated calibration points), "
-            "'keypoints' (the skeleton's ground truth), or 'both' (default). Landmarks "
-            "are worth far more per label -- a STATIC one is three unknowns however many "
-            "frames observe it, while a keypoint is three unknowns PER FRAME because the "
-            "animal moved",
-        ),
-    ] = "both",
     recordings: Annotated[
         list[str] | None,
         typer.Option(
             "--recording",
-            help="restrict to these recordings (repeatable; default: all). A "
-            "rig-scoped landmark ties every named recording into one solve",
+            help="restrict to these recordings (repeatable; default: all). Several "
+            "recordings' tracks are concatenated into one solve",
         ),
     ] = None,
     from_calibration: Annotated[
@@ -1178,16 +1167,6 @@ def calibrate(
     focal_px: Annotated[
         float | None,
         typer.Option("--focal-px", help="focal length in pixels, stated directly"),
-    ] = None,
-    scale_from: Annotated[
-        str | None,
-        typer.Option(
-            "--scale-from",
-            metavar="A,B=DISTANCE",
-            help="pin the scale with a known distance between two landmarks, e.g. "
-            "'tether_tip,coverslip_ne=1.8'. Without it the rig is valid up to scale: "
-            "angles are meaningful, lengths and velocities are not",
-        ),
     ] = None,
     free_focal: Annotated[
         bool,
@@ -1262,13 +1241,11 @@ def calibrate(
     _cmd_calibrate(
         argparse.Namespace(
             project=project,
-            points=points,
             recordings=recordings,
             from_calibration=from_calibration,
             lens_mm=lens_mm,
             sensor_mm=sensor_mm,
             focal_px=focal_px,
-            scale_from=scale_from,
             free_focal=free_focal,
             free_k1=free_k1,
             include_unreviewed=include_unreviewed,
