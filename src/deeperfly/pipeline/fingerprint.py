@@ -481,8 +481,8 @@ def _ik_template_digest(config: Config) -> dict:
 def _ik_articulation_digest(config: Config) -> dict | None:
     """The fitted head/abdomen chains: their per-DOF bounds AND their marker placement.
 
-    The markers belong here as much as the bounds do. A ``[inverse_kinematics.head]`` or
-    ``[inverse_kinematics.abdomen]`` table says *where* each tracked keypoint sits on the
+    The markers belong here as much as the bounds do. A ``[inverse_kinematics.markers.head]`` or
+    ``[inverse_kinematics.markers.abdomen]`` table says *where* each tracked keypoint sits on the
     model -- which body it rides and at what offset -- and that decides what the fit is
     fitting. Retargeting a chain and re-running with only the bounds recorded reused the
     previous fit, silently, while the config on disk described a different one; the default

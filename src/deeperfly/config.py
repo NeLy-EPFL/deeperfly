@@ -574,12 +574,13 @@ class InverseKinematicsParams:
     traces can step at a segment seam -- a poor trade for a joint-angle time series
     unless the recording is long enough to need it.
 
-    ``markers`` redefines the head/abdomen chain markers -- *where* each tracked
-    keypoint sits relative to the model, the labeling-scheme choice. It is keyed by
-    chain name (``"head"`` / ``"abdomen"``), each holding ``point -> {"body", "offset",
-    "depth"?, "base"?}`` (from the ``[inverse_kinematics.head]`` /
-    ``[inverse_kinematics.abdomen]`` config tables); see
-    :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`.
+    ``markers`` redefines a chain's markers -- *where* each tracked keypoint sits
+    relative to the model, the labeling-scheme choice. Written as
+    ``[inverse_kinematics.markers.<chain>]``, each holding ``point -> {"body", "offset",
+    "depth"?, "base"?}``; see
+    :meth:`~deeperfly.inverse_kinematics.articulation.Articulation.load`. Under its own
+    table rather than as two fixed chain names beside the knobs, so a chain can never
+    collide with one.
 
     ``base = true`` nominates a marker as its chain's **base landmark** -- the point that
     says where the chain sits, the way a leg's thorax-coxa does. The packaged head chain
@@ -611,14 +612,9 @@ class InverseKinematicsParams:
     markers: dict[str, dict] = field(default_factory=dict)
 
 
-#: Every key ``[inverse_kinematics]`` accepts. Derived from
-#: :class:`InverseKinematicsParams` plus the two marker sub-tables (which are read into
-#: its ``markers`` field), so the strict-validation error message cannot drift from the
-#: keys actually parsed.
-IK_KEYS: frozenset[str] = frozenset(
-    {f.name for f in fields(InverseKinematicsParams) if f.name != "markers"}
-    | {"head", "abdomen"}
-)
+#: Every key ``[inverse_kinematics]`` accepts -- its own fields and nothing else, now
+#: that the marker tables live under ``markers`` rather than beside the knobs.
+IK_KEYS: frozenset[str] = frozenset(f.name for f in fields(InverseKinematicsParams))
 
 
 @dataclass(frozen=True)
@@ -1289,12 +1285,25 @@ class Config:
         bounds = {
             str(k): [float(b) for b in v] for k, v in ik.pop("bounds", {}).items()
         }
-        # [inverse_kinematics.head] / [inverse_kinematics.abdomen]: per-chain marker
-        # placement (point -> {body, offset, depth?}), the labeling-scheme choice.
+        # [inverse_kinematics.markers.<chain>]: per-chain marker placement
+        # (point -> {body, offset, depth?}), the labeling-scheme choice. Under its own
+        # `markers` table rather than two fixed chain names sitting in the stage's knob
+        # namespace, which is also what the strict validation below had to special-case.
+        for chain in ("head", "abdomen"):
+            if chain in ik:
+                raise ValueError(
+                    f"[inverse_kinematics.{chain}] moved: it is a marker table, not a "
+                    f"knob, so it lives under [inverse_kinematics.markers.{chain}]"
+                )
+        raw_markers = ik.pop("markers", {})
+        if not isinstance(raw_markers, dict):
+            raise ValueError(
+                "[inverse_kinematics.markers] must be a table of chain -> markers, "
+                f"got {raw_markers!r}"
+            )
         markers = {
-            chain: {str(p): dict(spec) for p, spec in ik.pop(chain).items()}
-            for chain in ("head", "abdomen")
-            if chain in ik
+            str(chain): {str(p): dict(spec) for p, spec in table.items()}
+            for chain, table in raw_markers.items()
         }
         defaults = InverseKinematicsParams()
         template = str(ik.pop("template", defaults.template))
@@ -1373,7 +1382,7 @@ class Config:
             The baked chains selected by ``[inverse_kinematics].fit_head`` /
             ``fit_abdomen``, with ``[inverse_kinematics.bounds]`` degree overrides
             (keys like ``c_thorax-c_head-pitch`` / ``c_abdomen12-c_abdomen3-pitch``) and any
-            ``[inverse_kinematics.head]`` / ``[inverse_kinematics.abdomen]`` marker
+            ``[inverse_kinematics.markers.head]`` / ``[inverse_kinematics.markers.abdomen]`` marker
             placement overrides applied.
         """
         from .inverse_kinematics.articulation import Articulation

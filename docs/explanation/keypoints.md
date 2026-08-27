@@ -88,7 +88,7 @@ bottom and top, which are not rig views.
     viewer, so a placement change reports what this page should now say.
 
     Retarget a chain only if your labeling scheme differs, via
-    [`[inverse_kinematics.abdomen]`](../reference/configuration.md#ik-markers) — and note
+    [`[inverse_kinematics.markers.abdomen]`](../reference/configuration.md#ik-markers) — and note
     that a table **replaces** its chain's whole marker set, so list every marker you
     track.
 
@@ -104,7 +104,7 @@ bottom and top, which are not rig views.
     landmark and not as evidence about the head angles. Anchoring the head there instead
     of at the coxa registration's extrapolation is worth about 11° of head pitch; see
     [The head's base](../reference/configuration.md#ik-head-base). If you do redeclare
-    `[inverse_kinematics.head]` for some other reason, carry the nomination over —
+    `[inverse_kinematics.markers.head]` for some other reason, carry the nomination over —
     `neck = { body = "c_head", offset = [0.0, 0.0, 0.0], base = true }` — because a table
     replaces its chain's whole marker set.
 

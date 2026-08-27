@@ -259,7 +259,7 @@ inflate_threshold = 30.0
 # baked body; the abdomen chain is c_abdomen12 / c_abdomen3 / c_abdomen4 / c_abdomen5 /
 # c_abdomen6). Declaring the table REPLACES that chain's markers, so list all of them:
 #
-#   [inverse_kinematics.abdomen]
+#   [inverse_kinematics.markers.abdomen]
 #   abdomen0 = { body = "c_abdomen3", offset = [0.0, 0.0, 0.30] }
 #   abdomen1 = { body = "c_abdomen4", offset = [0.0, 0.0, 0.285] }
 #   abdomen2 = { body = "c_abdomen5", offset = [0.0, 0.0, 0.27] }
@@ -287,7 +287,7 @@ inflate_threshold = 30.0
 # still leaves the head unfitted. A marker table that redeclares the head chain replaces
 # the baked nomination too, so carry it over with `base = true`:
 #
-#   [inverse_kinematics.head]
+#   [inverse_kinematics.markers.head]
 #   neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0], base = true }
 #   l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
 #   r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }

@@ -347,7 +347,7 @@ def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, camera
     # fitting -- and it did not until the marker placement joined the digest.
     retarget = _cfg(
         {
-            "inverse_kinematics.head": {
+            "inverse_kinematics.markers.head": {
                 "neck": {"body": "c_head", "offset": [0.0, 0.0, 0.0], "base": True},
                 "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.05]},
                 "r_antenna": {"body": "r_pedicel", "offset": [0.0, 0.0, 0.05]},

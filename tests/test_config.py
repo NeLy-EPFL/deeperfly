@@ -259,7 +259,7 @@ def test_inverse_kinematics_allowed_keys_are_derived_from_the_dataclass():
     from deeperfly.config import IK_KEYS
 
     parsed = {f.name for f in InverseKinematicsParams.__dataclass_fields__.values()}
-    assert IK_KEYS == (parsed - {"markers"}) | {"head", "abdomen"}
+    assert IK_KEYS == parsed
 
 
 def test_gui_mesh_hide_defaults_to_wings_and_reads_overrides():
@@ -273,16 +273,26 @@ def test_gui_unknown_key_fails_loudly():
         Config.from_dict({"gui": {"bogus": 1}}).gui
 
 
+def test_a_marker_table_beside_the_knobs_is_refused_by_name():
+    """The v1 spelling: two fixed chain names in the stage's knob namespace."""
+    with pytest.raises(ValueError, match=r"\[inverse_kinematics.head\] moved"):
+        Config.from_dict(
+            {"inverse_kinematics": {"head": {"neck": {"body": "c_head"}}}}
+        ).inverse_kinematics
+
+
 def test_inverse_kinematics_reads_marker_tables():
     ik = Config.from_dict(
         {
             "inverse_kinematics": {
-                "abdomen": {
-                    "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
-                },
-                "head": {
-                    "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.0]},
-                },
+                "markers": {
+                    "abdomen": {
+                        "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
+                    },
+                    "head": {
+                        "l_antenna": {"body": "l_pedicel", "offset": [0.0, 0.0, 0.0]},
+                    },
+                }
             }
         }
     ).inverse_kinematics
@@ -299,9 +309,11 @@ def test_ik_articulation_applies_marker_offsets():
         {
             "inverse_kinematics": {
                 "fit_head": False,
-                "abdomen": {
-                    "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
-                    "abdomen1": {"body": "c_abdomen4", "offset": [0.0, 0.0, 0.5]},
+                "markers": {
+                    "abdomen": {
+                        "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
+                        "abdomen1": {"body": "c_abdomen4", "offset": [0.0, 0.0, 0.5]},
+                    },
                 },
             }
         }

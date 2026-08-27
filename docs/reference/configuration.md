@@ -164,7 +164,7 @@ one:
     frame, since a chain with no fittable marker is left unset rather than reported at the
     neutral pose) and no measured head or abdomen size, so both chains are drawn at the
     model's own. Nothing fails, and both are warned about rather than silent.
-    Retarget either chain with [`[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]`](#ik-markers)
+    Retarget either chain with [`[inverse_kinematics.markers.head]` / `[inverse_kinematics.markers.abdomen]`](#ik-markers)
     if your labeling scheme differs — where a point sits on the model is a
     labeling-scheme decision, and the packaged placements are tabulated in
     [Keypoint locations](../explanation/keypoints.md).
@@ -1448,7 +1448,7 @@ measurement that this fly matches the model.
     lateral joints express the same displacement, so freeing both attributes the animal's
     lateral bend to whichever the optimizer reaches first.
 
-### Marker placement — `[inverse_kinematics.head]` / `[inverse_kinematics.abdomen]` { #ik-markers }
+### Marker placement — `[inverse_kinematics.markers.head]` / `[inverse_kinematics.markers.abdomen]` { #ik-markers }
 
 *Where* each head/abdomen keypoint sits relative to the NeuroMechFly model is a
 **labeling-scheme choice** — the packaged abdomen markers are the five dorsal-midline
@@ -1460,14 +1460,14 @@ is present it **replaces** that chain's default markers. Each entry is keyed by 
 skeleton point name:
 
 ```toml
-[inverse_kinematics.abdomen]
+[inverse_kinematics.markers.abdomen]
 abdomen0 = { body = "c_abdomen12", offset = [-0.37, 0.0, 0.34] }
 abdomen1 = { body = "c_abdomen3",  offset = [-0.22, 0.0, 0.32] }
 abdomen2 = { body = "c_abdomen4",  offset = [-0.23, 0.0, 0.30] }
 abdomen3 = { body = "c_abdomen5",  offset = [-0.24, 0.0, 0.28] }
 abdomen4 = { body = "c_abdomen6",  offset = [-0.25, 0.0, 0.22] }
 
-[inverse_kinematics.head]
+[inverse_kinematics.markers.head]
 neck      = { body = "c_head",    offset = [0.0, 0.0, 0.0], base = true }
 l_antenna = { body = "l_pedicel", offset = [0.0, 0.0, 0.0] }
 r_antenna = { body = "r_pedicel", offset = [0.0, 0.0, 0.0] }
