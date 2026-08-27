@@ -2,14 +2,14 @@
 
 One config routinely describes more rig than one recording holds: the packaged default
 declares the eight-camera rig, and a seven-camera recording under it is not malformed. So a
-source with no footage invalidates the pathways that read it, a view no surviving pathway
-feeds leaves the rig, and everything keyed on that view follows -- rather than the whole
-recording being refused.
+camera whose ``video`` pattern matched nothing leaves the rig, and everything keyed on it
+follows -- rather than the whole recording being refused.
 
-What the tests here are really pinning is that the narrowing is *complete*. A half-narrowed
-config PARSES: eight cameras with seven pathways builds a plan whose eighth visibility row
-is simply all-False, and the failure then surfaces much later, somewhere that does not
-mention footage. So each layer gets its own assertion.
+Under v2 that is one deletion rather than three: a camera IS a source IS a pathway IS a
+view, so dropping the camera table entry drops all of them. What still needs pinning is
+that the ``V`` axis really shortens (a camera left in place with no footage gives a view
+whose 2D is all-NaN, which reads as a camera that detected nothing rather than one that
+was never there) and that everything keyed on the camera -- the video grids -- follows.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from deeperfly.config import MIN_VIEWS_FOR_3D, Config
 
 
 def _have(cfg: Config, *without: str) -> dict[str, list[str]]:
-    """The config's sources, all with footage except ``without``."""
+    """The config's cameras, all with footage except ``without``."""
     return {
         name: ["frame.mp4"] for name in cfg.source_patterns() if name not in without
     }
@@ -32,17 +32,18 @@ def test_nothing_missing_returns_the_very_same_config():
     assert cfg.narrowed_to_sources(_have(cfg)) is cfg
 
 
-def test_a_missing_source_drops_its_source_pathway_and_view():
-    """All three layers, because a half-narrowed config parses and fails later."""
+def test_a_camera_with_no_footage_leaves_the_rig_entirely():
+    """One deletion covers all four, because they are one name."""
     cfg = Config.default()
     view = list(cfg.camera_table()[1])[-1]
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
 
-    narrowed = cfg.narrowed_to_sources(_have(cfg, source))
+    narrowed = cfg.narrowed_to_sources(_have(cfg, view))
 
-    assert source not in narrowed.source_patterns()
+    assert view not in narrowed.source_patterns()
     assert view not in narrowed.camera_table()[1]
-    assert view not in [p["name"] for p in narrowed.data["pose2d"]["pathways"]]
+    plan = narrowed.detection_plan()
+    assert view not in plan.view_names
+    assert view not in [pw.name for pw in plan.pathways]
 
 
 def test_the_view_axis_actually_shortens():
@@ -54,8 +55,8 @@ def test_the_view_axis_actually_shortens():
     view is observed.
     """
     cfg = Config.default()
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
-    plan = cfg.narrowed_to_sources(_have(cfg, source)).detection_plan()
+    view = list(cfg.camera_table()[1])[-1]
+    plan = cfg.narrowed_to_sources(_have(cfg, view)).detection_plan()
 
     assert plan.n_views == len(cfg.camera_table()[1]) - 1
     mask = plan.visibility_mask()
@@ -67,8 +68,7 @@ def test_the_original_config_is_not_mutated():
     """Narrowing returns a copy; the caller's config still describes the whole rig."""
     cfg = Config.default()
     before = list(cfg.camera_table()[1])
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
-    cfg.narrowed_to_sources(_have(cfg, source))
+    cfg.narrowed_to_sources(_have(cfg, before[-1]))
     assert list(cfg.camera_table()[1]) == before
 
 
@@ -81,10 +81,10 @@ def test_the_snapshot_text_still_describes_the_configured_rig():
     operator configured.
     """
     cfg = Config.default()
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
-    narrowed = cfg.narrowed_to_sources(_have(cfg, source))
+    view = list(cfg.camera_table()[1])[-1]
+    narrowed = cfg.narrowed_to_sources(_have(cfg, view))
     assert narrowed.snapshot_text() == cfg.snapshot_text()
-    assert source in narrowed.snapshot_text()
+    assert f"[cameras.{view}]" in narrowed.snapshot_text()
 
 
 def test_a_dropped_view_is_blanked_out_of_every_video_grid():
@@ -95,10 +95,9 @@ def test_a_dropped_view_is_blanked_out_of_every_video_grid():
     for "leave a gap here".
     """
     cfg = Config.default()
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
     view = list(cfg.camera_table()[1])[-1]
 
-    narrowed = cfg.narrowed_to_sources(_have(cfg, source))
+    narrowed = cfg.narrowed_to_sources(_have(cfg, view))
 
     for before, after in zip(
         cfg.data["visualization"]["videos"], narrowed.data["visualization"]["videos"]
@@ -122,32 +121,28 @@ def test_a_dropped_view_is_blanked_out_of_every_video_grid():
     ]
 
 
-def test_an_orphaned_automatic_crop_is_dropped():
-    """An auto crop with no pathway using it is a hard error, not an unused table.
+def test_a_dropped_cameras_crop_goes_with_it():
+    """Left behind, a crop naming a camera that is gone REFUSES the whole plan.
 
-    An explicit box is left alone even when unused, because a visualization panel may
-    still borrow it by name through `crop = "<preprocessor>"`.
+    Which is the right answer for a typo and the wrong one here: narrowing exists exactly
+    so that a config describing more rig than this recording has still runs. So both the
+    fixed box and the searched name are narrowed too.
     """
-    cfg = Config.default()
-    data = cfg.data
-    data["pose2d"]["preprocessors"] = [
-        {"name": "crop_auto", "ops": [{"op": "crop", "auto": True}]},
+    cfg = Config.from_dict(
         {
-            "name": "crop_box",
-            "ops": [{"op": "crop", "x": 0, "y": 0, "width": 8, "height": 8}],
-        },
-    ]
-    data["pose2d"]["pathways"][-1]["preprocessor"] = "crop_auto"
-    cfg = Config.from_dict(data)
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
-
-    narrowed = cfg.narrowed_to_sources(_have(cfg, source))
-
-    names = [p["name"] for p in narrowed.data["pose2d"]["preprocessors"]]
-    assert "crop_auto" not in names, "an orphaned auto crop would refuse to resolve"
-    assert "crop_box" in names, (
-        "an unused explicit box may still be borrowed by a panel"
+            **Config.default().data,
+            "pose2d": {
+                **Config.default().data["pose2d"],
+                "crops": {"lh": [0, 0, 8, 8]},
+                "auto_crops": ["f", "h"],
+            },
+        }
     )
+    narrowed = cfg.narrowed_to_sources(_have(cfg, "h", "lh"))
+    pose2d = narrowed.data["pose2d"]
+    assert "lh" not in pose2d["crops"]
+    assert pose2d["auto_crops"] == ["f"]
+    narrowed.detection_plan()  # would refuse if either name had survived
 
 
 def test_narrowing_below_two_views_refuses():
@@ -180,15 +175,14 @@ def test_an_empty_file_list_counts_as_absent():
     assert source not in cfg.narrowed_to_sources(have).source_patterns()
 
 
-def test_the_warning_names_the_source_the_pathway_and_the_views(caplog):
+def test_the_warning_names_the_camera_it_dropped(caplog):
     """A narrowed run has to be legible in a log read after the fact."""
     cfg = Config.default()
-    source = cfg.data["pose2d"]["pathways"][-1]["source"]
     view = list(cfg.camera_table()[1])[-1]
     with caplog.at_level("WARNING", logger="deeperfly"):
-        cfg.narrowed_to_sources(_have(cfg, source))
+        cfg.narrowed_to_sources(_have(cfg, view))
     text = caplog.text
-    assert source in text and view in text and "narrowing" in text
+    assert view in text and "narrowing" in text
 
 
 # -- the other way a view becomes unusable: no measured camera -----------------

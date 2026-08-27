@@ -123,7 +123,7 @@ __all__ = [
 SIDECAR_NAME = "autocrop.json"
 
 #: Sidecar schema version, so a format change is a refusal and not a misread box.
-SIDECAR_VERSION = 1
+SIDECAR_VERSION = 2
 
 # -- the stencil -------------------------------------------------------------------------
 # Round 0 covers; rounds 1+ narrow. The blind cover's widths are fractions of the FRAME and
@@ -218,27 +218,28 @@ BORDER_BAND_PX: float = 3.0
 
 @dataclass(frozen=True)
 class AutoCropTarget:
-    """One ``[[pose2d.preprocessors]]`` chain whose crop is to be searched.
+    """One camera whose detection window is to be searched.
 
     Attributes
     ----------
-    preprocessor
-        The preprocessor's name -- the key the resolved box is stored under.
+    camera
+        The camera's name -- the key the resolved box is stored under, and also its
+        source's, its pathway's and its view's, since detection is one-to-one.
     transform
         Its chain, carrying the unresolved :class:`~deeperfly.preprocessing.AutoCrop`.
     source
-        The footage source the pathways using it read.
+        The footage it reads (its own name).
     view
-        The view index the pathways using it write into (the ``V`` axis of the points).
+        The view index it writes into (the ``V`` axis of the points).
     view_name
         That view's name, for logs and the gate.
     model
-        The model name the pathways using it forward through.
+        The detector it forwards through.
     pathways
-        The names of the pathways using it, in config order.
+        The pathways using this window -- one, its own.
     """
 
-    preprocessor: str
+    camera: str
     transform: FrameTransform
     source: str
     view: int
@@ -251,7 +252,7 @@ class AutoCropTarget:
 class Resolution:
     """What the search decided for one target, and the evidence for it."""
 
-    preprocessor: str
+    camera: str
     view_name: str
     box: tuple[int, int, int, int]
     incumbent: tuple[int, int, int, int]
@@ -304,57 +305,33 @@ def _round(value: float, digits: int):
 
 
 def targets(plan) -> list[AutoCropTarget]:
-    """The plan's unresolved automatic crops, in ``[[pose2d.preprocessors]]`` order.
+    """The plan's unresolved searched windows, in camera order.
 
-    A preprocessor may be shared by several pathways -- the rig's mirrored twin is one
-    source through one window twice -- which is fine and gives one box. Sharing it across
-    different *sources* or *views* is not: one searched window cannot be two cameras'
-    framing, and picking either silently mis-scales the other.
-
-    Raises
-    ------
-    ValueError
-        If a preprocessor with an automatic crop is used by pathways that disagree on the
-        source or the view, or by no pathway at all.
+    One per camera named in ``[pose2d] auto_crops``. The v1 shape had to check that a
+    shared preprocessor was not serving two cameras -- one searched window cannot be two
+    cameras' framing -- which the synthesized plan makes structurally impossible.
     """
     out: list[AutoCropTarget] = []
-    for name, transform in plan.preprocessors.items():
-        if not transform.needs_auto_crop:
+    for pw in plan.pathways:
+        if not pw.transform.needs_auto_crop:
             continue
-        users = [pw for pw in plan.pathways if pw.preprocessor == name]
-        if not users:
-            raise ValueError(
-                f"[[pose2d.preprocessors]] {name!r} declares `auto = true` but no pathway "
-                "uses it, so there is no footage to search and no view to judge it by; "
-                "point a pathway at it or delete it"
-            )
-        sources = {pw.source for pw in users}
-        views = {int(v) for pw in users for v in np.unique(pw.mapping[:, 1])}
-        models = {pw.model for pw in users}
-        if len(sources) > 1 or len(views) > 1:
-            raise ValueError(
-                f"[[pose2d.preprocessors]] {name!r} has `auto = true` and is shared by "
-                f"pathways covering sources {sorted(sources)} and views "
-                f"{sorted(plan.view_names[v] for v in views)}; one searched window cannot "
-                "be two cameras' framing. Give each its own preprocessor."
-            )
-        view = views.pop()
+        view = int(pw.mapping[0, 1])
         out.append(
             AutoCropTarget(
-                preprocessor=name,
-                transform=transform,
-                source=sources.pop(),
+                camera=pw.name,
+                transform=pw.transform,
+                source=pw.source,
                 view=view,
                 view_name=plan.view_names[view],
-                model=sorted(models)[0],
-                pathways=tuple(pw.name for pw in users),
+                model=pw.model,
+                pathways=(pw.name,),
             )
         )
     return out
 
 
 def resolved_boxes(plan) -> dict[str, tuple[int, int, int, int]]:
-    """``preprocessor name -> window`` for every automatic crop the plan has resolved.
+    """``camera -> window`` for every searched crop the plan has resolved.
 
     What a later stage needs in order to look through the same box detection did, whether
     this run searched it or read it back from the sidecar -- so the caller does not have to
@@ -368,12 +345,12 @@ def resolved_boxes(plan) -> dict[str, tuple[int, int, int, int]]:
 
 
 def resolved_plan(plan, boxes: dict[str, tuple[int, int, int, int]]):
-    """``plan`` with each named preprocessor's automatic crop set to its box.
+    """``plan`` with each named camera's searched crop set to its box.
 
     Returns the plan unchanged when ``boxes`` names nothing it carries, so a caller can
     apply a sidecar blindly. A name the plan does not have is ignored for the same reason:
-    a stale sidecar entry (a preprocessor since renamed or made explicit) should not stop
-    a run, it should just not apply.
+    a stale sidecar entry (a camera since dropped or given a fixed box) should not stop a
+    run, it should just not apply.
     """
     import dataclasses
 
@@ -446,8 +423,8 @@ def write_sidecar(outdir: Path | str, resolutions: list[Resolution]) -> Path:
         json.dumps(
             {
                 "version": SIDECAR_VERSION,
-                "boxes": {r.preprocessor: list(r.box) for r in resolutions},
-                "detail": {r.preprocessor: r.to_json() for r in resolutions},
+                "boxes": {r.camera: list(r.box) for r in resolutions},
+                "detail": {r.camera: r.to_json() for r in resolutions},
             },
             indent=1,
         )
@@ -576,9 +553,9 @@ class _Prober:
         self.others = (
             others  # (T, 3, H, W) per view of the model, target slots included
         )
-        # Usually one slot. More than one when several of the model's pathways share this
-        # preprocessor -- they then share its window too, so every one of them has to see the
-        # candidate; leaving the others at the incumbent would score a mixture of two boxes.
+        # One slot per pathway looking through this window -- which is one, since a
+        # camera has one pathway. Kept as a tuple because the multiview model forwards a
+        # whole frame's views together and the candidate has to reach the right slot.
         self.slots = tuple(slots)
         self.batch = max(1, int(batch))
         self.probes = 0
@@ -789,7 +766,7 @@ def _reference(
                 f"the rig misses the views the reference was built from by {rig_px:.0f} px "
                 f"(limit {RIG_RESIDUAL_LIMIT:.0f}), so it cannot be believed about a held-out "
                 "view either. Solve the rig first -- run once with bundle adjustment and point "
-                "[cameras].calibration at the exported calibration.toml"
+                "[calibration].path at the exported calibration.toml"
             ),
         )
     return projected[target.view], rig_px, ""
@@ -860,7 +837,7 @@ def search(
     search_frames, gate_frames
         The frame indices behind the two windows, recorded in the result for provenance.
     incumbents
-        Optional per-preprocessor boxes to measure against instead of the seed -- used by
+        Optional per-camera boxes to measure against instead of the seed -- used by
         the second pass, where "the incumbent" is what the first pass decided.
     """
     from ..config import AutoCropParams
@@ -888,7 +865,7 @@ def search(
             else model.input_size[1] / model.input_size[0]
         )
         incumbent = (incumbents or {}).get(
-            target.preprocessor, _incumbent_box(auto, frame_hw, aspect)
+            target.camera, _incumbent_box(auto, frame_hw, aspect)
         )
 
         others, slots = None, (0,)
@@ -903,7 +880,7 @@ def search(
         finalists, rounds = _search_one(prober, target, aspect, n_frames)
         conf_incumbent = float(prober.score([incumbent], n_frames)[0])
         res = Resolution(
-            preprocessor=target.preprocessor,
+            camera=target.camera,
             view_name=target.view_name,
             box=incumbent,
             incumbent=incumbent,
@@ -1006,9 +983,7 @@ def _joint_views(plan, models, target: AutoCropTarget, windows, incumbents):
                 if auto.seed is not None
                 else models[pw.model].input_size[1] / models[pw.model].input_size[0]
             )
-            box = (incumbents or {}).get(
-                pw.preprocessor, _incumbent_box(auto, hw, aspect)
-            )
+            box = (incumbents or {}).get(pw.name, _incumbent_box(auto, hw, aspect))
             transform = transform.resolve_auto_crop(box)
         prepared.append(models[pw.model].prepare(transform.apply(windows[pw.source])))
         if pw.name in target.pathways:
@@ -1035,7 +1010,7 @@ def _fill_incumbents(plan, models, windows, incumbents):
             if auto.seed is not None
             else models[t.model].input_size[1] / models[t.model].input_size[0]
         )
-        fill[t.preprocessor] = _incumbent_box(auto, hw, aspect)
+        fill[t.camera] = _incumbent_box(auto, hw, aspect)
     return {**base, **fill}
 
 
@@ -1119,7 +1094,7 @@ def _choose_by_agreement(
     """
     base = _fill_incumbents(plan, models, gate_windows, incumbents)
     ref, rig_px, why_not = _reference(
-        resolved_plan(plan, {**base, target.preprocessor: incumbent}),
+        resolved_plan(plan, {**base, target.camera: incumbent}),
         models,
         cameras,
         gate_windows,
@@ -1144,7 +1119,7 @@ def _choose_by_agreement(
 
     def evaluate(box):
         return _agreement(
-            resolved_plan(plan, {**base, target.preprocessor: box}),
+            resolved_plan(plan, {**base, target.camera: box}),
             models,
             gate_windows,
             target,
@@ -1413,7 +1388,7 @@ def ensure_resolved(
             gate_frames=tuple(gate_idx),
             incumbents=boxes or None,
         )
-        boxes = {r.preprocessor: r.box for r in resolutions}
+        boxes = {r.camera: r.box for r in resolutions}
     plan = resolved_plan(plan, boxes)
     if outdir is not None:
         merged = [*_recorded_resolutions(recorded, resolutions), *resolutions]
@@ -1424,10 +1399,10 @@ def ensure_resolved(
 
 def _recorded_resolutions(recorded, fresh) -> list[Resolution]:
     """Sidecar entries this run did not re-search, so writing it back keeps them."""
-    done = {r.preprocessor for r in fresh}
+    done = {r.camera for r in fresh}
     return [
         Resolution(
-            preprocessor=name,
+            camera=name,
             view_name="",
             box=tuple(box),
             incumbent=tuple(box),

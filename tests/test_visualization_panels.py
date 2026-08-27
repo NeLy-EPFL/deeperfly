@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import AZIMUTHS_DEG, CAMERA_NAMES, output_points_table
+from helpers import AZIMUTHS_DEG, CAMERA_NAMES
 
 from deeperfly.config import Config
 from deeperfly.skeleton import Skeleton
@@ -22,7 +22,8 @@ from deeperfly.visualization.bird import BIRD_VIEW, dorsal_camera
 
 CROP = (12, 7, 40, 20)
 #: The same window as a ``[[pose2d.preprocessors]]`` op list.
-CROP_OPS = [{"op": "crop", "x": 12, "y": 7, "width": 40, "height": 20}]
+#: The same window as CROP, as a [pose2d.crops] entry.
+CROP_BOX = list(CROP)
 
 
 @pytest.fixture
@@ -67,43 +68,25 @@ def _rig_cameras():
     }
 
 
-def _detector_cfg(panels, *, crops, spare=None, viz=None, **video):
-    """A config whose ``[pose2d]`` really detects each view through ``crops[view]``.
+def _detector_cfg(panels, *, crops, viz=None, **video):
+    """A config whose ``[pose2d]`` really detects each camera through ``crops[camera]``.
 
-    ``crops`` maps a view name to a preprocessor ``ops`` list; a view absent from it runs
-    full-frame, which is this rig's policy for its six side cameras. One dense pathway per
-    camera, so the channel mapping is the identity and no ``[pose2d.output_points]`` table
-    is needed -- the shape every dense plan has. ``spare`` adds named
-    preprocessors no pathway uses, for the panels that borrow one by name.
+    ``crops`` maps a camera name to an ``[x, y, width, height]`` window; a camera absent
+    from it runs full-frame, which is this rig's policy for its six side cameras. The plan
+    is synthesized, so there is nothing to name and nothing to cross-reference -- which
+    also means a panel borrowing a window by anything but a CAMERA name has nothing to
+    borrow.
     """
-    preprocessors = [{"name": f"crop_{v}", "ops": ops} for v, ops in crops.items()]
-    preprocessors += [{"name": n, "ops": ops} for n, ops in (spare or {}).items()]
     return Config.from_dict(
         {
-            "sources": [
-                {"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in CAMERA_NAMES
-            ],
-            "skeleton": Config.default().data["skeleton"],
-            "cameras": _rig_cameras(),
+            "cameras": {
+                v: {**spec, "video": f"{v}\\.mp4"} for v, spec in _rig_cameras().items()
+            },
             "pose2d": {
-                "preprocessors": preprocessors,
-                "models": [
-                    {
-                        "name": "dense",
-                        "class": "hrnet",
-                        "input_size": [256, 512],
-                        "n_out_channels": 38,
-                    }
-                ],
-                "pathways": [
-                    {
-                        "name": v,
-                        "source": f"vid_{v}",
-                        "model": "dense",
-                        **({"preprocessor": f"crop_{v}"} if v in crops else {}),
-                    }
-                    for v in CAMERA_NAMES
-                ],
+                "class": "hrnet",
+                "weights": "w.pth",
+                "input_size": [256, 512],
+                "crops": {v: list(box) for v, box in crops.items()},
             },
             "visualization": {
                 **(viz or {}),
@@ -195,7 +178,7 @@ def test_a_borrowed_crop_renders_exactly_like_the_written_box(src):
         ]
 
     borrowed = compose.read_video_specs(
-        _detector_cfg(panels("pose2d"), crops={"f": CROP_OPS})
+        _detector_cfg(panels("pose2d"), crops={"f": CROP_BOX})
     )[0]
     written = compose.read_video_specs(_cfg(panels(list(CROP))))[0]
     a = compose.compose_frame(borrowed, src, t=0)
@@ -213,7 +196,7 @@ def test_one_global_setting_gives_each_view_its_own_window(src):
                 {"plot": "imshow", "view": "rh"},  # full-frame pathway
                 {"plot": "skeleton_3d", "view": BIRD_VIEW},  # no pathway at all
             ],
-            crops={"f": CROP_OPS},
+            crops={"f": CROP_BOX},
             viz={"crop": "pose2d"},
         )
     )[0]
@@ -231,7 +214,7 @@ def test_a_borrowed_crop_moves_the_picture_and_the_geometry_together(src, result
     spec = compose.read_video_specs(
         _detector_cfg(
             [{"plot": "imshow", "view": "f"}],
-            crops={"f": CROP_OPS},
+            crops={"f": CROP_BOX},
             viz={"crop": "pose2d"},
         )
     )[0]
@@ -247,7 +230,7 @@ def test_a_borrowed_crop_moves_the_picture_and_the_geometry_together(src, result
 def test_a_named_preprocessor_can_be_borrowed_directly(src):
     spec = compose.read_video_specs(
         _detector_cfg(
-            [{"plot": "imshow", "view": "rh", "crop": "crop_f"}], crops={"f": CROP_OPS}
+            [{"plot": "imshow", "view": "rh", "crop": "f"}], crops={"f": CROP_BOX}
         )
     )[0]
     assert spec.panels[0].resolve_crop(src).crop == CROP
@@ -260,7 +243,7 @@ def test_a_panel_box_still_wins_over_the_global_setting(src):
                 {"plot": "imshow", "view": "f"},
                 {"plot": "imshow", "view": "f", "crop": [0, 0, 8, 8]},
             ],
-            crops={"f": CROP_OPS},
+            crops={"f": CROP_BOX},
             viz={"crop": "pose2d"},
         )
     )[0]
@@ -271,7 +254,7 @@ def test_a_video_entry_can_override_the_global_setting(src):
     spec = compose.read_video_specs(
         _detector_cfg(
             [{"plot": "imshow", "view": "f"}],
-            crops={"f": CROP_OPS},
+            crops={"f": CROP_BOX},
             viz={"crop": "pose2d"},
             crop=[1, 2, 9, 9],  # on the video entry
         )
@@ -279,124 +262,30 @@ def test_a_video_entry_can_override_the_global_setting(src):
     assert spec.panels[0].resolve_crop(src).crop == (1, 2, 9, 9)
 
 
-def test_a_borrowed_window_survives_a_flip_in_the_chain(src, caplog):
-    """A chain that also mirrors looks through the same region; the panel says so.
-
-    The panel cannot mirror the picture -- the overlay is projected into view pixels and a
-    crop cannot express a reflection -- so it shows the right region the un-mirrored way
-    round, and logs that it did rather than letting it be a surprise.
-    """
-    # logger="deeperfly", not a bare at_level: the CLI tests elsewhere in the suite
-    # setLevel the "deeperfly" logger, and a bare at_level only raises the ROOT one, so
-    # this captures nothing when it runs after them (see tests/test_project.py's docstring).
-    with caplog.at_level("WARNING", logger="deeperfly"):
-        spec = compose.read_video_specs(
-            _detector_cfg(
-                [{"plot": "imshow", "view": "rh", "crop": "mirror_crop"}],
-                crops={"f": CROP_OPS},
-                spare={"mirror_crop": [*CROP_OPS, {"op": "fliplr"}]},
-            )
-        )[0]
-    assert spec.panels[0].resolve_crop(src).crop == CROP
-    assert "mirrors or turns" in caplog.text
-
-
-def test_pathways_that_window_a_view_differently_are_an_error_not_a_guess(
-    fly, result, frames
-):
-    """Two windows, one panel: either render looks fine, so guessing is the wrong move."""
-    point_names = Config.default().data["skeleton"]["points"]
-    half = len(point_names) // 2
-    cfg = Config.from_dict(
-        {
-            "sources": [{"name": "vid_f", "filename": "f.mp4"}],
-            "skeleton": Config.default().data["skeleton"],
-            "cameras": _rig_cameras(),
-            "pose2d": {
-                "preprocessors": [
-                    {"name": "a", "ops": CROP_OPS},
-                    {
-                        "name": "b",
-                        "ops": [
-                            {"op": "crop", "x": 0, "y": 0, "width": 8, "height": 8}
-                        ],
-                    },
-                ],
-                "models": [
-                    {
-                        "name": "dense",
-                        "class": "hrnet",
-                        "input_size": [256, 512],
-                        "n_out_channels": 38,
-                    }
-                ],
-                "pathways": [
-                    {
-                        "name": "near",
-                        "source": "vid_f",
-                        "model": "dense",
-                        "preprocessor": "a",
-                    },
-                    {
-                        "name": "far",
-                        "source": "vid_f",
-                        "model": "dense",
-                        "preprocessor": "b",
-                    },
-                ],
-                # Both pathways fill view "f" -- half its points each -- through different
-                # windows, which is the only way a view can carry two of them.
-                "output_points": output_points_table(
-                    point_names,
-                    [
-                        (
-                            "f",
-                            "near",
-                            [p if p < half else -1 for p in range(len(point_names))],
-                        ),
-                        (
-                            "f",
-                            "far",
-                            [p if p >= half else -1 for p in range(len(point_names))],
-                        ),
-                    ],
-                ),
-            },
-            "visualization": {
-                "crop": "pose2d",
-                "videos": [
-                    {"video_name": "v", "panels": [{"plot": "imshow", "view": "f"}]}
-                ],
-            },
-        }
-    )
-    src = compose.Sources(fly, result.cameras, frames, pts2d=result.pts2d)
-    spec = compose.read_video_specs(cfg)[0]
-    with pytest.raises(ValueError, match="different windows"):
-        compose.compose_frame(spec, src, t=0)
-
-
 def test_an_unknown_crop_reference_names_the_alternatives():
-    with pytest.raises(ValueError, match="crop_f"):
+    with pytest.raises(ValueError, match=r"have: \['f'\]"):
         compose.read_video_specs(
             _detector_cfg(
                 [{"plot": "imshow", "view": "f", "crop": "crop_typo"}],
-                crops={"f": CROP_OPS},
+                crops={"f": CROP_BOX},
             )
         )
 
 
-def test_a_reserved_preprocessor_name_is_refused():
-    # A preprocessor literally named "pose2d" would shadow the per-view rule; say so
-    # instead of silently picking one meaning of the same word.
-    with pytest.raises(ValueError, match="rename the preprocessor"):
-        compose.read_video_specs(
-            _detector_cfg(
-                [{"plot": "imshow", "view": "f", "crop": "pose2d"}],
-                crops={"f": CROP_OPS},
-                spare={"pose2d": CROP_OPS},
-            )
-        )
+def test_a_camera_called_pose2d_is_refused_as_a_crop_reference():
+    # A camera literally named "pose2d" would shadow the per-view rule; say so instead of
+    # silently picking one meaning of the same word.
+    cfg = _detector_cfg(
+        [{"plot": "imshow", "view": "pose2d", "crop": "pose2d"}], crops={}
+    )
+    cfg.data["cameras"]["pose2d"] = {
+        "azimuth_deg": 30,
+        "distance": 100.0,
+        "focal_length_px": 1.0,
+    }
+    cfg.data["pose2d"]["crops"] = {"pose2d": CROP_BOX}
+    with pytest.raises(ValueError, match="rename the"):
+        compose.read_video_specs(cfg)
 
 
 def test_a_borrowed_crop_without_a_detection_plan_says_so():
@@ -414,7 +303,7 @@ def test_a_stale_borrowed_crop_fails_loudly_against_smaller_footage(src):
     spec = compose.read_video_specs(
         _detector_cfg(
             [{"plot": "imshow", "view": "f"}],
-            crops={"f": [{"op": "crop", "x": 0, "y": 0, "width": 900, "height": 400}]},
+            crops={"f": [0, 0, 900, 400]},
             viz={"crop": "pose2d"},
         )
     )[0]
@@ -433,14 +322,13 @@ def test_a_borrowed_crop_is_fingerprinted_so_a_new_box_re_renders():
 
     from deeperfly.pipeline import fingerprint
 
-    def digest(ops):
+    def digest(box):
         specs = _detector_cfg(
-            [{"plot": "imshow", "view": "f"}], crops={"f": ops}, viz={"crop": "pose2d"}
+            [{"plot": "imshow", "view": "f"}], crops={"f": box}, viz={"crop": "pose2d"}
         ).videos
         return fingerprint._norm([dataclasses.asdict(s) for s in specs])
 
-    moved = [{"op": "crop", "x": 13, "y": 7, "width": 40, "height": 20}]
-    assert digest(CROP_OPS) != digest(moved)
+    assert digest(CROP_BOX) != digest([13, 7, 40, 20])
 
 
 # -- clip ---------------------------------------------------------------------

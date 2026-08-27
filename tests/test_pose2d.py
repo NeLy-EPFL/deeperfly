@@ -11,7 +11,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from helpers import DEEPFLY3D_SKELETON_PATH, output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pose2d import detector, inference
@@ -149,123 +148,46 @@ def test_model_prepare_accepts_on_device_tensor(module):
 # -- plan-driven detection ---------------------------------------------------
 
 
-def _model_list():
-    return [
-        {
-            "name": "m",
-            "class": "hrnet",
-            "input_size": [256, 512],
-            "n_out_channels": 19,
-        }
-    ]
+def _model_keys():
+    return {"class": "hrnet", "weights": "w.pth", "input_size": [256, 512]}
 
 
-def _fly38() -> dict:
-    """The retired DeepFly3D skeleton table, spelled out.
+#: A 19-point skeleton, so the stub module above is a DENSE detector for it -- under v2
+#: a plan's channel count comes from the skeleton, so the two have to agree.
+_SKELETON19 = {"name": "s19", "points": [f"p{i}" for i in range(19)]}
 
-    These plans are the SPARSE, mirrored ones, which only mean anything against a
-    skeleton whose 38 points are two mirrored 19-point halves. That is the DeepFly3D set
-    specifically, not "whatever the package ships" -- the packaged ``fly38`` is the
-    midline one, where points ``i`` and ``i + 19`` are not each other's mirror image.
-    """
+
+def _plan(cameras, **pose2d):
+    """A synthesized plan over ``cameras`` -- one dense pathway each."""
     return Config.from_dict(
-        {"skeleton": {"include": str(DEEPFLY3D_SKELETON_PATH)}}
-    ).data["skeleton"]
+        {
+            "skeleton": _SKELETON19,
+            "default_camera": {
+                "distance": 100,
+                "focal_length_px": 1000,
+                "principal_point_px": [63.5, 31.5],
+            },
+            "cameras": cameras,
+            "pose2d": {**_model_keys(), **pose2d},
+        }
+    ).detection_plan()
 
 
 def _mini_plan():
-    """A 2-source / 2-pathway / 2-view plan: rh (plain) and lf (mirrored)."""
-    skel = _fly38()
-    point_names = skel["points"]
-    data = {
-        "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
-        "pose2d": {
-            "preprocessors": [
-                {"name": "plain", "ops": []},
-                {"name": "mirror", "ops": [{"op": "fliplr"}]},
-            ],
-            "models": _model_list(),
-            "pathways": [
-                {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
-                {
-                    "name": "lf_p",
-                    "source": "s1",
-                    "preprocessor": "mirror",
-                    "model": "m",
-                },
-            ],
-            "output_points": output_points_table(
-                point_names,
-                [
-                    ("rh", "rh_p", list(range(19, 38))),
-                    ("lf", "lf_p", list(range(0, 19))),
-                ],
-            ),
-        },
-        "cameras": {
-            "rh": {
-                "azimuth_deg": -120,
-                "distance": 100,
-                "focal_length_px": 1000,
-                "principal_point_px": [63.5, 31.5],
-            },
-            "lf": {
-                "azimuth_deg": 45,
-                "distance": 100,
-                "focal_length_px": 1000,
-                "principal_point_px": [63.5, 31.5],
-            },
-        },
-        "skeleton": skel,
-    }
-    return Config.from_dict(data).detection_plan()
+    """A two-camera plan: rh and lf, each detecting its own view densely."""
+    return _plan({"rh": {"azimuth_deg": -120}, "lf": {"azimuth_deg": 45}})
 
 
-def _front_plan():
-    """A 1-source / 2-pathway / 1-view plan: the front source bridges both sides."""
-    skel = _fly38()
-    point_names = skel["points"]
-    data = {
-        "sources": [{"name": "fcam", "filename": "f"}],
-        "pose2d": {
-            "preprocessors": [
-                {"name": "plain", "ops": []},
-                {"name": "mirror", "ops": [{"op": "fliplr"}]},
-            ],
-            "models": _model_list(),
-            "pathways": [
-                {
-                    "name": "f_plain",
-                    "source": "fcam",
-                    "preprocessor": "plain",
-                    "model": "m",
-                },
-                {
-                    "name": "f_mirror",
-                    "source": "fcam",
-                    "preprocessor": "mirror",
-                    "model": "m",
-                },
-            ],
-            "output_points": output_points_table(
-                point_names,
-                [
-                    ("f", "f_plain", list(range(19, 38))),
-                    ("f", "f_mirror", list(range(0, 19))),
-                ],
-            ),
-        },
-        "cameras": {
-            "f": {
-                "azimuth_deg": 0,
-                "distance": 100,
-                "focal_length_px": 1000,
-                "principal_point_px": [63.5, 31.5],
-            }
-        },
-        "skeleton": skel,
-    }
-    return Config.from_dict(data).detection_plan()
+def _windowed_plan():
+    """The same two cameras, one of them detecting through a window.
+
+    Which is the only per-camera difference a v2 plan can carry -- and the one that
+    matters, since a window has to be inverted on the way back.
+    """
+    return _plan(
+        {"rh": {"azimuth_deg": -120}, "lf": {"azimuth_deg": 45}},
+        crops={"lf": [4, 2, 56, 28]},
+    )
 
 
 def _models(plan, model):
@@ -282,13 +204,12 @@ def test_detect_sequence_shapes_and_scatter(module):
         for s in plan.sources
     }
     pts, conf = inference.detect_sequence(plan, models, windows)
-    assert pts.shape == (2, 2, 38, 2)
-    assert conf.shape == (2, 2, 38)
-    # rh (view 0) fills the right half (19..37); lf (view 1) the left half (0..18).
-    assert not np.isnan(pts[0, :, 19:]).any()
-    assert np.isnan(pts[0, :, :19]).all()
-    assert not np.isnan(pts[1, :, :19]).any()
-    assert np.isnan(pts[1, :, 19:]).all()
+    assert pts.shape == (2, 2, 19, 2)
+    assert conf.shape == (2, 2, 19)
+    # DENSE: every camera fills every point of its own view, and no other view's.
+    assert not np.isnan(pts).any()
+    for v, pw in enumerate(plan.pathways):
+        np.testing.assert_array_equal(pw.mapping[:, 1], v)
 
 
 def test_detect_sequence_chunking_is_equivalent(module):
@@ -425,19 +346,34 @@ def test_a_host_preparing_model_is_not_handed_a_device_window(module):
             del m.module.prepares_on_host, m.module.owns_prepare
 
 
-def test_front_source_two_pathways_bridge_both_sides(module):
+def test_a_windowed_camera_still_lands_in_raw_pixels(module):
+    """The one per-camera difference a v2 plan carries, and the one that can be silent.
+
+    The mirrored front-bridge pathway this replaced is not expressible any more (one
+    detector, one pass per camera). What IS still worth a gate is the window: both
+    cameras decode the same stub peak, and the windowed one has to come back offset by
+    its crop origin -- if the inverse were skipped, every detection through a windowed
+    camera would land short by exactly that offset and reproject plausibly.
+    """
     model = module
-    # One front source feeds two pathways (one mirrored) into a single view, so the
-    # front row carries BOTH body halves with no NaN.
-    plan = _front_plan()
+    plan = _windowed_plan()
     models = _models(plan, model)
     rng = np.random.default_rng(1)
-    windows = {"fcam": rng.uniform(size=(2, 64, 128, 3)).astype(np.float32)}
+    # RAW frames: the window is applied on the way in, and inverted on the way out.
+    windows = {
+        name: rng.uniform(size=(2, 64, 128, 3)).astype(np.float32)
+        for name in ("rh", "lf")
+    }
     pts, conf = inference.detect_sequence(plan, models, windows)
-    assert pts.shape == (1, 2, 38, 2)
-    assert not np.isnan(pts[0]).any()  # both halves filled on the bridging view
-    # The untrained model can emit negative peak values; just require all filled.
-    assert np.isfinite(conf[0]).all()
+    assert pts.shape == (2, 2, 19, 2)
+    assert not np.isnan(pts).any()
+    assert np.isfinite(conf).all()
+    # rh decodes at the centre of a 128x64 frame; lf at the centre of its 56x28 window,
+    # which is the crop origin plus half the window.
+    np.testing.assert_allclose(pts[0, 0, 0], [(128 - 1) / 2, (64 - 1) / 2], atol=1.0)
+    np.testing.assert_allclose(
+        pts[1, 0, 0], [4 + (56 - 1) / 2, 2 + (28 - 1) / 2], atol=1.0
+    )
 
 
 def test_detect_single_frame_matches_sequence(module):

@@ -16,40 +16,6 @@
 # Full reference: docs/reference/configuration.md.
 
 
-# == Footage =================================================================
-# Named sources, each decoded once. `filename` is a glob, or alternates tried in order,
-# matched case-insensitively -- so `camera_RH.mp4` finds a `CAMERA_rh.MP4`. Each names
-# its anatomical file (RH = right hind, F = front) and falls back to the DeepFly3D index.
-# One source can feed several views.
-#
-# [[sources]] blocks, not one inline array: `deeperfly project` lifts whole TOML *tables*
-# by their headers, and a bare top-level key is not a header.
-[[sources]]
-name = "vid_rh"
-filename = ["camera_RH.mp4", "camera_0.mp4"]
-[[sources]]
-name = "vid_rm"
-filename = ["camera_RM.mp4", "camera_1.mp4"]
-[[sources]]
-name = "vid_rf"
-filename = ["camera_RF.mp4", "camera_2.mp4"]
-[[sources]]
-name = "vid_f"
-filename = ["camera_F.mp4", "camera_3.mp4"]
-[[sources]]
-name = "vid_lf"
-filename = ["camera_LF.mp4", "camera_4.mp4"]
-[[sources]]
-name = "vid_lm"
-filename = ["camera_LM.mp4", "camera_5.mp4"]
-[[sources]]
-name = "vid_lh"
-filename = ["camera_LH.mp4", "camera_6.mp4"]
-[[sources]]
-name = "vid_h"
-filename = ["camera_H.mp4", "camera_7.mp4"]
-
-
 # == Skeleton ================================================================
 # Normally absent, as it is here: the skeleton is points, edges, symmetries and colors in
 # a version-controlled file of its own (src/deeperfly/data/skeletons/fly38.toml), and a
@@ -86,24 +52,51 @@ distance = 107.463
 
 
 # == Cameras =================================================================
-# One table per camera, in the order that is the V axis of every points array. A camera
-# holds only geometry, and its intrinsics describe its RAW frame -- detections are mapped
-# back to raw pixels before they meet a camera, so a detection window never moves the
-# principal point. [cameras] holds nothing but cameras: shared values live in
-# [default_camera] and the solved rig in [calibration].
+# One table per camera, in the order that is the V axis of every points array. Intrinsics
+# describe the RAW frame, so a detection window ([pose2d.crops]) never moves the principal
+# point -- detections map back to raw pixels before they meet a camera. [cameras] holds
+# nothing but cameras: shared values live in [default_camera] and the solved rig in
+# [calibration].
+#
+# `video` is a case-insensitive `re.fullmatch` over the filenames directly inside the
+# recording directory, or a list of them, and everything it matches is ONE stream
+# (matches of each entry in natural order, entries in written order, concatenated). A
+# split recording and an image sequence are the same rule. Alternate names go inside
+# the regex -- `camera_(RH|0)` takes anatomical or DeepFly3D positional naming. Nothing
+# is inferred from the camera name or its index.
+#
+# The matches of one entry must be PARTS OF ONE SERIES: identical once runs of digits
+# are masked. `camera_RH_0.mp4` + `camera_RH_1.mp4` concatenate; `camera_RH.mp4` +
+# `camera_0.mp4`, or `.mp4` + `.avi`, are an error naming them rather than a guess.
+#
+# The default stays tight -- containers only -- because a looser pattern also picks up
+# sidecars and stray takes. The two shapes it does not match:
+#
+#     video = 'camera_(RH|0)_\d+\.(mp4|avi|mov|mkv|webm|m4v)'    # a split recording
+#     video = 'camera_(RH|0)_\d+\.(png|jpe?g|tiff?|bmp|webp)'    # an image sequence
+#
+# Write patterns as TOML LITERAL strings (single quotes) -- `\d` in a basic string is
+# an invalid escape and the config will not parse.
 [cameras.rh]
+video = 'camera_(RH|0)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = -120
 [cameras.rm]
+video = 'camera_(RM|1)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = -90
 [cameras.rf]
+video = 'camera_(RF|2)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = -45
 [cameras.f]
+video = 'camera_(F|3)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = 0
 [cameras.lf]
+video = 'camera_(LF|4)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = 45
 [cameras.lm]
+video = 'camera_(LM|5)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = 90
 [cameras.lh]
+video = 'camera_(LH|6)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = 120
 
 # The axial hind view: the rig's only left/right BRIDGE, and the reason the shipped
@@ -119,6 +112,7 @@ azimuth_deg = 120
 # A recording WITHOUT this camera needs no edit here: the run narrows itself to the footage
 # it finds, drops this view, and says so. Below two views it refuses instead.
 [cameras.h]
+video = 'camera_(H|7)\.(mp4|avi|mov|mkv|webm|m4v)'
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168
@@ -146,15 +140,15 @@ do_visualization        = true
 
 
 # == 2D detection ============================================================
-# The detection plan: sources -> preprocessors -> models -> pathways. This one is DENSE --
-# one pathway per camera, the model emitting every tracked point for every view -- so
-# channel i -> point i of the pathway's view and no [pose2d.output_points] table is
-# needed. (The historical 19-channel detector predicted one body side, ran each side
-# camera twice, and needed 132 hand-written mapping rows. A contralateral point now
-# arrives as a prediction to correct, not a gap to author from nothing.)
+# One detector, run once per camera, emitting every skeleton point: channel i is
+# [skeleton] points[i]. So a camera IS a source IS a pathway IS a view, and only the
+# camera is named -- the plan is synthesized from the table above. (The historical
+# 19-channel detector predicted one body side, ran each side camera twice through a flip,
+# and needed 132 hand-written mapping rows. A contralateral point now arrives as a
+# prediction to correct, not a gap to author from nothing.)
 #
-# `class` picks the network, and there are two. "mvt" encodes a frame's views TOGETHER, so a
-# joint only one camera can see informs the ones that cannot -- which is why it is the
+# `class` picks the network, and there are two. "mvt" encodes a frame's views TOGETHER, so
+# a joint only one camera can see informs the ones that cannot -- which is why it is the
 # default. "hrnet" predicts each view alone, and runs both single-view checkpoints
 # (hrnet_w32 and hgnetv2_b4), selecting its feature maps by STRIDE rather than by index.
 # Both take ONE grayscale plane and emit one channel per tracked point.
@@ -163,43 +157,25 @@ do_visualization        = true
 # detector is trained per project, so there is nothing to download and the run stops with
 # the search path printed if it finds none. Prefer the bare name: it is a fact about
 # which model a run used and travels with the recording, where /mnt/... is a fact about
-# one machine. Everything else -- input_size, mean, n_out_channels, mvt's float32 -- is a
-# property of the checkpoint whose loader refuses a config that disagrees.
-#
-# `model` is the default for every pathway below; write `model` on one to override it,
-# and with a single [[pose2d.models]] entry it can be dropped entirely.
+# one machine. input_size, mean, the channel count and mvt's float32 are properties of
+# the checkpoint, whose loader refuses a config that disagrees.
 #
 # No `batch_size`: 16, the default, is also the measured best (configuration.md#pose2d).
 [pose2d]
-model = "dense38mv"
-models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
-]
-# The two AXIAL views get a searched crop; the six side cameras match training full-frame.
-preprocessors = [
-    { name = "crop_f", ops = [{ op = "crop", auto = true }] },
-    { name = "crop_h", ops = [{ op = "crop", auto = true }] },
-]
-pathways = [
-    { name = "rh", source = "vid_rh" },
-    { name = "rm", source = "vid_rm" },
-    { name = "rf", source = "vid_rf" },
-    { name = "f",  source = "vid_f",  preprocessor = "crop_f" },
-    { name = "lf", source = "vid_lf" },
-    { name = "lm", source = "vid_lm" },
-    { name = "lh", source = "vid_lh" },
-    { name = "h",  source = "vid_h",  preprocessor = "crop_h" },
-]
-# Preprocessors: an ordered op list applied to a pathway's frames before the model and
-# inverted on the way back, so a mirror here never moves the reconstructed skeleton.
-# Ops: fliplr / flipud / rot90(k) / crop(x,y,width,height) / resize(scale).
+class = "mvt"
+weights = "mvt_r28_pad48_gray_fly38.pth"
+auto_crops = ["f", "h"]
+
+# `auto_crops` names cameras whose window is SEARCHED per recording; [pose2d.crops]
+# gives fixed windows as `[x, y, width, height]` in raw pixels. In neither: full frame.
+# In both: the search starts from the box written here.
 #
 # A detector is trained through a box, and a differently framed camera puts the animal at
-# the wrong apparent SCALE -- the one thing no augmentation undoes. On this rig the six side
-# cameras match training full-frame and the two AXIAL ones (front and hind, 1600x1008
+# the wrong apparent SCALE -- the one thing no augmentation undoes. On this rig the six
+# side cameras match training full-frame and the two AXIAL ones (front and hind, 1600x1008
 # against the side cameras' 960x512) do not: dropped in whole, the fly lands too small and
 # detection collapses (255 px). So those two get a box, and it is MEASURED per recording
-# rather than copied -- `auto = true` reaches 2.9 px blind, against 3.4 px hand-tuned.
+# rather than copied -- searching reaches 2.9 px blind, against 3.4 px hand-tuned.
 #
 # It improves once the rig is solved, and is worth having before that. The search is a grid
 # over (centre, width) scored by detector CONFIDENCE, which needs nothing; what needs a rig
@@ -209,15 +185,14 @@ pathways = [
 # on this rig's hind view at r = +0.17). The gate self-checks: against a nominal orbit it
 # measures its own reference ~250 px out, refuses rather than choose with a broken ruler, and
 # falls back to confidence alone -- a box ~1.7x too wide, which is still far better than the
-# whole frame. Run once, `deeperfly calibration export`, point [cameras].calibration at it,
+# whole frame. Run once, `deeperfly calibration export`, point [calibration].path at it,
 # and the gate engages.
 #
 # The searched box lands in <outdir>/autocrop.json and is reused, so a resume neither
 # re-searches nor re-detects; `deeperfly auto-crop` runs it alone and prints the TOML that
-# freezes it. Seed the search when a recording's framing is unusual:
-#
-#   { name = "crop_h", ops = [{ op = "crop", auto = true, x = 400, y = 290,
-#                               width = 800, height = 400 }] }   # searched near this box
+# freezes it. [pose2d.crop_search] holds the search's own knobs.
+[pose2d.crops]
+# rh = [737, 0, 960, 512]   # this rig's side cameras match training full-frame
 
 
 # == Bundle adjustment =======================================================

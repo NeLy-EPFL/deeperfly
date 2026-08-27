@@ -170,10 +170,16 @@ def _camera_geometry(config: Config) -> dict:
     rewrites it under the same name -- which is the common case, and the one a path alone
     cannot see.
     """
+    from ..cameras import _rig_keys
+
     defaults, cams = config.camera_table()
+    # `_rig_keys` strips the footage pattern: `video` lives in the camera table under v2
+    # but it is not geometry, and re-pointing a camera at a differently NAMED file must
+    # not invalidate a solved rig. (It does invalidate pose2d, where it belongs -- the
+    # plan's `sources` carry it.)
     digest: dict = {
-        "defaults": dict(defaults),
-        "cameras": {n: dict(s) for n, s in cams.items()},
+        "defaults": _rig_keys(defaults),
+        "cameras": {n: _rig_keys(s) for n, s in cams.items()},
     }
     path = config.calibration_path()
     if path is not None:

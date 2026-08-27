@@ -1,34 +1,34 @@
-"""The detection plan: sources, preprocessors, models and pathways from config.
+"""The detection plan: one detector, run once per camera.
 
-The plan is built from config and keeps four counts independent rather than
-fusing them at "one per camera":
+Detection is **dense and one-to-one**. One detector emits every skeleton point for the
+camera it is given, so a camera IS a source IS a pathway IS a view, and only the camera is
+named: the plan is *synthesized* from the camera table rather than declared.
 
-- **sources** -- named footage globs, each decoded once.
+The four counts are still kept as separate structures, because everything downstream reads
+them -- ``pts2d`` assembly walks a pathway's mapping and the fingerprint digests it -- but
+under v2 they are all the same list:
+
+- **sources** -- one per camera, its ``video`` pattern (see
+  :meth:`deeperfly.config.Config.source_patterns`).
 - **views** -- the geometric cameras (``[cameras.*]``); the ``V`` axis of the
   ``(V, T, P, 2)`` points array.
-- **models** -- detector models (see :mod:`deeperfly.pose2d.models`).
-- **pathways** -- ``source -> preprocessor -> model``, each a named inference run.
+- **preprocessors** -- one per camera: its detection window (``[pose2d.crops]``, or a
+  searched one), or the identity.
+- **models** -- one, from ``[pose2d] class`` / ``weights``.
+- **pathways** -- one per camera, mapping channel ``i`` -> point ``i`` of that camera.
 
-Where a pathway's outputs land is declared separately, in ``[pose2d.output_points.<view>]``
-tables keyed by point name: ``point = { pathway, out_channel }`` says point ``point``
-of view ``<view>`` is filled by output channel ``out_channel`` of the named pathway.
-Keying on ``(view, point)`` makes every point's data come from exactly one place
-(a repeat is a TOML error). A ``(view, point)`` no entry names stays ``NaN`` -- that
-``NaN`` is how visibility is encoded, so no separate mask is needed. Internally each
-pathway carries the resolved ``(i, v, p)`` triples (channel ``i`` -> point ``p`` of
-view ``v``).
+The mapping is always the identity and is still materialized, because ``pts2d`` assembly
+and the fingerprint read it. A point predicted in a camera's cropped frame is mapped back
+into raw footage pixels by inverting the window -- see
+:func:`normalized_peaks_to_original_pixels` -- so a camera's intrinsics go on describing
+the raw frame and a detection window never moves the principal point.
 
-A source may feed several pathways: the front camera, for instance, is one
-source feeding two pathways (one mirrored), each mapping into view ``f``. A point
-predicted in a pathway's (possibly mirrored/cropped/resized) model frame is
-mapped back into its view's frame by inverting the pathway's preprocessing -- see
-:func:`normalized_peaks_to_original_pixels`, which inverts any
-:class:`~deeperfly.preprocessing.FrameTransform`.
-
-Those mirrored pathways are also where the plan's left/right identities are decided,
-which is why :func:`check_mirror_consistency` runs at load: with the skeleton's
-symmetry pairs declared, a mapping that sends a mirrored channel to the wrong side
-is a config error here rather than a silently side-swapped reconstruction later.
+What is gone with the declaration: ``[[sources]]``, ``[[pose2d.preprocessors]]``,
+``[[pose2d.models]]``, ``[[pose2d.pathways]]``, and ``[pose2d.output_points]``'s 38 x V
+rows of channel -> point. So is the mirrored twin (one source detected twice, once
+flipped) and with it ``check_mirror_consistency``: with no mirrored pathway there is
+nothing to be inconsistent. A 19-channel side-agnostic checkpoint is not expressible and
+runs under a v1 tag, not a resurrected code path.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 from jaxtyping import Float, Int
 
-from ..preprocessing import FrameTransform, Resize, frame_transform_from_ops
+from ..preprocessing import FrameTransform, Resize
 from .models import ModelSpec
 
 log = logging.getLogger("deeperfly")
@@ -47,7 +47,7 @@ log = logging.getLogger("deeperfly")
 
 @dataclass(frozen=True)
 class Source:
-    """A named footage source: its glob pattern (``[[sources]]`` ``filename``)."""
+    """One camera's footage: its name and its ``video`` pattern (or patterns)."""
 
     name: str
     pattern: str | list[str]
@@ -55,26 +55,24 @@ class Source:
 
 @dataclass(frozen=True)
 class Pathway:
-    """One detection pathway: a source through a preprocessor + model into views.
+    """One camera's inference run: its footage through its window into its own view.
 
     Attributes
     ----------
     name
-        The pathway's name (``[[pose2d.pathways]]`` ``name``), referenced from the
-        ``[pose2d.output_points.<view>]`` tables.
+        The camera's name -- which is also its source's, its preprocessor's and its
+        view's, because under v2 they are one thing.
     source, preprocessor, model
-        The names referenced from ``[[sources]]`` / ``[[pose2d.preprocessors]]`` /
-        ``[[pose2d.models]]``. ``preprocessor`` is ``None`` when the pathway omits it
-        (no frame ops; ``transform`` is the identity). ``model`` is always resolved --
-        a pathway that omits it takes ``[pose2d].model``, or the sole declared model
-        (see :func:`_default_model`).
+        ``source`` is the camera name. ``preprocessor`` is the camera name when it has a
+        detection window and ``None`` when it detects on the full frame (``transform`` is
+        then the identity). ``model`` is the sole detector.
     transform
-        The resolved preprocessor (the pathway's geometric frame prep); the
-        identity when ``preprocessor`` is omitted.
+        The detection window, as a :class:`~deeperfly.preprocessing.FrameTransform`; the
+        identity for a full-frame camera.
     mapping
-        An ``(E, 3)`` int array of ``(i, v, p)`` triples (resolved from
-        ``[pose2d.output_points]``): model output channel ``i`` -> point ``p`` of
-        view ``v``.
+        An ``(E, 3)`` int array of ``(i, v, p)`` triples: channel ``i`` -> point ``p`` of
+        view ``v``. Always the identity into this camera's own view -- materialized
+        because ``pts2d`` assembly and the fingerprint read it.
     """
 
     name: str
@@ -174,13 +172,13 @@ class DetectionPlan:
     n_points
         The skeleton point count -- the ``P`` axis.
     sources
-        The footage sources, in config order.
+        One per camera, in camera order.
     preprocessors
-        ``name -> FrameTransform``.
+        ``camera -> FrameTransform`` -- only the cameras that have a detection window.
     models
-        ``name -> ModelSpec``.
+        The sole detector, keyed by its class name.
     pathways
-        The pathways, in config order.
+        One per camera, in camera order.
     point_names
         The skeleton's point names, in order -- the meaning of the ``P`` axis. Carried so
         `deeperfly.pose2d.stream.load_models` can hold a model's own recorded channel
@@ -200,9 +198,9 @@ class DetectionPlan:
         return len(self.view_names)
 
     def source_patterns(self) -> dict[str, str | list[str]]:
-        """``source name -> footage glob(s)`` in config order.
+        """``camera -> footage pattern(s)`` in camera order.
 
-        A value may be a single glob or a list of alternate globs (see
+        A value is one regex, or a list of them concatenated in order (see
         :meth:`deeperfly.config.Config.source_patterns`).
         """
         return {s.name: s.pattern for s in self.sources}
@@ -220,10 +218,8 @@ class DetectionPlan:
     def view_sources(self) -> dict[str, str]:
         """``view name -> the source feeding it`` (via the pathways targeting it).
 
-        A view's intrinsics describe this source's raw frame, and its
-        visualization footage comes from it. When several distinct sources feed
-        one view, the first is used (and a warning is logged). Views no pathway
-        writes are absent.
+        Its own footage, always, since a camera is its own source -- kept as a mapping
+        because everything downstream reads one.
         """
         out: dict[str, str] = {}
         for pw in self.pathways:
@@ -242,24 +238,12 @@ class DetectionPlan:
         return out
 
     def view_transforms(self) -> dict[str, tuple[FrameTransform, ...]]:
-        """``view name -> every DISTINCT preprocessing chain a pathway detects it through``.
+        """``camera -> its detection window``, as a one-element tuple.
 
-        The companion of :meth:`view_sources`, but it hands back all the candidates rather
-        than picking one, because unlike a source the right answer depends on what the
-        caller wants from the chain. The rig's mirrored twin -- one source feeding two
-        pathways into one view, one of them flipped -- is two different chains looking
-        through the *same window*, so a caller after the window has no conflict while a
-        caller after the chirality has no answer.
-
-        Identity chains are dropped: a pathway that detects on the raw frame constrains
-        nothing, and keeping it would make every mirrored twin look like a disagreement.
-
-        Views no pathway writes are absent, in pathway (config) order.
-
-        Returns
-        -------
-        dict of str to tuple of FrameTransform
-            The distinct non-identity chains per view.
+        A tuple because the shape is what callers read (a visualization panel borrowing a
+        camera's window, the autocrop resolver); there is only ever one now, since a
+        camera has one pathway. Full-frame cameras are absent -- an identity chain
+        constrains nothing.
         """
         out: dict[str, list[FrameTransform]] = {}
         for pw in self.pathways:
@@ -273,448 +257,140 @@ class DetectionPlan:
 
     @classmethod
     def from_config(cls, config) -> DetectionPlan:
-        """Build a plan from a :class:`~deeperfly.config.Config`.
+        """Synthesize a plan from the camera table and ``[pose2d]``.
 
-        Parses the top-level ``[[sources]]`` plus pose2d's own machinery
-        (``[[pose2d.preprocessors]]`` / ``[[pose2d.models]]`` / ``[[pose2d.pathways]]`` /
-        ``[pose2d.output_points.<view>]``) and resolves view names from ``[cameras.*]``
-        and the points from ``[skeleton]``. Validates every cross-reference and
-        index loudly (a config typo fails here, not mid-run).
+        One source, one preprocessor, one identity-mapped pathway per camera, through the
+        single detector ``[pose2d] class`` / ``weights`` names. Nothing to cross-reference,
+        so nothing to validate but the two things a config can still get wrong: a
+        ``[pose2d.crops]`` or ``auto_crops`` entry naming a camera that does not exist.
         """
-        data = config.data
-        pose2d = data.get("pose2d", {})
-        view_names = list(config.camera_table()[1])
-        if not view_names:
-            raise ValueError(
-                "the detection plan needs cameras (views) under [cameras.*]"
-            )
-        skeleton = config.skeleton()
-        point_index = {name: i for i, name in enumerate(skeleton.point_names)}
+        from ..pose2d.models import class_defaults
+        from ..preprocessing import AutoCrop, Crop, FrameTransform
 
-        sources = _parse_sources(data.get("sources"))
-        preprocessors = _parse_preprocessors(pose2d.get("preprocessors"))
-        models = _parse_models(pose2d.get("models"), n_points=skeleton.n_points)
-        pathways = _parse_pathways(
-            pose2d.get("pathways"),
-            sources={s.name for s in sources},
-            preprocessors=preprocessors,
-            models=models,
-            view_names=view_names,
-            point_index=point_index,
-            output_points=pose2d.get("output_points"),
-            default_model=pose2d.get("model"),
+        pose2d = config.data.get("pose2d", {})
+        cameras = list(config.camera_table()[1])
+        if not cameras:
+            raise ValueError("the detection plan needs cameras under [cameras.<name>]")
+        skeleton = config.skeleton()
+
+        cls_name = pose2d.get("class")
+        if not isinstance(cls_name, str) or not cls_name:
+            raise ValueError(
+                "[pose2d] needs a string 'class' naming the detector, e.g. class = \"mvt\""
+            )
+        fallback = class_defaults(cls_name, skeleton.n_points)
+        size = pose2d.get("input_size") or list(fallback["input_size"])
+        if len(size) != 2:
+            raise ValueError("[pose2d] input_size must be [height, width]")
+        model = ModelSpec(
+            name=cls_name,
+            cls=cls_name,
+            weights=(pose2d.get("weights") or None),  # absent -> refused at load
+            input_size=(int(size[0]), int(size[1])),
+            mean=float(pose2d.get("mean", fallback["mean"])),
+            n_out_channels=int(
+                pose2d.get("n_out_channels", fallback["n_out_channels"])
+            ),
+            precision=(pose2d.get("precision") or fallback["precision"]),
+            kwargs={},
         )
-        check_mirror_consistency(pathways, models, skeleton, view_names)
+
+        crops = _parse_crops(pose2d.get("crops"), cameras)
+        searched = _parse_auto_crops(pose2d.get("auto_crops"), cameras)
+        patterns = config.source_patterns()
+
+        preprocessors: dict[str, FrameTransform] = {}
+        for name in cameras:
+            box = crops.get(name)
+            if name in searched:
+                # A camera in `auto_crops` WITH a box searches from that box -- which is
+                # what a separate `crop_seed` form would have been. There is no third way
+                # to say it.
+                preprocessors[name] = FrameTransform(
+                    (AutoCrop(seed=box, where=f"[pose2d] auto_crops {name!r}"),)
+                )
+            elif box is not None:
+                preprocessors[name] = FrameTransform(
+                    (Crop(x=box[0], y=box[1], width=box[2], height=box[3]),)
+                )
+
+        identity = np.stack(
+            [
+                np.arange(skeleton.n_points),
+                np.zeros(skeleton.n_points, dtype=int),
+                np.arange(skeleton.n_points),
+            ],
+            axis=1,
+        )
+        pathways = [
+            Pathway(
+                name=name,
+                source=name,
+                preprocessor=(name if name in preprocessors else None),
+                model=model.name,
+                transform=preprocessors.get(name, FrameTransform(())),
+                mapping=(identity + np.array([0, v, 0])).astype(np.int64),
+            )
+            for v, name in enumerate(cameras)
+        ]
         return cls(
-            view_names=view_names,
+            view_names=cameras,
             n_points=skeleton.n_points,
             point_names=tuple(skeleton.point_names),
-            sources=sources,
+            sources=[
+                Source(name=name, pattern=patterns.get(name, name)) for name in cameras
+            ],
             preprocessors=preprocessors,
-            models=models,
+            models={model.name: model},
             pathways=pathways,
         )
 
 
-# -- the mirror check ---------------------------------------------------------
+# -- the two things a config can still get wrong ------------------------------
 
 
-def check_mirror_consistency(
-    pathways: list[Pathway],
-    models: dict[str, ModelSpec],
-    skeleton,
-    view_names: list[str],
-) -> None:
-    """Validate that a **mirrored** pathway lands on the **mirrored** points.
+def _parse_crops(raw, cameras: list[str]) -> dict[str, tuple[int, int, int, int]]:
+    """``[pose2d.crops]`` -- camera -> ``[x, y, width, height]`` in raw pixels.
 
-    A detector channel means one anatomical landmark under one chirality convention. The
-    rig exploits that: the side cameras all feed the same side-agnostic model, and the
-    left-side views reach its convention through a ``fliplr`` preprocessor. Which side a
-    channel then represents is decided *only* by ``[pose2d.output_points]`` -- so the
-    left/right swap this package relies on is 132 hand-written config rows with nothing
-    checking them. A single typo (``rf_femur_tibia`` where ``lf_femur_tibia`` belongs)
-    silently swaps a side: the detector still fires, triangulation still converges, and
-    the reconstruction looks like a fly with its legs crossed.
-
-    Given the skeleton's symmetry pairs the invariant is decidable, so it is checked. For
-    each ``(model, channel)``, every point an **un-mirrored** pathway maps it to must be the
-    **symmetry partner** of every point a **mirrored** pathway maps it to.
-
-    Phrased over all combinations rather than over a single point per side on purpose. One
-    channel feeding several points is unusual but legal here -- ``[pose2d.output_points]``
-    keys on ``(view, point)``, so it constrains where a point's data comes *from*, not how
-    many points a channel may feed -- and rejecting that outright would fail configs that
-    work today. Comparing every combination costs nothing and is in fact *stricter* where
-    it matters: the realistic typo (a row moved from the un-mirrored pathway to the
-    mirrored one) leaves a channel mapping to the same point at both parities, and a point
-    is never its own partner, so it is caught.
-
-    Skipped entirely when the skeleton declares no ``symmetries`` -- the pairs are the
-    premise, and inferring them here would let a rename turn a passing config into a
-    failing one. Skipped per channel when only one parity maps it (nothing to compare):
-    a one-sided rig's pathways are all un-mirrored, and that is legal.
-
-    Raises
-    ------
-    ValueError
-        Naming the model, channel, pathways and points involved, and the partner that was
-        expected -- because "which of these 132 rows is wrong" is the only question the
-        operator has at that moment.
-    """
-    if not getattr(skeleton, "n_symmetries", 0):
-        return
-    names = tuple(skeleton.point_names)
-    # (model, channel, mirrored) -> point -> the pathways/views that said so.
-    cells: dict[tuple[str, int, bool], dict[int, list[str]]] = {}
-    for pw in pathways:
-        mirrored = pw.transform.reverses_handedness
-        for i, v, p in np.asarray(pw.mapping).reshape(-1, 3):
-            key = (pw.model, int(i), mirrored)
-            where = f"{pw.name!r} -> view {view_names[int(v)]!r}"
-            cells.setdefault(key, {}).setdefault(int(p), []).append(where)
-
-    problems: list[str] = []
-    for model, channel in sorted({(m, c) for m, c, _ in cells}):
-        plain = cells.get((model, channel, False)) or {}
-        mirror = cells.get((model, channel, True)) or {}
-        for p_plain in sorted(plain):
-            expected = skeleton.partner(p_plain)
-            for p_mirror in sorted(mirror):
-                if expected == p_mirror:
-                    continue
-                want = (
-                    f"{names[p_plain]!r} has no symmetry partner, so no mirrored pathway "
-                    "may map this channel at all"
-                    if expected is None
-                    else f"the mirrored pathway must land on {names[expected]!r}"
-                )
-                problems.append(
-                    f"model {model!r} channel {channel}: un-mirrored -> "
-                    f"{names[p_plain]!r} ({', '.join(plain[p_plain])}) but mirrored -> "
-                    f"{names[p_mirror]!r} ({', '.join(mirror[p_mirror])}). Mirroring the "
-                    f"frame mirrors the animal, so {want} -- as declared in "
-                    "[skeleton].symmetries."
-                )
-
-    if problems:
-        raise ValueError(
-            "[pose2d.output_points] disagrees with [skeleton].symmetries about "
-            "left/right:\n  - " + "\n  - ".join(problems)
-        )
-
-
-# -- parsing helpers ----------------------------------------------------------
-
-
-def _require_list(value, where: str) -> list:
-    if value is None:
-        raise ValueError(f"the detection plan is missing {where}")
-    if not isinstance(value, list):
-        raise ValueError(f"{where} must be a list of tables, got {value!r}")
-    if not value:
-        raise ValueError(f"{where} is empty")
-    return value
-
-
-def _parse_sources(raw) -> list[Source]:
-    out, seen = [], set()
-    for i, s in enumerate(_require_list(raw, "[[sources]]")):
-        name = s.get("name")
-        if not isinstance(name, str):
-            raise ValueError(f"[[sources]][{i}] needs a string 'name', got {name!r}")
-        if name in seen:
-            raise ValueError(f"[[sources]] has a duplicate name {name!r}")
-        seen.add(name)
-        from ..config import _source_filename
-
-        out.append(
-            Source(name=name, pattern=_source_filename(s.get("filename", name), name))
-        )
-    return out
-
-
-def _parse_preprocessors(raw) -> dict[str, FrameTransform]:
-    """Parse ``[[pose2d.preprocessors]]``; the section itself is optional.
-
-    A pathway's ``preprocessor`` key is already optional (omitting it means the identity),
-    so a plan whose every pathway detects on the raw frame has nothing to declare -- and
-    requiring an empty list from it was asking for a line that says "no line".
+    One value type, always a box: which cameras are SEARCHED is ``auto_crops``, a
+    separate list, so the map never has to be read for two different things at once.
     """
     if raw is None:
         return {}
-    if not isinstance(raw, list):
+    if not isinstance(raw, dict):
         raise ValueError(
-            f"[[pose2d.preprocessors]] must be a list of tables, got {raw!r}"
+            f"[pose2d.crops] must be a table of camera -> [x, y, width, height], "
+            f"got {raw!r}"
         )
-    out: dict[str, FrameTransform] = {}
-    for i, p in enumerate(raw):
-        name = p.get("name")
-        if not isinstance(name, str):
+    out: dict[str, tuple[int, int, int, int]] = {}
+    for name, box in raw.items():
+        if name not in cameras:
             raise ValueError(
-                f"[[pose2d.preprocessors]][{i}] needs a string 'name', got {name!r}"
+                f"[pose2d.crops] names {name!r}, which is not a camera; "
+                f"cameras: {cameras}"
             )
-        if name in out:
-            raise ValueError(f"[[pose2d.preprocessors]] has a duplicate name {name!r}")
-        out[name] = frame_transform_from_ops(
-            p.get("ops"), f"[[pose2d.preprocessors]] {name!r} ops"
-        )
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise ValueError(
+                f"[pose2d.crops] {name!r} must be [x, y, width, height], got {box!r}"
+            )
+        out[name] = tuple(int(v) for v in box)  # type: ignore[assignment]
     return out
 
 
-def _parse_models(raw, *, n_points: int | None = None) -> dict[str, ModelSpec]:
-    """Parse ``[[pose2d.models]]``, filling omitted keys from the model class.
-
-    Only ``name``, ``class`` and ``weights`` are irreducible. ``input_size`` / ``mean`` / ``n_out_channels`` /
-    ``precision`` come from :func:`~deeperfly.pose2d.models.class_defaults` when the table
-    does not state them -- with the dense classes' channel count resolved against
-    ``n_points``, the skeleton this plan routes into.
-    """
-    from .models import class_defaults
-
-    fixed = {
-        "name",
-        "class",
-        "weights",
-        "input_size",
-        "mean",
-        "n_out_channels",
-        "precision",
-    }
-    out: dict[str, ModelSpec] = {}
-    for i, m in enumerate(_require_list(raw, "[[pose2d.models]]")):
-        name = m.get("name")
-        if not isinstance(name, str):
-            raise ValueError(
-                f"[[pose2d.models]][{i}] needs a string 'name', got {name!r}"
-            )
-        if name in out:
-            raise ValueError(f"[[pose2d.models]] has a duplicate name {name!r}")
-        cls = m.get("class")
-        if not isinstance(cls, str):
-            raise ValueError(
-                f"[[pose2d.models]] {name!r} needs a string 'class', got {cls!r}"
-            )
-        fallback = class_defaults(cls, n_points)
-        size = m.get("input_size") or list(fallback["input_size"])
-        if len(size) != 2:
-            raise ValueError(
-                f"[[pose2d.models]] {name!r} input_size must be [height, width]"
-            )
-        weights = m.get("weights")
-        out[name] = ModelSpec(
-            name=name,
-            cls=cls,
-            weights=(weights or None),  # "" / absent -> resolved at load
-            input_size=(int(size[0]), int(size[1])),
-            mean=float(m.get("mean", fallback["mean"])),
-            n_out_channels=int(m.get("n_out_channels", fallback["n_out_channels"])),
-            # "" / absent -> the class's own requirement, else [pose2d].precision
-            precision=(m.get("precision") or fallback["precision"]),
-            kwargs={k: v for k, v in m.items() if k not in fixed},
-        )
-    return out
-
-
-def _resolve_view(value, view_names: list[str], where: str) -> int:
-    """A view reference (name or index) -> its index into ``view_names``."""
-    if isinstance(value, bool):
-        raise ValueError(f"{where} view {value!r} is not a name or index")
-    if isinstance(value, int):
-        if not 0 <= value < len(view_names):
-            raise ValueError(f"{where} view index {value} out of range")
-        return value
-    if value in view_names:
-        return view_names.index(value)
-    raise ValueError(f"{where} references unknown view {value!r}; views: {view_names}")
-
-
-def _parse_output_points(
-    raw,
-    *,
-    pathway_models: dict[str, str],
-    models: dict[str, ModelSpec],
-    view_names: list[str],
-    point_index: dict[str, int],
-) -> dict[str, np.ndarray]:
-    """Resolve ``[pose2d.output_points.<view>]`` into each pathway's ``(E, 3)`` mapping.
-
-    Each ``[pose2d.output_points.<view>]`` table is keyed by point name; an entry
-    ``{ pathway, out_channel }`` says output channel ``out_channel`` of that
-    pathway fills the named point of ``<view>``. Keying on ``(view, point)``
-    means every point has exactly one source (a repeat is a TOML error), so no
-    later-write-wins rule is needed. Returns ``pathway name -> (E, 3)`` array of
-    ``(out_channel, view, point)`` triples; every pathway must be named at least
-    once.
-    """
-    triples: dict[str, list[tuple[int, int, int]]] = {n: [] for n in pathway_models}
-    for view, table in (raw or {}).items():
-        v = _resolve_view(view, view_names, f"[pose2d.output_points.{view}]")
-        if not isinstance(table, dict):
-            raise ValueError(
-                f"[pose2d.output_points.{view}] must be a table of "
-                "point = {{ pathway, out_channel }}"
-            )
-        for point_name, entry in table.items():
-            where = f"[pose2d.output_points.{view}] {point_name!r}"
-            if point_name not in point_index:
-                raise ValueError(f"{where} is not a skeleton point")
-            if not (
-                isinstance(entry, dict)
-                and "pathway" in entry
-                and "out_channel" in entry
-            ):
-                raise ValueError(
-                    f"{where} must be {{ pathway = ..., out_channel = ... }}"
-                )
-            pw_name = entry["pathway"]
-            if pw_name not in pathway_models:
-                raise ValueError(f"{where} references unknown pathway {pw_name!r}")
-            i = int(entry["out_channel"])
-            n_out = models[pathway_models[pw_name]].n_out_channels
-            if not 0 <= i < n_out:
-                raise ValueError(
-                    f"{where} out_channel {i} outside [0, {n_out}) "
-                    "(model n_out_channels)"
-                )
-            triples[pw_name].append((i, v, point_index[point_name]))
-    out: dict[str, np.ndarray] = {}
-    for name, t in triples.items():
-        if not t:
-            t = _identity_triples(
-                name,
-                pathway_models=pathway_models,
-                models=models,
-                view_names=view_names,
-                n_points=len(point_index),
-            )
-        out[name] = np.asarray(t, dtype=np.int64).reshape(-1, 3)
-    return out
-
-
-def _identity_triples(
-    pw_name: str,
-    *,
-    pathway_models: dict[str, str],
-    models: dict[str, ModelSpec],
-    view_names: list[str],
-    n_points: int,
-) -> list[tuple[int, int, int]]:
-    """The default mapping for a pathway no ``[pose2d.output_points]`` table names.
-
-    **Channel ``i`` -> point ``i`` of the view the pathway is named after.** This is what a
-    DENSE detector always means -- one that emits every tracked point for the view it was
-    given -- and writing it out is 38 x V lines carrying no information, in which a single
-    transposition is a wrong limb rather than a crash. So a config for such a detector
-    declares no mapping at all.
-
-    The mapping stays REQUIRED for anything that is not dense, and the gate is the channel
-    count: the shipped 19-channel detector emits one side of the animal, so which points
-    its channels mean genuinely differs per view (and its front camera runs twice,
-    mirrored). There is no identity to fall back on and asking for the table is right.
-
-    Two things this cannot check, and one of them is checked elsewhere:
-
-    * That the model's channels are IN the skeleton's order rather than merely as numerous.
-      Nothing here can: the plan is parsed torch-free, before any weights are read. The
-      loaded module carries its own ``point_names``, and
-      :func:`deeperfly.pose2d.stream.load_models` compares them against the skeleton on
-      every run -- which also catches a hand-edited config and a swapped weights file,
-      neither of which a config generator ever sees.
-    * A typo that leaves a pathway unmapped by accident. Before this, an unnamed pathway
-      was an error; now a dense one silently gets the identity. The channel-count gate and
-      the load-time name check are what make that trade acceptable.
-    """
-    where = f"pathway {pw_name!r} has no [pose2d.output_points] entry"
-    view = _resolve_view(pw_name, view_names, where)
-    n_out = models[pathway_models[pw_name]].n_out_channels
-    if n_out != n_points:
+def _parse_auto_crops(raw, cameras: list[str]) -> tuple[str, ...]:
+    """``[pose2d] auto_crops`` -- the cameras whose window is searched per recording."""
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
         raise ValueError(
-            f"{where}, so it would default to channel i -> point i of view {pw_name!r} -- "
-            f"but its model emits {n_out} channels for a {n_points}-point skeleton. Only a "
-            "detector that predicts every point can take the default; give this pathway an "
-            "explicit [pose2d.output_points.<view>] table."
+            f"[pose2d] auto_crops must be a list of camera names, got {raw!r}"
         )
-    return [(i, view, i) for i in range(n_points)]
-
-
-def _default_model(declared, models: dict[str, ModelSpec]) -> str | None:
-    """The model a pathway that names none gets: ``[pose2d].model``, else the sole one.
-
-    A dense plan is one pathway per camera through *one* detector, so the model name
-    was written once per camera and said nothing -- the repetition is only there to be
-    a reference. ``[pose2d].model`` hoists it to where it belongs, and a plan with a
-    single ``[[pose2d.models]]`` entry needs even that: there is exactly one answer.
-
-    The fallback is deliberately not "the first model". Adding a second model to a plan
-    whose pathways are bare must be an error naming both, not a silent pick -- that is
-    the moment the default stops being unambiguous.
-    """
-    if declared is not None:
-        if declared not in models:
+    out = []
+    for name in raw:
+        if name not in cameras:
             raise ValueError(
-                f"[pose2d].model references unknown model {declared!r}; "
-                f"models: {sorted(models)}"
+                f"[pose2d] auto_crops names {name!r}, which is not a camera; "
+                f"cameras: {cameras}"
             )
-        return declared
-    return next(iter(models)) if len(models) == 1 else None
-
-
-def _parse_pathways(
-    raw,
-    *,
-    sources: set[str],
-    preprocessors: dict[str, FrameTransform],
-    models: dict[str, ModelSpec],
-    view_names: list[str],
-    point_index: dict[str, int],
-    output_points,
-    default_model=None,
-) -> list[Pathway]:
-    specs: list[
-        tuple[str, str, str | None, str]
-    ] = []  # name, source, preprocessor, model
-    fallback = _default_model(default_model, models)
-    seen: set[str] = set()
-    for i, pw in enumerate(_require_list(raw, "[[pose2d.pathways]]")):
-        where = f"[[pose2d.pathways]][{i}]"
-        name = pw.get("name")
-        if not isinstance(name, str):
-            raise ValueError(f"{where} needs a string 'name', got {name!r}")
-        if name in seen:
-            raise ValueError(f"[[pose2d.pathways]] has a duplicate name {name!r}")
-        seen.add(name)
-        src = pw.get("source")
-        if src not in sources:
-            raise ValueError(f"{where} references unknown source {src!r}")
-        prep = pw.get("preprocessor")
-        if prep is not None and prep not in preprocessors:
-            raise ValueError(f"{where} references unknown preprocessor {prep!r}")
-        model = pw.get("model", fallback)
-        if model is None:
-            raise ValueError(
-                f"{where} ({name!r}) names no model and there is no default: this plan "
-                f"declares {len(models)} models ({sorted(models)}), so write 'model' on "
-                "the pathway, or [pose2d].model to set one for all of them"
-            )
-        if model not in models:
-            raise ValueError(f"{where} references unknown model {model!r}")
-        specs.append((name, src, prep, model))
-
-    mappings = _parse_output_points(
-        output_points,
-        pathway_models={name: model for name, _, _, model in specs},
-        models=models,
-        view_names=view_names,
-        point_index=point_index,
-    )
-    return [
-        Pathway(
-            name=name,
-            source=src,
-            preprocessor=prep,
-            model=model,
-            transform=preprocessors[prep] if prep is not None else FrameTransform(()),
-            mapping=mappings[name],
-        )
-        for name, src, prep, model in specs
-    ]
+        out.append(str(name))
+    return tuple(out)

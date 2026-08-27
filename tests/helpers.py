@@ -40,7 +40,7 @@ def seven_camera_default() -> Config:
     chirality tests.
     """
     cfg = Config.default()
-    keep = [n for n in cfg.source_patterns() if n != "vid_h"]
+    keep = [n for n in cfg.source_patterns() if n != "h"]
     return cfg.narrowed_to_sources(keep)
 
 
@@ -53,7 +53,9 @@ def seven_camera_default_text() -> str:
     what a seven-camera user's own config would literally look like.
 
     Line-based rather than a TOML round-trip because the packaged file is also the
-    user-facing tutorial: re-emitting it would strip every comment.
+    user-facing tutorial: re-emitting it would strip every comment. Under v2 the surgery
+    is one table and one grid cell -- a camera IS its source, its pathway and its view, so
+    removing the camera removes all four.
     """
     out, skip = [], False
     for line in Config.default().snapshot_text().splitlines(keepends=True):
@@ -67,13 +69,9 @@ def seven_camera_default_text() -> str:
                 skip = False
             else:
                 continue
-        if stripped in ('name = "vid_h"',):
-            out.pop()  # the [[sources]] header just written
-            skip = True
-            continue
         out.append(line)
     text = "".join(out)
-    text = text.replace('    { name = "h",  source = "vid_h"  },\n', "")
+    text = text.replace('auto_crops = ["f", "h"]', 'auto_crops = ["f"]')
     text = text.replace('["rh", "h", "lh"]', '["rh", "", "lh"]')
     return text
 
@@ -92,32 +90,6 @@ def leg_indices(skeleton, side: str) -> np.ndarray:
         ],
         dtype=np.int64,
     )
-
-
-def output_points_table(point_names, specs):
-    """Build a ``[pose2d.output_points.<view>]`` mapping from per-pathway channel lists.
-
-    Parameters
-    ----------
-    point_names
-        The skeleton's ordered point names.
-    specs
-        Iterable of ``(view, pathway, points)`` where ``points[i]`` is the point
-        index output channel ``i`` of ``pathway`` fills in ``view`` (``-1`` drops
-        the channel).
-
-    Returns
-    -------
-    dict
-        ``{view: {point_name: {"pathway": ..., "out_channel": i}}}``.
-    """
-    table: dict[str, dict] = {}
-    for view, pathway, points in specs:
-        entries = table.setdefault(view, {})
-        for ch, p in enumerate(points):
-            if p >= 0:
-                entries[point_names[p]] = {"pathway": pathway, "out_channel": ch}
-    return table
 
 
 def reference_rmat(yaw_rad: float) -> np.ndarray:
@@ -175,18 +147,6 @@ def small_rotation(sigma: float, seed: int) -> np.ndarray:
     return expm(skew)
 
 
-#: A 19-channel, one-side-per-pass plan over ``fly38`` -- the shape deeperfly shipped
-#: before the dense detectors. Kept as test data rather than read from the packaged
-#: config, because the packaged plan is now DENSE: every view sees every point, so its
-#: visibility mask is all-True and cannot express the thing these tests are about.
-SPARSE_CONFIG_PATH = Path(__file__).parent / "data" / "fly38_sparse_config.toml"
-
-
-def sparse_config() -> Config:
-    """The 19-channel ``fly38`` plan, for tests about PARTIAL per-view visibility."""
-    return Config.from_toml(SPARSE_CONFIG_PATH)
-
-
 #: The historical DeepFly3D 38-point set, retired as a packaged skeleton by the 0.2
 #: release and kept here as TEST DATA (the file says why).
 DEEPFLY3D_SKELETON_PATH = Path(__file__).parent / "data" / "fly38_deepfly3d.toml"
@@ -223,17 +183,48 @@ def deepfly3d_skeleton():
     )
 
 
-def fly_masked(pts2d: np.ndarray) -> np.ndarray:
-    """NaN-out the ``(view, point)`` pairs a **one-side** detector does not observe.
+def one_side_visibility(n_points: int = 38) -> np.ndarray:
+    """``(7, P)`` bool: a side camera sees its own half of the columns, the front all.
 
-    Visibility is the union of :func:`sparse_config`'s pathway maps: each side camera
-    sees only its own body half, and the front view is bridged by two pathways. That
-    partial coverage is the premise of every test that calls this -- a joint seen by two
-    or three cameras behaves differently under an outlier than one seen by seven.
+    Written out here rather than read off a detection plan. It used to be the union of a
+    19-channel plan's pathway maps -- one body side per pass, the front view detected
+    twice through a flip -- and that plan is not expressible under a dense
+    one-detector-per-camera schema. But no test that used it was about the plan: they are
+    about a pose with NaN columns, where a joint seen by two or three cameras behaves
+    differently under an outlier than one seen by seven.
+
+    Two properties matter and both are stated as INDEX blocks, which is exactly what the
+    old mask was (the 19-per-side DeepFly3D layout, ``l`` then ``r``):
+
+    * the halves are **disjoint**, which is what the bundle-adjustment test rests on --
+      with no column shared, the left/right relative pose is unobservable except through
+      the front camera;
+    * every column is seen by **at least three** cameras (its own side's three, plus the
+      front), so it triangulates.
+
+    By index and not by point NAME, because the packaged skeleton puts six unpaired
+    midline points at the end: giving them to every camera would co-register the two
+    clusters and make that test pass for the wrong reason, and giving them to the front
+    camera alone would leave them un-triangulable.
+    """
+    half = n_points // 2
+    mask = np.zeros((len(CAMERA_NAMES), n_points), dtype=bool)
+    for v, cam in enumerate(CAMERA_NAMES):
+        if cam == "f":
+            mask[v] = True
+        elif cam[0] == "l":
+            mask[v, :half] = True
+        else:
+            mask[v, half:] = True
+    return mask
+
+
+def fly_masked(pts2d: np.ndarray) -> np.ndarray:
+    """NaN-out the ``(view, point)`` pairs :func:`one_side_visibility` does not observe.
 
     The leading axis must be the 7 fly views in order (rh, rm, rf, f, lf, lm, lh).
     """
-    mask = sparse_config().detection_plan().visibility_mask()  # (7, 38)
+    mask = one_side_visibility(pts2d.shape[-2])
     m = mask.reshape((mask.shape[0], *([1] * (pts2d.ndim - 3)), mask.shape[1]))
     return np.where(m[..., None], pts2d, np.nan)
 

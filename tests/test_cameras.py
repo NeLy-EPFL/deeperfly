@@ -269,9 +269,9 @@ def test_group_from_config_ignores_non_rig_keys():
 
 
 def test_a_retired_per_camera_preprocess_key_is_refused_not_ignored():
-    """The key cropped a view once; the pathway does it now, and both cannot.
+    """The key cropped a view once; [pose2d.crops] does it now, and both cannot.
 
-    A pathway's ops are inverted on the way back, so its detections land in raw footage
+    A detection window is inverted on the way back, so detections land in raw footage
     pixels and the camera keeps raw intrinsics. The retired key instead moved the CAMERA
     into cropped-pixel space -- so honoring both would double-correct by exactly the crop
     offset, with nothing in the output to point at.
@@ -291,7 +291,7 @@ def test_a_retired_per_camera_preprocess_key_is_refused_not_ignored():
         ValueError, match=r"\[cameras\.left\] carries 'preprocess'"
     ) as e:
         Config.from_dict(config).camera_table()
-    assert "[pose2d]" in str(e.value) and "preprocessor" in str(e.value)
+    assert "[pose2d.crops]" in str(e.value)
 
 
 def test_the_retired_key_is_refused_under_the_shared_table_too():

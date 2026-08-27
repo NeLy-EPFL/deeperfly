@@ -42,8 +42,8 @@ def test_init_writes_parseable_config(tmp_path):
         "h",
     ]
     assert Skeleton.from_config(cfg).n_points == 38
-    # Footage globs live on the sources; the detection plan parses end to end.
-    assert all("filename" in s for s in config["sources"])
+    # Footage patterns live on the cameras; the detection plan builds end to end.
+    assert all("video" in spec for spec in config["cameras"].values())
     plan = cfg.detection_plan()
     # Dense: one pathway per camera, and one source per pathway.
     assert len(plan.sources) == len(cameras)
@@ -64,54 +64,45 @@ def test_init_refuses_to_clobber(tmp_path, capsys):
 # -- [inputs] filename -> camera resolution ----------------------------------
 
 
-def test_camera_files_finds_video(tmp_path):
-    # A bare name is a prefix, so "camera_0" globs "camera_0*" and matches the video.
-    (tmp_path / "camera_0.mp4").write_bytes(b"x")
-    assert camera_files(tmp_path, "camera_0") == [tmp_path / "camera_0.mp4"]
-
-
-def test_camera_files_explicit_filename(tmp_path):
-    # A value naming a file is matched verbatim (not used as a prefix).
+def test_camera_files_matches_the_pattern_in_full(tmp_path):
+    """A full match on the filename, extension included -- nothing is inferred."""
     (tmp_path / "camera_0.mp4").write_bytes(b"x")
     (tmp_path / "camera_0_extra.mp4").write_bytes(b"x")
-    assert camera_files(tmp_path, "camera_0.mp4") == [tmp_path / "camera_0.mp4"]
+    assert camera_files(tmp_path, r"camera_0\.mp4") == [tmp_path / "camera_0.mp4"]
 
 
-def test_camera_files_finds_image_sequence_natsorted(tmp_path):
-    # An image sequence is the whole set of files, sorted naturally (2 before 10).
+def test_camera_files_finds_an_image_sequence_natsorted(tmp_path):
+    # An image sequence is the whole set of files, sorted naturally (2 before 10) --
+    # the same rule a SPLIT recording follows.
     for i in (0, 2, 10):
         (tmp_path / f"camera_0_img_{i}.jpg").write_bytes(b"x")
-    assert camera_files(tmp_path, "camera_0") == [
+    assert camera_files(tmp_path, r"camera_0_img_\d+\.jpg") == [
         tmp_path / "camera_0_img_0.jpg",
         tmp_path / "camera_0_img_2.jpg",
         tmp_path / "camera_0_img_10.jpg",
     ]
 
 
-def test_camera_files_subdir_via_explicit_glob(tmp_path):
-    # A subdirectory of images is addressed with an explicit "<name>/*" glob.
-    sub = tmp_path / "camera_0"
-    sub.mkdir()
-    (sub / "f0.png").write_bytes(b"x")
-    (sub / "f1.png").write_bytes(b"x")
-    assert camera_files(tmp_path, "camera_0/*") == [sub / "f0.png", sub / "f1.png"]
-
-
-def test_camera_files_multiple_videos_keeps_first_and_warns(tmp_path, caplog):
-    # Video footage is one file per camera: only the first matching video is used.
+def test_several_videos_concatenate_rather_than_keeping_the_first(tmp_path):
+    """The v1 rule was "keep the first, warn"; a split recording is one stream now."""
     for i in range(3):
         (tmp_path / f"camera_0_{i}.mp4").write_bytes(b"x")
-    with caplog.at_level("WARNING", logger="deeperfly"):
-        files = camera_files(tmp_path, "camera_0")
-    assert files == [tmp_path / "camera_0_0.mp4"]
-    assert any("using only the first" in r.message for r in caplog.records)
+    files = camera_files(tmp_path, r"camera_0_\d+\.mp4")
+    assert [p.name for p in files] == [
+        "camera_0_0.mp4",
+        "camera_0_1.mp4",
+        "camera_0_2.mp4",
+    ]
 
 
-def test_camera_files_mixed_extensions_keeps_priority(tmp_path):
-    # Video outranks image when both match the prefix.
+def test_mixed_extensions_are_an_error_not_a_silent_pick(tmp_path):
+    """v1 ranked video over images; a pattern names its extension now."""
+    import pytest
+
     (tmp_path / "camera_0.mp4").write_bytes(b"x")
-    (tmp_path / "camera_0.png").write_bytes(b"x")
-    assert camera_files(tmp_path, "camera_0") == [tmp_path / "camera_0.mp4"]
+    (tmp_path / "camera_0.jpg").write_bytes(b"x")
+    with pytest.raises(ValueError, match="not parts of one series"):
+        camera_files(tmp_path, r"camera_0\..+")
 
 
 def test_camera_files_missing_returns_empty(tmp_path):
@@ -119,9 +110,7 @@ def test_camera_files_missing_returns_empty(tmp_path):
     assert camera_files(tmp_path, "camera_9") == []
 
 
-def test_source_patterns_defaults_to_source_name():
-    # A source with no `filename` uses its own name as the pattern; [[sources]] order.
-    config = Config.from_dict(
-        {"sources": [{"name": "rh", "filename": "cam0.mp4"}, {"name": "lf"}]}
-    )
+def test_source_patterns_defaults_to_the_camera_name():
+    # A camera with no `video` uses its own name as the pattern; camera order.
+    config = Config.from_dict({"cameras": {"rh": {"video": "cam0.mp4"}, "lf": {}}})
     assert source_patterns(config) == {"rh": "cam0.mp4", "lf": "lf"}

@@ -66,8 +66,7 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
     # write zero-byte videos, so a search here would fail on "cannot tell how long this
     # recording is" -- a failure about the fixture, in tests about caching and CLI
     # plumbing. tests/test_autocrop.py is where the search itself is exercised.
-    text = re.sub(r"(?m)^preprocessors = \[\n(?:.*\n)*?\]\n", "", text, count=1)
-    text = re.sub(r',\s*preprocessor = "crop_[fh]"', "", text)
+    text = re.sub(r"(?m)^auto_crops = \[[^\]]*\][^\n]*\n", "", text, count=1)
     for stage in STAGES:
         on = flags.get(stage, baseline[stage])
         # Anchor to the start of a line so a `do_<stage> = ...` example inside a
@@ -160,8 +159,8 @@ def _stub_detect(monkeypatch, tmp_path):
 
     T, H, W = 3, 16, 16
     calls: list[bool] = []
-    # Per-source raw sizes (the default plan's 7 sources are vid_<view>).
-    sizes = {f"vid_{view}": (H, W) for view in FLY_CAMERAS}
+    # Per-camera raw sizes -- a camera IS its own source under v2.
+    sizes = {view: (H, W) for view in FLY_CAMERAS}
     monkeypatch.setattr(
         pipeline.stages, "source_image_sizes", lambda config, **kw: sizes
     )
@@ -313,11 +312,11 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
 
     outdir = tmp_path / "out"
     outdir.mkdir()
-    # A source the packaged default does NOT declare, so discovery cannot find it and only
-    # the run's own config can.
+    # A camera the packaged default does NOT declare, so discovery cannot find it and
+    # only the run's own config can.
     (outdir / "config.toml").write_text(
-        DEFAULT_CONFIG_PATH.read_text() + f'\n[[sources]]\nname = "vid_extra"\n'
-        f'filename = ["camera_{len(FLY_CAMERAS)}.mp4"]\n'
+        DEFAULT_CONFIG_PATH.read_text() + "\n[cameras.extra]\nazimuth_deg = 30\n"
+        f"video = 'camera_{len(FLY_CAMERAS)}\\.mp4'\n"
     )
 
     seen = {}
@@ -328,10 +327,10 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
     monkeypatch.setattr(cli.run, "run_recording", capture)
     cli.main(["run", str(rec), "-o", str(outdir), "--log-level", "error"])
 
-    assert "vid_extra" in seen["sources"], (
+    assert "extra" in seen["sources"], (
         "the run got discovery's cameras, not its own config's"
     )
-    assert [f.name for f in seen["sources"]["vid_extra"]] == [
+    assert [f.name for f in seen["sources"]["extra"]] == [
         f"camera_{len(FLY_CAMERAS)}.mp4"
     ]
     assert len(seen["sources"]) == len(FLY_CAMERAS) + 1
@@ -387,32 +386,15 @@ def test_default_outdir_inside_input(tmp_path, monkeypatch):
 
 
 def _footage_cfg(tmp_path):
-    """A minimal but complete two-source/two-view plan that reads real footage."""
-    from deeperfly.skeleton import Skeleton
-
-    names = Skeleton.fly().point_names
-
-    def output_points(view, pathway):
-        lines = [f"[pose2d.output_points.{view}]"]
-        lines += [
-            f'{names[i]} = {{ pathway = "{pathway}", out_channel = {i} }}'
-            for i in range(19)
-        ]
-        return "\n".join(lines) + "\n"
-
+    """A minimal but complete two-camera config that reads real footage."""
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        '[[sources]]\nname = "cam0"\n[[sources]]\nname = "cam1"\n'
-        '[[pose2d.preprocessors]]\nname = "plain"\nops = []\n'
-        '[[pose2d.models]]\nname = "m"\nclass = "hrnet"\n'
-        "input_size = [256, 512]\nn_out_channels = 19\n"
-        '[[pose2d.pathways]]\nname = "p0"\nsource = "cam0"\npreprocessor = "plain"\nmodel = "m"\n'
-        '[[pose2d.pathways]]\nname = "p1"\nsource = "cam1"\npreprocessor = "plain"\nmodel = "m"\n'
+        '[pose2d]\nclass = "hrnet"\nweights = "w.pth"\ninput_size = [256, 512]\n'
         "[cameras.cam0]\nazimuth_deg = 0\ndistance = 10\nfocal_length_px = 100\n"
+        "video = 'cam0\\..+'\n"
         "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
-        + output_points("cam0", "p0")
-        + output_points("cam1", "p1")
-        + "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
+        "video = 'cam1\\..+'\n"
+        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
         "do_triangulation = false\ndo_visualization = false\n"
     )
     return cfg
@@ -539,8 +521,13 @@ def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
 
 _RES_CFG = Config.from_dict(
     {
-        "sources": [{"name": "cam0"}, {"name": "cam1"}],
-        "cameras": {"cam0": {}, "cam1": {}},
+        "default_camera": {"distance": 100.0, "focal_length_px": 1.0},
+        "cameras": {
+            # A `video` pattern is a full match on the filename, extension included; the
+            # optional `_<n>` covers this fixture's image sequences.
+            "cam0": {"azimuth_deg": 0, "video": r"cam0(_\d+)?\..+"},
+            "cam1": {"azimuth_deg": 90, "video": r"cam1(_\d+)?\..+"},
+        },
     }
 )
 
@@ -640,7 +627,7 @@ def test_resolve_uneven_file_count_warns_and_skips(tmp_path, caplog):
     with caplog.at_level("WARNING", logger="deeperfly"):
         out = _resolve(["rec"], tmp_path)
     assert out[0].sources == {}
-    assert any("uneven file count" in r.message for r in caplog.records)
+    assert any("uneven image count" in r.message for r in caplog.records)
 
 
 def test_resolve_wildcard_keeps_valid_skips_nonrecordings_quietly(tmp_path, caplog):
@@ -1532,7 +1519,7 @@ def test_grayscale_decode_is_requested_only_when_every_model_accepts_it(monkeypa
         }
         try:
             pose2d_stream.detect_2d(
-                Config.from_dict({"sources": [{"name": "s", "filename": "a.mp4"}]}),
+                Config.from_dict({"cameras": {"s": {"video": r"a\.mp4"}}}),
                 SimpleNamespace(n_views=1, n_points=1, pathways=[], sources=["s"]),
                 models,
                 sources={"s": ["a.mp4"]},
@@ -1631,7 +1618,7 @@ def test_source_view_frames_source_priority(result, tmp_path, monkeypatch):
     assert pipeline.source_view_frames(cfg, res, [], sources=None) == {}
 
 
-def test_prefetch_windows_applies_per_source_transform(monkeypatch):
+def test_prefetch_windows_applies_the_cameras_window(monkeypatch):
     from types import SimpleNamespace
 
     from deeperfly import io, preprocessing
@@ -1649,7 +1636,7 @@ def test_prefetch_windows_applies_per_source_transform(monkeypatch):
         return SimpleNamespace(stream_blocks=stream_blocks)
 
     monkeypatch.setattr(io, "open_reader", fake_open_reader)
-    t = preprocessing.FrameTransform((preprocessing.Fliplr(), preprocessing.Rot90(k=1)))
+    t = preprocessing.FrameTransform((preprocessing.Crop(x=1, y=1, width=4, height=2),))
     windows = list(
         pose2d_stream.prefetch_windows(["camA"], block=8, transforms=[t], gray_ok=True)
     )

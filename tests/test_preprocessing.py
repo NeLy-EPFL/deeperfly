@@ -1,11 +1,15 @@
-"""Tests for per-camera frame preprocessing (ordered op lists -> FrameTransform).
+"""Tests for the frame geometry detection runs through: a WINDOW and a resize.
 
-The transform is applied once, at decode time, to a ``(T, H, W, C)`` batch; the
-*transformed* frame is the canonical frame for the whole run, and the composed
-affine maps raw-frame intrinsics into it. These tests pin the per-op semantics
-(matching the NumPy functions), the order sensitivity, the affine/pixel
-agreement, the device-preserving torch path, the identity no-op, the intrinsics
-mapping, and the config parser's validation.
+Two ops survive the op grammar's removal -- ``Crop`` (a detection window, from
+``[pose2d.crops]``) and ``Resize`` (constructed internally to fit the detector's own
+input) -- so what is pinned here is what remains true of them: the per-op semantics
+against the NumPy functions, the affine/pixel agreement, the device-preserving torch
+path, the identity no-op, and ``raw_window``, which is how a detection gets back out of a
+crop into raw footage pixels.
+
+Gone with ``fliplr`` / ``flipud`` / ``rot90``: every reorientation case, the op-parsing
+section (there is no op grammar to parse) and the handedness section (with no reflection
+possible, nothing reverses handedness).
 """
 
 from __future__ import annotations
@@ -13,15 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.preprocessing import (
-    Crop,
-    Fliplr,
-    Flipud,
-    FrameTransform,
-    Resize,
-    Rot90,
-    frame_transform_from_ops,
-)
+from deeperfly.preprocessing import Crop, FrameTransform, Resize
 
 
 def _clip(rng, t=2, h=4, w=6):
@@ -34,74 +30,6 @@ def test_identity_is_strict_noop():
     idt = FrameTransform()
     assert idt.is_identity()
     assert idt.apply(frames) is frames  # untouched, no copy
-
-
-def test_noop_ops_are_dropped():
-    assert Rot90(k=5) == Rot90(k=1)
-    assert Rot90(k=-1) == Rot90(k=3)
-    assert FrameTransform((Rot90(k=4),)).is_identity()
-    assert FrameTransform((Resize(scale=1.0),)).is_identity()
-    # equivalent chains compare equal after normalization
-    assert FrameTransform((Rot90(k=4), Fliplr())) == FrameTransform((Fliplr(),))
-
-
-def test_adjacent_exact_compositions_fold():
-    # Exact algebra only: consecutive rotations sum, double flips cancel -- so
-    # equivalent chains share one fingerprint (and reuse each other's caches).
-    assert FrameTransform((Rot90(k=2), Rot90(k=2))).is_identity()
-    assert FrameTransform((Fliplr(), Fliplr())).is_identity()
-    assert FrameTransform((Rot90(k=1), Rot90(k=1))) == FrameTransform((Rot90(k=2),))
-    # cancellation exposes new exact neighbors
-    assert FrameTransform((Rot90(k=1), Fliplr(), Fliplr(), Rot90(k=3))).is_identity()
-    # different ops never fold
-    assert not FrameTransform((Fliplr(), Flipud())).is_identity()
-    assert len(FrameTransform((Fliplr(), Rot90(k=2), Fliplr())).ops) == 3
-
-
-@pytest.mark.parametrize("rot90", range(4))
-@pytest.mark.parametrize("flipud", (False, True))
-@pytest.mark.parametrize("fliplr", (False, True))
-def test_apply_matches_numpy_per_frame(fliplr, flipud, rot90):
-    # A fliplr -> flipud -> rot90 chain over the batch must equal the same
-    # sequence run per frame with NumPy -- pinning the ops and their in-order
-    # application.
-    rng = np.random.default_rng(1)
-    frames = _clip(rng)
-    ops = []
-    if fliplr:
-        ops.append(Fliplr())
-    if flipud:
-        ops.append(Flipud())
-    if rot90:
-        ops.append(Rot90(k=rot90))
-    out = FrameTransform(tuple(ops)).apply(frames)
-    for i in range(len(frames)):
-        ref = frames[i]
-        if fliplr:
-            ref = np.fliplr(ref)
-        if flipud:
-            ref = np.flipud(ref)
-        if rot90:
-            ref = np.rot90(ref, rot90)
-        assert np.array_equal(out[i], ref)
-
-
-def test_order_matters():
-    # fliplr then rot90 differs from rot90 then fliplr -- the list order is the
-    # application order, there is no canonical reordering.
-    rng = np.random.default_rng(5)
-    frames = _clip(rng)
-    a = FrameTransform((Fliplr(), Rot90(k=1))).apply(frames)
-    b = FrameTransform((Rot90(k=1), Fliplr())).apply(frames)
-    assert a.shape == b.shape
-    assert not np.array_equal(a, b)
-
-
-def test_rot90_swaps_height_and_width():
-    rng = np.random.default_rng(2)
-    frames = _clip(rng, h=4, w=6)
-    assert FrameTransform((Rot90(k=1),)).apply(frames).shape == (2, 6, 4, 3)
-    assert FrameTransform((Rot90(k=2),)).apply(frames).shape == (2, 4, 6, 3)
 
 
 def test_crop_values_and_shape():
@@ -129,95 +57,13 @@ def test_crop_validates_fields():
         Crop(x=0, y=0, width=0, height=3)
 
 
-def test_apply_returns_contiguous_numpy():
-    # cv2 (the visualization draw path) needs contiguous arrays; np.flip/np.rot90 yield views.
-    rng = np.random.default_rng(3)
-    out = FrameTransform((Fliplr(), Rot90(k=1))).apply(_clip(rng))
-    assert out.flags["C_CONTIGUOUS"]
-
-
 # -- output_size / affine ------------------------------------------------------
-
-
-def test_output_size_composes():
-    t = FrameTransform((Rot90(k=1), Crop(x=0, y=1, width=3, height=2)))
-    assert t.output_size((4, 6)) == (2, 3)  # rot90: (6, 4), then crop
 
 
 def test_resize_output_size_rounds_half_away_from_zero():
     # cv2's rounding, not Python's banker's rounding (round(2.5) == 2).
     assert Resize(scale=0.5).output_size((5, 7)) == (3, 4)
     assert Resize(width=10, height=3).output_size((5, 7)) == (3, 10)
-
-
-@pytest.mark.parametrize(
-    "ops",
-    [
-        (Fliplr(),),
-        (Flipud(),),
-        (Rot90(k=1),),
-        (Rot90(k=2),),
-        (Rot90(k=3),),
-        (Fliplr(), Rot90(k=1)),
-        (Rot90(k=1), Fliplr()),
-        (Crop(x=1, y=2, width=4, height=3),),
-        (Rot90(k=1), Crop(x=0, y=1, width=3, height=4)),
-        (Fliplr(), Crop(x=2, y=0, width=5, height=4), Rot90(k=3)),
-        (Crop(x=1, y=1, width=5, height=3), Flipud()),
-    ],
-)
-def test_affine_matches_pixel_movement(ops):
-    # Property test: for lossless ops, every raw pixel that stays in frame must
-    # land exactly where the composed affine says.
-    h, w = 5, 7
-    frame = np.arange(h * w, dtype=np.int64).reshape(h, w, 1)
-    t = FrameTransform(ops)
-    out = t.apply(frame)
-    a = t.affine((h, w))
-    oh, ow = t.output_size((h, w))
-    assert out.shape[:2] == (oh, ow)
-    checked = 0
-    for y in range(h):
-        for x in range(w):
-            xp, yp, one = a @ (x, y, 1.0)
-            assert one == 1.0
-            if 0 <= xp < ow and 0 <= yp < oh:
-                assert xp == int(xp) and yp == int(yp)  # integer pixel centers
-                assert out[int(yp), int(xp), 0] == frame[y, x, 0]
-                checked += 1
-    assert checked > 0
-
-
-@pytest.mark.parametrize(
-    "ops",
-    [
-        (),
-        (Fliplr(),),
-        (Flipud(),),
-        (Rot90(k=1),),
-        (Crop(x=2, y=1, width=5, height=3),),
-        (Resize(width=20, height=12),),
-        (Fliplr(), Resize(width=20, height=12)),
-        (Crop(x=1, y=1, width=6, height=4), Fliplr(), Resize(scale=2.0)),
-    ],
-)
-def test_map_unmap_points_roundtrip(ops):
-    # unmap_points is the exact inverse of map_points (the inverse the detector
-    # uses to bring a model peak back into its view/source frame).
-    size = (10, 8)  # (H, W)
-    t = FrameTransform(ops)
-    rng = np.random.default_rng(0)
-    pts = rng.uniform([0, 0], [size[1] - 1, size[0] - 1], size=(11, 2))
-    mapped = t.map_points(pts, size)
-    np.testing.assert_allclose(t.unmap_points(mapped, size), pts, atol=1e-9)
-
-
-def test_map_points_matches_apply_for_fliplr():
-    # A left-right flip sends pixel column x to (W-1)-x; map_points must agree.
-    t = FrameTransform((Fliplr(),))
-    size = (4, 6)
-    np.testing.assert_allclose(t.map_points([[0, 0]], size), [[5, 0]])
-    np.testing.assert_allclose(t.map_points([[5, 3]], size), [[0, 3]])
 
 
 def test_resize_affine_matches_centroid():
@@ -237,24 +83,6 @@ def test_resize_affine_matches_centroid():
 
 
 # -- torch path ----------------------------------------------------------------
-
-
-def test_torch_path_stays_torch_and_matches_numpy():
-    torch = pytest.importorskip("torch")
-    rng = np.random.default_rng(4)
-    frames_np = _clip(rng)
-    frames_t = torch.from_numpy(frames_np)
-    for t in (
-        FrameTransform((Fliplr(),)),
-        FrameTransform((Flipud(),)),
-        FrameTransform((Rot90(k=1),)),
-        FrameTransform((Crop(x=1, y=0, width=4, height=3),)),
-        FrameTransform((Fliplr(), Flipud(), Rot90(k=3))),
-        FrameTransform((Rot90(k=1), Crop(x=0, y=1, width=3, height=4), Fliplr())),
-    ):
-        out = t.apply(frames_t)
-        assert isinstance(out, torch.Tensor)  # device/type preserved, no host copy
-        np.testing.assert_array_equal(out.numpy(), t.apply(frames_np))
 
 
 def test_torch_crop_out_of_bounds_raises():
@@ -316,32 +144,6 @@ def test_raw_window_of_the_identity_is_the_whole_frame():
     assert FrameTransform(()).raw_window((96, 128)) == (0, 0, 128, 96)
 
 
-@pytest.mark.parametrize(
-    "ops", [(Fliplr(),), (Flipud(),), (Rot90(k=1),), (Rot90(k=2),)]
-)
-def test_a_reorientation_alone_still_covers_the_whole_frame(ops):
-    # Mirroring or turning a frame changes which pixel is where, not which pixels are
-    # there -- so these chains are exactly the ones a panel CAN follow (by ignoring them).
-    assert FrameTransform(ops).raw_window((96, 128)) == (0, 0, 128, 96)
-
-
-def test_a_crop_after_a_flip_is_not_the_crop_s_own_numbers():
-    """The case that rules out reading the box straight off the config.
-
-    ``fliplr`` then ``crop x=0`` detects through the frame's RIGHT edge; a panel that
-    copied the crop's ``x`` would show the left one and be 924 pixels wrong while looking
-    entirely reasonable.
-    """
-    t = FrameTransform((Fliplr(), Crop(x=0, y=0, width=100, height=50)))
-    assert t.raw_window((96, 1024)) == (924, 0, 100, 50)
-
-
-def test_a_crop_after_a_quarter_turn_swaps_the_window_s_axes():
-    # rot90 maps (x, y) -> (y, w-1-x), so the crop's width bounds the RAW height.
-    t = FrameTransform((Rot90(k=1), Crop(x=0, y=0, width=10, height=20)))
-    assert t.raw_window((96, 128)) == (108, 0, 20, 10)
-
-
 def test_a_resize_does_not_move_the_window():
     # The window is a region of the raw frame; resampling changes its resolution only.
     box = (12, 7, 40, 20)
@@ -365,28 +167,6 @@ def test_a_crop_measured_in_resized_pixels_comes_back_in_raw_ones():
     assert t.raw_window((96, 128)) == (20, 20, 20, 20)
 
 
-def test_raw_window_agrees_with_what_apply_actually_kept():
-    """The end-to-end check: the window's pixels are the transform's pixels.
-
-    Compared as SETS of pixel values (a unique-value multiset), because the chain is
-    allowed to reorder them -- that is the one thing the window deliberately drops.
-    """
-    rng = np.random.default_rng(0)
-    frame = rng.integers(0, 255, size=(96, 128, 1), dtype=np.uint8)
-    for ops in [
-        (Crop(x=12, y=7, width=40, height=20),),
-        (Fliplr(), Crop(x=3, y=5, width=40, height=20)),
-        (Rot90(k=1), Crop(x=0, y=0, width=10, height=20)),
-        (Rot90(k=3), Flipud(), Crop(x=4, y=6, width=30, height=25)),
-    ]:
-        t = FrameTransform(ops)
-        x, y, w, h = t.raw_window((96, 128))
-        np.testing.assert_array_equal(
-            np.sort(t.apply(frame).ravel()),
-            np.sort(frame[y : y + h, x : x + w].ravel()),
-        )
-
-
 def test_raw_window_rejects_a_crop_that_does_not_fit():
     # A stale crop plan against differently-sized footage: loud, not a truncated slice.
     t = FrameTransform((Crop(x=12, y=7, width=400, height=20),))
@@ -402,109 +182,4 @@ def test_raw_window_rejects_a_crop_that_does_not_fit():
 # chain is the one whose transform is inverted on the way back).
 
 
-@pytest.mark.parametrize(
-    "ops",
-    [
-        [{"op": "nope"}],  # unknown op
-        [{"op": "rot90", "k": 1, "extra": 2}],  # unknown key
-        [{"op": "crop", "x": 0, "y": 0, "width": 10}],  # incomplete crop
-        [{"op": "crop", "x": 0, "y": 0, "width": 0, "height": 10}],  # empty crop
-        [{"op": "resize"}],  # nothing to resize by
-        [{"op": "resize", "scale": 0.5, "width": 10, "height": 10}],  # both
-        [{"op": "resize", "width": 10}],  # width without height
-        [{"op": "resize", "scale": 0.0}],
-        [{"op": "resize", "scale": 0.5, "interpolation": "bicubic"}],
-        [{"k": 1}],  # no op name at all
-        "fliplr",  # not a list of tables
-    ],
-)
-def test_bad_ops_are_refused(ops):
-    with pytest.raises(ValueError):
-        frame_transform_from_ops(ops, "[[pose2d.preprocessors]] 'x' ops")
-
-
-def test_an_empty_or_absent_op_list_is_the_identity():
-    """A preprocessor may legally declare no ops -- that is a named identity, not an error."""
-    assert frame_transform_from_ops(None, "where").is_identity()
-    assert frame_transform_from_ops([], "where").is_identity()
-
-
-def test_the_refusal_names_where_it_came_from():
-    """A config with several preprocessors needs to know WHICH one failed, and at which op."""
-    with pytest.raises(ValueError, match=r"crop_h.*ops\[1\]"):
-        frame_transform_from_ops(
-            [{"op": "fliplr"}, {"op": "nope"}], "[[pose2d.preprocessors]] 'crop_h' ops"
-        )
-
-
-def test_to_json_is_canonical():
-    t = FrameTransform((Rot90(k=5), Resize(scale=0.5), Rot90(k=4)))
-    assert t.to_json() == [
-        {"op": "rot90", "k": 1},
-        {"op": "resize", "scale": 0.5, "interpolation": "bilinear"},
-    ]
-
-
 # -- handedness ---------------------------------------------------------------
-
-
-def test_reverses_handedness_is_a_parity_not_a_presence():
-    """Two reflections compose into a rotation, so "is there a flip" is the wrong question.
-
-    This is what the pathway mirror check reads, so getting it wrong would either miss a
-    side swap or invent one.
-    """
-    assert not FrameTransform(()).reverses_handedness
-    assert FrameTransform((Fliplr(),)).reverses_handedness
-    assert FrameTransform((Flipud(),)).reverses_handedness
-    # fliplr + flipud == a half-turn: handedness preserved.
-    assert not FrameTransform((Fliplr(), Flipud())).reverses_handedness
-    assert FrameTransform((Fliplr(), Flipud(), Fliplr())).reverses_handedness
-    # Rotations, crops and resizes never reflect.
-    for op in (
-        Rot90(k=1),
-        Rot90(k=3),
-        Crop(x=1, y=2, width=4, height=8),
-        Resize(scale=2),
-    ):
-        assert not FrameTransform((op,)).reverses_handedness
-        assert FrameTransform((Fliplr(), op)).reverses_handedness
-
-
-def test_every_op_is_classified_as_reflecting_or_not():
-    """A new op must be considered, not silently inherit "does not reflect".
-
-    ``reverses_handedness`` recognizes reflections by isinstance, so an added op defaults to
-    orientation-preserving -- which is right for a rotation and wrong (silently) for a
-    transpose. This pins the op registry against the classification, so adding an op to
-    ``_OP_NAMES`` without deciding forces this test to be updated.
-    """
-    from deeperfly.preprocessing import _OP_NAMES
-
-    reflecting = {"fliplr", "flipud"}
-    preserving = {"rot90", "crop", "resize"}
-    assert set(_OP_NAMES) == reflecting | preserving, (
-        "a frame op was added: decide whether it reverses handedness and teach "
-        "FrameTransform.reverses_handedness about it"
-    )
-
-
-def test_the_sign_of_the_affine_determinant_agrees_with_reverses_handedness():
-    """An independent check: a reflection is exactly a negative-determinant linear part.
-
-    Two implementations of "does this mirror?" that must agree -- the isinstance parity that
-    needs no frame size, and the composed affine that is the ground truth.
-    """
-    size = (64, 128)
-    for ops in [
-        (),
-        (Fliplr(),),
-        (Flipud(),),
-        (Fliplr(), Flipud()),
-        (Rot90(k=1),),
-        (Fliplr(), Rot90(k=1)),
-        (Resize(scale=2), Fliplr()),
-    ]:
-        t = FrameTransform(ops)
-        det = np.linalg.det(t.affine(size)[:2, :2])
-        assert t.reverses_handedness == (det < 0), ops

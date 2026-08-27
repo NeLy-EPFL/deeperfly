@@ -39,6 +39,7 @@ from .base import (
     to_numpy,
     to_torch,
 )
+from .concat import ConcatCursor, ConcatReader
 from .images import ImageSequenceReader, list_image_files
 from .video import VideoCursor, VideoReader, VideoWriter
 
@@ -57,10 +58,11 @@ def open_reader(
     - a directory or glob of images -> an
       :class:`~deeperfly.io.images.ImageSequenceReader` (OpenCV, ``workers`` sets
       decode parallelism);
-    - an explicit list of footage files -- one video file, or an ordered image
-      sequence the caller has already resolved (``deeperfly run`` resolves each
-      camera's files up front, naturally sorted) -- is read in the given order
-      without re-listing the directory.
+    - an explicit list of footage files -- an ordered image sequence, one video file, or
+      SEVERAL video files that are one camera's split recording -> a
+      :class:`~deeperfly.io.concat.ConcatReader`, which reads them end to end under one
+      global frame index. Read in the given order, without re-listing the directory
+      (``deeperfly run`` resolves each camera's files up front).
 
     Parameters
     ----------
@@ -85,10 +87,10 @@ def open_reader(
         files = [Path(f) for f in source]
         if not files:
             raise ValueError("open_reader got an empty file list")
-        # A camera's video footage is a single file (the resolver keeps just the
-        # first when several match), so decode that one.
         if is_video_file(files[0]):
-            return VideoReader(files[0])
+            # Several video files are one camera's stream, decoded back to back -- what
+            # `[cameras.<name>].video` means when its pattern matches more than one file.
+            return VideoReader(files[0]) if len(files) == 1 else ConcatReader(files)
         return ImageSequenceReader(files, workers=workers)
     p = Path(source)
     if is_video_file(p):
@@ -97,6 +99,8 @@ def open_reader(
 
 
 __all__ = [
+    "ConcatCursor",
+    "ConcatReader",
     "CursorFrames",
     "FrameCursor",
     "FrameReader",

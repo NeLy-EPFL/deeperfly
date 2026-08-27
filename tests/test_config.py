@@ -337,20 +337,16 @@ def test_ik_template_applies_legs_and_bounds():
 def test_source_patterns_and_camera_table():
     c = Config.from_dict(
         {
-            "sources": [
-                {"name": "cam0", "filename": "v0.mp4"},
-                {"name": "cam1"},  # no filename -> own name
-            ],
             "default_camera": {"focal_length_px": 800.0},
             "cameras": {
-                "rh": {},
-                "lf": {},
+                "rh": {"video": "v0.mp4"},
+                "lf": {},  # no `video` -> its own name
             },
         }
     )
-    # Footage globs come from the [[sources]] table (views are pure geometry).
-    assert c.source_patterns() == {"cam0": "v0.mp4", "cam1": "cam1"}
-    # camera_table() splits the reserved `defaults` key from the real views.
+    # Footage patterns come off the cameras -- a camera IS its own source.
+    assert c.source_patterns() == {"rh": "v0.mp4", "lf": "lf"}
+    # camera_table() hands back [default_camera] beside the cameras themselves.
     defaults, cams = c.camera_table()
     assert defaults == {"focal_length_px": 800.0}
     assert set(cams) == {"rh", "lf"}

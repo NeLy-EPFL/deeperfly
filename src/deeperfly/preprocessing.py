@@ -1,34 +1,26 @@
-"""Per-camera frame preprocessing applied once at decode time.
+"""Frame geometry for detection: a detection WINDOW, and the resize into the model.
 
-A :class:`FrameTransform` is an ordered sequence of standard image operations
--- left-right / up-down flip, quarter-turn rotation, crop and resize -- applied
-to a camera's frames right after they are read, in the order written in the
-config. The transformed frame is the canonical frame for the whole run
-(detector, 2D points, bundle adjustment, overlays); nothing maps back to the raw
-footage.
+A :class:`FrameTransform` is an ordered sequence of image operations applied to a camera's
+frames on the way to the detector and **inverted on the way back**, so a detection lands
+in raw footage pixels however it was windowed to get there -- which is what lets a camera's
+intrinsics go on describing the raw frame.
 
-Camera intrinsics in the config refer to the *raw* footage frame: every op
-carries an exact affine pixel map, and the composed chain transforms the
-principal point (and scales/swaps the focal lengths) into the canonical frame
-via :meth:`FrameTransform.map_intrinsics`.
+Two ops survive, and neither is spelled in a config any more:
 
-Configured per camera as an ordered list under ``[cameras.<camera>]``::
+* :class:`Crop` -- a detection window, from ``[pose2d.crops]``, keyed by camera.
+* :class:`Resize` -- constructed internally to fit the detector's own ``input_size``
+  (:mod:`deeperfly.pose2d.pathways`); never a config op, and it never had a caller as one.
 
-    preprocess = [
-        { op = "rot90", k = 1 },
-        { op = "fliplr" },
-        { op = "crop", x = 10, y = 10, width = 80, height = 80 },
-        { op = "resize", scale = 0.5 },
-    ]
+:class:`AutoCrop` is a *placeholder* rather than a transform: it declares a window
+**searched per recording** by :mod:`deeperfly.pose2d.autocrop` instead of written down (a
+camera named in ``[pose2d] auto_crops``). Until the search fills it in, every geometric
+method raises :class:`UnresolvedAutoCrop`.
 
-(see :class:`FrameTransform`).
-
-One op is a *placeholder* rather than a transform: ``{ op = "crop", auto = true }`` (see
-:class:`AutoCrop`) declares a crop whose window is **searched per recording** by
-:mod:`deeperfly.pose2d.autocrop` instead of written down. It only makes sense on a
-``[[pose2d.preprocessors]]`` chain -- what decides the window is the detector's own
-response -- and until the search fills it in, every geometric method raises
-:class:`UnresolvedAutoCrop`.
+What went with the op grammar in 0.3.0: ``fliplr``, ``flipud``, ``rot90``, and ``resize``
+as a config op. The flips existed for the mirrored detection pathway -- one source detected
+twice, once flipped, for a side-agnostic 19-channel checkpoint -- and that pathway is not
+expressible under a dense one-detector-per-camera plan. With no reflection left in any
+chain there is no handedness to reverse either, so ``reverses_handedness`` goes too.
 """
 
 from __future__ import annotations
@@ -44,109 +36,14 @@ if TYPE_CHECKING:
     pass
 
 __all__ = [
-    "Fliplr",
-    "Flipud",
-    "Rot90",
     "Crop",
     "AutoCrop",
     "UnresolvedAutoCrop",
     "Resize",
     "FrameTransform",
-    "frame_transform_from_ops",
 ]
 
-_OP_NAMES = ("fliplr", "flipud", "rot90", "crop", "resize")
 _INTERPOLATIONS = ("bilinear", "nearest")
-
-# Distortion coefficients (OpenCV order, as in :mod:`deeperfly.geometry`) that
-# are *not* radially symmetric: tangential p1/p2 and thin-prism s1..s4. These
-# do not survive a mirror or rotation of the image, unlike the radial k terms.
-_NON_RADIAL_DIST_IDX = (2, 3, 8, 9, 10, 11)
-
-
-@dataclass(frozen=True)
-class Fliplr:
-    """Left-right mirror (:func:`numpy.fliplr` per frame)."""
-
-    def is_identity(self) -> bool:
-        return False
-
-    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
-        return size
-
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
-        _, w = size
-        return np.array([[-1.0, 0.0, w - 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        return np.flip(arr, axis=-2)
-
-    def apply_torch(self, frames):
-        return frames.flip(-2)
-
-    def to_json(self) -> dict:
-        return {"op": "fliplr"}
-
-
-@dataclass(frozen=True)
-class Flipud:
-    """Up-down flip (:func:`numpy.flipud` per frame)."""
-
-    def is_identity(self) -> bool:
-        return False
-
-    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
-        return size
-
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
-        h, _ = size
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, h - 1.0], [0.0, 0.0, 1.0]])
-
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        return np.flip(arr, axis=-3)
-
-    def apply_torch(self, frames):
-        return frames.flip(-3)
-
-    def to_json(self) -> dict:
-        return {"op": "flipud"}
-
-
-@dataclass(frozen=True)
-class Rot90:
-    """``k`` counter-clockwise quarter-turns (:func:`numpy.rot90` semantics)."""
-
-    k: int = 1  # any sign, kept mod 4
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "k", int(self.k) % 4)
-
-    def is_identity(self) -> bool:
-        return self.k == 0
-
-    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
-        h, w = size
-        return (w, h) if self.k % 2 else (h, w)
-
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
-        # One CCW quarter-turn maps (x, y) -> (y, w-1-x); compose it k times,
-        # threading the intermediate size (each turn swaps h and w).
-        a = np.eye(3)
-        h, w = size
-        for _ in range(self.k):
-            quarter = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, w - 1.0], [0.0, 0.0, 1.0]])
-            a = quarter @ a
-            h, w = w, h
-        return a
-
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        return np.rot90(arr, self.k, axes=(-3, -2))
-
-    def apply_torch(self, frames):
-        return frames.rot90(self.k, dims=(-3, -2))
-
-    def to_json(self) -> dict:
-        return {"op": "rot90", "k": self.k}
 
 
 @dataclass(frozen=True)
@@ -220,8 +117,8 @@ class UnresolvedAutoCrop(ValueError):
 class AutoCrop:
     """A crop whose window is **searched per recording** instead of written down.
 
-    Declared as ``{ op = "crop", auto = true }``, optionally with an
-    ``x``/``y``/``width``/``height`` **seed** (all four or none). The seed is not the box:
+    Declared by naming the camera in ``[pose2d] auto_crops``, optionally with a box in
+    ``[pose2d.crops]`` as a **seed**. The seed is not the box:
     it is the incumbent the search starts from, and it narrows the search domain to its
     neighbourhood. Without one the search covers the whole frame at the model's own
     aspect, which is what a brand-new rig needs and costs a few more probes.
@@ -430,28 +327,7 @@ class Resize:
         return out
 
 
-FrameOp = Union[Fliplr, Flipud, Rot90, Crop, AutoCrop, Resize]
-
-
-def _normalize_ops(ops) -> tuple[FrameOp, ...]:
-    """Drop no-ops and fold exact adjacent compositions (same-type flips cancel,
-    consecutive rotations sum), so equivalent chains compare -- and
-    fingerprint -- equal."""
-    out: list[FrameOp] = []
-    for op in ops:
-        if op.is_identity():
-            continue
-        prev = out[-1] if out else None
-        if isinstance(op, Rot90) and isinstance(prev, Rot90):
-            out.pop()
-            op = Rot90(k=prev.k + op.k)
-            if op.is_identity():
-                continue
-        elif isinstance(op, (Fliplr, Flipud)) and type(prev) is type(op):
-            out.pop()
-            continue
-        out.append(op)
-    return tuple(out)
+FrameOp = Union[Crop, AutoCrop, Resize]
 
 
 def _apply_affine(a: np.ndarray, pts: np.ndarray) -> np.ndarray:
@@ -467,15 +343,16 @@ class FrameTransform:
     :meth:`apply` works on a ``(T, H, W, C)`` (or ``(H, W, C)``) batch and
     preserves the input's array type/device where it can -- a NumPy array stays
     NumPy, a torch tensor stays a torch tensor on its device (so a GPU-decoded
-    window still feeds the detector without a host round-trip). The op list is
-    normalized (see :func:`_normalize_ops`), so e.g. two half-turns are the
-    identity and reuse the identity's cached results.
+    window still feeds the detector without a host round-trip). Identity ops are
+    dropped, so an empty chain and a chain of no-ops are the same object.
     """
 
     ops: tuple[FrameOp, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "ops", _normalize_ops(self.ops))
+        object.__setattr__(
+            self, "ops", tuple(op for op in self.ops if not op.is_identity())
+        )
         if sum(isinstance(op, AutoCrop) for op in self.ops) > 1:
             raise ValueError(
                 "a preprocessing chain may carry at most one automatic crop; two would "
@@ -521,26 +398,6 @@ class FrameTransform:
                 op.resolve(box) if isinstance(op, AutoCrop) else op for op in self.ops
             )
         )
-
-    @property
-    def reverses_handedness(self) -> bool:
-        """Whether the chain **mirrors** the frame, i.e. contains an odd reflection count.
-
-        Only :class:`Fliplr` and :class:`Flipud` reflect; :class:`Rot90`, :class:`Crop` and
-        :class:`Resize` are orientation-preserving, and two reflections compose into a
-        rotation (``fliplr`` + ``flipud`` is a half-turn, which reverses nothing). So the
-        answer is the *parity* of the reflection count, not "is there a flip".
-
-        This is what makes a pathway's left/right routing checkable: a mirrored pathway
-        sees a mirror-image animal, so it must land on the *symmetric partner* of the point
-        the un-mirrored convention assigns to that channel -- see
-        :func:`deeperfly.pose2d.pathways.check_mirror_consistency`.
-
-        A future reflecting op must be added to the isinstance check below, and
-        ``tests/test_preprocessing.py`` pins that against the op registry so it cannot be
-        forgotten.
-        """
-        return sum(isinstance(op, (Fliplr, Flipud)) for op in self.ops) % 2 == 1
 
     def apply(self, frames):
         """Apply the op sequence to a frame batch, on the ``(H, W)`` axes (-3, -2).
@@ -683,145 +540,3 @@ class FrameTransform:
     def to_json(self) -> list[dict]:
         """The chain as a canonical JSON-able op list (fingerprints, logs)."""
         return [op.to_json() for op in self.ops]
-
-
-def _require_int(value, minimum: int, key: str, where: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{where}.{key} must be an integer, got {value!r}")
-    if value < minimum:
-        raise ValueError(f"{where}.{key} must be >= {minimum}, got {value}")
-    return value
-
-
-def _parse_op(step, where: str) -> FrameOp:
-    """Parse one ``{ op = ... }`` table into a frame op (loud on typos)."""
-    if not isinstance(step, dict) or not isinstance(step.get("op"), str):
-        raise ValueError(
-            f'{where} must be a table naming the op, like {{ op = "fliplr" }}; '
-            f"got {step!r}"
-        )
-    name = step["op"]
-    if name not in _OP_NAMES:
-        raise ValueError(f"{where} has unknown op {name!r}; allowed: {list(_OP_NAMES)}")
-    keys = set(step) - {"op"}
-    allowed = {
-        "fliplr": set(),
-        "flipud": set(),
-        "rot90": {"k"},
-        "crop": {"x", "y", "width", "height", "auto"},
-        "resize": {"width", "height", "scale", "interpolation"},
-    }[name]
-    box_keys = {"x", "y", "width", "height"}
-    if keys - allowed:
-        raise ValueError(
-            f"{where} ({name}) has unknown key(s) {sorted(keys - allowed)}; "
-            f"allowed: {sorted(allowed)}"
-        )
-    try:
-        if name == "fliplr":
-            return Fliplr()
-        if name == "flipud":
-            return Flipud()
-        if name == "rot90":
-            k = step.get("k", 1)
-            if isinstance(k, bool) or not isinstance(k, int):
-                raise ValueError(
-                    f"{where}.k must be an integer quarter-turn count "
-                    f"(e.g. 1/2/3, any sign), got {k!r}"
-                )
-            return Rot90(k=k)
-        if name == "crop":
-            auto = step.get("auto", False)
-            if not isinstance(auto, bool):
-                raise ValueError(
-                    f"{where}.auto must be true or false, got {auto!r} -- it says "
-                    "whether this crop's window is searched per recording"
-                )
-            given = box_keys & set(step)
-            if auto:
-                # All four or none. A partial seed cannot be completed: a width with no
-                # centre (or the reverse) is not a box, and guessing the rest would be
-                # inventing the very quantity the search is for.
-                if given and given != box_keys:
-                    raise ValueError(
-                        f"{where} (crop, auto) has a partial seed box -- give all of "
-                        f"{sorted(box_keys)} or none of them (missing "
-                        f"{sorted(box_keys - given)}). A seed narrows the search to its "
-                        "neighbourhood; without one the whole frame is searched."
-                    )
-                seed = (
-                    (
-                        _require_int(step["x"], 0, "x", where),
-                        _require_int(step["y"], 0, "y", where),
-                        _require_int(step["width"], 1, "width", where),
-                        _require_int(step["height"], 1, "height", where),
-                    )
-                    if given
-                    else None
-                )
-                return AutoCrop(seed=seed, where=where)
-            missing = box_keys - set(step)
-            if missing:
-                raise ValueError(
-                    f"{where} (crop) missing key(s) {sorted(missing)} -- write the box, "
-                    "or set auto = true to have it searched per recording"
-                )
-            return Crop(
-                x=_require_int(step["x"], 0, "x", where),
-                y=_require_int(step["y"], 0, "y", where),
-                width=_require_int(step["width"], 1, "width", where),
-                height=_require_int(step["height"], 1, "height", where),
-            )
-        scale = step.get("scale")
-        if scale is not None:
-            if isinstance(scale, bool) or not isinstance(scale, (int, float)):
-                raise ValueError(f"{where}.scale must be a number, got {scale!r}")
-            scale = float(scale)
-        width = step.get("width")
-        height = step.get("height")
-        if width is not None:
-            width = _require_int(width, 1, "width", where)
-        if height is not None:
-            height = _require_int(height, 1, "height", where)
-        return Resize(
-            width=width,
-            height=height,
-            scale=scale,
-            interpolation=step.get("interpolation", "bilinear"),
-        )
-    except ValueError as exc:
-        if str(exc).startswith(where):
-            raise
-        raise ValueError(f"{where}: {exc}") from exc
-
-
-def frame_transform_from_ops(ops, where: str) -> FrameTransform:
-    """Build a :class:`FrameTransform` from a list of ``{ op = ... }`` tables.
-
-    The parser behind a detection plan's named ``[[pose2d.preprocessors]]``: one op
-    grammar, one set of refusals, so a typo fails the same way wherever it is written.
-
-    Parameters
-    ----------
-    ops
-        An ordered list of op tables (or empty / ``None`` for the identity).
-    where
-        A label for error messages (e.g. ``"[[pose2d.preprocessors]] 'mirror'"``).
-
-    Returns
-    -------
-    FrameTransform
-        The parsed, normalized transform.
-
-    Raises
-    ------
-    ValueError
-        If ``ops`` is not a list, or any op table is malformed.
-    """
-    if not ops:
-        return FrameTransform(())
-    if not isinstance(ops, list):
-        raise ValueError(f"{where} must be a list of op tables, got {ops!r}")
-    return FrameTransform(
-        tuple(_parse_op(step, f"{where}[{i}]") for i, step in enumerate(ops))
-    )

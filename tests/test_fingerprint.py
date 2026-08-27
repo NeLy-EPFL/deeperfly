@@ -6,7 +6,6 @@ import json
 
 import numpy as np
 import pytest
-from helpers import output_points_table
 
 from deeperfly.config import Config
 from deeperfly.pipeline.fingerprint import (
@@ -35,45 +34,11 @@ def _cfg(extra: dict | None = None) -> Config:
         }
         for name, az in (("cam0", 0), ("cam1", 90))
     }
-    point_names = Skeleton.fly().point_names
+    for name in cameras:
+        cameras[name]["video"] = f"{name}\\.mp4"
     data = {
         "cameras": cameras,
-        "sources": [
-            {"name": "cam0", "filename": "cam0.mp4"},
-            {"name": "cam1", "filename": "cam1.mp4"},
-        ],
-        "pose2d": {
-            "preprocessors": [{"name": "plain", "ops": []}],
-            "models": [
-                {
-                    "name": "m",
-                    "class": "hrnet",
-                    "input_size": [256, 512],
-                    "n_out_channels": 19,
-                }
-            ],
-            "pathways": [
-                {
-                    "name": "p_cam0",
-                    "source": "cam0",
-                    "preprocessor": "plain",
-                    "model": "m",
-                },
-                {
-                    "name": "p_cam1",
-                    "source": "cam1",
-                    "preprocessor": "plain",
-                    "model": "m",
-                },
-            ],
-            "output_points": output_points_table(
-                point_names,
-                [
-                    ("cam0", "p_cam0", list(range(19))),
-                    ("cam1", "p_cam1", list(range(19))),
-                ],
-            ),
-        },
+        "pose2d": {"class": "hrnet", "weights": "w.pth", "input_size": [256, 512]},
         "pipeline": {},
     }
     for key, value in (extra or {}).items():
@@ -182,33 +147,28 @@ def test_pose2d_fingerprint_tracks_result_affecting_keys(store):
             "pose2d", _cfg({"pose2d.precision": "float32"}), enabled, store
         ),
     )
-    # the detection plan: source glob, preprocessor ops, model input, point map
+    # The synthesized plan, through the three keys that still describe it: the footage
+    # pattern, the detection window, and the model's input.
     src = _cfg()
-    src.data["sources"][0]["filename"] = "other.mp4"
-    pre = _cfg()
-    pre.data["pose2d"]["preprocessors"][0]["ops"] = [{"op": "fliplr"}]
-    model = _cfg()
-    model.data["pose2d"]["models"][0]["input_size"] = [128, 256]
-    pw = _cfg()
-    point = Skeleton.fly().point_names[0]
-    pw.data["pose2d"]["output_points"]["cam0"][point]["out_channel"] = 18
-    for changed in (src, pre, model, pw):
+    src.data["cameras"]["cam0"]["video"] = "other.mp4"
+    window = _cfg({"pose2d.crops": {"cam0": [1, 2, 5, 4]}})
+    model = _cfg({"pose2d.input_size": [128, 256]})
+    for changed in (src, window, model):
         assert fingerprint_diff(
             fp, stage_fingerprint("pose2d", changed, enabled, store)
         )
 
 
-def test_pose2d_fingerprint_tracks_per_model_precision(store):
+def test_pose2d_fingerprint_records_the_resolved_precision_per_model(store):
     base = _cfg()
     enabled = base.stage_flags()
     fp = stage_fingerprint("pose2d", base, enabled, store)
-    # A per-model precision override changes the fingerprint, and the resolved
-    # value lives inside that model's dict -- not as a top-level key.
-    over = _cfg()
-    over.data["pose2d"]["models"][0]["precision"] = "float32"
+    # The resolved value lives inside the model's dict -- not as a top-level key, which
+    # is what let a per-model override go unnoticed when there could be several.
+    over = _cfg({"pose2d.precision": "float32"})
     fp_over = stage_fingerprint("pose2d", over, enabled, store)
     assert fingerprint_diff(fp, fp_over)
-    assert fp_over["models"]["m"]["precision"] == "float32"
+    assert fp_over["models"]["hrnet"]["precision"] == "float32"
     assert "precision" not in fp_over  # no stale top-level key
 
 
@@ -238,9 +198,9 @@ def test_bundle_adjustment_fingerprint_is_geometry_only(store):
     """BA depends on the rig geometry, not the footage sources feeding the views."""
     base = _cfg()
     enabled = base.stage_flags()
-    # changing a source glob does not touch BA (footage lives in the plan, not here)
+    # changing a footage pattern does not touch BA (footage lives in the plan, not here)
     moved = _cfg()
-    moved.data["sources"][0]["filename"] = "elsewhere.mp4"
+    moved.data["cameras"]["cam0"]["video"] = "elsewhere.mp4"
     assert stage_fingerprint(
         "bundle_adjustment", base, enabled, store
     ) == stage_fingerprint("bundle_adjustment", moved, enabled, store)

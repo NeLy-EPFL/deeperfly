@@ -174,7 +174,7 @@ class Pose2dParams:
 
 @dataclass(frozen=True)
 class AutoCropParams:
-    """``[pose2d.autocrop]`` -- how a ``{ op = "crop", auto = true }`` window is searched.
+    """``[pose2d.crop_search]`` -- how an ``auto_crops`` window is searched.
 
     The knobs are the ones a recording can genuinely need to differ on; the stencil's shape
     (how many widths, how many centres, how many narrowing rounds) is measured and lives as
@@ -709,8 +709,36 @@ class GuiParams:
 #: (:meth:`deeperfly.pose2d.pathways.DetectionPlan.from_config`), so the strict
 #: :func:`_params` validator ignores them when building :class:`Pose2dParams`.
 _POSE2D_PLAN_KEYS = frozenset(
-    {"preprocessors", "model", "models", "pathways", "output_points", "autocrop"}
+    {
+        "class",
+        "weights",
+        "auto_crops",
+        "crops",
+        "crop_search",
+        "input_size",
+        "mean",
+        "n_out_channels",
+    }
 )
+
+#: ``[pose2d]`` keys this release no longer honors, ``key -> what to write instead``.
+#:
+#: The whole declared detection plan. Detection is dense and one-to-one -- one detector,
+#: run once per camera, channel ``i`` -> point ``i`` -- so every one of these was either a
+#: reference to be resolved or 38 x V rows carrying no information.
+RETIRED_POSE2D_KEYS = {
+    "models": 'renamed and flattened: [pose2d] class = "mvt" / weights = "x.pth". One '
+    "detector per run.",
+    "model": "renamed: [pose2d] class (the detector CLASS, not a reference to a table)",
+    "pathways": "gone: implied by the camera table -- one pathway per camera, mapping "
+    "channel i to point i of that camera.",
+    "preprocessors": "gone with the op grammar: a detection window is [pose2d.crops], "
+    "keyed by camera, and `fliplr`/`flipud`/`rot90`/`resize` have no consumer left.",
+    "output_points": "gone: channel i is point i. A 19-channel side-agnostic checkpoint "
+    "is not expressible under v2 and runs under a v1 tag.",
+    "autocrop": "renamed: [pose2d.crop_search] (the SEARCH's knobs). Which cameras are "
+    'searched is [pose2d] auto_crops = ["f", "h"].',
+}
 
 
 def _dig(data: dict, path: tuple[str, ...]) -> dict:
@@ -760,35 +788,54 @@ def _params(data: dict, path: tuple[str, ...], cls, *, ignore: frozenset = froze
     return cls(**{k: v for k, v in sub.items() if k in fields})
 
 
-def _source_filename(filename, name: str) -> str | list[str]:
-    """Validate a ``[[sources]]`` ``filename`` value (a glob or list of globs).
+#: What makes a `video` entry a REGEX rather than a literal filename. A list of entries
+#: none of which holds one of these is v1's "alternate names, first match wins" -- which
+#: under v2 concatenates them instead.
+_REGEX_METACHARACTERS = set(r"\^$.|?*+()[]{}")
 
-    Parameters
-    ----------
-    filename
-        The raw ``filename`` value from the config (a string, or a list of
-        strings -- alternate globs tried in order).
-    name
-        The source's name, for the error message.
 
-    Returns
-    -------
-    str or list of str
-        The validated ``filename`` value, unchanged.
+def _video_pattern(video, name: str) -> str | list[str]:
+    """Validate a ``[cameras.<name>].video`` value: one regex, or a list to concatenate.
+
+    The list form is **the one v2 key whose v1 shape still parses and now means something
+    else**: ``["camera_RH.mp4", "camera_0.mp4"]`` used to be alternate names with the
+    first match winning, and now names two parts of one stream to be decoded back to
+    back. Silently doubling a recording is the one migration failure that produces a
+    plausible result instead of an error, so it gets its own check rather than the generic
+    one: a list of literal filenames -- no regex metacharacter anywhere in it -- is
+    refused by name. Alternates belong inside the regex -- ``camera_(RH|0)`` plus
+    an extension.
 
     Raises
     ------
     ValueError
-        If ``filename`` is not a string or a list of strings.
+        If ``video`` is not a string or a list of strings, or if it is a list that reads
+        as v1 alternates.
     """
-    if isinstance(filename, str):
-        return filename
-    if isinstance(filename, list) and all(isinstance(f, str) for f in filename):
-        return filename
-    raise ValueError(
-        f"[[sources]] {name!r} 'filename' must be a string or list of strings, "
-        f"got {filename!r}"
-    )
+    if isinstance(video, str):
+        return video
+    if not (isinstance(video, list) and all(isinstance(f, str) for f in video)):
+        raise ValueError(
+            f"[cameras.{name}] 'video' must be a string or list of strings, got {video!r}"
+        )
+    if len(video) > 1 and not any(
+        set(entry) & _REGEX_METACHARACTERS for entry in video
+    ):
+        raise ValueError(
+            f"[cameras.{name}] video = {video!r} is a list of literal filenames, which "
+            "under v2 CONCATENATES them into one stream -- v1 read it as alternate names "
+            "with the first match winning, so honoring it would silently double the "
+            "recording. Alternates go inside the regex:\n"
+            f"    video = '{_alternates_hint(video)}'"
+        )
+    return video
+
+
+def _alternates_hint(entries: list[str]) -> str:
+    """The v1 alternates rewritten as one regex, for the error message above."""
+    import re as _re
+
+    return "|".join(f"({_re.escape(e)})" for e in entries)
 
 
 #: Per-camera keys that a config may no longer carry, ``key -> what to write instead``.
@@ -823,14 +870,13 @@ RETIRED_CAMERA_KEYS = {
         "known before there is a calibration."
     ),
     "preprocess": (
-        "frame ops moved to the detection pathway, where the transform is inverted on the "
-        "way back so the detections still land in raw footage pixels:\n"
-        "    [pose2d]\n"
-        '    preprocessors = [{ name = "crop_f", ops = [{ op = "crop", x = 400, y = 290, '
-        "width = 800, height = 400 }] }]\n"
-        '    pathways = [{ name = "f", source = "vid_f", preprocessor = "crop_f" }]\n'
-        "  ...or `auto = true` in place of the box to search one per recording; see "
-        "docs/reference/configuration.md#autocrop"
+        "a detection window is [pose2d.crops], keyed by camera -- where it is inverted on "
+        "the way back, so the detections still land in raw footage pixels and the camera "
+        "keeps raw intrinsics:\n"
+        "    [pose2d.crops]\n"
+        "    f = [400, 290, 800, 400]\n"
+        '  ...or name the camera in [pose2d] auto_crops = ["f"] to search one per '
+        "recording; see docs/reference/configuration.md#autocrop"
     ),
 }
 
@@ -852,20 +898,6 @@ def _refuse_retired_camera_keys(defaults: dict, views: dict[str, dict]) -> None:
                     f"was accepted and silently ignored before, so a config relying on "
                     f"it was already running without it.\n  {advice}"
                 )
-
-
-def _declares_auto_crop(prep: dict) -> bool:
-    """Whether a ``[[pose2d.preprocessors]]`` table carries an ``auto = true`` crop.
-
-    Such a table is the one kind that cannot be left orphaned: an automatic crop with no
-    pathway using it is a hard error (the search would have nothing to search *for*), while
-    an unused explicit box is merely an unused table -- and may still be borrowed by name by
-    a visualization panel's ``crop``, so it is kept.
-    """
-    for op in prep.get("ops") or []:
-        if isinstance(op, dict) and str(op.get("op")) == "crop" and op.get("auto"):
-            return True
-    return False
 
 
 def _narrow_videos(data: dict, dropped: set[str]) -> None:
@@ -1204,7 +1236,7 @@ class Config:
 
     @property
     def autocrop(self) -> AutoCropParams:
-        return _params(self.data, ("pose2d", "autocrop"), AutoCropParams)
+        return _params(self.data, ("pose2d", "crop_search"), AutoCropParams)
 
     @property
     def triangulation(self) -> TriangulationParams:
@@ -1521,31 +1553,29 @@ class Config:
         view no surviving pathway feeds leaves the rig, and everything keyed on that view
         follows.
 
-        What is dropped, in dependency order:
+        What is dropped:
 
-        * ``[[sources]]`` -- the ones with no footage;
-        * ``[[pose2d.pathways]]`` -- those whose ``source`` is gone. A source may feed
-          several pathways, so this is not one-to-one;
-        * ``[cameras.<name>]`` -- views no surviving pathway feeds. This is the one that
-          shortens the ``V`` axis, because ``view_names`` comes from the camera table
-          (:meth:`~deeperfly.pose2d.pathways.DetectionPlan.from_config`) and not from the
-          pathways -- dropping a pathway alone leaves a view whose 2D is all-NaN, which
-          reads as a detected-and-empty camera rather than an absent one, and which
-          bundle adjustment would then export into ``calibration.toml`` at its unrefined
-          nominal pose with nothing marking it as unmeasured;
-        * ``[pose2d.output_points.<view>]`` -- tables naming a dropped view or pathway;
-        * ``[[pose2d.preprocessors]]`` -- an ``auto = true`` one no surviving pathway uses,
-          because an orphaned automatic crop is a hard error rather than an unused table;
-        * ``[visualization.videos]`` grid cells and ``panels`` naming a dropped view -- a
+        * ``[cameras.<name>]`` -- the cameras whose ``video`` pattern matched nothing.
+          This is what shortens the ``V`` axis, and dropping it is the whole job now: a
+          camera IS a source IS a pathway IS a view, so there is no three-way bookkeeping
+          left. Leaving a camera in place with no footage would give a view whose 2D is
+          all-NaN, which reads as a detected-and-empty camera rather than an absent one --
+          and which bundle adjustment would then export into ``calibration.toml`` at its
+          unrefined nominal pose with nothing marking it as unmeasured.
+        * ``[visualization.videos]`` grid cells and ``panels`` naming a dropped camera -- a
           grid cell is blanked (``""``) rather than removed, so the montage keeps its shape
           and the remaining cameras stay where the reader expects them.
 
-        Point-name sections (``[bundle_adjustment].points_to_use``, ``[postprocess].ops``,
-        ``[inverse_kinematics]``) are view-agnostic and untouched.
+        * ``[pose2d.crops]`` entries and ``auto_crops`` names for a dropped camera. These
+          have to go rather than be left inert, because the plan REFUSES a crop naming a
+          camera that does not exist -- which is the right answer for a typo and the wrong
+          one for the legal case narrowing exists to serve.
+
+        Point-name sections (``[bundle_adjustment] points``, ``[postprocess]`` ops,
+        ``[inverse_kinematics]``) are camera-agnostic and untouched.
 
         Only :attr:`data` narrows. :attr:`text` -- what the snapshot records -- keeps
-        saying what was *asked for*, exactly as a ``[skeleton]`` preset reference does
-        (see :func:`_resolve_skeleton`). That split is what keeps the cache honest: the
+        saying what was *asked for*. That split is what keeps the cache honest: the
         narrowed plan is what reaches the fingerprints, so a run that proceeded on seven
         views records a seven-view fingerprint and recomputes when the eighth camera turns
         up, while the snapshot still describes the rig the operator configured.
@@ -1553,8 +1583,8 @@ class Config:
         Parameters
         ----------
         available
-            The resolved ``source name -> footage files`` map, or any container of source
-            names. A source absent from it, or present with an empty list, is absent.
+            The resolved ``camera -> footage files`` map, or any container of camera
+            names. A camera absent from it, or present with an empty list, is absent.
 
         Returns
         -------
@@ -1581,86 +1611,28 @@ class Config:
             return self
 
         data = copy.deepcopy(self.data)
-        pose2d = data.get("pose2d") if isinstance(data.get("pose2d"), dict) else {}
-
-        data["sources"] = [
-            src
-            for src in (data.get("sources") or [])
-            if not isinstance(src, dict) or src.get("name") in have
-        ]
-
-        pathways = [p for p in (pose2d.get("pathways") or []) if isinstance(p, dict)]
-        kept_pw = [p for p in pathways if p.get("source") in have]
-        dropped_pw = {
-            str(p.get("name")) for p in pathways if p.get("source") not in have
-        }
-        if pathways:
-            pose2d["pathways"] = kept_pw
-
-        # A view survives if a surviving pathway maps into it. For the dense plan that is
-        # the pathway's own name; an [pose2d.output_points] table can name others, so both
-        # are consulted rather than assuming the identity.
-        fed: set[str] = {str(p.get("name")) for p in kept_pw}
-        # `[pose2d.output_points.<view>]` is a table keyed by POINT name, each entry
-        # `{ pathway, out_channel }` -- so the pathways a view depends on are the entries'
-        # values, not the table's keys.
-        out_points = pose2d.get("output_points")
-        if isinstance(out_points, dict):
-            for view, table in out_points.items():
-                if not isinstance(table, dict):
-                    continue
-                if any(
-                    isinstance(entry, dict) and str(entry.get("pathway")) in fed
-                    for entry in table.values()
-                ):
-                    fed.add(str(view))
-            pose2d["output_points"] = {
-                view: {
-                    point: entry
-                    for point, entry in table.items()
-                    if not isinstance(entry, dict) or str(entry.get("pathway")) in fed
-                }
-                if isinstance(table, dict)
-                else table
-                for view, table in out_points.items()
-                if view in fed
-            }
-
         cams = data.get("cameras")
-        dropped_views: list[str] = []
         if isinstance(cams, dict):
-            for view in [
-                v for v, spec in cams.items() if isinstance(spec, dict) and v not in fed
-            ]:
-                cams.pop(view)
-                dropped_views.append(view)
-
-        used_preps = {p.get("preprocessor") for p in kept_pw}
-        preps = pose2d.get("preprocessors")
-        if isinstance(preps, list):
-            pose2d["preprocessors"] = [
-                pr
-                for pr in preps
-                if not isinstance(pr, dict)
-                or pr.get("name") in used_preps
-                or not _declares_auto_crop(pr)
-            ]
-
-        _narrow_videos(data, set(dropped_views))
+            for name in gone:
+                cams.pop(name, None)
+        pose2d = data.get("pose2d")
+        if isinstance(pose2d, dict):
+            crops = pose2d.get("crops")
+            if isinstance(crops, dict):
+                for name in gone:
+                    crops.pop(name, None)
+            searched = pose2d.get("auto_crops")
+            if isinstance(searched, list):
+                pose2d["auto_crops"] = [n for n in searched if n not in gone]
+        _narrow_videos(data, set(gone))
 
         narrowed = Config(data, text=self.text, source=self.source)
         narrowed.auto_crops = dict(self.auto_crops)
-        surviving = [
-            v
-            for v, spec in (narrowed.data.get("cameras") or {}).items()
-            if isinstance(spec, dict)
-        ]
+        surviving = list(narrowed.data.get("cameras") or {})
         log.warning(
-            "narrowing this run to the footage present: source(s) %s resolved no files, "
-            "so pathway(s) %s and view(s) %s are dropped -- running on %d view(s): %s",
+            "narrowing this run to the footage present: camera(s) %s matched no files "
+            "and are dropped -- running on %d camera(s): %s",
             gone,
-            sorted(dropped_pw) or ["(none)"],
-            dropped_views or ["(none)"],
             len(surviving),
             surviving,
         )
@@ -1669,9 +1641,9 @@ class Config:
                 f"only {len(surviving)} view(s) have footage ({surviving}), and "
                 f"{MIN_VIEWS_FOR_3D} are needed for 3D -- a single view triangulates to "
                 "nothing without saying so.\n"
-                f"  source(s) with no files: {gone}\n"
-                "  Check the [[sources]] `filename` globs, or pass the recording that "
-                "holds the rest of the cameras."
+                f"  camera(s) with no files: {gone}\n"
+                "  Check the [cameras.<name>] `video` patterns, or pass the recording "
+                "that holds the rest of the cameras."
             )
         return narrowed
 
@@ -1700,71 +1672,49 @@ class Config:
             A narrowed copy, or ``self`` when the rig covers every declared view.
         """
         keep = set(covered)
-        declared = [
-            v
-            for v, spec in (self.data.get("cameras") or {}).items()
-            if isinstance(spec, dict)
-        ]
+        declared = list(self.data.get("cameras") or {})
         dropped = [v for v in declared if v not in keep]
         if not dropped:
             return self
 
-        # Translate views back into sources, because that is the axis the narrowing is
-        # expressed on: a source survives while any pathway reading it feeds a view that
-        # survives. A source feeding only dropped views has nothing left to detect for.
-        pose2d = self.data.get("pose2d") or {}
-        pathways = [p for p in (pose2d.get("pathways") or []) if isinstance(p, dict)]
-        out_points = pose2d.get("output_points")
-        alive: set[str] = set()
-        for pw in pathways:
-            views = {str(pw.get("name"))}
-            if isinstance(out_points, dict):
-                for view, table in out_points.items():
-                    if isinstance(table, dict) and any(
-                        isinstance(e, dict)
-                        and str(e.get("pathway")) == str(pw.get("name"))
-                        for e in table.values()
-                    ):
-                        views.add(str(view))
-            if views & keep:
-                alive.add(str(pw.get("source")))
         log.warning(
-            "the rig does not cover view(s) %s, so this run drops them: a view with no "
+            "the rig does not cover camera(s) %s, so this run drops them: a view with no "
             "measured camera cannot be projected through",
             dropped,
         )
-        return self.narrowed_to_sources(alive)
+        # Camera, source and view are one name, so there is nothing to translate: the
+        # cameras the rig covers ARE the sources that survive.
+        return self.narrowed_to_sources([v for v in declared if v in keep])
 
     def source_patterns(self) -> dict[str, str | list[str]]:
-        """Map each footage source to its glob (``[[sources]]`` ``name`` -> ``filename``).
+        """``camera -> its footage pattern(s)`` (``[cameras.<name>].video``), in order.
 
-        Read directly from the ``[[sources]]`` table (without building the whole
-        detection plan) so recording discovery stays cheap. A source with no
-        ``filename`` key uses its own name as the glob pattern. ``filename`` may be
-        a single glob or a list of alternate globs tried in order (the first that
-        resolves footage wins), so a source can name both its anatomical file and a
-        legacy fallback (``["camera_RH.mp4", "camera_0.mp4"]``).
+        Read straight off the camera table, without building the detection plan, so
+        recording discovery stays cheap. A camera with no ``video`` key uses its own name
+        as the pattern.
+
+        The value is one regex or a **list** of them; the list means CONCATENATION, in
+        written order, and everything one entry matches is one stream in natural order (see
+        :func:`deeperfly.recordings.camera_files`). Nothing is inferred from the camera
+        name or its index.
 
         Returns
         -------
         dict of str to (str or list of str)
-            ``source_name -> footage glob(s)`` in config order.
+            ``camera -> pattern(s)`` in camera order.
 
         Raises
         ------
         ValueError
-            If a source entry has no string ``name``, or its ``filename`` is not a
-            string or list of strings.
+            If a ``video`` value is not a string or list of strings, or if it is a list of
+            literal filenames -- v1's alternates, which v2 would concatenate (see
+            :func:`_video_pattern`).
         """
-        out: dict[str, str | list[str]] = {}
-        for s in self.data.get("sources", []) or []:
-            name = s.get("name")
-            if not isinstance(name, str):
-                raise ValueError(
-                    f"[[sources]] entry needs a string 'name', got {name!r}"
-                )
-            out[name] = _source_filename(s.get("filename", name), name)
-        return out
+        _, cameras = self.camera_table()
+        return {
+            name: _video_pattern(spec.get("video", name), name)
+            for name, spec in cameras.items()
+        }
 
     # -- snapshot round-trip -------------------------------------------------
 

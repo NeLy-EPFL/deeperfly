@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,16 +33,12 @@ __all__ = [
 
 
 def _footage_exts() -> tuple[str, ...]:
-    """Footage extensions deeperfly can read, in priority order (video before image).
+    """Footage extensions deeperfly can read (video kinds, then image kinds).
 
-    Recognizes a camera's frames and, when a folder mixes several, picks the one to
-    keep (earliest wins). Imported lazily so resolving filenames doesn't pull in the
-    I/O stack.
-
-    Returns
-    -------
-    tuple of str
-        Lowercase extensions (with the dot), video kinds before image kinds.
+    Imported lazily so resolving filenames does not pull in the I/O stack. Order no
+    longer carries a *priority*: a pattern names the extension it wants, so a directory
+    holding both ``camera_RH.mp4`` and ``camera_RH.avi`` is an error naming both rather
+    than a silent pick.
     """
     from .io import IMAGE_EXTS, VIDEO_EXTS
 
@@ -68,192 +65,132 @@ def _is_video_ext(suffix: str) -> bool:
     return suffix.lower() in VIDEO_EXTS
 
 
-def _camera_glob(pattern: str) -> str:
-    """A camera's ``input`` value as a filename glob.
+#: Runs of digits, masked out to test whether matches are parts of ONE series.
+_DIGITS = re.compile(r"\d+")
 
-    A value that already names a file (a known footage suffix like
-    ``camera_0.mp4``) or carries its own wildcard (``camera_0/*``, ``cam*``) is used
-    verbatim; a bare name (``camera_0``) is treated as a *prefix*, so ``camera_0``
-    becomes ``camera_0*`` and matches both ``camera_0.mp4`` and an image sequence
-    ``camera_0_000123.jpg ...``.
 
-    Parameters
-    ----------
-    pattern
-        A camera's ``input`` value (a name, prefix, file or wildcard).
+def _series_key(name: str) -> str:
+    """``name`` with every run of digits replaced by ``#``.
 
-    Returns
-    -------
-    str
-        The glob to match inside the recording directory.
+    ``camera_RH_0.mp4`` and ``camera_RH_1.mp4`` share a key (``camera_RH_#.mp4``);
+    ``camera_RH.mp4`` and ``camera_0.mp4`` do not.
     """
-    has_wildcard = any(c in pattern for c in "*?[")
-    if has_wildcard or Path(pattern).suffix.lower() in _footage_exts():
-        return pattern
-    return f"{pattern}*"
+    return _DIGITS.sub("#", name)
 
 
-def _case_insensitive_glob(pattern: str) -> str:
-    """Rewrite a glob so its ASCII letters match either case.
+def _entry_matches(root: Path, pattern: str, camera: str) -> list[Path]:
+    """Every filename directly inside ``root`` that ``pattern`` fully matches.
 
-    Wraps each ASCII letter that is not already inside a ``[...]`` character class
-    in a two-case class (``h`` -> ``[hH]``), leaving wildcards (``* ? [ ]``) and
-    path separators untouched. So ``camera_RH.mp4`` matches a ``CAMERA_rh.MP4`` on
-    a case-sensitive filesystem while ``camera_0/*`` still traverses a
-    subdirectory. Matching an anatomical name like ``camera_RH.mp4`` is thus
-    robust to however the acquisition capitalized ``CAMERA``, ``RH``, or ``MP4``.
+    ``re.fullmatch``, case-insensitively, on the FILENAME only -- a pattern never
+    traverses into a subdirectory. Naturally sorted, and checked to be parts of one
+    series (see :func:`_series_key`), which is the whole safety of letting a pattern match
+    several files: everything one entry matches is concatenated into one stream, so a
+    pattern loose enough to catch two naming schemes would silently splice two recordings.
 
-    Parameters
-    ----------
-    pattern
-        A filename glob (the output of :func:`_camera_glob`).
-
-    Returns
-    -------
-    str
-        An equivalent glob whose letters are case-insensitive.
-    """
-    out: list[str] = []
-    in_class = False
-    for char in pattern:
-        if char == "[":
-            in_class = True
-        elif char == "]":
-            in_class = False
-        if char.isascii() and char.isalpha() and not in_class:
-            out.append(f"[{char.lower()}{char.upper()}]")
-        else:
-            out.append(char)
-    return "".join(out)
-
-
-def _as_alternates(pattern: str | list[str]) -> list[str]:
-    """A source's ``filename`` as an ordered list of alternate glob patterns.
-
-    A bare string is a single-element list; a list is used as-is. The alternates
-    are tried in order, the first that resolves any footage winning -- so a source
-    can name both its anatomical file and a legacy fallback
-    (``["camera_RH.mp4", "camera_0.mp4"]``) and match whichever the recording
-    actually holds.
-
-    Parameters
-    ----------
-    pattern
-        A source's ``filename`` value (a glob string, or a list of them).
-
-    Returns
-    -------
-    list of str
-        The alternate glob patterns, in priority order.
-    """
-    return [pattern] if isinstance(pattern, str) else list(pattern)
-
-
-def _raw_matches(root: Path, pattern: str | list[str]) -> list[Path]:
-    """The first alternate's raw (any-file) matches under ``root``, case-insensitively.
-
-    Unlike :func:`camera_files`, this keeps every matched file (not just footage),
-    so a caller can tell "matched, but not footage" from "matched nothing".
-
-    Parameters
-    ----------
-    root
-        The recording directory to glob inside.
-    pattern
-        The source's ``filename`` value (see :func:`_as_alternates`).
-
-    Returns
-    -------
-    list of Path
-        The files matched by the first alternate that matches any file (else empty).
-    """
-    for alternate in _as_alternates(pattern):
-        files = [
-            p
-            for p in root.glob(_case_insensitive_glob(_camera_glob(alternate)))
-            if p.is_file()
-        ]
-        if files:
-            return files
-    return []
-
-
-def camera_files(root: Path, pattern: str | list[str]) -> list[Path]:
-    """A camera's footage files under ``root`` matching its ``input`` ``pattern``.
-
-    Tries each of ``pattern``'s alternates (see :func:`_as_alternates`) in order,
-    returning the first that resolves footage. For a given alternate: globs it
-    case-insensitively (see :func:`_camera_glob`, :func:`_case_insensitive_glob`),
-    keeps files with a known footage extension, and -- when several extensions
-    match -- keeps the highest-priority one. Naturally sorted. Video footage is a
-    single file, so several matching videos keep only the first (warned); images
-    stay as the whole sequence. Empty when no alternate resolves footage, so the
-    caller can treat the camera as absent.
-
-    Parameters
-    ----------
-    root
-        The recording directory to glob inside.
-    pattern
-        The camera's ``input`` glob, or a list of alternates (see
-        :func:`_as_alternates`).
-
-    Returns
-    -------
-    list of Path
-        Naturally-sorted footage files (one video, or an image sequence).
+    Raises
+    ------
+    ValueError
+        If ``pattern`` is not a valid regex, or if its matches are not one series (the
+        message names the files and the camera).
     """
     from natsort import natsorted
 
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(
+            f"[cameras.{camera}] video = {pattern!r} is not a valid regex: {exc}. "
+            "Write patterns as TOML LITERAL strings (single quotes) -- a backslash in a "
+            "basic string is an escape."
+        ) from exc
     exts = _footage_exts()
-    for alternate in _as_alternates(pattern):
-        files = [
-            p
-            for p in root.glob(_case_insensitive_glob(_camera_glob(alternate)))
-            if p.is_file() and p.suffix.lower() in exts
-        ]
-        if not files:
-            continue
-        present = {p.suffix.lower() for p in files}
-        if len(present) > 1:
-            keep = min(present, key=exts.index)
-            files = [p for p in files if p.suffix.lower() == keep]
-        return _first_if_video(root, alternate, natsorted(files))
-    return []
+    files = natsorted(
+        p
+        for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in exts and rx.fullmatch(p.name)
+    )
+    keys = {_series_key(p.name) for p in files}
+    if len(keys) > 1:
+        raise ValueError(
+            f"recording {root}: [cameras.{camera}] video = {pattern!r} matches "
+            f"{len(files)} files that are not parts of one series: "
+            f"{[p.name for p in files]}. Everything one pattern matches is decoded as ONE "
+            "stream, so these would be spliced together. Narrow the pattern, or put the "
+            "alternatives in a list if they really are consecutive parts."
+        )
+    return list(files)
 
 
-def _first_if_video(root: Path, name: str, files: list[Path]) -> list[Path]:
-    """Reduce a camera's video footage to its first file (warning).
+def camera_files(root: Path, pattern: str | list[str]) -> list[Path]:
+    """A camera's footage under ``root``: everything its ``video`` pattern matches.
 
-    A camera's video is one file, but images are a sequence, so an image sequence
-    is left untouched.
+    One regex, or a list of them **concatenated in order**. Each entry contributes its
+    matches in natural order, and the entries are laid end to end -- so a split recording
+    (``camera_RH_0.mp4``, ``camera_RH_1.mp4``) and an image sequence are the same rule,
+    and alternate NAMES go inside the regex (``camera_(RH|0)`` plus an extension) rather
+    than in the list.
+
+    Empty when nothing matches, so the caller can treat the camera as absent.
 
     Parameters
     ----------
     root
-        The recording directory (for the warning message).
-    name
-        The camera name (for the warning message).
-    files
-        The naturally-sorted matched files.
+        The recording directory to look inside (filenames only, no recursion).
+    pattern
+        The camera's ``video`` value: a regex, or a list of them.
+    camera
+        The camera's name, for the error messages.
 
     Returns
     -------
     list of Path
-        ``files[:1]`` for multi-file video footage, else ``files`` unchanged.
+        The camera's files, in decode order.
+
+    Raises
+    ------
+    ValueError
+        If a pattern is not a valid regex, if one entry's matches are not parts of one
+        series, or if two entries match the same file.
     """
-    if len(files) > 1 and _is_video_ext(files[0].suffix):
-        log.warning(
-            "recording %s: camera %s matches %d video files %s; using only the first "
-            "(%s) -- video footage is a single file per camera",
-            root,
-            name,
-            len(files),
-            [p.name for p in files],
-            files[0].name,
-        )
-        return files[:1]
-    return files
+    entries = [pattern] if isinstance(pattern, str) else list(pattern)
+    out: list[Path] = []
+    for entry in entries:
+        for path in _entry_matches(root, entry, _camera_hint(pattern)):
+            if path in out:
+                raise ValueError(
+                    f"recording {root}: {path.name} is matched by two of "
+                    f"{entries!r}, so it would be decoded twice"
+                )
+            out.append(path)
+    return out
+
+
+#: Set by :func:`find_recording` around a camera's resolution, so the error messages
+#: above can name it. A module global rather than a parameter because ``camera_files`` is
+#: called from four places that do not all have the name to hand.
+_CAMERA_HINT: str = "?"
+
+
+def _camera_hint(pattern) -> str:
+    return _CAMERA_HINT
+
+
+def _raw_matches(root: Path, pattern: str | list[str]) -> list[Path]:
+    """Like :func:`camera_files`, but keeping every matched file rather than only footage.
+
+    So a caller can tell "matched, but not footage" from "matched nothing".
+    """
+    entries = [pattern] if isinstance(pattern, str) else list(pattern)
+    out: list[Path] = []
+    for entry in entries:
+        try:
+            rx = re.compile(entry, re.IGNORECASE)
+        except re.error:
+            continue
+        out += [
+            p for p in sorted(root.iterdir()) if p.is_file() and rx.fullmatch(p.name)
+        ]
+    return out
 
 
 def source_patterns(config: Config) -> dict[str, str | list[str]]:
@@ -412,12 +349,23 @@ class Recording:
 
 
 def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
-    """Whether every camera under ``root`` has the same file and frame count.
+    """Whether every camera under ``root`` covers the same number of FRAMES.
 
-    File counts are compared directly. For image sequences equal file counts
-    already imply equal frame counts, so only *video* footage is probed for its
-    frame count, and only when knowable (an unreadable file's ``None`` count is
-    skipped rather than falsely rejecting the recording). Warns when counts differ.
+    The file-count comparison this used to make first **inverts** under concatenation and
+    is gone for video: the acquisition splits each camera at its own byte threshold, so one
+    camera legitimately being two files while another is three is the normal case, and
+    comparing file counts would silently skip every split recording. What is compared is
+    the concatenated frame count, which :meth:`deeperfly.io.ConcatReader.count` returns as
+    the sum over parts.
+
+    For an image sequence the file count IS the frame count, so it stays the cheap proxy
+    it always was.
+
+    This is also the check that catches a runaway pattern: a camera whose regex matches two
+    real cameras' files comes out at twice the others' T. The series check in
+    :func:`_entry_matches` cannot see that (a pattern like ``camera_[0-9]`` plus an
+    extension matches two cameras, and they are one series by its test), so this is the
+    backstop.
 
     Parameters
     ----------
@@ -429,19 +377,21 @@ def _frame_counts_match(root: Path, sources: dict[str, list[Path]]) -> bool:
     Returns
     -------
     bool
-        ``True`` if every camera has the same file (and frame) count.
+        ``True`` if every camera covers the same number of frames.
     """
-    file_counts = {n: len(ps) for n, ps in sources.items()}
-    if len(set(file_counts.values())) > 1:
-        log.warning(
-            "recording %s has an uneven file count across cameras %s; skipping it",
-            root,
-            file_counts,
-        )
-        return False
     sample = next((ps for ps in sources.values() if ps), [])
-    if not sample or not _is_video_ext(sample[0].suffix):
-        return True  # image sequence (or empty): the file count already settled it
+    if not sample:
+        return True
+    if not _is_video_ext(sample[0].suffix):
+        counts = {n: len(ps) for n, ps in sources.items()}
+        if len(set(counts.values())) > 1:
+            log.warning(
+                "recording %s has an uneven image count across cameras %s; skipping it",
+                root,
+                counts,
+            )
+            return False
+        return True
     from . import io
 
     frame_counts = {n: io.open_reader(ps).count() for n, ps in sources.items()}
@@ -497,67 +447,49 @@ def find_recording(root: Path, config: Config) -> dict[str, list[Path]] | None:
     """
     if not root.is_dir():
         return None
-    from natsort import natsorted
 
     exts = _footage_exts()
     patterns = source_patterns(config)
-    # Raw matches (any file) per source, so "no match" is distinguishable from
-    # "matched, but not footage".
-    raw = {name: _raw_matches(root, pat) for name, pat in patterns.items()}
-    present = {name: ps for name, ps in raw.items() if ps}
-    if not present:
+    global _CAMERA_HINT
+    raw: dict[str, list[Path]] = {}
+    sources: dict[str, list[Path]] = {}
+    for name, pat in patterns.items():
+        _CAMERA_HINT = name
+        try:
+            raw[name] = _raw_matches(root, pat)
+            files = camera_files(root, pat)
+        finally:
+            _CAMERA_HINT = "?"
+        if files:
+            sources[name] = files
+    if not any(raw.values()):
         return None  # nothing here looks like a camera's files: not a recording
-    missing = [name for name in patterns if name not in present]
+    missing = [name for name in patterns if name not in sources]
     if missing:
-        # Not a refusal: the run narrows to the sources that are here. Logged at WARNING
-        # rather than INFO because the usual cause is a wrong `filename` glob, which looks
+        # Not a refusal: the run narrows to the cameras that are here. Logged at WARNING
+        # rather than INFO because the usual cause is a wrong `video` pattern, which looks
         # exactly like a camera that was never recorded.
         log.warning(
-            "recording %s has footage for %d of %d configured source(s) -- absent: %s. "
-            "The run will use the %s it has; check the [[sources]] `filename` globs if "
-            "that is not what you expect",
+            "recording %s has footage for %d of %d configured camera(s) -- absent: %s. "
+            "The run will use the %s it has; check the [cameras.<name>] `video` patterns "
+            "if that is not what you expect",
             root,
-            len(present),
+            len(sources),
             len(patterns),
             missing,
-            sorted(present),
+            sorted(sources),
         )
-    sources = {
-        name: [p for p in ps if p.suffix.lower() in exts]
-        for name, ps in present.items()
-    }
-    no_ext = sorted(name for name, ps in sources.items() if not ps)
-    if no_ext:
+    matched_only = sorted(n for n, ps in raw.items() if ps and n not in sources)
+    if matched_only:
         log.warning(
             "recording %s: camera(s) %s matched files but none with a known footage "
-            "extension %s; skipping it",
+            "extension %s",
             root,
-            no_ext,
+            matched_only,
             list(exts),
         )
+    if not sources:
         return None
-    seen = {p.suffix.lower() for ps in sources.values() for p in ps}
-    if len(seen) > 1:
-        keep = min(seen, key=exts.index)
-        log.warning(
-            "recording %s mixes footage extensions %s; using %s",
-            root,
-            sorted(seen, key=exts.index),
-            keep,
-        )
-        sources = {
-            name: [p for p in ps if p.suffix.lower() == keep]
-            for name, ps in sources.items()
-        }
-        gone = sorted(name for name, ps in sources.items() if not ps)
-        if gone:
-            log.warning(
-                "recording %s has no %s footage for %s; skipping it", root, keep, gone
-            )
-            return None
-    sources = {
-        name: _first_if_video(root, name, natsorted(ps)) for name, ps in sources.items()
-    }
     if not _frame_counts_match(root, sources):
         return None
     return sources

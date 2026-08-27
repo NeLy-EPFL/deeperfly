@@ -877,36 +877,6 @@ def _referenced_transforms(
         ) from None
 
 
-def _warn_if_reoriented(
-    transforms: tuple["FrameTransform", ...], view: str, ref: str
-) -> None:
-    """Say so when a borrowed chain does more to the picture than a panel can show.
-
-    A panel takes a *window*; the overlay geometry lives in the view's own pixels, so a
-    mirrored or turned picture would need a mirrored or turned projection under it, which
-    a crop cannot express. The panel then shows the right region the wrong way round --
-    harmless (picture and overlay still agree), but not what ``crop = "pose2d"`` promises,
-    so it is worth a line in the log rather than a surprise on screen.
-    """
-    from ..preprocessing import Rot90
-
-    culprits = [
-        t.to_json()
-        for t in transforms
-        if t.reverses_handedness or any(isinstance(op, Rot90) for op in t.ops)
-    ]
-    if culprits:
-        log.warning(
-            "panel crop = %r for view %r borrows preprocessing that also mirrors or "
-            "turns the frame (%s); the panel shows the same REGION, in the view's own "
-            "orientation -- the overlay is projected into view pixels and cannot follow "
-            "a flip",
-            ref,
-            view,
-            culprits,
-        )
-
-
 def _require_keys(table: dict, required: tuple[str, ...], loc: str) -> None:
     """Raise a clear ``ValueError`` if ``table`` lacks any ``required`` key.
 
@@ -980,7 +950,6 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     background = viz.get("background", "black")
     global_fps = (viz.get("output_fps"), viz.get("speed"))
     plan = _PlanOnDemand(config)  # only built if some panel references it
-    warned: set[tuple[str, str]] = set()
     specs: list[VideoSpec] = []
     for i, entry in enumerate(viz.get("videos", [])):
         loc = f"[[visualization.videos]] (entry {i})"
@@ -1010,12 +979,11 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
             crop = _parse_crop(p.get("crop", entry.get("crop", viz.get("crop"))), ploc)
             crop_from: tuple["FrameTransform", ...] = ()
             if isinstance(crop, str):
+                # A borrowed chain is a WINDOW and nothing else now that the op grammar
+                # is gone, so there is no mirrored-or-turned case left to warn about.
                 crop_from = _referenced_transforms(
                     crop, p["view"], plan.get(ploc), ploc
                 )
-                if (crop, p["view"]) not in warned:  # once per reference + view
-                    warned.add((crop, p["view"]))
-                    _warn_if_reoriented(crop_from, p["view"], crop)
                 crop = None
             panels.append(
                 Panel(

@@ -18,14 +18,15 @@ from deeperfly.config import Config
 
 
 def _cfg(*names: str, filenames: list[str] | None = None) -> Config:
-    """A minimal config whose ``[[sources]]`` name each camera (filename = glob)."""
-    sources = []
+    """A minimal config: one camera per name, its ``video`` pattern its own name."""
+    cameras = {}
     for i, name in enumerate(names):
-        entry = {"name": name}
-        if filenames is not None:
-            entry["filename"] = filenames[i]
-        sources.append(entry)
-    return Config.from_dict({"sources": sources})
+        spec: dict = {"azimuth_deg": 60 * i, "distance": 100, "focal_length_px": 1}
+        # A `video` pattern is a full match on the FILENAME, extension included --
+        # nothing is inferred from the camera's name.
+        spec["video"] = filenames[i] if filenames is not None else rf"{name}(_\d+)?\..+"
+        cameras[name] = spec
+    return Config.from_dict({"cameras": cameras})
 
 
 def _touch(path: Path) -> Path:
@@ -39,17 +40,7 @@ def _seq(root: Path, prefix: str, n: int, ext: str = ".jpg") -> list[Path]:
     return [_touch(root / f"{prefix}_{i:04d}{ext}") for i in range(n)]
 
 
-# -- glob shaping ------------------------------------------------------------
-
-
-def test_camera_glob_prefixes_bare_names():
-    assert rec._camera_glob("camera_0") == "camera_0*"
-
-
-def test_camera_glob_passes_through_files_and_wildcards():
-    assert rec._camera_glob("camera_0.mp4") == "camera_0.mp4"  # known footage suffix
-    assert rec._camera_glob("cam*") == "cam*"
-    assert rec._camera_glob("camera_0/*") == "camera_0/*"
+# -- pattern matching -------------------------------------------------------
 
 
 def test_has_glob():
@@ -85,33 +76,90 @@ def test_camera_files_returns_image_sequence_natsorted(tmp_path):
     _touch(tmp_path / "cam_10.jpg")
     _touch(tmp_path / "cam_2.jpg")
     _touch(tmp_path / "cam_1.jpg")
-    files = rec.camera_files(tmp_path, "cam")
+    files = rec.camera_files(tmp_path, r"cam_\d+\.jpg")
     assert [p.name for p in files] == ["cam_1.jpg", "cam_2.jpg", "cam_10.jpg"]
 
 
 def test_camera_files_single_video(tmp_path):
     _touch(tmp_path / "camera_0.mp4")
-    assert rec.camera_files(tmp_path, "camera_0") == [tmp_path / "camera_0.mp4"]
+    assert rec.camera_files(tmp_path, r"camera_0\.mp4") == [tmp_path / "camera_0.mp4"]
 
 
-def test_camera_files_prefers_video_when_extensions_mix(tmp_path):
+def test_the_pattern_is_a_full_match_on_the_filename():
+    """Not a prefix and not a search: `camera_0` does not match `camera_0.mp4`.
+
+    Which is the point of naming the extension -- a loose pattern also picks up sidecars
+    and stray takes, and under v2 everything one pattern matches is CONCATENATED.
+    """
+    assert rec._series_key("camera_RH_0.mp4") == rec._series_key("camera_RH_1.mp4")
+    assert rec._series_key("camera_RH.mp4") != rec._series_key("camera_0.mp4")
+
+
+def test_the_pattern_is_case_insensitive(tmp_path):
+    _touch(tmp_path / "CAMERA_rh.MP4")
+    assert [p.name for p in rec.camera_files(tmp_path, r"camera_RH\.mp4")] == [
+        "CAMERA_rh.MP4"
+    ]
+
+
+def test_alternate_names_go_inside_the_regex(tmp_path):
+    """The anatomical-or-positional pair the packaged default admits."""
+    _touch(tmp_path / "camera_0.mp4")
+    pattern = r"camera_(RH|0)\.mp4"
+    assert [p.name for p in rec.camera_files(tmp_path, pattern)] == ["camera_0.mp4"]
+    _touch(tmp_path / "camera_RH.mp4")
+    # Both present is not "pick one": they are not one series, so it is an error.
+    with pytest.raises(ValueError, match="not parts of one series"):
+        rec.camera_files(tmp_path, pattern)
+
+
+def test_split_parts_concatenate(tmp_path):
+    """The behavioral change: everything one pattern matches is ONE stream."""
+    for i in (0, 1, 2):
+        _touch(tmp_path / f"camera_RH_{i}.mp4")
+    got = rec.camera_files(tmp_path, r"camera_RH_\d+\.mp4")
+    assert [p.name for p in got] == [
+        "camera_RH_0.mp4",
+        "camera_RH_1.mp4",
+        "camera_RH_2.mp4",
+    ]
+
+
+def test_a_list_of_patterns_concatenates_in_written_order(tmp_path):
+    _touch(tmp_path / "take_b.mp4")
+    _touch(tmp_path / "take_a.mp4")
+    got = rec.camera_files(tmp_path, [r"take_a\.mp4", r"take_b\.mp4"])
+    assert [p.name for p in got] == ["take_a.mp4", "take_b.mp4"]
+
+
+def test_two_entries_matching_one_file_is_refused(tmp_path):
+    _touch(tmp_path / "take_a.mp4")
+    with pytest.raises(ValueError, match="matched by two of"):
+        rec.camera_files(tmp_path, [r"take_a\.mp4", r"take_.\.mp4"])
+
+
+def test_mixed_extensions_are_an_error_not_a_silent_pick(tmp_path):
+    """v1 kept the video and dropped the images; the pattern names the extension now."""
     _touch(tmp_path / "cam_0.mp4")
-    _seq(tmp_path, "cam_0", 3)  # also cam_0_0000.jpg ...
-    files = rec.camera_files(tmp_path, "cam_0")
-    assert [p.name for p in files] == ["cam_0.mp4"]  # video wins over images
-
-
-def test_camera_files_keeps_only_first_of_several_videos(tmp_path):
-    _touch(tmp_path / "cam_a.mp4")
-    _touch(tmp_path / "cam_b.mp4")
-    files = rec.camera_files(tmp_path, "cam")  # prefix matches both videos
-    assert len(files) == 1
-    assert files[0].name == "cam_a.mp4"
+    _touch(tmp_path / "cam_0.avi")
+    with pytest.raises(ValueError, match="not parts of one series"):
+        rec.camera_files(tmp_path, r"cam_0\..+")
 
 
 def test_camera_files_empty_when_no_footage(tmp_path):
     _touch(tmp_path / "notes.txt")  # not a footage extension
-    assert rec.camera_files(tmp_path, "cam") == []
+    assert rec.camera_files(tmp_path, r"notes\.txt") == []
+
+
+def test_a_pattern_never_traverses_into_a_subdirectory(tmp_path):
+    (tmp_path / "sub").mkdir()
+    _touch(tmp_path / "sub" / "cam_0.mp4")
+    assert rec.camera_files(tmp_path, r"sub/cam_0\.mp4") == []
+
+
+def test_an_invalid_regex_says_so(tmp_path):
+    with pytest.raises(ValueError, match="not a valid regex"):
+        rec.camera_files(tmp_path, "cam_(0")
 
 
 # -- find_recording ----------------------------------------------------------
@@ -163,7 +211,7 @@ def test_find_recording_still_refuses_a_directory_matching_nothing(tmp_path):
     assert rec.find_recording(tmp_path, _cfg("cam_a", "cam_b")) is None
 
 
-def test_find_recording_none_on_uneven_file_count(tmp_path):
+def test_find_recording_none_on_uneven_image_count(tmp_path):
     _seq(tmp_path, "cam_a", 4)
     _seq(tmp_path, "cam_b", 3)  # mismatched sequence length
     assert rec.find_recording(tmp_path, _cfg("cam_a", "cam_b")) is None
@@ -177,7 +225,7 @@ def test_frame_counts_match_equal_image_sequences(tmp_path):
     assert rec._frame_counts_match(tmp_path, sources) is True
 
 
-def test_frame_counts_match_unequal_file_counts(tmp_path):
+def test_frame_counts_match_unequal_image_counts(tmp_path):
     sources = {"a": _seq(tmp_path, "a", 3), "b": _seq(tmp_path, "b", 2)}
     assert rec._frame_counts_match(tmp_path, sources) is False
 

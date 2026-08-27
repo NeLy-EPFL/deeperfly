@@ -8,38 +8,6 @@
 # docs/reference/configuration.md.
 
 
-# == Footage =================================================================
-# Named sources, each decoded once; `filename` is a glob, or alternates tried in order,
-# matched case-insensitively. [[sources]] blocks rather than one inline array, because
-# `deeperfly project` lifts whole TOML *tables* by their headers.
-[[sources]]
-name = "vid_rh"
-filename = ["camera_RH.mp4", "camera_0.mp4"]
-[[sources]]
-name = "vid_rm"
-filename = ["camera_RM.mp4", "camera_1.mp4"]
-[[sources]]
-name = "vid_rf"
-filename = ["camera_RF.mp4", "camera_2.mp4"]
-[[sources]]
-name = "vid_f"
-filename = ["camera_F.mp4", "camera_3.mp4"]
-[[sources]]
-name = "vid_lf"
-filename = ["camera_LF.mp4", "camera_4.mp4"]
-[[sources]]
-name = "vid_lm"
-filename = ["camera_LM.mp4", "camera_5.mp4"]
-[[sources]]
-name = "vid_lh"
-filename = ["camera_LH.mp4", "camera_6.mp4"]
-[[sources]]
-name = "vid_h"
-filename = ["camera_H.mp4", "camera_7.mp4"]
-
-
-
-
 # == Views ===================================================================
 # The geometric cameras a pathway maps its points back into. A view holds only geometry;
 # its footage comes from the pathway's source, and its intrinsics describe that source's
@@ -115,36 +83,19 @@ do_visualization        = true
 # multiview transformer's float32 -- is a property of the checkpoint whose loader
 # refuses a config that disagrees, so the class states it and this does not.
 [pose2d]
-model = "dense38mv"
-models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
-]
+class = "mvt"
+weights = "mvt_r28_pad48_gray_fly38.pth"
 
-# Per-camera training crops. A detector is trained through a box, and a
-# differently framed camera puts the animal at the wrong apparent SCALE --
-# the one thing no augmentation undoes. A view with no entry here runs
-# full-frame.
-preprocessors = [
-    { name = "crop_rh", ops = [{ op = "crop", x = 737, y = 0, width = 960, height = 512 }] },
-    { name = "crop_rm", ops = [{ op = "crop", x = 710, y = 0, width = 960, height = 512 }] },
-    { name = "crop_rf", ops = [{ op = "crop", x = 493, y = 0, width = 960, height = 512 }] },
-    { name = "crop_f", ops = [{ op = "crop", x = 479, y = 3, width = 1018, height = 509 }] },
-    { name = "crop_lf", ops = [{ op = "crop", x = 301, y = 0, width = 960, height = 512 }] },
-    { name = "crop_lm", ops = [{ op = "crop", x = 330, y = 0, width = 960, height = 512 }] },
-    { name = "crop_lh", ops = [{ op = "crop", x = 413, y = 0, width = 960, height = 512 }] },
-    { name = "crop_h", ops = [{ op = "crop", x = 749, y = 57, width = 498, height = 249 }] },
-]
-
-pathways = [
-    { name = "rh", source = "vid_rh", preprocessor = "crop_rh" },
-    { name = "rm", source = "vid_rm", preprocessor = "crop_rm" },
-    { name = "rf", source = "vid_rf", preprocessor = "crop_rf" },
-    { name = "f", source = "vid_f", preprocessor = "crop_f" },
-    { name = "lf", source = "vid_lf", preprocessor = "crop_lf" },
-    { name = "lm", source = "vid_lm", preprocessor = "crop_lm" },
-    { name = "lh", source = "vid_lh", preprocessor = "crop_lh" },
-    { name = "h", source = "vid_h", preprocessor = "crop_h" },
-]
+# Detection windows, in raw pixels: [x, y, width, height].
+[pose2d.crops]
+rh = [737, 0, 960, 512]
+rm = [710, 0, 960, 512]
+rf = [493, 0, 960, 512]
+f = [479, 3, 1018, 509]
+lf = [301, 0, 960, 512]
+lm = [330, 0, 960, 512]
+lh = [413, 0, 960, 512]
+h = [749, 57, 498, 249]
 
 
 # == Bundle adjustment =======================================================

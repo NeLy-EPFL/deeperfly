@@ -321,10 +321,12 @@ def test_front_camera_bridges_left_right_in_bundle_adjustment(
 
     def run(front_sees_both: bool) -> float:
         pts2d = fly_masked(pts2d_full.copy())
-        if not front_sees_both:  # drop the front camera's left-side observations
+        if not front_sees_both:  # drop the front camera's left-half observations
+            # The whole half, by the same index boundary `one_side_visibility` uses:
+            # leaving any left column in the front view re-bridges the two clusters, and
+            # the recovery then succeeds for the wrong reason.
             fi = names.index("f")
-            for j in leg_indices(deepfly3d, "l"):
-                pts2d[fi, :, j] = np.nan
+            pts2d[fi, :, : pts2d.shape[-2] // 2] = np.nan
         opt, _ = bundle_adjust_cameras(
             perturbed,
             pts2d,

@@ -218,6 +218,176 @@ def test_reader_is_a_context_manager(tmp_path):
         assert reader[:].shape[0] == frames.shape[0]
 
 
+# -- concatenation: several files as one stream ------------------------------
+#
+# The behavioral half of the v2 schema change, and the only one whose failure is silent: a
+# frame-index bug after a part boundary succeeds and mislabels every subsequent frame.
+# Nothing downstream can catch that, so the gate is byte-identity against the single-file
+# reader over the SAME content -- decoded once as one clip, then split with `ffmpeg -f
+# segment` (here, PyAV writing the halves, which is the same thing) and read back.
+
+
+def _write_all_intra(path, frames, *, fps=10):
+    """Encode ``frames`` with every picture a keyframe, so ANY split point is legal."""
+    import av
+
+    n, h, w = frames.shape[:3]
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream("libx264", rate=fps)
+        stream.width, stream.height = w, h
+        stream.pix_fmt = "yuv420p"
+        stream.gop_size = 1  # all-intra
+        for i in range(n):
+            frame = av.VideoFrame.from_ndarray(
+                np.ascontiguousarray(frames[i]), format="rgb24"
+            )
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return path
+
+
+def _segment(src, parts):
+    """Split ``src`` into ``parts`` = [(path, n_frames), ...] by REMUXING its packets.
+
+    A stream copy, exactly like ``ffmpeg -f segment``: no second encode, so the parts
+    decode to the same pixels the whole file does. Re-encoding the halves instead would
+    introduce a second lossy generation and turn a byte-identity gate into a tolerance.
+    """
+    import av
+
+    with av.open(str(src)) as inp:
+        packets = [
+            pkt for pkt in inp.demux(inp.streams.video[0]) if pkt.dts is not None
+        ]
+        template = inp.streams.video[0]
+        at = 0
+        for path, n in parts:
+            with av.open(str(path), mode="w") as out:
+                ostream = out.add_stream_from_template(template)
+                for pkt in packets[at : at + n]:
+                    pkt.stream = ostream
+                    out.mux(pkt)
+            at += n
+    return [path for path, _ in parts]
+
+
+@pytest.fixture
+def split_clip(tmp_path):
+    """``(reader, whole)``: the same 30 frames as two remuxed parts, and as one array."""
+    frames = _indexed_clip(n=30, h=32, w=48)
+    whole_path = _write_all_intra(tmp_path / "whole.mp4", frames)
+    whole = io.open_reader(whole_path)[:]
+    parts = _segment(
+        whole_path, [(tmp_path / "part_0.mp4", 17), (tmp_path / "part_1.mp4", 13)]
+    )
+    reader = io.open_reader(parts)
+    yield reader, whole
+    reader.close()
+
+
+def test_open_reader_concatenates_several_videos(tmp_path, split_clip):
+    reader, whole = split_clip
+    assert isinstance(reader, io.ConcatReader)
+    # The count is the SUM over parts, exact -- a global index is undefined otherwise.
+    assert reader.count() == len(whole)
+
+
+def test_a_single_video_is_still_a_plain_reader(tmp_path):
+    path = _write_clip(tmp_path, _indexed_clip(n=4))
+    assert isinstance(io.open_reader([path]), io.VideoReader)
+
+
+def test_random_access_across_a_boundary_is_byte_identical(split_clip):
+    reader, whole = split_clip
+    # Every index, including the two either side of the boundary at 17.
+    for i in range(len(whole)):
+        np.testing.assert_array_equal(reader[i], whole[i], err_msg=f"frame {i}")
+
+
+def test_a_slice_spanning_the_boundary_is_byte_identical(split_clip):
+    reader, whole = split_clip
+    for key in (slice(None), slice(5, 25), slice(16, 19), slice(0, 30, 3)):
+        np.testing.assert_array_equal(reader[key], whole[key], err_msg=str(key))
+
+
+def test_an_explicit_index_list_keeps_the_callers_order(split_clip):
+    reader, whole = split_clip
+    wanted = [29, 0, 17, 16, 17]
+    np.testing.assert_array_equal(reader[wanted], whole[wanted])
+
+
+def test_a_full_forward_decode_is_byte_identical(split_clip):
+    reader, whole = split_clip
+    np.testing.assert_array_equal(np.stack(list(reader.stream_frames())), whole)
+
+
+def test_blocks_are_regrouped_across_the_boundary(split_clip):
+    """No short block at a split: a consumer batching a forward pass would see one."""
+    reader, whole = split_clip
+    blocks = list(reader.stream_blocks(block_size=8))
+    assert [len(b) for b in blocks] == [8, 8, 8, 6]
+    np.testing.assert_array_equal(np.concatenate(blocks), whole)
+
+
+def test_the_cursor_keeps_one_decoder_open_per_part(split_clip):
+    reader, whole = split_clip
+    cursor = reader.cursor()
+    try:
+        # Crossing the boundary swaps which cursor answers; neither is re-opened.
+        for i in (0, 16, 17, 29, 17, 16):
+            np.testing.assert_array_equal(cursor.frame(i), whole[i])
+        assert len(cursor._cursors) == 2
+    finally:
+        cursor.close()
+
+
+def test_an_index_outside_the_stream_is_an_error_naming_the_length(split_clip):
+    reader, _ = split_clip
+    with pytest.raises(IndexError, match="30-frame stream"):
+        reader[30]
+
+
+def test_parts_that_disagree_on_frame_size_are_refused(tmp_path):
+    _write_clip(tmp_path, _indexed_clip(n=4, h=32, w=48), name="a.mp4")
+    _write_clip(tmp_path, _indexed_clip(n=4, h=32, w=64), name="b.mp4")
+    with pytest.raises(ValueError, match="agree on frame size"):
+        io.open_reader([tmp_path / "a.mp4", tmp_path / "b.mp4"])
+
+
+def test_parts_that_disagree_on_frame_rate_are_refused(tmp_path):
+    frames = _indexed_clip(n=4)
+    with io.VideoWriter(tmp_path / "a.mp4", fps=10) as w:
+        w.write_frames(frames)
+    with io.VideoWriter(tmp_path / "b.mp4", fps=25) as w:
+        w.write_frames(frames)
+    with pytest.raises(ValueError, match="agree on frame rate"):
+        io.open_reader([tmp_path / "a.mp4", tmp_path / "b.mp4"])
+
+
+def test_a_part_whose_header_carries_no_count_is_decoded_once(tmp_path, monkeypatch):
+    """Never estimated from duration * fps: an off-by-one there shifts every later index.
+
+    The cost is logged, because a full decode of a part is worth knowing about.
+    """
+    frames = _indexed_clip(n=10)
+    _write_clip(tmp_path, frames[:6], name="a.mp4")
+    _write_clip(tmp_path, frames[6:], name="b.mp4")
+    real_count = io.VideoReader.count
+
+    def blind(self):
+        return None if self.path.name == "a.mp4" else real_count(self)
+
+    monkeypatch.setattr(io.VideoReader, "count", blind)
+    reader = io.open_reader([tmp_path / "a.mp4", tmp_path / "b.mp4"])
+    assert reader.count() == 10
+    # And the boundary is still in the right place.
+    whole = io.open_reader(_write_clip(tmp_path, frames, name="whole.mp4"))[:]
+    np.testing.assert_array_equal(reader[5], whole[5])
+    np.testing.assert_array_equal(reader[6], whole[6])
+
+
 # -- single-frame reads: seek, don't walk ------------------------------------
 #
 # `reader[i]` used to decode every frame from the start of the file and discard the ones

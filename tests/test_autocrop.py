@@ -1,4 +1,4 @@
-"""Tests for the searched detector crop (``{ op = "crop", auto = true }``).
+"""Tests for the searched detector crop (a camera named in ``[pose2d] auto_crops``).
 
 Three layers, because the failure modes are at three different heights:
 
@@ -16,24 +16,27 @@ import json
 
 import numpy as np
 import pytest
-from helpers import output_points_table
 
 from deeperfly.config import AutoCropParams, Config
 from deeperfly.pose2d import autocrop
 from deeperfly.preprocessing import (
     AutoCrop,
     Crop,
-    Fliplr,
     FrameTransform,
     UnresolvedAutoCrop,
-    frame_transform_from_ops,
 )
+
+
+def _auto(seed=None) -> FrameTransform:
+    """An unresolved searched window, as the plan synthesizes one."""
+    return FrameTransform((AutoCrop(seed=seed, where="[pose2d] auto_crops 'a'"),))
+
 
 # -- the placeholder op -------------------------------------------------------------------
 
 
 def test_an_unresolved_auto_crop_refuses_every_geometric_question():
-    t = frame_transform_from_ops([{"op": "crop", "auto": True}], "p")
+    t = _auto()
     assert t.needs_auto_crop
     for call in (
         lambda: t.output_size((64, 128)),
@@ -48,9 +51,7 @@ def test_an_unresolved_auto_crop_refuses_every_geometric_question():
 
 def test_a_resolved_auto_crop_is_exactly_the_equivalent_crop():
     box = (12, 7, 40, 20)
-    auto = frame_transform_from_ops(
-        [{"op": "crop", "auto": True}], "p"
-    ).resolve_auto_crop(box)
+    auto = _auto().resolve_auto_crop(box)
     plain = FrameTransform((Crop(*box),))
     size = (64, 128)
     frames = np.arange(2 * 64 * 128 * 3, dtype=np.uint8).reshape(2, 64, 128, 3)
@@ -61,17 +62,6 @@ def test_a_resolved_auto_crop_is_exactly_the_equivalent_crop():
     assert not auto.needs_auto_crop
 
 
-def test_resolving_keeps_the_rest_of_the_chain_and_its_order():
-    """A mirrored pathway crops THEN flips, which is what the detector was trained through."""
-    t = frame_transform_from_ops(
-        [{"op": "crop", "auto": True}, {"op": "fliplr"}], "p"
-    ).resolve_auto_crop((1, 0, 4, 2))
-    assert isinstance(t.ops[-1], Fliplr) and t.reverses_handedness
-    frames = np.arange(6 * 8 * 1, dtype=np.uint8).reshape(1, 6, 8, 1)
-    expected = np.flip(frames[:, 0:2, 1:5], axis=-2)
-    assert np.array_equal(t.apply(frames), expected)
-
-
 def test_the_json_is_the_declaration_not_the_searched_box():
     """Fingerprint stability: a searched box must not look like a config edit.
 
@@ -79,36 +69,12 @@ def test_the_json_is_the_declaration_not_the_searched_box():
     that searched a box would invalidate the detections it just computed, and every later run
     would search and re-detect again.
     """
-    t = frame_transform_from_ops(
-        [{"op": "crop", "auto": True, "x": 1, "y": 2, "width": 8, "height": 4}], "p"
-    )
+    t = _auto(seed=(1, 2, 8, 4))
     before = t.to_json()
     assert before == [
         {"op": "crop", "auto": True, "x": 1, "y": 2, "width": 8, "height": 4}
     ]
     assert t.resolve_auto_crop((90, 90, 10, 5)).to_json() == before
-
-
-def test_a_partial_seed_is_refused():
-    with pytest.raises(ValueError, match="partial seed box"):
-        frame_transform_from_ops([{"op": "crop", "auto": True, "x": 1}], "p")
-
-
-def test_a_crop_without_a_box_says_that_auto_exists():
-    with pytest.raises(ValueError, match="auto = true"):
-        frame_transform_from_ops([{"op": "crop"}], "p")
-
-
-def test_auto_must_be_a_boolean():
-    with pytest.raises(ValueError, match="auto must be true or false"):
-        frame_transform_from_ops([{"op": "crop", "auto": "yes"}], "p")
-
-
-def test_two_automatic_crops_in_one_chain_are_ambiguous():
-    with pytest.raises(ValueError, match="at most one automatic crop"):
-        frame_transform_from_ops(
-            [{"op": "crop", "auto": True}, {"op": "crop", "auto": True}], "p"
-        )
 
 
 def test_the_pose2d_fingerprint_is_unchanged_by_resolving(tmp_path):
@@ -117,7 +83,7 @@ def test_the_pose2d_fingerprint_is_unchanged_by_resolving(tmp_path):
     config = _auto_config()
     enabled = config.stage_flags()
     before = stage_fingerprint("pose2d", config, enabled, None)
-    config.auto_crops = {"crop_a": (2, 1, 20, 10)}
+    config.auto_crops = {"a": (2, 1, 20, 10)}
     assert stage_fingerprint("pose2d", config, enabled, None) == before
 
 
@@ -283,7 +249,7 @@ def test_an_infinite_objective_does_not_move_the_search():
 
 def test_the_sidecar_round_trips(tmp_path):
     res = autocrop.Resolution(
-        preprocessor="crop_h",
+        camera="h",
         view_name="h",
         box=(1, 2, 30, 15),
         incumbent=(0, 0, 40, 20),
@@ -291,13 +257,13 @@ def test_the_sidecar_round_trips(tmp_path):
         accepted=True,
     )
     autocrop.write_sidecar(tmp_path, [res])
-    assert autocrop.read_sidecar(tmp_path) == {"crop_h": (1, 2, 30, 15)}
+    assert autocrop.read_sidecar(tmp_path) == {"h": (1, 2, 30, 15)}
 
 
 def test_a_missing_or_foreign_sidecar_is_not_an_error(tmp_path):
     assert autocrop.read_sidecar(tmp_path) == {}
     (tmp_path / autocrop.SIDECAR_NAME).write_text(
-        json.dumps({"version": 99, "boxes": {"crop_h": [1, 2, 3, 4]}})
+        json.dumps({"version": 99, "boxes": {"h": [1, 2, 3, 4]}})
     )
     assert autocrop.read_sidecar(tmp_path) == {}
     (tmp_path / autocrop.SIDECAR_NAME).write_text("not json")
@@ -319,84 +285,54 @@ def test_a_malformed_box_is_dropped_and_the_rest_kept(tmp_path):
 # -- plan wiring --------------------------------------------------------------------------
 
 
-def _auto_config(*, seed=None, extra_view=False, shared=False):
-    """A two-camera config whose view ``a`` detects through an automatic crop."""
-    skel = Config.default().data["skeleton"]
-    names = skel["points"]
-    op = {"op": "crop", "auto": True}
-    if seed is not None:
-        op |= {"x": seed[0], "y": seed[1], "width": seed[2], "height": seed[3]}
-    pathways = [
-        {"name": "a", "source": "s_a", "preprocessor": "crop_a", "model": "m"},
-        {
-            "name": "b",
-            "source": "s_b",
-            "preprocessor": "crop_a" if shared else None,
-            "model": "m",
-        },
-    ]
-    if extra_view:
-        pathways.append(
-            {"name": "c", "source": "s_c", "preprocessor": "crop_c", "model": "m"}
-        )
-    data = {
-        "sources": [
-            {"name": "s_a", "filename": "a*.mp4"},
-            {"name": "s_b", "filename": "b*.mp4"},
-            {"name": "s_c", "filename": "c*.mp4"},
-        ],
-        "pose2d": {
-            "preprocessors": [{"name": "crop_a", "ops": [op]}]
-            + ([{"name": "crop_c", "ops": [dict(op)]}] if extra_view else []),
-            "models": [
-                {
-                    "name": "m",
-                    "class": "hrnet",
-                    "input_size": [32, 64],
-                    "n_out_channels": len(names),
-                }
-            ],
-            "pathways": pathways,
-            "output_points": output_points_table(
-                names,
-                [(pw["name"], pw["name"], list(range(len(names)))) for pw in pathways],
-            ),
-        },
-        "cameras": {
-            v: {"azimuth_deg": az, "distance": 100, "focal_length_px": 500}
-            for v, az in (("a", 0), ("b", 60), ("c", 120))
-        },
-        "skeleton": skel,
+def _auto_config(*, seed=None, extra_view=False):
+    """A config whose camera ``a`` detects through a searched window."""
+    cameras = {v: {"azimuth_deg": az} for v, az in (("a", 0), ("b", 60), ("c", 120))}
+    auto = ["a", "c"] if extra_view else ["a"]
+    pose2d = {
+        "class": "hrnet",
+        "weights": "w.pth",
+        "input_size": [32, 64],
+        "auto_crops": auto,
     }
-    return Config.from_dict(data)
+    if seed is not None:
+        pose2d["crops"] = {name: list(seed) for name in auto}
+    return Config.from_dict(
+        {
+            "default_camera": {"distance": 100, "focal_length_px": 500},
+            "cameras": cameras,
+            "pose2d": pose2d,
+        }
+    )
 
 
 def test_targets_finds_the_unresolved_crops_and_their_view():
     plan = _auto_config().detection_plan()
     (target,) = autocrop.targets(plan)
-    assert target.preprocessor == "crop_a"
-    assert target.view_name == "a" and target.source == "s_a"
+    assert target.camera == "a"
+    assert target.view_name == "a" and target.source == "a"
     assert target.pathways == ("a",)
 
 
-def test_a_shared_automatic_crop_across_views_is_refused():
-    with pytest.raises(ValueError, match="one searched window cannot be two"):
-        autocrop.targets(_auto_config(shared=True).detection_plan())
+def test_a_searched_window_belongs_to_exactly_one_camera():
+    """Two refusals the synthesis made structurally impossible, replaced by the fact.
 
-
-def test_an_unused_automatic_crop_is_refused():
-    config = _auto_config()
-    config.data["pose2d"]["preprocessors"].append(
-        {"name": "orphan", "ops": [{"op": "crop", "auto": True}]}
-    )
-    with pytest.raises(ValueError, match="no pathway uses it"):
-        autocrop.targets(config.detection_plan())
+    v1 could share one preprocessor across cameras (one searched window cannot be two
+    cameras' framing) or leave one orphaned with no pathway using it (nothing to search
+    for, nothing to judge it by). Both were errors this file checked. Under v2 a window
+    IS a camera's, so what is worth asserting is the one-to-one itself.
+    """
+    plan = _auto_config(extra_view=True).detection_plan()
+    targets = autocrop.targets(plan)
+    assert [t.camera for t in targets] == ["a", "c"]
+    assert [t.view_name for t in targets] == ["a", "c"]
+    assert [t.pathways for t in targets] == [("a",), ("c",)]
 
 
 def test_resolved_plan_reaches_the_pathways_too():
     plan = _auto_config().detection_plan()
-    out = autocrop.resolved_plan(plan, {"crop_a": (3, 4, 20, 10)})
-    assert not out.preprocessors["crop_a"].needs_auto_crop
+    out = autocrop.resolved_plan(plan, {"a": (3, 4, 20, 10)})
+    assert not out.preprocessors["a"].needs_auto_crop
     pathway = next(pw for pw in out.pathways if pw.name == "a")
     assert pathway.transform.raw_window((64, 128)) == (3, 4, 20, 10)
     assert autocrop.targets(out) == []
@@ -409,10 +345,10 @@ def test_resolved_plan_ignores_a_stale_name():
 
 def test_the_config_applies_recorded_boxes_to_every_later_plan():
     config = _auto_config()
-    assert config.detection_plan().preprocessors["crop_a"].needs_auto_crop
-    config.auto_crops = {"crop_a": (5, 6, 20, 10)}
+    assert config.detection_plan().preprocessors["a"].needs_auto_crop
+    config.auto_crops = {"a": (5, 6, 20, 10)}
     plan = config.detection_plan()
-    assert plan.preprocessors["crop_a"].raw_window((64, 128)) == (5, 6, 20, 10)
+    assert plan.preprocessors["a"].raw_window((64, 128)) == (5, 6, 20, 10)
 
 
 def test_read_for_run_picks_up_a_recorded_box(tmp_path):
@@ -421,7 +357,7 @@ def test_read_for_run_picks_up_a_recorded_box(tmp_path):
         tmp_path,
         [
             autocrop.Resolution(
-                preprocessor="crop_x",
+                camera="x",
                 view_name="x",
                 box=(7, 8, 20, 10),
                 incumbent=(0, 0, 1, 1),
@@ -429,7 +365,7 @@ def test_read_for_run_picks_up_a_recorded_box(tmp_path):
             )
         ],
     )
-    assert Config.read_for_run(None, tmp_path).auto_crops == {"crop_x": (7, 8, 20, 10)}
+    assert Config.read_for_run(None, tmp_path).auto_crops == {"x": (7, 8, 20, 10)}
 
 
 # -- the search, against a detector whose optimum is known --------------------------------
@@ -533,13 +469,13 @@ def test_the_blind_search_finds_the_animal(joint):
     plan = config.detection_plan()
     model = BlobDetector(fill=fill, joint_views=joint)
     windows = {
-        "s_a": _blob_frames(2, frame_hw, blob),
-        "s_b": _blob_frames(2, frame_hw, blob),
-        "s_c": _blob_frames(2, frame_hw, blob),
+        "a": _blob_frames(2, frame_hw, blob),
+        "b": _blob_frames(2, frame_hw, blob),
+        "c": _blob_frames(2, frame_hw, blob),
     }
     (res,) = autocrop.search(
         plan,
-        {"m": model},
+        {"hrnet": model},
         search_windows=windows,
         params=AutoCropParams(search_frames=2, gate=False),
     )
@@ -563,17 +499,17 @@ def test_a_seed_narrows_the_search_to_far_fewer_probes():
         2.0,
         frame_hw,
     )
-    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("s_a", "s_b", "s_c")}
+    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("a", "b", "c")}
     params = AutoCropParams(search_frames=2, gate=False)
     blind = autocrop.search(
         _auto_config().detection_plan(),
-        {"m": BlobDetector(fill=fill)},
+        {"hrnet": BlobDetector(fill=fill)},
         search_windows=windows,
         params=params,
     )[0]
     seeded = autocrop.search(
         _auto_config(seed=seed).detection_plan(),
-        {"m": BlobDetector(fill=fill)},
+        {"hrnet": BlobDetector(fill=fill)},
         search_windows=windows,
         params=params,
     )[0]
@@ -590,10 +526,10 @@ def test_the_search_keeps_the_incumbent_when_it_cannot_be_beaten():
     """A seed already at the optimum: nothing to accept, and that is the right answer."""
     frame_hw, blob, fill = (300, 600), (250, 120, 90, 45), 0.5
     ideal = _ideal_box(blob, fill, 2.0, frame_hw)
-    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("s_a", "s_b", "s_c")}
+    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("a", "b", "c")}
     (res,) = autocrop.search(
         _auto_config(seed=ideal).detection_plan(),
-        {"m": BlobDetector(fill=fill)},
+        {"hrnet": BlobDetector(fill=fill)},
         search_windows=windows,
         params=AutoCropParams(search_frames=2, gate=False),
     )
@@ -616,10 +552,8 @@ def test_a_joint_view_model_sees_every_view_in_one_probe():
 
     autocrop.search(
         plan,
-        {"m": Recorder(joint_views=True)},
-        search_windows={
-            n: _blob_frames(1, frame_hw, blob) for n in ("s_a", "s_b", "s_c")
-        },
+        {"hrnet": Recorder(joint_views=True)},
+        search_windows={n: _blob_frames(1, frame_hw, blob) for n in ("a", "b", "c")},
         params=AutoCropParams(search_frames=1, gate=False, probe_batch=4),
     )
     assert seen, "nothing was forwarded"
@@ -666,7 +600,7 @@ def test_a_narrowed_decode_agrees_with_slicing_the_full_one(narrows):
     module.joint_views = True
     module.impl = Impl()
     loaded = LoadedModel(
-        ModelSpec(name="m", cls="x", weights=None, input_size=(32, 64)), module
+        ModelSpec(name="hrnet", cls="x", weights=None, input_size=(32, 64)), module
     )
 
     frames = _blob_frames(2, (300, 600), (250, 120, 90, 45))
@@ -684,12 +618,12 @@ def test_a_narrowed_decode_agrees_with_slicing_the_full_one(narrows):
 
 def test_probe_batching_does_not_change_the_answer():
     frame_hw, blob = (300, 600), (250, 120, 90, 45)
-    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("s_a", "s_b", "s_c")}
+    windows = {n: _blob_frames(2, frame_hw, blob) for n in ("a", "b", "c")}
     boxes = []
     for batch in (1, 4, 16):
         (res,) = autocrop.search(
             _auto_config().detection_plan(),
-            {"m": BlobDetector()},
+            {"hrnet": BlobDetector()},
             search_windows=windows,
             params=AutoCropParams(search_frames=2, gate=False, probe_batch=batch),
         )
@@ -713,8 +647,8 @@ def test_resolved_boxes_reports_what_the_plan_carries():
     plan = _auto_config().detection_plan()
     assert autocrop.resolved_boxes(plan) == {}
     assert autocrop.resolved_boxes(
-        autocrop.resolved_plan(plan, {"crop_a": (1, 2, 20, 10)})
-    ) == {"crop_a": (1, 2, 20, 10)}
+        autocrop.resolved_plan(plan, {"a": (1, 2, 20, 10)})
+    ) == {"a": (1, 2, 20, 10)}
 
 
 def test_a_recorded_box_is_reused_instead_of_searched(tmp_path, monkeypatch):
@@ -728,7 +662,7 @@ def test_a_recorded_box_is_reused_instead_of_searched(tmp_path, monkeypatch):
         tmp_path,
         [
             autocrop.Resolution(
-                preprocessor="crop_a",
+                camera="a",
                 view_name="a",
                 box=(9, 8, 40, 20),
                 incumbent=(0, 0, 1, 1),
@@ -746,13 +680,13 @@ def test_a_recorded_box_is_reused_instead_of_searched(tmp_path, monkeypatch):
         config, config.detection_plan(), models={}, outdir=tmp_path
     )
     assert searched == []
-    assert autocrop.resolved_boxes(plan) == {"crop_a": (9, 8, 40, 20)}
+    assert autocrop.resolved_boxes(plan) == {"a": (9, 8, 40, 20)}
 
 
 def test_a_carried_over_box_survives_rewriting_the_sidecar(tmp_path):
     """Re-searching one view must not delete another view's recorded box."""
     keep = autocrop.Resolution(
-        preprocessor="crop_other",
+        camera="other",
         view_name="z",
         box=(1, 1, 10, 5),
         incumbent=(1, 1, 10, 5),
@@ -760,7 +694,7 @@ def test_a_carried_over_box_survives_rewriting_the_sidecar(tmp_path):
     )
     autocrop.write_sidecar(tmp_path, [keep])
     fresh = autocrop.Resolution(
-        preprocessor="crop_a",
+        camera="a",
         view_name="a",
         box=(2, 2, 20, 10),
         incumbent=(0, 0, 1, 1),
@@ -769,8 +703,8 @@ def test_a_carried_over_box_survives_rewriting_the_sidecar(tmp_path):
     carried = autocrop._recorded_resolutions(autocrop.read_sidecar(tmp_path), [fresh])
     autocrop.write_sidecar(tmp_path, [*carried, fresh])
     assert autocrop.read_sidecar(tmp_path) == {
-        "crop_other": (1, 1, 10, 5),
-        "crop_a": (2, 2, 20, 10),
+        "other": (1, 1, 10, 5),
+        "a": (2, 2, 20, 10),
     }
 
 
@@ -797,7 +731,7 @@ def test_search_without_frames_for_a_target_is_a_clear_failure():
     with pytest.raises(SystemExit, match="no frames for source"):
         autocrop.search(
             _auto_config().detection_plan(),
-            {"m": BlobDetector()},
-            search_windows={"s_b": _blob_frames(1, (60, 120), (10, 10, 20, 10))},
+            {"hrnet": BlobDetector()},
+            search_windows={"b": _blob_frames(1, (60, 120), (10, 10, 20, 10))},
             params=AutoCropParams(gate=False),
         )

@@ -193,48 +193,38 @@ def test_mvt_pins_float32_without_the_config_saying_so():
     assert class_defaults("hrnet")["precision"] is None
 
 
-def _dense_config(model_table):
+def _dense_config(**pose2d):
     return Config.from_dict(
         {
-            "sources": [
-                {"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in CAMERA_NAMES
-            ],
             "skeleton": {"include": "fly38"},
             "cameras": {
                 v: {"azimuth_deg": az, "distance": 100.0, "focal_length_px": 1.0}
                 for v, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
             },
-            "pose2d": {
-                "models": [model_table],
-                "pathways": [
-                    {"name": v, "source": f"vid_{v}", "model": model_table["name"]}
-                    for v in CAMERA_NAMES
-                ],
-            },
+            "pose2d": pose2d,
         }
     )
 
 
-def test_a_three_key_model_table_is_a_complete_dense_plan():
-    plan = _dense_config(
-        {"name": "m", "class": "mvt", "weights": "x.pth"}
-    ).detection_plan()
-    spec = plan.models["m"]
+def test_two_keys_are_a_complete_dense_plan():
+    """`class` and `weights`, and the whole detection plan follows from the cameras."""
+    plan = _dense_config(**{"class": "mvt", "weights": "x.pth"}).detection_plan()
+    spec = plan.models["mvt"]
     assert (spec.input_size, spec.mean, spec.n_out_channels, spec.precision) == (
         (256, 512),
         0.0,
         38,
         "float32",
     )
-    mask = plan.visibility_mask()
-    assert mask.all(), "a dense plan leaves no (view, point) cell unobserved"
+    assert [pw.name for pw in plan.pathways] == CAMERA_NAMES
+    assert plan.visibility_mask().all(), "a dense plan leaves no cell unobserved"
 
 
 def test_an_explicit_key_still_wins_over_the_class():
     plan = _dense_config(
-        {"name": "m", "class": "mvt", "weights": "x.pth", "precision": "float16"}
+        **{"class": "mvt", "weights": "x.pth", "precision": "float16"}
     ).detection_plan()
-    assert plan.models["m"].precision == "float16"
+    assert plan.models["mvt"].precision == "float16"
 
 
 # -- weights resolution -------------------------------------------------------
@@ -511,7 +501,7 @@ def test_the_packaged_config_names_its_checkpoint_portably(tmp_path, monkeypatch
     monkeypatch.setattr(download, "cache_dir", lambda: tmp_path / "empty-cache")
     (tmp_path / "empty-cache").mkdir()
 
-    spec = Config.default().detection_plan().models["dense38mv"]
+    spec = Config.default().detection_plan().models["mvt"]
     assert spec.weights == "mvt_r28_pad48_gray_fly38.pth"
     assert "/" not in spec.weights and not Path(spec.weights).is_absolute()
     with pytest.raises(SystemExit) as e:
@@ -542,59 +532,11 @@ OTHER = {"name": "m2", "class": "hrnet", "weights": "w2.pth"}
 BARE = [{"name": "a", "source": "vid_a"}, {"name": "b", "source": "vid_b"}]
 
 
-def test_a_sole_model_needs_naming_nowhere():
-    """One entry in ``models`` is one possible answer, so no pathway has to repeat it.
-
-    This is the shape every dense plan has -- one detector, one pathway per camera -- and
-    the name existed only to be pointed at.
-    """
-    plan = _plan_config({"models": [DENSE], "pathways": BARE}).detection_plan()
-    assert [p.model for p in plan.pathways] == ["m", "m"]
-
-
-def test_pose2d_model_is_the_default_and_a_pathway_may_still_override_it():
-    plan = _plan_config(
-        {
-            "model": "m",
-            "models": [DENSE, OTHER],
-            "pathways": [BARE[0], {**BARE[1], "model": "m2"}],
-        }
-    ).detection_plan()
-    assert [p.model for p in plan.pathways] == ["m", "m2"]
-
-
-def test_two_models_and_a_bare_pathway_is_an_error_that_names_both():
-    """Adding a second model must break the plan LOUDLY, not silently pick the first.
-
-    A bare pathway is unambiguous only while there is one model; the moment there are
-    two, "the first one" would be a guess about which camera runs which detector.
-    """
-    cfg = _plan_config({"models": [DENSE, OTHER], "pathways": BARE})
-    with pytest.raises(ValueError, match="names no model and there is no default") as e:
-        cfg.detection_plan()
-    # Both candidates are named: "which one did you mean" is the only question here.
-    assert "'m', 'm2'" in str(e.value)
-
-
-def test_an_unknown_default_model_is_rejected_at_the_table_that_declared_it():
-    cfg = _plan_config({"model": "nope", "models": [DENSE], "pathways": BARE})
-    with pytest.raises(ValueError, match=r"\[pose2d\]\.model references unknown model"):
-        cfg.detection_plan()
-
-
 # -- every config in the repo, held to the same shape -------------------------
 
 REPO = Path(__file__).resolve().parents[1]
 #: Every config a user is meant to read or run, packaged and staged alike.
 ALL_CONFIGS = [DEFAULT_CONFIG_PATH, *sorted(REPO.glob("examples/*/config.toml"))]
-
-
-@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: Path(p).parent.name)
-def test_no_config_repeats_the_model_on_every_pathway(path):
-    raw = tomllib.loads(Path(path).read_text())["pose2d"]
-    assert not [pw for pw in raw["pathways"] if "model" in pw]
-    plan = Config.from_toml(path).detection_plan()
-    assert {p.model for p in plan.pathways} == {m["name"] for m in raw["models"]}
 
 
 @pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: Path(p).parent.name)
@@ -622,6 +564,7 @@ def test_every_config_is_dense_over_the_whole_skeleton(path):
     cfg = Config.from_toml(path)
     plan = cfg.detection_plan()
     assert [p.name for p in plan.pathways] == plan.view_names
-    assert "output_points" not in cfg.data["pose2d"]
     assert plan.visibility_mask().all()
     assert cfg.skeleton().name == "fly38"
+    # One detector for the whole run, named by its class.
+    assert len(plan.models) == 1
