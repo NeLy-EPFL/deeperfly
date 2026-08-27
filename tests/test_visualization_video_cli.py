@@ -107,8 +107,8 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
     # re-running bundle adjustment, no video); triangulate the cached 2D into 3D.
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\nvisualization = false\n"
     )
 
     cli.main(
@@ -139,8 +139,8 @@ def _viz_3d_cfg(tmp_path):
     drawn -- a derived stage feeds downstream only while enabled)."""
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = true\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\nvisualization = true\n"
         "[visualization]\noutput_fps = 5\n"
         "[[visualization.videos]]\n"
         'video_name = "pose3d"\n'

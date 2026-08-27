@@ -156,7 +156,7 @@ _BLANK_PROFILE = """\
 # method = "ransac"
 
 # [pipeline]
-# do_inverse_kinematics = true
+# inverse_kinematics = true
 """
 
 #: A project/recording slug: safe as a directory name on every platform we target, and

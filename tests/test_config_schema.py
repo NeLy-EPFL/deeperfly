@@ -97,7 +97,7 @@ def test_the_stage_flags_are_described_even_though_they_are_generated():
     """'Which stages run' is the most-changed thing in the config; it must not be missing."""
     spec = stage_flags_spec()
     names = {f.name for f in spec.fields}
-    assert "do_pose2d" in names and "do_triangulation" in names
+    assert "pose2d" in names and "triangulation" in names
     assert all(f.type == "bool" for f in spec.fields)
 
 
@@ -305,7 +305,7 @@ def test_cli_set_can_turn_a_default_on_stage_off(tmp_path):
         [
             "config",
             "set",
-            "pipeline.do_eks",
+            "pipeline.eks",
             "false",
             "-c",
             str(cfg),
@@ -355,7 +355,7 @@ def test_the_schema_endpoint_serves_every_section(result, tmp_path):
     # The open-ended sections are NAMED, so a form builder can say "this needs the file"
     # rather than render nothing and look broken.
     assert "cameras" in payload["undescribable"]
-    assert "pose2d.output_points" in payload["undescribable"]
+    assert "pose2d.crops" in payload["undescribable"]
 
     one = client.get("/api/schema", params={"section": "triangulation"}).json()
     assert one["name"] == "triangulation"
@@ -444,7 +444,7 @@ def test_the_config_api_reports_values_and_what_was_set(tmp_path, result):
     assert tri["method"]["overridden"] is True
     assert tri["min_inliers"]["is_default"] is True
     # The generated pipeline flags are reported too -- the most-changed thing in the config.
-    assert "do_pose2d" in payload["sections"]["pipeline"]
+    assert "pose2d" in payload["sections"]["pipeline"]
 
     posted = api.post(
         "/api/config",

@@ -462,12 +462,11 @@ def create_app(
             # Named so a form builder can say "this one needs the file" instead of
             # rendering nothing and looking broken.
             "undescribable": [
+                "default_camera",
                 "cameras",
                 "skeleton",
-                "sources",
-                "pose2d.models",
-                "pose2d.pathways",
-                "pose2d.output_points",
+                "calibration",
+                "pose2d.crops",
                 "visualization.videos",
             ],
         }

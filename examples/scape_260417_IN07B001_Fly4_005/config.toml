@@ -52,18 +52,18 @@ distance = 158.9168
 
 
 # == Pipeline ================================================================
-# The stages, in run order. `do_pose2d = false` reconstructs from the cached 2D without
+# The stages, in run order. `pose2d = false` reconstructs from the cached 2D without
 # re-detecting; an enabled stage reuses its cache while its keys here are unchanged, so
 # an edit recomputes exactly the affected stages. `--overwrite [stage]` forces it.
 [pipeline]
-do_pose2d               = true
-do_bundle_adjustment    = true
-do_pictorial_structures = false  # DeepFly3D-style peak recovery over the top-K candidates
-do_triangulation        = true
-do_eks                  = true   # ensemble Kalman smoother over the 3D (de-jitters, repairs)
-do_postprocess          = true   # the corrections below, from knowing the animal
-do_inverse_kinematics   = false  # fit NeuroMechFly joint angles (needs `deeperfly[ik]`)
-do_visualization        = true
+pose2d                  = true
+bundle_adjustment       = true
+pictorial_structures    = false  # DeepFly3D-style peak recovery over the top-K candidates
+triangulation           = true
+eks                     = true   # ensemble Kalman smoother over the 3D (de-jitters, repairs)
+postprocess             = true   # the corrections below, from knowing the animal
+inverse_kinematics      = false  # fit NeuroMechFly joint angles (needs `deeperfly[ik]`)
+visualization           = true
 
 
 # == 2D detection ============================================================

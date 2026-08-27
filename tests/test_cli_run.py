@@ -72,12 +72,12 @@ def _default_cfg(tmp_path, *, name="config.toml", **flags):
         # Anchor to the start of a line so a `do_<stage> = ...` example inside a
         # comment is not matched ahead of the real [pipeline] flag.
         text, n = re.subn(
-            rf"(?m)^(do_{stage}\s*=\s*)(?:true|false)",
+            rf"(?m)^({stage}\s*=\s*)(?:true|false)",
             rf"\g<1>{str(on).lower()}",
             text,
             count=1,
         )
-        assert n == 1, f"do_{stage} not found in the default config"
+        assert n == 1, f"{stage} not found in the default config"
     cfg = tmp_path / name
     cfg.write_text(text)
     return cfg
@@ -103,7 +103,7 @@ def test_stage_flags_defaults():
 
 def test_stage_flags_toggles():
     flags = Config.from_dict(
-        {"pipeline": {"do_pose2d": False, "do_pictorial_structures": True}}
+        {"pipeline": {"pose2d": False, "pictorial_structures": True}}
     ).stage_flags()
     assert flags["pose2d"] is False and flags["pictorial_structures"] is True
     assert flags["triangulation"] is True  # untouched default
@@ -120,28 +120,26 @@ def test_resolve_config_default_when_no_cli_and_no_snapshot(tmp_path):
 
 def test_resolve_config_uses_cli_when_no_snapshot(tmp_path):
     cfg = tmp_path / "mine.toml"
-    cfg.write_text("[pipeline]\ndo_pose2d = false\n")
+    cfg.write_text("[pipeline]\npose2d = false\n")
     config = Config.read_for_run(str(cfg), tmp_path)
-    assert config.source == cfg and config.data["pipeline"] == {"do_pose2d": False}
+    assert config.source == cfg and config.data["pipeline"] == {"pose2d": False}
 
 
 def test_resolve_config_cli_wins_over_snapshot(tmp_path):
     snapshot = tmp_path / "config.toml"
-    snapshot.write_text("[pipeline]\ndo_triangulation = false\n")
+    snapshot.write_text("[pipeline]\ntriangulation = false\n")
     other = tmp_path / "other.toml"
-    other.write_text("[pipeline]\ndo_triangulation = true\n")
+    other.write_text("[pipeline]\ntriangulation = true\n")
     config = Config.read_for_run(str(other), tmp_path)
-    assert config.source == other and config.data["pipeline"] == {
-        "do_triangulation": True
-    }
+    assert config.source == other and config.data["pipeline"] == {"triangulation": True}
 
 
 def test_resolve_config_snapshot_used_without_cli(tmp_path):
     snapshot = tmp_path / "config.toml"
-    snapshot.write_text("[pipeline]\ndo_visualization = false\n")
+    snapshot.write_text("[pipeline]\nvisualization = false\n")
     config = Config.read_for_run(None, tmp_path)
     assert config.source == snapshot and config.data["pipeline"] == {
-        "do_visualization": False
+        "visualization": False
     }
 
 
@@ -394,8 +392,8 @@ def _footage_cfg(tmp_path):
         "video = 'cam0\\..+'\n"
         "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
         "video = 'cam1\\..+'\n"
-        "[pipeline]\ndo_pose2d = true\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = false\n"
+        "[pipeline]\npose2d = true\nbundle_adjustment = false\n"
+        "triangulation = false\nvisualization = false\n"
     )
     return cfg
 
@@ -455,8 +453,8 @@ def test_resume_skips_footage_validation_when_pose2d_cached(result, tmp_path):
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\nvisualization = false\n"
     )
     cli.main(
         [
@@ -490,9 +488,9 @@ def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
     ).save(outdir / "results.h5")
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_inverse_kinematics = true\n"
-        "do_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\ninverse_kinematics = true\n"
+        "visualization = false\n"
         "[inverse_kinematics]\nn_iterations = 30\n"
     )
     cli.main(
@@ -852,8 +850,8 @@ def test_disabled_pose2d_reuses_cached_2d(result, tmp_path, monkeypatch):
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\nvisualization = false\n"
     )
     monkeypatch.setattr(
         pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("pose2d is off")
@@ -878,8 +876,8 @@ def test_triangulation_skipped_without_2d(tmp_path, caplog):
     outdir = tmp_path / "out"
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\nvisualization = false\n"
     )
     with caplog.at_level("WARNING"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
@@ -900,8 +898,8 @@ def test_visualization_only_from_cached_result(result, tmp_path, monkeypatch):
     result.save(outdir / "results.h5")  # full result with 3D
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = true\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = false\nvisualization = true\n"
     )
     monkeypatch.setattr(
         pipeline.stages, "stage_pose2d", lambda *a, **k: pytest.fail("no pose2d")
@@ -935,8 +933,8 @@ def test_visualization_skipped_without_result(tmp_path, caplog):
     outdir = tmp_path / "out"
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = false\ndo_visualization = true\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = false\nvisualization = true\n"
     )
     with caplog.at_level("WARNING"):
         cli.main(["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)])
@@ -1134,8 +1132,8 @@ def test_enable_pictorial_later_redetects_candidates(tmp_path, monkeypatch, capl
 
     _edit_snapshot(
         tmp_path / "out",
-        r"^do_pictorial_structures = false",
-        "do_pictorial_structures = true",
+        r"^pictorial_structures = false",
+        "pictorial_structures = true",
     )
     with caplog.at_level("WARNING", logger="deeperfly"):
         cli.main(_run_args(tmp_path, log_level="warning"))
@@ -1178,8 +1176,8 @@ def test_disable_pictorial_later_keeps_pose2d(tmp_path, monkeypatch):
 
     _edit_snapshot(
         tmp_path / "out",
-        r"^do_pictorial_structures = true",
-        "do_pictorial_structures = false",
+        r"^pictorial_structures = true",
+        "pictorial_structures = false",
     )
     cli.main(_run_args(tmp_path))
     assert len(calls) == 1  # pose2d cache (with candidates) still valid
@@ -1232,7 +1230,7 @@ def test_camera_geometry_edit_invalidates_bundle_adjustment(tmp_path, monkeypatc
 
 def test_overwrite_unknown_stage_errors(tmp_path):
     cfg = tmp_path / "cfg.toml"
-    cfg.write_text("[pipeline]\ndo_pose2d = false\n")
+    cfg.write_text("[pipeline]\npose2d = false\n")
     with pytest.raises(SystemExit, match="unknown stage"):
         cli.main(
             [
@@ -1392,8 +1390,8 @@ def test_resume_pictorial_skipped_without_candidates(result, tmp_path, caplog, m
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_pictorial_structures = true\ndo_triangulation = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "pictorial_structures = true\ntriangulation = true\nvisualization = false\n"
         f'[triangulation]\nmethod = "{method}"\n'
     )
     with caplog.at_level("WARNING"):

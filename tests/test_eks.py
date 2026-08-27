@@ -480,8 +480,8 @@ def test_run_recording_caches_the_eks_stage(result, tmp_path, caplog):
     )
     cfg = tmp_path / "cfg.toml"
     cfg.write_text(
-        "[pipeline]\ndo_pose2d = false\ndo_bundle_adjustment = false\n"
-        "do_triangulation = true\ndo_eks = true\ndo_visualization = false\n"
+        "[pipeline]\npose2d = false\nbundle_adjustment = false\n"
+        "triangulation = true\neks = true\nvisualization = false\n"
         "[eks]\nfit_frames = 4\nfit_iterations = 4\n"
     )
     argv = ["run", str(tmp_path / "rec"), "-c", str(cfg), "-o", str(outdir)]

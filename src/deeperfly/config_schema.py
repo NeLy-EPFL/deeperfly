@@ -216,7 +216,7 @@ def stage_flags_spec() -> SectionSpec:
         "[<stage>] table.",
         fields=tuple(
             FieldSpec(
-                name=f"do_{stage}",
+                name=stage,
                 type="bool",
                 default=default,
                 doc=f"Run the {stage.replace('_', ' ')} stage.",

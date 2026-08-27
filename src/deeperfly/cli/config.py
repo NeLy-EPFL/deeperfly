@@ -49,16 +49,15 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
 
     if args.section in (None, "pipeline"):
         # `[pipeline]` has no params dataclass, so its rows are built here rather than by
-        # `effective()`. Two shapes have to line up: the table is keyed by FIELD name
-        # (`do_eks`) while `stage_flags()` is keyed by STAGE name (`eks`), and each row is
-        # `(value, is_default)` rather than a bare bool. Getting either wrong prints an
-        # em-dash for every flag, which is what it did -- and which reads as "unset" for
-        # exactly the keys a reader is most likely to be checking.
+        # `effective()`. Each row is `(value, is_default)` rather than a bare bool;
+        # getting that wrong prints an em-dash for every flag, which is what it did -- and
+        # which reads as "unset" for exactly the keys a reader is most likely to be
+        # checking. (The field name and the stage name are the same word now.)
         declared = config.data.get("pipeline", {}) or {}
         _print_section(
             stage_flags_spec(),
             {
-                f"do_{stage}": (on, f"do_{stage}" not in declared)
+                stage: (on, stage not in declared)
                 for stage, on in config.stage_flags().items()
             },
         )

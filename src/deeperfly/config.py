@@ -1394,16 +1394,38 @@ class Config:
     # -- pipeline orchestration ---------------------------------------------
 
     def stage_flags(self) -> dict[str, bool]:
-        """Which stages are enabled, from the ``[pipeline].do_<stage>`` booleans.
+        """Which stages are enabled, from the ``[pipeline].<stage>`` booleans.
+
+        The key is the stage's own name. ``do_`` was a prefix on a key inside a table
+        called ``pipeline``, which already said what the booleans were about; a
+        ``do_<stage>`` key is refused by name rather than silently ignored, because an
+        ignored one leaves the stage at its default and reads as "the flag did nothing".
 
         Returns
         -------
         dict of str to bool
             ``stage_name -> enabled`` for every stage in :data:`STAGES`, each
             defaulting to :data:`STAGE_DEFAULTS`.
+
+        Raises
+        ------
+        ValueError
+            On a ``do_<stage>`` key, or a key that is not a stage at all.
         """
         pipe = self.data.get("pipeline", {})
-        return {n: bool(pipe.get(f"do_{n}", STAGE_DEFAULTS[n])) for n in STAGES}
+        retired = sorted(k for k in pipe if k.startswith("do_") and k[3:] in STAGES)
+        if retired:
+            raise ValueError(
+                f"[pipeline] carries {retired}, which this release no longer honors: the "
+                "`do_` prefix is gone, since [pipeline] already says what these are.\n"
+                + "".join(f"    {k[3:]} = ...\n" for k in retired)
+            )
+        unknown = sorted(set(pipe) - set(STAGES))
+        if unknown:
+            raise ValueError(
+                f"[pipeline] has unknown key(s) {unknown}; allowed: {list(STAGES)}"
+            )
+        return {n: bool(pipe.get(n, STAGE_DEFAULTS[n])) for n in STAGES}
 
     # -- structured sections: the domain objects their parsers build --------
 

@@ -140,7 +140,7 @@ class Panel:
     ``stage`` names the pipeline stage whose points to draw -- ``"pose2d"``,
     ``"triangulation"``, ``"eks"``, ``"pictorial_structures"``. Unset means "whatever the
     result resolved to", which is the MOST DERIVED stage present, so a video's meaning
-    changes when a later stage is enabled: turn on ``do_eks`` and a panel that used to
+    changes when a later stage is enabled: turn on ``[pipeline] eks`` and a panel that used to
     show the triangulation shows the smoother's output instead, under the same video
     name. Naming the stage is how a video keeps meaning one thing, and how a before/after
     pair is expressed at all.
@@ -502,7 +502,7 @@ class Sources:
             if pts3d is None:
                 raise ValueError(
                     f"the {_BIRD_VIEW!r} panel is a plan view derived from the 3D pose, "
-                    "so it needs Sources.pts3d (enable do_triangulation)"
+                    "so it needs Sources.pts3d (enable [pipeline] triangulation)"
                 )
             like = next(iter(self.camera_group), None)
             cached = dorsal_camera(pts3d, self.skeleton, like=like)
