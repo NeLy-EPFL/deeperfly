@@ -29,16 +29,16 @@ def config() -> Config:
     """Reference camera rig config (cameras only)."""
     return Config.from_dict(
         {
+            "default_camera": {
+                "focal_length_px": [FOCAL_PX, FOCAL_PX],
+                "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
+                "distortion_coefficients": [],
+                "look_at": [0.0, 0.0, 0.0],
+                "distance": DISTANCE_MM,
+                "elevation_deg": 0.0,
+                "roll_deg": 0.0,
+            },
             "cameras": {
-                "defaults": {
-                    "focal_length_px": [FOCAL_PX, FOCAL_PX],
-                    "principal_point_px": [(WIDTH - 1) / 2, (HEIGHT - 1) / 2],
-                    "distortion_coefficients": [],
-                    "look_at": [0.0, 0.0, 0.0],
-                    "distance": DISTANCE_MM,
-                    "elevation_deg": 0.0,
-                    "roll_deg": 0.0,
-                },
                 **{
                     name: {"azimuth_deg": az}
                     for name, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
@@ -207,7 +207,7 @@ def test_group_from_config_dict(config):
 
 def test_group_from_config_toml_file(tmp_path):
     toml = """
-    [cameras.defaults]
+    [default_camera]
     focal_length_px = 800.0
     principal_point_px = [320.0, 240.0]
     distance = 5.0
@@ -233,8 +233,8 @@ def test_group_empty_config_raises():
 def test_group_from_config_infers_principal_point_per_view():
     # Defaults omit principal_point_px; each view's center comes from image_sizes.
     config = {
+        "default_camera": {"focal_length_px": 800.0, "distance": 5.0},
         "cameras": {
-            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
             "left": {"azimuth_deg": 0.0},
             "right": {"azimuth_deg": 90.0},
         },
@@ -250,16 +250,16 @@ def test_group_from_config_infers_principal_point_per_view():
 
 
 def test_group_from_config_ignores_non_rig_keys():
-    """A view is pure geometry: a footage glob beside it is not part of the rig.
+    """A camera is pure geometry: the footage pattern beside it is not part of the rig.
 
-    And its intrinsics describe the RAW source frame, which is what lets the detector
-    window a view however it likes -- a pathway's frame ops are inverted on the way back,
-    so a detection meets its camera in raw pixels regardless.
+    And its intrinsics describe the RAW frame, which is what lets the detector window a
+    camera however it likes -- a detection is mapped back through the window before it
+    meets a camera, so it always arrives in raw pixels.
     """
     config = {
+        "default_camera": {"focal_length_px": 800.0, "distance": 5.0},
         "cameras": {
-            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
-            "left": {"azimuth_deg": 0.0, "input": "cam0.mp4"},
+            "left": {"azimuth_deg": 0.0, "video": "cam0.mp4"},
         },
     }
     image_sizes = {"left": (100, 100)}
@@ -282,8 +282,8 @@ def test_a_retired_per_camera_preprocess_key_is_refused_not_ignored():
     "your crop did nothing" is not actionable on its own.
     """
     config = {
+        "default_camera": {"focal_length_px": 800.0, "distance": 5.0},
         "cameras": {
-            "defaults": {"focal_length_px": 800.0, "distance": 5.0},
             "left": {"azimuth_deg": 0.0, "preprocess": [{"op": "fliplr"}]},
         },
     }
@@ -294,26 +294,68 @@ def test_a_retired_per_camera_preprocess_key_is_refused_not_ignored():
     assert "[pose2d]" in str(e.value) and "preprocessor" in str(e.value)
 
 
-def test_the_retired_key_is_refused_under_defaults_too():
-    """`[cameras.defaults]` is where someone would put it to crop every view."""
+def test_the_retired_key_is_refused_under_the_shared_table_too():
+    """`[default_camera]` is where someone would put it to crop every camera."""
     config = {
+        "default_camera": {
+            "focal_length_px": 800.0,
+            "distance": 5.0,
+            "preprocess": [{"op": "fliplr"}],
+        },
         "cameras": {
-            "defaults": {
-                "focal_length_px": 800.0,
-                "distance": 5.0,
-                "preprocess": [{"op": "fliplr"}],
-            },
             "left": {"azimuth_deg": 0.0},
         },
     }
-    with pytest.raises(ValueError, match=r"\[cameras\.defaults\] carries 'preprocess'"):
+    with pytest.raises(ValueError, match=r"\[default_camera\] carries 'preprocess'"):
         Config.from_dict(config).camera_table()
+
+
+def test_a_leftover_mirror_key_is_refused_by_name():
+    """It named the camera seeing this one's mirror image, for flip augmentation.
+
+    Refused rather than ignored, and that is the whole point: the previous release kept
+    it as "a fact about how the rig was built" with no reader left, so a config carrying
+    it was already running without it -- and silence there is exactly what a reader would
+    take for "still honored". The message has to say what replaces it, which is nothing
+    in the config: the mirror is the camera at the negated azimuth.
+    """
+    config = {
+        "default_camera": {"focal_length_px": 800.0, "distance": 5.0},
+        "cameras": {"left": {"azimuth_deg": 45.0, "mirror": "right"}},
+    }
+    with pytest.raises(ValueError, match=r"\[cameras\.left\] carries 'mirror'") as e:
+        Config.from_dict(config).camera_table()
+    assert "azimuth_deg" in str(e.value)
+
+
+def test_a_camera_called_defaults_is_refused_by_name():
+    """The v1 spelling of the shared values, and now an illegal camera name.
+
+    [cameras] is a pure name -> camera map, which is what makes it safe to read without
+    knowing a reserved word; a `defaults` sub-table there would parse as a camera with no
+    azimuth and fail somewhere else entirely.
+    """
+    with pytest.raises(ValueError, match=r"\[cameras\] carries 'defaults'") as e:
+        Config.from_dict({"cameras": {"defaults": {"distance": 5.0}}}).camera_table()
+    assert "[default_camera]" in str(e.value)
+
+
+def test_a_calibration_key_under_cameras_is_refused_by_name():
+    with pytest.raises(ValueError, match=r"\[cameras\] carries 'calibration'") as e:
+        Config.from_dict({"cameras": {"calibration": "cal.toml"}}).camera_table()
+    assert "[calibration]" in str(e.value)
+
+
+def test_a_bare_key_under_cameras_is_refused():
+    """Not a camera and not a reserved word -- so it can only be a mistake."""
+    with pytest.raises(ValueError, match=r"non-table key\(s\) \['fps'\]"):
+        Config.from_dict({"cameras": {"fps": 100}}).camera_table()
 
 
 def test_group_from_config_missing_principal_point_no_sizes_raises():
     config = {
+        "default_camera": {"focal_length_px": 800.0},
         "cameras": {
-            "defaults": {"focal_length_px": 800.0},
             "left": {"distance": 5.0},
         },
     }

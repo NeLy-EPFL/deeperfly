@@ -116,7 +116,7 @@ def extract_section(text: str, name: str) -> str:
     machine-serialized equivalent.
 
     Header matching is anchored to the start of a line, so a section *mentioned* inside a
-    comment (the packaged config discusses ``[cameras.defaults]`` before declaring it) is
+    comment (the packaged config discusses ``[default_camera]`` before declaring it) is
     not mistaken for the declaration.
 
     Parameters

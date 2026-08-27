@@ -447,8 +447,8 @@ def _mirror_config(left_point, *, symmetries=None, mirror_left=True):
     return Config.from_dict(
         {
             "skeleton": skel,
+            "default_camera": {"distance": 1.0},
             "cameras": {
-                "defaults": {"distance": 1.0},
                 "left": {"azimuth_deg": 90},
                 "right": {"azimuth_deg": -90},
             },
@@ -541,7 +541,8 @@ def test_an_even_number_of_reflections_is_not_a_mirror():
     cfg = Config.from_dict(
         {
             "skeleton": {"points": ["l_a", "r_a"], "symmetries": [["l_a", "r_a"]]},
-            "cameras": {"defaults": {"distance": 1.0}, "a": {"azimuth_deg": 0}},
+            "default_camera": {"distance": 1.0},
+            "cameras": {"a": {"azimuth_deg": 0}},
             "sources": [{"name": "vid", "filename": "v"}],
             "pose2d": {
                 "preprocessors": [

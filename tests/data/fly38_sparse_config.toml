@@ -47,7 +47,7 @@ include = "fly38_deepfly3d.toml"
 
 
 # == Views ===================================================================
-[cameras.defaults]
+[default_camera]
 focal_length_px = 22388.125
 distance = 107.463
 

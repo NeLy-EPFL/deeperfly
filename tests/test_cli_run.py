@@ -273,20 +273,16 @@ def _set_snapshot_key(outdir, section, line):
 
 
 def _with_calibration(text, filename=None):
-    """The packaged config with ``[cameras].calibration`` set.
+    """The packaged config with ``[calibration].path`` set.
 
-    A ``[cameras]`` table is *added* rather than uncommented: the packaged config gives
-    each view its own ``[cameras.<name>]`` table and no bare ``[cameras]`` header, because
-    ``deeperfly project`` injects its solved rig as a ``calibration`` key there and two
-    headers would collide. Enabling one by hand therefore means adding the table, which
-    is what this reproduces.
+    PREPENDED rather than spliced in beside a marker: the packaged config discusses
+    ``[calibration]`` in prose before declaring it, so a first-occurrence replace lands
+    inside a comment. A top-level table is order-independent in TOML.
     """
     from deeperfly.calibration import CALIBRATION_FILENAME as _default
 
     name = filename or _default
-    marker = "[cameras.defaults]"
-    assert marker in text, "the packaged config no longer has [cameras.defaults]"
-    return text.replace(marker, f'[cameras]\ncalibration = "{name}"\n\n{marker}', 1)
+    return f'[calibration]\npath = "{name}"\n\n' + text
 
 
 def _make_fly_recording(d):

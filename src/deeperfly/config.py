@@ -806,7 +806,22 @@ def _source_filename(filename, name: str) -> str | list[str]:
 #: It survived as accepted-and-ignored, which is the worst place for it to be: a crop is
 #: exactly what a wrongly-framed axial camera needs, so the key that did nothing was the one
 #: a reader of the docs reached for in the situation where being wrong costs most.
+#: ``[cameras]`` keys that are no longer cameras, ``key -> what to write instead``.
+RETIRED_CAMERAS_KEYS = {
+    "defaults": "renamed and moved out: [default_camera], a sibling table -- so [cameras] "
+    "holds nothing but cameras and no camera can be called `defaults`",
+    "calibration": 'moved to its own table: [calibration]\n    path = "calibration.toml"',
+}
+
 RETIRED_CAMERA_KEYS = {
+    "mirror": (
+        "gone: it named the camera that sees this one's mirror image, for flip "
+        "augmentation during training. Its in-repo consumer went in 0.2.0 and dfpose "
+        "hardcodes its own table, so nothing reads it. Should a reader appear it is "
+        "derivable with no config surface -- the mirror is the camera at the negated "
+        "`azimuth_deg`, which every camera declares and which, unlike the extrinsics, is "
+        "known before there is a calibration."
+    ),
     "preprocess": (
         "frame ops moved to the detection pathway, where the transform is inverted on the "
         "way back so the detections still land in raw footage pixels:\n"
@@ -821,20 +836,21 @@ RETIRED_CAMERA_KEYS = {
 
 
 def _refuse_retired_camera_keys(defaults: dict, views: dict[str, dict]) -> None:
-    """Raise on a ``[cameras.*]`` key this release no longer honors.
+    """Raise on a per-camera key this release no longer honors.
 
     Checked here rather than at the rig parser because the rig parser never sees these:
     they are stripped as non-geometry before a spec reaches
-    :meth:`~deeperfly.cameras.Camera.from_spec`, which is exactly how one went on being
-    accepted and ignored.
+    :meth:`~deeperfly.cameras.Camera.from_spec`, which is exactly how they went on being
+    accepted and ignored -- which is why they are named rather than dropped now.
     """
-    for where, spec in [("defaults", defaults), *views.items()]:
+    for where, spec in [("[default_camera]", defaults), *views.items()]:
+        loc = where if where.startswith("[") else f"[cameras.{where}]"
         for key, advice in RETIRED_CAMERA_KEYS.items():
             if key in spec:
                 raise ValueError(
-                    f"[cameras.{where}] carries {key!r}, which this release no longer "
-                    f"honors -- it was accepted and silently ignored before, so a config "
-                    f"relying on it was already running without it.\n  {advice}"
+                    f"{loc} carries {key!r}, which this release no longer honors -- it "
+                    f"was accepted and silently ignored before, so a config relying on "
+                    f"it was already running without it.\n  {advice}"
                 )
 
 
@@ -1400,52 +1416,6 @@ class Config:
 
         return Skeleton.from_config(self)
 
-    def mirror_views(self) -> dict[str, str]:
-        """``view -> the view that sees this view's mirror image`` (``[cameras.<n>].mirror``).
-
-        Only the views that declare it; empty when none do. Consumed by flip augmentation
-        (which lives outside this package): a mirrored training sample must be told which
-        camera it now *looks like*, or any metric that splits by camera side -- ipsilateral
-        versus contralateral error, the one that matters most on this rig -- silently calls
-        every swapped channel by the wrong side.
-
-        The mapping must be an **involution**: if ``rf`` mirrors to ``lf`` then ``lf`` must
-        mirror to ``rf``, and a camera on the midline (the front view, whose mirror is still
-        a front view) declares itself. Validated here, because a half-declared pairing is
-        the kind of thing that reads as correct and behaves as a silent side swap on one
-        camera only.
-
-        Declared rather than derived from the extrinsics on purpose. Which camera is the
-        mirror of which is a fact about how the rig was built, and it stays true before
-        there is any calibration to compute it from.
-
-        Raises
-        ------
-        ValueError
-            If a ``mirror`` names an unknown view, or if the relation is not symmetric.
-        """
-        _, cams = self.camera_table()
-        out = {
-            name: str(spec["mirror"])
-            for name, spec in cams.items()
-            if spec.get("mirror")
-        }
-        for name, other in out.items():
-            if other not in cams:
-                raise ValueError(
-                    f"[cameras.{name}].mirror names unknown view {other!r}; "
-                    f"views: {sorted(cams)}"
-                )
-            back = out.get(other)
-            if back != name:
-                got = "nothing" if back is None else repr(back)
-                raise ValueError(
-                    f"[cameras.{name}].mirror = {other!r} but [cameras.{other}].mirror "
-                    f"is {got}; the mirror relation must be symmetric (a midline camera "
-                    f"mirrors to itself)"
-                )
-        return out
-
     def detection_plan(self) -> "DetectionPlan":
         """The 2D detection plan (``[[sources]]`` + ``[[pose2d.preprocessors]]``/``[[pose2d.models]]``/``[[pose2d.pathways]]``).
 
@@ -1473,25 +1443,45 @@ class Config:
         return plan
 
     def camera_table(self) -> tuple[dict, dict]:
-        """Split ``[cameras]`` into the shared defaults and the per-camera specs.
+        """``([default_camera], [cameras.*])`` -- the shared values and the cameras.
+
+        ``[cameras]`` is a pure name -> camera map: no reserved key and no sub-table that
+        could be mistaken for an entry, which is what the sibling ``[default_camera]``
+        buys. A bare key or a ``defaults`` sub-table under ``[cameras]`` is therefore
+        refused by name rather than skipped -- a camera called ``defaults`` used to be the
+        way to write the shared values, so silence there is what a reader of a v1 config
+        would misread as "still honored".
 
         Returns
         -------
         defaults, cameras : dict
-            The ``[cameras.defaults]`` spec and the real per-camera specs (keyed
-            by name, with ``defaults`` and the scalar ``calibration`` key excluded).
+            The ``[default_camera]`` spec and the per-camera specs, keyed by name.
         """
         cams = dict(self.data.get("cameras", {}))
-        defaults = cams.pop("defaults", {})
-        cams.pop("calibration", None)  # a path, not a camera -- see calibration_path
-        # A non-table value under [cameras] is a key, not a view; keeping one would
-        # reach Camera.from_spec as a spec and fail with a confusing message.
-        views = {k: v for k, v in cams.items() if isinstance(v, dict)}
-        _refuse_retired_camera_keys(defaults, views)
-        return defaults, views
+        for key, advice in RETIRED_CAMERAS_KEYS.items():
+            if key in cams:
+                raise ValueError(
+                    f"[cameras] carries {key!r}, which this release no longer honors.\n"
+                    f"  {advice}\n"
+                    "  [cameras] holds one table per camera and nothing else."
+                )
+        bare = sorted(k for k, v in cams.items() if not isinstance(v, dict))
+        if bare:
+            raise ValueError(
+                f"[cameras] holds non-table key(s) {bare}; it is a map of camera name "
+                "to camera. Shared values go in [default_camera], the solved rig in "
+                "[calibration]."
+            )
+        defaults = dict(self.data.get("default_camera", {}))
+        _refuse_retired_camera_keys(defaults, cams)
+        return defaults, cams
 
     def calibration_path(self) -> Path | None:
-        """The solved rig this config points at (``[cameras].calibration``), if any.
+        """The solved rig this config points at (``[calibration].path``), if any.
+
+        Its own table rather than a key under ``[cameras]``, which is what lets
+        ``deeperfly project compose_config`` inject it as a fragment of its own without
+        overlapping the rig fragment.
 
         A relative path resolves against the **config file's own directory**, so a
         config and the calibration beside it travel together (and an output-dir
@@ -1505,7 +1495,15 @@ class Config:
             The calibration file/directory, or ``None`` when the config specifies the
             rig as an orbit (the default).
         """
-        raw = self.data.get("cameras", {}).get("calibration")
+        table = self.data.get("calibration") or {}
+        if not isinstance(table, dict):
+            raise ValueError(f"[calibration] must be a table, got {table!r}")
+        unknown = sorted(set(table) - {"path"})
+        if unknown:
+            raise ValueError(
+                f"[calibration] has unknown key(s) {unknown}; allowed: path"
+            )
+        raw = table.get("path")
         if raw is None:
             return None
         path = Path(str(raw))
@@ -1632,9 +1630,7 @@ class Config:
         dropped_views: list[str] = []
         if isinstance(cams, dict):
             for view in [
-                v
-                for v, spec in cams.items()
-                if isinstance(spec, dict) and v != "defaults" and v not in fed
+                v for v, spec in cams.items() if isinstance(spec, dict) and v not in fed
             ]:
                 cams.pop(view)
                 dropped_views.append(view)
@@ -1657,7 +1653,7 @@ class Config:
         surviving = [
             v
             for v, spec in (narrowed.data.get("cameras") or {}).items()
-            if isinstance(spec, dict) and v != "defaults"
+            if isinstance(spec, dict)
         ]
         log.warning(
             "narrowing this run to the footage present: source(s) %s resolved no files, "
@@ -1707,7 +1703,7 @@ class Config:
         declared = [
             v
             for v, spec in (self.data.get("cameras") or {}).items()
-            if isinstance(spec, dict) and v != "defaults"
+            if isinstance(spec, dict)
         ]
         dropped = [v for v in declared if v not in keep]
         if not dropped:

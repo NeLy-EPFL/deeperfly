@@ -32,15 +32,15 @@ def test_value_nests():
 _ARRAY_OF_ARRAYS = """\
 [skeleton]
 name = "toy"
-point_names = ["l_a", "r_a"]
+points = ["l_a", "r_a"]
 symmetries = [
     ["l_a", "r_a"],
 ]
 
-[skeleton.limb_palette]
-body = "#000000"
+[skeleton.colors]
+"*" = "#000000"
 
-[cameras.defaults]
+[cameras.a]
 distance = 1.0
 """
 
@@ -57,7 +57,7 @@ def test_extract_section_is_not_ended_by_an_array_continuation_line():
     assert set(parsed) == {"skeleton"}
     assert parsed["skeleton"]["symmetries"] == [["l_a", "r_a"]]
     # Sub-tables of the section come along; the next top-level table does not.
-    assert parsed["skeleton"]["limb_palette"] == {"body": "#000000"}
+    assert parsed["skeleton"]["colors"] == {"*": "#000000"}
 
 
 def test_top_level_tables_ignores_array_continuation_lines():

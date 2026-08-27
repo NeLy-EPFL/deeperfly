@@ -67,55 +67,44 @@ filename = ["camera_H.mp4", "camera_7.mp4"]
 # include = "fly38"
 
 
-# == Views ===================================================================
-# The geometric cameras a pathway maps its points back into: eight views orbiting an
-# object near the world origin. A view holds only geometry -- its footage comes from the
-# pathway's source, and its intrinsics describe that source's RAW frame, since detections
-# are mapped back to raw pixels before they meet a camera. `defaults` merges into each.
+# == Rig =====================================================================
+# A solved calibration WINS over [default_camera] + [cameras.*], which are then read only
+# for the camera ORDER (the V axis of every points array). That is how a rig travels
+# between recordings: an orbit is a human's description of it, a calibration a solver's
+# measurement, and raw extrinsics cannot be written in a camera table at all. Point it at
+# a calibration.toml from a previous run (`deeperfly calibration export`) or a board.
 #
-# `calibration` points at a SOLVED rig -- a calibration.toml from a previous run
-# (`deeperfly calibration export`) or a board -- and WINS over the orbits below, which are
-# then read only for their order. That is how a rig travels between recordings: an orbit
-# is a human's description of it, a calibration a solver's measurement, and raw extrinsics
-# cannot be written in a view table at all.
-#
-# `mirror` names the view seeing this one's MIRROR IMAGE. A TRAINING key only -- flip
-# augmentation relabels a flipped sample with the mirrored camera, so a metric splitting
-# ipsilateral from contralateral error still reads the side off the camera id -- and a run
-# drops it. Must be an involution; a midline camera names itself. Written out rather than
-# computed: that it is `-azimuth` here is a coincidence of a symmetric layout.
-#
-# One [cameras.<name>] table per view rather than inline entries under a bare [cameras]:
-# `deeperfly project` injects its solved rig as a `calibration` key there.
-#
-#   [cameras]
-#   calibration = "calibration.toml"      # relative to THIS file; uncomment to use one
-[cameras.defaults]
+# [calibration]
+# path = "calibration.toml"                # relative to THIS file
+
+# What every camera is before it says otherwise: each [cameras.<name>] starts here and
+# overrides what it needs. Same keys as a camera.
+[default_camera]
 focal_length_px = 22388.125               # scalar when fx == fy, else [fx, fy]
 distance = 107.463
-# principal_point_px = [479.5, 239.5]     # omit: inferred per view from its own frame
+# principal_point_px = [479.5, 239.5]     # omit: each camera's own frame center
 
+
+# == Cameras =================================================================
+# One table per camera, in the order that is the V axis of every points array. A camera
+# holds only geometry, and its intrinsics describe its RAW frame -- detections are mapped
+# back to raw pixels before they meet a camera, so a detection window never moves the
+# principal point. [cameras] holds nothing but cameras: shared values live in
+# [default_camera] and the solved rig in [calibration].
 [cameras.rh]
 azimuth_deg = -120
-mirror = "lh"
 [cameras.rm]
 azimuth_deg = -90
-mirror = "lm"
 [cameras.rf]
 azimuth_deg = -45
-mirror = "lf"
 [cameras.f]
 azimuth_deg = 0
-mirror = "f"
 [cameras.lf]
 azimuth_deg = 45
-mirror = "rf"
 [cameras.lm]
 azimuth_deg = 90
-mirror = "rm"
 [cameras.lh]
 azimuth_deg = 120
-mirror = "rh"
 
 # The axial hind view: the rig's only left/right BRIDGE, and the reason the shipped
 # detector was trained on eight. Without it no camera sees both body sides, so a
@@ -133,7 +122,6 @@ mirror = "rh"
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168
-mirror = "h"                              # a midline camera is its own mirror image
 
 
 # == Pipeline ================================================================

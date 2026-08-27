@@ -215,7 +215,7 @@ def _rig_coverage(config: Config) -> list[str]:
     declared = [
         v
         for v, spec in (config.data.get("cameras") or {}).items()
-        if isinstance(spec, dict) and v != "defaults"
+        if isinstance(spec, dict)
     ]
     path = config.calibration_path()
     if path is None:

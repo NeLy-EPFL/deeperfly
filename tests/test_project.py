@@ -666,7 +666,7 @@ def test_extract_section_takes_the_last_section_to_the_end_of_file():
 
 
 def test_extract_section_ignores_a_header_named_inside_a_comment():
-    """The packaged config discusses [cameras.defaults] before declaring it."""
+    """The packaged config discusses [default_camera] before declaring it."""
     from deeperfly._toml import extract_section
 
     got = extract_section("# see [b] below\n[a]\nx = 1\n[b]\ny = 2\n", "a")
@@ -803,12 +803,11 @@ def test_the_rig_can_be_lifted_into_the_project(project):
 
     path = project.write_rig()
     parsed = tomllib.loads(path.read_text())
-    assert len(parsed["sources"]) == _N_VIEWS
     assert set(parsed["cameras"]) >= set(CAMERA_NAMES)
-    # A bare [cameras] would collide with the calibration key composition injects.
-    assert not any(
-        line.strip() == "[cameras]" for line in path.read_text().splitlines()
-    )
+    assert parsed["default_camera"]["focal_length_px"] > 0
+    # The calibration is NOT lifted with it -- it is its own table, injected per
+    # composition, which is what keeps the two fragments disjoint.
+    assert "calibration" not in parsed
     # Comments survive: the rig's prose explains the orbit convention.
     assert "#" in path.read_text()
 
@@ -823,7 +822,7 @@ def test_the_current_calibration_is_injected_into_the_composition(cameras, proje
     project.save()
 
     parsed = tomllib.loads(project.compose_config())
-    assert parsed["cameras"]["calibration"].endswith("calibrations/rig.toml")
+    assert parsed["calibration"]["path"].endswith("calibrations/rig.toml")
     # ...and the composed config actually resolves the rig through it.
     text = project.compose_config()
     written = project.root / "composed.toml"
@@ -835,19 +834,32 @@ def test_the_current_calibration_is_injected_into_the_composition(cameras, proje
 def test_two_fragments_declaring_one_table_is_refused(project):
     """TOML forbids it, and the failure must name which files collide, not just fail to parse."""
     project.write_rig()
-    project.profile_path().write_text('[[sources]]\nname = "oops"\n')
+    project.profile_path().write_text("[cameras.oops]\nazimuth_deg = 0\n")
     with pytest.raises(ValueError, match="declare"):
         project.compose_config()
 
 
-def test_a_rig_with_a_bare_cameras_table_is_refused(cameras, project):
+def test_the_rig_and_the_calibration_no_longer_overlap(cameras, project):
+    """`[calibration]` being its own table is what removed the guard's one exception.
+
+    As a `[cameras]` key it overlapped the rig fragment's `[cameras.*]` sub-tables, so
+    the collision check had to carry an exception for the one legal overlap -- and a rig
+    that declared a bare `[cameras]` of its own then needed a second, separate refusal.
+    Neither exists now, so a rig declaring `[cameras]` is refused by the plain rule.
+    """
     project.write_rig()
-    project.rig_path().write_text("[cameras]\nfocal_length_px = 1.0\n")
     cal = project.root / "calibrations" / "rig.toml"
     cameras.to_calibration(name="rig").save(cal)
     project.calibration = "calibrations/rig.toml"
     project.save()
-    with pytest.raises(ValueError, match="bare \\[cameras\\]"):
+    # The two fragments are disjoint, so composition succeeds...
+    import tomllib
+
+    parsed = tomllib.loads(project.compose_config())
+    assert "calibration" in parsed and "cameras" in parsed
+    # ...and a second [cameras] anywhere is the ordinary collision.
+    project.profile_path().write_text("[cameras.rh]\nazimuth_deg = 0\n")
+    with pytest.raises(ValueError, match=r"declare\s+\[cameras\]"):
         project.compose_config()
 
 

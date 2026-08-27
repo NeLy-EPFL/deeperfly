@@ -46,12 +46,11 @@ filename = ["camera_H.mp4", "camera_7.mp4"]
 # RAW frame -- the crops below never move the principal point, because detections are
 # mapped back to raw pixels before they meet a camera. `defaults` merges into each view.
 #
-# No `mirror` key: it names the view seeing a view's mirror image and is a TRAINING key
-# only, which a run drops. The packaged default config declares it.
+# A solved rig wins over the orbits below, which are then read only for the camera ORDER:
 #
-#   [cameras]
-#   calibration = "calibration.toml"      # a SOLVED rig; wins over the orbits below
-[cameras.defaults]
+#   [calibration]
+#   path = "calibration.toml"             # relative to THIS file
+[default_camera]
 focal_length_px = 22388.125               # scalar when fx == fy, else [fx, fy]
 distance = 107.463
 # principal_point_px = [479.5, 239.5]     # omit: inferred per view from its own frame

@@ -206,11 +206,9 @@ def _config_with_partial_calibration(tmp_path, drop="h"):
     partial.to_calibration(
         name="rig", image_sizes={k: (512, 1024) for k in partial.names}
     ).save(cal)
-    text = cfg.snapshot_text().replace(
-        "[cameras.defaults]",
-        f'[cameras]\ncalibration = "{cal}"\n\n[cameras.defaults]',
-        1,
-    )
+    # Prepended: the packaged config discusses `[calibration]` in prose before declaring
+    # it, so a first-occurrence replace would land inside a comment.
+    text = f'[calibration]\npath = "{cal}"\n\n' + cfg.snapshot_text()
     path = tmp_path / "config.toml"
     path.write_text(text)
     return Config.from_toml(path), sizes
@@ -251,15 +249,7 @@ def test_an_unreadable_calibration_is_left_to_the_stage_that_needs_it(tmp_path):
 
     cal = tmp_path / "rig.toml"
     cal.write_text("this is not toml {{{")
-    text = (
-        Config.default()
-        .snapshot_text()
-        .replace(
-            "[cameras.defaults]",
-            f'[cameras]\ncalibration = "{cal}"\n\n[cameras.defaults]',
-            1,
-        )
-    )
+    text = f'[calibration]\npath = "{cal}"\n\n' + Config.default().snapshot_text()
     path = tmp_path / "config.toml"
     path.write_text(text)
     cfg = Config.from_toml(path)

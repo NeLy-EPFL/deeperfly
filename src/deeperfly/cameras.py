@@ -65,10 +65,9 @@ _UNSUPPORTED_EXTRINSICS_KEYS = (
     "eye",
 )
 
-# Per-camera keys owned by other stages (footage glob, frame preprocessing, the
-# mirror-view pairing training reads), not the rig geometry -- dropped before a
-# spec reaches :meth:`Camera.from_spec`.
-_NON_RIG_KEYS = ("input", "preprocess", "mirror")
+# The one per-camera key that is not rig geometry: the footage pattern, which belongs to
+# discovery. Dropped before a spec reaches :meth:`Camera.from_spec`.
+_NON_RIG_KEYS = ("video",)
 
 
 def _rig_keys(spec: dict) -> dict:
@@ -396,12 +395,11 @@ class CameraGroup:
     ) -> CameraGroup:
         """Build a group from a config.
 
-        Reads ``[cameras.defaults]`` and ``[cameras.<name>]``; per-camera keys
-        override the defaults. A camera here is a geometric *view*: its
-        intrinsics describe its source's raw footage frame, the frame a pathway
-        maps its detections back into (see
-        :mod:`deeperfly.pose2d.pathways`). Detector-input geometry (mirror,
-        crop, resize) lives in the pathways, not on the view.
+        Reads ``[default_camera]`` and ``[cameras.<name>]``; per-camera keys
+        override the shared ones. A camera here is a geometric *view*: its
+        intrinsics describe its own raw footage frame, the frame detections are
+        mapped back into (see :mod:`deeperfly.pose2d.pathways`), so a detection
+        window (``[pose2d.crops]``) never moves the principal point.
 
         Parameters
         ----------
@@ -410,7 +408,7 @@ class CameraGroup:
         image_sizes
             Maps a view name to its source's raw footage ``(height, width)``,
             used to infer that view's principal point (image center) when
-            neither the camera spec nor ``[cameras.defaults]`` specifies
+            neither the camera spec nor ``[default_camera]`` specifies
             ``principal_point_px``.
 
         Returns
@@ -425,7 +423,7 @@ class CameraGroup:
 
         Notes
         -----
-        ``[cameras].calibration`` wins over the orbit specs when present: an orbit is a
+        ``[calibration].path`` wins over the orbit specs when present: an orbit is a
         human's description of the rig they built, a calibration is a solver's
         measurement of it, and the measurement is the better rig. The ``[cameras.<name>]`` tables
         are then read only for their **order** (the ``V`` axis of every points array is

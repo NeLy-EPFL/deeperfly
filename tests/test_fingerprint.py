@@ -257,10 +257,10 @@ def test_the_calibration_a_config_points_at_is_fingerprinted_by_content(
 ):
     """A solved rig must invalidate its consumers -- by CONTENT, not merely by path.
 
-    ``camera_table()`` drops the scalar ``calibration`` key (it is a path, not a view), so
-    fingerprinting the tables alone left the rig a run *actually builds from* invisible to
-    the cache. Re-solving a calibration rewrites it under the same name, which is the common
-    case and the one a path cannot see -- so cached bundle_adjustment /
+    ``camera_table()`` never sees the calibration -- it is a path in its own table, not a
+    camera -- so fingerprinting the tables alone left the rig a run *actually builds from*
+    invisible to the cache. Re-solving a calibration rewrites it under the same name, which
+    is the common case and the one a path cannot see -- so cached bundle_adjustment /
     pictorial_structures / triangulation / visualization were reused against a rig that no
     longer existed.
     """
@@ -268,13 +268,13 @@ def test_the_calibration_a_config_points_at_is_fingerprinted_by_content(
     rig.write_text("# solved rig, pass 1\n")
     enabled = _cfg().stage_flags()
     before = stage_fingerprint(
-        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+        "bundle_adjustment", _cfg({"calibration.path": str(rig)}), enabled, store
     )
 
     # Re-solved IN PLACE: same path, different numbers.
     rig.write_text("# solved rig, pass 2 -- different numbers\n")
     after = stage_fingerprint(
-        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+        "bundle_adjustment", _cfg({"calibration.path": str(rig)}), enabled, store
     )
     assert fingerprint_diff(before, after), (
         "re-solving in place must invalidate the cache"
@@ -286,14 +286,14 @@ def test_the_calibration_a_config_points_at_is_fingerprinted_by_content(
         "# solved rig, pass 2 -- different numbers\n"
     )  # same bytes, new name
     elsewhere = stage_fingerprint(
-        "bundle_adjustment", _cfg({"cameras.calibration": str(other)}), enabled, store
+        "bundle_adjustment", _cfg({"calibration.path": str(other)}), enabled, store
     )
     assert fingerprint_diff(after, elsewhere)
 
     # A calibration that vanishes is a distinct state, not a silently unchanged one.
     rig.unlink()
     gone = stage_fingerprint(
-        "bundle_adjustment", _cfg({"cameras.calibration": str(rig)}), enabled, store
+        "bundle_adjustment", _cfg({"calibration.path": str(rig)}), enabled, store
     )
     assert fingerprint_diff(after, gone)
 

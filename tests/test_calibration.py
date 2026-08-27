@@ -267,15 +267,13 @@ def _config_with_calibration(tmp_path, cameras, *, sizes=SIZES) -> Config:
         cameras.names, cameras.rvecs, cameras.tvecs + 1.25, cameras.intrs, cameras.dists
     )
     moved.to_calibration(name="solved", image_sizes=sizes).save(tmp_path)
-    # A [cameras] table is ADDED rather than uncommented. The packaged config gives each
-    # view its own [cameras.<name>] table and ships no bare [cameras] header, because
-    # `deeperfly project` injects its solved rig as a `calibration` key there and two
-    # headers would collide -- so enabling one by hand means adding the table.
-    marker = "[cameras.defaults]"
-    base = seven_camera_default_text()
-    assert marker in base, "the packaged config no longer has [cameras.defaults]"
-    text = base.replace(
-        marker, f'[cameras]\ncalibration = "{CALIBRATION_FILENAME}"\n\n{marker}', 1
+    # PREPENDED, not spliced in beside a marker: the packaged config discusses
+    # `[calibration]` and `[default_camera]` in prose before declaring either, so a
+    # first-occurrence replace lands inside a comment. A top-level table is
+    # order-independent in TOML, so the front of the file is a fine place for it.
+    text = (
+        f'[calibration]\npath = "{CALIBRATION_FILENAME}"\n\n'
+        + seven_camera_default_text()
     )
     (tmp_path / "config.toml").write_text(text)
     return Config.from_toml(tmp_path / "config.toml")

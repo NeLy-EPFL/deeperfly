@@ -341,8 +341,8 @@ def test_source_patterns_and_camera_table():
                 {"name": "cam0", "filename": "v0.mp4"},
                 {"name": "cam1"},  # no filename -> own name
             ],
+            "default_camera": {"focal_length_px": 800.0},
             "cameras": {
-                "defaults": {"focal_length_px": 800.0},
                 "rh": {},
                 "lf": {},
             },
