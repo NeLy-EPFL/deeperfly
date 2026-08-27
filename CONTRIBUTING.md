@@ -25,11 +25,22 @@ are all core dependencies — there are no optional extras.
 ## Running the tests
 
 ```bash
-uv run --group test pytest
+uv run --group test pytest          # the whole suite, ~20 s on 32 cores
+uv run --group test pytest -n0 tests/test_skeleton.py   # ONE file: use -n0
 ```
 
 The suite covers the PyTorch detector and OpenCV cross-checks for the geometry.
-Some tests download the detector weights on first run.
+It runs fully offline — the detector-weight download is mocked.
+
+`-n auto` (the default in `addopts`) is right for the whole suite and wrong for
+one file: every worker imports torch, jax, scipy and fastapi to collect a suite
+it will not run, so a 6-test file costs 2.6 s and 35 CPU-seconds against 0.67 s
+with `-n0`. `-n0` is also what you want for `--pdb` and `-s`.
+
+`tests/test_gui_browser.py` drives the editor in a real headless browser and is
+the only gate over the GUI's JavaScript. `playwright` is in the `test` group but
+the browser is a separate download, so the file skips itself until you run
+`uv run playwright install chromium` once.
 
 ## Linting and formatting
 
