@@ -186,6 +186,13 @@ def draw_image(
     return canvas
 
 
+def _hex_u8(value: str) -> tuple[int, int, int]:
+    """A ``#rrggbb`` colour as a 0-255 RGB tuple."""
+    from ._palette import hex_to_rgb
+
+    return tuple(int(round(c * 255)) for c in hex_to_rgb(value))  # type: ignore[return-value]
+
+
 def _colors_u8(skeleton: "Skeleton", colors=None) -> np.ndarray:
     return np.clip(point_colors_rgb(skeleton, colors) * 255.0 + 0.5, 0, 255).astype(
         np.uint8
@@ -323,8 +330,15 @@ def _draw(
     draw_points: bool,
     outline_thickness: int,
     line_dash: Dash = None,
+    bone_color: str | None = None,
 ) -> np.ndarray:
-    """Draw bones then joints, back-to-front when ``depth`` is given."""
+    """Draw bones then joints, back-to-front when ``depth`` is given.
+
+    A bone takes the colour of the point its edge is written FROM, which is why the
+    skeleton writes its edges source-first. ``bone_color`` overrides that for every bone
+    at once, joints keeping theirs -- DeepLabCut's ``skeleton_color``, and the standard
+    figure look of coloured joints on grey bones.
+    """
     pts = np.asarray(pts, dtype=float)
     finite: np.ndarray = np.asarray(np.isfinite(pts).all(-1))
 
@@ -334,6 +348,7 @@ def _draw(
         )
 
     dash = _dash_pattern(line_dash)
+    flat = None if bone_color is None else _hex_u8(bone_color)
     bones = skeleton.bones
     bone_order = range(len(bones))
     if depth is not None and len(bones):
@@ -348,7 +363,7 @@ def _draw(
     for k in bone_order:
         a, b = int(bones[k][0]), int(bones[k][1])
         if finite[a] and finite[b]:
-            color: Color = tuple(map(int, colors[a]))  # type: ignore[assignment]
+            color: Color = flat or tuple(map(int, colors[a]))  # type: ignore[assignment]
             _draw_bone(canvas, xy(a), xy(b), color, line_thickness, dash)
 
     if not draw_points:
@@ -381,6 +396,7 @@ def draw_skeleton_2d(
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
     colors: Sequence[str] | None = None,
+    bone_color: str | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
@@ -436,6 +452,7 @@ def draw_skeleton_2d(
         pts2d,
         skeleton,
         colors=_colors_u8(skeleton, colors),
+        bone_color=bone_color,
         depth=None,
         conf=conf,
         x0=x0,
@@ -461,6 +478,7 @@ def draw_skeleton_3d(
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
     colors: Sequence[str] | None = None,
+    bone_color: str | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
@@ -522,6 +540,7 @@ def draw_skeleton_3d(
         pts2d,
         skeleton,
         colors=_colors_u8(skeleton, colors),
+        bone_color=bone_color,
         depth=depth,
         conf=conf,
         x0=x0,

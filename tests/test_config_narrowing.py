@@ -100,14 +100,16 @@ def test_a_dropped_view_is_blanked_out_of_every_video_grid():
     narrowed = cfg.narrowed_to_sources(_have(cfg, view))
 
     for before, after in zip(
-        cfg.data["visualization"]["videos"], narrowed.data["visualization"]["videos"]
+        cfg.data["visualization"]["videos"].values(),
+        narrowed.data["visualization"]["videos"].values(),
     ):
         assert [len(r) for r in after["grid"]] == [len(r) for r in before["grid"]]
         assert view not in [cell for row in after["grid"] for cell in row]
     # ...and the surviving cameras did not move.
     survivor = list(narrowed.camera_table()[1])[0]
-    first_before = cfg.data["visualization"]["videos"][0]["grid"]
-    first_after = narrowed.data["visualization"]["videos"][0]["grid"]
+    first = next(iter(cfg.data["visualization"]["videos"]))
+    first_before = cfg.data["visualization"]["videos"][first]["grid"]
+    first_after = narrowed.data["visualization"]["videos"][first]["grid"]
     assert [
         (r, c)
         for r, row in enumerate(first_after)

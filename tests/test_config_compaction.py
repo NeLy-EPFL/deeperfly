@@ -305,29 +305,24 @@ def test_a_class_with_no_weights_explains_the_setup():
 # -- the visualization grid ---------------------------------------------------
 
 
-def _grid_config(video, cameras=CAMERA_NAMES):
+def _grid_config(video, cameras=CAMERA_NAMES, *, cell=(480, 240)):
     azimuths = dict(zip(CAMERA_NAMES, AZIMUTHS_DEG))
     return Config.from_dict(
         {
-            "sources": [{"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in cameras],
             "skeleton": {"include": "fly38"},
             "cameras": {
                 v: {
                     "azimuth_deg": azimuths.get(v, 0.0),
                     "distance": 100.0,
                     "focal_length_px": 1.0,
+                    "video": rf"{v}\.mp4",
                 }
                 for v in cameras
             },
-            "pose2d": {
-                "models": [{"name": "m", "class": "hrnet", "weights": "x.pth"}],
-                "pathways": [
-                    {"name": v, "source": f"vid_{v}", "model": "m"} for v in cameras
-                ],
-            },
+            "pose2d": {"class": "hrnet", "weights": "x.pth"},
             "visualization": {
-                "kwargs": {"imshow": {"width": 480, "height": 240}},
-                "videos": [video],
+                "default_video": {"cell": list(cell)},
+                "videos": {"v": video},
             },
         }
     )
@@ -337,55 +332,64 @@ def _panel_signature(spec):
     return [(p.plot, p.view, p.x0, p.y0, p.stage) for p in spec.panels]
 
 
-def test_grid_expands_to_the_panels_it_replaces():
-    grid = _grid_config(
-        {
-            "video_name": "v",
-            "plot": "skeleton_3d",
-            "stage": "triangulation",
-            "grid": [["rf", "f", "lf"], ["rm", "bird", "lm"]],
-        }
-    ).videos[0]
-    hand = _grid_config(
-        {
-            "video_name": "v",
-            "panels": [
-                {"plot": op, "view": view, "x0": x, "y0": y, "stage": "triangulation"}
-                for view, x, y in [
-                    ("rf", 0, 0),
-                    ("f", 480, 0),
-                    ("lf", 960, 0),
-                    ("rm", 0, 240),
-                    ("bird", 480, 240),
-                    ("lm", 960, 240),
-                ]
-                for op in (
-                    ("imshow", "skeleton_3d") if view != "bird" else ("skeleton_3d",)
-                )
-            ],
-        }
-    ).videos[0]
-    # `stage` rides along on the overlay only; imshow has no points to stage.
-    assert [p[:4] for p in _panel_signature(grid)] == [
-        p[:4] for p in _panel_signature(hand)
-    ]
-
-
-def test_a_non_camera_cell_gets_no_frame_under_it():
+def test_a_grid_is_footage_plus_one_panel_per_layer_per_cell():
+    """What the grid replaces: fourteen hand-written panels with hand-computed offsets."""
     spec = _grid_config(
-        {"video_name": "v", "plot": "skeleton_3d", "grid": [["rf", "bird"]]}
+        {
+            "grid": [["rf", "f", "lf"], ["rm", "bird", "lm"]],
+            "layers": [{"draw": "skeleton_3d", "stage": "triangulation"}],
+        }
     ).videos[0]
     assert _panel_signature(spec) == [
         ("imshow", "rf", 0, 0, None),
-        ("skeleton_3d", "rf", 0, 0, None),
-        ("skeleton_3d", "bird", 480, 0, None),
+        ("skeleton_3d", "rf", 0, 0, "triangulation"),
+        ("imshow", "f", 480, 0, None),
+        ("skeleton_3d", "f", 480, 0, "triangulation"),
+        ("imshow", "lf", 960, 0, None),
+        ("skeleton_3d", "lf", 960, 0, "triangulation"),
+        ("imshow", "rm", 0, 240, None),
+        ("skeleton_3d", "rm", 0, 240, "triangulation"),
+        # `bird` is no camera, so it gets no footage under its overlay.
+        ("skeleton_3d", "bird", 480, 240, "triangulation"),
+        ("imshow", "lm", 960, 240, None),
+        ("skeleton_3d", "lm", 960, 240, "triangulation"),
     ]
+
+
+def test_layer_order_is_draw_order():
+    """The whole point of layers: a dashed reference UNDER a solid fit, in one video."""
+    spec = _grid_config(
+        {
+            "grid": [["rf"]],
+            "layers": [
+                {"draw": "skeleton_3d", "stage": "triangulation", "line_dash": [4, 9]},
+                {"draw": "skeleton_3d", "stage": "postprocess"},
+            ],
+        }
+    ).videos[0]
+    assert [(p.plot, p.stage) for p in spec.panels] == [
+        ("imshow", None),
+        ("skeleton_3d", "triangulation"),
+        ("skeleton_3d", "postprocess"),
+    ]
+    # Footage is laid down ONCE, under the first layer -- again per layer it would paint
+    # over the layer beneath.
+    assert sum(p.plot == "imshow" for p in spec.panels) == 1
+    assert spec.panels[1].options["line_dash"] == [4, 9]
+    assert "line_dash" not in spec.panels[2].options
+
+
+def test_footage_false_drops_the_picture_under_every_cell():
+    spec = _grid_config(
+        {"grid": [["rf"]], "layers": [{"draw": "skeleton_3d"}], "footage": False}
+    ).videos[0]
+    assert [p.plot for p in spec.panels] == ["skeleton_3d"]
 
 
 def test_a_non_camera_cell_is_skipped_entirely_in_a_2d_video():
     """There is no picture to draw 2D detections on, so the tile is left empty."""
     spec = _grid_config(
-        {"video_name": "v", "plot": "skeleton_2d", "grid": [["rf", "bird"]]}
+        {"grid": [["rf", "bird"]], "layers": [{"draw": "skeleton_2d"}]}
     ).videos[0]
     assert {p.view for p in spec.panels} == {"rf"}
 
@@ -393,7 +397,7 @@ def test_a_non_camera_cell_is_skipped_entirely_in_a_2d_video():
 @pytest.mark.parametrize("gap", ["", "-", "."])
 def test_a_gap_cell_leaves_its_tile_empty(gap):
     spec = _grid_config(
-        {"video_name": "v", "plot": "skeleton_3d", "grid": [["rf", gap, "lf"]]}
+        {"grid": [["rf", gap, "lf"]], "layers": [{"draw": "skeleton_3d"}]}
     ).videos[0]
     assert [(p.view, p.x0) for p in spec.panels if p.plot == "skeleton_3d"] == [
         ("rf", 0),
@@ -401,45 +405,26 @@ def test_a_gap_cell_leaves_its_tile_empty(gap):
     ]
 
 
-def test_cell_size_can_be_stated_when_imshow_kwargs_do_not_say():
+def test_the_cell_size_can_be_stated_per_video():
     cfg = _grid_config(
         {
-            "video_name": "v",
-            "plot": "skeleton_3d",
             "cell": [100, 50],
             "grid": [["rf", "lf"], ["rm", "lm"]],
+            "layers": [{"draw": "skeleton_3d"}],
         }
     )
-    del cfg.data["visualization"]["kwargs"]
     offsets = [(p.x0, p.y0) for p in cfg.videos[0].panels if p.plot == "skeleton_3d"]
     assert offsets == [(0, 0), (100, 0), (0, 50), (100, 50)]
 
 
-def test_explicit_panels_are_appended_after_the_grid():
-    spec = _grid_config(
-        {
-            "video_name": "v",
-            "plot": "skeleton_3d",
-            "grid": [["rf"]],
-            "panels": [{"plot": "imshow", "view": "lh", "x0": 999, "y0": 9}],
-        }
-    ).videos[0]
-    assert _panel_signature(spec)[-1] == ("imshow", "lh", 999, 9, None)
-
-
-def test_a_grid_without_a_plot_is_an_error():
-    with pytest.raises(ValueError, match="no 'plot'"):
-        _grid_config({"video_name": "v", "grid": [["rf"]]}).videos
-
-
-def test_a_grid_with_an_unknown_plot_is_an_error():
-    with pytest.raises(ValueError, match="unknown plot op"):
-        _grid_config({"video_name": "v", "plot": "nope", "grid": [["rf"]]}).videos
+def test_a_grid_with_an_unknown_draw_op_is_an_error():
+    with pytest.raises(ValueError, match="unknown draw op"):
+        _grid_config({"grid": [["rf"]], "layers": [{"draw": "nope"}]}).videos
 
 
 def test_a_grid_with_no_cell_size_says_so():
-    cfg = _grid_config({"video_name": "v", "plot": "skeleton_3d", "grid": [["rf"]]})
-    del cfg.data["visualization"]["kwargs"]
+    cfg = _grid_config({"grid": [["rf"]], "layers": [{"draw": "skeleton_3d"}]})
+    del cfg.data["visualization"]["default_video"]
     with pytest.raises(ValueError, match="cell size"):
         cfg.videos
 

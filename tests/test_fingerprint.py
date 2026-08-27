@@ -456,9 +456,10 @@ def test_stage_valid_needs_record_fingerprint_and_output(tmp_path, store, camera
 def test_stage_valid_visualization_checks_mp4s(tmp_path, store):
     config = _cfg(
         {
-            "visualization.videos": [
-                {"video_name": "demo", "panels": []},
-            ]
+            "visualization.default_video": {"cell": [8, 8], "footage": False},
+            "visualization.videos": {
+                "demo": {"grid": [["cam0"]], "layers": [{"draw": "skeleton_3d"}]}
+            },
         }
     )
     enabled = config.stage_flags()

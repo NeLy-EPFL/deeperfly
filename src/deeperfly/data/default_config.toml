@@ -320,58 +320,66 @@ midline = ["neck"]
 
 
 # == Visualization ===========================================================
-# Each [[visualization.videos]] is one MP4. `grid` lays views out in cells, expanding to an
-# `imshow` plus the named `plot` per cell with the offsets computed -- a cell whose view is
-# not a camera (the synthetic `bird`) gets no imshow, and `""` leaves a gap. Add an
-# explicit `panels` list for a layout a grid cannot say; it draws on top.
+# A video is a `grid` of camera cells with `layers` over them, and one MP4 per
+# [visualization.videos.<name>]. A camera cell gets its footage underneath
+# (`footage = false` drops it); the synthetic `bird` plan view has none, and `""` leaves
+# a gap.
 #
-# `stage` names WHICH stage's points to draw. Left out it means "the most-derived stage
-# present" -- so with eks on, a video named pose3d silently becomes the smoother's
+# A layer is one `draw` op plus its style. Layers draw IN ORDER, which is how a
+# before/after is written -- a dashed reference under a solid fit.
+#
+# `stage` names WHICH stage's points a layer draws. Left out it means "the most-derived
+# stage present" -- so with eks on, a video named pose3d silently becomes the smoother's
 # output and pose2d stops showing the detector at all. Naming it is how each video keeps
 # meaning one thing, and the only way to render a before/after pair.
 #
-# `view = "bird"` is a synthetic dorsal plan view fitted to the animal's own body axes from
-# the 3D: the one viewpoint showing all six legs with no body in the way, which the rig
-# cannot have because the tether is up there. Having no footage, it never appears in the
-# 2D video.
+# `bird` is a synthetic dorsal plan view fitted to the animal's own body axes from the 3D:
+# the one viewpoint showing all six legs with no body in the way, which the rig cannot
+# have because the tether is up there.
 #
-# `crop = "pose2d"` frames every panel through the window its own view's pathway detected
-# through, resolved per view, so an axial camera is not a smudge in its cell -- and the box
-# stays in exactly one place. A copy down here would keep showing the previous recording's
-# window under an overlay that still looks well-formed.
-[visualization]
+# `crop = "pose2d"` frames every panel through its own camera's detection window, so an
+# axial camera is not a smudge in its cell -- and the box stays in exactly one place. A
+# copy down here would keep showing the previous recording's window under an overlay that
+# still looks well-formed.
+
+# What every video is unless it says otherwise (the same keys a video entry takes).
+[visualization.default_video]
 background = "black"
 crop = "pose2d"
+cell = [480, 240]           # grid cell size, in pixels
 
-# Joints draw as a solid outline ring whose fill opacity is the detector confidence, so a
-# low-confidence joint fades to its ring instead of vanishing (`outline_thickness = 0`
-# restores fill-only markers). `width`/`height` here also size the grid's cells.
-[visualization.kwargs]
-imshow       = { width = 480, height = 240 }
-skeleton_2d  = { width = 480, height = 240, line_thickness = 2 }
-skeleton_3d  = { width = 480, height = 240, line_thickness = 2 }
-skeleton_nmf = { width = 480, height = 240, line_thickness = 2 }
-mesh_nmf     = { width = 480, height = 240, alpha = 0.55 }
+# What every layer is unless it says otherwise. Joints draw as a solid outline ring whose
+# fill opacity is the detector confidence, so a low-confidence joint fades to its ring
+# instead of vanishing (`outline_thickness = 0` restores fill-only markers).
+[visualization.default_layer]
+line_thickness = 2
+# bone_color = "#404040"    # every bone this one color, joints keeping theirs
 
 # Right-side cameras in the LEFT column, so the montage reads as the animal from above.
-[[visualization.videos]]
-video_name = "pose2d"       # camera frames with the raw 2D detections
-plot  = "skeleton_2d"
-stage = "pose2d"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+[visualization.videos.pose2d]             # camera frames with the raw 2D detections
+grid = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+layers = [{ draw = "skeleton_2d", stage = "pose2d" }]
 
-[[visualization.videos]]
-video_name = "pose3d"       # the triangulated 3D reprojected back into each view
-plot  = "skeleton_3d"
-stage = "triangulation"
-grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+[visualization.videos.pose3d]             # the triangulated 3D, reprojected per view
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [{ draw = "skeleton_3d", stage = "triangulation" }]
 
-[[visualization.videos]]
-video_name = "pose_nmf"     # the fitted NeuroMechFly skeleton (needs [pipeline] inverse_kinematics)
-plot  = "skeleton_nmf"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+# The kinematic fit over the pose it was fitted to: the dashed reference is the target, so
+# every difference is something the model's limits or segment lengths refused.
+# Needs [pipeline] inverse_kinematics.
+[visualization.videos.pose_nmf]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "skeleton_3d",  stage = "postprocess", line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]
 
-[[visualization.videos]]
-video_name = "pose_mesh"    # the fitted NeuroMechFly mesh (needs [pipeline] inverse_kinematics)
-plot  = "mesh_nmf"
-grid  = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+# The posed mesh with the same forward kinematics over it: the mesh shows where the
+# model's BODY lands, the skeleton the joint centers that put it there, so a leg off the
+# animal reads as a joint-angle error rather than a scale one.
+[visualization.videos.mesh_nmf]
+grid = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "mesh_nmf", alpha = 0.55 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]

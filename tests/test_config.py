@@ -379,18 +379,16 @@ def test_source_patterns_and_camera_table():
 def test_videos_returns_typed_specs():
     c = Config.from_dict(
         {
+            "cameras": {"f": {"azimuth_deg": 0, "distance": 10, "focal_length_px": 1}},
             "visualization": {
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [{"plot": "skeleton_2d", "view": "f"}],
-                    }
-                ]
-            }
+                "default_video": {"cell": [64, 32]},
+                "videos": {"v": {"grid": [["f"]], "layers": [{"draw": "skeleton_2d"}]}},
+            },
         }
     )
     specs = c.videos
     assert len(specs) == 1 and isinstance(specs[0], VideoSpec)
+    # The table's KEY is the video's name -- so two of them is a TOML error.
     assert specs[0].video_name == "v"
 
 

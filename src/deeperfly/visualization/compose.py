@@ -86,16 +86,16 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("deeperfly")
 
-#: The value of a panel's ``crop`` that means "the window the detector looked through",
-#: resolved per view from ``[[pose2d.pathways]]``. Reserved: a ``[[pose2d.preprocessors]]``
-#: of this name cannot be referenced by name.
+#: The value of a video's ``crop`` that means "the window the detector looked through",
+#: resolved per camera from ``[pose2d.crops]``. Reserved: a camera of this name cannot be
+#: referenced by name.
 DETECTOR_CROP = "pose2d"
 
 #: Panel keys consumed by the compositor itself; everything else is forwarded to
 #: the draw op as keyword arguments.
 _RESERVED = frozenset(
     {
-        "plot",
+        "draw",
         "view",
         "x0",
         "y0",
@@ -677,129 +677,135 @@ OPS: dict[str, Callable[[np.ndarray, Panel, Sources, int], None]] = {
 # -- config parsing -----------------------------------------------------------
 
 
-def _op_kwargs(table: dict, plot: str) -> dict:
-    """Look up a per-op kwargs table's entry for ``plot`` (a dict, else empty)."""
-    value = table.get(plot, {})
-    if not isinstance(value, dict):
-        raise ValueError(
-            f"visualization kwargs for plot op {plot!r} must be a table of keyword "
-            f"arguments, got {value!r}"
-        )
-    return value
-
-
 #: Grid cells that mean "leave this tile empty".
 _GRID_GAP = frozenset({"", "-", "."})
 
+#: The style keys each draw op accepts, so ONE ``[visualization.default_layer]`` table can
+#: serve every op: a key an op has no use for is dropped for that op rather than reaching
+#: its draw function as an unexpected keyword. A key no op at all accepts is still a typo
+#: and is refused (see :func:`_layer_style`).
+_OP_STYLE: dict[str, frozenset[str]] = {
+    "imshow": frozenset(),
+    "skeleton_2d": frozenset(
+        {
+            "colors",
+            "bone_color",
+            "point_radius",
+            "line_thickness",
+            "line_dash",
+            "draw_points",
+            "outline_thickness",
+        }
+    ),
+    "skeleton_3d": frozenset(
+        {
+            "colors",
+            "bone_color",
+            "point_radius",
+            "line_thickness",
+            "line_dash",
+            "draw_points",
+            "outline_thickness",
+        }
+    ),
+    "mesh_nmf": frozenset({"alpha"}),
+}
+_OP_STYLE["skeleton_nmf"] = _OP_STYLE["skeleton_3d"]
 
-def _expand_grid(entry: dict, viz: dict, config: "Config", loc: str) -> list[dict]:
-    """Expand a video's ``grid`` into ``imshow`` + overlay panels with computed offsets.
+#: Every style key any op accepts -- what makes an unknown one a named error.
+_STYLE_KEYS = frozenset().union(*_OP_STYLE.values())
 
-    A montage is the overwhelmingly common video and it is pure repetition: every panel
-    is the same two ops at a position that is a row and a column times the cell size. Two
-    of those three facts were being written by hand, per panel, per video -- fourteen
-    lines each to say "three by three", with the pixel offsets recomputed by a person
-    whenever a cell size changed. So a video may say the shape instead::
 
-        [[visualization.videos]]
-        video_name = "pose3d"
-        plot  = "skeleton_3d"
-        stage = "triangulation"
-        grid  = [["rf", "f",    "lf"],
-                 ["rm", "bird", "lm"],
-                 ["rh", "h",    "lh"]]
+def _layer_style(draw: str, layer: dict, loc: str) -> dict:
+    """A layer's style, narrowed to the keys ``draw`` can use.
 
-    Cell size comes from the resolved ``imshow`` width/height (the same
-    ``[visualization.kwargs]`` the panels already read), or from an explicit
-    ``cell = [w, h]``. A cell of ``""``, ``"-"`` or ``"."`` leaves its tile empty.
+    Narrowed rather than forwarded whole because ``[visualization.default_layer]`` is one
+    table for every op: ``line_thickness`` there is meant for the skeletons and would
+    reach the mesh op as an unexpected keyword. A key NO op accepts is a typo and says so
+    -- which is what the v1 three-level per-op kwargs merge could not do, since every
+    table was keyed by op and a misspelled op name simply matched nothing.
+    """
+    style = {k: v for k, v in layer.items() if k not in _RESERVED}
+    unknown = sorted(set(style) - _STYLE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{loc} layer {draw!r} has unknown style key(s) {unknown}; "
+            f"allowed: {sorted(_STYLE_KEYS)}"
+        )
+    return {k: v for k, v in style.items() if k in _OP_STYLE[draw]}
 
-    A cell whose view is **not a camera** gets no ``imshow`` -- the synthetic ``bird``
-    plan view has no footage to draw under its skeleton, and with ``plot = "skeleton_2d"``
-    it has nothing to draw at all, so it is skipped entirely rather than drawn onto black.
+
+def _expand_grid(
+    grid, layer: dict, *, cell, config: "Config", loc: str, footage: bool
+) -> list[dict]:
+    """Expand a ``grid`` into ``layer``'s panels, with computed offsets.
+
+    Called once per layer and appended, so **layer order is draw order**: the first
+    layer's panels are laid over the footage, the next layer's over those. A montage is
+    the overwhelmingly common video and it is pure repetition -- every panel is the same
+    op at a position that is a row and a column times the cell size -- so a video says
+    the shape instead::
+
+        [visualization.videos.pose3d]
+        grid = [["rf", "f",    "lf"],
+                ["rm", "bird", "lm"],
+                ["rh", "h",    "lh"]]
+        layers = [{ draw = "skeleton_3d", stage = "triangulation" }]
+
+    A camera cell gets its footage underneath (``footage = false`` on the video drops
+    it), and only for the FIRST layer -- drawing it again per layer would paint over the
+    layer beneath. A cell whose view is not a camera has none: the synthetic ``bird`` plan
+    view has no footage to draw under its skeleton, and with ``draw = "skeleton_2d"`` it
+    has nothing to draw at all, so it is skipped entirely rather than drawn onto black.
     Deriving that from ``[cameras.*]`` rather than asking is the whole point: a rig that
     gains a camera gains a drawable cell without anyone editing a second list.
 
-    Explicit ``panels`` are still honored and are appended after the expansion, so a
-    one-off tile can be added to a grid without abandoning it.
+    A cell of ``""``, ``"-"`` or ``"."`` leaves its tile empty.
 
     Returns
     -------
     list of dict
-        Panel tables in the same shape a hand-written ``panels`` list produces.
+        Panel tables, in the shape the panel loop reads.
     """
-    grid = entry.get("grid")
-    if grid is None:
-        return []
     if not isinstance(grid, list) or not all(isinstance(r, list) for r in grid):
-        raise ValueError(f"{loc} 'grid' must be a list of rows (lists of view names)")
-    plot = entry.get("plot")
-    if plot is None:
+        raise ValueError(f"{loc} 'grid' must be a list of rows (lists of camera names)")
+    draw = layer.get("draw")
+    if draw not in OPS:
         raise ValueError(
-            f"{loc} has a 'grid' but no 'plot' -- name the overlay op drawn on each "
-            f"cell (one of {sorted(OPS)})"
+            f"{loc} layer has unknown draw op {draw!r}; choose from {sorted(OPS)}"
         )
-    if plot not in OPS:
-        raise ValueError(
-            f"{loc} has unknown plot op {plot!r}; choose from {sorted(OPS)}"
-        )
-
-    cell = entry.get("cell")
-    if cell is None:
-        merged = {
-            **_op_kwargs(viz.get("kwargs", {}), "imshow"),
-            **_op_kwargs(entry.get("kwargs", {}), "imshow"),
-        }
-        cell = [merged.get("width"), merged.get("height")]
     if len(cell) != 2 or not all(isinstance(v, int) and v > 0 for v in cell):
         raise ValueError(
             f"{loc} needs a cell size for its 'grid': set cell = [width, height] on the "
-            "video, or give [visualization.kwargs] imshow both a width and a height"
+            "video or in [visualization.default_video]"
         )
     cw, ch = int(cell[0]), int(cell[1])
 
     cameras = set(config.camera_table()[1])
-    extras = {k: entry[k] for k in ("stage",) if k in entry}
+    style = _layer_style(draw, layer, loc)
+    # `stage` is a layer key that lands on the Panel rather than reaching the draw op --
+    # which is exactly what lets one video draw a before/after pair.
+    if "stage" in layer:
+        style["stage"] = layer["stage"]
+    # The cell is also each panel's SIZE: a grid says the shape once, and a panel drawn at
+    # its view's native resolution would overflow into its neighbour.
+    size = {"width": cw, "height": ch}
     panels: list[dict] = []
     for r, row in enumerate(grid):
         for c, view in enumerate(row):
             if not isinstance(view, str):
                 raise ValueError(
-                    f"{loc} grid[{r}][{c}] must be a view name, got {view!r}"
+                    f"{loc} grid[{r}][{c}] must be a camera name, got {view!r}"
                 )
             if view in _GRID_GAP:
                 continue
-            at = {"view": view, "x0": c * cw, "y0": r * ch}
-            if view in cameras:
-                panels.append({"plot": "imshow", **at})
-            elif plot == "skeleton_2d":
+            at = {"view": view, "x0": c * cw, "y0": r * ch, **size}
+            if footage and view in cameras:
+                panels.append({"draw": "imshow", **at})
+            elif view not in cameras and draw == "skeleton_2d":
                 continue  # no footage, so no 2D detections to draw on it
-            panels.append({"plot": plot, **at, **extras})
+            panels.append({"draw": draw, **at, **style})
     return panels
-
-
-def _layout_key(panel: dict, options: dict, key: str):
-    """Resolve a structural layout key (``scale`` / ``width`` / ``height``).
-
-    A direct key on the panel wins over one merged in from the op-kwargs levels.
-    The key is popped from ``options`` either way so it is never forwarded to the
-    draw op (it resizes the layer, it is not a draw argument).
-
-    Parameters
-    ----------
-    panel
-        The raw panel table.
-    options
-        The merged op-kwargs; ``key`` is popped from it.
-    key
-        The layout key (``"scale"`` / ``"width"`` / ``"height"``).
-
-    Returns
-    -------
-    The resolved value, or ``None`` if unset at every level.
-    """
-    value = panel[key] if key in panel else options.get(key)
-    options.pop(key, None)
-    return value
 
 
 def _parse_crop(value, loc: str) -> tuple[int, int, int, int] | str | None:
@@ -916,24 +922,25 @@ class _PlanOnDemand:
 
 
 def read_video_specs(config: "Config") -> list[VideoSpec]:
-    """Parse ``[[visualization.videos]]`` from a config.
+    """Parse ``[visualization.videos.<name>]`` from a config.
 
-    A video's panels come from its ``grid`` (see :func:`_expand_grid`), its explicit
-    ``panels`` list, or both -- the grid expands first and the explicit panels follow, so
-    they draw on top. A video with neither draws nothing and is rejected.
+    A video is a ``grid`` of camera cells with ``layers`` drawn over them. Each layer is
+    one ``draw`` op plus its style, and ``_expand_grid`` runs once per layer and appends --
+    so **layer order is draw order**, which is how a before/after is written (a dashed
+    reference under a solid fit). Footage is implicit under a camera cell;
+    ``footage = false`` drops it.
 
-    Per-op kwargs are merged into each panel's ``options`` from least to most
-    specific: global ``[visualization.kwargs]``, the video entry's
-    ``kwargs``, then the panel's own extra keys (each keyed by ``plot`` op name).
-    The layout keys ``scale`` / ``width`` / ``height`` are lifted onto the
-    :class:`Panel` fields rather than forwarded. The canvas background comes from
-    ``visualization.background`` (default ``"black"``).
+    Resolution is exactly ``default -> explicit``, once per collection:
+    ``[visualization.default_video]`` under each video, and
+    ``[visualization.default_layer]`` under each layer. The v1 shape merged per-op kwargs
+    across three levels (global, video, panel) into one namespace shared with the
+    structural keys, which is why ``width`` could mean either a draw argument or a layer
+    size depending on where it was written.
 
-    ``crop`` resolves across the same three levels (``[visualization]`` -> the video
-    entry -> the panel), so ``crop = "pose2d"`` written once gives every panel the window
-    its own view's detector looked through. A referenced crop becomes
-    :attr:`Panel.crop_from` and is turned into a box at render time, when the raw frame
-    size is known.
+    ``crop`` resolves the same way (default video -> this video), so ``crop = "pose2d"``
+    written once gives every panel the window its own camera's detector looked through. A
+    referenced crop becomes :attr:`Panel.crop_from` and is turned into a box at render
+    time, when the raw frame size is known.
 
     Parameters
     ----------
@@ -943,73 +950,116 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     Returns
     -------
     list of VideoSpec
-        One spec per ``[[visualization.videos]]`` entry.
+        One spec per ``[visualization.videos.<name>]`` table, in written order.
     """
     viz = config.visualization
-    global_kwargs = viz.get("kwargs", {})
-    background = viz.get("background", "black")
-    global_fps = (viz.get("output_fps"), viz.get("speed"))
-    plan = _PlanOnDemand(config)  # only built if some panel references it
+    for key, advice in RETIRED_VISUALIZATION_KEYS.items():
+        if key in viz:
+            raise ValueError(
+                f"[visualization] carries {key!r}, which this release no longer "
+                f"honors.\n  {advice}"
+            )
+    bare = sorted(
+        k for k in viz if k not in ("videos", "default_video", "default_layer")
+    )
+    if bare:
+        raise ValueError(
+            f"[visualization] holds {bare}; it holds nothing itself now. Per-video "
+            "values go in [visualization.default_video], per-layer style in "
+            "[visualization.default_layer]."
+        )
+    default_video = dict(viz.get("default_video", {}))
+    default_layer = dict(viz.get("default_layer", {}))
+    videos = viz.get("videos", {})
+    if isinstance(videos, list):
+        raise ValueError(
+            "[[visualization.videos]] is now keyed by name: write "
+            "[visualization.videos.pose3d] and drop the `video_name` key. Keying by name "
+            "also makes two videos with one name a TOML error rather than two videos "
+            "racing to write the same .mp4."
+        )
+    if not isinstance(videos, dict):
+        raise ValueError(
+            f"[visualization.videos] must be a table of name -> video, got {videos!r}"
+        )
+
+    plan = _PlanOnDemand(config)  # only built if some video references it
     specs: list[VideoSpec] = []
-    for i, entry in enumerate(viz.get("videos", [])):
-        loc = f"[[visualization.videos]] (entry {i})"
-        _require_keys(entry, ("video_name",), loc)
-        video_kwargs = entry.get("kwargs", {})
+    for name, raw in videos.items():
+        loc = f"[visualization.videos.{name}]"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{loc} must be a table, got {raw!r}")
+        entry = {**default_video, **raw}
+        unknown = sorted(set(entry) - _VIDEO_KEYS)
+        if unknown:
+            raise ValueError(
+                f"{loc} has unknown key(s) {unknown}; allowed: {sorted(_VIDEO_KEYS)}"
+            )
+        layers = entry.get("layers")
+        if not isinstance(layers, list) or not layers:
+            raise ValueError(
+                f"{loc} needs a non-empty `layers` list -- each entry one draw op plus "
+                "its style, drawn in order"
+            )
+        grid = entry.get("grid")
+        if grid is None:
+            raise ValueError(f"{loc} needs a `grid` of camera cells")
+        cell = entry.get("cell")
+        crop = _parse_crop(entry.get("crop"), loc)
+        footage = bool(entry.get("footage", True))
+
+        raw_panels: list[dict] = []
+        for k, layer in enumerate(layers):
+            if not isinstance(layer, dict):
+                raise ValueError(f"{loc} layers[{k}] must be a table, got {layer!r}")
+            raw_panels += _expand_grid(
+                grid,
+                {**default_layer, **layer},
+                cell=cell if cell is not None else [],
+                config=config,
+                loc=loc,
+                footage=footage and k == 0,
+            )
+
         panels = []
-        raw_panels = [*_expand_grid(entry, viz, config, loc), *entry.get("panels", [])]
         for j, p in enumerate(raw_panels):
             ploc = f"{loc} panel {j}"
-            _require_keys(p, ("plot", "view"), ploc)
-            plot = p["plot"]
-            if plot not in OPS:
-                raise ValueError(
-                    f"{ploc} has unknown plot op {plot!r}; choose from {sorted(OPS)}"
-                )
-            options = {
-                **_op_kwargs(global_kwargs, plot),
-                **_op_kwargs(video_kwargs, plot),
-                **{k: v for k, v in p.items() if k not in _RESERVED},
-            }
-            # scale / width / height resize the layer rather than reaching the draw
-            # op, so pull them out of the merged kwargs.
-            scale = _layout_key(p, options, "scale")
-            width = _layout_key(p, options, "width")
-            height = _layout_key(p, options, "height")
-            # crop: panel -> video -> global, most specific winning.
-            crop = _parse_crop(p.get("crop", entry.get("crop", viz.get("crop"))), ploc)
+            draw = p["draw"]
+            options = {k: v for k, v in p.items() if k not in _RESERVED}
             crop_from: tuple["FrameTransform", ...] = ()
-            if isinstance(crop, str):
+            panel_crop = crop
+            if isinstance(panel_crop, str):
                 # A borrowed chain is a WINDOW and nothing else now that the op grammar
                 # is gone, so there is no mirrored-or-turned case left to warn about.
                 crop_from = _referenced_transforms(
-                    crop, p["view"], plan.get(ploc), ploc
+                    panel_crop, p["view"], plan.get(ploc), ploc
                 )
-                crop = None
+                panel_crop = None
             panels.append(
                 Panel(
-                    plot=plot,
+                    plot=draw,
                     view=p["view"],
                     x0=int(p.get("x0", 0)),
                     y0=int(p.get("y0", 0)),
-                    scale=1.0 if scale is None else float(scale),
-                    width=None if width is None else int(width),
-                    height=None if height is None else int(height),
+                    scale=float(p.get("scale", 1.0)),
+                    width=None if p.get("width") is None else int(p["width"]),
+                    height=None if p.get("height") is None else int(p["height"]),
                     background=p.get("background"),
-                    crop=crop,
+                    crop=panel_crop,
                     clip=bool(p.get("clip", True)),
                     stage=p.get("stage"),
                     crop_from=crop_from,
                     options=options,
                 )
             )
-        output_fps, speed = _resolve_fps_spec(entry, *global_fps)
+        output_fps, speed = _resolve_fps_spec(entry)
         specs.append(
             VideoSpec(
-                video_name=entry["video_name"],
+                video_name=str(name),
                 panels=panels,
                 width=entry.get("width"),
                 height=entry.get("height"),
-                background=background,
+                background=entry.get("background", "black"),
                 output_fps=output_fps,
                 speed=speed,
             )
@@ -1017,36 +1067,47 @@ def read_video_specs(config: "Config") -> list[VideoSpec]:
     return specs
 
 
-def _resolve_fps_spec(
-    entry: dict, global_output_fps, global_speed
-) -> tuple[float | None, float | None]:
-    """Pick this video's ``(output_fps, speed)``, most specific level winning.
+#: Every key a ``[visualization.videos.<name>]`` table (or ``default_video``) accepts.
+_VIDEO_KEYS = frozenset(
+    {
+        "grid",
+        "layers",
+        "cell",
+        "crop",
+        "footage",
+        "background",
+        "width",
+        "height",
+        "output_fps",
+        "speed",
+    }
+)
 
-    A per-video ``output_fps`` or ``speed`` overrides the global
-    ``[visualization]`` setting, and within one level an explicit
-    ``output_fps`` beats ``speed``. Exactly one of the pair is set (or both
-    ``None``), so :meth:`VideoSpec.resolve_fps` never has to break a tie.
+#: ``[visualization]`` keys this release no longer honors.
+RETIRED_VISUALIZATION_KEYS = {
+    "kwargs": "gone: per-layer style is written inline on the layer, and what every "
+    "layer takes by default is [visualization.default_layer]. The three-level merge "
+    "shared one namespace with the structural keys, so `width` meant either a draw "
+    "argument or a layer size depending on where it was written.",
+    "background": "moved: [visualization.default_video] background = ...",
+    "crop": 'moved: [visualization.default_video] crop = "pose2d"',
+    "cell": "moved: [visualization.default_video] cell = [480, 240]",
+    "output_fps": "moved: [visualization.default_video] output_fps = ...",
+    "speed": "moved: [visualization.default_video] speed = ...",
+}
 
-    Parameters
-    ----------
-    entry
-        One video entry table.
-    global_output_fps, global_speed
-        The ``[visualization]`` fallback values.
 
-    Returns
-    -------
-    output_fps, speed : float or None
-        Exactly one set (or both ``None``).
+def _resolve_fps_spec(entry: dict) -> tuple[float | None, float | None]:
+    """This video's ``(output_fps, speed)`` -- an explicit ``output_fps`` beats ``speed``.
+
+    Exactly one of the pair is set (or both ``None``), so
+    :meth:`VideoSpec.resolve_fps` never has to break a tie. The three-level resolution
+    is gone: ``entry`` already carries ``[visualization.default_video]`` under it.
     """
     if entry.get("output_fps") is not None:
         return float(entry["output_fps"]), None
     if entry.get("speed") is not None:
         return None, float(entry["speed"])
-    if global_output_fps is not None:
-        return float(global_output_fps), None
-    if global_speed is not None:
-        return None, float(global_speed)
     return None, None
 
 

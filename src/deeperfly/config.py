@@ -905,20 +905,21 @@ def _refuse_retired_camera_keys(defaults: dict, views: dict[str, dict]) -> None:
 
 
 def _narrow_videos(data: dict, dropped: set[str]) -> None:
-    """Blank dropped views out of every ``[[visualization.videos]]`` grid, in place.
+    """Blank dropped cameras out of every video's grid, in place.
 
-    A grid cell is set to ``""`` rather than removed, because a grid's shape is a layout: the
-    montage reads as the animal from above, and closing the gap would slide every remaining
-    camera into a neighbour's place. ``""`` is already the config's own spelling for "leave a
-    gap here". Explicit ``panels`` are removed instead -- they carry their own ``x0``/``y0``,
-    so there is no row to keep aligned.
+    A grid cell is set to ``""`` rather than removed, because a grid's shape is a layout:
+    the montage reads as the animal from above, and closing the gap would slide every
+    remaining camera into a neighbour's place. ``""`` is already the config's own spelling
+    for "leave a gap here".
     """
     if not dropped:
         return
     viz = data.get("visualization")
     if not isinstance(viz, dict):
         return
-    for entry in viz.get("videos") or []:
+    videos = viz.get("videos")
+    entries = videos.values() if isinstance(videos, dict) else (videos or [])
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         grid = entry.get("grid")
@@ -928,13 +929,6 @@ def _narrow_videos(data: dict, dropped: set[str]) -> None:
                 if isinstance(row, list)
                 else row
                 for row in grid
-            ]
-        panels = entry.get("panels")
-        if isinstance(panels, list):
-            entry["panels"] = [
-                pan
-                for pan in panels
-                if not isinstance(pan, dict) or pan.get("view") not in dropped
             ]
 
 

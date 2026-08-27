@@ -55,10 +55,26 @@ def onscreen_src(fly, result, frames, rng):
     return compose.Sources(fly, result.cameras, frames, pts2d=pts2d, conf=result.conf)
 
 
-def _cfg(panels, **video):
-    return Config.from_dict(
-        {"visualization": {"videos": [{"video_name": "v", "panels": panels, **video}]}}
-    )
+def _cfg(layers, *, grid=None, cell=(128, 96), cameras=True, **video):
+    """A video over ``layers``, its grid one row of the rig's cameras by default.
+
+    A panel is no longer a config surface -- the grid computes the offsets and `cell`
+    sizes the tiles -- so the tests that were about per-panel keys either name the video
+    key that replaced them or build a :class:`Panel` directly.
+    """
+    if isinstance(layers, dict):
+        layers = [layers]
+    data = {
+        "visualization": {
+            "default_video": {"cell": list(cell)},
+            "videos": {
+                "v": {"grid": grid or [["rh", "rm"]], "layers": layers, **video}
+            },
+        }
+    }
+    if cameras:
+        data["cameras"] = _rig_cameras()
+    return Config.from_dict(data)
 
 
 def _rig_cameras():
@@ -68,15 +84,17 @@ def _rig_cameras():
     }
 
 
-def _detector_cfg(panels, *, crops, viz=None, **video):
+def _detector_cfg(layers, *, crops, grid=None, cell=(80, 40), **video):
     """A config whose ``[pose2d]`` really detects each camera through ``crops[camera]``.
 
     ``crops`` maps a camera name to an ``[x, y, width, height]`` window; a camera absent
     from it runs full-frame, which is this rig's policy for its six side cameras. The plan
     is synthesized, so there is nothing to name and nothing to cross-reference -- which
-    also means a panel borrowing a window by anything but a CAMERA name has nothing to
+    also means a video borrowing a window by anything but a CAMERA name has nothing to
     borrow.
     """
+    if isinstance(layers, dict):
+        layers = [layers]
     return Config.from_dict(
         {
             "cameras": {
@@ -89,8 +107,14 @@ def _detector_cfg(panels, *, crops, viz=None, **video):
                 "crops": {v: list(box) for v, box in crops.items()},
             },
             "visualization": {
-                **(viz or {}),
-                "videos": [{"video_name": "v", "panels": panels, **video}],
+                "default_video": {"cell": list(cell)},
+                "videos": {
+                    "v": {
+                        "grid": grid or [["f", "rh", BIRD_VIEW]],
+                        "layers": layers,
+                        **video,
+                    }
+                },
             },
         }
     )
@@ -139,15 +163,13 @@ def test_crop_is_validated_at_parse_time():
         ([-1, 0, 10, 10], "outside the frame"),
     ):
         with pytest.raises(ValueError, match=msg):
-            compose.read_video_specs(
-                _cfg([{"plot": "imshow", "view": "rh", "crop": bad}])
-            )
+            compose.read_video_specs(_cfg({"draw": "imshow"}, crop=bad))
 
 
 def test_crop_is_not_forwarded_to_the_draw_op():
-    panel = compose.read_video_specs(
-        _cfg([{"plot": "imshow", "view": "rh", "crop": list(CROP)}])
-    )[0].panels[0]
+    panel = compose.read_video_specs(_cfg({"draw": "imshow"}, crop=list(CROP)))[
+        0
+    ].panels[0]
     assert panel.crop == CROP
     assert "crop" not in panel.options and "clip" not in panel.options
 
@@ -165,22 +187,13 @@ def test_crop_is_not_forwarded_to_the_draw_op():
 def test_a_borrowed_crop_renders_exactly_like_the_written_box(src):
     """The whole promise, as pixels: `"pose2d"` and the literal box are the same panel."""
 
-    def panels(crop):
-        return [
-            {"plot": "imshow", "view": "f", "crop": crop, "width": 80, "height": 40},
-            {
-                "plot": "skeleton_2d",
-                "view": "f",
-                "crop": crop,
-                "width": 80,
-                "height": 40,
-            },
-        ]
-
+    layers = [{"draw": "skeleton_2d"}]
     borrowed = compose.read_video_specs(
-        _detector_cfg(panels("pose2d"), crops={"f": CROP_BOX})
+        _detector_cfg(layers, crops={"f": CROP_BOX}, grid=[["f"]], crop="pose2d")
     )[0]
-    written = compose.read_video_specs(_cfg(panels(list(CROP))))[0]
+    written = compose.read_video_specs(
+        _cfg(layers, grid=[["f"]], cell=(80, 40), crop=list(CROP))
+    )[0]
     a = compose.compose_frame(borrowed, src, t=0)
     b = compose.compose_frame(written, src, t=0)
     assert a.std() > 0, "the panel drew nothing, so the comparison is vacuous"
@@ -190,32 +203,24 @@ def test_a_borrowed_crop_renders_exactly_like_the_written_box(src):
 def test_one_global_setting_gives_each_view_its_own_window(src):
     """The line that replaces every duplicated box: each panel follows its own camera."""
     spec = compose.read_video_specs(
-        _detector_cfg(
-            [
-                {"plot": "imshow", "view": "f"},
-                {"plot": "imshow", "view": "rh"},  # full-frame pathway
-                {"plot": "skeleton_3d", "view": BIRD_VIEW},  # no pathway at all
-            ],
-            crops={"f": CROP_BOX},
-            viz={"crop": "pose2d"},
-        )
+        _detector_cfg({"draw": "skeleton_3d"}, crops={"f": CROP_BOX}, crop="pose2d")
     )[0]
-    resolved = [p.resolve_crop(src) for p in spec.panels]
-    assert resolved[0].crop == CROP
-    # An uncropped view keeps the no-crop path rather than a full-frame box, and the
-    # derived plan view -- which no pathway writes -- must not be windowed at all, or a
-    # global setting could not be written safely.
-    assert resolved[1].crop is None
-    assert resolved[2].crop is None
+    by_view = {}
+    for panel in spec.panels:
+        by_view.setdefault(panel.view, panel.resolve_crop(src))
+    assert by_view["f"].crop == CROP
+    # An unwindowed camera keeps the no-crop path rather than a full-frame box, and the
+    # derived plan view -- which no camera writes -- must not be windowed at all, or one
+    # setting on the video could not be written safely.
+    assert by_view["rh"].crop is None
+    assert by_view[BIRD_VIEW].crop is None
 
 
 def test_a_borrowed_crop_moves_the_picture_and_the_geometry_together(src, result):
     """Same guarantee as a written crop: the projection follows the window."""
     spec = compose.read_video_specs(
         _detector_cfg(
-            [{"plot": "imshow", "view": "f"}],
-            crops={"f": CROP_BOX},
-            viz={"crop": "pose2d"},
+            {"draw": "imshow"}, crops={"f": CROP_BOX}, grid=[["f"]], crop="pose2d"
         )
     )[0]
     panel = spec.panels[0].resolve_crop(src)
@@ -227,36 +232,24 @@ def test_a_borrowed_crop_moves_the_picture_and_the_geometry_together(src, result
     np.testing.assert_allclose(cropped.intr[2:], full.intr[2:] - [x, y])
 
 
-def test_a_named_preprocessor_can_be_borrowed_directly(src):
+def test_another_cameras_window_can_be_borrowed_by_name(src):
+    """A window is keyed by camera, so a video may name a camera other than its own."""
     spec = compose.read_video_specs(
         _detector_cfg(
-            [{"plot": "imshow", "view": "rh", "crop": "f"}], crops={"f": CROP_BOX}
+            {"draw": "imshow"}, crops={"f": CROP_BOX}, grid=[["rh"]], crop="f"
         )
     )[0]
     assert spec.panels[0].resolve_crop(src).crop == CROP
 
 
-def test_a_panel_box_still_wins_over_the_global_setting(src):
+def test_a_written_box_on_the_video_wins_over_the_default(src):
+    """Resolution is exactly default -> explicit, once, on the video."""
     spec = compose.read_video_specs(
         _detector_cfg(
-            [
-                {"plot": "imshow", "view": "f"},
-                {"plot": "imshow", "view": "f", "crop": [0, 0, 8, 8]},
-            ],
+            {"draw": "imshow"},
             crops={"f": CROP_BOX},
-            viz={"crop": "pose2d"},
-        )
-    )[0]
-    assert [p.resolve_crop(src).crop for p in spec.panels] == [CROP, (0, 0, 8, 8)]
-
-
-def test_a_video_entry_can_override_the_global_setting(src):
-    spec = compose.read_video_specs(
-        _detector_cfg(
-            [{"plot": "imshow", "view": "f"}],
-            crops={"f": CROP_BOX},
-            viz={"crop": "pose2d"},
-            crop=[1, 2, 9, 9],  # on the video entry
+            grid=[["f"]],
+            crop=[1, 2, 9, 9],
         )
     )[0]
     assert spec.panels[0].resolve_crop(src).crop == (1, 2, 9, 9)
@@ -266,35 +259,16 @@ def test_an_unknown_crop_reference_names_the_alternatives():
     with pytest.raises(ValueError, match=r"have: \['f'\]"):
         compose.read_video_specs(
             _detector_cfg(
-                [{"plot": "imshow", "view": "f", "crop": "crop_typo"}],
-                crops={"f": CROP_BOX},
+                {"draw": "imshow"}, crops={"f": CROP_BOX}, grid=[["f"]], crop="typo"
             )
         )
-
-
-def test_a_camera_called_pose2d_is_refused_as_a_crop_reference():
-    # A camera literally named "pose2d" would shadow the per-view rule; say so instead of
-    # silently picking one meaning of the same word.
-    cfg = _detector_cfg(
-        [{"plot": "imshow", "view": "pose2d", "crop": "pose2d"}], crops={}
-    )
-    cfg.data["cameras"]["pose2d"] = {
-        "azimuth_deg": 30,
-        "distance": 100.0,
-        "focal_length_px": 1.0,
-    }
-    cfg.data["pose2d"]["crops"] = {"pose2d": CROP_BOX}
-    with pytest.raises(ValueError, match="rename the"):
-        compose.read_video_specs(cfg)
 
 
 def test_a_borrowed_crop_without_a_detection_plan_says_so():
     """A viz-only caller composites panels over frames it brought itself, and must not be
     forced to carry a detector -- but a panel that reaches for one has to be told."""
     with pytest.raises(ValueError, match="cannot build"):
-        compose.read_video_specs(
-            _cfg([{"plot": "imshow", "view": "rh", "crop": "pose2d"}])
-        )
+        compose.read_video_specs(_cfg({"draw": "imshow"}, crop="pose2d"))
 
 
 def test_a_stale_borrowed_crop_fails_loudly_against_smaller_footage(src):
@@ -302,9 +276,10 @@ def test_a_stale_borrowed_crop_fails_loudly_against_smaller_footage(src):
     anyway: a box from another recording must not truncate into a plausible panel."""
     spec = compose.read_video_specs(
         _detector_cfg(
-            [{"plot": "imshow", "view": "f"}],
+            {"draw": "imshow"},
             crops={"f": [0, 0, 900, 400]},
-            viz={"crop": "pose2d"},
+            grid=[["f"]],
+            crop="pose2d",
         )
     )[0]
     with pytest.raises(ValueError, match="exceeds"):
@@ -324,7 +299,7 @@ def test_a_borrowed_crop_is_fingerprinted_so_a_new_box_re_renders():
 
     def digest(box):
         specs = _detector_cfg(
-            [{"plot": "imshow", "view": "f"}], crops={"f": box}, viz={"crop": "pose2d"}
+            [{"draw": "imshow"}], crops={"f": box}, grid=[["f"]], crop="pose2d"
         ).videos
         return fingerprint._norm([dataclasses.asdict(s) for s in specs])
 
@@ -336,16 +311,16 @@ def test_a_borrowed_crop_is_fingerprinted_so_a_new_box_re_renders():
 
 def test_clip_keeps_a_panel_out_of_its_neighbour(src):
     """A skeleton drawn in the left cell must not reach the right cell."""
-    panels = [
-        {"plot": "skeleton_3d", "view": "rh", "x0": 0, "width": 64, "height": 48},
-        {"plot": "skeleton_3d", "view": "rm", "x0": 64, "width": 64, "height": 48},
-    ]
-    clipped = compose.compose_frame(compose.read_video_specs(_cfg(panels))[0], src, t=0)
-    loose = compose.compose_frame(
-        compose.read_video_specs(_cfg([{**p, "clip": False} for p in panels]))[0],
-        src,
-        t=0,
-    )
+    spec = compose.read_video_specs(
+        _cfg({"draw": "skeleton_3d"}, cell=(64, 48), footage=False)
+    )[0]
+    clipped = compose.compose_frame(spec, src, t=0)
+    import copy as _copy
+
+    loose_spec = _copy.deepcopy(spec)
+    for panel in loose_spec.panels:
+        panel.clip = False
+    loose = compose.compose_frame(loose_spec, src, t=0)
     # The loose render spills across the seam; the clipped one cannot, so it must have
     # strictly fewer painted pixels somewhere. (If neither spilled the test is vacuous,
     # so assert the spill exists first.)
@@ -359,19 +334,21 @@ def test_clip_preserves_layering(onscreen_src, frames):
     precisely so this keeps working -- an opaque tile per panel would erase the image
     the previous panel drew.
     """
-    spec = compose.read_video_specs(
-        _cfg(
-            [
-                {"plot": "imshow", "view": "rh", "width": 128, "height": 96},
-                {"plot": "skeleton_2d", "view": "rh", "width": 128, "height": 96},
-            ]
-        )
-    )[0]
+    spec = compose.read_video_specs(_cfg({"draw": "skeleton_2d"}, grid=[["rh"]]))[0]
     frame = compose.compose_frame(spec, onscreen_src, t=0)
     image_only = compose.compose_frame(
         compose.read_video_specs(
-            _cfg([{"plot": "imshow", "view": "rh", "width": 128, "height": 96}])
-        )[0],
+            _cfg({"draw": "skeleton_2d", "draw_points": False}, grid=[["rh"]])
+        )[0].__class__(
+            "v",
+            [
+                p
+                for p in compose.read_video_specs(
+                    _cfg({"draw": "skeleton_2d"}, grid=[["rh"]])
+                )[0].panels
+                if p.plot == "imshow"
+            ],
+        ),
         onscreen_src,
         t=0,
     )
@@ -380,29 +357,17 @@ def test_clip_preserves_layering(onscreen_src, frames):
     assert (frame == image_only).all(-1).mean() > 0.5
 
 
-def test_clip_defaults_on_and_is_overridable():
-    panels = compose.read_video_specs(
-        _cfg(
-            [
-                {"plot": "imshow", "view": "rh"},
-                {"plot": "imshow", "view": "rm", "clip": False},
-            ]
-        )
-    )[0].panels
-    assert panels[0].clip is True and panels[1].clip is False
+def test_clip_defaults_on():
+    """It is a compositor field with no config surface -- a grid cell always clips."""
+    panels = compose.read_video_specs(_cfg({"draw": "imshow"}))[0].panels
+    assert panels and all(p.clip is True for p in panels)
 
 
 def test_a_fully_offcanvas_panel_is_skipped_not_crashed(src):
     spec = compose.read_video_specs(
-        _cfg(
-            [
-                {"plot": "imshow", "view": "rh", "width": 32, "height": 32},
-                {"plot": "imshow", "view": "rm", "x0": 999, "width": 32, "height": 32},
-            ],
-            width=32,
-            height=32,
-        )
+        _cfg({"draw": "imshow"}, cell=(32, 32), width=32, height=32)
     )[0]
+    spec.panels[-1].x0 = 999  # entirely past the right edge
     assert compose.compose_frame(spec, src, t=0).shape == (32, 32, 3)
 
 
@@ -444,15 +409,18 @@ def test_a_missing_stage_is_an_error_not_a_fallback(fly, result, frames):
 
 
 def test_stage_is_parsed_and_not_forwarded_to_the_draw_op():
+    """`stage` is per LAYER, which is what lets one video draw a before/after pair."""
     panels = compose.read_video_specs(
         _cfg(
             [
-                {"plot": "skeleton_3d", "view": "rh", "stage": "triangulation"},
-                {"plot": "skeleton_3d", "view": "rm"},
-            ]
+                {"draw": "skeleton_3d", "stage": "triangulation"},
+                {"draw": "skeleton_3d"},
+            ],
+            grid=[["rh"]],
+            footage=False,
         )
     )[0].panels
-    assert panels[0].stage == "triangulation" and panels[1].stage is None
+    assert [p.stage for p in panels] == ["triangulation", None]
     assert "stage" not in panels[0].options
 
 
@@ -581,7 +549,7 @@ def test_dorsal_view_resolves_from_a_panel_and_needs_no_footage(fly, result, fra
         fly, result.cameras, frames, pts2d=result.pts2d, pts3d=_posed_fly(fly)
     )
     spec = compose.read_video_specs(
-        _cfg([{"plot": "skeleton_3d", "view": BIRD_VIEW, "width": 96, "height": 48}])
+        _cfg({"draw": "skeleton_3d"}, grid=[[BIRD_VIEW]], cell=(96, 48))
     )[0]
     frame = compose.compose_frame(spec, src, t=0)
     assert frame.shape == (48, 96, 3)

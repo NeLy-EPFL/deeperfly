@@ -192,22 +192,23 @@ def test_line_dash_reaches_the_draw_op_from_a_config(result, fly):
     """
     config = Config.from_dict(
         {
+            "cameras": _VIZ_CAMERAS,
             "visualization": {
-                "videos": [
-                    {
-                        "video_name": "compare",
-                        "panels": [
+                "default_video": {"cell": [128, 96], "footage": False},
+                "videos": {
+                    "compare": {
+                        "grid": [["rh"]],
+                        "layers": [
                             {
-                                "plot": "skeleton_3d",
-                                "view": "rh",
+                                "draw": "skeleton_3d",
                                 "line_dash": [4, 9],
                                 "line_thickness": 2,
                                 "draw_points": False,
                             }
                         ],
                     }
-                ]
-            }
+                },
+            },
         }
     )
     (spec,) = config.videos
@@ -225,27 +226,42 @@ def test_line_dash_reaches_the_draw_op_from_a_config(result, fly):
 # -- compositor --------------------------------------------------------------
 
 
+_VIZ_CAMERAS = {
+    v: {"azimuth_deg": az, "distance": 100.0, "focal_length_px": 1.0}
+    for v, az in (("rh", -120), ("rm", -90), ("rf", -45))
+}
+
+
 def _two_panel_config(plot):
+    """A 1x2 grid: footage plus one overlay layer over cameras rh and rm."""
     return Config.from_dict(
         {
+            "cameras": _VIZ_CAMERAS,
             "visualization": {
-                "videos": [
-                    {
-                        "video_name": f"test_{plot}",
-                        "panels": [
-                            {"plot": "imshow", "view": "rh", "x0": 0, "y0": 0},
-                            {"plot": plot, "view": "rh", "point_radius": 2},
-                            {"plot": "imshow", "view": "rm", "x0": 128, "y0": 0},
-                            {"plot": plot, "view": "rm", "x0": 128, "y0": 0},
-                        ],
+                "default_video": {"cell": [128, 96]},
+                "videos": {
+                    f"test_{plot}": {
+                        "grid": [["rh", "rm"]],
+                        "layers": [{"draw": plot, "point_radius": 2}],
                     }
-                ]
-            }
+                },
+            },
         }
     )
 
 
-def test_read_video_specs_parses_panels_and_options():
+def _spec(*panels, **video):
+    """A :class:`VideoSpec` built DIRECTLY, for the compositor's own arithmetic.
+
+    Per-panel offsets, sizes and backgrounds are no longer a config surface -- a grid
+    computes the offsets and `cell` sets the size -- but they are still what `Panel`
+    carries and what `canvas_size` / `Panel.scales` / the background fill are about. So
+    those tests construct the object instead of a config that cannot express it.
+    """
+    return compose.VideoSpec(video.pop("name", "v"), list(panels), **video)
+
+
+def test_read_video_specs_expands_a_grid_into_footage_plus_layer():
     specs = compose.read_video_specs(_two_panel_config("skeleton_2d"))
     assert len(specs) == 1
     spec = specs[0]
@@ -256,168 +272,88 @@ def test_read_video_specs_parses_panels_and_options():
         "imshow",
         "skeleton_2d",
     ]
-    assert spec.panels[1].options == {"point_radius": 2}  # extra keys forwarded
-    assert spec.panels[2].x0 == 128
+    assert spec.panels[1].options == {"point_radius": 2}  # style forwarded
+    assert spec.panels[2].x0 == 128  # the second column, at one cell width
 
 
-def test_op_kwargs_merge_three_levels():
-    cfg = Config.from_dict(
+def _viz_config(videos: dict) -> Config:
+    return Config.from_dict(
         {
-            "visualization": {
-                "kwargs": {  # 1. global, all videos
-                    "skeleton_2d": {"line_thickness": 2, "point_radius": 1},
-                    "skeleton_3d": {"line_thickness": 2},
-                },
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "kwargs": {"skeleton_2d": {"point_radius": 7}},  # 2. this video
-                        "panels": [
-                            {"plot": "skeleton_2d", "view": "rh"},
-                            # 3. panel-level key overrides both broader levels
-                            {
-                                "plot": "skeleton_2d",
-                                "view": "rm",
-                                "line_thickness": 9,
-                            },
-                            {"plot": "skeleton_3d", "view": "rf"},
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                            },  # unrelated op untouched
-                        ],
-                    }
-                ],
-            }
+            "cameras": _VIZ_CAMERAS,
+            "visualization": {"default_video": {"cell": [128, 96]}, "videos": videos},
         }
     )
-    panels = compose.read_video_specs(cfg)[0].panels
-    # global line_thickness, video point_radius overrides global point_radius
-    assert panels[0].options == {"line_thickness": 2, "point_radius": 7}
-    # panel line_thickness wins over global; video point_radius still applies
-    assert panels[1].options == {"line_thickness": 9, "point_radius": 7}
-    # skeleton_3d only sees its own global entry, not skeleton_2d's
-    assert panels[2].options == {"line_thickness": 2}
-    # imshow has no kwargs at any level
-    assert panels[3].options == {}
 
 
-def test_op_kwargs_must_be_a_table():
+def test_a_list_of_videos_says_they_are_keyed_by_name_now():
+    """The v1 shape parses -- it is just a different TOML type -- so it is named.
+
+    Keying by name is also what makes two videos with one name a TOML error rather than
+    two videos racing to write the same .mp4.
+    """
     cfg = Config.from_dict(
-        {
-            "visualization": {
-                "kwargs": {"skeleton_2d": 2},
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [{"plot": "skeleton_2d", "view": "rh"}],
-                    }
-                ],
-            }
-        }
+        {"visualization": {"videos": [{"video_name": "v", "grid": [["rh"]]}]}}
     )
-    with pytest.raises(ValueError, match="must be a table"):
+    with pytest.raises(ValueError, match="keyed by name"):
         compose.read_video_specs(cfg)
 
 
-def _viz_config(videos: list[dict]) -> Config:
-    return Config.from_dict({"visualization": {"videos": videos}})
-
-
-def test_missing_video_name_raises_clear_error():
-    cfg = _viz_config([{"panels": [{"plot": "imshow", "view": "rh"}]}])
-    with pytest.raises(ValueError, match=r"entry 0\).*video_name"):
+def test_a_video_with_no_layers_raises_clear_error():
+    cfg = _viz_config({"v": {"grid": [["rh"]]}})
+    with pytest.raises(ValueError, match="needs a non-empty `layers`"):
         compose.read_video_specs(cfg)
 
 
-def test_missing_panel_plot_raises_clear_error():
-    cfg = _viz_config([{"video_name": "v", "panels": [{"view": "rh"}]}])
-    with pytest.raises(ValueError, match=r"panel 0.*plot"):
+def test_a_video_with_no_grid_raises_clear_error():
+    cfg = _viz_config({"v": {"layers": [{"draw": "imshow"}]}})
+    with pytest.raises(ValueError, match="needs a `grid`"):
         compose.read_video_specs(cfg)
 
 
-def test_missing_panel_view_raises_clear_error():
-    cfg = _viz_config([{"video_name": "v", "panels": [{"plot": "imshow"}]}])
-    with pytest.raises(ValueError, match=r"panel 0.*view"):
+def test_unknown_draw_op_raises_at_parse_time():
+    cfg = _viz_config({"v": {"grid": [["rh"]], "layers": [{"draw": "skeleton2d"}]}})
+    with pytest.raises(ValueError, match="unknown draw op"):
         compose.read_video_specs(cfg)
 
 
-def test_unknown_plot_op_raises_at_parse_time():
+def test_an_unknown_style_key_is_refused():
+    """What the v1 per-op kwargs merge could not do: a misspelled op matched nothing."""
     cfg = _viz_config(
-        [{"video_name": "v", "panels": [{"plot": "skeleton2d", "view": "rh"}]}]
+        {"v": {"grid": [["rh"]], "layers": [{"draw": "skeleton_2d", "thikness": 2}]}}
     )
-    with pytest.raises(ValueError, match="unknown plot op"):
+    with pytest.raises(ValueError, match=r"unknown style key\(s\) \['thikness'\]"):
         compose.read_video_specs(cfg)
 
 
-def test_scale_from_kwargs_lifted_to_panel_and_panel_key_wins():
-    cfg = Config.from_dict(
+def test_a_style_key_an_op_cannot_use_is_dropped_for_that_op():
+    """Which is what lets ONE [visualization.default_layer] table serve every op."""
+    cfg = _viz_config(
         {
-            "visualization": {
-                "kwargs": {"skeleton_2d": {"scale": 0.5, "line_thickness": 2}},
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            {
-                                "plot": "skeleton_2d",
-                                "view": "rh",
-                            },  # scale from kwargs
-                            {
-                                "plot": "skeleton_2d",
-                                "view": "rm",
-                                "scale": 0.25,
-                            },  # wins
-                        ],
-                    }
-                ],
+            "v": {
+                "grid": [["rh"]],
+                "layers": [{"draw": "mesh_nmf", "line_thickness": 2, "alpha": 0.5}],
             }
         }
     )
-    panels = compose.read_video_specs(cfg)[0].panels
-    assert panels[0].scale == 0.5
-    assert panels[1].scale == 0.25
-    # scale is structural -- it must not leak into the forwarded draw-op kwargs
-    assert "scale" not in panels[0].options
-    assert panels[0].options == {"line_thickness": 2}
+    mesh = [p for p in compose.read_video_specs(cfg)[0].panels if p.plot == "mesh_nmf"]
+    assert mesh[0].options == {"alpha": 0.5}
+
+
+def test_a_retired_visualization_key_is_refused_by_name():
+    for key in ("kwargs", "background", "crop", "cell"):
+        with pytest.raises(ValueError, match=key):
+            compose.read_video_specs(
+                Config.from_dict({"visualization": {key: {} if key == "kwargs" else 1}})
+            )
 
 
 def test_width_height_resolve_scales_and_override_scale():
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                                "scale": 0.5,
-                            },  # uniform
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                                "width": 64,
-                                "height": 32,
-                            },
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                                "width": 64,
-                            },  # aspect kept
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                                "height": 48,
-                            },  # aspect kept
-                        ],
-                    }
-                ]
-            }
-        }
-    )
-    panels = compose.read_video_specs(cfg)[0].panels
+    panels = [
+        compose.Panel(plot="imshow", view="rh", scale=0.5),
+        compose.Panel(plot="imshow", view="rh", width=64, height=32),
+        compose.Panel(plot="imshow", view="rh", width=64),  # aspect kept
+        compose.Panel(plot="imshow", view="rh", height=48),  # aspect kept
+    ]
     # a 96-tall, 128-wide source view
     assert panels[0].scales(96, 128) == (0.5, 0.5)
     assert panels[1].scales(96, 128) == (64 / 128, 32 / 96)  # exact box, non-uniform
@@ -429,33 +365,10 @@ def test_width_height_resolve_scales_and_override_scale():
 
 def test_width_height_set_panel_footprint_for_canvas_size(result, fly, frames):
     # frames are 96x128 per view; pin each tile to a fixed 100x60 box regardless
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            {
-                                "plot": "imshow",
-                                "view": "rh",
-                                "width": 100,
-                                "height": 60,
-                            },
-                            {
-                                "plot": "imshow",
-                                "view": "rm",
-                                "x0": 100,
-                                "width": 100,
-                                "height": 60,
-                            },
-                        ],
-                    }
-                ]
-            }
-        }
+    spec = _spec(
+        compose.Panel(plot="imshow", view="rh", width=100, height=60),
+        compose.Panel(plot="imshow", view="rm", x0=100, width=100, height=60),
     )
-    spec = compose.read_video_specs(cfg)[0]
     src = compose.Sources(fly, result.cameras, frames, pts2d=result.pts2d)
     # two 100x60 tiles side by side -> 200 wide x 60 tall, independent of frame size
     assert compose.canvas_size(spec, src) == (60, 200)
@@ -463,67 +376,26 @@ def test_width_height_set_panel_footprint_for_canvas_size(result, fly, frames):
     assert frame.shape == (60, 200, 3)
 
 
-def test_width_height_via_global_kwargs():
-    cfg = Config.from_dict(
+def test_the_canvas_background_comes_from_the_video():
+    cfg = _viz_config(
         {
-            "visualization": {
-                "kwargs": {"imshow": {"width": 80, "height": 80}},
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [{"plot": "imshow", "view": "rh"}],
-                    }
-                ],
-            }
-        }
-    )
-    panel = compose.read_video_specs(cfg)[0].panels[0]
-    assert panel.width == 80 and panel.height == 80
-    assert "width" not in panel.options and "height" not in panel.options
-
-
-def test_background_two_levels_global_and_panel():
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "background": "white",  # global canvas fill
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            {"plot": "skeleton_3d", "view": "rh"},
-                            {
-                                "plot": "skeleton_3d",
-                                "view": "rm",
-                                "background": "black",
-                            },
-                        ],
-                    }
-                ],
+            "v": {
+                "background": "white",
+                "grid": [["rh"]],
+                "layers": [{"draw": "skeleton_3d"}],
             }
         }
     )
     spec = compose.read_video_specs(cfg)[0]
     assert spec.background == "white"
-    assert spec.panels[0].background is None  # inherits the canvas fill
-    assert spec.panels[1].background == "black"  # per-panel override
-    # background is not forwarded to the draw op
-    assert "background" not in spec.panels[1].options
+    # A panel background is a compositor field, not a config surface -- a panel takes the
+    # canvas fill unless something built it otherwise.
+    assert all(p.background is None for p in spec.panels)
+    assert "background" not in spec.panels[-1].options
 
 
 def test_background_defaults_to_black():
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [{"plot": "skeleton_3d", "view": "rh"}],
-                    }
-                ]
-            }
-        }
-    )
+    cfg = _viz_config({"v": {"grid": [["rh"]], "layers": [{"draw": "skeleton_3d"}]}})
     assert compose.read_video_specs(cfg)[0].background == "black"
 
 
@@ -535,27 +407,11 @@ def test_fill_region_paints_and_clips():
 
 
 def test_panel_background_fills_footprint_before_op(result, fly, frames):
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "background": "black",
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            # skeleton-only tile on its own white backdrop
-                            {
-                                "plot": "skeleton_3d",
-                                "view": "rh",
-                                "background": "white",
-                            },
-                        ],
-                    }
-                ],
-            }
-        }
+    # A per-panel backdrop is a compositor field, not a config surface.
+    spec = _spec(
+        compose.Panel(plot="skeleton_3d", view="rh", background="white"),
+        background="black",
     )
-    spec = compose.read_video_specs(cfg)[0]
     src = compose.Sources(fly, result.cameras, frames, pts3d=result.pts3d)
     frame = compose.compose_frame(spec, src, t=0)
     # the panel footprint (rh view size) was painted white over the black canvas
@@ -580,11 +436,11 @@ def test_scale_shrinks_panel_footprint_and_image(result, fly, frames):
     assert (canvas[20:, :] == 0).all()
 
     # a 0.5-scaled panel halves its footprint in the inferred canvas size
-    raw = _two_panel_config("skeleton_2d").data
-    for panel in raw["visualization"]["videos"][0]["panels"]:
-        panel["scale"] = 0.5
-        panel["x0"] = panel.get("x0", 0) // 2  # keep the two 64-wide tiles adjacent
-    spec = compose.read_video_specs(Config.from_dict(raw))[0]
+    spec = compose.read_video_specs(_two_panel_config("skeleton_2d"))[0]
+    for panel in spec.panels:
+        panel.scale = 0.5
+        panel.width = panel.height = None  # scale, not a fixed box
+        panel.x0 //= 2  # keep the two 64-wide tiles adjacent
     assert spec.panels[0].scale == 0.5
     src = compose.Sources(fly, result.cameras, frames, pts2d=result.pts2d)
     # two 64x48 tiles (128x96 frames at 0.5) side by side -> 128 x 48
@@ -717,20 +573,8 @@ def test_mesh_rgba_gl_matches_software_when_available(result):
 
 
 def test_mesh_nmf_op_overlays_the_mesh(result, fly, frames):
-    cfg = Config.from_dict(
-        {
-            "visualization": {
-                "videos": [
-                    {
-                        "video_name": "v",
-                        "panels": [
-                            {"plot": "imshow", "view": "rh"},
-                            {"plot": "mesh_nmf", "view": "rh", "alpha": 0.6},
-                        ],
-                    }
-                ]
-            }
-        }
+    cfg = _viz_config(
+        {"v": {"grid": [["rh"]], "layers": [{"draw": "mesh_nmf", "alpha": 0.6}]}}
     )
     spec = compose.read_video_specs(cfg)[0]
     src = compose.Sources(fly, result.cameras, frames, nmf_pts3d=result.pts3d)
@@ -779,13 +623,14 @@ def test_packaged_config_videos_parse():
         "pose2d",
         "pose3d",
         "pose_nmf",
-        "pose_mesh",
+        "mesh_nmf",
     }
     assert all(p.plot in compose.OPS for s in specs for p in s.panels)
-    # the global [visualization.kwargs] sets line_thickness=2 on every skeleton panel
+    # [visualization.default_layer] sets line_thickness on every skeleton panel that did
+    # not override it (the dashed reference layers write 1).
     skel = [p for s in specs for p in s.panels if p.plot.startswith("skeleton")]
-    assert skel and all(p.options.get("line_thickness") == 2 for p in skel)
-    # the global [visualization.kwargs] sizes every panel to a 480x240 box
+    assert skel and all(p.options.get("line_thickness") in (1, 2) for p in skel)
+    # the default video's `cell` sizes every panel to a 480x240 box
     assert all(p.width == 480 and p.height == 240 for s in specs for p in s.panels)
     # and the default canvas background is black
     assert all(s.background == "black" for s in specs)
