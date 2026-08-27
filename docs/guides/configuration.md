@@ -1,5 +1,32 @@
 # Writing configs
 
+!!! danger "This page still describes the v1 schema"
+
+    The 0.3.0 config schema landed in the code and in the packaged
+    `default_config.toml`, but **this page has not been rewritten yet** — it is organized
+    around the v1 tables, and most key names on it are refused by name if you write them.
+    Until it is rewritten, the authority is the packaged config itself:
+
+    ```console
+    $ deeperfly config show                # every section, with its defaults
+    $ python -c "import deeperfly.config as c; print(c.DEFAULT_CONFIG_PATH.read_text())"
+    ```
+
+    What changed, in one list: `[[sources]]` → `[cameras.<name>].video` (a regex, or a
+    list of them CONCATENATED); `[cameras.defaults]` → `[default_camera]`;
+    `[cameras].calibration` → `[calibration].path`; `[cameras.<n>].mirror` gone;
+    `[[pose2d.models]]`/`[[pose2d.pathways]]`/`[[pose2d.preprocessors]]`/`[pose2d.output_points]`
+    → `[pose2d] class`/`weights` + `[pose2d.crops]` + `auto_crops`; `[pose2d.autocrop]` →
+    `[pose2d.crop_search]`; `[pipeline] do_<stage>` → `<stage>`; `[skeleton]` out of the
+    config entirely (a file, resolved for you; `include` overrides), with `point_names` →
+    `points`, `limb_points` → `edges`, `limb_palette` → `[skeleton.colors]`;
+    `[bundle_adjustment] points_to_use` → `points` (a `*` selector); `symmetrize`'s
+    `pairs` → `points`; `[inverse_kinematics.head]`/`.abdomen` →
+    `[inverse_kinematics.markers.<chain>]`; `[[visualization.videos]]` +
+    `panels`/`kwargs`/`plot` → `[visualization.videos.<name>]` with `grid` + `layers`, plus
+    `[visualization.default_video]` / `.default_layer`. Calibration landmarks and
+    calibration-stage scale pinning are gone.
+
 A run is driven by a single self-contained `config.toml`. `deeperfly init
 config.toml` writes a copy to edit in place; `deeperfly run recording/` with no
 `-c` falls back to the packaged defaults. A single file carries everything a run

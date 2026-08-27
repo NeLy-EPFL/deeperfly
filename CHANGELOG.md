@@ -12,6 +12,71 @@ API. A version that says so is more useful than one that flatters.
 
 ## [Unreleased]
 
+### Changed — the v2 config schema (breaking, no migrator)
+
+A v1 config fails to load with an error naming the v2 table that replaced the offending
+one. That includes the `config.toml` snapshots inside existing `deeperfly_outputs_*`
+directories: the fix is to re-point `-c` at a v2 config. Fingerprints keep their shape but
+change their VALUES (a pathway and a preprocessor are now a camera), so a first v2 run
+recomputes from `pose2d` down. That is correct, not a regression.
+
+- **The skeleton leaves the run config.** It is four things — `points`, `edges`,
+  `symmetries`, `colors` — in a version-controlled file, and a config normally says nothing
+  at all (`[skeleton] include = "<name or path>"` overrides). The limb/chain concept goes
+  with the declaration that created it: `Skeleton` loses `limb_names`, `limb_id`, `n_limbs`
+  and the limb-keyed `palette`, and carries one hex colour per point instead.
+  `results.h5` stops writing `limb_names`/`limb_id`/`palette` and writes `point_colors`; a
+  file without it reads back on a colormap, which is acceptable because colours are
+  cosmetic. The symmetries are now checked to be an **automorphism of the edges**, which is
+  strictly stronger than the chain-consistency check it replaces.
+- **One point selector for every point set.** An entry in `[bundle_adjustment] points`, the
+  `static`/`symmetrize` ops' `points`/`midline`, or `[skeleton.colors]` is a point name or
+  a `*` pattern. `points_to_use` and `symmetrize`'s `pairs` are refused by name.
+- **The rig table splits three ways**: `[default_camera]`, `[cameras.<name>]`,
+  `[calibration].path`. `[cameras.<n>].mirror` is deleted (nothing read it since 0.2.0;
+  it is derivable from `azimuth_deg`).
+- **Detection is dense and one-to-one**, and the plan is synthesized from the camera table:
+  `[pose2d] class`/`weights` plus `[pose2d.crops]` (per camera, always a box) and
+  `auto_crops` (the cameras whose window is searched). `[[sources]]`,
+  `[[pose2d.preprocessors]]`, `[[pose2d.models]]`, `[[pose2d.pathways]]` and
+  `[pose2d.output_points]` are gone, with the mirrored pathway and the preprocessing op
+  grammar (`fliplr`/`flipud`/`rot90`/config-level `resize`). A 19-channel side-agnostic
+  checkpoint is not expressible and runs under a v1 tag.
+- **`[cameras.<name>].video` is a regex** (`re.fullmatch`, case-insensitive, over the
+  filenames in the recording directory), or a list of them **concatenated in order**. This
+  is the one behavioral change in the release: a split recording is now one stream, read
+  through a new `ConcatReader` under one global frame index. Alternate NAMES go inside the
+  regex; a list of literal filenames is refused by name, because honoring it as v1 did
+  would silently double a recording.
+- **`[pipeline] do_<stage>` → `<stage>`.** `[inverse_kinematics.head]`/`.abdomen` →
+  `[inverse_kinematics.markers.<chain>]`. `[pose2d.autocrop]` → `[pose2d.crop_search]`.
+- **A video is a `grid` plus `layers`**, keyed by name
+  (`[visualization.videos.pose3d]`), with `[visualization.default_video]` and
+  `[visualization.default_layer]` for the shared values. Layers draw in order, which is how
+  a before/after pair is written. `panels`, the per-op `kwargs` tables, video-level
+  `plot`/`stage` and `video_name` are gone; new layer style key `bone_color`.
+
+### Removed
+
+- **Calibration landmarks**, the whole namespace, GUI panel included. Zero `landmarks.toml`
+  and zero `landmarks/` groups exist anywhere, so every rig ever solved here was already
+  animal-as-target. `Track` loses `kind`/`static`/`scatter_px`, `merge_observations` loses
+  its rig-scoped cross-recording tie, and `PACKAGE_FORMAT_VERSION` goes to 2.
+- **Calibration-stage scale pinning** (`--scale-from`, `scale_pair`/`scale_distance`,
+  `UNITS`' `"mm"`, `SCALE_SOURCES`' `known_distance`). Images cannot determine scale;
+  physical units first mean something at inverse kinematics, where `body_scale` fits the
+  point cloud to the fitted model's own dimensions.
+
+### Fixed
+
+- **`tests/test_gui_browser.py` ran in no environment that existed** — 1859 lines and 53
+  tests over the editor's JavaScript, the only gate there is on it, collapsed into one
+  reported skip because `playwright` was in no dependency group and no CI job. It is in the
+  `test` group now, with a CI job that installs chromium and asserts on the summary line.
+  Two keystroke tests that lost 3 runs in 4 under `-n auto` were dropping keys, not racing a
+  redraw: `App.init` registers its keydown listener after two awaits, so the app now marks
+  the end of boot with `body[data-ready]` and the fixture waits on it.
+
 ### Changed
 
 - **The default 2D detector now has a PADDED heatmap field.** `[pose2d].models` names
