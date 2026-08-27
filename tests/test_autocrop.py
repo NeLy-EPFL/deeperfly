@@ -322,7 +322,7 @@ def test_a_malformed_box_is_dropped_and_the_rest_kept(tmp_path):
 def _auto_config(*, seed=None, extra_view=False, shared=False):
     """A two-camera config whose view ``a`` detects through an automatic crop."""
     skel = Config.default().data["skeleton"]
-    names = skel["point_names"]
+    names = skel["points"]
     op = {"op": "crop", "auto": True}
     if seed is not None:
         op |= {"x": seed[0], "y": seed[1], "width": seed[2], "height": seed[3]}

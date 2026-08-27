@@ -65,7 +65,7 @@ def _cmd_project_new(args: argparse.Namespace) -> None:
     _info_line("id:       ", project.id)
     _info_line(
         "skeleton: ",
-        f"{skeleton.name}  ({skeleton.n_points} points, {skeleton.n_limbs} limbs)"
+        f"{skeleton.name}  ({skeleton.n_points} points, {skeleton.n_bones} bones)"
         if skeleton.n_points
         else f"{skeleton.name}  (empty -- edit {project.skeleton_file})",
     )

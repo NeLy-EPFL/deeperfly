@@ -24,9 +24,9 @@ def _fly38_table() -> dict:
     ships": on the packaged midline ``fly38`` a mirrored channel landing on point
     ``i + 19`` is a genuine left/right error and the mirror check correctly says so.
     """
-    return Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}}).data[
-        "skeleton"
-    ]
+    return Config.from_dict(
+        {"skeleton": {"include": str(DEEPFLY3D_SKELETON_PATH)}}
+    ).data["skeleton"]
 
 
 def _config(pathways, output_points, cameras=None, models=None):
@@ -68,7 +68,7 @@ def _plan(specs, **kwargs):
     table derived from ``points`` (``points[i]`` = the point index channel ``i``
     fills, ``-1`` to drop).
     """
-    point_names = _fly38_table()["point_names"]
+    point_names = _fly38_table()["points"]
     pathways, ps_specs = [], []
     for s in specs:
         name = f"{s['view']}_p"
@@ -211,7 +211,7 @@ def test_footage_by_view_rekeys_source_footage_to_view_names():
 
     from deeperfly.pipeline.run import _footage_by_view
 
-    point_names = _fly38_table()["point_names"]
+    point_names = _fly38_table()["points"]
     pathways = [
         {"name": "rh_p", "source": "s0", "preprocessor": "plain", "model": "m"},
         {"name": "lf_p", "source": "s1", "preprocessor": "mirror", "model": "m"},
@@ -388,7 +388,7 @@ def test_an_explicit_table_and_the_identity_default_agree_for_a_dense_pathway():
             "weights": "unused.pt",
         }
     ]
-    names = list(_fly38_table()["point_names"])
+    names = list(_fly38_table()["points"])
     explicit = {
         "rh": {n: {"pathway": "rh", "out_channel": i} for i, n in enumerate(names)}
     }
@@ -441,7 +441,7 @@ def test_model_precision_absent_or_empty_inherits(over):
 
 def _mirror_config(left_point, *, symmetries=None, mirror_left=True):
     """A two-view rig: one plain pathway onto ``r_a``, one mirrored onto ``left_point``."""
-    skel = {"point_names": ["l_a", "r_a", "l_b", "r_b"]}
+    skel = {"points": ["l_a", "r_a", "l_b", "r_b"]}
     if symmetries is not None:
         skel["symmetries"] = symmetries
     return Config.from_dict(
@@ -540,7 +540,7 @@ def test_an_even_number_of_reflections_is_not_a_mirror():
     """``fliplr`` + ``flipud`` is a half-turn: it preserves handedness, so no swap is due."""
     cfg = Config.from_dict(
         {
-            "skeleton": {"point_names": ["l_a", "r_a"], "symmetries": [["l_a", "r_a"]]},
+            "skeleton": {"points": ["l_a", "r_a"], "symmetries": [["l_a", "r_a"]]},
             "cameras": {"defaults": {"distance": 1.0}, "a": {"azimuth_deg": 0}},
             "sources": [{"name": "vid", "filename": "v"}],
             "pose2d": {

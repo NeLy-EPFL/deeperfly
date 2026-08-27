@@ -641,7 +641,7 @@ def test_a_run_refuses_a_cached_pose_on_another_skeleton(tmp_path, cameras, deep
     _store_on(outputs, cameras, deepfly3d)  # the retired DeepFly3D point set
 
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[skeleton]\nname = "fly38"\n')  # the shipped one
+    cfg.write_text('[skeleton]\ninclude = "fly38"\n')  # the shipped one
     with pytest.raises(SystemExit) as excinfo:
         run_recording(outdir=outputs, config_path=cfg)
     message = str(excinfo.value)
@@ -661,5 +661,5 @@ def test_a_run_accepts_a_cached_pose_on_the_same_skeleton(tmp_path, cameras, fly
     outputs = tmp_path / "out"
     store = _store_on(outputs, cameras, fly)
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[skeleton]\nname = "fly38b"\n')  # the pre-1.0 spelling
+    cfg.write_text('[skeleton]\ninclude = "fly38b"\n')  # the pre-1.0 spelling
     _refuse_a_foreign_skeleton(Config.from_toml(cfg), store)  # does not raise

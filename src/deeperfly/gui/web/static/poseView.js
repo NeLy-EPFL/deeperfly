@@ -40,7 +40,7 @@
 // position, so they still read on a joint that has no GT yet (only a detected / projected / seed).
 //
 // The fitted NMF model is a read-only reference: a faint mint under-glow *beneath* the skeleton
-// (so the limb palette always reads on top) with its *disagreement* against the placed point
+// (so the point colours always read on top) with its *disagreement* against the placed point
 // drawn back on top as a per-joint "leash" -- silent at coincidence, growing with the residual.
 // With the combined skeleton toggled off a source/reference instead draws in its own bright,
 // dashed/dotted style so it stays fully visible on its own.
@@ -80,7 +80,7 @@ const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
 // that one glance tells you where a point came from:
 //   ground truth (authored)  -> solid lime ring over a filled disc
 //   detector prediction      -> thin dark ring over a filled disc that fades with confidence
-//   derived (reprojected 3D) -> a hollow circle in the point's own limb palette
+//   derived (reprojected 3D) -> a hollow circle in the point's own colour
 //     colour, no fill: "computed, not observed".
 // The Hidden flag is not one of these: it says whether the cell enters the training loss, which is
 // orthogonal to where the keypoint came from, so it is drawn as a bar STRUCK THROUGH whichever of
@@ -93,7 +93,7 @@ const MARQUEE_ADD_STROKE = "rgba(124,252,0,0.9)"; // Ctrl/⌘-drag = add: lime, 
 const MARQUEE_ADD_FILL = "rgba(124,252,0,0.14)"; // its translucent fill
 
 // The fitted NMF model is a read-only reference overlay (mint) drawn UNDERNEATH the editable
-// skeleton, so the limb palette always owns the top layer instead of being painted over. It is
+// skeleton, so the point colours always own the top layer instead of being painted over. It is
 // drawn as a soft under-glow skeleton whose overall shape is the ambient signal, with its
 // *disagreement* with the placed point at one joint -- a "leash" from the point to where the
 // model lands -- drawn on top only for the joint under the cursor (or being dragged), so the
@@ -108,7 +108,7 @@ const LEASH_MIN_PX = 2.5; // below this editable<->reference screen gap the leas
 const LEASH_FULL_PX = 16; // at/above this gap the reference marker + leash reach full emphasis
 
 // The reprojected skeleton is its own independent overlay (the "projected" source, toggled on
-// its own -- on by default): the full 3D reprojection in the limb palette -- hollow rings at
+// its own -- on by default): the full 3D reprojection in the point colours -- hollow rings at
 // every reprojected joint joined by THICK, semi-transparent, DASHED edges -- so where
 // triangulation places each joint reads at a glance as a distinct "derived, not observed" layer
 // that never competes with the solid editable skeleton on top. It draws the same way whether or
@@ -120,13 +120,13 @@ const PROJ_DASH = [7, 5]; // ... and dashed (screen px on/off), the "derived, no
 // The "Unplaced" layer (see drawPlaceholders): a faint, draggable seed at a joint this view has
 // NOTHING else to grab (no GT / detected / reprojected point) -- a joint triangulation rejected,
 // or one the detector never fired. A small dashed hollow ring with a faint centre dot in the
-// joint's limb palette, at reduced opacity, so it reads as "not observed -- drag me to place",
+// joint's own colour, at reduced opacity, so it reads as "not observed -- drag me to place",
 // clearly apart from the observed (filled disc), reprojected (solid hollow ring) and NMF markers.
 const PLACEHOLDER_ALPHA = 0.55; // the Unplaced seed's opacity: faint, but grabbable at a glance
 const PLACEHOLDER_DASH = [2, 3]; // its dashed hollow ring (screen px on/off)
 
 // The "Absent" tombstone (see drawAbsent): a joint the operator declared NOT on this animal.
-// Deliberately achromatic -- every other marker is drawn in the joint's limb palette, so grey
+// Deliberately achromatic -- every other marker is drawn in the joint's own colour, so grey
 // says "outside the anatomy" at a glance and cannot be mistaken for a faint observation. A cross
 // rather than a ring for the same reason: rings mean "a position, just not observed", and an
 // absent joint has no position at all.
@@ -738,7 +738,7 @@ export class PoseView {
     // on a frame until the first keystroke.
     if (!this.instanceMode && this.placeholder) this.drawPlaceholders();
     if (this.landmarksVisible && this.landmarks) this.drawLandmarks();
-    // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the limb palette owns
+    // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the point colours own
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
     if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
     // The annotation skeleton: one skeleton, each joint at its ground-truth pixel or at the
@@ -832,7 +832,7 @@ export class PoseView {
   }
 
   // Calibration landmarks: a diamond plus its name, in one warm colour distinct from every
-  // limb palette entry. Deliberately a different SHAPE, not just a different hue -- a
+  // point colour. Deliberately a different SHAPE, not just a different hue -- a
   // landmark is a different kind of thing from a keypoint, and shape survives colour
   // blindness and a busy frame in a way hue does not.
   drawLandmarks() {
@@ -1062,7 +1062,7 @@ export class PoseView {
       const [cx, cy] = this.toCanvas(node.pos[0], node.pos[1]);
       const isHover = i === this.highlight;
       const r = POINT_RADIUS_PX * (isHover ? HOVER_SCALE : 1);
-      // FILL: a filled disc in the limb palette colour -- a detected point's fill fades with
+      // FILL: a filled disc in the point's colour -- a detected point's fill fades with
       // the detector's confidence, so faint points that want a second look read as faint.
       let fillAlpha = 1;
       if (node.src === "invented") fillAlpha = PLACEHOLDER_ALPHA;
@@ -1290,7 +1290,7 @@ export class PoseView {
   }
 
   // The reprojected 3D drawn as its own independent overlay: the full reprojected skeleton in the
-  // limb palette -- hollow rings at every reprojected joint joined by thick, semi-transparent,
+  // point colours -- hollow rings at every reprojected joint joined by thick, semi-transparent,
   // DASHED edges. It reads as a distinct "derived, not observed" layer beneath the solid editable
   // skeleton (and stands alone when that is hidden); where a reprojected point sits off its placed
   // pixel, that gap is the live disagreement. Every joint is shown at once (no hover gating), so a
@@ -1345,7 +1345,7 @@ export class PoseView {
   // The "Unplaced" layer: a faint, draggable seed at every joint this view has nothing else to grab
   // (no GT / detected / reprojected point) -- e.g. a joint triangulation rejected, or one the
   // detector never fired. Each is drawn as a small dashed hollow ring with a faint centre dot in
-  // the joint's limb palette at reduced opacity, so it reads as "not observed -- drag me to place"
+  // the joint's own colour at reduced opacity, so it reads as "not observed -- drag me to place"
   // rather than an observed point. Its position is the server's sensible seed (the raw detection,
   // else a nearby frame's pixel, else a neighbour / view centroid). Grabbing one authors a
   // ground-truth point there (see grabCandidates); placeholderPos suppresses it the instant a real

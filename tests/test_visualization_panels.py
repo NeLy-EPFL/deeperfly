@@ -305,7 +305,7 @@ def test_pathways_that_window_a_view_differently_are_an_error_not_a_guess(
     fly, result, frames
 ):
     """Two windows, one panel: either render looks fine, so guessing is the wrong move."""
-    point_names = Config.default().data["skeleton"]["point_names"]
+    point_names = Config.default().data["skeleton"]["points"]
     half = len(point_names) // 2
     cfg = Config.from_dict(
         {
@@ -719,9 +719,6 @@ def test_dorsal_view_names_the_landmarks_it_cannot_find(result, frames):
         name="bare",
         point_names=("a", "b", "c"),
         bones=np.zeros((0, 2), int),
-        limb_names=("x",),
-        limb_id=np.zeros(3, int),
-        palette={"x": "#ffffff"},
     )
     with pytest.raises(ValueError, match="anterior"):
         dorsal_camera(np.zeros((2, 3, 3)), bare)

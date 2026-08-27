@@ -219,9 +219,9 @@ def test_plan_shape_and_coverage(plan, fly, template, articulation):
 @pytest.mark.parametrize(
     "ref,model_only,skeleton_only",
     [
-        ({"name": "fly38"}, [], []),
+        ({"include": "fly38"}, [], []),
         (
-            {"file": str(DEEPFLY3D_SKELETON_PATH)},
+            {"include": str(DEEPFLY3D_SKELETON_PATH)},
             ["abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4", "neck"],
             [
                 "l_abdomen0",

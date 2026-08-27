@@ -76,35 +76,36 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     sk = PoseResult.load(path).skeleton
     assert sk.name == "fly38"
     assert sk.point_names == Skeleton.fly().point_names
-    assert sk.palette == Skeleton.fly().palette
+    assert sk.point_colors == Skeleton.fly().point_colors
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
-    np.testing.assert_array_equal(sk.limb_id, Skeleton.fly().limb_id)
     # The editor reads its skeleton from here, so losing the pairs on the way would leave
     # the chirality check falling back to name inference for every run.
     np.testing.assert_array_equal(sk.symmetries, Skeleton.fly().symmetries)
 
 
-def test_a_results_file_written_before_symmetry_existed_still_loads(
+def test_a_results_file_written_before_symmetry_or_colors_still_loads(
     cameras, rng, tmp_path
 ):
-    """The ``symmetries`` dataset is additive, so its absence must not be an error.
+    """Both datasets are additive, so their absence must not be an error.
 
-    Such a file loads as a skeleton with no declared pairs, which disables the pair-driven
-    features for it rather than breaking it -- and the editor's chirality check then falls
-    back to inferring pairs by name (``Skeleton.symmetries_or_inferred``).
+    Such a file loads as a skeleton with no declared pairs and the colormap by index,
+    which disables the pair-driven features and changes how it draws rather than breaking
+    it -- and colours are cosmetic, which is what makes it acceptable to read the ~351
+    already-written files back without a repack.
     """
     import h5py
+
+    from deeperfly.skeleton import TAB10_HEX
 
     path = tmp_path / "old.h5"
     _result(cameras, rng).save(path)
     with h5py.File(path, "r+") as f:
         del f["skeleton/symmetries"]
+        del f["skeleton/point_colors"]
     sk = PoseResult.load(path).skeleton
     assert sk.n_symmetries == 0
     assert sk.point_names == Skeleton.fly().point_names
-    np.testing.assert_array_equal(
-        sk.symmetries_or_inferred(), Skeleton.fly().symmetries
-    )
+    assert sk.point_colors[:2] == TAB10_HEX[:2]
 
 
 def test_optional_fields_absent(cameras, rng, tmp_path):

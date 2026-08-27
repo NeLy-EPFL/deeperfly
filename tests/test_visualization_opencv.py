@@ -32,13 +32,11 @@ def frames(result, rng):
 # -- palette -----------------------------------------------------------------
 
 
-def test_palette_matches_matplotlib(fly):
+def test_point_colors_match_matplotlib(fly):
     mpl = pytest.importorskip("matplotlib.colors")
     rgb = point_colors_rgb(fly)
-    for limb, hexc in fly.palette.items():
-        idx = [i for i, lid in enumerate(fly.limb_id) if fly.limb_names[lid] == limb]
-        for i in idx:
-            np.testing.assert_allclose(rgb[i], mpl.to_rgba(hexc)[:3], atol=1e-6)
+    for i, hexc in enumerate(fly.point_colors):
+        np.testing.assert_allclose(rgb[i], mpl.to_rgba(hexc)[:3], atol=1e-6)
 
 
 # -- primitives --------------------------------------------------------------

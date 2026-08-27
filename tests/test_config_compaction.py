@@ -4,7 +4,8 @@ Each of these replaces a block of the packaged config with a *reference* to some
 that already knows the answer, so each test's real job is to pin that the short form and
 the long form mean exactly the same thing:
 
-* ``[skeleton] name = "fly38"``  -- a packaged skeleton instead of ~80 written lines.
+* no ``[skeleton]`` table at all -- the packaged skeleton, resolved for you;
+  ``include = "fly38"`` names another.
 * ``[[pose2d.models]]`` with only ``class``/``weights`` -- the rest from the class.
 * ``weights = "x.pth"`` -- found on ``$DEEPERFLY_MODELS`` instead of a machine's path.
 * ``grid = [[...]]``  -- a montage instead of hand-computed panel offsets.
@@ -27,14 +28,13 @@ from deeperfly.pose2d.models import CLASS_ALIASES, class_defaults
 
 
 def _skeleton_signature(s):
-    """Everything a skeleton IS, so two of them can be compared for real."""
+    """Everything a skeleton IS -- points, edges, symmetries, colors."""
     return (
         s.name,
         tuple(s.point_names),
-        tuple(s.limb_names),
         tuple(map(tuple, s.bones)),
-        tuple(sorted(s.palette.items())),
         s.symmetries.tolist(),
+        tuple(s.point_colors),
     )
 
 
@@ -42,7 +42,20 @@ def test_packaged_presets_are_discoverable():
     assert set(skeleton_presets()) == {"fly38"}
 
 
-def test_a_retired_preset_name_still_resolves():
+def test_no_skeleton_table_resolves_to_the_packaged_one():
+    """The norm: a run config says NOTHING about its skeleton.
+
+    Which points exist is a property of the detector, not of the recording, so the
+    default is allowed to be "the one packaged skeleton" -- and what makes that safe is
+    the check at the other end, where a checkpoint's recorded point names are compared
+    against these (`deeperfly.pose2d.stream._check_channel_names`).
+    """
+    assert _skeleton_signature(Config.from_dict({}).skeleton()) == _skeleton_signature(
+        Config.from_dict({"skeleton": {"include": "fly38"}}).skeleton()
+    )
+
+
+def test_a_retired_skeleton_name_still_resolves():
     """``fly38b`` was renamed to ``fly38``; the old spelling has to keep loading.
 
     Every config and every output-directory snapshot written before the rename holds the
@@ -51,80 +64,93 @@ def test_a_retired_preset_name_still_resolves():
     ``name`` still wins over the file's, which is why such a run goes on *calling* its
     skeleton fly38b while computing exactly what it always did.
     """
-    aliased = Config.from_dict({"skeleton": {"name": "fly38b"}}).skeleton()
-    current = Config.from_dict({"skeleton": {"name": "fly38"}}).skeleton()
+    aliased = Config.from_dict({"skeleton": {"include": "fly38b"}}).skeleton()
+    current = Config.from_dict({"skeleton": {"include": "fly38"}}).skeleton()
     assert list(aliased.point_names) == list(current.point_names)
     assert aliased.bones.tolist() == current.bones.tolist()
-    assert aliased.name == "fly38b", "the config's own name is not overwritten"
 
 
 @pytest.mark.parametrize("preset", ["fly38"])
-def test_preset_matches_the_same_table_written_out(preset):
-    """A named preset resolves to exactly the table it replaces -- the whole premise."""
+def test_include_matches_the_same_table_written_out(preset):
+    """``include`` resolves to exactly the table it replaces -- the whole premise."""
     spelled = tomllib.loads(skeleton_presets()[preset].read_text())["skeleton"]
-    by_name = Config.from_dict({"skeleton": {"name": preset}}).skeleton()
+    by_name = Config.from_dict({"skeleton": {"include": preset}}).skeleton()
     written = Config.from_dict({"skeleton": spelled}).skeleton()
     assert _skeleton_signature(by_name) == _skeleton_signature(written)
     assert by_name.n_points == 38
 
 
-def test_preset_keys_are_overridden_wholesale():
+def test_included_keys_are_overridden_wholesale():
     cfg = Config.from_dict(
-        {"skeleton": {"name": "fly38", "limb_palette": {"neck": "#ffffff"}}}
+        {"skeleton": {"include": "fly38", "colors": {"neck": "#ffffff"}}}
     )
-    palette = cfg.skeleton().palette
-    assert palette["neck"] == "#ffffff"
-    # Wholesale, not merged: the override replaces the referenced palette entirely.
-    assert "lf_leg" not in palette
+    colors = dict(zip(cfg.skeleton().point_names, cfg.skeleton().point_colors))
+    assert colors["neck"] == "#ffffff"
+    # Wholesale, not merged: the override replaces the included colors entirely, so
+    # every other point falls back to the colormap.
+    assert colors["lf_claw"] != "#0f7399"
 
 
 def test_a_self_contained_table_is_left_alone():
-    """A config that spells out point_names keeps its meaning -- `name` stays free text."""
-    cfg = Config.from_dict(
-        {"skeleton": {"name": "fly38", "point_names": ["a", "b", "c"]}}
-    )
+    """A config that spells out its points keeps its meaning -- `name` stays free text."""
+    cfg = Config.from_dict({"skeleton": {"name": "mine", "points": ["a", "b", "c"]}})
     assert cfg.skeleton().n_points == 3
 
 
-def test_file_reference_resolves_next_to_its_config(tmp_path):
+def test_include_resolves_next_to_its_config(tmp_path):
     (tmp_path / "sk").mkdir()
     (tmp_path / "sk" / "mine.toml").write_text(
-        '[skeleton]\nname = "mine"\npoint_names = ["a", "b"]\n'
+        '[skeleton]\nname = "mine"\npoints = ["a", "b"]\n'
     )
     cfg_path = tmp_path / "config.toml"
-    cfg_path.write_text('[skeleton]\nfile = "sk/mine.toml"\n')
+    cfg_path.write_text('[skeleton]\ninclude = "sk/mine.toml"\n')
     assert Config.from_toml(cfg_path).skeleton().name == "mine"
 
 
-def test_unknown_preset_names_the_ones_that_exist():
-    with pytest.raises(ValueError, match=r"not a packaged skeleton.*fly38"):
-        Config.from_dict({"skeleton": {"name": "fly99"}})
+def test_an_unknown_include_names_the_skeletons_that_exist():
+    with pytest.raises(ValueError, match=r"neither a packaged skeleton.*fly38"):
+        Config.from_dict({"skeleton": {"include": "fly99"}})
 
 
-def test_missing_file_reference_says_where_it_looked(tmp_path):
+def test_a_missing_include_says_where_it_looked(tmp_path):
     cfg_path = tmp_path / "config.toml"
-    cfg_path.write_text('[skeleton]\nfile = "nope.toml"\n')
-    with pytest.raises(ValueError, match="does not exist"):
+    cfg_path.write_text('[skeleton]\ninclude = "nope.toml"\n')
+    with pytest.raises(ValueError, match="readable file"):
         Config.from_toml(cfg_path)
 
 
 def test_a_file_without_a_skeleton_table_is_refused(tmp_path):
     (tmp_path / "notaskeleton.toml").write_text("[cameras]\n")
     cfg_path = tmp_path / "config.toml"
-    cfg_path.write_text('[skeleton]\nfile = "notaskeleton.toml"\n')
+    cfg_path.write_text('[skeleton]\ninclude = "notaskeleton.toml"\n')
     with pytest.raises(ValueError, match="carries no .skeleton. table"):
         Config.from_toml(cfg_path)
 
 
-def test_the_resolved_points_reach_the_fingerprint():
-    """A preset is a reference in the snapshot but the RESOLVED names are cached on.
+@pytest.mark.parametrize(
+    "key,advice",
+    [
+        ("point_names", "points"),
+        ("limb_points", "edges"),
+        ("limb_palette", r"\[skeleton.colors\]"),
+        ("file", "include"),
+    ],
+)
+def test_a_v1_skeleton_key_is_refused_by_name(key, advice):
+    """Named, never ignored: silence is what a reader would read as "still honored"."""
+    with pytest.raises(ValueError, match=advice):
+        Config.from_dict({"skeleton": {key: "whatever"}})
 
-    Otherwise a preset edited between releases would leave every cached run believing a
-    skeleton it no longer routes.
+
+def test_the_resolved_points_reach_the_fingerprint():
+    """``include`` is a reference in the snapshot but the RESOLVED names are cached on.
+
+    Otherwise a skeleton file edited between releases would leave every cached run
+    believing a skeleton it no longer routes.
     """
     from deeperfly.pipeline.fingerprint import _skeleton_digest
 
-    cfg = Config.from_dict({"skeleton": {"name": "fly38"}})
+    cfg = Config.from_dict({"skeleton": {"include": "fly38"}})
     assert _skeleton_digest(cfg)["point_names"][:2] == [
         "lf_thorax_coxa",
         "lf_coxa_trochanter",
@@ -173,7 +199,7 @@ def _dense_config(model_table):
             "sources": [
                 {"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in CAMERA_NAMES
             ],
-            "skeleton": {"name": "fly38"},
+            "skeleton": {"include": "fly38"},
             "cameras": {
                 v: {"azimuth_deg": az, "distance": 100.0, "focal_length_px": 1.0}
                 for v, az in zip(CAMERA_NAMES, AZIMUTHS_DEG)
@@ -294,7 +320,7 @@ def _grid_config(video, cameras=CAMERA_NAMES):
     return Config.from_dict(
         {
             "sources": [{"name": f"vid_{v}", "filename": f"{v}.mp4"} for v in cameras],
-            "skeleton": {"name": "fly38"},
+            "skeleton": {"include": "fly38"},
             "cameras": {
                 v: {
                     "azimuth_deg": azimuths.get(v, 0.0),
@@ -501,7 +527,7 @@ def _plan_config(pose2d: dict) -> Config:
     return Config.from_dict(
         {
             "sources": [{"name": "vid_a"}, {"name": "vid_b"}],
-            "skeleton": {"name": "fly38"},
+            "skeleton": {"include": "fly38"},
             "cameras": {
                 "a": {"azimuth_deg": 0, "focal_length_px": 1.0, "distance": 1.0},
                 "b": {"azimuth_deg": 90, "focal_length_px": 1.0, "distance": 1.0},

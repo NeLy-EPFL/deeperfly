@@ -889,15 +889,14 @@ def _narrow_videos(data: dict, dropped: set[str]) -> None:
 # -- skeleton presets ---------------------------------------------------------
 
 
-#: Retired preset names that still resolve, ``old name -> packaged name``.
+#: Retired skeleton names that still resolve, ``old name -> packaged name``.
 #:
 #: A rename is not a data migration: ``fly38b`` became ``fly38`` when it was left as the
 #: only packaged skeleton, and not one coordinate moved. But a *reference* to it is on
-#: disk in every config and every output-directory snapshot written before that, and
-#: those would otherwise fail to load at all -- so the old spelling keeps working. It
-#: resolves to the same file, and the config's own ``name`` still wins, so such a run
-#: goes on calling its skeleton ``fly38b`` and computes exactly what it always did (the
-#: skeleton's name is not in any fingerprint -- see
+#: disk in configs and output-directory snapshots written before that, so the old
+#: spelling keeps working. It resolves to the same file, and a config's own ``name``
+#: still wins, so such a run goes on calling its skeleton ``fly38b`` and computes exactly
+#: what it always did (the skeleton's name is not in any fingerprint -- see
 #: :func:`deeperfly.pipeline.fingerprint._skeleton_digest`).
 #:
 #: This is deliberately not symmetric. ``fly38`` now means the midline-abdomen set, and
@@ -908,6 +907,24 @@ def _narrow_videos(data: dict, dropped: set[str]) -> None:
 #: output directory whose stored pose is
 #: (:func:`deeperfly.pipeline.run._refuse_a_foreign_skeleton`).
 SKELETON_ALIASES = {"fly38b": "fly38"}
+
+#: ``[skeleton]`` keys this release no longer honors, ``key -> what to write instead``.
+#:
+#: The whole grouping half of the v1 table. A key that was quietly ignored is worse than
+#: one that errors, and these are the two whose absence would be invisible: a
+#: ``limb_palette`` still in a config would leave the skeleton on the colormap, and
+#: ``point_names`` would leave it on the packaged points -- both of which look like a
+#: working run.
+RETIRED_SKELETON_KEYS = {
+    "point_names": "renamed: points = [...] (in the skeleton FILE, not the config)",
+    "limb_points": "gone: edges = [[a, b], ...] is the whole topology, with no grouping "
+    "concept. Chains are derived from the bone graph where they are needed "
+    "(deeperfly.pictorial.skeleton_chains).",
+    "limb_palette": 'gone: [skeleton.colors] is per POINT -- "lf_*" = "#0f7399" colors '
+    "the five points of one leg, and the edges written from them.",
+    "name": None,  # still legal; listed so the loop below can skip it
+    "file": 'renamed: include = "skeleton.toml"',
+}
 
 
 def skeleton_presets() -> dict[str, Path]:
@@ -922,31 +939,63 @@ def skeleton_presets() -> dict[str, Path]:
     return {p.stem: p for p in sorted(SKELETON_PRESET_DIR.glob("*.toml"))}
 
 
+def default_skeleton_spec() -> dict:
+    """The ``[skeleton]`` table a config that declares none resolves to.
+
+    The **sole packaged skeleton**, and an error if there is not exactly one. A run
+    normally says nothing about its skeleton because which points exist is a property of
+    the detector, not of the recording -- and what makes that safe is not this default but
+    the check at the other end: a checkpoint records its own point names, and
+    :func:`deeperfly.pose2d.stream._check_channel_names` refuses one whose channels are
+    not these points. So the default is allowed to be "the one there is", and the moment
+    there are two, a config has to choose.
+    """
+    presets = skeleton_presets()
+    if len(presets) != 1:
+        raise ValueError(
+            f"this build packages {len(presets)} skeletons ({sorted(presets)}), so a "
+            "config cannot leave the skeleton unsaid. Name one:\n"
+            '    [skeleton]\n    include = "fly38"'
+        )
+    return _load_skeleton_file(next(iter(presets.values())))
+
+
+def _load_skeleton_file(path: Path) -> dict:
+    """The ``[skeleton]`` table of a skeleton file, or an error naming what it is not."""
+    loaded = tomllib.loads(path.read_text()).get("skeleton")
+    if not isinstance(loaded, dict) or "points" not in loaded:
+        raise ValueError(
+            f"{path} carries no [skeleton] table with 'points'; it is not a skeleton "
+            "file (the format is data/skeletons/fly38.toml -- points, edges, "
+            "symmetries, colors)"
+        )
+    log.info("skeleton %r from %s", loaded.get("name", path.stem), path)
+    return loaded
+
+
 def _resolve_skeleton(data: dict, source: Path | None) -> dict:
-    """Expand a ``[skeleton]`` table that *references* a skeleton instead of spelling one.
+    """Fill in ``[skeleton]``: the packaged skeleton, or the one ``include`` names.
 
-    A skeleton is 80-odd lines of point names, mirror pairs, limb chains and colors that
-    almost never differ between recordings of the same animal -- and when it does differ it
+    A skeleton is a hundred lines of points, edges, mirror pairs and colors that almost
+    never differ between recordings of the same animal -- and when it does differ it
     differs completely (the DeepFly3D set and ``fly38`` are both 38 points and share 32 of
-    them, in a different order). So it belongs in a file that a config *names*, not in
-    every config:
+    them, in a different order). So it lives in a version-controlled file, and a run
+    config normally says **nothing at all**:
 
-    * ``name = "fly38"`` -- a packaged preset (:func:`skeleton_presets`), or a retired
+    * no ``[skeleton]`` table -> :func:`default_skeleton_spec`, the packaged skeleton.
+    * ``include = "fly38"`` -> a packaged name (:func:`skeleton_presets`), or a retired
       spelling of one (:data:`SKELETON_ALIASES`).
-    * ``file = "skeleton.toml"`` -- a path, resolved next to the config that wrote it.
-      The format is the same, which is what makes a preset and a project's own
-      ``skeleton.toml`` interchangeable.
+    * ``include = "skeleton.toml"`` -> a path, resolved next to the config that wrote it.
+      Same format, which is what makes a packaged skeleton and a project's own
+      interchangeable.
 
-    A table that spells out ``point_names`` is already self-contained and is left exactly
-    as it is -- so every config written before presets existed keeps its own meaning, and
-    ``name`` goes on being a free-text label for those. Resolution happens once, at
-    :class:`Config` construction, so everything downstream (the skeleton itself, the
-    fingerprints, ``deeperfly config show``) sees one fully-populated table and needs to
-    know nothing about presets.
+    Keys written alongside ``include`` win **wholesale, per key**: a ``colors`` table
+    there replaces the included one rather than merging entry by entry, because a
+    half-merged color table is not a thing anyone means.
 
-    Keys written in the config win **wholesale, per key**: a ``limb_palette`` there
-    replaces the referenced one rather than merging entry by entry, because a half-merged
-    palette keyed on limbs that the override renamed is not a thing anyone means.
+    Resolution happens once, at :class:`Config` construction, so everything downstream
+    (the skeleton itself, the fingerprints, ``deeperfly config show``) sees one
+    fully-populated table and needs to know nothing about where it came from.
 
     Returns
     -------
@@ -956,48 +1005,59 @@ def _resolve_skeleton(data: dict, source: Path | None) -> dict:
     Raises
     ------
     ValueError
-        If the reference names no packaged preset / no readable file, or if the
-        referenced file carries no ``[skeleton]`` table.
+        If the table carries a v1 key (:data:`RETIRED_SKELETON_KEYS`), if ``include``
+        names no packaged skeleton and no readable file, or if the referenced file is not
+        a skeleton file.
     """
     skel = data.get("skeleton")
-    if not isinstance(skel, dict) or "point_names" in skel:
-        return data
+    if skel is None:
+        return {**data, "skeleton": default_skeleton_spec()}
+    if not isinstance(skel, dict):
+        raise ValueError(f"[skeleton] must be a table, got {skel!r}")
 
-    ref, presets = skel.get("file"), skeleton_presets()
-    if ref:
-        path = Path(ref)
+    for key, advice in RETIRED_SKELETON_KEYS.items():
+        if advice is not None and key in skel:
+            raise ValueError(
+                f"[skeleton] carries {key!r}, which this release no longer honors.\n"
+                f"  {advice}\n"
+                "  A skeleton is points, edges, symmetries and colors, in a file of its "
+                "own; see data/skeletons/fly38.toml."
+            )
+
+    ref = skel.get("include")
+    if ref is None:
+        if "points" not in skel:
+            raise ValueError(
+                "[skeleton] declares neither 'include' nor 'points'"
+                + (f" (it only names {skel['name']!r})" if "name" in skel else "")
+                + ". Leave the table out entirely to take the packaged skeleton, or "
+                'name one: include = "fly38".'
+            )
+        # Spelled out in the config. Legal -- it is what the editor writes into a
+        # project and what a results.h5 round-trip produces -- but not the norm.
+        return data
+    presets = skeleton_presets()
+    if ref in presets:
+        path = presets[ref]
+    elif SKELETON_ALIASES.get(ref) in presets:
+        current = SKELETON_ALIASES[ref]
+        path = presets[current]
+        log.info(
+            "[skeleton] include = %r is the former spelling of %r and resolves to it; "
+            "the points are unchanged",
+            ref,
+            current,
+        )
+    else:
+        path = Path(str(ref))
         if not path.is_absolute() and source is not None:
             path = source.parent / path
         if not path.is_file():
             raise ValueError(
-                f"[skeleton] file = {ref!r} does not exist (looked in {path})"
+                f"[skeleton] include = {ref!r} is neither a packaged skeleton "
+                f"(have: {sorted(presets)}) nor a readable file (looked in {path})"
             )
-    elif skel.get("name") in presets:
-        path = presets[skel["name"]]
-    elif SKELETON_ALIASES.get(skel.get("name")) in presets:
-        current = SKELETON_ALIASES[skel["name"]]
-        path = presets[current]
-        log.info(
-            "[skeleton] name = %r is the former spelling of %r and resolves to it; the "
-            "points are unchanged",
-            skel["name"],
-            current,
-        )
-    else:
-        raise ValueError(
-            f"[skeleton] declares no 'point_names' and name = {skel.get('name')!r} is not "
-            f"a packaged skeleton (have: {sorted(presets)}). Either spell the skeleton out "
-            "in this table, name a packaged one, or point 'file' at a skeleton.toml."
-        )
-
-    loaded = tomllib.loads(path.read_text()).get("skeleton")
-    if not isinstance(loaded, dict) or "point_names" not in loaded:
-        raise ValueError(
-            f"{path} carries no [skeleton] table with 'point_names'; it is not a skeleton "
-            "file (the format is a project's own skeleton.toml, or a packaged preset)"
-        )
-    log.info("skeleton %r from %s", loaded.get("name", path.stem), path)
-    return {**data, "skeleton": {**loaded, **skel}}
+    return {**data, "skeleton": {**_load_skeleton_file(path), **skel}}
 
 
 # -- the Config class --------------------------------------------------------
@@ -1330,10 +1390,15 @@ class Config:
         return CameraGroup.from_config(self, image_sizes=image_sizes)
 
     def skeleton(self) -> "Skeleton":
-        """The configured skeleton (``[skeleton]``), or the default fly skeleton."""
+        """The run's skeleton.
+
+        Always present: :func:`_resolve_skeleton` filled the table in at construction,
+        from ``include`` or from the packaged skeleton, so there is nothing to fall back
+        to here.
+        """
         from .skeleton import Skeleton
 
-        return Skeleton.from_config(self) if "skeleton" in self.data else Skeleton.fly()
+        return Skeleton.from_config(self)
 
     def mirror_views(self) -> dict[str, str]:
         """``view -> the view that sees this view's mirror image`` (``[cameras.<n>].mirror``).

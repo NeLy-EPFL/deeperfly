@@ -1,4 +1,4 @@
-# deeperfly run configuration -- Flywheel recording g25_260507_Fly1, trial 002 (8 views, all cropped).
+# deeperfly run configuration -- SCAPE recording IN07B001_260417_Fly4, trial 005 (8 views).
 #
 #     deeperfly run <this directory>     # -o defaults to its own deeperfly_outputs/
 #
@@ -78,13 +78,10 @@ azimuth_deg = 120
 # no residual can afterwards detect it: bundle adjustment holds the intrinsics fixed, so
 # it absorbs a focal error into the distance instead of reporting it. Measured from the
 # foam ball, the one rigid object of fixed size in every view.
-# This rig's hind sensor is 1984x832, so its principal point is written out rather than
-# inferred -- the footage is not centered on it.
 [cameras.h]
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168
-principal_point_px = [991.5, 415.5]   # the 1984x832 hind sensor's own center
 
 
 # == Pipeline ================================================================
@@ -126,24 +123,18 @@ models = [
 # the one thing no augmentation undoes. A view with no entry here runs
 # full-frame.
 preprocessors = [
-    { name = "crop_rh", ops = [{ op = "crop", x = 737, y = 0, width = 960, height = 512 }] },
-    { name = "crop_rm", ops = [{ op = "crop", x = 710, y = 0, width = 960, height = 512 }] },
-    { name = "crop_rf", ops = [{ op = "crop", x = 493, y = 0, width = 960, height = 512 }] },
-    { name = "crop_f", ops = [{ op = "crop", x = 479, y = 3, width = 1018, height = 509 }] },
-    { name = "crop_lf", ops = [{ op = "crop", x = 301, y = 0, width = 960, height = 512 }] },
-    { name = "crop_lm", ops = [{ op = "crop", x = 330, y = 0, width = 960, height = 512 }] },
-    { name = "crop_lh", ops = [{ op = "crop", x = 413, y = 0, width = 960, height = 512 }] },
-    { name = "crop_h", ops = [{ op = "crop", x = 749, y = 57, width = 498, height = 249 }] },
+    { name = "crop_f", ops = [{ op = "crop", x = 306, y = 306, width = 1030, height = 515 }] },
+    { name = "crop_h", ops = [{ op = "crop", x = 474, y = 146, width = 520, height = 260 }] },
 ]
 
 pathways = [
-    { name = "rh", source = "vid_rh", preprocessor = "crop_rh" },
-    { name = "rm", source = "vid_rm", preprocessor = "crop_rm" },
-    { name = "rf", source = "vid_rf", preprocessor = "crop_rf" },
+    { name = "rh", source = "vid_rh" },
+    { name = "rm", source = "vid_rm" },
+    { name = "rf", source = "vid_rf" },
     { name = "f", source = "vid_f", preprocessor = "crop_f" },
-    { name = "lf", source = "vid_lf", preprocessor = "crop_lf" },
-    { name = "lm", source = "vid_lm", preprocessor = "crop_lm" },
-    { name = "lh", source = "vid_lh", preprocessor = "crop_lh" },
+    { name = "lf", source = "vid_lf" },
+    { name = "lm", source = "vid_lm" },
+    { name = "lh", source = "vid_lh" },
     { name = "h", source = "vid_h", preprocessor = "crop_h" },
 ]
 
@@ -173,12 +164,9 @@ loss = "linear"
 # One 3D trajectory per keypoint fitted to the whole recording against every view, with
 # the rig's own projection as the observation model.
 [eks]
-# Raised from the shipped 5.0, which over-flags: measured against hand labels on 54
-# recordings (63,921 labeled cells), 30 beats both 5 and 15 on 2D accuracy and leaves
-# fewer blown cells, while keeping the frame-to-frame jumps 5 and 15 are better at than
-# 60+. A blown detection sits at Mahalanobis ~1e4, so every threshold in this range still
-# catches it; raising it only stops down-weighting cells the detector had right.
-inflate_threshold = 30.0
+# Raised from the shipped 5.0: over a 5..30 sweep this is the best reprojection median,
+# and it flags 37% of observations rather than two thirds of everything.
+inflate_threshold = 15.0
 
 
 # == Postprocess =============================================================
@@ -235,8 +223,52 @@ skeleton_nmf = { width = 480, height = 240, line_thickness = 2 }
 mesh_nmf     = { width = 480, height = 240, alpha = 0.55 }
 
 # Right-side cameras in the LEFT column, so the montage reads as the animal from above.
+# Four videos over the SAME cached results.h5, differing only in which stage's 3D each
+# `stage` key names -- that is what the key is for. Nothing upstream of `visualization`
+# recomputes, so all four describe one and the same reconstruction.
 [[visualization.videos]]
 video_name = "pose3d_post"  # the 3D after the postprocess chain, reprojected into each view
 plot  = "skeleton_3d"
 stage = "postprocess"
-grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+grid  = [["f", "h"], ["rf", "lf"], ["rm", "lm"], ["rh", "lh"]]
+
+# BEFORE the smoother: the raw per-frame RANSAC triangulation of the detector's 2D.
+[[visualization.videos]]
+video_name = "pose3d_tri"
+plot  = "skeleton_3d"
+stage = "triangulation"
+grid  = [["f", "h"], ["rf", "lf"], ["rm", "lm"], ["rh", "lh"]]
+
+# AFTER the smoother, but BEFORE the postprocess chain -- so `pose3d_tri` vs this pair
+# isolates mvEKS alone; against `pose3d_post` it would also carry the static freeze and
+# the symmetrization.
+[[visualization.videos]]
+video_name = "pose3d_eks"
+plot  = "skeleton_3d"
+stage = "eks"
+grid  = [["f", "h"], ["rf", "lf"], ["rm", "lm"], ["rh", "lh"]]
+
+# Both at once, in one frame: the grid layer draws the BEFORE (triangulation) as thin
+# DASHED bones with no joints, and the panels below draw the AFTER (eks) over it, solid
+# and with joints, in the same limb colors. Same color = same limb; dashed = where the
+# smoother moved it from. A frame where the two coincide is a frame mvEKS left alone.
+[[visualization.videos]]
+video_name = "pose3d_eks_vs_tri"
+plot  = "skeleton_3d"
+stage = "triangulation"
+grid  = [["f", "h"], ["rf", "lf"], ["rm", "lm"], ["rh", "lh"]]
+panels = [
+  { plot = "skeleton_3d", view = "f",    x0 =   0, y0 =   0, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "rf",   x0 =   0, y0 = 240, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "rm",   x0 =   0, y0 = 480, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "rh",   x0 =   0, y0 = 720, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "h",    x0 = 480, y0 =   0, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "lf",   x0 = 480, y0 = 240, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "lm",   x0 = 480, y0 = 480, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+  { plot = "skeleton_3d", view = "lh",   x0 = 480, y0 = 720, stage = "eks", line_dash = 0, line_thickness = 2, draw_points = true },
+]
+
+# Applies to every skeleton_3d layer of THIS video; the explicit panels above override it
+# back to solid for the "after" layer.
+[visualization.videos.kwargs]
+skeleton_3d = { width = 480, height = 240, line_thickness = 1, line_dash = [4, 4], draw_points = false }

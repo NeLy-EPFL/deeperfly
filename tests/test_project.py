@@ -113,16 +113,15 @@ def test_the_fly38_preset_round_trips_to_the_packaged_skeleton(project):
     """
     got, want = project.skeleton(), Skeleton.fly()
     assert got.point_names == want.point_names
-    assert got.limb_names == want.limb_names
-    assert got.palette == want.palette
+    assert got.point_colors == want.point_colors
     np.testing.assert_array_equal(got.bones, want.bones)
-    np.testing.assert_array_equal(got.limb_id, want.limb_id)
+    np.testing.assert_array_equal(got.symmetries, want.symmetries)
 
 
 def test_the_fly38_preset_keeps_its_comments(project):
-    """The prose explaining the limb ordering and palette travels with the project."""
+    """The prose explaining the point order and the colours travels with the project."""
     text = project.skeleton_path().read_text()
-    assert "kinematic-chain order" in text
+    assert "channel i of the detector is points[i]" in text
     assert "#" in text
 
 
@@ -140,25 +139,31 @@ def test_a_skeleton_path_keeps_only_the_skeleton_section(tmp_path):
     import tomllib
 
     from deeperfly import _toml
-    from deeperfly.config import DEFAULT_CONFIG_PATH
+    from deeperfly.config import skeleton_presets
 
-    project = Project.create(tmp_path / "p", skeleton=str(DEFAULT_CONFIG_PATH))
+    # A run config that spells its skeleton out AND carries a rig -- which is the shape
+    # the hazard lives in. (The packaged config no longer names a skeleton at all, so it
+    # cannot stand in here: seeding from it is refused by name.)
+    mixed = tmp_path / "mixed.toml"
+    mixed.write_text(
+        skeleton_presets()["fly38"].read_text() + "\n[cameras.rh]\nazimuth_deg = -120\n"
+    )
+    project = Project.create(tmp_path / "p", skeleton=str(mixed))
     text = project.skeleton_path().read_text()
-    # Asserted on the *declarations*, not on substrings: the [skeleton] block's prose names
-    # `[pose2d.output_points]` (as the thing that reads its symmetry pairs) and a comment
-    # mentioning a table is not a second definition of it. Substring matching cannot tell
-    # those apart in either direction, and the declaration is what the hazard is about.
+    # Asserted on the *declarations*, not on substrings: a comment mentioning a table is
+    # not a second definition of it. Substring matching cannot tell those apart in either
+    # direction, and the declaration is what the hazard is about.
     assert _toml.top_level_tables(text) == ["skeleton"]
     assert set(tomllib.loads(text)) == {"skeleton"}
     assert project.skeleton().n_points == 38
     # The pairs must survive the lift, or a project seeded this way silently loses the
     # mirror check, flip augmentation and the chirality QC. Sixteen, not nineteen: the
-    # packaged skeleton is `fly38b`, whose neck and five abdomen points are ON the
-    # midline and so correctly have no mirror partner.
+    # packaged skeleton's neck and five abdomen points are ON the midline and so
+    # correctly have no mirror partner.
     assert project.skeleton().n_symmetries == 16
-    # And the lift RESOLVED the packaged config's `name = "fly38b"` reference: a project
-    # records what it tracks, so a later package upgrade cannot restate it.
-    assert "point_names" in tomllib.loads(text)["skeleton"]
+    # And the lift wrote the POINTS out: a project records what it tracks, so a later
+    # package upgrade cannot restate it.
+    assert "points" in tomllib.loads(text)["skeleton"]
 
 
 def test_creating_over_an_existing_project_is_refused(tmp_path):

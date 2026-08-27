@@ -345,8 +345,9 @@ body {
 }
 
 /* The legend, rendered into the Help panel (#help-body) by app.js from the server
-   meta. The keypoint-colour swatches come straight from the loaded skeleton's per-limb
-   palette (no hard-coded left/right), so the legend reads correctly for any config. */
+   meta. The keypoint-colour swatches come straight from the loaded skeleton's own
+   per-point colours (no hard-coded left/right), so the legend reads correctly for any
+   skeleton. */
 .legend {
   margin-bottom: 20px;
 }
@@ -387,21 +388,22 @@ body {
   background: #5a9fe0;
 }
 
-/* Keypoint colours: one swatch + limb name per limb, wrapping to fit. */
-.legend-limbs {
+/* Keypoint colours: one swatch per distinct colour, labelled by its points'
+   shared name prefix, wrapping to fit. */
+.legend-swatches {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 18px;
 }
 
-.legend-limb {
+.legend-swatch {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   font-size: 12px;
 }
 
-.limb-dot {
+.swatch-dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
@@ -437,7 +439,7 @@ body {
 
 /* Marker discs, styled to match the canvas markers: ground truth = solid lime ring,
    detected = thin dark ring, projected = hollow ring. The disc colour is a grey
-   stand-in for the per-keypoint limb colour, which varies from point to point. */
+   stand-in for the per-keypoint colour, which varies from point to point. */
 .mk {
   width: 12px;
   height: 12px;
@@ -483,7 +485,7 @@ body {
 }
 
 /* The "Absent" tombstone: achromatic and cross-shaped, so it reads as "outside the anatomy"
-   rather than as a faint observation. Every other marker is drawn in the limb palette. */
+   rather than as a faint observation. Every other marker is drawn in the point's colour. */
 .mk.m-absent {
   background: transparent;
   border: none;

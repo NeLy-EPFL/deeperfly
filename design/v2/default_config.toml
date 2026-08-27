@@ -1,0 +1,287 @@
+# deeperfly run configuration.
+#
+#     deeperfly run <recording dir> -c <this file>
+#
+# Four questions: which rig ([cameras]), which detector ([pose2d]), which stages run
+# ([pipeline]), what to render ([visualization]). Every other table is one stage's
+# knobs, named after the stage, and optional -- `deeperfly config show <stage>` prints
+# its defaults.
+#
+# Anywhere a table names points, an entry is a point name or a `*` pattern over them.
+
+
+# == Skeleton ===============================================================
+# Normally absent: the checkpoint carries its own point names and order, so the run
+# resolves the skeleton from the detector. Write this table only to override it --
+# `include` names a packaged skeleton or a path relative to this config, and keys
+# written alongside replace that skeleton's. See fly38.toml.
+#
+# [skeleton]
+# include = "fly38"
+
+
+# == Rig =====================================================================
+# A solved calibration wins over [default_camera] + [cameras.*], which are then read
+# only for the camera ORDER (the V axis of every points array).
+# [calibration]
+# path = "calibration.toml"
+
+# What every camera is before it says otherwise: each [cameras.<name>] starts here and
+# overrides what it needs. Same keys as a camera.
+[default_camera]
+focal_length_px = 22388.125             # scalar when fx == fy, else [fx, fy]
+distance = 107.463
+# principal_point_px = [479.5, 239.5]   # omit: each camera's own frame center
+
+
+# == Cameras =================================================================
+# One table per camera, in the order that is the V axis of every points array.
+# Intrinsics describe the RAW frame, so a detection window ([pose2d.crop]) never moves
+# the principal point -- detections map back to raw pixels before meeting a camera.
+#
+# `video` is a case-insensitive `re.fullmatch` over the filenames directly inside the
+# recording directory, or a list of them, and everything it matches is ONE stream
+# (matches of each entry in natural order, entries in written order, concatenated). A
+# split recording and an image sequence are the same rule. Alternate names go inside
+# the regex -- `camera_(RH|0)` takes anatomical or DeepFly3D positional naming.
+#
+# The matches of one entry must be PARTS OF ONE SERIES: identical once runs of digits
+# are masked. `camera_RH_0.mp4` + `camera_RH_1.mp4` concatenate; `camera_RH.mp4` +
+# `camera_0.mp4`, or `.mp4` + `.avi`, are an error naming them rather than a guess.
+#
+# The default stays tight -- containers only -- because a looser pattern also picks up
+# sidecars and stray takes. The two shapes it does not match:
+#
+#     video = 'camera_(RH|0)_\d+\.(mp4|avi|mov|mkv|webm|m4v)'    # a split recording
+#     video = 'camera_(RH|0)_\d+\.(png|jpe?g|tiff?|bmp|webp)'    # an image sequence
+#
+# Write patterns as TOML LITERAL strings (single quotes) -- `\d` in a basic string is
+# an invalid escape and the config will not parse.
+
+[cameras.rh]
+video = 'camera_(RH|0)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = -120
+[cameras.rm]
+video = 'camera_(RM|1)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = -90
+[cameras.rf]
+video = 'camera_(RF|2)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = -45
+[cameras.f]
+video = 'camera_(F|3)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = 0
+[cameras.lf]
+video = 'camera_(LF|4)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = 45
+[cameras.lm]
+video = 'camera_(LM|5)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = 90
+[cameras.lh]
+video = 'camera_(LH|6)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = 120
+
+# The axial hind view: sees both sides at once, this rig's only left/right bridge. On a
+# different lens from the other seven (InfiniStix 0.73x / 130 mm vs 1.0x / 94 mm), so
+# BOTH focal and distance change, by different factors -- set one without the other and
+# no residual can detect it (bundle adjustment holds intrinsics fixed and absorbs a
+# focal error into the distance). Measured from the foam ball.
+[cameras.h]
+video = 'camera_(H|7)\.(mp4|avi|mov|mkv|webm|m4v)'
+azimuth_deg = 180
+focal_length_px = 24168.591
+distance = 158.9168
+
+
+# == Pipeline ================================================================
+# Which stages run, in this order; each has its own table below, named the same. A
+# disabled stage reuses its cached output when it exists (`pose2d = false` reconstructs
+# from cached 2D); an enabled one recomputes only when its own keys change.
+# `--overwrite [stage]` forces it.
+[pipeline]
+pose2d               = true
+bundle_adjustment    = true
+pictorial_structures = false  # DeepFly3D-style peak recovery over the top-K candidates
+triangulation        = true
+eks                  = true   # ensemble Kalman smoother over the 3D (de-jitter, repair)
+postprocess          = true   # the corrections below, from knowing the animal
+inverse_kinematics   = true   # fit a body model's joint angles (needs `deeperfly[ik]`)
+visualization        = true
+
+
+# == 2D detection ============================================================
+# One detector, run once per camera, emitting every skeleton point: channel i is
+# [skeleton] points[i]. input_size, mean, channel count and dtype are properties of the
+# checkpoint, whose loader refuses a config that disagrees.
+[pose2d]
+class = "mvt"
+weights = "mvt_r28_pad48_gray_fly38.pth"
+auto_crops = ["f", "h"]
+
+# `auto_crops` names cameras whose window is SEARCHED per recording; [pose2d.crops]
+# gives fixed windows as `[x, y, width, height]` in raw pixels. In neither: full frame.
+# In both: search starts from the box written here.
+#
+# A detector is trained through a box, and wrong apparent SCALE is the one thing no
+# augmentation undoes. Here the six side cameras match training full-frame and the two
+# AXIAL ones (1600x1008 vs 960x512) do not -- dropped in whole, detection collapses
+# (255 px). Searching beats hand-tuning (2.9 vs 3.4 px).
+#
+# The search scores detector confidence over a grid of (centre, width), which needs
+# nothing; the accept GATE is reprojection agreement with the other cameras' 3D, which
+# needs a solved rig. Without one the gate refuses rather than measure with a broken
+# ruler, and confidence alone gives a box ~1.7x too wide -- still far better than the
+# full frame. To engage it: run once, `deeperfly calibration export`, point
+# [calibration].path at it.
+#
+# The result lands in <outdir>/autocrop.json and is reused, so a resume neither
+# re-searches nor re-detects. `deeperfly auto-crop` runs it alone and prints the TOML.
+[pose2d.crops]
+# rh = [737, 0, 960, 512]   # this rig's side cameras match training full-frame
+
+
+# == Bundle adjustment =======================================================
+# The fly itself is the target; scipy.optimize.least_squares kwargs go in this table.
+[bundle_adjustment]
+# Leg joints sit at sharp limb corners and detect most reliably, so only they drive the
+# solve. Omit for every keypoint.
+points = ["lf_*", "lm_*", "lh_*", "rf_*", "rm_*", "rh_*"]
+fixed = ["*.intr"]          # e.g. also "f.rvec"/"f.tvec" to fix the world gauge
+weigh_by_confidence = false
+max_frames = 200            # bundle-adjust on at most this many frames
+max_nfev = 2000             # forwarded to scipy.optimize.least_squares
+loss = "linear"
+
+
+# == Ensemble Kalman smoother ================================================
+# One 3D trajectory per keypoint fitted to the whole recording against every view, with
+# the rig's own projection as the observation model.
+[eks]
+# Raised from the shipped 5.0, which over-flags. Measured on 54 recordings (63,921
+# labeled cells): 30 beats 5 and 15 on 2D accuracy and keeps their frame-to-frame
+# stability. A blown detection sits at Mahalanobis ~1e4, so anything in this range
+# still catches it.
+inflate_threshold = 30.0
+
+
+# == Postprocess =============================================================
+# Corrections from knowing the ANIMAL rather than the pixels, applied in order to the
+# finished 3D. After the smoother, which re-derives 3D from 2D and would undo them.
+# ORDER MATTERS: symmetrize is a fixed map once the plane is fitted, so
+# static-then-symmetrize satisfies both exactly and the other order does not.
+#
+# The IK's own alignment takes these same medians, and that is NOT a duplication to
+# collapse: it bakes them into the body plan as joint offsets, where these ops write a
+# corrected pose -- and only the pose exists without the optional Rust solver. Ordering
+# makes the two agree for free: a median over an already-constant point is that
+# constant, and a body frame built from mirrored coxae has the midline plane as one of
+# its own coordinate planes.
+
+# A tethered fly's thorax plate does not move, so these seven are a constant of the
+# recording and their variation over time is noise. `abdomen` is deliberately absent --
+# it pitches, telescopes and bends.
+[[postprocess.ops]]
+op = "static"
+method = "median"           # or mean / trimmed_mean / mode / geometric_median
+points = ["neck", "*_thorax_coxa"]
+
+# Each side is triangulated from its own cameras, so a left/right pair drifts apart;
+# this closes the gap. Name either point of a pair -- [skeleton] symmetries knows the
+# partner. Body-fixed points only: leg asymmetry IS the behavior.
+[[postprocess.ops]]
+op = "symmetrize"
+points = ["l*_thorax_coxa"]      # either half of each pair
+midline = ["neck"]
+
+# Deliberately NOT an op: rescaling each bone to its median length. By the test the two
+# above pass -- does it rewrite the pose? -- it would be one, but it moves the keypoints
+# that are supposed to move, where these two touch only the seven that are not, and
+# it is right only insofar as the median length is.
+
+
+# == Inverse kinematics ======================================================
+# `model` names a MODEL PACK -- the leg template, the head/abdomen articulation and the
+# overlay mesh of one mechanical model, resolved by name (or a path to a pack manifest)
+# the way [skeleton] include resolves a skeleton. Everything the fit needs that is not
+# measured from this recording lives there, so fitting a different model is a name, not
+# a code path. Segment LENGTHS are never in the pack: they come from the 3D pose, which
+# is what makes the fitted model this animal rather than a generic one.
+#
+# `chains` picks which non-leg chains to fit; left out it is every chain the pack
+# defines, and `[]` fits the legs alone.
+#
+# WHERE each tracked point sits on the model is neither the skeleton's business nor the
+# pack's: it is a `binding` -- the adaptor between the two -- one row per point (`body` +
+# body-frame `offset`), resolved from the pair as <skeleton>@<model> unless named here.
+# The offsets live there and nowhere else, because an offset is a fact about the PAIR. A leg point sits at offset zero
+# on a joint, so it is fitted as one; abdomen0..4 have no exact NeuroMechFly counterpart
+# and sit mid-tergite at a hand-tuned offset, so they ride the body instead -- their rows
+# say `approximate = true`, and the IK reports their residual separately.
+[inverse_kinematics]
+model = "neuromechfly"
+# binding = "fly38@neuromechfly"
+# chains = ["head", "abdomen"]
+# legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
+
+# Per-DOF degree limits, keyed by the pack's own angle name. Overrides the pack.
+# [inverse_kinematics.bounds]
+# "rf_trochanterfemur-rf_tibia-pitch" = [10, 160]
+
+# Where a tracked keypoint sits on the fitted body -- the labeling-scheme choice, not the
+# model's geometry. A table REPLACES its chain's whole marker set, so a redeclared chain
+# has to carry `base = true` over or the chain reverts to the registered base.
+# [inverse_kinematics.markers.head]
+# neck = { body = "c_head", offset = [0.0, 0.0, 0.0], base = true }
+
+
+# == Visualization ===========================================================
+# A video is a `grid` of camera cells with `layers` over them. A camera cell gets its
+# footage underneath (`footage = false` drops it); the synthetic `bird` plan view has
+# none, and `""` leaves a gap.
+#
+# A layer is one draw op plus its style. `stage` names which stage's points it draws --
+# left out it means "the most-derived stage present", so a video changes meaning as
+# stages are toggled. Layers draw in order, which is how a before/after is written.
+#
+# `crop = "pose2d"` frames each panel through its own camera's detection window, so an
+# axial camera is not a smudge -- and the box stays in exactly one place.
+
+# What every video is unless it says otherwise (same keys as a video entry).
+[visualization.default_video]
+background = "black"
+crop = "pose2d"
+cell = [480, 240]           # grid cell size, in pixels
+
+# What every layer is unless it says otherwise. Joints draw as a solid outline ring
+# whose fill opacity is the detector confidence, so a low-confidence joint fades to its
+# ring instead of vanishing (`outline_thickness = 0` restores fill-only markers).
+[visualization.default_layer]
+line_thickness = 2
+# bone_color = "#404040"    # every bone this one color, joints keeping theirs
+
+# Right-side cameras in the LEFT column, so the montage reads as the animal from above.
+[visualization.videos.pose2d]             # camera frames with the raw 2D detections
+grid = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+layers = [{ draw = "skeleton_2d", stage = "pose2d" }]
+
+[visualization.videos.pose3d]             # the postprocessed 3D, reprojected per view
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [{ draw = "skeleton_3d", stage = "postprocess" }]
+
+# The kinematic fit over the pose it was fitted to: the dashed reference is the target,
+# so every difference is something the model's limits or segment lengths refused.
+[visualization.videos.pose_nmf]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "skeleton_3d",  stage = "postprocess", line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]
+
+# The posed mesh with the same forward kinematics over it: the mesh shows where the
+# model's BODY lands, the skeleton the joint centers that put it there, so a leg off
+# the animal reads as a joint-angle error rather than a scale one.
+[visualization.videos.mesh_nmf]
+grid = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "mesh_nmf", alpha = 0.55 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]

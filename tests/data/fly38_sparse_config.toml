@@ -43,7 +43,7 @@ filename = ["camera_LH.mp4", "camera_6.mp4"]
 # DeepFly3D point set, which is no longer a packaged skeleton (`fly38` now names the
 # midline-abdomen one). The file sits beside this config.
 [skeleton]
-file = "fly38_deepfly3d.toml"
+include = "fly38_deepfly3d.toml"
 
 
 # == Views ===================================================================

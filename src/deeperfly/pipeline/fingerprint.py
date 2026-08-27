@@ -150,10 +150,8 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
         "point_names": list(skel.point_names),
         "bones": skel.bones.tolist(),
     }
-    if cosmetic:  # the visualization stage also draws limbs/colors
-        digest["limb_names"] = list(skel.limb_names)
-        digest["limb_id"] = skel.limb_id.tolist()
-        digest["palette"] = dict(skel.palette)
+    if cosmetic:  # the visualization stage also draws the colors
+        digest["point_colors"] = list(skel.point_colors)
     return digest
 
 

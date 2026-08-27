@@ -1,0 +1,105 @@
+# deeperfly run configuration -- SCAPE recording E49_260810_Fly3, trial 002
+# (8 views, searched crops, joint-angle fit on).
+#
+#     export DEEPERFLY_MODELS=/path/to/models     # where the .pth below is found
+#     deeperfly run <this directory> -c <this file>
+#
+# Only what this recording has a reason to say: the rig, the searched crops, the IK
+# trade. Everything else is the packaged default -- including the footage patterns,
+# since this recording uses the anatomical names (`camera_RH.mp4` ...) the default
+# already admits. A camera writes `video` only when its files are named otherwise.
+
+[default_camera]
+focal_length_px = 22388.125
+distance = 107.463
+
+[cameras.rh]
+azimuth_deg = -120
+[cameras.rm]
+azimuth_deg = -90
+[cameras.rf]
+azimuth_deg = -45
+[cameras.f]
+azimuth_deg = 0
+[cameras.lf]
+azimuth_deg = 45
+[cameras.lm]
+azimuth_deg = 90
+[cameras.lh]
+azimuth_deg = 120
+[cameras.h]              # the axial view, on the InfiniStix 0.73x / 130 mm
+azimuth_deg = 180
+focal_length_px = 24168.591
+distance = 158.9168
+
+[pipeline]
+inverse_kinematics = true
+
+[pose2d]
+class = "mvt"
+weights = "mvt_r28_pad48_gray_fly38.pth"
+auto_crops = ["f", "h"]      # the two axial views; the side cameras run full-frame
+
+[bundle_adjustment]
+points = ["lf_*", "lm_*", "lh_*", "rf_*", "rm_*", "rh_*"]
+fixed = ["*.intr"]
+weigh_by_confidence = false
+max_frames = 200
+max_nfev = 2000
+loss = "linear"
+
+[eks]
+inflate_threshold = 30.0
+
+[[postprocess.ops]]
+op = "static"
+method = "median"
+points = ["neck", "*_thorax_coxa"]
+
+[[postprocess.ops]]
+op = "symmetrize"
+points = ["l*_thorax_coxa"]
+midline = ["neck"]
+
+# The two femurs come out 4-6% apart here, left always longer, with non-overlapping
+# 10th-90th bands -- so at most one number is anatomy. `symmetric_segments` gives each
+# mirror pair their mean. It COSTS (3D residual +22%, reprojection +0.14 px in 7 of 8
+# views) and is on because a fit meant for cross-side comparison should be one animal.
+# Delete this table to fit each leg on its own.
+[inverse_kinematics]
+symmetric_segments = true
+
+[visualization.default_video]
+background = "black"
+crop = "pose2d"
+cell = [480, 240]
+
+[visualization.default_layer]
+line_thickness = 2
+
+[visualization.videos.pose3d_post]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [{ draw = "skeleton_3d", stage = "postprocess" }]
+
+# Before the smoother (dashed) against after (solid), in one frame: same color = same
+# limb, dashed = where it moved from. Where they coincide, mvEKS left the frame alone.
+[visualization.videos.pose3d_eks_vs_tri]
+grid = [["f", "h"], ["rf", "lf"], ["rm", "lm"], ["rh", "lh"]]
+layers = [
+    { draw = "skeleton_3d", stage = "triangulation", line_thickness = 1, line_dash = [4, 4], draw_points = false },
+    { draw = "skeleton_3d", stage = "eks" },
+]
+
+[visualization.videos.pose3d_post_vs_ik]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "skeleton_3d",  stage = "postprocess", line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]
+
+[visualization.videos.mesh_ik]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "mesh_nmf", alpha = 0.55 },
+    { draw = "skeleton_nmf", point_radius = 3 },
+]

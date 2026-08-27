@@ -28,7 +28,8 @@ The portable form of a solved rig — see
 
 ::: deeperfly.skeleton.Skeleton
 
-::: deeperfly.skeleton.infer_symmetries_by_name
+::: deeperfly.skeleton.resolve_points
+
 
 ## Chirality (left/right swap detection)
 

@@ -17,5 +17,11 @@ from the machine they were drafted on.
 | `project-system-plan.md` | The project system: many recordings under one skeleton and one rig, with a shared label store. |
 | `keypoint-editor-redesign.md` | Rebuilding the GUI as a ground-truth annotation tool — 2D as the source, 3D derived. |
 | `sidebar-and-live-switch-plan.md` | The editor's sidebar and switching the live overlay between stages. |
+| `v2/` | **Active.** The 0.3.0 breaking refactor: the config schema, the skeleton domain model, footage concatenation, and the removals that make the schema small. Start at `v2/README.md`. |
+
+`v2/` **retracts item 3 of `project-system-plan.md`** -- the dedicated non-skeleton
+calibration landmarks. The project system, GUI-first operation and from-scratch rigs all
+stay; only the landmarks go, because the animal turned out to be the better calibration
+target in every case that ever ran.
 
 For what the code actually does, read the code and `docs/`.

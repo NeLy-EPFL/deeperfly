@@ -13,7 +13,7 @@ camera are dropped. Buffers are RGB throughout.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import cv2
 import numpy as np
@@ -186,8 +186,8 @@ def draw_image(
     return canvas
 
 
-def _colors_u8(skeleton: "Skeleton", palette: dict[str, str] | None) -> np.ndarray:
-    return np.clip(point_colors_rgb(skeleton, palette) * 255.0 + 0.5, 0, 255).astype(
+def _colors_u8(skeleton: "Skeleton", colors=None) -> np.ndarray:
+    return np.clip(point_colors_rgb(skeleton, colors) * 255.0 + 0.5, 0, 255).astype(
         np.uint8
     )
 
@@ -380,7 +380,7 @@ def draw_skeleton_2d(
     y0: int = 0,
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
-    palette: dict[str, str] | None = None,
+    colors: Sequence[str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
@@ -401,7 +401,7 @@ def draw_skeleton_2d(
     pts2d
         The view's 2D joints of shape ``(P, 2)`` in image pixels.
     skeleton
-        Skeleton supplying the bones and per-limb colors.
+        Skeleton supplying the bones and per-point colors.
     x0, y0
         Top-left pixel offset.
     scale
@@ -410,8 +410,8 @@ def draw_skeleton_2d(
     conf
         Per-joint confidence ``(P,)`` setting each joint's fill opacity, or
         ``None`` (fully opaque).
-    palette
-        Optional ``limb_name -> hex`` override of the skeleton palette.
+    colors
+        Optional per-point hex override of the skeleton's own colors.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
     line_dash
@@ -435,7 +435,7 @@ def draw_skeleton_2d(
         canvas,
         pts2d,
         skeleton,
-        colors=_colors_u8(skeleton, palette),
+        colors=_colors_u8(skeleton, colors),
         depth=None,
         conf=conf,
         x0=x0,
@@ -460,7 +460,7 @@ def draw_skeleton_3d(
     y0: int = 0,
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
-    palette: dict[str, str] | None = None,
+    colors: Sequence[str] | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
@@ -482,7 +482,7 @@ def draw_skeleton_3d(
     camera
         The camera the skeleton is reprojected through (distortion included).
     skeleton
-        Skeleton supplying the bones and per-limb colors.
+        Skeleton supplying the bones and per-point colors.
     x0, y0
         Top-left pixel offset.
     scale
@@ -491,8 +491,8 @@ def draw_skeleton_3d(
     conf
         Per-joint confidence ``(P,)`` setting each joint's fill opacity, or
         ``None`` (fully opaque).
-    palette
-        Optional ``limb_name -> hex`` override of the skeleton palette.
+    colors
+        Optional per-point hex override of the skeleton's own colors.
     point_radius, line_thickness
         Joint and bone sizes in pixels.
     line_dash
@@ -521,7 +521,7 @@ def draw_skeleton_3d(
         canvas,
         pts2d,
         skeleton,
-        colors=_colors_u8(skeleton, palette),
+        colors=_colors_u8(skeleton, colors),
         depth=depth,
         conf=conf,
         x0=x0,

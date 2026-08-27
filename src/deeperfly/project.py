@@ -107,23 +107,26 @@ def skeleton_preset_names() -> tuple[str, ...]:
 SKELETON_PRESETS = skeleton_preset_names()
 
 _BLANK_SKELETON = """\
-# The project's skeleton: what is tracked, in order.
+# The project's skeleton: FOUR things -- points, edges, symmetries, colors.
 #
-# `point_names` is the source of truth for the tracked-point ORDER, which every
+# `points` is the source of truth for the tracked-point ORDER, which every
 # (V, T, P, ...) array and every stored label indexes into positionally -- so adding a
 # point is safe, and reordering or renaming one is a migration.
 #
-# `limb_points` lists each limb's points in kinematic-chain order; the bones drawn in the
-# editor are the consecutive pairs of each chain. A point in no limb is still tracked.
+# `edges` is the whole topology, as point pairs: the bones drawn in the editor, the
+# length prior, pictorial structures' graph. There is no grouping concept -- a point in
+# no edge is still tracked, and what a group name was for is a `*` pattern in `colors`.
+#
+# `symmetries` pairs each point with its mirror; the loader checks the pairs are an
+# automorphism of `edges`, which is what makes hand-written rows safe.
 [skeleton]
 name = "unnamed"
-point_names = []
+points = []
+# edges = [["hip", "knee"], ["knee", "ankle"]]
+# symmetries = [["l_hip", "r_hip"]]
 
-[skeleton.limb_points]
-# leg = ["hip", "knee", "ankle"]
-
-[skeleton.limb_palette]
-# leg = "#0f7399"
+[skeleton.colors]
+# "l_*" = "#0f7399"
 """
 
 #: Top-level config tables a project's ``rig.toml`` owns: the footage sources and the
@@ -1461,12 +1464,12 @@ def _skeleton_text(skeleton: str) -> str:
     parsed = tomllib.loads(text).get("skeleton")
     if parsed is None:
         raise ValueError(f"{path} has no [skeleton] table")
-    # A config may only NAME its skeleton (`[skeleton] name = "fly38"`). Seeding a
+    # A config may only INCLUDE its skeleton (`[skeleton] include = "fly38"`). Seeding a
     # project from one has to write the skeleton out, not copy the reference: a project
     # is a long-lived record of what it tracks, and a reference would let a package
     # upgrade change, retroactively, what its stored labels mean.
-    if "point_names" not in parsed and parsed.get("name") in presets:
-        text = presets[parsed["name"]].read_text()
+    if "points" not in parsed and parsed.get("include") in presets:
+        text = presets[parsed["include"]].read_text()
     # Keep only the skeleton section: a whole run config would drag a rig and a
     # detection plan into the project's skeleton file, where a later reader would have
     # no way to know which of the two definitions was authoritative.

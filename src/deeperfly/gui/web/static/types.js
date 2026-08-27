@@ -77,7 +77,7 @@
  * @property {string[]} point_names
  * @property {[number, number][]} bones
  * @property {[number, number, number][]} point_colors  0-255 RGB, one per point
- * @property {{name: string, color: [number, number, number]}[]} limbs  per-limb name + 0-255 RGB swatch, derived from the skeleton palette, for the legend
+ * @property {{name: string, color: [number, number, number]}[]} colors  one label + 0-255 RGB swatch per distinct point colour, for the legend
  * @property {Camera3D[]} cameras_3d  per-camera world poses for the rig plot
  * @property {CameraProj[]} cameras_proj  per-camera pinhole projection for the mesh overlay
  * @property {boolean} dirty

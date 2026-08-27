@@ -168,15 +168,15 @@ def _fly38() -> dict:
     specifically, not "whatever the package ships" -- the packaged ``fly38`` is the
     midline one, where points ``i`` and ``i + 19`` are not each other's mirror image.
     """
-    return Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}}).data[
-        "skeleton"
-    ]
+    return Config.from_dict(
+        {"skeleton": {"include": str(DEEPFLY3D_SKELETON_PATH)}}
+    ).data["skeleton"]
 
 
 def _mini_plan():
     """A 2-source / 2-pathway / 2-view plan: rh (plain) and lf (mirrored)."""
     skel = _fly38()
-    point_names = skel["point_names"]
+    point_names = skel["points"]
     data = {
         "sources": [{"name": "s0", "filename": "a"}, {"name": "s1", "filename": "b"}],
         "pose2d": {
@@ -224,7 +224,7 @@ def _mini_plan():
 def _front_plan():
     """A 1-source / 2-pathway / 1-view plan: the front source bridges both sides."""
     skel = _fly38()
-    point_names = skel["point_names"]
+    point_names = skel["points"]
     data = {
         "sources": [{"name": "fcam", "filename": "f"}],
         "pose2d": {
@@ -481,7 +481,7 @@ def test_load_refuses_a_model_trained_on_another_skeleton():
     """
     from deeperfly.pose2d.stream import _check_channel_names
 
-    fly38 = list(Config.default().data["skeleton"]["point_names"])
+    fly38 = list(Config.default().data["skeleton"]["points"])
     fly38b = [n for n in fly38 if "abdomen" not in n] + [
         "neck",
         "abdomen0",
@@ -500,7 +500,7 @@ def test_load_refuses_the_same_points_in_a_different_order():
     """The order is the mapping. Two configs with identical point SETS still disagree."""
     from deeperfly.pose2d.stream import _check_channel_names
 
-    names = list(Config.default().data["skeleton"]["point_names"])
+    names = list(Config.default().data["skeleton"]["points"])
     swapped = names[:]
     swapped[0], swapped[5] = swapped[5], swapped[0]
     with pytest.raises(SystemExit, match="the ORDER differs"):
@@ -512,7 +512,7 @@ def test_load_refuses_the_same_points_in_a_different_order():
 def test_load_accepts_the_matching_skeleton():
     from deeperfly.pose2d.stream import _check_channel_names
 
-    names = list(Config.default().data["skeleton"]["point_names"])
+    names = list(Config.default().data["skeleton"]["points"])
     _check_channel_names("dense", _model_with_points(names), _plan_with_points(names))
 
 
@@ -529,7 +529,7 @@ def test_a_checkpoint_recording_no_channel_names_is_refused():
 
     from deeperfly.pose2d.stream import _check_channel_names
 
-    names = list(Config.default().data["skeleton"]["point_names"])
+    names = list(Config.default().data["skeleton"]["points"])
     nameless = types.SimpleNamespace(module=types.SimpleNamespace())
     with pytest.raises(SystemExit, match="records no channel names"):
         _check_channel_names("stripped", nameless, _plan_with_points(names))

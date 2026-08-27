@@ -1,6 +1,7 @@
 """Skeleton edits as typed migrations -- the guard on the sharpest hazard in the project.
 
-``point_names`` is fingerprinted into every ``labels.h5``, so a skeleton edit can invalidate
+The skeleton's ``points`` are fingerprinted into every ``labels.h5``, so a skeleton edit
+can invalidate
 every label in a project. Worse, the invalidation is *quiet*: two 38-point skeletons in
 different orders load each other's files happily and mean something different by every index.
 
@@ -28,17 +29,22 @@ from deeperfly.skeleton_migrate import (
 SIZES = {name: (48, 64) for name in CAMERA_NAMES}
 
 
-def _skeleton(point_names, limbs=None, name="test"):
+def _skeleton(point_names, edges=None, name="test", colors=None):
     from deeperfly.config import Config
 
-    limbs = limbs or {"all": list(point_names)}
+    points = list(point_names)
+    edges = (
+        [list(e) for e in edges]
+        if edges is not None
+        else [[a, b] for a, b in zip(points, points[1:])]
+    )
     return Config.from_dict(
         {
             "skeleton": {
                 "name": name,
-                "point_names": list(point_names),
-                "limb_points": limbs,
-                "limb_palette": {k: "#123456" for k in limbs},
+                "points": points,
+                "edges": edges,
+                "colors": colors if colors is not None else {"*": "#123456"},
             }
         }
     ).skeleton()
@@ -47,10 +53,10 @@ def _skeleton(point_names, limbs=None, name="test"):
 def _project(tmp_path, points=("head", "thorax", "abdomen"), cells=None, frames=4):
     """A project whose skeleton is ``points`` and whose one recording carries ``cells``."""
     project = Project.create(tmp_path / "proj", skeleton="blank")
+    chain = [[a, b] for a, b in zip(points, points[1:])]
     project.skeleton_path().write_text(
-        f'[skeleton]\nname = "test"\npoint_names = {list(points)!r}\n'.replace("'", '"')
-        + "\n[skeleton.limb_points]\n"
-        + f"all = {list(points)!r}\n".replace("'", '"')
+        f'[skeleton]\nname = "test"\npoints = {list(points)!r}\n'.replace("'", '"')
+        + f"edges = {chain!r}\n".replace("'", '"')
     )
     rec = tmp_path / "flyA"
     rec.mkdir()
@@ -125,10 +131,11 @@ def test_deleting_a_point_is_flagged_destructive():
     assert 1 not in mapping  # 'b' has nowhere to go
 
 
-def test_a_bones_or_palette_only_change_is_trivial(tmp_path):
-    """Bones are display + the BA prior; they cannot invalidate a label."""
+def test_an_edges_or_colors_only_change_is_trivial(tmp_path):
+    """Edges are display + the BA prior, and colors are cosmetic; neither can
+    invalidate a label."""
     project, _ = _project(tmp_path, ("a", "b", "c"))
-    new = _skeleton(["a", "b", "c"], limbs={"one": ["a", "b"], "two": ["c"]})
+    new = _skeleton(["a", "b", "c"], edges=[["a", "b"]], colors={"a": "#ff0000"})
     plan = plan_migration(project, new)
     assert plan.trivial
     assert not plan.destructive
@@ -282,8 +289,7 @@ def test_a_sidecar_on_a_different_point_ORDER_blocks_the_migration(tmp_path):
     # The drift: the project now declares the reverse order, while the sidecar's rows (and
     # its stamped identity) are still on a, b, c.
     project.skeleton_path().write_text(
-        '[skeleton]\nname = "test"\npoint_names = ["c", "b", "a"]\n'
-        '\n[skeleton.limb_points]\nall = ["c", "b", "a"]\n'
+        '[skeleton]\nname = "test"\npoints = ["c", "b", "a"]\n'
     )
     plan = plan_migration(project, _skeleton(["a", "b", "c"]))
 
@@ -313,8 +319,7 @@ def test_a_sidecar_on_a_different_skeleton_names_what_differs(tmp_path):
     """A different point *set* is a different repair, so it gets a different message."""
     project, entry = _project(tmp_path, ("a", "b", "c"))
     project.skeleton_path().write_text(
-        '[skeleton]\nname = "test"\npoint_names = ["a", "b", "z"]\n'
-        '\n[skeleton.limb_points]\nall = ["a", "b", "z"]\n'
+        '[skeleton]\nname = "test"\npoints = ["a", "b", "z"]\n'
     )
     plan = plan_migration(project, _skeleton(["a", "b", "z", "w"]))
     assert plan.errors
@@ -349,28 +354,26 @@ def test_a_sidecar_on_the_declared_axis_still_migrates(tmp_path):
 def test_the_rewritten_skeleton_file_round_trips(tmp_path):
     """The migrated skeleton must parse back to exactly what was asked for."""
     project, _ = _project(tmp_path, ("a", "b", "c"))
-    new = _skeleton(["c", "a", "b"], limbs={"chain": ["c", "a"], "solo": ["b"]})
+    new = _skeleton(["c", "a", "b"], edges=[["c", "a"]], colors={"c": "#010203"})
     apply_migration(project, new, plan_migration(project, new), snapshot=False)
 
     back = project.skeleton()
     assert back.point_names == ("c", "a", "b")
-    assert back.limb_names == ("chain", "solo")
     np.testing.assert_array_equal(back.bones, new.bones)
-    np.testing.assert_array_equal(back.limb_id, new.limb_id)
+    assert back.point_colors == new.point_colors
 
 
 def test_the_real_fly_skeleton_round_trips_through_a_migration(tmp_path):
-    """The 38-point, 10-limb, 28-bone case -- where a chain-recovery bug would show."""
+    """The 38-point, 28-edge, 10-colour case, emitted point by point and read back."""
     project, _ = _project(tmp_path, Skeleton.fly().point_names[:3])
     fly = Skeleton.fly()
     apply_migration(project, fly, plan_migration(project, fly), snapshot=False)
 
     back = project.skeleton()
     assert back.point_names == fly.point_names
-    assert back.limb_names == fly.limb_names
     np.testing.assert_array_equal(back.bones, fly.bones)
-    np.testing.assert_array_equal(back.limb_id, fly.limb_id)
-    assert back.palette == fly.palette
+    assert back.point_colors == fly.point_colors
+    np.testing.assert_array_equal(back.symmetries, fly.symmetries)
 
 
 # -- symmetry pairs -----------------------------------------------------------
@@ -404,7 +407,7 @@ def test_the_pairs_are_emitted_by_name_so_a_reorder_carries_them(fly):
 
     reversed_names = tuple(reversed(fly.point_names))
     spec = tomllib.loads(_skeleton_toml(fly))
-    spec["skeleton"]["point_names"] = list(reversed_names)
+    spec["skeleton"]["points"] = list(reversed_names)
     moved = Skeleton.from_config(Config.from_dict(spec))
     # Same pairing, different indices -- and diff_skeletons compares by name, so it reports
     # the reorder and NOT a symmetry change.

@@ -7,7 +7,7 @@ be re-run later from pristine upstream outputs:
 .. code-block:: text
 
     attrs["meta"]            json: {deeperfly_format_version: 3, created_utc, ...}
-    skeleton/                the skeleton (point names, bones, visibility, palette)
+    skeleton/                the skeleton (point names, bones, symmetries, colors)
     pose2d/
         points               (V, T, P, 2) arg-max 2D detections (visibility-masked)
         conf                 (V, T, P) detection confidences
@@ -1510,37 +1510,33 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.create_dataset(
         "point_names", data=np.array(s.point_names, dtype=object), dtype=_STR
     )
-    g.create_dataset(
-        "limb_names", data=np.array(s.limb_names, dtype=object), dtype=_STR
-    )
-    g.create_dataset("limb_id", data=s.limb_id)
     g.create_dataset("bones", data=s.bones)
+    # One hex per POINT, in point order. Replaces the `limb_names` / `limb_id` /
+    # `palette` trio, which stored the grouping the skeleton no longer has. A file
+    # written before this reads back with the colormap (below), which is acceptable
+    # because colors are cosmetic -- no repack, and nothing geometric is lost.
+    g.create_dataset(
+        "point_colors", data=np.array(s.point_colors, dtype=object), dtype=_STR
+    )
     # Additive, and read back with a default: a results.h5 written before symmetry
-    # existed has no such dataset and loads as a skeleton with no pairs. That only
-    # disables the pair-driven features for that file (`deeperfly.chirality` falls
-    # back to name inference), so no format version bump is needed.
+    # existed has no such dataset and loads as a skeleton with no pairs, which only
+    # disables the pair-driven features for that file.
     g.create_dataset("symmetries", data=np.asarray(s.symmetries).reshape(-1, 2))
-    pal = g.create_group("palette")
-    for name, color in s.palette.items():
-        pal.attrs[name] = color
 
 
 def _read_skeleton(g: h5py.Group) -> Skeleton:
     decode = lambda arr: tuple(  # noqa: E731
         x.decode() if isinstance(x, bytes) else x for x in arr
     )
-    palette = {
-        name: (v.decode() if isinstance(v, bytes) else v)
-        for name, v in g["palette"].attrs.items()  # type: ignore[index]
-    }
     sym = g.get("symmetries")
+    stored = g.get("point_colors")
     return Skeleton(
         name=str(g.attrs["name"]),
         point_names=decode(g["point_names"][()]),  # type: ignore[index]
-        limb_names=decode(g["limb_names"][()]),  # type: ignore[index]
-        limb_id=g["limb_id"][()],  # type: ignore[index]
         bones=g["bones"][()],  # type: ignore[index]
-        palette=palette,
+        # Absent in a file written before colors were per point: the skeleton then
+        # defaults to the colormap by index rather than guessing at a limb palette.
+        point_colors=() if stored is None else decode(stored[()]),
         symmetries=(
             np.empty((0, 2), np.int64)
             if sym is None

@@ -4,22 +4,11 @@
 # A skeleton is FOUR things: points, edges, symmetries, colors. Nothing else -- no
 # groups, no chains, no subset names. Same shape as SLEAP and DeepLabCut.
 #
-# Referenced, not copied: a run config says nothing at all about the skeleton and takes
-# the packaged one, or names another with `[skeleton] include`. NEVER edit a published
-# skeleton in place -- a model trained under `fly38` resolves to whatever this file says
-# today, and the points-equality check against the checkpoint is all that stands between
-# a silent edit and silently mislabeled joints. Add a new name instead.
-#
-# This file was called `fly38b` up to the 0.2 release, when it became the only packaged
-# skeleton and took the plain name. `include = "fly38b"` still resolves here.
-#
-# It is NOT the historical DeepFly3D set, which also had 38 points and is what `fly38`
-# named before 1.0: that one carried two three-marker abdomen SIDE chains
-# (l_abdomen0..2 / r_abdomen0..2) and no neck. Same count, different points, different
-# order -- so a labels.h5 or results.h5 written against it has to be remapped by name and
-# never reinterpreted. `deeperfly project skeleton` is that migration; a run refuses
-# outright (deeperfly.pipeline.run) rather than reading one skeleton's names against the
-# other's columns.
+# Referenced, not copied: a run config names this file, or says nothing and takes the
+# name recorded with the detector's weights. NEVER edit a published skeleton in place --
+# a model trained under `fly38` resolves to whatever this file says today, and the
+# points-equality check against the checkpoint is all that stands between a silent edit
+# and silently mislabeled joints. Add a new name instead.
 
 
 [skeleton]

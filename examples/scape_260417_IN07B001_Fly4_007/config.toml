@@ -38,12 +38,6 @@ name = "vid_h"
 filename = ["camera_H.mp4", "camera_7.mp4"]
 
 
-# == Skeleton ================================================================
-# The channel order this checkpoint was trained in. A dense detector's channels ARE a
-# skeleton, so the wrong one attaches points to the wrong joints -- the packaged preset
-# is the file the model release ships, and it is checked against the weights every run.
-[skeleton]
-name = "fly38"
 
 
 # == Views ===================================================================

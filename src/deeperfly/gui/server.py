@@ -32,6 +32,7 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import threading
 import tomllib
 from collections import OrderedDict
@@ -1714,20 +1715,33 @@ def _cameras_proj(session: Session) -> list[dict]:
 # -- payload builders ---------------------------------------------------------
 
 
-def _limb_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
-    """Per-limb ``{name, color}`` swatches for the client's colour legend.
+def _color_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
+    """One ``{name, color}`` swatch per distinct colour, for the client's legend.
 
-    Derived straight from the skeleton's limbs and palette (``colors`` is the
-    per-point RGB already computed for the overlay), so the legend reflects
-    whatever the loaded config defines -- there is no left/right assumption baked
-    into the front-end. Each limb's swatch is the colour of its first point.
+    Grouped by COLOUR rather than by any structure the skeleton declares, because it
+    declares none: a skeleton is points, edges, symmetries and colours, so the only
+    grouping there is to show is the one the operator authored in ``[skeleton.colors]``.
+    For ``fly38`` that is the same ten swatches the per-limb legend used to draw.
+
+    Each group is labelled by the **shared prefix** of its points' names, trimmed of a
+    trailing separator (``lf_thorax_coxa`` + ``lf_claw`` -> ``lf``), falling back to the
+    first point's own name when they share nothing -- which is what a hand-written colour
+    table that groups unrelated points deserves. ``colors`` is the per-point RGB already
+    computed for the overlay, so the legend and the canvas cannot disagree.
     """
-    limb_id = np.asarray(skel.limb_id)
+    groups: dict[str, list[int]] = {}
+    for i, hexc in enumerate(skel.point_colors):
+        groups.setdefault(hexc, []).append(i)
     out: list[dict] = []
-    for lid, name in enumerate(skel.limb_names):
-        members = np.where(limb_id == lid)[0]
-        rgb = colors[members[0]] if len(members) else np.array([136, 136, 136])
-        out.append({"name": name, "color": [int(c) for c in rgb]})
+    for hexc, members in groups.items():
+        names = [skel.point_names[i] for i in members]
+        label = os.path.commonprefix(names).rstrip("_-") if len(names) > 1 else names[0]
+        out.append(
+            {
+                "name": label or names[0],
+                "color": [int(c) for c in colors[members[0]]],
+            }
+        )
     return out
 
 
@@ -1784,7 +1798,7 @@ def _meta_payload(
         "point_names": list(skel.point_names),
         "bones": np.asarray(skel.bones, dtype=int).reshape(-1, 2).tolist(),
         "point_colors": colors.tolist(),
-        "limbs": _limb_legend(skel, colors),
+        "colors": _color_legend(skel, colors),
         "cameras_3d": _cameras_3d(session),
         "cameras_proj": _cameras_proj(session),
         "dirty": bool(s.dirty),

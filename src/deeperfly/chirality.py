@@ -228,9 +228,9 @@ def check(
         encodes visibility everywhere; a pair with either member missing simply does not
         vote.
     symmetries
-        ``(S, 2)`` pairs, i.e. :attr:`deeperfly.skeleton.Skeleton.symmetries` (or
-        :meth:`~deeperfly.skeleton.Skeleton.symmetries_or_inferred` when the skeleton may
-        predate the field).
+        ``(S, 2)`` pairs, i.e. :attr:`deeperfly.skeleton.Skeleton.symmetries`. Empty for
+        a skeleton that declares none (or one read from a ``results.h5`` written before
+        the field existed), in which case there is nothing to check and the QC skips.
     min_pairs, min_separation_frac, min_margin_frac
         The gates documented at :data:`MIN_PAIRS`, :data:`MIN_SEPARATION_FRAC` and
         :data:`MIN_MARGIN_FRAC`.

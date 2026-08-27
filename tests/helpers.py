@@ -193,15 +193,15 @@ DEEPFLY3D_SKELETON_PATH = Path(__file__).parent / "data" / "fly38_deepfly3d.toml
 
 
 def fly38_skeleton():
-    """The packaged ``fly38`` preset, loaded by name.
+    """The packaged ``fly38`` skeleton, loaded through ``include``.
 
     The same skeleton :func:`deeperfly.skeleton.Skeleton.fly` returns, but reached through
-    the config layer -- so a test using this one is also asserting that the preset
-    reference resolves.
+    the config layer -- so a test using this one is also asserting that the reference
+    resolves.
     """
     from deeperfly.skeleton import Skeleton
 
-    return Skeleton.from_config(Config.from_dict({"skeleton": {"name": "fly38"}}))
+    return Skeleton.from_config(Config.from_dict({"skeleton": {"include": "fly38"}}))
 
 
 def deepfly3d_skeleton():
@@ -219,7 +219,7 @@ def deepfly3d_skeleton():
     from deeperfly.skeleton import Skeleton
 
     return Skeleton.from_config(
-        Config.from_dict({"skeleton": {"file": str(DEEPFLY3D_SKELETON_PATH)}})
+        Config.from_dict({"skeleton": {"include": str(DEEPFLY3D_SKELETON_PATH)}})
     )
 
 

@@ -26,7 +26,7 @@ ES modules served straight from `static/`.
     encodes its source — ground truth (solid lime ring over a filled disc), detector
     prediction (thin dark ring over a disc that fades with confidence; the "Detected"
     state), or a point derived by reprojecting the 3D (a hollow circle in the point's
-    limb palette colour; the "Projected" state — an occluded view *and* one the detector
+    point colour; the "Projected" state — an occluded view *and* one the detector
     missed both show this way, no observation in the view) — and it also draws the ghosted 3D-estimate reprojection overlay and
     optional per-joint name labels.
   - `scene3d.js` — the on-demand 3D view (a hand-rolled orbit camera on a canvas;

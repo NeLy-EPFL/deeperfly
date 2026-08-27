@@ -1835,7 +1835,7 @@ class App {
         // listener must NOT be re-added.
         this.bindings = this.buildBindings();
         this.applyOsHints();
-        this.helpBuilt = false; // the legend is built from this rig's limbs and points
+        this.helpBuilt = false; // the legend is built from this rig's points and colours
 
         // 6 -- rebuild the canvases, then fan out every display toggle: new PoseViews
         // take their constructor defaults, which match the HTML at boot but not the
@@ -3849,22 +3849,22 @@ class App {
     this.helpBody.innerHTML = guide + out.join("") + this.buildLegend();
   }
 
-  // The legend, built from the server meta so it reflects whatever config is loaded:
-  // the keypoint colours come straight from the skeleton's per-limb palette (no L/R
+  // The legend, built from the server meta so it reflects whatever skeleton is loaded:
+  // the keypoint colours come straight from the skeleton's own per-point colours (no L/R
   // assumption), and the marker/overlay rows mirror how poseView.js draws them.
   buildLegend() {
     const esc = (s) =>
       String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-    const limbs = (this.meta.limbs || [])
-      .map((lb) => {
-        const [r, g, b] = lb.color;
-        const name = esc(lb.name).replace(/_/g, " ");
-        return `<span class="legend-limb"><i class="limb-dot" style="background:rgb(${r},${g},${b})"></i>${name}</span>`;
+    const groups = (this.meta.colors || [])
+      .map((sw) => {
+        const [r, g, b] = sw.color;
+        const name = esc(sw.name).replace(/_/g, " ");
+        return `<span class="legend-swatch"><i class="swatch-dot" style="background:rgb(${r},${g},${b})"></i>${name}</span>`;
       })
       .join("");
     const colours = `<h3 class="legend-title">Keypoint colours</h3>`
-      + `<p class="legend-note">Each keypoint takes its limb's colour from the skeleton palette (from your config).</p>`
-      + `<div class="legend-limbs">${limbs}</div>`;
+      + `<p class="legend-note">One colour per keypoint, from the skeleton's own colours; grouped here by the colour they share.</p>`
+      + `<div class="legend-swatches">${groups}</div>`;
 
     // Marker vocabulary. What a marker says is now one of two things about the annotation
     // skeleton -- did you place this pixel, and can a human see the joint here -- plus two

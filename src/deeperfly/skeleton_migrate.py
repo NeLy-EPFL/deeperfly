@@ -15,8 +15,8 @@ counts what it would touch, and -- for anything destructive -- a refusal to proc
     rename a point      remap by identity; names rewritten in labels.h5      notice
     reorder points      remap by name; on-disk COO indices rewritten         notice
     add/remove a bone   none (bones are display + the BA prior only)         silent
-    change limb/palette none                                                 silent
-    change symmetries   none (read by flip aug / mirror check / chirality)   silent
+    change a colour     none                                                 silent
+    change symmetries   none (read by flip augmentation / the chirality QC)  silent
     delete a point      its labels are QUARANTINED, not deleted              confirm
 
 The one rule everything else follows from: **labels move by name, never by index.** The same
@@ -49,7 +49,7 @@ log = logging.getLogger("deeperfly")
 
 #: Change kinds, and whether each needs the operator to confirm.
 #:
-#: Only deletion does. Everything else either cannot lose a label (adding, bones, palette) or
+#: Only deletion does. Everything else either cannot lose a label (adding, bones, colours) or
 #: moves it deterministically by name (rename, reorder) -- and asking about a safe edit trains
 #: people to click through the dangerous one.
 DESTRUCTIVE = ("delete",)
@@ -59,7 +59,7 @@ DESTRUCTIVE = ("delete",)
 class SkeletonChange:
     """One difference between two skeletons."""
 
-    kind: str  # "add"|"delete"|"rename"|"reorder"|"bones"|"limbs"|"symmetries"
+    kind: str  # "add"|"delete"|"rename"|"reorder"|"bones"|"colors"|"symmetries"
     detail: str
     points: tuple[str, ...] = ()
 
@@ -100,11 +100,11 @@ class MigrationPlan:
     def trivial(self) -> bool:
         """Whether nothing about the *label indexing* changes.
 
-        Bones, limbs/palette and symmetry pairs are all display or downstream-policy
+        Bones, colours and symmetry pairs are all display or downstream-policy
         metadata: no label row moves and no sidecar is rewritten, so such an edit needs
         neither a rewrite nor a confirmation.
         """
-        return all(c.kind in ("bones", "limbs", "symmetries") for c in self.changes)
+        return all(c.kind in ("bones", "colors", "symmetries") for c in self.changes)
 
     @property
     def quarantined(self) -> int:
@@ -179,10 +179,10 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
         np.asarray(old.bones).reshape(-1, 2), np.asarray(new.bones).reshape(-1, 2)
     ):
         changes.append(
-            SkeletonChange("bones", "the bones changed (display + the BA prior only)")
+            SkeletonChange("bones", "the edges changed (display + the BA prior only)")
         )
-    if tuple(old.limb_names) != tuple(new.limb_names) or old.palette != new.palette:
-        changes.append(SkeletonChange("limbs", "the limbs or palette changed"))
+    if tuple(old.point_colors) != tuple(new.point_colors):
+        changes.append(SkeletonChange("colors", "the point colours changed"))
     # Symmetry is compared by NAME, not by index: a pure reorder moves both indices of
     # every pair, so an index comparison would report a symmetry change for an edit that
     # left the pairing untouched. Names are also what the emitted `[skeleton]` fragment
@@ -194,8 +194,7 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
             SkeletonChange(
                 "symmetries",
                 "the left/right symmetry pairs changed (flip augmentation, the "
-                "[pose2d.output_points] mirror check and the chirality QC read them; "
-                "no label moves)",
+                "symmetrize correction and the chirality QC read them; no label moves)",
             )
         )
     return changes, mapping
@@ -451,12 +450,14 @@ def _rewrite(path: Path, plan: MigrationPlan, new_skeleton) -> tuple[int, int]:
 
 
 def _skeleton_toml(skeleton) -> str:
-    """A skeleton as a ``[skeleton]`` config fragment.
+    """A skeleton as a ``[skeleton]`` file: points, edges, symmetries, colours.
 
     Written from the object rather than lifted from a file, because a migrated skeleton has
-    no source file yet. ``limb_points`` is the source of truth the parser reads -- ``bones``
-    are derived from it -- so the chains are reconstructed from ``limb_id`` and the bone
-    list rather than emitted directly.
+    no source file yet. Every one of the four is emitted by NAME, so the fragment survives
+    a later reorder -- and all four are emitted, because a migration rewrites the whole
+    table: dropping the symmetries here would silently disable flip augmentation and the
+    chirality QC on the first skeleton edit a project ever makes, and dropping the colours
+    would drop the operator's palette back to a colormap.
     """
     from . import _toml
 
@@ -465,60 +466,34 @@ def _skeleton_toml(skeleton) -> str:
         "# original file is not preserved, but the structure is exact.",
         "[skeleton]",
         f"name = {_toml.value(skeleton.name)}",
-        f"point_names = {_toml.value(list(skeleton.point_names))}",
+        f"points = {_toml.value(list(skeleton.point_names))}",
     ]
-    # By NAME, so the emitted fragment survives a later reorder -- and emitted at all,
-    # because a migration rewrites the whole [skeleton] table: dropping the pairs here
-    # would silently disable the mirror check, flip augmentation and the chirality QC on
-    # the first skeleton edit a project ever makes.
+    names = tuple(skeleton.point_names)
+    edges = [
+        [names[int(a)], names[int(b)]]
+        for a, b in np.asarray(skeleton.bones, dtype=int).reshape(-1, 2)
+    ]
+    if edges:
+        lines += [
+            "",
+            "# The bones, as point pairs; an edge takes the colour of the point it is",
+            "# written FROM.",
+            f"edges = {_toml.value(edges)}",
+        ]
     if skeleton.n_symmetries:
         lines += [
             "",
-            "# Left/right mirror pairs (unordered; each point in at most one pair).",
+            "# Left/right mirror pairs (unordered; each point in at most one pair). The",
+            "# loader checks they are an automorphism of the edges above.",
             f"symmetries = {_toml.value([list(p) for p in skeleton.symmetry_names])}",
         ]
-    lines += [
-        "",
-        "# Each limb's points in kinematic-chain order (the bones are the consecutive pairs).",
-        "[skeleton.limb_points]",
-    ]
-    chains = _limb_chains(skeleton)
-    for limb, points in chains.items():
-        lines.append(f"{_toml.key(limb)} = {_toml.value(points)}")
-    if skeleton.palette:
-        lines += ["", "[skeleton.limb_palette]"]
-        for limb, color in skeleton.palette.items():
-            lines.append(f"{_toml.key(limb)} = {_toml.value(color)}")
+    # Per point and spelled out rather than compacted into `*` patterns: a generated
+    # pattern would be a guess about which points are meant to share a colour, and the
+    # only fact in hand is that these ones do.
+    lines += ["", "[skeleton.colors]"]
+    for name, color in zip(skeleton.point_names, skeleton.point_colors):
+        lines.append(f"{_toml.key(name)} = {_toml.value(color)}")
     return "\n".join(lines) + "\n"
-
-
-def _limb_chains(skeleton) -> dict[str, list[str]]:
-    """``limb name -> its points in chain order``, recovered from ``limb_id`` + ``bones``.
-
-    A limb's points are ordered by walking its bones from the endpoint that is never a
-    bone's *target*; a limb with no bones (a single antenna point) is its member list.
-    """
-    limb_id = np.asarray(skeleton.limb_id)
-    bones = np.asarray(skeleton.bones, dtype=int).reshape(-1, 2)
-    out: dict[str, list[str]] = {}
-    for lid, limb in enumerate(skeleton.limb_names):
-        members = [int(i) for i in np.nonzero(limb_id == lid)[0]]
-        if not members:
-            continue
-        inside = [b for b in bones if b[0] in members and b[1] in members]
-        if not inside:
-            out[limb] = [skeleton.point_names[i] for i in members]
-            continue
-        targets = {int(b[1]) for b in inside}
-        start = next((m for m in members if m not in targets), members[0])
-        nxt = {int(a): int(b) for a, b in inside}
-        chain, seen = [start], {start}
-        while chain[-1] in nxt and nxt[chain[-1]] not in seen:
-            chain.append(nxt[chain[-1]])
-            seen.add(chain[-1])
-        chain += [m for m in members if m not in seen]
-        out[limb] = [skeleton.point_names[i] for i in chain]
-    return out
 
 
 def _stamp() -> str:
