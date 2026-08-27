@@ -95,14 +95,7 @@ h = [463, 114, 570, 285]
 [bundle_adjustment]
 # The leg joints sit at sharp limb corners and detect most reliably, so only they drive
 # the solve. Omit this key to use every keypoint.
-points_to_use = [
-    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
-    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
-    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
-    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
-    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
-    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
-]
+points = ["lf_*", "lm_*", "lh_*", "rf_*", "rm_*", "rh_*"]
 fixed = ["*.intr"]          # e.g. also "f.rvec"/"f.tvec" to fix the world gauge
 weigh_by_confidence = false
 max_frames = 200            # bundle-adjust on at most this many frames
@@ -144,9 +137,7 @@ points = ["neck",
 # never the legs, whose left/right asymmetry at any instant IS the behavior.
 [[postprocess.ops]]
 op = "symmetrize"
-pairs = [["lf_thorax_coxa", "rf_thorax_coxa"],
-         ["lm_thorax_coxa", "rm_thorax_coxa"],
-         ["lh_thorax_coxa", "rh_thorax_coxa"]]
+points = ["l*_thorax_coxa"]      # either half of each pair
 midline = ["neck"]
 
 

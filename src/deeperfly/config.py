@@ -320,9 +320,8 @@ class PostprocessParams:
 
         [postprocess]
         ops = [
-            { op = "static", points = ["neck", "lf_thorax_coxa"], method = "median" },
-            { op = "symmetrize", pairs = [["lf_thorax_coxa", "rf_thorax_coxa"]],
-              midline = ["neck"] },
+            { op = "static", points = ["neck", "*_thorax_coxa"], method = "median" },
+            { op = "symmetrize", points = ["l*_thorax_coxa"], midline = ["neck"] },
         ]
 
     Empty (the default) passes the pose through unchanged -- the stage still writes its
@@ -349,9 +348,10 @@ class StaticPointsParams:
     replaces each listed point with a single **temporal center**, computed independently
     in each space the result carries: once in 3D, and once per view in 2D.
 
-    ``points`` names the skeleton points to hold static, by their
-    ``[skeleton].point_names``. Empty leaves the pose untouched. A name that is not in
-    the skeleton is an error, not a silent no-op.
+    ``points`` names the skeleton points to hold static. An entry may be a point name or
+    a ``*`` pattern (``["neck", "*_thorax_coxa"]`` is the packaged seven). Empty leaves
+    the pose untouched; a name that is not in the skeleton, or a pattern matching nothing,
+    is an error rather than a silent no-op.
 
     ``method`` picks *which* center. They differ only in what they assume about the
     contamination, and the right choice follows from what the estimate's error
@@ -411,12 +411,17 @@ class SymmetrizeParams:
     whatever the two sides' errors differ by. This op fits the plane and enforces the
     relationship.
 
-    ``pairs`` names the left/right pairs to symmetrize, and it is deliberately **not**
-    defaulted from ``[skeleton].symmetries``. That list pairs every point including the
-    legs, and at any instant a fly's left and right legs are in *different gait phases* --
-    that asymmetry is the behavior being measured. Symmetrizing it would be a serious
+    ``pairs`` is the RESOLVED left/right pairs, and it is deliberately **not** defaulted
+    from ``[skeleton] symmetries``. That list pairs every point including the legs, and at
+    any instant a fly's left and right legs are in *different gait phases* -- that
+    asymmetry is the behavior being measured. Symmetrizing it would be a serious
     corruption wearing the costume of a correction. Only body-fixed pairs belong here; on
     a tethered fly that is the six thorax-coxa joints.
+
+    The config names one half of each pair in ``points`` (a selector, so
+    ``["l*_thorax_coxa"]`` is the three) and :attr:`Config.postprocess` looks the partner
+    up in the skeleton -- so which pairs are corrected stays a deliberate choice while the
+    pairing itself is stated once, in the skeleton.
 
     ``midline`` names points that lie *on* the plane and are projected onto it. Also not
     inferred: "has no mirror partner" does not imply "on the midline". A fly's abdomen
@@ -492,8 +497,11 @@ class IoParams:
 class BundleAdjustmentParams:
     """``[bundle_adjustment]`` -- bundle adjustment over scipy ``least_squares``.
 
-    ``points_to_use`` (``None`` = all) names which skeleton points drive bundle adjustment
-    (resolved to indices against the skeleton in :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
+    ``points_to_use`` (``None`` = all) is the RESOLVED set of skeleton points that drive
+    bundle adjustment -- the config writes ``points``, a selector whose entries may be
+    ``*`` patterns, and :attr:`Config.bundle_adjustment` resolves it (the names are then
+    mapped to indices in
+    :func:`deeperfly.pipeline.stages.stage_bundle_adjustment`);
     ``fixed`` / ``shared`` hold or tie camera parameters; ``weigh_by_confidence``
     scales each reprojection residual by ``sqrt(confidence)``; ``max_frames`` /
     ``frame_sampling`` choose how many frames to bundle-adjust on and which (see
@@ -1244,7 +1252,63 @@ class Config:
 
     @property
     def postprocess(self) -> PostprocessParams:
-        return _params(self.data, ("postprocess",), PostprocessParams)
+        """The correction chain, with every op's point SELECTORS resolved to names.
+
+        Resolved here rather than in :mod:`deeperfly.postprocess`, which goes on reading
+        the fields it always read: the ops' ``points`` / ``midline`` become plain name
+        lists, and ``symmetrize``'s ``points`` becomes the ``pairs`` it takes -- one half
+        of each pair is enough, because ``[skeleton] symmetries`` already says the
+        partner. Restating the pairs was the config repeating the skeleton.
+        """
+        params = _params(self.data, ("postprocess",), PostprocessParams)
+        if not params.ops:
+            return params
+        return dataclasses.replace(
+            params, ops=[self._resolved_op(op) for op in params.ops]
+        )
+
+    def _resolved_point_names(self, entries, where: str) -> list[str]:
+        """A point selector -> the names it matches, in point order."""
+        from .skeleton import resolve_points
+
+        skeleton = self.skeleton()
+        return [
+            skeleton.point_names[i]
+            for i in resolve_points(entries, skeleton.point_names, where=where)
+        ]
+
+    def _resolved_op(self, op) -> dict:
+        """One ``[[postprocess.ops]]`` entry with its selectors resolved."""
+        if not isinstance(op, dict):
+            return op
+        out = dict(op)
+        name = str(out.get("op", "?"))
+        where = f'{{ op = "{name}" }}'
+        if "pairs" in out:
+            raise ValueError(
+                f"{where} carries 'pairs', which this release no longer honors: name "
+                "either half of each pair in `points` ([skeleton] symmetries knows the "
+                'partner) -- points = ["l*_thorax_coxa"] is the packaged default\'s three.'
+            )
+        for key in ("points", "midline"):
+            if key in out:
+                out[key] = self._resolved_point_names(out[key], f"{where} {key}")
+        if name == "symmetrize":
+            skeleton = self.skeleton()
+            pairs = []
+            for point in out.pop("points", []):
+                partner = skeleton.partner(point)
+                if partner is None:
+                    raise ValueError(
+                        f"{where} points names {point!r}, which has no partner in "
+                        "[skeleton] symmetries -- a point with no mirror image cannot be "
+                        "symmetrized. Midline points go in `midline`."
+                    )
+                pair = sorted((point, skeleton.point_names[partner]))
+                if pair not in pairs:
+                    pairs.append(pair)
+            out["pairs"] = pairs
+        return out
 
     @property
     def pictorial(self) -> PictorialParams:
@@ -1261,7 +1325,18 @@ class Config:
     @property
     def bundle_adjustment(self) -> BundleAdjustmentParams:
         ba = dict(_dig(self.data, ("bundle_adjustment",)))
-        points_to_use = ba.pop("points_to_use", None)
+        if "points_to_use" in ba:
+            raise ValueError(
+                "[bundle_adjustment] carries 'points_to_use', which this release no "
+                "longer honors: renamed to `points`, and an entry may be a `*` pattern "
+                '-- points = ["lf_*", "lm_*", ...] is the packaged default\'s 30 names.'
+            )
+        raw_points = ba.pop("points", None)
+        points_to_use = (
+            None
+            if raw_points is None
+            else self._resolved_point_names(raw_points, "[bundle_adjustment] points")
+        )
         fixed = ba.pop("fixed", [])
         shared = ba.pop("shared", [])
         weigh_by_confidence = ba.pop("weigh_by_confidence", True)

@@ -339,7 +339,9 @@ def test_the_report_measures_what_was_frozen(cameras, fly, scene):
     _, _, _, (report,) = stages.stage_postprocess(
         _config(points), cameras, fly, pts2d, pts3d
     )
-    assert report["points"] == points
+    # In POINT order, not as written: the selector resolves to a set of columns.
+    assert set(report["points"]) == set(points)
+    assert report["points"] == sorted(points, key=fly.point_names.index)
     per_point = report["moved_2d_median_px_per_point"]
     assert set(per_point) == set(points)
     # The genuinely moving point drifted furthest, and is the one named.
@@ -366,7 +368,7 @@ def test_an_empty_list_passes_the_pose_through(cameras, fly, scene):
 def test_an_unknown_point_names_its_own_table(cameras, fly, scene):
     """Two tables name a set of held-still points; the error has to say which one."""
     _, pts3d, pts2d = scene
-    with pytest.raises(ValueError, match=r'op = "static".*points references'):
+    with pytest.raises(ValueError, match=r"op = .static. . points names"):
         stages.stage_postprocess(_config(["not_a_point"]), cameras, fly, pts2d, pts3d)
 
 
@@ -478,7 +480,7 @@ def test_the_fingerprint_notices_an_edited_point_list(tmp_path, cameras, fly, sc
             "postprocess",
             _chain(
                 {"op": "static", "points": list(RIGID)},
-                {"op": "symmetrize", "pairs": [[RIGID[0], RIGID[1]]]},
+                {"op": "symmetrize", "points": [RIGID[0]]},
             ),
             on,
             store,
@@ -526,7 +528,8 @@ def test_run_recording_freezes_and_then_reuses_the_cache(
     # One report per op, in order -- the metadata mirrors the configured chain.
     assert [o["op"] for o in meta["ops"]] == ["static"]
     assert meta["ops"][0]["method"] == "median"
-    assert meta["ops"][0]["points"] == list(RIGID)
+    # In point order, which is what the selector resolves to.
+    assert meta["ops"][0]["points"] == sorted(RIGID, key=fly.point_names.index)
     # The most-derived pose is what a reader of the file now gets.
     loaded = PoseResult.load(outdir / "results.h5")
     np.testing.assert_allclose(loaded.pts3d, frozen3d)
@@ -666,10 +669,7 @@ def test_symmetrize_leaves_the_2d_alone(cameras, fly, scene):
     cfg = _chain(
         {
             "op": "symmetrize",
-            "pairs": [
-                ["lf_thorax_coxa", "rf_thorax_coxa"],
-                ["lm_thorax_coxa", "rm_thorax_coxa"],
-            ],
+            "points": ["lf_thorax_coxa", "lm_thorax_coxa"],
             "midline": ["neck"] if "neck" in fly.point_names else [],
         }
     )
@@ -684,7 +684,7 @@ def test_symmetrize_leaves_the_2d_alone(cameras, fly, scene):
 def test_too_few_pairs_is_reported_not_guessed(rng, cameras, fly, scene):
     """One pair fixes a normal but no offset; that is under-determined, not an error."""
     _, pts3d, pts2d = scene
-    cfg = _chain({"op": "symmetrize", "pairs": [["lf_thorax_coxa", "rf_thorax_coxa"]]})
+    cfg = _chain({"op": "symmetrize", "points": ["lf_thorax_coxa"]})
     all_nan = np.full_like(pts3d, np.nan)
     out2d, out3d, _, (report,) = stages.stage_postprocess(
         cfg, cameras, fly, pts2d, all_nan
@@ -701,7 +701,7 @@ def test_the_chain_runs_in_order_and_reports_each_op(cameras, fly, scene):
     _, pts3d, pts2d = scene
     cfg = _chain(
         {"op": "static", "points": list(RIGID)},
-        {"op": "symmetrize", "pairs": [["lf_thorax_coxa", "rf_thorax_coxa"]]},
+        {"op": "symmetrize", "points": ["lf_thorax_coxa"]},
     )
     out2d, out3d, _, reports = stages.stage_postprocess(cfg, cameras, fly, pts2d, pts3d)
     assert [r["op"] for r in reports] == ["static", "symmetrize"]
