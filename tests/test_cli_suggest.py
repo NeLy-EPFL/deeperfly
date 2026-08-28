@@ -1,4 +1,4 @@
-"""Tests for ``deeperfly labels-suggest`` -- the CLI half of the acquisition feature.
+"""Tests for ``deeperfly labels-suggest`` -- the CLI half of the suggester.
 
 Beyond the usual argument plumbing, two properties are asserted here because a real
 recording directory holds irreplaceable work: the command never writes to
@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 
 from deeperfly import cli
-from deeperfly.acquisition import file_md5, read_suggestions
 from deeperfly.gui.labels import Labels, labels_identity, save_labels
+from deeperfly.labels_suggest import file_md5, read_suggestions
 from deeperfly.results import StageStore
 from deeperfly.triangulation import reprojection_error
 

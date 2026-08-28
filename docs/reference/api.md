@@ -103,9 +103,9 @@ is what the pipeline stage catches to skip rather than fail the run.
 
 ::: deeperfly.inverse_kinematics.KinematicTemplate
 
-## Acquisition (active learning)
+## Label suggestion (active learning)
 
-::: deeperfly.acquisition
+::: deeperfly.labels_suggest
 
 ## Pictorial structures
 

@@ -30,7 +30,7 @@ import webbrowser
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..acquisition import SUGGESTIONS_FILENAME
+from ..labels_suggest import SUGGESTIONS_FILENAME
 from ..results import PoseResult, StageStore
 from .labels import (
     Labels,

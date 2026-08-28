@@ -69,7 +69,7 @@ starts moving pixels per frame, gets the right answer without editing this modul
 ``reproj_error`` is dropped only when a recomputation reproduces it *and* the stage's
 2D was not stored whole. The second half is not an optimization but a safeguard: the
 stored error is the only witness that an outside tool overwrote a stage's 2D with
-something other than the detections (see :func:`deeperfly.acquisition.stored_vs_pose2d`),
+something other than the detections (see :func:`deeperfly.labels_suggest.stored_vs_pose2d`),
 and a recomputed error agrees with the stored 3D by construction, so it can never
 disagree with itself. Deriving it would silently retire that check.
 
@@ -304,7 +304,7 @@ def _keep_reproj_error(reproj_error, pts3d, obs2d, cameras, *, kind: str) -> boo
     2. ``kind == "full"`` -- the stage's 2D is stored whole, which is exactly the 2D an
        outside tool can overwrite. The stored error is then the only witness to that
        substitution, because a recomputed one agrees with the stored 3D by construction.
-       See :func:`deeperfly.acquisition.stored_vs_pose2d`, which reads it for that.
+       See :func:`deeperfly.labels_suggest.stored_vs_pose2d`, which reads it for that.
     """
     if reproj_error is None:
         return False

@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..acquisition import SUGGESTIONS_FILENAME
+from ..labels_suggest import SUGGESTIONS_FILENAME
 from .labels import labels_identity
 from .readers import FrameSource
 from .state import EditorState

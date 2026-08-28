@@ -80,7 +80,7 @@ Six ideas worth taking:
 | **`.pkg.slp` — self-contained package with embedded frames** | A project shareable as one file. Only 50 of 4,073 frames are labeled, so embedding labeled frames is cheap and makes merge/transfer trivial. |
 | **`embed` policy: `"all"` / `"user"` / `"source"`** | Explicit control of "portable copy" vs "pointer to the original video", with `source_video` preserving lineage. |
 | **`Labels.merge` + GUI "Merge Data From…"** | Merge is a *first-class, GUI-reachable* operation. SLEAP's rationale is exactly yours: *you can only train on one dataset*, so import before training. |
-| **Suggestions with a `group` field** | Batches of suggested frames tagged by generation method. `labels_suggest.json` already exists here ([acquisition.py](../src/deeperfly/acquisition.py)); the `group` field is what makes several rounds coexist. |
+| **Suggestions with a `group` field** | Batches of suggested frames tagged by generation method. `labels_suggest.json` already exists here ([acquisition.py](../src/deeperfly/labels_suggest.py)); the `group` field is what makes several rounds coexist. |
 | **`RecordingSession` / `CameraGroup` / `FrameGroup` / `InstanceGroup`** | The multi-view multi-animal data model, worked out. `FrameGroup` = one time point across views; `InstanceGroup` = the same animal across views; `Identity` = an animal across *sessions*, distinct from an in-video `Track`. |
 | **`format_id` on the file, with documented migrations** | `labels.h5` is already at v5 with real migrations. Keep that discipline at project scope. |
 
@@ -137,7 +137,7 @@ right *fallback* for intrinsics when a from-scratch rig has no lens datasheet (�
 | Sparse, versioned GT sidecar with provenance, occlusion, absence, quarantine | [gui/labels.py](../src/deeperfly/gui/labels.py) (v5) | Genuinely excellent. The COO layout widens to multi-animal cheaply (§10). |
 | Per-stage cached results with fingerprint-driven recompute | [results.py](../src/deeperfly/results.py), [pipeline/fingerprint.py](../src/deeperfly/pipeline/fingerprint.py) | The job model of §7.4 maps straight onto it. |
 | Bundle adjustment with analytic Jacobians, robust IRLS losses, per-parameter fix/share, **bone-length priors** | [bundle_adjustment/](../src/deeperfly/bundle_adjustment/) | `build_state(fixed=["f.rvec", "rm.tvec[2]"])` is exactly the gauge fixing §6.4 needs; `bone_pairs`/`bone_targets` is exactly the scale bar. |
-| Active-learning frame ranking with staleness tiers | [acquisition.py](../src/deeperfly/acquisition.py) | Already sidecar-based; needs only a `group` field and project scope. |
+| Active-learning frame ranking with staleness tiers | [acquisition.py](../src/deeperfly/labels_suggest.py) | Already sidecar-based; needs only a `group` field and project scope. |
 | A browser editor with writer-lock, undo, WebSocket edits, WebGL 3D | [gui/](../src/deeperfly/gui/) | The chassis for everything in §7. |
 | Recording discovery, batch globbing, outdir planning | [recordings.py](../src/deeperfly/recordings.py) | `Recording` is already the right unit; it just has no home. |
 

@@ -52,7 +52,7 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from ..acquisition import read_suggestions, suggestions_staleness
+from ..labels_suggest import read_suggestions, suggestions_staleness
 from ..visualization._palette import point_colors_rgb
 from .labels import save_labels
 from .session import Session
@@ -1989,7 +1989,7 @@ def _points3d_to_json(pts: np.ndarray) -> list:
 # `_suggestions_notes` lifts the facts most likely to mislead (an under-delivered count, a
 # reseeded result, uncalibrated cameras) out of the CLI log and onto the screen.
 #
-# `deeperfly.acquisition` owns the sidecar format, so both parsing (`read_suggestions`)
+# `deeperfly.labels_suggest` owns the sidecar format, so both parsing (`read_suggestions`)
 # and the staleness tiers (`suggestions_staleness`) are ITS functions, imported here
 # rather than reimplemented -- a second interpretation of the format is exactly how a
 # panel ends up quietly disagreeing with the file it is displaying. Nothing here writes:
@@ -2094,7 +2094,7 @@ def _number(value) -> float | None:
 def _read_suggestions(path: Path | None) -> dict | None:
     """The parsed sidecar at ``path``, or ``None`` when there is nothing to show.
 
-    Thin wrapper over :func:`deeperfly.acquisition.read_suggestions`, which already
+    Thin wrapper over :func:`deeperfly.labels_suggest.read_suggestions`, which already
     returns ``None`` for a file that is absent, unreadable, not a JSON object, or
     stamped with a format version it does not know. The extra guard here is only that
     an unexpected exception from the reader must not take the editor down with it: "no
@@ -2116,7 +2116,7 @@ def _suggestions_stale(session: Session, data: dict, *, n_done: int) -> dict:
     """How out of date the queue is, as ``{"level", "reasons"}``.
 
     The two tiers that need to *inspect files* are delegated to
-    :func:`deeperfly.acquisition.suggestions_staleness`, so they are decided in one place:
+    :func:`deeperfly.labels_suggest.suggestions_staleness`, so they are decided in one place:
     the recording fingerprint (``hard`` -- the queue's frame indices mean something else
     entirely, and the panel then renders no rows at all) and ``results.h5``'s
     stat-then-md5 fingerprint (``predictions`` -- the ranking describes predictions that

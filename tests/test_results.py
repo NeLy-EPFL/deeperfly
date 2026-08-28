@@ -688,7 +688,7 @@ def test_a_stored_2d_keeps_its_reproj_error_as_an_audit_record(cameras, rng, tmp
 
     Not an oversight: that 2D is the one an outside tool can overwrite, and a recomputed
     error agrees with the stored 3D by construction, so it could never reveal the
-    substitution. ``acquisition.stored_vs_pose2d`` reads the stored value for exactly that.
+    substitution. ``labels_suggest.stored_vs_pose2d`` reads the stored value for exactly that.
     """
     store = StageStore(tmp_path / "results.h5")
     obs2d, _ = _write_base(store, cameras, rng)
@@ -829,7 +829,7 @@ def test_repack_keeps_groups_it_does_not_know_about(cameras, rng, tmp_path):
     """A foreign tool's record of what it did to this file is not a space saving.
 
     ``dfpose_predict/`` is written by the labeling pipeline and read back by
-    ``acquisition`` to detect reseeded cells; a repack that dropped it would destroy the
+    ``labels_suggest`` to detect reseeded cells; a repack that dropped it would destroy the
     provenance the reprojection-error rule exists to protect.
     """
     from deeperfly.results import repack

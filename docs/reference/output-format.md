@@ -107,7 +107,7 @@ dense run, where every cell is observed, but stored whole on a run with gaps.
 `reproj_error` is dropped only when a recomputation reproduces it **and** the stage's 2D
 was not stored whole. The second half is a safeguard rather than an optimization: the
 stored error is the only witness that an outside tool overwrote a stage's 2D with
-something other than the detections (`deeperfly.acquisition` reads it for exactly that),
+something other than the detections (`deeperfly.labels_suggest` reads it for exactly that),
 and a recomputed error agrees with the stored 3D by construction, so it could never
 disagree with itself.
 

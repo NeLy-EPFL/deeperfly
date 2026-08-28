@@ -923,8 +923,8 @@ def test_suggestions_never_write_anything(client, session):
         assert path.stat().st_mtime_ns == mtime
 
 
-def test_suggestions_go_through_the_acquisition_reader(client, session, monkeypatch):
-    """The sidecar format is owned by `deeperfly.acquisition`, so ITS reader parses it.
+def test_suggestions_go_through_the_labels_suggest_reader(client, session, monkeypatch):
+    """The sidecar format is owned by `deeperfly.labels_suggest`, so ITS reader parses it.
 
     Pinning the delegation matters because the alternative is tempting and wrong: a
     second JSON parse in the GUI would be a second interpretation of the format, free to

@@ -1,4 +1,4 @@
-"""Active-learning acquisition: which frames are worth a human's next pass.
+"""Which frames are worth a human's next pass (active-learning acquisition).
 
 Ranks the frames of one recording by **multi-view disagreement of the detector's
 own 2D**: triangulate each joint from ``pose2d/points`` and measure how far each
@@ -66,9 +66,9 @@ from .triangulation import reprojection_error, triangulate_ransac
 __all__ = [
     "SUGGESTIONS_FILENAME",
     "SUGGESTIONS_FORMAT_VERSION",
-    "AcquisitionInputs",
     "FrameScores",
     "Pick",
+    "SuggestInputs",
     "frame_reason",
     "prepare_inputs",
     "read_labeled_frames",
@@ -650,7 +650,7 @@ def frame_reason(
 
 
 @dataclass
-class AcquisitionInputs:
+class SuggestInputs:
     """Everything read out of one ``results.h5`` to score it.
 
     Built only by :func:`prepare_inputs`, which reads ``pose2d/points`` through
@@ -707,7 +707,7 @@ _REPROJECTION_SEED_CODES = (
 )
 
 
-def prepare_inputs(results_path: str | Path) -> AcquisitionInputs:
+def prepare_inputs(results_path: str | Path) -> SuggestInputs:
     """Read one ``results.h5`` (read-only) into the arrays the score needs.
 
     Reads ``pose2d/points`` (the pristine detector output) and the
@@ -733,7 +733,7 @@ def prepare_inputs(results_path: str | Path) -> AcquisitionInputs:
     pose2d = store.read_pose2d()
     if pose2d is None:
         raise ValueError(
-            f"{path} has no pose2d/points -- acquisition scores the pristine detector "
+            f"{path} has no pose2d/points -- the suggester scores the pristine detector "
             "output, so a file without it cannot be ranked (re-run 'deeperfly run')"
         )
     pts2d, conf = pose2d
@@ -807,7 +807,7 @@ def prepare_inputs(results_path: str | Path) -> AcquisitionInputs:
         image_sizes=store.read_image_sizes(),
         footage=store.read_footage(),
     )
-    return AcquisitionInputs(
+    return SuggestInputs(
         results_path=path,
         cameras=cameras,
         cameras_from=cameras_from,
@@ -873,7 +873,7 @@ def _predict_provenance(stamp: dict) -> dict:
 
 
 def stored_vs_pose2d(
-    inputs: AcquisitionInputs, scores: FrameScores, *, threshold: float = 15.0
+    inputs: SuggestInputs, scores: FrameScores, *, threshold: float = 15.0
 ) -> dict | None:
     """What the *stored* reprojection error would have said on the substituted cells.
 
@@ -994,7 +994,7 @@ def file_md5(path: str | Path, *, chunk: int = 1 << 20) -> str:
 
 
 def build_suggestions(
-    inputs: AcquisitionInputs,
+    inputs: SuggestInputs,
     scores: FrameScores,
     picks: "list[Pick]",
     *,
