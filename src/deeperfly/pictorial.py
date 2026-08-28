@@ -47,15 +47,15 @@ __all__ = [
     "reconstruct",
 ]
 
-# Defaults (all overridable through the pipeline / CLI).
-DEFAULT_K = 5  # candidate peaks kept per (view, joint)
+# Internal defaults: knobs this module owns outright, because no config key exposes
+# them. The knobs a run CAN set (`k`, `lam`, the peak gates) are deliberately absent --
+# their defaults belong to `deeperfly.config.PictorialParams` and are written there
+# once, so the functions below take them as required arguments rather than restating
+# a number that would then be free to drift from the one a run actually gets.
 DEFAULT_MAX_HYP = 10  # 3D hypotheses kept per joint after pruning
 DEFAULT_INLIER_PX = 15.0  # a view supports a 3D hypothesis if a candidate is this close
-DEFAULT_LAMBDA = 1.0  # bone-length prior weight (relative to per-view evidence ~O(1))
 DEFAULT_HUBER = 0.5  # Huber knee for the bone-length residual, in units of bone length
 DEFAULT_MU = 5.0  # temporal weight (per unit squared 3D displacement / bone-scale^2)
-DEFAULT_PEAK_THRESHOLD = 0.05  # ignore heatmap peaks weaker than this (RAW field units)
-DEFAULT_PEAK_THRESHOLD_REL = 0.0  # ... or than this fraction of the channel's own peak
 DEFAULT_PEAK_RADIUS = 2  # NMS / sub-pixel-window half-width (heatmap pixels)
 DEFAULT_SUBPIXEL = "weighted"  # peak refinement: "argmax" | "weighted" | "taylor"
 
@@ -88,11 +88,11 @@ class Candidates:
 
 def peak_candidates(
     heatmaps: Float[np.ndarray, "*chan H_out W_out"],
-    k: int = DEFAULT_K,
+    k: int,
     *,
     radius: int = DEFAULT_PEAK_RADIUS,
-    threshold: float = DEFAULT_PEAK_THRESHOLD,
-    threshold_rel: float = DEFAULT_PEAK_THRESHOLD_REL,
+    threshold: float,
+    threshold_rel: float,
     method: str = DEFAULT_SUBPIXEL,
     normalize: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[Float[np.ndarray, "*chan K 2"], Float[np.ndarray, "*chan K"]]:
@@ -109,17 +109,22 @@ def peak_candidates(
     heatmaps
         Heatmaps of shape ``(*chan, H_out, W_out)``.
     k
-        Number of peaks to keep per channel.
+        Number of peaks to keep per channel. Required: the shipped value is
+        ``[pictorial_structures] k`` (:class:`deeperfly.config.PictorialParams`),
+        which owns it so the accuracy/cost dial has exactly one default.
     radius
         NMS / sub-pixel-window half-width, in heatmap pixels.
     threshold
         Ignore peaks weaker than this, in RAW field units. Absolute, so it is a statement
-        about a particular detector's output scale -- see ``threshold_rel``.
+        about a particular detector's output scale -- see ``threshold_rel``. Required,
+        and deliberately: a default here would be a claim this module cannot make, and
+        the one it used to carry (0.05) silently gated away every second candidate on a
+        detector whose field peaks near 0.08. Pass 0.0 for no gate.
     threshold_rel
         Ignore peaks weaker than this fraction of the channel's OWN peak, which is the
         scale-free version of the same gate and the only one portable across detectors.
-        The effective threshold is the larger of the two. It exists because the absolute
-        default was set on a detector whose heatmaps peak near 1.0, and the multiview
+        The effective threshold is the larger of the two. It exists because the shipped
+        absolute gate was set on a detector whose heatmaps peak near 1.0, and the multiview
         transformer's peak near 0.08: at ``threshold = 0.05`` an r28 field offers a second
         candidate in **0.04%** of cells, so recovery is choosing from a set of one almost
         everywhere and can only return its own input.
@@ -654,7 +659,7 @@ def solve_frame(
     scale: float,
     max_hyp: int = DEFAULT_MAX_HYP,
     inlier_px: float = DEFAULT_INLIER_PX,
-    lam: float = DEFAULT_LAMBDA,
+    lam: float,
     huber: float = DEFAULT_HUBER,
     mu: float = DEFAULT_MU,
     prev_pts3d: Float[np.ndarray, "P 3"] | None = None,
@@ -678,7 +683,11 @@ def solve_frame(
         Pre-computed skeleton chains (:func:`skeleton_chains`).
     scale
         Characteristic bone length scaling the prior and NMS radius.
-    max_hyp, inlier_px, lam, huber, mu
+    lam
+        Bone-length prior weight, relative to per-view evidence of order 1. Required:
+        the shipped value is ``[pictorial_structures] lam``
+        (:class:`deeperfly.config.PictorialParams`).
+    max_hyp, inlier_px, huber, mu
         Pruning and cost knobs (see the module defaults).
     prev_pts3d
         Previous frame's 3D for the temporal term, or ``None``.
@@ -748,7 +757,7 @@ def reconstruct(
     temporal: bool = False,
     max_hyp: int = DEFAULT_MAX_HYP,
     inlier_px: float = DEFAULT_INLIER_PX,
-    lam: float = DEFAULT_LAMBDA,
+    lam: float,
     huber: float = DEFAULT_HUBER,
     mu: float = DEFAULT_MU,
     fallback_argmax: bool = False,
@@ -783,7 +792,10 @@ def reconstruct(
         recommendation.
     temporal
         Whether to add the inter-frame temporal term.
-    max_hyp, inlier_px, lam, huber, mu
+    lam
+        Bone-length prior weight; see :func:`solve_frame`. Required, for the same
+        reason.
+    max_hyp, inlier_px, huber, mu
         Per-frame pruning and cost knobs.
 
     Returns

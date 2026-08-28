@@ -42,7 +42,9 @@ def test_peak_candidates_finds_ordered_bumps():
     # Two bumps; the (8, 40) one is stronger so must come first.
     hm[0] += 1.0 * np.exp(-((yy - 20) ** 2 + (xx - 10) ** 2) / 4.0)
     hm[0] += 1.5 * np.exp(-((yy - 8) ** 2 + (xx - 40) ** 2) / 4.0)
-    xy, score = pictorial.peak_candidates(hm, k=2, radius=2)
+    xy, score = pictorial.peak_candidates(
+        hm, k=2, radius=2, threshold=0.0, threshold_rel=0.0
+    )
     assert score[0, 0] > score[0, 1]  # ordered by strength
     # Strongest peak at (row=8, col=40) -> normalized (x, y), cell-centre (+0.5).
     np.testing.assert_allclose(xy[0, 0], [(40 + 0.5) / ww, (8 + 0.5) / hh], atol=1e-6)
@@ -52,7 +54,7 @@ def test_peak_candidates_finds_ordered_bumps():
 def test_peak_candidates_pads_when_too_few():
     hm = np.zeros((1, 16, 16))
     hm[0, 5, 5] = 1.0  # a single peak
-    xy, score = pictorial.peak_candidates(hm, k=4)
+    xy, score = pictorial.peak_candidates(hm, k=4, threshold=0.0, threshold_rel=0.0)
     assert np.isfinite(xy[0, 0]).all() and score[0, 0] == 1.0
     assert np.isnan(xy[0, 1:]).all() and (score[0, 1:] == 0).all()
 
@@ -116,7 +118,7 @@ def test_pictorial_recovers_decoyed_joint(cameras, deepfly3d, rng):
     argmax = xy[:, :, :, 0, :]  # the (wrong) single-peak detections
 
     ps3d, _, _ = pictorial.reconstruct(
-        cameras, deepfly3d, cands, argmax, bone_max_frames=None
+        cameras, deepfly3d, cands, argmax, lam=1.0, bone_max_frames=None
     )
     # The greedy path triangulates the arg-max (including the decoy).
     rp3d, _, _ = reconstruct(cameras, fly_masked(argmax))
@@ -134,7 +136,7 @@ def test_pictorial_clean_matches_truth(cameras, fly, rng):
     xy, sc = candidates_from_proj(proj, k=1)
     cands = pictorial.Candidates(xy=xy, score=sc)
     ps3d, _, _ = pictorial.reconstruct(
-        cameras, fly, cands, xy[:, :, :, 0, :], bone_max_frames=None
+        cameras, fly, cands, xy[:, :, :, 0, :], lam=1.0, bone_max_frames=None
     )
     seen = np.isfinite(ps3d[0]).all(-1)
     assert seen.sum() >= 30  # most joints are multi-view visible
@@ -197,7 +199,7 @@ def test_temporal_term_suppresses_jump(cameras, fly, rng):
         sc[view, joint, 1] = 0.9
 
     chains = pictorial.skeleton_chains(fly)
-    common = dict(target_map={}, chains=chains, scale=1.0, inlier_px=5.0)
+    common = dict(target_map={}, chains=chains, scale=1.0, inlier_px=5.0, lam=1.0)
 
     x_no_t, _ = pictorial.solve_frame(
         cameras, fly, xy, sc, mu=0.0, prev_pts3d=None, **common
@@ -222,7 +224,7 @@ def test_single_view_joint_is_nan(cameras, fly, rng):
     sc[1:, 0, lonely] = 0.0
     cands = pictorial.Candidates(xy=xy, score=sc)
     ps3d, _, _ = pictorial.reconstruct(
-        cameras, fly, cands, xy[:, :, :, 0, :], bone_max_frames=None
+        cameras, fly, cands, xy[:, :, :, 0, :], lam=1.0, bone_max_frames=None
     )
     assert np.isnan(ps3d[0, lonely]).all()
     assert np.isfinite(ps3d[0, 2]).all()  # neighbors unaffected
@@ -247,6 +249,7 @@ def test_run_from_points2d_pictorial(cameras, fly, rng):
         do_bundle_adjust=False,
         do_pictorial=True,
         candidates=cands,
+        ps_kwargs={"lam": 1.0},
     )
     assert isinstance(result, PoseResult)
     assert result.meta["pictorial"] is True
@@ -307,10 +310,22 @@ def test_fallback_argmax_fills_abstentions(cameras, fly, rng):
     argmax2d = xy[:, :, :, 0, :]
 
     _, off, _ = pictorial.reconstruct(
-        cameras, fly, cands, argmax2d, fallback_argmax=False, bone_max_frames=None
+        cameras,
+        fly,
+        cands,
+        argmax2d,
+        lam=1.0,
+        fallback_argmax=False,
+        bone_max_frames=None,
     )
     _, on, _ = pictorial.reconstruct(
-        cameras, fly, cands, argmax2d, fallback_argmax=True, bone_max_frames=None
+        cameras,
+        fly,
+        cands,
+        argmax2d,
+        lam=1.0,
+        fallback_argmax=True,
+        bone_max_frames=None,
     )
     gap = ~np.isfinite(off).all(-1) & np.isfinite(argmax2d).all(-1)
     assert gap.any(), "no abstention to fall back from -- the test would be vacuous"
@@ -381,7 +396,9 @@ def test_peak_candidates_honors_a_models_own_cell_geometry():
     hm = np.zeros((1, 12, 20))
     hm[0, 10, 18] = 1.0
 
-    shared, _ = pictorial.peak_candidates(hm, k=1, radius=1)
+    shared, _ = pictorial.peak_candidates(
+        hm, k=1, radius=1, threshold=0.0, threshold_rel=0.0
+    )
     # (18 + 0.5) / 20, (10 + 0.5) / 12 -- normalized by the FIELD's own extent, which on a
     # padded model is the padded input and not the frame the coordinates claim to be in.
     assert shared[0, 0] == pytest.approx([18.5 / 20, 10.5 / 12])
@@ -392,7 +409,12 @@ def test_peak_candidates_honors_a_models_own_cell_geometry():
         )
 
     owned, _ = pictorial.peak_candidates(
-        hm, k=1, radius=1, normalize=cells_to_normalized
+        hm,
+        k=1,
+        radius=1,
+        threshold=0.0,
+        threshold_rel=0.0,
+        normalize=cells_to_normalized,
     )
     # Exactly 1.0 on both axes: the peak is on the reported frame's far edge, which the
     # shared convention places at 0.925 -- 4.8 px in, on a 64 px frame.
@@ -413,7 +435,9 @@ def test_peak_candidates_relative_threshold_is_scale_free():
     hm[0, 2, 2] = 0.08  # a multiview-transformer-scale primary peak
     hm[0, 6, 6] = 0.03  # a genuine secondary mode, 38% of it
 
-    absolute, _ = pictorial.peak_candidates(hm, k=3, radius=1, threshold=0.05)
+    absolute, _ = pictorial.peak_candidates(
+        hm, k=3, radius=1, threshold=0.05, threshold_rel=0.0
+    )
     assert np.isfinite(absolute[0, :, 0]).sum() == 1  # the secondary is gated away
 
     relative, _ = pictorial.peak_candidates(

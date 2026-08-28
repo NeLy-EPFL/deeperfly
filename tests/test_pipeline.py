@@ -537,6 +537,7 @@ def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
         np.ones(proj.shape[:3]),
         candidates=cands,
         do_pictorial=True,
+        ps_kwargs={"lam": 1.0},
         triangulation=triangulation,
         do_bundle_adjust=False,
     )

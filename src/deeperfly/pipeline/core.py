@@ -563,7 +563,10 @@ def run_from_points2d(
     candidates
         The detector's top-K candidate peaks; required when ``do_pictorial``.
     ps_kwargs
-        Extra keyword arguments forwarded to the pictorial-structures corrector.
+        Keyword arguments forwarded to the pictorial-structures corrector. Must
+        include ``lam``, which :func:`deeperfly.pictorial.reconstruct` requires: no
+        default is filled in here, because a default written on the way through would
+        be a second copy of ``[pictorial_structures] lam``.
     ransac_threshold, min_inliers, reproj_threshold, max_drops
         Per-strategy triangulation knobs (see ``triangulation`` above).
     fps

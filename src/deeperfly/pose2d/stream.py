@@ -407,8 +407,8 @@ def detect_2d(
     input=None,
     want_candidates,
     k,
-    threshold=None,
-    threshold_rel=None,
+    threshold,
+    threshold_rel,
     progress=None,
 ):
     """Stream 2D detection over decode blocks -> ``(pts2d, conf, candidates)``.
@@ -439,6 +439,11 @@ def detect_2d(
         structures, which are not cached).
     k
         Number of candidate peaks per joint when ``want_candidates``.
+    threshold, threshold_rel
+        Absolute and relative peak gates, likewise. Required even when
+        ``want_candidates`` is false, so that the three candidate knobs travel
+        together and none of them acquires a second default on the way down --
+        the shipped values are :class:`deeperfly.config.PictorialParams`'.
     progress
         Optional progress factory ``progress(total, description) -> (wrap, close)``;
         defaults to :func:`_null_progress` (no bar). The CLI injects a Rich-backed
@@ -521,12 +526,8 @@ def detect_2d(
                     windows,
                     k=k,
                     progress=wrap,
-                    **({} if threshold is None else {"threshold": float(threshold)}),
-                    **(
-                        {}
-                        if threshold_rel is None
-                        else {"threshold_rel": float(threshold_rel)}
-                    ),
+                    threshold=float(threshold),
+                    threshold_rel=float(threshold_rel),
                 )
                 cand_xy.append(cand.xy)
                 cand_score.append(cand.score)

@@ -1524,6 +1524,8 @@ def test_grayscale_decode_is_requested_only_when_every_model_accepts_it(monkeypa
                 sources={"s": ["a.mp4"]},
                 want_candidates=False,
                 k=5,
+                threshold=0.0,
+                threshold_rel=0.0,
             )
         except SystemExit:
             pass  # no pathways -> "detector received no frames"; the decode already ran

@@ -486,11 +486,11 @@ def detect_candidates_sequence(
     models: dict,
     windows: dict,
     *,
-    k: int = 5,
+    k: int,
     method: SubpixelMethod = "weighted",
     radius: int = 2,
-    threshold: float | None = None,
-    threshold_rel: float | None = None,
+    threshold: float,
+    threshold_rel: float,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ):
     """Detect a sequence, returning both arg-max poses and top-K candidate peaks.
@@ -511,6 +511,11 @@ def detect_candidates_sequence(
         ``source name -> (T, H, W, 3)`` window.
     k
         Number of candidate peaks kept per (view, joint).
+    threshold, threshold_rel
+        Absolute and relative peak gates
+        (:func:`deeperfly.pictorial.peak_candidates`). Required along with ``k``: all
+        three are run configuration, and their shipped values live in
+        :class:`deeperfly.config.PictorialParams` rather than being restated here.
     method, radius
         Heatmap decode options.
     progress
@@ -576,8 +581,8 @@ def detect_candidates_sequence(
                 k,
                 radius=radius,
                 method=method,
-                **({} if threshold is None else {"threshold": threshold}),
-                **({} if threshold_rel is None else {"threshold_rel": threshold_rel}),
+                threshold=threshold,
+                threshold_rel=threshold_rel,
                 normalize=lambda cells: model.cells_to_normalized(
                     cells, heatmaps.shape[-2:]
                 ),
