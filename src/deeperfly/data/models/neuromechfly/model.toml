@@ -1,0 +1,38 @@
+# The NeuroMechFly model pack: what the `inverse_kinematics` stage fits.
+#
+# A pack is the mechanical model, selected as one unit by
+# `[inverse_kinematics] model = "neuromechfly"` (a packaged name, or a path to a
+# manifest like this one). It is three assets plus the few facts that are true of the
+# model as a whole:
+#
+#   template.toml       the leg chains -- joints, DOF axes, bounds, angle names
+#   articulation.json   the chains whose joints are NOT keypoints (head, abdomen),
+#                       plus every body's neutral frame            (baked from the MJCF)
+#   mesh.npz            the overlay mesh                           (baked from the MJCF)
+#
+# A pack names NO skeleton point and carries no offset. Where a tracked point sits on
+# this model is a fact about the (skeleton, model) PAIR, so it lives in a binding --
+# see src/deeperfly/data/bindings/. Segment LENGTHS are not here either: they are
+# measured per recording from the 3D pose, which is why the fit reprojects tightly on
+# any animal.
+
+name = "neuromechfly"
+
+template = "template.toml"
+articulation = "articulation.json"
+mesh = "mesh.npz"
+
+# The direction a segment extends along in its parent joint's frame. Every
+# NeuroMechFly leg body sits at a pure -z offset from its parent (unit direction
+# [0, 0, -1] to three decimals) and carries quat="1 0 0 0", so the rest leg points
+# straight down. flybody's segments run along +y and its leg bodies are rotated, which
+# is the whole reason this is declared rather than assumed.
+rest_axis = [0.0, 0.0, -1.0]
+
+# The bodies whose observed positions register the recording to the model -- one
+# similarity transform, which sets both the frame the plan is solved in and the
+# recording's body scale. Model BODIES, not skeleton points: which tracked point
+# observes each is the binding's to say. Three finite anchors are enough, so a skeleton
+# tracking only four of the six still registers. Their neutral frames come from
+# articulation.json's `bodies` map.
+anchors = ["lf_coxa", "lm_coxa", "lh_coxa", "rf_coxa", "rm_coxa", "rh_coxa"]

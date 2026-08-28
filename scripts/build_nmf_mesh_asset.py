@@ -8,7 +8,8 @@ script reads the same self-contained model the docs keypoint viewer ships
 by ``scripts/build_keypoint_viewer_assets.py``) and bakes two compact, runtime-only
 assets:
 
-``data/nmf_mesh.npz`` -- every mesh's neutral-pose vertices in world coordinates,
+``data/models/neuromechfly/mesh.npz`` -- every mesh's neutral-pose vertices in
+world coordinates,
 its faces and color, and which "slot" poses it:
 
 - a **leg segment** (coxa / trochanter+femur / tibia / tarsus), posed by mapping
@@ -16,16 +17,16 @@ its faces and color, and which "slot" poses it:
 - an **articulated node** of the head or abdomen, posed by the fitted joint angles
   through the baked chain forward kinematics (so the head turns / abdomen curls); or
 - the rigid **body** (thorax / wings / halteres), posed by one global similarity
-  transform fit from the six thorax-coxa keypoints.
+  transform fit from the six coxa anchors.
 
-``data/nmf_articulation.json`` -- the head and abdomen kinematic chains the IK
+``data/models/neuromechfly/articulation.json`` -- the head and abdomen chains the IK
 solver fits: each chain's ordered revolute joints (neutral world anchor + axis +
 angle name + default bounds) and its markers (the tracked keypoints rigidly
 attached at a given depth in the chain, with the attachment ``body`` + ``offset``
 they were built from), plus a ``bodies`` map of every chain body's neutral world
 frame (so a run config can move a marker to a new offset without re-running this
-script -- see ``Articulation.load``), and the neutral thorax-coxa positions that
-register the whole rigid body. The chain forward kinematics is a serial
+script -- see ``Articulation.load``). The bodies include the registration anchors, so
+the pack manifest's ``anchors`` list resolves against the same map. The chain forward kinematics is a serial
 product of rotations about the neutral anchors -- it reproduces MuJoCo's frames
 exactly (validated to ~1e-16), so the baked angles and overlay are consistent.
 
@@ -39,6 +40,7 @@ whenever the bundled model changes::
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import mujoco
@@ -46,12 +48,15 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 ASSETS = REPO / "docs" / "keypoints" / "assets"
-OUT_MESH = REPO / "src" / "deeperfly" / "data" / "nmf_mesh.npz"
-OUT_ARTIC = REPO / "src" / "deeperfly" / "data" / "nmf_articulation.json"
+PACK = REPO / "src" / "deeperfly" / "data" / "models" / "neuromechfly"
+BINDING = REPO / "src" / "deeperfly" / "data" / "bindings" / "fly38@neuromechfly.toml"
+OUT_MESH = PACK / "mesh.npz"
+OUT_ARTIC = PACK / "articulation.json"
 
-# deeperfly skeleton order (must match Skeleton.fly().point_names / keypoints.json).
 LEGS = ["lf", "lm", "lh", "rf", "rm", "rh"]
-JOINTS = ["thorax_coxa", "coxa_trochanter", "femur_tibia", "tibia_tarsus", "pretarsus"]
+# The bodies a leg chain's five joints sit at, proximal to distal. MODEL names: which
+# tracked point observes each is the binding's to say, and this script asks it.
+JOINT_BODIES = ["coxa", "trochanterfemur", "tibia", "tarsus1", "tarsus5"]
 # mesh-name part -> the leg segment index it belongs to (its bone spans
 # keypoints[seg] -> keypoints[seg + 1]).
 PART_SEGMENT = {
@@ -298,31 +303,36 @@ def main() -> None:
     mujoco.mj_forward(model, data)
 
     geom_rgb = np.asarray(json.loads((ASSETS / "colors.json").read_text())["geom_rgb"])
-    kp = json.loads((ASSETS / "keypoints.json").read_text())
-    point_names = [p["name"] for p in kp["points"]]
+    # Where each tracked point sits on this model: the BINDING, which is the one place
+    # a skeleton point name and a model body name are allowed to meet. Its row order is
+    # the skeleton's point order, which is the order the mesh asset's arrays are in.
+    binding = tomllib.loads(BINDING.read_text())["points"]
+    point_names = list(binding)
     kp_index = {name: i for i, name in enumerate(point_names)}
-    # Per-point attachment body + offset (the labeling-scheme choice: where each
-    # keypoint sits relative to its NeuroMechFly body). Baked alongside each marker
-    # so a run config can move a marker to a new offset without re-running MuJoCo.
-    point_meta = {
-        p["name"]: {"body": p["body"], "offset": list(p["offset"])}
-        for p in kp["points"]
-        if "body" in p and "offset" in p
-    }
 
     # Neutral world keypoints (body world pose * offset), in skeleton order.
     kp_neutral = np.full((len(point_names), 3), np.nan)
-    for i, p in enumerate(kp["points"]):
+    for i, name in enumerate(point_names):
+        row = binding[name]
         try:
-            bid = model.body(p["body"]).id
+            bid = model.body(row["body"]).id
         except KeyError:
             continue
         kp_neutral[i] = data.xpos[bid] + data.xmat[bid].reshape(3, 3) @ np.asarray(
-            p["offset"]
+            row.get("offset", [0.0, 0.0, 0.0]), dtype=float
         )
 
-    _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names)
-    _write_articulation(model, data, kp_neutral, point_names, point_meta)
+    # body -> the tracked point observing it, the reverse of the binding. A body
+    # carrying more than one point is not a joint of any chain, so it is left out.
+    seen: dict[str, int] = {}
+    for name, row in binding.items():
+        seen[row["body"]] = seen.get(row["body"], 0) + 1
+    body_point = {
+        row["body"]: name for name, row in binding.items() if seen[row["body"]] == 1
+    }
+
+    _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names, body_point)
+    _write_articulation(model, data, binding)
 
 
 def _part_for(mesh_name: str) -> str:
@@ -355,7 +365,9 @@ def _part_for(mesh_name: str) -> str:
     return "other"
 
 
-def _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names) -> None:
+def _write_mesh(
+    model, data, geom_rgb, kp_index, kp_neutral, point_names, body_point
+) -> None:
     """Bake ``nmf_mesh.npz``: neutral verts/faces/colors + each mesh's posing slot."""
     verts: list[np.ndarray] = []
     faces: list[np.ndarray] = []
@@ -390,6 +402,7 @@ def _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names) -> Non
             g,
             name,
             kp_index,
+            body_point,
             bone_slot,
             node_slot,
             slot_prox,
@@ -422,8 +435,8 @@ def _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names) -> Non
         slot_chain=np.asarray(slot_chain, dtype=np.int64),
         slot_depth=np.asarray(slot_depth, dtype=np.int64),
         kp_neutral=kp_neutral.astype(np.float32),
-        coxa_idx=np.asarray(
-            [kp_index[f"{leg}_thorax_coxa"] for leg in LEGS], dtype=np.int64
+        anchor_idx=np.asarray(
+            [kp_index[body_point[f"{leg}_coxa"]] for leg in LEGS], dtype=np.int64
         ),
         point_names=np.asarray(point_names, dtype=object),
     )
@@ -436,8 +449,8 @@ def _write_mesh(model, data, geom_rgb, kp_index, kp_neutral, point_names) -> Non
     )
 
 
-def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> None:
-    """Bake ``nmf_articulation.json``: the head/abdomen chains + neutral coxae.
+def _write_articulation(model, data, binding) -> None:
+    """Bake ``articulation.json``: the head/abdomen chains + the attachment bodies.
 
     Each marker records the skeleton ``point`` it predicts, its chain ``depth``, its
     neutral world position, *and* the attachment ``body`` + ``offset`` it was built
@@ -451,8 +464,7 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
         jid = model.joint(jname).id
         return data.xanchor[jid].round(8).tolist(), data.xaxis[jid].round(8).tolist()
 
-    kp_index = {n: i for i, n in enumerate(point_names)}
-    bodies = _chain_bodies(model, data)
+    bodies = _chain_bodies(model, data, extra=[f"{leg}_coxa" for leg in LEGS])
     chains = []
     for chain in CHAINS:
         joints = []
@@ -466,36 +478,18 @@ def _write_articulation(model, data, kp_neutral, point_names, point_meta) -> Non
                     "bounds_deg": j["bounds"],
                 }
             )
-        markers = []
+        # The markers themselves are NOT baked here: they are binding rows, and a
+        # model asset restating them is what kept a skeleton from reaching a second
+        # model. What survives is the check -- the depth each row will be derived at
+        # has to be the depth the model actually puts that body at.
         for name, depth in chain["markers"]:
-            meta = point_meta.get(name, {})
-            _check_depth(chain, name, meta.get("body"), depth, bodies)
-            markers.append(
-                {
-                    "point": name,
-                    "depth": depth,
-                    "neutral": kp_neutral[kp_index[name]].round(8).tolist(),
-                    "body": meta.get("body"),
-                    "offset": meta.get("offset"),
-                }
-            )
-        chains.append(
-            {
-                "name": chain["name"],
-                "joints": joints,
-                "markers": markers,
-                "base_point": chain.get("base_point"),
-            }
-        )
+            _check_depth(chain, name, binding.get(name, {}).get("body"), depth, bodies)
+        chains.append({"name": chain["name"], "joints": joints})
 
-    coxa_points = [f"{leg}_thorax_coxa" for leg in LEGS]
-    coxa_neutral = [kp_neutral[kp_index[p]].round(8).tolist() for p in coxa_points]
     leg_rest = _leg_rest(model)
     OUT_ARTIC.write_text(
         json.dumps(
             {
-                "coxa_points": coxa_points,
-                "coxa_neutral": coxa_neutral,
                 "leg_rest": leg_rest,
                 "chains": chains,
                 "bodies": bodies,
@@ -542,24 +536,37 @@ def _check_depth(chain, point: str, body: str | None, depth: int, bodies: dict) 
         )
 
 
-def _chain_bodies(model, data) -> dict[str, dict]:
+def _chain_bodies(model, data, extra: list[str] = ()) -> dict[str, dict]:
     """Neutral world frame + chain/depth of every body a marker may attach to.
 
     A marker is rigidly attached to a model body and rides the chain at that body's
     depth (the same ``_node_for_body`` rule that assigns the segment meshes). Baking
     each such body's frame lets the run config place a marker by an offset in the
     body frame: ``neutral = pos + mat @ offset`` at load time.
+
+    ``extra`` names bodies to bake that belong to no baked chain -- the registration
+    anchors, whose frames the pack manifest resolves its ``anchors`` list against.
+    They carry ``chain = null``, which is what makes them unusable as a chain marker
+    body without an explicit depth.
     """
     bodies: dict[str, dict] = {}
     for bid in range(1, model.nbody):
         node = _node_for_body(model, bid)
+        name = model.body(bid).name
         if node is None:
-            continue
-        chain_idx, depth = node
-        bodies[model.body(bid).name] = {
-            "pos": data.xpos[bid].round(8).tolist(),
-            "mat": data.xmat[bid].round(8).tolist(),  # 3x3 row-major
-            "chain": CHAINS[chain_idx]["name"],
+            if name not in extra:
+                continue
+            chain, depth = None, 0
+        else:
+            chain_idx, depth = node
+            chain = CHAINS[chain_idx]["name"]
+        bodies[name] = {
+            # NOT rounded: a marker's neutral position is derived from this frame at
+            # load time (`pos + mat @ offset`), and it has to come out equal to the
+            # same expression evaluated here in full precision.
+            "pos": data.xpos[bid].tolist(),
+            "mat": data.xmat[bid].tolist(),  # 3x3 row-major
+            "chain": chain,
             "depth": int(depth),
         }
     return bodies
@@ -570,6 +577,7 @@ def _slot_for(
     g,
     name,
     kp_index,
+    body_point,
     bone_slot,
     node_slot,
     slot_prox,
@@ -584,8 +592,8 @@ def _slot_for(
         key = (leg, seg)
         if key not in bone_slot:
             bone_slot[key] = len(slot_prox)
-            slot_prox.append(kp_index[f"{leg}_{JOINTS[seg]}"])
-            slot_dist.append(kp_index[f"{leg}_{JOINTS[seg + 1]}"])
+            slot_prox.append(kp_index[body_point[f"{leg}_{JOINT_BODIES[seg]}"]])
+            slot_dist.append(kp_index[body_point[f"{leg}_{JOINT_BODIES[seg + 1]}"]])
             slot_chain.append(-1)
             slot_depth.append(-1)
         return bone_slot[key]

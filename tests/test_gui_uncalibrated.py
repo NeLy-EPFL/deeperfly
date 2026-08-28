@@ -73,11 +73,11 @@ def test_view_names_fall_back_to_positional_when_nothing_records_them():
 def test_every_3d_path_is_none_rather_than_raising(state):
     assert not state.has_cameras
     assert not state.has_3d
-    assert not state.has_nmf
+    assert not state.has_model
     assert state.display_pts3d() is None
     assert state.display_pts3d_projected() is None
     assert state.display_pts2d_refine() is None
-    assert state.display_nmf_projected() is None
+    assert state.display_model_projected() is None
 
 
 def test_solving_a_point_without_a_rig_is_nan_not_an_exception(state):
@@ -174,7 +174,7 @@ def test_the_points_payload_carries_no_projection(state, tmp_path):
     )
     payload = _points_payload(session, 0, "view", verbose=True)
     assert payload["proj"] is None
-    assert payload["nmf"] is None
+    assert payload["model"] is None
     assert len(payload["points"]) == len(VIEWS)
     # The placeholder layer is what makes the frame labelable at all here.
     assert payload["placeholder"] is not None

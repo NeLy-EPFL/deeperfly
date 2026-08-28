@@ -68,7 +68,7 @@
  * @property {number} n_frames
  * @property {number} n_points
  * @property {boolean} has_3d
- * @property {boolean} has_nmf  whether a fitted NMF model overlay is available
+ * @property {boolean} has_model  whether a fitted model overlay is available
  * @property {boolean} [has_cameras]  whether a camera rig is solved for this recording.
  *   False => uncalibrated: every view is an independent 2D canvas (no 3D, no
  *   reprojection, no cross-view help). Absent on an older server, which means calibrated.
@@ -117,7 +117,7 @@
  * @property {boolean[][]} invisible  [view][point]  occluded: dropped from triangulation
  * @property {boolean[][]} absent  [view][point]  "not on this animal" (amputated / ablated). Per-*point* truth broadcast over views, so it indexes like `fixed`/`invisible`. Rides EVERY reply including the lean mid-drag stream, because it gates whether the joint is drawn at all. Drawn as a dim grey tombstone with no edges; never draggable.
  * @property {Point[][] | null} proj  [view][point] the 3D reprojection, or null. Ghosted by the "3D estimate" overlay, and the canvas's fallback position + "projection" source for a joint with no observed pixel (occluded / undetected in that view).
- * @property {Point[][] | null} [nmf]  [view][point] fitted NMF model reprojection (display only), or null. Omitted on mid-drag replies (the server skips the per-frame re-fit) -- treat "absent" as "unchanged".
+ * @property {Point[][] | null} [model]  [view][point] fitted model reprojection (display only), or null. Omitted on mid-drag replies (the server skips the per-frame re-fit) -- treat "absent" as "unchanged".
  * @property {(number | null)[][]} [conf]  [view][point] detector confidence, or null. Rides the settle/plain reply only (not the mid-drag stream).
  * @property {Point[][] | null} [pred]  [view][point] the raw detector prediction (before GT override), for the verbose overlay. Present only when verbose was requested.
  * @property {Point[][] | null} [placeholder]  [view][point] seed positions for joints ABSENT from a view (no detection / reprojection), so a GT can still be dragged into being; NaN->null elsewhere. Present only when verbose was requested.
@@ -133,7 +133,7 @@
  * @typedef {object} ScenePayload
  * @property {number} frame
  * @property {Point3[] | null} points3d  triangulated keypoints, or null when 2D-only
- * @property {Point3[] | null} nmf3d  fitted NMF model joints, or null when no IK model
+ * @property {Point3[] | null} model3d  fitted model joints, or null when no IK model
  */
 
 /**

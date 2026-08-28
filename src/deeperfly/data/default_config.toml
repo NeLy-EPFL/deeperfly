@@ -299,6 +299,17 @@ inflate_threshold = 30.0
 # because the smoother re-derives 3D from the 2D, so anything corrected before it is
 # followed straight back off.
 #
+# THIS IS NOT REDUNDANT WITH THE IK'S `body_alignment`, which takes the same medians of
+# the same seven body-fixed points. The two produce the same NUMBER for different
+# DESTINATIONS: this stage writes a corrected `points3d` -- a pose -- while the alignment
+# bakes an `offset_pos` into the body plan -- a model parameter. Only the pose exists on
+# an install without the Rust solver. They agree by ORDERING, not by merging: a median
+# over an already-constant point returns that constant exactly, and the alignment builds
+# its frame from left-minus-right and front-minus-hind coxa centroids, so mirror-symmetric
+# origins INDUCE a frame whose x-z plane is this stage's midline plane rather than a
+# competing estimate of it. Nothing coordinates them, and the recomputation must not be
+# "deduplicated" later.
+#
 # ORDER MATTERS. With one fitted plane (the default) symmetrize is a FIXED map, so it
 # leaves an already-static point static and static-then-symmetrize satisfies both exactly;
 # the other order would not. Each op logs how far it moved what it touched -- a point
@@ -373,19 +384,19 @@ layers = [{ draw = "skeleton_3d", stage = "triangulation" }]
 # The kinematic fit over the pose it was fitted to: the dashed reference is the target, so
 # every difference is something the model's limits or segment lengths refused.
 # Needs [pipeline] inverse_kinematics.
-[visualization.videos.pose_nmf]
+[visualization.videos.pose_model]
 grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
 layers = [
     { draw = "skeleton_3d",  stage = "postprocess", line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
-    { draw = "skeleton_nmf", point_radius = 3 },
+    { draw = "skeleton_model", point_radius = 3 },
 ]
 
 # The posed mesh with the same forward kinematics over it: the mesh shows where the
 # model's BODY lands, the skeleton the joint centers that put it there, so a leg off the
 # animal reads as a joint-angle error rather than a scale one.
-[visualization.videos.mesh_nmf]
+[visualization.videos.mesh_model]
 grid = [["rf", "f", "lf"], ["rm", "", "lm"], ["rh", "h", "lh"]]
 layers = [
-    { draw = "mesh_nmf", alpha = 0.55 },
-    { draw = "skeleton_nmf", point_radius = 3 },
+    { draw = "mesh_model", alpha = 0.55 },
+    { draw = "skeleton_model", point_radius = 3 },
 ]

@@ -27,6 +27,9 @@ from pathlib import Path
 
 import numpy as np
 
+from .binding import Binding
+from .pack import MODELS
+
 __all__ = [
     "Dof",
     "Joint",
@@ -36,13 +39,13 @@ __all__ = [
     "TEMPLATES",
 ]
 
-#: Packaged NeuroMechFly template selected by ``template = "neuromechfly"``.
-DEFAULT_TEMPLATE_PATH = (
-    Path(__file__).parent.parent / "data" / "neuromechfly_template.toml"
-)
+#: The leg template of each packaged model pack, ``pack name -> path``. A template is
+#: selected through its pack (``[inverse_kinematics] model``), not on its own; this
+#: mapping is what lets a bare name still resolve.
+TEMPLATES = {name: path.parent / "template.toml" for name, path in MODELS.items()}
 
-#: Named packaged templates (extend as more body models are added).
-TEMPLATES = {"neuromechfly": DEFAULT_TEMPLATE_PATH}
+#: The packaged NeuroMechFly leg template.
+DEFAULT_TEMPLATE_PATH = TEMPLATES["neuromechfly"]
 
 
 @dataclass(frozen=True)
@@ -61,29 +64,46 @@ class Dof:
     axis: tuple[float, float, float]
     lo: float
     hi: float
+    #: The model's own name for this DOF's angle -- the key a fitted angle is reported
+    #: under, a ``[inverse_kinematics.bounds]`` override is looked up by, and the
+    #: model's spring reference is read by. Declared rather than composed, so the
+    #: ``<joint>-<dof>`` convention is flygym's and not deeperfly's; the file's default
+    #: is that convention, which is why the packaged template writes none.
+    angle: str = ""
 
 
 @dataclass(frozen=True)
 class Joint:
-    """A joint in a leg chain: the skeleton ``point`` it sits on and its DOFs.
+    """A joint in a leg chain: the model ``body`` it sits at, and its DOFs.
+
+    ``point`` is the tracked point that observes it, resolved through the binding at
+    load time -- the template itself names no skeleton point.
 
     ``segment`` names the segment that leads *into* this joint from its parent
     (``""`` for the root ThC, which sits at the chain origin); the segment's length
     is measured from the data at solve time. ``joint`` is the flygym joint base name
-    ``<parent_body>-<child_body>`` for this leg (e.g. ``"c_thorax-rf_coxa"``); each
-    DOF's angle name is ``<joint>-<dof>`` (``"c_thorax-rf_coxa-roll"``).
+    ``<parent_body>-<child_body>`` for this leg (e.g. ``"c_thorax-rf_coxa"``), and each
+    DOF names its own angle (:attr:`Dof.angle`).
+
+    ``quat`` is the constant rotation from the parent joint's post-DOF frame into this
+    joint's own, in ``(w, x, y, z)`` -- the model body's own orientation, which the DOF
+    axes are then expressed in. NeuroMechFly's leg bodies all carry ``quat="1 0 0 0"``,
+    so the packaged template declares none and every joint is identity; flybody's carry
+    real rotations, which is why this is a field rather than an assumption.
     """
 
     name: str
+    body: str
     point: str
     segment: str
     joint: str
     dofs: tuple[Dof, ...]
+    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
 class LegChain:
-    """One leg's serial chain (ThC -> CTr -> FTi -> TiTa -> Claw)."""
+    """One leg's serial chain (ThC -> CTr -> FTi -> TiTa -> Pretarsus)."""
 
     name: str  # "rf", "lm", ...
     side: str  # "r" or "l"
@@ -99,11 +119,17 @@ class LegChain:
 
     @property
     def dof_names(self) -> list[str]:
-        """``<parent_body>-<child_body>-<dof>`` (the flygym joint name) for every DOF.
+        """Every DOF's declared angle name, in chain order.
 
-        E.g. ``c_thorax-rf_coxa-roll``, ``rf_coxa-rf_trochanterfemur-pitch``.
+        E.g. ``c_thorax-rf_coxa-roll``, ``rf_coxa-rf_trochanterfemur-pitch`` for the
+        packaged template, which leaves them on flygym's ``<joint>-<dof>`` convention.
         """
-        return [f"{j.joint}-{d.name}" for j in self.joints for d in j.dofs]
+        return [d.angle for j in self.joints for d in j.dofs]
+
+    @property
+    def quats(self) -> np.ndarray:
+        """``(J, 4)`` each joint's constant ``(w, x, y, z)`` offset rotation."""
+        return np.asarray([j.quat for j in self.joints], dtype=float)
 
     @property
     def axes(self) -> np.ndarray:
@@ -125,6 +151,10 @@ class KinematicTemplate:
 
     name: str
     legs: tuple[LegChain, ...]
+    #: The direction a segment extends along in its parent joint's frame, from the
+    #: pack manifest. ``-z`` for NeuroMechFly, whose leg bodies sit at a pure ``-z``
+    #: offset from their parent; flybody's run along ``+y``.
+    rest_axis: tuple[float, float, float] = (0.0, 0.0, -1.0)
 
     # -- construction --------------------------------------------------------
 
@@ -135,6 +165,8 @@ class KinematicTemplate:
         *,
         legs: list[str] | None = None,
         bounds_overrides: dict[str, tuple[float, float]] | None = None,
+        rest_axis: tuple[float, float, float] | None = None,
+        binding: "Binding | str | Path | None" = "fly38@neuromechfly",
     ) -> "KinematicTemplate":
         """Load a template by name or path, optionally restricting legs / overriding bounds.
 
@@ -149,6 +181,16 @@ class KinematicTemplate:
             ``"<parent>-<child>-<dof>" -> (lo_deg, hi_deg)`` degree overrides keyed by
             the flygym joint name (e.g. ``{"rf_trochanterfemur-rf_tibia-pitch": (10,
             160)}``), applied after the per-side defaults. Case-insensitive.
+        rest_axis
+            The model's segment rest direction, from its pack manifest. ``None`` keeps
+            the default, which is NeuroMechFly's ``-z``.
+        binding
+            The (skeleton, model) binding, which names the tracked point observing each
+            joint's body -- a :class:`~deeperfly.inverse_kinematics.binding.Binding`, or
+            a ``"<skeleton>@<model>"`` reference to load. Defaults to the packaged pair,
+            which is what a caller reading the model's structure wants; a run resolves
+            its own through :meth:`deeperfly.config.Config.ik_binding`. ``None`` leaves
+            every joint's ``point`` empty -- enough to read the structure, not to fit.
 
         Returns
         -------
@@ -162,8 +204,16 @@ class KinematicTemplate:
                 f"inverse-kinematics template {ref!r} not found "
                 f"(known: {sorted(TEMPLATES)}, or a path to a template TOML)"
             )
+        if binding is not None and not isinstance(binding, Binding):
+            binding = Binding.load(binding)
         spec = tomllib.loads(path.read_text())
-        return cls.from_spec(spec, legs=legs, bounds_overrides=bounds_overrides)
+        return cls.from_spec(
+            spec,
+            legs=legs,
+            bounds_overrides=bounds_overrides,
+            rest_axis=rest_axis,
+            binding=binding,
+        )
 
     @classmethod
     def from_spec(
@@ -172,10 +222,24 @@ class KinematicTemplate:
         *,
         legs: list[str] | None = None,
         bounds_overrides: dict[str, tuple[float, float]] | None = None,
+        rest_axis: tuple[float, float, float] | None = None,
+        binding: "Binding | None" = None,
     ) -> "KinematicTemplate":
         """Expand a parsed template mapping into per-leg chains."""
         overrides = {k.lower(): v for k, v in (bounds_overrides or {}).items()}
-        all_legs = list(spec.get("legs", []))
+        # A leg entry is its id, or a table declaring the side too. Inferring the side
+        # from the id's first letter is what a template named `T1_left` gets silently
+        # wrong -- mirrored axes and the wrong bounds, with no error -- so the fallback
+        # is kept only for a template that predates the field.
+        declared = {}
+        all_legs: list[str] = []
+        for entry in spec.get("legs", []):
+            if isinstance(entry, dict):
+                name = str(entry["name"])
+                declared[name] = str(entry["side"])
+            else:
+                name = str(entry)
+            all_legs.append(name)
         chosen = all_legs if legs is None else list(legs)
         unknown = [leg for leg in chosen if leg not in all_legs]
         if unknown:
@@ -193,9 +257,22 @@ class KinematicTemplate:
             side: {**flat, **dict(raw.get(side, {}))} for side in ("l", "r")
         }
         chains = tuple(
-            _build_leg(leg, spec["joints"], bounds_by_side, overrides) for leg in chosen
+            _build_leg(
+                leg,
+                declared.get(leg),
+                spec["joints"],
+                bounds_by_side,
+                overrides,
+                binding,
+            )
+            for leg in chosen
         )
-        return cls(name=spec.get("name", "template"), legs=chains)
+        rest = rest_axis if rest_axis is not None else (0.0, 0.0, -1.0)
+        return cls(
+            name=spec.get("name", "template"),
+            legs=chains,
+            rest_axis=tuple(float(v) for v in rest),  # type: ignore[arg-type]
+        )
 
     # -- views ---------------------------------------------------------------
 
@@ -217,24 +294,32 @@ class KinematicTemplate:
 
 def _build_leg(
     leg: str,
+    side: str | None,
     joints_spec: list[dict],
     bounds_by_side: dict[str, dict],
     overrides: dict[str, tuple[float, float]],
+    binding: "Binding | None" = None,
 ) -> LegChain:
     """Expand the generic joint list into one leg's chain with side-specific bounds."""
-    side = "l" if leg.lower().startswith("l") else "r"
+    side = side if side is not None else ("l" if leg.lower().startswith("l") else "r")
     side_bounds = bounds_by_side.get(side, {})
     joints: list[Joint] = []
     for jspec in joints_spec:
         jname = jspec["name"]
-        point = f"{leg}_{jspec['suffix']}"
+        body = str(jspec["body"]).format(leg=leg)
+        point = "" if binding is None else (binding.point_for(body) or "")
         joint = jspec.get("joint", "").format(
             leg=leg
         )  # flygym base, "c_thorax-rf_coxa"
         dofs: list[Dof] = []
         for dspec in jspec.get("dofs", []):
             side_key = f"{jname}_{dspec['name']}"  # side-default key, e.g. "ThC_roll"
-            dof_name = f"{joint}-{dspec['name']}"  # flygym DOF, "c_thorax-rf_coxa-roll"
+            # The model's own name for the angle. `{joint}-{dof}` is flygym's scheme
+            # and stays the default, so declaring it is only needed for a model that
+            # names its DOFs some other way.
+            dof_name = str(dspec.get("angle", "{joint}-{dof}")).format(
+                joint=joint, dof=dspec["name"], leg=leg
+            )
             lo_deg, hi_deg = _resolve_bounds(
                 dof_name, side_bounds.get(side_key), overrides
             )
@@ -247,15 +332,19 @@ def _build_leg(
                     axis=tuple(flip * float(a) for a in dspec["axis"]),
                     lo=float(np.deg2rad(lo_deg)),
                     hi=float(np.deg2rad(hi_deg)),
+                    angle=dof_name,
                 )
             )
+        quat = jspec.get("quat", (1.0, 0.0, 0.0, 0.0))
         joints.append(
             Joint(
                 name=jname,
+                body=body,
                 point=point,
                 segment=str(jspec.get("segment", "")),
                 joint=joint,
                 dofs=tuple(dofs),
+                quat=tuple(float(v) for v in quat),  # type: ignore[arg-type]
             )
         )
     return LegChain(name=leg, side=side, joints=tuple(joints))

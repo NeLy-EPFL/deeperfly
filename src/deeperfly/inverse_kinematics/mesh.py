@@ -1,10 +1,10 @@
 """Pose the bundled NeuroMechFly mesh to a fitted pose, for the 2D overlay.
 
 The mesh overlay reuses the simplified NeuroMechFly model the docs keypoint viewer
-ships, baked into a runtime-only asset (``data/nmf_mesh.npz`` -- see
+ships, baked into a runtime-only asset (the pack's ``mesh.npz`` -- see
 ``scripts/build_nmf_mesh_asset.py``). There is no MuJoCo/flygym at runtime: the
 mesh is posed straight from the inverse-kinematics result's fitted joint positions
-(``PoseResult.nmf_pts3d``) and chain angles (``PoseResult.nmf_angles``), each mesh
+(``PoseResult.model_pts3d``) and chain angles (``PoseResult.model_angles``), each mesh
 in its own "slot":
 
 - Each **leg** mesh (coxa / trochanter+femur / tibia / tarsus) is a bone between
@@ -19,7 +19,7 @@ in its own "slot":
   transform fit (Umeyama) from the six thorax-coxa keypoints, which are body-fixed.
   That same transform also registers the articulated nodes.
 
-:func:`NmfMesh.pose` returns world-space vertices for one frame (NaN for segments
+:func:`ModelMesh.pose` returns world-space vertices for one frame (NaN for segments
 whose endpoints are missing); the rasterizer in :mod:`deeperfly.visualization.mesh`
 projects and shades them per view.
 """
@@ -34,16 +34,18 @@ from pathlib import Path
 import numpy as np
 from jaxtyping import Float, Int
 
-__all__ = ["NmfMesh", "load_nmf_mesh"]
+from .pack import MODELS
+
+__all__ = ["ModelMesh", "load_model_mesh"]
 
 #: The packaged baked mesh asset (built by ``scripts/build_nmf_mesh_asset.py``).
-DEFAULT_MESH_PATH = Path(__file__).parent.parent / "data" / "nmf_mesh.npz"
+DEFAULT_MESH_PATH = MODELS["neuromechfly"].parent / "mesh.npz"
 
 _EPS = 1e-9
 
 
 @dataclass(frozen=True)
-class NmfMesh:
+class ModelMesh:
     """The baked NeuroMechFly overlay mesh and the data to pose it from a fit.
 
     Attributes
@@ -65,8 +67,9 @@ class NmfMesh:
         slot (head / abdomen-segment meshes), or ``-1`` for body / leg-bone slots.
     kp_neutral
         ``(P, 3)`` the model's neutral keypoint positions (skeleton order).
-    coxa_idx
-        ``(6,)`` the thorax-coxa keypoint indices that anchor the body transform.
+    anchor_idx
+        ``(6,)`` the keypoint indices observing the model's anchor bodies, which
+        place the rigid body transform.
     vert_part
         ``(Nv,)`` each vertex's body-part index into :attr:`part_names` (so the
         overlay can hide whole parts -- e.g. the wings -- per the render config).
@@ -85,12 +88,12 @@ class NmfMesh:
     slot_chain: Int[np.ndarray, "S"]
     slot_depth: Int[np.ndarray, "S"]
     kp_neutral: Float[np.ndarray, "P 3"]
-    coxa_idx: Int[np.ndarray, "6"]
+    anchor_idx: Int[np.ndarray, "6"]
     vert_part: Int[np.ndarray, "Nv"]
     part_names: tuple[str, ...]
 
     @classmethod
-    def load(cls, path: str | Path = DEFAULT_MESH_PATH) -> "NmfMesh":
+    def load(cls, path: str | Path = DEFAULT_MESH_PATH) -> "ModelMesh":
         z = np.load(Path(path), allow_pickle=True)
         n_slots = z["slot_prox"].shape[0]
         nofill = np.full(n_slots, -1, dtype=np.int64)
@@ -109,7 +112,7 @@ class NmfMesh:
                 z["slot_depth"].astype(np.int64) if "slot_depth" in z else nofill
             ),
             kp_neutral=z["kp_neutral"].astype(float),
-            coxa_idx=z["coxa_idx"].astype(np.int64),
+            anchor_idx=z["anchor_idx"].astype(np.int64),
             vert_part=(
                 z["vert_part"].astype(np.int64)
                 if "vert_part" in z
@@ -205,8 +208,7 @@ class NmfMesh:
         angles: Float[np.ndarray, "D"] | None = None,
         angle_names: list[str] | None = None,
         *,
-        head_scale: float = 1.0,
-        abdomen_scale: float = 1.0,
+        chain_scales: dict[str, float] | None = None,
         chain_offsets: dict[str, np.ndarray] | None = None,
         body_scale: float | None = None,
     ) -> tuple[Float[np.ndarray, "Nv 3"], np.ndarray]:
@@ -223,12 +225,13 @@ class NmfMesh:
             and abdomen mesh nodes articulate through the baked chain kinematics so
             the overlay head turns / abdomen curls with the fit; otherwise those
             nodes ride the rigid body at their neutral pose.
-        head_scale, abdomen_scale
-            Extra size multipliers for the head / abdomen meshes, about each chain's
-            base, *on top of* the coxa-derived body scale. NeuroMechFly's head and
-            abdomen are fixed model geometry (unlike the legs, which skin to the real
-            keypoints), so these let the overlay match a fly whose head/abdomen differ
-            in size (e.g. a fuller abdomen). ``1.0`` leaves them at the model size.
+        chain_scales
+            ``chain name -> multiplier``: extra size for a chain's mesh, about that
+            chain's base, *on top of* the anchor-derived body scale. A chain's geometry
+            is fixed in the model (unlike the legs, which skin to the real keypoints),
+            so this lets the overlay match a fly whose head or abdomen differs in size
+            (e.g. a fuller abdomen). A chain absent from the mapping stays at the model
+            size, which is what ``None`` means for every chain.
         chain_offsets
             ``chain name -> (3,)`` model-unit translation of a chain's base, from the
             IK stage's ``chain_offsets``. The solved body plan bakes the same shift into
@@ -255,7 +258,7 @@ class NmfMesh:
         rot, scale, trans = self._body_transform(pts3d, fixed_scale=body_scale)
         up = rot @ np.array([0.0, 0.0, 1.0])  # live dorsal axis fixes the bone roll
         node_xform = self._node_transforms(
-            angles, angle_names, (head_scale, abdomen_scale), chain_offsets
+            angles, angle_names, chain_scales, chain_offsets
         )
 
         for slot, rows in enumerate(self._slot_verts):
@@ -287,14 +290,14 @@ class NmfMesh:
         self,
         angles: np.ndarray | None,
         angle_names: list[str] | None,
-        scales: tuple[float, float] = (1.0, 1.0),
+        chain_scales: dict[str, float] | None = None,
         chain_offsets: dict[str, np.ndarray] | None = None,
     ) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]:
         """Model-frame affine ``(A, b)`` per ``(chain, depth)`` node from the angles.
 
         Missing angles (no IK chain fit, or NaN) give the articulation identity, so
-        the node rides the rigid body at its neutral pose. ``scales`` (head, abdomen)
-        additionally grows each chain's mesh about its base anchor -- folded into the
+        the node rides the rigid body at its neutral pose. ``chain_scales`` additionally
+        grows a named chain's mesh about its base anchor -- folded into the
         affine as ``A' = f A`` and ``b' = f b + (1 - f) base``. The solved body plan
         bakes that same growth into its chain offsets, so the fitted angles and the
         nodes drawn from them describe one pose (see
@@ -308,9 +311,10 @@ class NmfMesh:
         bakes into that chain's root offset.
 
         Deliberately driven by the *unfiltered* packaged articulation and the angle
-        *names*, not by the recording's body plan: chain index 0 is always the head and
-        1 the abdomen here (that is what ``nmf_mesh.npz`` bakes into its node slots),
-        and this way the overlay articulates for a result file written by any version --
+        *names*, not by the recording's body plan: a node slot's chain index is an index
+        into the packaged articulation's own chain order (that is what the pack's ``mesh.npz``
+        bakes in), and this way the overlay articulates for a result file written by any
+        version --
         including one whose run fit only the abdomen, and one produced before body plans
         existed.
         """
@@ -337,7 +341,7 @@ class NmfMesh:
                     )
                     if np.isfinite(theta).all():
                         a, b = chain_affine(chain, depth, theta)
-                f = float(scales[chain_idx]) if chain_idx < len(scales) else 1.0
+                f = float((chain_scales or {}).get(chain.name, 1.0))
                 if f != 1.0:  # grow the node about its chain base anchor
                     base = chain.anchors[0]
                     a, b = f * a, f * b + (1.0 - f) * base
@@ -360,8 +364,8 @@ class NmfMesh:
         a full per-frame similarity (which let the body breathe with coxa noise).
         ``None`` fits the scale per frame (the legacy behaviour).
         """
-        src = self.kp_neutral[self.coxa_idx]
-        dst = pts3d[self.coxa_idx]
+        src = self.kp_neutral[self.anchor_idx]
+        dst = pts3d[self.anchor_idx]
         good = np.isfinite(dst).all(axis=1)
         if int(good.sum()) < 3:  # too few anchors to place the body
             fallback = 1.0 if fixed_scale is None else float(fixed_scale)
@@ -374,9 +378,9 @@ class NmfMesh:
 
 
 @functools.lru_cache(maxsize=2)
-def load_nmf_mesh(path: str | Path = DEFAULT_MESH_PATH) -> NmfMesh:
+def load_model_mesh(path: str | Path = DEFAULT_MESH_PATH) -> ModelMesh:
     """Load (and cache) the packaged NeuroMechFly overlay mesh."""
-    return NmfMesh.load(path)
+    return ModelMesh.load(path)
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:

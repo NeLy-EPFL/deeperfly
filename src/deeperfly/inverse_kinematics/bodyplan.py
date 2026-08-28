@@ -20,9 +20,8 @@ memory -- QuickIK parses it from a string) rather than shipped as a static asset
 
 **The plan lives in the model frame.** The legs are measured in the camera rig's world
 frame at an arbitrary scale, while the baked chains are model-frame at model scale, and
-the two body frames differ by a fixed rotation (~23 degrees of pitch: the coxa-centroid
-frame :func:`~deeperfly.inverse_kinematics.align._body_axes` builds is not the model's
-own frame) plus a per-recording scale. Mixing them under one root would misplace the
+the two body frames differ by a fixed rotation (~23 degrees of pitch: the frame the
+coxa centroids induce is not the model's own frame) plus a per-recording scale. Mixing them under one root would misplace the
 head and abdomen by a large fraction of their own extent, and their limits could not
 absorb it. So everything is expressed in model coordinates: observations are mapped in
 through the inverse of the body similarity
@@ -36,10 +35,10 @@ MJCF carries ``quat="1 0 0 0"``, so a leg's hinge axes ARE the model frame's, an
 already lives in the model frame. Each leg subtree therefore gets an identity
 ``offset_quat`` and the template's axes apply verbatim.
 
-That is a correction. The leg subtree used to be rotated by the model's *coxa-derived*
-body frame -- what a recording's ``r_body`` estimates -- which is pitched about 23 degrees
-away from the model's own. Combined with two swapped axes in the template it left the fit
-unable to reproduce the model's resting posture at all. Both are fixed together, and
+That is a correction. The leg subtree used to be rotated by a coxa-derived body frame,
+which is pitched about 23 degrees away from the model's own. Combined with two swapped
+axes in the template it left the fit unable to reproduce the model's resting posture at
+all. (That estimate is gone entirely: nothing else consumed it.) Both are fixed together, and
 :mod:`deeperfly.inverse_kinematics.template` carries the measurement.
 
 A DOF's ``neutral`` is the model's own **spring reference** for that joint -- the resting
@@ -330,7 +329,7 @@ def build_body_plan(
         }
     ]
     for leg in template.legs:
-        joints += _leg_joints(leg, skeleton, alignment, body_sim)
+        joints += _leg_joints(leg, skeleton, alignment, body_sim, template.rest_axis)
     for chain in articulation.chains if articulation is not None else ():
         joints += _chain_joints(
             chain, scales.get(chain.name, 1.0), shifts.get(chain.name)
@@ -384,12 +383,16 @@ def build_body_plan(
     )
 
 
-def _leg_joints(leg, skeleton, alignment: Alignment, body_sim) -> list[dict]:
+def _leg_joints(
+    leg, skeleton, alignment: Alignment, body_sim, rest_axis=REST_AXIS
+) -> list[dict]:
     """One leg's chain: the thorax-coxa at its measured place, then measured segments.
 
-    Every joint carries an identity ``offset_quat``: the plan is in the model frame and
-    each leg body is axis-aligned with it, so the template's axes and its straight-down
-    rest direction already mean what they say (see the module docstring).
+    A joint's ``offset_quat`` is the model body's own orientation, and a segment runs
+    along the model's own ``rest_axis``. Both are identity/``-z`` for NeuroMechFly,
+    whose leg bodies are axis-aligned with the model frame, which is what lets its
+    template's axes mean what they say (see the module docstring) -- and both are read
+    off the template rather than assumed, because flybody's are neither.
     """
     rot, scale, trans = body_sim
     rest = _leg_spring_reference()
@@ -411,27 +414,23 @@ def _leg_joints(leg, skeleton, alignment: Alignment, body_sim) -> list[dict]:
         offset = (
             [float(v) for v in coxa_model]
             if j == 0
-            else [float(v) for v in REST_AXIS * seglens[j]]
+            else [float(v) for v in np.asarray(rest_axis, dtype=float) * seglens[j]]
         )
         out.append(
             {
                 "name": joint.point,
                 "parent": parent,
                 "offset_pos": offset,
-                "offset_quat": list(_IDENTITY_QUAT),
+                "offset_quat": [float(v) for v in joint.quat],
                 "dofs": [
                     {
                         "type": "hinge",
                         "axis": [float(a) for a in dof.axis],
                         "neutral": float(
-                            np.clip(
-                                rest.get(f"{joint.joint}-{dof.name}", 0.0),
-                                dof.lo,
-                                dof.hi,
-                            )
+                            np.clip(rest.get(dof.angle, 0.0), dof.lo, dof.hi)
                         ),
                         "limits": [float(dof.lo), float(dof.hi)],
-                        "x-deeperfly-angle": f"{joint.joint}-{dof.name}",
+                        "x-deeperfly-angle": dof.angle,
                     }
                     for dof in joint.dofs
                 ],
@@ -554,12 +553,12 @@ def _leg_spring_reference() -> dict[str, float]:
 
 def _model_neutral(skeleton, point: str) -> np.ndarray:
     """A skeleton point's neutral model position (from the packaged overlay asset)."""
-    from .mesh import load_nmf_mesh
+    from .mesh import load_model_mesh
 
     index = {name: i for i, name in enumerate(skeleton.point_names)}
     if point not in index:
         return np.zeros(3)
-    return np.asarray(load_nmf_mesh().kp_neutral[index[point]], dtype=float)
+    return np.asarray(load_model_mesh().kp_neutral[index[point]], dtype=float)
 
 
 def _model_seglens(

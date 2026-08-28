@@ -13,6 +13,7 @@ import typer
 from ..config import STAGES
 from ..pipeline import _OVERWRITE_ALL
 from .autocrop import _cmd_auto_crop
+from .bind import _cmd_ik_bind
 from .calibrate import _cmd_calibrate
 from .calibration import _cmd_calibration_export, _cmd_calibration_show
 from .config import _cmd_config_set, _cmd_config_show
@@ -136,6 +137,53 @@ def auto_crop(
             write=write,
             no_gate=no_gate,
         )
+    )
+
+
+ik_app = typer.Typer(
+    no_args_is_help=True,
+    help="Model packs and the bindings that adapt a skeleton to one.",
+)
+app.add_typer(ik_app, name="ik")
+
+
+@ik_app.command("bind")
+def ik_bind(
+    skeleton: Annotated[
+        str | None,
+        typer.Argument(help="the skeleton to bind (default: the packaged one)"),
+    ] = None,
+    model: Annotated[
+        str, typer.Argument(help="the model pack to bind it to")
+    ] = "neuromechfly",
+    mjcf: Annotated[
+        str | None,
+        typer.Option("--mjcf", help="the model's MJCF, which the rules are read from"),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="where to write (default: data/bindings/)"),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Generate a (skeleton, model) binding, for review.
+
+    A binding says where each tracked point sits on the model, and it is the one
+    artifact where a skeleton point name and a model body name may appear together. It
+    is not fully hand-authorable -- a pretarsus's offset is the most distal vertex of the
+    last tarsus, computed from the geometry -- so this expands the name conventions,
+    resolves that geometry, and marks the rows no rule can decide `approximate = true`.
+
+    **Read the approximate rows.** They are placements a human chose, and this command
+    only reproduces the choice that was made before; binding a new skeleton means
+    deciding them again.
+
+    Needs MuJoCo, which deeperfly does not depend on:
+    `uv run --with mujoco deeperfly ik bind fly38 neuromechfly --mjcf model/fly.xml`.
+    """
+    _configure_logging(log_level.value)
+    _cmd_ik_bind(
+        argparse.Namespace(skeleton=skeleton, model=model, mjcf=mjcf, output=output)
     )
 
 

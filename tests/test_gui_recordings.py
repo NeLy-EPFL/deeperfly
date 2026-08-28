@@ -202,7 +202,7 @@ def test_a_stale_cache_stamp_is_never_served_as_immutable(client, monkeypatch):
     footage is bytes, not decodable video, so ``/api/frame`` 404s before it sets a
     header. Both routes share ``_image_cache_control``.
     """
-    monkeypatch.setattr(EditorState, "has_nmf", property(lambda self: True))
+    monkeypatch.setattr(EditorState, "has_model", property(lambda self: True))
     monkeypatch.setattr(server, "_render_mesh_png", lambda s, camera, t: b"png")
     before = client.get("/api/meta").json()["cache_v"]
     client.post("/api/recordings/open", json={"recording": "flyB"})
@@ -230,7 +230,7 @@ def test_the_mesh_overlay_is_never_served_from_the_previous_recording(
     full ``immutable`` confidence, from process memory, without the token ever getting a
     say.
     """
-    monkeypatch.setattr(EditorState, "has_nmf", property(lambda self: True))
+    monkeypatch.setattr(EditorState, "has_model", property(lambda self: True))
     monkeypatch.setattr(
         server, "_render_mesh_png", lambda s, camera, t: s.results_path.encode()
     )

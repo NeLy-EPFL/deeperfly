@@ -8,6 +8,11 @@
 # NeLy-EPFL/sequential-inverse-kinematics (`body_config`), transcribed so deeperfly
 # carries no ikpy/flygym dependency.
 #
+# Each joint names the model BODY it sits at the origin of; which tracked point
+# observes that body is the binding's to say (data/bindings/<skeleton>@<model>.toml),
+# so no skeleton point name appears in this file. That is what lets one skeleton reach
+# a second model, and a test asserts it.
+#
 # Frame: the MODEL's own frame -- x = anterior, y = left, z = dorsal (up) -- which is
 # also every leg body's frame, since the MJCF gives each of them quat="1 0 0 0". The rest
 # leg points straight down (-z), and the model agrees: each distal body sits at a pure -z
@@ -49,19 +54,36 @@
 #   "rf_trochanterfemur-rf_tibia-pitch" = [10, 160]
 #
 # Each joint's `joint` field is the flygym joint base `<parent_body>-<child_body>`
-# ({leg} expands per leg); a DOF's angle name is `<joint>-<dof>`, e.g.
-# `c_thorax-rf_coxa-roll`.
+# ({leg} expands per leg), and a DOF's angle name defaults to `{joint}-{dof}`, e.g.
+# `c_thorax-rf_coxa-roll`. A model that names its DOFs some other way writes its own
+# `angle` on each DOF (`{joint}`, `{dof}` and `{leg}` expand), so the convention below
+# is flygym's rather than deeperfly's.
+#
+# A joint may also declare `quat = [w, x, y, z]`, the constant rotation out of its
+# parent's frame into its own -- the model body's orientation, which its DOF axes are
+# read in. Every NeuroMechFly leg body carries quat="1 0 0 0", so none is written here
+# and the loader defaults each joint to identity.
 
 name = "neuromechfly"
 
-# The legs to expand the generic chain over (point names are <leg>_<suffix>).
-legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
+# The legs to expand the generic chain over, each
+# declaring its `side` -- which selects the mirrored DOF axes and the per-side bounds.
+# Inferring it from the id's first letter is what a template naming its legs `T1_left`
+# gets silently wrong: side "r", mirrored axes, the wrong bounds, and no error.
+legs = [
+    { name = "lf", side = "l" },
+    { name = "lm", side = "l" },
+    { name = "lh", side = "l" },
+    { name = "rf", side = "r" },
+    { name = "rm", side = "r" },
+    { name = "rh", side = "r" },
+]
 
 # -- the generic single-leg chain (shared by all six legs) -------------------
 
 [[joints]]
 name = "ThC"            # thorax-coxa: 3-DOF ball joint at the body-fixed coxa
-suffix = "thorax_coxa"
+body = "{leg}_coxa"
 joint = "c_thorax-{leg}_coxa"
 dofs = [
     { name = "yaw",   axis = [1.0, 0.0, 0.0], mirror = true },
@@ -71,7 +93,7 @@ dofs = [
 
 [[joints]]
 name = "CTr"            # coxa-trochanter
-suffix = "coxa_trochanter"
+body = "{leg}_trochanterfemur"
 segment = "coxa"
 joint = "{leg}_coxa-{leg}_trochanterfemur"
 dofs = [
@@ -81,7 +103,7 @@ dofs = [
 
 [[joints]]
 name = "FTi"            # femur-tibia
-suffix = "femur_tibia"
+body = "{leg}_tibia"
 segment = "femur"
 joint = "{leg}_trochanterfemur-{leg}_tibia"
 dofs = [
@@ -90,7 +112,7 @@ dofs = [
 
 [[joints]]
 name = "TiTa"           # tibia-tarsus
-suffix = "tibia_tarsus"
+body = "{leg}_tarsus1"
 segment = "tibia"
 joint = "{leg}_tibia-{leg}_tarsus1"
 dofs = [
@@ -98,8 +120,8 @@ dofs = [
 ]
 
 [[joints]]
-name = "Claw"           # tarsus tip (end effector, no DOFs)
-suffix = "pretarsus"
+name = "Pretarsus"           # tarsus tip (end effector, no DOFs)
+body = "{leg}_tarsus5"
 segment = "tarsus"
 
 # -- joint angle limits (degrees) --------------------------------------------

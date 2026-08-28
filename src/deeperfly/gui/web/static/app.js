@@ -44,7 +44,7 @@
 // reprojection as its own overlay -- the reprojected skeleton (hollow rings joined by thick,
 // dashed, semi-transparent edges; on by default), whose points double as spawn seeds for a
 // ground-truth drag. A non-modal floating panel shows the 3D
-// view -- the camera rig, the 3D pose, and the fitted NMF skeleton + mesh (see
+// view -- the camera rig, the 3D pose, and the fitted Model skeleton + mesh (see
 // scene3d.js); it overlays the editor without blocking it (drag the title bar to move
 // it, the corner to resize), so the main frame scrubber still steps the 3D pose
 // through time. Almost everything has a keyboard shortcut; `?` opens a help list of them.
@@ -53,7 +53,7 @@
 // `// @ts-check` and the JSDoc payload types in types.js.
 
 import { BundleAdjustPanel } from "./baPanel.js";
-import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchNmfAsset, fetchNmfVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveAllCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
+import { EditSocket, cancelJob, configSchema, configValues, fetchCorrected, fetchMeta, fetchModelAsset, fetchModelVerts, fetchPoints, fetchRecordings, fetchScene, fetchSuggestions, frameUrl, jobs as fetchJobs, openRecording, saveAllCorrections, setConfig, shutdownServer, submitJob } from "./api.js";
 import { MeshGL } from "./meshGL.js";
 import { PoseView } from "./poseView.js";
 import { Scene3D } from "./scene3d.js";
@@ -294,7 +294,7 @@ class App {
   //: Narrower than `projectedMask`, which is every cell with no position of its own --
   //: the facts readout has to say "excluded" only where the operator actually said so.
   excludedMask = null;
-  // On-demand 3D view (rig + 3D pose + NMF skeleton/mesh), built lazily on first open.
+  // On-demand 3D view (rig + 3D pose + Model skeleton/mesh), built lazily on first open.
   /** @type {Scene3D | null} */
   scene = null;
   sceneOpen = false;
@@ -445,9 +445,9 @@ class App {
   /** @type {HTMLDivElement} */
   referenceSection = el("reference-section");
   /** @type {HTMLLabelElement} */
-  nmfWrap = el("nmf-wrap");
+  modelWrap = el("model-wrap");
   /** @type {HTMLInputElement} */
-  nmfCheck = el("show-nmf");
+  modelCheck = el("show-model");
   /** @type {HTMLLabelElement} */
   meshWrap = el("mesh-wrap");
   /** @type {HTMLInputElement} */
@@ -615,9 +615,9 @@ class App {
   /** @type {HTMLInputElement} */
   scenePoseCheck = el("scene-pose");
   /** @type {HTMLLabelElement} */
-  sceneNmfWrap = el("scene-nmf-wrap");
+  sceneModelWrap = el("scene-model-wrap");
   /** @type {HTMLInputElement} */
-  sceneNmfCheck = el("scene-nmf");
+  sceneModelCheck = el("scene-model");
   /** @type {HTMLLabelElement} */
   sceneMeshWrap = el("scene-mesh-wrap");
   /** @type {HTMLInputElement} */
@@ -751,11 +751,11 @@ class App {
     this.coverMinInput.value = String(this.clampCoverMin());
     // The section heading spans both checks, so it survives as long as either one does.
     this.checksSection.style.display = warnAvailable || coverAvailable ? "" : "none";
-    this.referenceSection.style.display = this.meta.has_nmf ? "" : "none";
-    this.nmfWrap.style.display = this.meta.has_nmf ? "" : "none";
-    this.meshWrap.style.display = this.meta.has_nmf ? "" : "none";
-    this.sceneNmfWrap.style.display = this.meta.has_nmf ? "" : "none";
-    this.sceneMeshWrap.style.display = this.meta.has_nmf ? "" : "none";
+    this.referenceSection.style.display = this.meta.has_model ? "" : "none";
+    this.modelWrap.style.display = this.meta.has_model ? "" : "none";
+    this.meshWrap.style.display = this.meta.has_model ? "" : "none";
+    this.sceneModelWrap.style.display = this.meta.has_model ? "" : "none";
+    this.sceneMeshWrap.style.display = this.meta.has_model ? "" : "none";
 
     // Server-mirrored editor settings: a fresh EditorState reverts both server-side, so
     // the switches have to follow the reset fields rather than keep the old choice.
@@ -884,10 +884,10 @@ class App {
       this.coverMinInput.value = String(this.clampCoverMin());
       this.applyCoverMin();
     });
-    // The NMF overlay is the fitted inverse-kinematics model -- only when present. The
+    // The model overlay is the fitted inverse-kinematics model -- only when present. The
     // "Reference" section heading is hidden with it, so it never dangles over no rows.
-    this.nmfCheck.addEventListener("change", () => this.applyNmf());
-    // The NMF mesh overlay (rendered on the client GPU) -- only when a fitted model
+    this.modelCheck.addEventListener("change", () => this.applyModel());
+    // The Model mesh overlay (rendered on the client GPU) -- only when a fitted model
     // is present. The head/abdomen size is estimated from the data by the IK stage
     // (no operator knob), so the overlay just follows the model.
     this.meshCheck.addEventListener("change", () => this.applyMesh());
@@ -917,8 +917,8 @@ class App {
     this.helpClose.addEventListener("click", () => this.closeHelp());
     this.sceneClose.addEventListener("click", () => this.closeScene());
     this.initSceneDrag();
-    // The 3D-view layer toggles; the NMF layers only exist when a model was fit.
-    for (const c of [this.sceneAxesCheck, this.sceneCamerasCheck, this.scenePoseCheck, this.sceneNmfCheck, this.sceneMeshCheck]) {
+    // The 3D-view layer toggles; the model layers only exist when a model was fit.
+    for (const c of [this.sceneAxesCheck, this.sceneCamerasCheck, this.scenePoseCheck, this.sceneModelCheck, this.sceneMeshCheck]) {
       c.addEventListener("change", () => this.applySceneToggles());
     }
     // Click outside the dialog body (on the dim backdrop) closes the modal dialogs. The
@@ -1203,9 +1203,9 @@ class App {
     // navigation fetch carries `pred`; on the mid-drag edit stream (no `pred`) the
     // detections are unchanged within the frame, so keep the mask we already have.
     if (p.pred) this.detectedMask = p.pred.map((row) => row.map((pt) => pt != null));
-    // `nmf` is omitted on mid-drag replies (the server skips the per-frame re-fit);
+    // `model` is omitted on mid-drag replies (the server skips the per-frame re-fit);
     // when absent, leave each view's model overlay as-is instead of clearing it.
-    const hasNmf = "nmf" in p;
+    const hasModel = "model" in p;
     // How many views carry a GT pixel for each keypoint of this frame -- the label-coverage
     // check's whole input, and a column sum of a mask the payload already carries. Computed here
     // rather than asked of the server for exactly that reason: it is a view of data the client
@@ -1230,10 +1230,10 @@ class App {
         // The Unplaced seeds ride the same verbose reply (`placeholder`); omitted mid-drag -> keep.
         placeholder: p.placeholder ? p.placeholder[v] : undefined,
         absent: p.absent ? p.absent[v] : undefined,
-        nmf: hasNmf ? (p.nmf ? p.nmf[v] : null) : undefined,
+        model: hasModel ? (p.model ? p.model[v] : null) : undefined,
       });
     });
-    // The NMF mesh follows the (re-fit) latent skeleton: refresh it after an edit
+    // The Model mesh follows the (re-fit) latent skeleton: refresh it after an edit
     // settles, coalescing a live drag's many replies into one GPU render.
     this.scheduleMeshRefresh();
     this.dirty = p.dirty;
@@ -1426,9 +1426,9 @@ class App {
     this.views.forEach((view) => view.setCoverMin(n));
   }
 
-  applyNmf() {
-    const visible = this.nmfCheck.checked;
-    this.views.forEach((view) => view.setNmfVisible(visible));
+  applyModel() {
+    const visible = this.modelCheck.checked;
+    this.views.forEach((view) => view.setModelVisible(visible));
   }
 
   applyMesh() {
@@ -1439,15 +1439,15 @@ class App {
 
   /** Ensure the static mesh topology + colors are loaded into the GPU (once). */
   async ensureMeshAsset() {
-    if (!this.meta.has_nmf) return false;
+    if (!this.meta.has_model) return false;
     if (!this.meshGL) this.meshGL = new MeshGL();
     if (!this.meshGL.ok) return false;
     if (!this.meshAssetLoaded) {
       try {
-        this.meshGL.loadAsset(await fetchNmfAsset());
+        this.meshGL.loadAsset(await fetchModelAsset());
         this.meshAssetLoaded = true;
       } catch (e) {
-        console.error("could not load the NMF mesh asset", e);
+        console.error("could not load the Model mesh asset", e);
         return false;
       }
     }
@@ -1462,7 +1462,7 @@ class App {
     const frame = this.frame;
     let buf;
     try {
-      buf = await fetchNmfVerts(frame);
+      buf = await fetchModelVerts(frame);
     } catch (e) {
       return; // overlay simply stays where it was
     }
@@ -1835,7 +1835,7 @@ class App {
         this.applyWarnThreshold();
         this.applyCover();
         this.applyCoverMin();
-        this.applyNmf();
+        this.applyModel();
         this.applyMesh();
         this.relayout();
 
@@ -1844,7 +1844,7 @@ class App {
           this.scene.setCameras(this.meta.cameras_3d);
           this.scene.setSkeleton(this.meta.edges, this.meta.point_colors, this.meta.edge_colors);
           this.scene.setPoints3d(null);
-          this.scene.setNmf3d(null);
+          this.scene.setModel3d(null);
         }
         this.sceneMeshReady = false;
 
@@ -3485,7 +3485,7 @@ class App {
       axes: this.sceneAxesCheck.checked,
       cameras: this.sceneCamerasCheck.checked,
       pose: this.scenePoseCheck.checked,
-      nmf: this.sceneNmfCheck.checked,
+      model: this.sceneModelCheck.checked,
       mesh: this.sceneMeshCheck.checked,
     });
   }
@@ -3493,11 +3493,11 @@ class App {
   // Upload the current frame's posed mesh verts to the shared GL renderer, so the
   // 3D view can render the mesh independently of the 2D mesh-overlay toggle.
   async ensureSceneMesh() {
-    if (!this.meta.has_nmf || !(await this.ensureMeshAsset())) return;
+    if (!this.meta.has_model || !(await this.ensureMeshAsset())) return;
     const frame = this.frame;
     let buf;
     try {
-      buf = await fetchNmfVerts(frame);
+      buf = await fetchModelVerts(frame);
     } catch (e) {
       return; // the mesh layer just stays where it was (or empty)
     }
@@ -3522,7 +3522,7 @@ class App {
     if (epoch !== this.epoch) return; // a recording switch landed mid-flight
     if (s.frame !== this.frame) return; // a stale reply after a fast scrub
     this.scene.setPoints3d(s.points3d);
-    this.scene.setNmf3d(s.nmf3d ?? null);
+    this.scene.setModel3d(s.model3d ?? null);
   }
 
   // Coalesce the 3D view's posed-mesh refreshes (the heavy part) during a scrub.
@@ -3611,9 +3611,9 @@ class App {
     if (multi) {
       b.push({ key: "u", group: "show", label: "u", desc: "Under-labeled joints — a gauge on every keypoint you have not yet labeled in two views of this frame", run: () => this.toggleCheck(this.coverCheck, () => this.applyCover()) });
     }
-    if (this.meta.has_nmf) {
-      b.push({ key: "m", group: "show", label: "m", desc: "NMF skeleton overlay", run: () => this.toggleCheck(this.nmfCheck, () => this.applyNmf()) });
-      b.push({ key: "M", group: "show", label: hint("M", ["shift"]), desc: "NMF mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
+    if (this.meta.has_model) {
+      b.push({ key: "m", group: "show", label: "m", desc: "Model skeleton overlay", run: () => this.toggleCheck(this.modelCheck, () => this.applyModel()) });
+      b.push({ key: "M", group: "show", label: hint("M", ["shift"]), desc: "Model mesh overlay", run: () => this.toggleCheck(this.meshCheck, () => this.applyMesh()) });
     }
     // Selecting points. `a`/`v` are keyboard entries; the mouse gestures and the
     // "Ctrl/⌘ = add" rule are rendered in the curated help (buildHelp), so these carry
@@ -3805,12 +3805,12 @@ class App {
       + `<div class="legend-rows">${markerRows}</div>`;
 
     // Read-only reference overlays (shown only when the result carries them). The projected
-    // source is documented in the marker block above; here we cover the NMF model overlay.
+    // source is documented in the marker block above; here we cover the fitted-model overlay.
     const refs = [];
-    if (this.meta.has_nmf) {
+    if (this.meta.has_model) {
       refs.push([
-        `<span class="swatch swatch-nmf"></span>`,
-        `<b>NMF skeleton</b> — the fitted NeuroMechFly model joints (dotted mint).`,
+        `<span class="swatch swatch-model"></span>`,
+        `<b>Model skeleton</b> — the fitted model joints (dotted mint).`,
       ]);
     }
     const refBlock = refs.length
@@ -3865,18 +3865,18 @@ class App {
       frameLabel.title =
         `Jump to a frame — ← / → step 1 · ${hint("←", ["shift"])} steps 10 · PgUp / PgDn jump 100 · ↑ / ↓ step the side panel's list · Home / End first / last`;
     }
-    // Overlay toggles: the "Show" button's summary and the NMF-mesh chip.
+    // Overlay toggles: the "Show" button's summary and the model-mesh chip.
     const mesh = hint("M", ["shift"]);
     setTitle(
       "show-toggle",
-      `What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected${this.meta.has_3d ? " · p Reprojected 3D · w Reproj. warning" : ""}${this.meta.n_views > 1 ? " · u Under-labeled" : ""}${this.meta.has_nmf ? " · m NMF skeleton · Shift+M NMF mesh" : ""} · l Grid/Focus · 0 Fit every camera)`,
+      `What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected${this.meta.has_3d ? " · p Reprojected 3D · w Reproj. warning" : ""}${this.meta.n_views > 1 ? " · u Under-labeled" : ""}${this.meta.has_model ? " · m Model skeleton · Shift+M Model mesh" : ""} · l Grid/Focus · 0 Fit every camera)`,
     );
     const meshChip = document.querySelector("#mesh-wrap kbd");
     if (meshChip) meshChip.textContent = mesh;
     // The live "adding" pill's key glyph (⌘ on macOS, Ctrl elsewhere).
     const addKey = document.getElementById("add-hint-key");
     if (addKey) addKey.textContent = add;
-    setTitle("mesh-wrap", `Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (${mesh})`);
+    setTitle("mesh-wrap", `Overlay the fitted model mesh, rendered on the GPU onto each view (${mesh})`);
     // The selection status card's how-to, re-spelled for this OS and this model.
     setTitle(
       "point-status",

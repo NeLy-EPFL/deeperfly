@@ -433,8 +433,8 @@ def test_store_ik_roundtrip(cameras, rng, tmp_path):
     np.testing.assert_array_equal(got_model, model)  # NaN preserved
 
 
-def test_poseresult_load_picks_up_nmf(cameras, rng, tmp_path):
-    """PoseResult.load surfaces the fitted model joints as nmf_pts3d."""
+def test_poseresult_load_picks_up_model(cameras, rng, tmp_path):
+    """PoseResult.load surfaces the fitted model joints as model_pts3d."""
     store = StageStore(tmp_path / "results.h5")
     _write_base(store, cameras, rng)
     store.write_points(
@@ -455,17 +455,18 @@ def test_poseresult_load_picks_up_nmf(cameras, rng, tmp_path):
         },
     )
     res = PoseResult.load(store.path)
-    assert res.nmf_pts3d is not None
-    np.testing.assert_array_equal(res.nmf_pts3d, model)
+    assert res.model_pts3d is not None
+    np.testing.assert_array_equal(res.model_pts3d, model)
     # the data-estimated head/abdomen size rides along on the IK group meta
-    assert res.nmf_chain_scales == {"head": 1.25, "abdomen": 2.1}
-    assert res.nmf_head_scale == 1.25 and res.nmf_abdomen_scale == 2.1
+    assert res.model_chain_scales == {"head": 1.25, "abdomen": 2.1}
+    assert res.model_chain_scale("head") == 1.25
+    assert res.model_chain_scale("abdomen") == 2.1
     # ...and so does where each chain's base was measured, which the overlay needs for
     # the same reason: the angles were fitted about the shifted pivot, so a head drawn
     # about the model's anchor is off by exactly this vector.
-    np.testing.assert_allclose(res.nmf_chain_offsets["head"], [0.03, -0.02, -0.13])
+    np.testing.assert_allclose(res.model_chain_offsets["head"], [0.03, -0.02, -0.13])
     # the per-recording constant body scale rides along too (defaults to 1.0)
-    assert res.nmf_body_scale == 0.87
+    assert res.model_body_scale == 0.87
 
 
 def test_ik_meta_without_chain_offsets_reads_as_no_shift(cameras, rng, tmp_path):
@@ -482,7 +483,7 @@ def test_ik_meta_without_chain_offsets_reads_as_no_shift(cameras, rng, tmp_path)
         model_pts3d=rng.normal(size=(4, 38, 3)),
         meta={"chain_scales": {"head": 1.25}},
     )
-    assert PoseResult.load(store.path).nmf_chain_offsets == {}
+    assert PoseResult.load(store.path).model_chain_offsets == {}
 
 
 def test_store_truncate_from_drops_ik(cameras, rng, tmp_path):

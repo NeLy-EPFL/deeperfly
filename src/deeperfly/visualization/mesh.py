@@ -1,9 +1,9 @@
 """Software rasterizer for the NeuroMechFly mesh overlay (shaded, translucent).
 
 Projects a posed mesh (world vertices + faces + per-face color, from
-:meth:`deeperfly.inverse_kinematics.mesh.NmfMesh.pose`) through one camera and
+:meth:`deeperfly.inverse_kinematics.mesh.ModelMesh.pose`) through one camera and
 draws it as a flat-shaded, depth-ordered, semi-transparent surface. Used by both
-the ``mesh_nmf`` video op and the GUI's on-demand mesh overlay, so the two render
+the ``mesh_model`` video op and the GUI's on-demand mesh overlay, so the two render
 identically.
 
 Triangles are flat-shaded by their world-space normal against a headlight at the

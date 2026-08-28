@@ -90,7 +90,7 @@
           <!-- The toolbar reads as intentional clusters purely through spacing: each
                .ctl-group packs its controls tight (6px), while the row spaces the groups
                wide apart (20px) -- so there are no divider elements to dangle when a group
-               is hidden at runtime (single camera hides the Grid/Focus segment; no-3D/no-NMF
+               is hidden at runtime (single camera hides the Grid/Focus segment; no-3D/no-model
                hide overlay toggles). The single .spacer splits the left work area (view
                toggles · annotate · history) from the right utilities (panels · session). -->
           <div class="control-row toolbar-row">
@@ -98,9 +98,9 @@
                  upward (the bar sits at the screen's bottom edge). Each overlay keeps its
                  own keyboard shortcut, which is the fast path -- the menu is the
                  discoverable one. The rows keep their ids (show-*, *-wrap) so app.js binds
-                 them unchanged and still display:none's the 3D/NMF rows when absent. -->
+                 them unchanged and still display:none's the 3D/model rows when absent. -->
             <div class="ctl-group popover-wrap" id="show-wrap">
-              <button id="show-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected · p Reprojected 3D · w Reproj. warning · u Under-labeled · m NMF skeleton · Shift+M NMF mesh)">Show <span class="caret">▾</span></button>
+              <button id="show-toggle" class="popover-btn" aria-haspopup="true" aria-expanded="false" title="What is drawn on each camera (keyboard: h Hide all · n Names · s Unplaced-joint positions · t Detected · p Reprojected 3D · w Reproj. warning · u Under-labeled · m Model skeleton · Shift+M Model mesh)">Show <span class="caret">▾</span></button>
               <div id="show-menu" class="popover-menu" role="menu" hidden>
                 <label class="pm-master" title="Hide every overlay at once for an unobstructed look at the raw frames — press again to restore them exactly as they were. A quick, non-destructive peek: each layer's own toggle is left untouched (h)."><input id="show-hide-all" type="checkbox" /> <span class="pm-name">Hide all overlays</span> <kbd>h</kbd></label>
                 <label title="Label each keypoint with its name (n)"><input id="show-labels" type="checkbox" /> <span class="pm-name">Names</span> <kbd>n</kbd></label>
@@ -125,8 +125,8 @@
                 <label id="cover-wrap" title="Flag a keypoint you have labeled in fewer than two views of this frame: a violet gauge ring around the joint — a dashed track for the two labels it needs, and a solid arc for the ones it has, so nothing labeled reads as an empty ring and one of two as a half-swept one. Two is the floor because two is what the geometry needs — a single pixel fixes only a viewing ray, and until the second one lands the joint's depth still comes from the detector rather than from you. It counts YOUR pixels, whether or not the cell is Hidden (that flag only decides what the training loss reads); a joint marked Absent is never flagged, having nothing to label. Off by default — it is the pass for &quot;what is still missing here&quot;. Toggle with u."><input id="show-cover" type="checkbox" /><span class="mk mk-inline m-cover"></span> <span class="pm-name">Under-labeled</span> <kbd>u</kbd></label>
                 <label id="cover-min-wrap" class="pm-subrow" title="How many views must carry a ground-truth pixel before a keypoint counts as labeled. Two is the minimum any 3D point needs; raise it to demand redundancy."><span class="pm-subrow-label">Want at least</span> <input id="cover-min" type="number" min="1" max="99" step="1" value="2" /> <span class="pm-subrow-unit">views</span></label>
                 <div class="pm-section" id="reference-section">Model</div>
-                <label id="nmf-wrap" title="Show the fitted NeuroMechFly model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-nmf" type="checkbox" /><span class="swatch swatch-nmf"></span> <span class="pm-name">NMF skeleton</span> <kbd>m</kbd></label>
-                <label id="mesh-wrap" title="Overlay the fitted NeuroMechFly mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">NMF mesh</span> <kbd>⇧M</kbd></label>
+                <label id="model-wrap" title="Show the fitted model (the model joints): a mint glow under the skeleton, with a leash marking where the model disagrees with the pose (m)"><input id="show-model" type="checkbox" /><span class="swatch swatch-model"></span> <span class="pm-name">Model skeleton</span> <kbd>m</kbd></label>
+                <label id="mesh-wrap" title="Overlay the fitted model mesh, rendered on the GPU onto each view (Shift+M)"><input id="show-mesh" type="checkbox" /> <span class="pm-name">Model mesh</span> <kbd>⇧M</kbd></label>
                 <div class="pm-section" id="layout-arrange-section">Cameras</div>
                 <div class="pm-row" id="layout-arrange-row"><div id="layout-switch" class="segmented"></div> <kbd>l</kbd></div>
                 <button type="button" id="reset-view" class="pm-btn" title="Reset zoom &amp; pan on every camera back to the tight fit (0)">Fit every camera <kbd>0</kbd></button>
@@ -159,7 +159,7 @@
               <!-- No side-panel button here: the panel's own ✕ closes it and the right-edge
                    rail (#sidebar-rail) opens it, so the control is at the edge the panel
                    comes from rather than a third place that also means "panel". -->
-              <button id="cameras" title="Show the 3D scene — cameras, 3D pose, NMF skeleton + mesh (c)">3D scene</button>
+              <button id="cameras" title="Show the 3D scene — cameras, 3D pose, Model skeleton + mesh (c)">3D scene</button>
               <button id="help" title="Help — the labeling guide, keypoint colours, and keyboard shortcuts (?)">Help</button>
             </div>
             <div class="ctl-group">
@@ -388,8 +388,8 @@
           <label title="Show the world origin (X / Y / Z axes at 0, 0, 0)"><input id="scene-axes" type="checkbox" checked /> Origin</label>
           <label title="Show the camera rig (each camera as an RGB axis triad)"><input id="scene-cameras" type="checkbox" checked /> Cameras</label>
           <label title="Show the triangulated 3D pose"><input id="scene-pose" type="checkbox" checked /> 3D estimate</label>
-          <label id="scene-nmf-wrap" title="Show the fitted NMF skeleton (the model joints)"><input id="scene-nmf" type="checkbox" checked /> NMF skeleton</label>
-          <label id="scene-mesh-wrap" title="Show the posed NeuroMechFly mesh"><input id="scene-mesh" type="checkbox" checked /> NMF mesh</label>
+          <label id="scene-model-wrap" title="Show the fitted Model skeleton (the model joints)"><input id="scene-model" type="checkbox" checked /> Model skeleton</label>
+          <label id="scene-mesh-wrap" title="Show the posed model mesh"><input id="scene-mesh" type="checkbox" checked /> Model mesh</label>
         </div>
         <button id="scene-close" class="icon-btn" aria-label="Close" title="Close (Esc)">✕</button>
       </div>

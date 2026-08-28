@@ -79,36 +79,56 @@ from flygym.compose.pose import KinematicPosePreset
 
 # --- repo paths -------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_TOML = REPO_ROOT / "src/deeperfly/data/default_config.toml"
 SKELETON_DIR = REPO_ROOT / "src/deeperfly/data/skeletons"
+BINDING_DIR = REPO_ROOT / "src/deeperfly/data/bindings"
 OUT_DIR = REPO_ROOT / "docs/keypoints/assets"
 MODEL_DIR = OUT_DIR / "model"
+#: The skeleton this page is a labeling reference for, and the model it is bound to.
+DEFAULT_SKELETON = "fly38"
+MODEL_NAME = "neuromechfly"
 
 
 def load_skeleton(name: str | None = None) -> dict:
-    """The ``[skeleton]`` table, presets expanded -- ``deeperfly.config`` without importing it.
+    """A packaged skeleton file -- points, edges, point_symmetries, colors.
 
-    A run config only *names* its skeleton (``[skeleton] name = "fly38"``); the point
-    names, mirror pairs, limb chains and colors live in ``data/skeletons/<name>.toml``.
-    This mirrors :func:`deeperfly.config._resolve_skeleton`: a table that already spells
-    out ``point_names`` is self-contained and used as it is, otherwise the named preset is
-    loaded and the config's own keys override it **wholesale, per key**. Reimplemented
-    rather than imported because this script runs in a throwaway flygym environment that
-    has no torch/jax, so it cannot import the library.
+    A skeleton is four things in a version-controlled file of its own
+    (``data/skeletons/<name>.toml``), and a run config normally says nothing about it,
+    so this reads the file directly. Reimplemented rather than imported because this
+    script runs in a throwaway flygym environment that has no torch/jax, so it cannot
+    import the library. It reads the *packaged* file, which is what the published page
+    is a reference for.
     """
-    with open(CONFIG_TOML, "rb") as fh:
-        skel = tomllib.load(fh)["skeleton"]
-    if name is None and "point_names" in skel:
-        return skel
-    preset = SKELETON_DIR / f"{name or skel.get('name')}.toml"
+    preset = SKELETON_DIR / f"{name or DEFAULT_SKELETON}.toml"
     if not preset.is_file():
         available = ", ".join(sorted(p.stem for p in SKELETON_DIR.glob("*.toml")))
         sys.exit(f"no packaged skeleton {preset.stem!r} (have: {available})")
     with open(preset, "rb") as fh:
-        base = tomllib.load(fh)["skeleton"]
-    # An explicit --skeleton asks for that preset as written; otherwise the config's keys
-    # win over the preset's, per key, exactly as a real run resolves them.
-    return base if name else {**base, **skel}
+        return tomllib.load(fh)["skeleton"]
+
+
+def load_binding(skeleton: str, model: str) -> dict:
+    """The ``<skeleton>@<model>`` binding's rows: where each point sits on the model."""
+    path = BINDING_DIR / f"{skeleton}@{model}.toml"
+    if not path.is_file():
+        sys.exit(
+            f"no binding for skeleton {skeleton!r} on model {model!r} ({path}). "
+            "The placement of a tracked point on a model is a fact about the PAIR; "
+            f"generate one with `deeperfly ik bind {skeleton} {model}`."
+        )
+    with open(path, "rb") as fh:
+        return tomllib.load(fh)["points"]
+
+
+def point_color(name: str, colors: dict[str, str]) -> str:
+    """One point's color from a ``[skeleton.point_colors]`` selector table.
+
+    The selector grammar's two rules, and only those: an entry is a point name or a
+    ``*`` pattern, and an exact name beats a pattern.
+    """
+    if name in colors:
+        return colors[name]
+    hits = [v for k, v in colors.items() if fnmatch.fnmatchcase(name, k)]
+    return hits[0] if hits else "#888888"
 
 
 # --- keypoint -> NeuroMechFly body mapping ----------------------------------
@@ -270,6 +290,22 @@ def map_keypoint(model: mj.MjModel, name: str) -> tuple[str, np.ndarray, bool]:
 
 
 # --- slider grouping --------------------------------------------------------
+def joint_group_of(point: str) -> str:
+    """The viewer's slider group for a tracked POINT (its own grouping, not a skeleton's).
+
+    A skeleton is points, edges, point_symmetries and colors with no grouping concept, so
+    the page derives the one it needs for its sliders and its legend.
+    """
+    for leg in LEG_PREFIXES:
+        if point.startswith(leg + "_"):
+            return f"{leg}_leg"
+    if point.endswith("antenna"):
+        return point
+    if point.startswith("abdomen"):
+        return "abdomen"
+    return point
+
+
 def joint_group(child: str) -> tuple[str, str]:
     """Return ``(group_key, group_label)`` for the child segment of a joint."""
     for leg in LEG_PREFIXES:
@@ -514,13 +550,16 @@ def joint_group_label(key: str) -> str:
     return labels[key]
 
 
-def build_keypoints_json(model: mj.MjModel, skel: dict) -> dict:
-    """The 38 deeperfly points, their NeuroMechFly targets, colors and bones."""
-    point_names: list[str] = skel["point_names"]
-    limb_points: dict[str, list[str]] = skel["limb_points"]
-    palette: dict[str, str] = skel.get("limb_palette", {})
+def build_keypoints_json(model: mj.MjModel, skel: dict, binding: dict) -> dict:
+    """The viewer's point table: DERIVED from the skeleton and the binding, not authored.
 
-    point_to_limb = {p: limb for limb, pts in limb_points.items() for p in pts}
+    Every placement -- which body, what offset, whether it is approximate -- is read
+    out of the binding, which is where those facts live. This function contributes
+    only what the *page* needs on top: each point's colour, the edge list, and the
+    neutral world position it draws the point at.
+    """
+    point_names: list[str] = skel["points"]
+    colors: dict[str, str] = skel.get("point_colors", {})
     index = {name: i for i, name in enumerate(point_names)}
 
     data = mj.MjData(model)
@@ -529,39 +568,43 @@ def build_keypoints_json(model: mj.MjModel, skel: dict) -> dict:
 
     points, approx = [], []
     for name in point_names:
-        body, offset, is_approx = map_keypoint(model, name)
-        bid = body_id(model, body)  # asserts existence
+        row = binding.get(name)
+        if row is None:
+            sys.exit(f"the binding has no row for skeleton point {name!r}")
+        offset = np.asarray(row.get("offset", [0.0, 0.0, 0.0]), dtype=float)
+        bid = body_id(model, row["body"])  # asserts existence
         world = (
             np.array(data.body(bid).xpos)
             + np.array(data.body(bid).xmat).reshape(3, 3) @ offset
         )
         assert np.isfinite(world).all(), f"non-finite neutral position for {name}"
-        limb = point_to_limb.get(name, "")
         points.append(
             {
                 "name": name,
-                "limb": limb,
-                "color": palette.get(limb, "#888888"),
+                "limb": joint_group_of(name),
+                "color": point_color(name, colors),
                 "body": model.body(bid).name,
                 "offset": [float(v) for v in offset],
             }
         )
-        if is_approx:
+        if row.get("approximate"):
             approx.append(name)
 
-    bones = []
-    for pts in limb_points.values():
-        idxs = [index[p] for p in pts]
-        bones.extend([a, b] for a, b in zip(idxs, idxs[1:]))
+    bones = [
+        [index[a], index[b]]
+        for a, b in skel.get("edges", [])
+        if a in index and b in index
+    ]
+
+    limbs: dict[str, str] = {}
+    for p in points:
+        limbs.setdefault(p["limb"], p["color"])
 
     return {
         # Named so the viewer can say *which* skeleton it is showing -- the page is a
         # labeling reference, and a stale one that does not admit it is worse than none.
         "skeleton": skel.get("name", "?"),
-        "limbs": [
-            {"name": limb, "color": palette.get(limb, "#888888")}
-            for limb in limb_points
-        ],
+        "limbs": [{"name": k, "color": v} for k, v in limbs.items()],
         "points": points,
         "bones": bones,
         "approximate": approx,
@@ -631,13 +674,10 @@ def main() -> int:
     parser.add_argument(
         "--skeleton",
         metavar="NAME",
-        help="a packaged skeleton to build the page for (default: whatever "
-        "default_config.toml names)",
+        help=f"a packaged skeleton to build the page for (default: {DEFAULT_SKELETON})",
     )
     args = parser.parse_args()
 
-    if not CONFIG_TOML.exists():
-        sys.exit(f"cannot find deeperfly config at {CONFIG_TOML}")
     skel = load_skeleton(args.skeleton)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -651,8 +691,9 @@ def main() -> int:
     print("Building colors.json (per-geom flygym colors) ...")
     (OUT_DIR / "colors.json").write_text(json.dumps(build_colors_json(model)))
 
-    print(f"Building keypoints.json ({skel.get('name')} -> bodies) ...")
-    keypoints = build_keypoints_json(model, skel)
+    print(f"Building keypoints.json ({skel.get('name')}@{MODEL_NAME} binding) ...")
+    binding = load_binding(skel.get("name", "?"), MODEL_NAME)
+    keypoints = build_keypoints_json(model, skel, binding)
     (OUT_DIR / "keypoints.json").write_text(json.dumps(keypoints, indent=1))
 
     (OUT_DIR / "ATTRIBUTION.txt").write_text(ATTRIBUTION)

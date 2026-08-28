@@ -528,9 +528,18 @@ class InverseKinematicsParams:
     QuickIK fits the whole body -- every leg plus the head and abdomen -- against all
     the tracked keypoints at once.
 
-    ``template`` names a packaged kinematic template (``"neuromechfly"``) or a path
-    to a template TOML; ``legs`` restricts which legs are fit (``None`` = all);
-    ``bounds`` holds per-DOF degree overrides keyed by the flygym joint angle name
+    ``model`` names a packaged model **pack** (``"neuromechfly"``) or a path to one's
+    ``model.toml``: the leg template, the baked articulation and the overlay mesh,
+    selected as one unit, plus the model's rest axis and registration anchors
+    (:mod:`deeperfly.inverse_kinematics.pack`). ``binding`` names the artifact saying
+    where each tracked point sits on that model; it defaults to
+    ``"<skeleton>@<model>"``, so a normal run writes nothing and an unbound pair is a
+    load error naming both halves (:mod:`deeperfly.inverse_kinematics.binding`).
+    ``legs`` restricts which legs are fit (``None`` = all);
+    ``chains`` restricts which of the model's non-leg chains are fit (``None`` = every
+    chain it defines, ``[]`` = legs only) -- one list rather than a boolean per chain,
+    so a model that articulates something other than a head and an abdomen needs no new
+    key; ``bounds`` holds per-DOF degree overrides keyed by the flygym joint angle name
     ``"<parent>-<child>-<dof>"`` (e.g. ``{"rf_trochanterfemur-rf_tibia-pitch": [10,
     160]}``).
 
@@ -601,10 +610,10 @@ class InverseKinematicsParams:
     registered base.
     """
 
-    template: str = "neuromechfly"
+    model: str = "neuromechfly"
+    binding: str | None = None
     legs: list[str] | None = None
-    fit_head: bool = True
-    fit_abdomen: bool = True
+    chains: list[str] | None = None
     n_iterations: int = 60
     neutral_weight: float = 1e-3
     damping: float = 0.1
@@ -958,6 +967,24 @@ def _narrow_videos(data: dict, dropped: set[str]) -> None:
 #: output directory whose stored pose is
 #: (:func:`deeperfly.pipeline.run._refuse_a_foreign_skeleton`).
 SKELETON_ALIASES = {"fly38b": "fly38"}
+
+#: ``[inverse_kinematics]`` keys this release no longer honors,
+#: ``key -> what to write instead``.
+#:
+#: Two chain names spelled as booleans in the schema said, in the config, that a fitted
+#: model has a head and an abdomen and nothing else. Which chains a model articulates is
+#: the model's to declare -- and ``template`` named one of a pack's three assets while
+#: leaving the other two unreachable.
+RETIRED_IK_KEYS = {
+    "template": 'renamed and widened: model = "neuromechfly" selects a PACK -- the leg '
+    "template, the baked articulation and the overlay mesh together, which is what "
+    "makes the last two selectable at all.",
+    "fit_head": 'gone: chains = ["head", "abdomen"] selects them by name (omit for '
+    "every chain the model defines, [] for legs only).",
+    "fit_abdomen": 'gone: chains = ["head", "abdomen"] selects them by name (omit for '
+    "every chain the model defines, [] for legs only).",
+}
+
 
 #: ``[skeleton]`` keys this release no longer honors, ``key -> what to write instead``.
 #:
@@ -1364,6 +1391,12 @@ class Config:
     @property
     def inverse_kinematics(self) -> InverseKinematicsParams:
         ik = dict(_dig(self.data, ("inverse_kinematics",)))
+        for key, advice in RETIRED_IK_KEYS.items():
+            if key in ik:
+                raise ValueError(
+                    f"[inverse_kinematics] carries {key!r}, which this release no "
+                    f"longer honors.\n  {advice}"
+                )
         bounds = {
             str(k): [float(b) for b in v] for k, v in ik.pop("bounds", {}).items()
         }
@@ -1388,10 +1421,10 @@ class Config:
             for chain, table in raw_markers.items()
         }
         defaults = InverseKinematicsParams()
-        template = str(ik.pop("template", defaults.template))
+        model = str(ik.pop("model", defaults.model))
+        binding = ik.pop("binding", defaults.binding)
         legs = ik.pop("legs", None)
-        fit_head = ik.pop("fit_head", defaults.fit_head)
-        fit_abdomen = ik.pop("fit_abdomen", defaults.fit_abdomen)
+        chains = ik.pop("chains", defaults.chains)
         n_iterations = ik.pop("n_iterations", defaults.n_iterations)
         neutral_weight = ik.pop("neutral_weight", defaults.neutral_weight)
         damping = ik.pop("damping", defaults.damping)
@@ -1411,10 +1444,10 @@ class Config:
                 f"allowed: {sorted(IK_KEYS)}"
             )
         return InverseKinematicsParams(
-            template=template,
+            model=model,
+            binding=None if binding is None else str(binding),
             legs=None if legs is None else [str(leg) for leg in legs],
-            fit_head=bool(fit_head),
-            fit_abdomen=bool(fit_abdomen),
+            chains=None if chains is None else [str(c) for c in chains],
             n_iterations=int(n_iterations),
             neutral_weight=float(neutral_weight),
             damping=float(damping),
@@ -1438,48 +1471,98 @@ class Config:
     def annotation(self) -> AnnotationParams:
         return _params(self.data, ("annotation",), AnnotationParams)
 
+    def ik_model(self):
+        """The configured model pack (``[inverse_kinematics].model``).
+
+        Returns
+        -------
+        deeperfly.inverse_kinematics.pack.ModelPack
+            The packaged or path-loaded manifest and its three asset paths.
+        """
+        from .inverse_kinematics.pack import ModelPack
+
+        return ModelPack.load(self.inverse_kinematics.model)
+
+    def ik_binding(self):
+        """The configured (skeleton, model) binding.
+
+        Returns
+        -------
+        deeperfly.inverse_kinematics.binding.Binding
+            The named binding, or the ``"<skeleton>@<model>"`` default for this run's
+            skeleton and pack.
+        """
+        from .inverse_kinematics.binding import Binding
+
+        p = self.inverse_kinematics
+        ref = p.binding or f"{self.skeleton().name}@{self.ik_model().name}"
+        return Binding.load(ref)
+
     def ik_template(self):
-        """The configured kinematic template (``[inverse_kinematics].template`` + bounds).
+        """The configured pack's kinematic template, with this run's leg restriction.
 
         Returns
         -------
         deeperfly.inverse_kinematics.template.KinematicTemplate
-            The packaged or path-loaded template, with the legs restricted and the
-            ``[inverse_kinematics.bounds]`` degree overrides applied.
+            The pack's leg template, with the legs restricted, the pack's rest axis
+            applied and the ``[inverse_kinematics.bounds]`` degree overrides applied.
+
+        Raises
+        ------
+        ValueError
+            If the template names a leg joint the configured skeleton does not track.
+            Without the check every observation of that joint is NaN and the fit is a
+            plausible-looking pose fitted to nothing.
         """
         from .inverse_kinematics.template import KinematicTemplate
 
         p = self.inverse_kinematics
+        pack = self.ik_model()
         overrides = {k: (v[0], v[1]) for k, v in p.bounds.items()}
-        return KinematicTemplate.load(
-            p.template, legs=p.legs, bounds_overrides=overrides
+        template = KinematicTemplate.load(
+            pack.template_path,
+            legs=p.legs,
+            bounds_overrides=overrides,
+            rest_axis=pack.rest_axis,
+            binding=self.ik_binding(),
         )
+        tracked = set(self.skeleton().point_names)
+        missing = [n for n in template.model_point_names if n not in tracked]
+        if missing:
+            raise ValueError(
+                f"[inverse_kinematics] model {p.model!r} predicts point(s) {missing}, "
+                f"which skeleton {self.skeleton().name!r} does not track. Every "
+                "observation of them would be missing, so the fit would be pinned by "
+                "its neutral pose rather than by the data."
+            )
+        return template
 
     def ik_articulation(self):
-        """The configured head/abdomen articulation, or ``None`` if neither is fit.
+        """The configured non-leg articulation, or ``None`` if no chain is fit.
 
         Returns
         -------
         deeperfly.inverse_kinematics.articulation.Articulation or None
-            The baked chains selected by ``[inverse_kinematics].fit_head`` /
-            ``fit_abdomen``, with ``[inverse_kinematics.bounds]`` degree overrides
-            (keys like ``c_thorax-c_head-pitch`` / ``c_abdomen12-c_abdomen3-pitch``) and any
-            ``[inverse_kinematics.markers.head]`` / ``[inverse_kinematics.markers.abdomen]`` marker
-            placement overrides applied.
+            The baked chains selected by ``[inverse_kinematics].chains``, with
+            ``[inverse_kinematics.bounds]`` degree overrides (keys like
+            ``c_thorax-c_head-pitch`` / ``c_abdomen12-c_abdomen3-pitch``) and any
+            ``[inverse_kinematics.markers.<chain>]`` marker placement overrides applied.
         """
         from .inverse_kinematics.articulation import Articulation
 
         p = self.inverse_kinematics
-        fit = tuple(
-            name
-            for name, on in (("head", p.fit_head), ("abdomen", p.fit_abdomen))
-            if on
-        )
-        if not fit:
+        fit = None if p.chains is None else tuple(p.chains)
+        if fit == ():
             return None
+        pack = self.ik_model()
         overrides = {k: (v[0], v[1]) for k, v in p.bounds.items()}
         return Articulation.load(
-            fit=fit, bounds_overrides=overrides, marker_overrides=p.markers
+            pack.articulation_path,
+            binding=self.ik_binding(),
+            anchors=pack.anchors,
+            fit=fit,
+            bounds_overrides=overrides,
+            marker_overrides=p.markers,
         )
 
     # -- pipeline orchestration ---------------------------------------------

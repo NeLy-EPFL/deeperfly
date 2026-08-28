@@ -3,8 +3,8 @@
 The IK *solve* is QuickIK's (see :mod:`deeperfly.inverse_kinematics`), but QuickIK's
 Python bindings return only joint angles and a root pose -- its Rust
 ``evaluate_fwdkin`` is not exposed. Every consumer of the fit needs joint *positions*:
-``IKResult.model_pts3d`` reprojects onto the raw views (the ``skeleton_nmf`` panel, the
-GUI's NMF overlay) and the mesh overlay skins each leg bone between two fitted joints.
+``IKResult.model_pts3d`` reprojects onto the raw views (the ``skeleton_model`` panel, the
+GUI's model overlay) and the mesh overlay skins each leg bone between two fitted joints.
 So deeperfly evaluates forward kinematics itself, here.
 
 :class:`PlanKinematics` walks a QuickIK body plan (:mod:`deeperfly.inverse_kinematics.bodyplan`)
@@ -16,7 +16,7 @@ descendants, never itself.
 
 :func:`chain_affine` and :func:`chain_fk` are the baked head/abdomen chains' kinematics
 (a serial product of rotations about *neutral world* anchors, the convention
-``data/nmf_articulation.json`` was baked in), and :func:`leg_fk` is a leg's. Those two
+``the pack's ``articulation.json```` was baked in), and :func:`leg_fk` is a leg's. Those two
 are algebraically the same transform as the corresponding subtree of a body plan --
 which is what lets the mesh overlay keep posing its head/abdomen nodes from
 :func:`chain_affine` while the angles come from a whole-body plan solve.
@@ -42,8 +42,10 @@ __all__ = [
     "rmat_to_quat",
 ]
 
-#: The rest direction a leg segment extends along in its parent joint's frame
-#: (straight down in the leg-local frame, whose z is dorsal).
+#: The rest direction a leg segment extends along in its parent joint's frame, for a
+#: model that does not say. NeuroMechFly's is straight down in the leg-local frame,
+#: whose z is dorsal; a model declares its own as ``rest_axis``
+#: (:attr:`~deeperfly.inverse_kinematics.template.KinematicTemplate.rest_axis`).
 REST_AXIS = np.array([0.0, 0.0, -1.0])
 
 _EPS = 1e-12
@@ -130,12 +132,18 @@ def leg_fk(
     axes: Float[np.ndarray, "D 3"],
     seglens: Float[np.ndarray, "J"],
     dof_counts: tuple[int, ...],
+    *,
+    rest_axis: Float[np.ndarray, "3"] | None = None,
+    quats: Float[np.ndarray, "J 4"] | None = None,
 ) -> Float[np.ndarray, "J 3"]:
     """One leg's joint positions in the leg-local frame, from its joint angles.
 
-    Each joint rotates the running frame about its DOF axes in order; the *next*
-    joint's segment then offsets the position along that frame's rest direction
-    ``-z``. With every angle zero this is the rest pose: a straight leg pointing down.
+    Each joint enters its parent's post-DOF frame through a constant rotation
+    (``quats``) and then rotates about its DOF axes in order; the *next* joint's
+    segment offsets the position along the parent's frame in the ``rest_axis``
+    direction. With every angle zero this is the rest pose -- for NeuroMechFly, a
+    straight leg pointing down. The convention is the body plan's own
+    (:meth:`PlanKinematics.joint_positions`), which is QuickIK's.
 
     The numpy counterpart of the (now-removed) JAX kernel, and identical to the
     corresponding subtree of a body plan whose segment offsets are
@@ -152,6 +160,11 @@ def leg_fk(
         (the root sits at the origin).
     dof_counts
         DOFs at each joint, in chain order (e.g. ``(3, 2, 1, 1, 0)``).
+    rest_axis
+        ``(3,)`` the direction a segment extends along. ``None`` = :data:`REST_AXIS`.
+    quats
+        ``(J, 4)`` each joint's constant ``(w, x, y, z)`` rotation out of its parent's
+        post-DOF frame. ``None`` = identity at every joint, which is NeuroMechFly.
 
     Returns
     -------
@@ -161,13 +174,17 @@ def leg_fk(
     angles = np.asarray(angles, dtype=float)
     axes = np.asarray(axes, dtype=float)
     seglens = np.asarray(seglens, dtype=float)
+    axis = REST_AXIS if rest_axis is None else np.asarray(rest_axis, dtype=float)
+    quats = None if quats is None else np.asarray(quats, dtype=float)
     rot = np.eye(3)
     pos = np.zeros(3)
     out = []
     d = 0
     for j, n_dofs in enumerate(dof_counts):
-        pos = pos + rot @ (REST_AXIS * seglens[j])
+        pos = pos + rot @ (axis * seglens[j])
         out.append(pos)
+        if quats is not None:
+            rot = rot @ quat_to_rmat(quats[j])
         for _ in range(n_dofs):
             rot = rot @ axis_rmat(axes[d], angles[d])
             d += 1
@@ -180,14 +197,14 @@ def chain_affine(
     """The model-frame affine ``(A, b)`` carrying a depth-``d`` point: ``A p + b``.
 
     The baked head/abdomen chains rotate about their *neutral world* anchors (the
-    fixed/spatial-frame convention ``data/nmf_articulation.json`` was baked in, which
+    fixed/spatial-frame convention ``the pack's ``articulation.json```` was baked in, which
     reproduces the MJCF frames exactly): with ``A_d = A_{d-1} R_d`` and
     ``b_d = A_{d-1}(c_d - R_d c_d) + b_{d-1}``, a point rigidly attached at depth
     ``d`` maps to ``A_d p + b_d``. At all-zero angles every ``R_d = I``, so points
     stay at their neutral positions.
 
     Used by the mesh overlay to pose the head / abdomen node meshes
-    (:meth:`deeperfly.inverse_kinematics.mesh.NmfMesh._node_transforms`).
+    (:meth:`deeperfly.inverse_kinematics.mesh.ModelMesh._node_transforms`).
 
     Parameters
     ----------

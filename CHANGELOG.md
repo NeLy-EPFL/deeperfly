@@ -96,6 +96,48 @@ recomputes from `pose2d` down. That is correct, not a regression.
   `[visualization.default_layer]` for the shared values. Layers draw in order, which is how
   a before/after pair is written. `panels`, the per-op `kwargs` tables, video-level
   `plot`/`stage` and `video_name` are gone; new layer style key `edge_color`.
+- **The inverse-kinematics stage stops being NeuroMechFly-shaped.**
+  `[inverse_kinematics] template` -> `model`, which selects a whole **model pack** rather
+  than one of its three assets: `data/models/<name>/` holds a `model.toml` manifest naming
+  a leg template, a baked articulation and an overlay mesh, plus the model's own
+  `rest_axis` and its registration `anchors` (model *bodies*, not skeleton points). That
+  closes two gaps — the articulation asset was unreachable from the config and the overlay
+  mesh was not selectable at all — while the table *loses* a key:
+  `fit_head`/`fit_abdomen` -> `chains = ["head", "abdomen"]` (omit for every chain the
+  pack defines, `[]` for legs only).
+- **Where a tracked point sits on the model is a third artifact**, keyed on the pair:
+  `data/bindings/<skeleton>@<model>.toml`, one row per point with a `body`, an `offset`,
+  and the `base` / `approximate` flags. It used to be stated in three places and two
+  forms — a name convention in `template.toml`, `body` + `offset` markers inside
+  `nmf_articulation.json`, and all 38 rows in a docs asset. A pack now names no skeleton
+  point and a skeleton names no model body, which is a greppable invariant and a test.
+  `[inverse_kinematics] binding` defaults to `<skeleton>@<model>`, so a normal config
+  writes nothing; an **unbound pair is a load error** naming both halves rather than a fit
+  against all-NaN observations, and `deeperfly ik bind` generates one for review.
+  `approximate` reaches the fit and is **carried and reported, never acted on**: the
+  logged residual splits exact rows from approximate ones, so a reader can tell a bad fit
+  from a bad retarget.
+- **A model pack declares what the code used to assume**: a leg's `side` (inferred before
+  from the leg id's first letter, which silently gave `T1_left` mirrored axes and the
+  wrong bounds), a DOF's `angle` name (flygym's `<joint>-<dof>` stays the default), a
+  joint's `quat` and the model's `rest_axis`. The packaged pack sets all of them to
+  today's values, and the fit is **bit-identical** on a real recording — body plan, angles
+  and fitted joints — which is the gate these changes are held to.
+- **The baked body frames are no longer rounded to 8 decimals.** A marker's neutral
+  position is now *derived* at load time (`pos + mat @ offset`) rather than baked beside
+  it, and that has to come out equal to the same expression evaluated in MuJoCo — which a
+  rounded frame does not, by about 7e-9. Storing the frames in full precision is what
+  makes the packaged binding reproduce the markers the asset used to carry exactly. It is
+  the one place the fit is not bit-identical to 0.2: on the 8-view example recording the
+  fitted angles move by at most **1.4e-5 degrees** (about two `float32` ULP, and QuickIK
+  solves in `float32`) and the fitted joints by **1.7e-7 model units**, against the fit's
+  own residual of ~1.2e-2.
+- **`nmf_*` -> `model_*`** across `results.h5`'s reader, the visualization ops
+  (`skeleton_nmf` -> `skeleton_model`, `mesh_nmf` -> `mesh_model`), the pipeline, the GUI
+  server (`/api/nmf/*` -> `/api/model/*`, the frame payload's `nmf` key -> `model`) and
+  five JS modules. The stage is model-agnostic now, and its vocabulary says so. **No
+  `results.h5` dataset name changes** — the file already named the stage, not the model —
+  so this needs no format bump and no repack.
 
 ### Removed
 
@@ -103,6 +145,11 @@ recomputes from `pose2d` down. That is correct, not a regression.
   and zero `landmarks/` groups exist anywhere, so every rig ever solved here was already
   animal-as-target. `Track` loses `kind`/`static`/`scatter_px`, `merge_observations` loses
   its rig-scoped cross-recording tie, and `PACKAGE_FORMAT_VERSION` goes to 2.
+- **The dead body-frame alignment state**: `Alignment.r_body`, `.head_origin`,
+  `align.to_local` / `to_world` and the `_body_axes` / `_head_origin` that built them. The
+  leg subtree stopped being rotated by `r_body` when it went identity, and nothing outside
+  the tests has read any of the four since. They also carried the IK stage's only
+  hardcoded leg names.
 - **Calibration-stage scale pinning** (`--scale-from`, `scale_pair`/`scale_distance`,
   `UNITS`' `"mm"`, `SCALE_SOURCES`' `known_distance`). Images cannot determine scale;
   physical units first mean something at inverse kinematics, where `body_scale` fits the

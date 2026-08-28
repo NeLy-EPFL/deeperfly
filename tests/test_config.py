@@ -107,7 +107,7 @@ def test_every_example_config_still_validates(example):
     # Each typed accessor raises on any key its validator rejects.
     for section in ("pose2d", "triangulation", "eks", "bundle_adjustment"):
         getattr(cfg, section if section != "eks" else "eks")
-    assert cfg.inverse_kinematics.template == InverseKinematicsParams().template
+    assert cfg.inverse_kinematics.model == InverseKinematicsParams().model
 
 
 def test_overrides_win_over_defaults():
@@ -182,10 +182,9 @@ def test_bundle_adjustment_defaults_when_absent():
 def test_inverse_kinematics_defaults_when_absent():
     ik = Config.from_dict({}).inverse_kinematics
     assert (
-        ik.template == "neuromechfly"
+        ik.model == "neuromechfly"
         and ik.legs is None
-        and ik.fit_head is True
-        and ik.fit_abdomen is True
+        and ik.chains is None
         and ik.n_iterations == 60
         and ik.neutral_weight == 1e-3
         # Heavily damped on purpose: light damping overshoots into the joint limits,
@@ -206,7 +205,7 @@ def test_inverse_kinematics_reads_overrides():
     ik = Config.from_dict(
         {
             "inverse_kinematics": {
-                "template": "neuromechfly",
+                "model": "neuromechfly",
                 "legs": ["rf", "lf"],
                 "n_iterations": 50,
                 "fixed_body": False,
@@ -217,6 +216,35 @@ def test_inverse_kinematics_reads_overrides():
     assert ik.legs == ["rf", "lf"] and ik.n_iterations == 50
     assert ik.fixed_body is False
     assert ik.bounds == {"rf_trochanterfemur-rf_tibia-pitch": [10.0, 160.0]}
+
+
+@pytest.mark.parametrize("key", ["template", "fit_head", "fit_abdomen"])
+def test_inverse_kinematics_refuses_the_v1_keys_by_name(key):
+    """A key that selected one asset, or named a chain, is refused rather than ignored."""
+    with pytest.raises(ValueError, match=f"carries {key!r}"):
+        Config.from_dict({"inverse_kinematics": {key: "x"}}).inverse_kinematics
+
+
+def test_an_unbound_skeleton_model_pair_is_a_load_error():
+    """The binding is what makes the pair checkable; without one, fit against nothing."""
+    cfg = Config.from_dict({"skeleton": {"points": ["a", "b"], "edges": [["a", "b"]]}})
+    with pytest.raises(FileNotFoundError, match="no binding for skeleton"):
+        cfg.ik_template()
+
+
+def test_a_model_predicting_untracked_points_is_a_load_error():
+    """Silently, every observation of them is NaN and the fit is pinned by its neutral."""
+    cfg = Config.from_dict(
+        {
+            "skeleton": {
+                "points": ["neck", "abdomen0"],
+                "edges": [["neck", "abdomen0"]],
+            },
+            "inverse_kinematics": {"binding": "fly38@neuromechfly"},
+        }
+    )
+    with pytest.raises(ValueError, match="does not track"):
+        cfg.ik_template()
 
 
 def test_inverse_kinematics_unknown_key_fails_loudly():
@@ -317,7 +345,7 @@ def test_ik_articulation_applies_marker_offsets():
     cfg = Config.from_dict(
         {
             "inverse_kinematics": {
-                "fit_head": False,
+                "chains": ["abdomen"],
                 "markers": {
                     "abdomen": {
                         "abdomen0": {"body": "c_abdomen3", "offset": [0.0, 0.0, 0.5]},
@@ -328,7 +356,7 @@ def test_ik_articulation_applies_marker_offsets():
         }
     )
     art = cfg.ik_articulation()
-    assert [c.name for c in art.chains] == ["abdomen"]  # fit_head=False drops head
+    assert [c.name for c in art.chains] == ["abdomen"]  # chains = [...] selects
     ab = art.chain("abdomen")
     assert ab.marker_names == ("abdomen0", "abdomen1")  # table replaces the set
     # a different offset moves the neutral marker (the default z-offset was 0.3)

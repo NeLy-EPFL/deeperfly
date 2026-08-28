@@ -469,23 +469,23 @@ class PoseResult:
     conf: Float[np.ndarray, "V T P"] | None = None
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     reproj_error: Float[np.ndarray, "V T P"] | None = None
-    nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
-    nmf_angles: Float[np.ndarray, "T D"] | None = None
-    nmf_angle_names: list[str] | None = None
-    nmf_chain_scales: dict[str, float] = field(default_factory=dict)
+    model_pts3d: Float[np.ndarray, "T P 3"] | None = None
+    model_angles: Float[np.ndarray, "T D"] | None = None
+    model_angle_names: list[str] | None = None
+    model_chain_scales: dict[str, float] = field(default_factory=dict)
     #: ``chain name -> (3,)`` model-unit shift putting a chain's base where the
     #: recording's own base landmark was measured (the head's ``neck``). The mesh
-    #: overlay needs it for the same reason it needs ``nmf_chain_scales``: the solved
+    #: overlay needs it for the same reason it needs ``model_chain_scales``: the solved
     #: plan baked the shift into the angles, so drawing without it puts the head on a
     #: different pivot than the one it was fitted about. Empty for a file written before
     #: chains had base landmarks, which is correctly no shift.
-    nmf_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
-    nmf_body_scale: float = 1.0
+    model_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
+    model_body_scale: float = 1.0
     #: The body plan the fit was solved on, as JSON, when the file recorded one. Lets
     #: the editor's live re-fit run on exactly the pipeline's geometry instead of
     #: re-deriving it. ``None`` for a file written before plans were stored -- every
     #: consumer must cope, since the stored fit and its overlays do not need it.
-    nmf_body_plan: str | None = None
+    model_body_plan: str | None = None
     #: ``(T, P)`` which skeleton keypoints are **not on this animal** -- an amputated leg,
     #: an ablated antenna -- per frame, since a limb can be lost part-way through a
     #: recording. Columns align to ``skeleton.point_names``. ``None`` (the common case)
@@ -497,19 +497,18 @@ class PoseResult:
     subject_id: str | None = None
     meta: dict = field(default_factory=dict)
 
-    @property
-    def nmf_head_scale(self) -> float:
-        """Data-estimated overlay head size (1.0 if unknown); see ``nmf_chain_scales``."""
-        return float(self.nmf_chain_scales.get("head", 1.0))
+    def model_chain_scale(self, chain: str) -> float:
+        """Data-estimated overlay size of one fitted chain (1.0 if unknown).
 
-    @property
-    def nmf_abdomen_scale(self) -> float:
-        """Data-estimated overlay abdomen size (1.0 if unknown)."""
-        return float(self.nmf_chain_scales.get("abdomen", 1.0))
+        Named rather than one property per chain: which chains a model articulates is
+        the model's to declare, so ``head`` and ``abdomen`` are two arguments here, not
+        two entries in this class's API.
+        """
+        return float(self.model_chain_scales.get(chain, 1.0))
 
     def __post_init__(self) -> None:
         self.pts2d = np.asarray(self.pts2d, dtype=float)
-        for name in ("conf", "pts3d", "reproj_error", "nmf_pts3d"):
+        for name in ("conf", "pts3d", "reproj_error", "model_pts3d"):
             arr = getattr(self, name)
             if arr is not None:
                 setattr(self, name, np.asarray(arr, dtype=float))
@@ -709,33 +708,38 @@ class PoseResult:
                 if "pose2d/conf" in f
                 else None
             )
-            nmf = nmf_angles = nmf_angle_names = nmf_body_plan = None
-            nmf_chain_scales: dict[str, float] = {}
-            nmf_chain_offsets: dict[str, np.ndarray] = {}
-            nmf_body_scale = 1.0
+            model_pts3d = model_angles = model_angle_names = None
+            model_body_plan = None
+            model_chain_scales: dict[str, float] = {}
+            model_chain_offsets: dict[str, np.ndarray] = {}
+            model_body_scale = 1.0
             if "inverse_kinematics/body_plan" in f:
                 raw = f["inverse_kinematics/body_plan"][()]  # type: ignore[index]
-                nmf_body_plan = raw.decode() if isinstance(raw, bytes) else str(raw)
+                model_body_plan = raw.decode() if isinstance(raw, bytes) else str(raw)
             if "inverse_kinematics/points3d" in f:
-                nmf = np.asarray(f["inverse_kinematics/points3d"][()], dtype=float)  # type: ignore[index]
+                model_pts3d = np.asarray(  # type: ignore[index]
+                    f["inverse_kinematics/points3d"][()], dtype=float
+                )
             if "inverse_kinematics/angles" in f:
-                nmf_angles = np.asarray(f["inverse_kinematics/angles"][()], dtype=float)  # type: ignore[index]
-                nmf_angle_names = [
+                model_angles = np.asarray(
+                    f["inverse_kinematics/angles"][()], dtype=float
+                )  # type: ignore[index]
+                model_angle_names = [
                     n.decode() if isinstance(n, bytes) else n
                     for n in f["inverse_kinematics/angle_names"][()]  # type: ignore[index]
                 ]
             if "inverse_kinematics" in f and "meta" in f["inverse_kinematics"].attrs:
                 ik_meta = json.loads(f["inverse_kinematics"].attrs["meta"])  # type: ignore[arg-type]
-                nmf_chain_scales = {
+                model_chain_scales = {
                     str(k): float(v)
                     for k, v in (ik_meta.get("chain_scales") or {}).items()
                 }
-                nmf_chain_offsets = {
+                model_chain_offsets = {
                     str(k): np.asarray(v, dtype=float).reshape(3)
                     for k, v in (ik_meta.get("chain_offsets") or {}).items()
                 }
                 if ik_meta.get("body_scale") is not None:
-                    nmf_body_scale = float(ik_meta["body_scale"])
+                    model_body_scale = float(ik_meta["body_scale"])
         if pts2d is None:
             raise ValueError(f"{path} has no 2D points (no pose2d group)")
         return cls(
@@ -745,13 +749,13 @@ class PoseResult:
             conf=conf,  # type: ignore[arg-type]
             pts3d=pts3d,  # type: ignore[arg-type]
             reproj_error=reproj,  # type: ignore[arg-type]
-            nmf_pts3d=nmf,  # type: ignore[arg-type]
-            nmf_angles=nmf_angles,  # type: ignore[arg-type]
-            nmf_angle_names=nmf_angle_names,
-            nmf_chain_scales=nmf_chain_scales,
-            nmf_chain_offsets=nmf_chain_offsets,
-            nmf_body_scale=nmf_body_scale,
-            nmf_body_plan=nmf_body_plan,
+            model_pts3d=model_pts3d,  # type: ignore[arg-type]
+            model_angles=model_angles,  # type: ignore[arg-type]
+            model_angle_names=model_angle_names,
+            model_chain_scales=model_chain_scales,
+            model_chain_offsets=model_chain_offsets,
+            model_body_scale=model_body_scale,
+            model_body_plan=model_body_plan,
             absent=absent,  # type: ignore[arg-type]
             subject_id=subject_id,
             meta=meta,

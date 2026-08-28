@@ -55,7 +55,7 @@ def test_meta_payload(client, result):
     assert meta["n_frames"] == result.n_frames
     assert meta["n_points"] == result.pts2d.shape[2]
     assert meta["has_3d"] is True
-    assert meta["has_nmf"] is False  # the default result carries no fitted NMF model
+    assert meta["has_model"] is False  # the default result carries no fitted model
     assert list(meta["camera_names"]) == list(result.cameras.names)
     assert len(meta["point_colors"]) == result.pts2d.shape[2]
     assert len(meta["edges"]) == len(result.skeleton.edges)
@@ -290,12 +290,12 @@ def test_placeholder_seed_for_a_rejected_point(result, tmp_path):
     assert all(ph[v][p] is not None for v in range(result.n_views))  # every view seeded
 
 
-def test_nmf_overlay_payload(result, tmp_path):
-    """A result with a fitted NMF model exposes it via has_nmf + the points 'nmf' field."""
+def test_model_overlay_payload(result, tmp_path):
+    """A result with a fitted model exposes it via has_model + the points 'model' field."""
     import dataclasses
 
     # reuse the 3D points as a stand-in model; the server just reprojects them.
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     image_sizes = {name: (HEIGHT, WIDTH) for name in res.cameras.names}
     session = Session.build(
         EditorState.from_result(res),
@@ -306,13 +306,13 @@ def test_nmf_overlay_payload(result, tmp_path):
     )
     client = TestClient(create_app(session))
 
-    assert client.get("/api/meta").json()["has_nmf"] is True
+    assert client.get("/api/meta").json()["has_model"] is True
     payload = client.get("/api/points/0?mode=view").json()
-    nmf = payload["nmf"]
-    assert nmf is not None and len(nmf) == res.n_views
-    assert all(len(row) == res.pts2d.shape[2] for row in nmf)
+    model = payload["model"]
+    assert model is not None and len(model) == res.n_views
+    assert all(len(row) == res.pts2d.shape[2] for row in model)
     # the model reprojects to finite pixels in at least one view
-    assert any(q is not None for row in nmf for q in row)
+    assert any(q is not None for row in model for q in row)
 
     # the posed-mesh overlay endpoint returns an RGBA PNG for a known camera
     cam = res.cameras.names[0]
@@ -327,11 +327,11 @@ def test_mesh_overlay_absent_without_ik(client):
     assert client.get("/api/mesh/rf/0").status_code == 404
 
 
-def _nmf_client(result, tmp_path):
-    """A TestClient over a result carrying a (stand-in) fitted NMF model."""
+def _model_client(result, tmp_path):
+    """A TestClient over a result carrying a (stand-in) fitted model."""
     import dataclasses
 
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     image_sizes = {name: (HEIGHT, WIDTH) for name in res.cameras.names}
     session = Session.build(
         EditorState.from_result(res),
@@ -343,21 +343,21 @@ def _nmf_client(result, tmp_path):
     return TestClient(create_app(session)), res
 
 
-def test_nmf_client_render_asset_and_verts(result, tmp_path):
+def test_model_client_render_asset_and_verts(result, tmp_path):
     """The client-render endpoints ship the mesh topology once + posed verts per frame."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    client, res = _nmf_client(result, tmp_path)
-    mesh = load_nmf_mesh()
+    client, res = _model_client(result, tmp_path)
+    mesh = load_model_mesh()
     n_v, n_f = int(mesh.vertices.shape[0]), int(mesh.faces.shape[0])
 
-    asset = client.get("/api/nmf/asset")
+    asset = client.get("/api/model/asset")
     assert asset.status_code == 200
     head = np.frombuffer(asset.content[:8], dtype="<u4")
     assert head.tolist() == [n_v, n_f]
     assert len(asset.content) == 8 + n_f * 3 * 4 + n_v * 3  # header + faces + rgb
 
-    verts = client.get("/api/nmf/verts/0")
+    verts = client.get("/api/model/verts/0")
     assert verts.status_code == 200
     # float32 verts + float32 smooth normals + uint8 valid mask
     assert len(verts.content) == n_v * 3 * 4 + n_v * 3 * 4 + n_f
@@ -368,15 +368,15 @@ def test_nmf_client_render_asset_and_verts(result, tmp_path):
     assert lit.any() and np.allclose(np.linalg.norm(nrm[lit], axis=1), 1.0, atol=1e-5)
 
 
-def test_nmf_verts_payload_hides_configured_parts(result, tmp_path):
+def test_model_verts_payload_hides_configured_parts(result, tmp_path):
     """The verts payload drops the faces of the session's hidden parts (e.g. wings)."""
     import dataclasses
 
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     image_sizes = {name: (HEIGHT, WIDTH) for name in res.cameras.names}
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     n_v = int(mesh.vertices.shape[0])
     n_wing = int(mesh.hidden_face_mask(["wings"]).sum())
     assert n_wing > 0  # the baked asset labels wing faces
@@ -388,9 +388,9 @@ def test_nmf_verts_payload_hides_configured_parts(result, tmp_path):
             results_path=str(tmp_path / "results.h5"),
             labels_path=tmp_path / "labels.h5",
             image_sizes=image_sizes,
-            nmf_hide_parts=hide,
+            model_hide_parts=hide,
         )
-        content = TestClient(create_app(session)).get("/api/nmf/verts/0").content
+        content = TestClient(create_app(session)).get("/api/model/verts/0").content
         return int(np.frombuffer(content[n_v * 24 :], dtype=np.uint8).sum())
 
     shown, hidden = valid_sum(()), valid_sum(("wings",))
@@ -399,10 +399,10 @@ def test_nmf_verts_payload_hides_configured_parts(result, tmp_path):
     assert shown - hidden == n_wing
 
 
-def test_nmf_client_endpoints_absent_without_ik(client):
-    """The client-render NMF endpoints 404 when the result carries no fitted model."""
-    assert client.get("/api/nmf/asset").status_code == 404
-    assert client.get("/api/nmf/verts/0").status_code == 404
+def test_model_client_endpoints_absent_without_ik(client):
+    """The client-render model endpoints 404 when the result carries no fitted model."""
+    assert client.get("/api/model/asset").status_code == 404
+    assert client.get("/api/model/verts/0").status_code == 404
 
 
 def test_meta_cameras_proj_reproduces_projection(client, result):
@@ -482,20 +482,20 @@ def test_scene_payload_has_3d_points(client, result):
     assert len(pts3d) == result.pts2d.shape[2]
     for pt in pts3d:
         assert pt is None or len(pt) == 3
-    assert payload["nmf3d"] is None  # the default result carries no fitted NMF model
+    assert payload["model3d"] is None  # the default result carries no fitted model
 
 
-def test_scene_payload_carries_nmf_skeleton(result, tmp_path):
+def test_scene_payload_carries_model_skeleton(result, tmp_path):
     """When a model is fit, the 3D scene payload also ships its joints (for the viewer)."""
-    client, res = _nmf_client(result, tmp_path)
+    client, res = _model_client(result, tmp_path)
     payload = client.get("/api/scene/0").json()
-    nmf3d = payload["nmf3d"]
-    assert nmf3d is not None
-    assert len(nmf3d) == res.pts2d.shape[2]
-    assert any(pt is not None and len(pt) == 3 for pt in nmf3d)
+    model3d = payload["model3d"]
+    assert model3d is not None
+    assert len(model3d) == res.pts2d.shape[2]
+    assert any(pt is not None and len(pt) == 3 for pt in model3d)
 
 
-def test_nmf_live_uses_the_configured_model(result):
+def test_model_live_uses_the_configured_model(result):
     """The editor's live re-fit honors a passed template, not always the full model.
 
     A run that restricts the fitted legs (or any IK config) must carry over to the
@@ -509,18 +509,20 @@ def test_nmf_live_uses_the_configured_model(result):
     )
     from deeperfly.inverse_kinematics.template import KinematicTemplate
 
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     template = KinematicTemplate.load("neuromechfly", legs=["rf", "lf"])
     state = EditorState.from_result(res, template=template)
-    assert state.nmf_live is not None
+    assert state.model_live is not None
     leg_angles = [
-        n for n in state.nmf_live.angle_names if "head" not in n and "abdomen" not in n
+        n
+        for n in state.model_live.angle_names
+        if "head" not in n and "abdomen" not in n
     ]
     # leg DOF names are "<parent>-<child>-<dof>"; the child body carries the leg code.
     assert {n.split("-")[1].split("_")[0] for n in leg_angles} == {"rf", "lf"}
 
 
-def test_nmf_live_refit_is_a_pure_function_of_frame_and_labels(result):
+def test_model_live_refit_is_a_pure_function_of_frame_and_labels(result):
     """The same frame, same labels, always the same angles -- however you got there.
 
     QuickIK's solver state is mutated in place and the editor solves arbitrary frames in
@@ -534,10 +536,10 @@ def test_nmf_live_refit_is_a_pure_function_of_frame_and_labels(result):
         "quickik", reason="the live re-fit needs the deeperfly[ik] extra"
     )
 
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     state = EditorState.from_result(res)
-    assert state.nmf_live is not None
-    live = state.nmf_live
+    assert state.model_live is not None
+    live = state.model_live
     pts_a = np.asarray(res.pts3d)[0]
     pts_b = np.asarray(res.pts3d)[min(1, res.pts3d.shape[0] - 1)]
 
@@ -548,7 +550,7 @@ def test_nmf_live_refit_is_a_pure_function_of_frame_and_labels(result):
     np.testing.assert_array_equal(first, again)
 
 
-def test_nmf_live_masks_a_limb_it_cannot_fit(result):
+def test_model_live_masks_a_limb_it_cannot_fit(result):
     """A limb with too few observed keypoints comes back NaN, as in the batch fit.
 
     Otherwise the editor would draw a limb at whatever pose the neutral prior implied,
@@ -560,9 +562,9 @@ def test_nmf_live_masks_a_limb_it_cannot_fit(result):
         "quickik", reason="the live re-fit needs the deeperfly[ik] extra"
     )
 
-    res = dataclasses.replace(result, nmf_pts3d=np.asarray(result.pts3d))
+    res = dataclasses.replace(result, model_pts3d=np.asarray(result.pts3d))
     state = EditorState.from_result(res)
-    live = state.nmf_live
+    live = state.model_live
     assert live is not None
     index = {n: i for i, n in enumerate(res.skeleton.point_names)}
     pts = np.asarray(res.pts3d)[0].copy()
@@ -1223,11 +1225,11 @@ def test_ws_reply_echoes_edit_seq(client):
     assert reply["seq"] == 42
 
 
-def test_ws_live_drag_omits_nmf_then_includes_on_release(result, tmp_path):
-    """A mid-drag edit_3d (fix=False) omits the 'nmf' key -- skipping the per-frame
+def test_ws_live_drag_omits_model_then_includes_on_release(result, tmp_path):
+    """A mid-drag edit_3d (fix=False) omits the 'model' key -- skipping the per-frame
     IK re-fit that dominated drag latency -- while the pin/release reply (fix=True)
     carries it again. The overlay's absence tells the client to hold what it has."""
-    client, _res = _nmf_client(result, tmp_path)
+    client, _res = _model_client(result, tmp_path)
     view, point = 2, 5
     base = client.get("/api/points/0?mode=edit_3d").json()["points"]
     target = [base[view][point][0] + 3.0, base[view][point][1] - 2.0]
@@ -1247,8 +1249,8 @@ def test_ws_live_drag_omits_nmf_then_includes_on_release(result, tmp_path):
         ws.send_json({**drag, "fix": True, "seq": 2})
         end = ws.receive_json()
 
-    assert "nmf" not in mid and mid["seq"] == 1  # mid-drag: refit skipped
-    assert end["nmf"] is not None and end["seq"] == 2  # release: overlay recomputed
+    assert "model" not in mid and mid["seq"] == 1  # mid-drag: refit skipped
+    assert end["model"] is not None and end["seq"] == 2  # release: overlay recomputed
 
 
 def test_ws_reset_point_view_reverts_one_view(client):
@@ -1840,12 +1842,12 @@ def test_save_mirrors_absence_into_results_h5(client, session, result, tmp_path)
 
 
 def test_the_mid_drag_reply_omits_the_heavy_fields_rather_than_nulling_them(session):
-    """`include_nmf=False` is the lean drag stream; the keys must be *absent*, not null,
+    """`include_model=False` is the lean drag stream; the keys must be *absent*, not null,
     so the front-end can tell "unchanged" from "gone" and leave the overlay as it is."""
     from deeperfly.gui.server import _points_payload
 
-    lean = _points_payload(session, 0, "edit_3d", include_nmf=False)
-    full = _points_payload(session, 0, "edit_3d", include_nmf=True)
-    for key in ("conf", "nmf"):
+    lean = _points_payload(session, 0, "edit_3d", include_model=False)
+    full = _points_payload(session, 0, "edit_3d", include_model=True)
+    for key in ("conf", "model"):
         assert key not in lean
         assert key in full

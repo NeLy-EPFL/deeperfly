@@ -5,7 +5,7 @@ with measured segment lengths (:mod:`deeperfly.inverse_kinematics.align`). The h
 and abdomen instead articulate joints that are **not** keypoints (a neck pivot; the
 abdominal segment hinges), with fixed geometry that must come from the model. This
 module loads that geometry -- baked once from the NeuroMechFly MJCF into
-``data/nmf_articulation.json`` by ``scripts/build_nmf_mesh_asset.py`` -- as a set of
+``the pack's ``articulation.json```` by ``scripts/build_nmf_mesh_asset.py`` -- as a set of
 :class:`Chain` objects:
 
 - the **head** is a 3-DOF chain (yaw / pitch / roll) at one anchor, carrying the two
@@ -14,7 +14,7 @@ module loads that geometry -- baked once from the NeuroMechFly MJCF into
   at the chain depths where they attach.
 
 A recording is registered to the model by one similarity transform
-(:func:`body_similarity`) fit from the six thorax-coxa keypoints (which are
+(:func:`body_similarity`) fit from the six coxa anchors (which are
 body-fixed). The same chains both enter the solved body plan
 (:mod:`deeperfly.inverse_kinematics.bodyplan`) and pose the head/abdomen of the overlay
 mesh, so the angles and the mesh stay consistent.
@@ -35,7 +35,9 @@ from pathlib import Path
 
 import numpy as np
 
+from .binding import Binding
 from .forward import chain_affine
+from .pack import MODELS
 
 __all__ = [
     "Chain",
@@ -48,9 +50,10 @@ __all__ = [
 ]
 
 #: The packaged baked articulation asset (built by ``scripts/build_nmf_mesh_asset.py``).
-DEFAULT_ARTICULATION_PATH = (
-    Path(__file__).parent.parent / "data" / "nmf_articulation.json"
-)
+DEFAULT_ARTICULATION_PATH = MODELS["neuromechfly"].parent / "articulation.json"
+
+#: The anchors of the packaged pack, for a load that names no pack.
+_DEFAULT_ANCHORS = ("lf_coxa", "lm_coxa", "lh_coxa", "rf_coxa", "rm_coxa", "rh_coxa")
 
 log = logging.getLogger("deeperfly")
 
@@ -102,6 +105,11 @@ class Chain:
         ``(M, 3)`` each marker's neutral model position.
     marker_depth
         ``(M,)`` each marker's chain depth (number of proximal joints that move it).
+    marker_approximate
+        ``(M,)`` whether each marker's placement on the model is a modelling decision
+        rather than a measurement (the binding's ``approximate``). Carried so the fit's
+        residual can be split exact-versus-approximate, and acted on nowhere: it says
+        which part of a residual is the retarget, not that the point matters less.
     base_point
         The marker that **measures where this chain's base sits**, or ``None``. The
         legs place each chain root at its measured median thorax-coxa; a baked chain
@@ -126,6 +134,7 @@ class Chain:
     marker_names: tuple[str, ...]
     marker_neutral: np.ndarray
     marker_depth: tuple[int, ...]
+    marker_approximate: tuple[bool, ...] = ()
     base_point: str | None = None
 
     def marker_index(self, point: str) -> int | None:
@@ -135,7 +144,13 @@ class Chain:
 
 @dataclass(frozen=True)
 class Articulation:
-    """The loaded head/abdomen chains plus the neutral coxae that register the body.
+    """The loaded head/abdomen chains plus the anchor bodies that register the body.
+
+    ``anchors`` names model **bodies** -- not skeleton points, and declared by the pack
+    manifest -- and ``anchor_neutral`` is their neutral world position, read out of
+    ``bodies``, in the same order. Which tracked point observes
+    each is a property of the (skeleton, model) pair, so it is the binding's to say;
+    until the binding exists, :attr:`anchor_points` derives it from a name convention.
 
     ``bodies`` maps each model body a marker may attach to (the abdomen segments and
     the head subtree) to its neutral world frame and chain/depth -- used to recompute
@@ -152,8 +167,9 @@ class Articulation:
     """
 
     chains: tuple[Chain, ...]
-    coxa_points: tuple[str, ...]
-    coxa_neutral: np.ndarray  # (6, 3) neutral thorax-coxa positions, in coxa order
+    anchors: tuple[str, ...]  # model body names
+    anchor_neutral: np.ndarray  # (N, 3) neutral anchor positions, in anchor order
+    _anchor_points: tuple[str, ...] = ()  # the binding's point per anchor, same order
     bodies: dict[str, dict] = field(default_factory=dict)
     leg_rest: dict[str, float] = field(default_factory=dict)
 
@@ -162,6 +178,8 @@ class Articulation:
         cls,
         ref: str | Path = DEFAULT_ARTICULATION_PATH,
         *,
+        binding: "Binding | str | Path | None" = "fly38@neuromechfly",
+        anchors: tuple[str, ...] = _DEFAULT_ANCHORS,
         fit: tuple[str, ...] | None = None,
         bounds_overrides: dict[str, tuple[float, float]] | None = None,
         marker_overrides: dict[str, dict[str, dict]] | None = None,
@@ -172,6 +190,18 @@ class Articulation:
         ----------
         ref
             Path to the articulation JSON (defaults to the packaged asset).
+        binding
+            The (skeleton, model) binding -- a :class:`Binding`, or a
+            ``"<skeleton>@<model>"`` reference to load. Its rows on this model's chain
+            bodies ARE the chains' markers, and its row on each anchor body says which
+            tracked point observes that anchor. Defaults to the packaged pair, which is
+            what a caller reading the packaged model wants; a run resolves its own
+            through :meth:`deeperfly.config.Config.ik_binding`. ``None`` loads the
+            model's structure with **no markers and no anchor points** -- readable, not
+            fittable.
+        anchors
+            The pack manifest's registration anchor bodies, whose neutral frames are
+            read out of this asset's ``bodies`` map, in the order given.
         fit
             Which chains to keep (subset of ``{"head", "abdomen"}``); ``None`` = all.
         bounds_overrides
@@ -180,36 +210,59 @@ class Articulation:
             case-insensitive.
         marker_overrides
             ``chain_name -> {point_name: {"body", "offset", "depth"?}}`` redefining a
-            chain's markers -- *where* each tracked keypoint sits relative to the model
-            (the labeling-scheme choice). When present for a chain, the table **replaces**
-            that chain's baked markers: each marker's neutral position is recomputed as
-            ``body_frame @ offset`` from the baked :attr:`bodies` frame, and its depth is
-            the attachment body's chain depth (or an explicit ``depth``). Lets the IK be
-            retargeted to a different labeling scheme without re-running MuJoCo.
+            chain's markers -- a per-run patch over the binding. When present for a
+            chain, the table **replaces** that chain's binding rows; the resolution is
+            otherwise identical, since the two say the same kind of thing.
         """
+        if binding is not None and not isinstance(binding, Binding):
+            binding = Binding.load(binding)
         spec = json.loads(Path(ref).read_text())
         overrides = {k.lower(): v for k, v in (bounds_overrides or {}).items()}
         bodies = spec.get("bodies", {})
-        markers = marker_overrides or {}
-        if markers and not bodies:
+        missing = [a for a in anchors if a not in bodies]
+        if missing:
             raise ValueError(
-                "[inverse_kinematics] marker overrides need the attachment-body frames, "
-                "but this articulation asset predates them; rebuild it with "
-                "scripts/build_nmf_mesh_asset.py"
+                f"the model pack names registration anchor(s) {missing}, which its "
+                f"articulation asset {Path(ref).name} does not bake a body frame for "
+                f"(it has {sorted(bodies)})"
             )
+        markers = marker_overrides or {}
         chains = []
         for c in spec["chains"]:
             if fit is not None and c["name"] not in fit:
                 continue
-            resolved, base_point = _resolve_markers(c, markers.get(c["name"]), bodies)
+            table = markers.get(c["name"])
+            if table is None:
+                table = (
+                    {}
+                    if binding is None
+                    else _chain_binding_markers(c["name"], binding, bodies)
+                )
+            resolved, base_point = _resolve_markers(c, table, bodies)
             chains.append(_build_chain(c, overrides, resolved, base_point))
         return cls(
             chains=tuple(chains),
-            coxa_points=tuple(spec["coxa_points"]),
-            coxa_neutral=np.asarray(spec["coxa_neutral"], dtype=float),
+            anchors=tuple(anchors),
+            anchor_neutral=np.asarray(
+                [bodies[a]["pos"] for a in anchors], dtype=float
+            ).reshape(len(anchors), 3),
+            _anchor_points=tuple(
+                "" if binding is None else (binding.origin_point_for(a) or "")
+                for a in anchors
+            ),
             bodies=bodies,
             leg_rest={str(k): float(v) for k, v in spec.get("leg_rest", {}).items()},
         )
+
+    @property
+    def anchor_points(self) -> tuple[str, ...]:
+        """The tracked point observing each anchor body, from the binding.
+
+        Empty strings where the binding has no point on an anchor's origin: the
+        registration needs three finite anchors, not all of them, so a skeleton that
+        tracks four of the six coxae still registers.
+        """
+        return self._anchor_points
 
     def chain(self, name: str) -> Chain | None:
         return next((c for c in self.chains if c.name == name), None)
@@ -262,28 +315,50 @@ def _build_chain(
         marker_names=tuple(m["point"] for m in markers),
         marker_neutral=np.asarray([m["neutral"] for m in markers], dtype=float),
         marker_depth=tuple(int(m["depth"]) for m in markers),
+        marker_approximate=tuple(bool(m.get("approximate", False)) for m in markers),
         base_point=base_point,
     )
 
 
-def _resolve_markers(
-    c: dict, override: dict[str, dict] | None, bodies: dict[str, dict]
-) -> tuple[list[dict], str | None]:
-    """The chain's ``(markers, base_point)``: the baked set, or a config override's set.
+def _chain_binding_markers(chain: str, binding, bodies: dict[str, dict]) -> dict:
+    """The binding's rows for one chain, as a marker table.
 
-    Without an override the chain keeps its baked markers and base point. With one, the
-    table *replaces* them: each marker's neutral world position is recomputed from the
-    attachment body's baked frame (``pos + mat @ offset``) and its depth is the body's
-    chain depth (or an explicit ``depth``). Used to retarget the IK to a different
-    labeling scheme -- e.g. abdomen points placed at different offsets.
+    A row belongs to a chain when its attachment body does. That is the whole
+    derivation: a tracked point rigidly carried by a chain body rides that chain at
+    that body's depth, and the one row that says otherwise says so itself (``base``).
+    """
+    out: dict[str, dict] = {}
+    for row in binding.rows:
+        frame = bodies.get(row.body)
+        if frame is None or frame.get("chain") != chain:
+            continue
+        out[row.point] = {
+            "body": row.body,
+            "offset": [float(v) for v in row.offset],
+            "approximate": row.approximate,
+            "base": row.base,
+        }
+    return out
+
+
+def _resolve_markers(
+    c: dict, table: dict[str, dict], bodies: dict[str, dict]
+) -> tuple[list[dict], str | None]:
+    """One chain's ``(markers, base_point)`` from a ``point -> {body, offset, ...}`` table.
+
+    Each marker's neutral world position is ``pos + mat @ offset`` in the attachment
+    body's baked frame, and its depth is that body's chain depth (or an explicit
+    ``depth``). One code path for both the binding's rows and a run config's
+    ``[inverse_kinematics.markers.<chain>]`` override, because they are the same
+    statement -- *where does this tracked point sit on the model* -- written in two
+    places, and the override is a per-run patch over the binding.
 
     A marker entry may carry ``base = true`` to nominate it as the chain's base point
-    (:attr:`Chain.base_point`). Because the override replaces the whole table, a config
-    that redeclares a chain would otherwise silently drop the baked nomination and put
-    the chain back on the registered base -- so the flag has to be expressible here.
+    (:attr:`Chain.base_point`). Because an override replaces the whole table, a config
+    that redeclares a chain would otherwise silently drop the binding's nomination and
+    put the chain back on the registered base -- so the flag has to be expressible here.
     """
-    if not override:
-        return list(c["markers"]), c.get("base_point")
+    override = table
     out: list[dict] = []
     base_point: str | None = None
     for point, spec in override.items():
@@ -318,6 +393,7 @@ def _resolve_markers(
                 "point": point,
                 "neutral": neutral.tolist(),
                 "depth": int(frame["depth"] if depth is None else depth),
+                "approximate": bool(spec.get("approximate", False)),
             }
         )
     return out, base_point
@@ -327,23 +403,29 @@ def _resolve_markers(
 def load_articulation(
     ref: str | Path = DEFAULT_ARTICULATION_PATH,
     fit: tuple[str, ...] | None = None,
+    binding: str | Path | None = "fly38@neuromechfly",
 ) -> Articulation:
-    """Load (and cache) the packaged head/abdomen articulation (no bounds overrides)."""
-    return Articulation.load(ref, fit=fit)
+    """Load (and cache) an articulation with no bounds overrides.
+
+    The default pair is the packaged one, which is what the overlay and the leg spring
+    references want: both read the model's *structure*, and neither is a run. A run
+    resolves its own pair through :meth:`deeperfly.config.Config.ik_binding`.
+    """
+    return Articulation.load(ref, fit=fit, binding=binding)
 
 
 def body_similarity(
-    neutral_coxae: np.ndarray, measured_coxae: np.ndarray
+    neutral_anchors: np.ndarray, measured_anchors: np.ndarray
 ) -> tuple[np.ndarray, float, np.ndarray] | None:
-    """Similarity transform (R, s, t) mapping the neutral coxae onto the measured ones.
+    """Similarity transform (R, s, t) mapping the neutral anchors onto the measured ones.
 
-    ``measured_coxae`` is ``(6, 3)`` (NaN where a coxa was not seen); at least three
-    finite coxae are needed. Returns ``None`` when too few are available.
+    ``measured_anchors`` is ``(N, 3)`` (NaN where an anchor was not observed); at least
+    three finite anchors are needed. Returns ``None`` when too few are available.
     """
-    good = np.isfinite(measured_coxae).all(axis=1)
+    good = np.isfinite(measured_anchors).all(axis=1)
     if int(good.sum()) < 3:
         return None
-    return _umeyama(neutral_coxae[good], measured_coxae[good])
+    return _umeyama(neutral_anchors[good], measured_anchors[good])
 
 
 def estimate_chain_scale(
@@ -355,7 +437,7 @@ def estimate_chain_scale(
 ) -> float:
     """Isotropic size of a chain relative to the model, from lengths its joints cannot change.
 
-    The body registration (coxa Umeyama) sets the overall fly scale, but the head and
+    The body registration (anchor Umeyama) sets the overall fly scale, but the head and
     abdomen are fixed model geometry that need not match this fly (a longer abdomen, a
     bigger head), so each chain gets one uniform multiplier of its own. It is measured
     from the chain's **rigid marker separations**: the distances between its own markers
@@ -562,7 +644,7 @@ def calibrate_chain(
 
     ``fit_root`` additionally frees the chain's root position, for a chain that has no
     base landmark to be placed on (the abdomen: no keypoint sits on its root). Left on the
-    model's own anchor, that root inherits the coxa registration's worst-conditioned
+    model's own anchor, that root inherits the body registration's worst-conditioned
     direction. The three shift components are **not** equally determined -- the Jacobian
     has one exact null direction, ``(-0.68, +0.68, 0, 0, 0 | scale 0.000 | dx -0.07, dy 0,
     dz +0.25)``, i.e. hinge 0 trading against hinge 1 and a root translation -- so:

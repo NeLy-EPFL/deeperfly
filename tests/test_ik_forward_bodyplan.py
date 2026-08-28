@@ -35,7 +35,7 @@ from deeperfly.inverse_kinematics.bodyplan import (
     _model_seglens,
     build_body_plan,
 )
-from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+from deeperfly.inverse_kinematics.mesh import load_model_mesh
 from deeperfly.inverse_kinematics.template import KinematicTemplate
 from deeperfly.skeleton import Skeleton
 
@@ -83,9 +83,9 @@ def _measure(real_pts3d, fly, template, *, symmetric_segments=False):
     )
     align = body_alignment(pts3d, fly, template, symmetric_segments=symmetric_segments)
     index = {n: i for i, n in enumerate(fly.point_names)}
-    coxae = np.stack([pts3d[:, index[p]] for p in articulation.coxa_points], axis=1)
+    coxae = np.stack([pts3d[:, index[p]] for p in articulation.anchor_points], axis=1)
     with np.errstate(all="ignore"):
-        sim = body_similarity(articulation.coxa_neutral, np.nanmedian(coxae, axis=0))
+        sim = body_similarity(articulation.anchor_neutral, np.nanmedian(coxae, axis=0))
     assert sim is not None
     return align, sim
 
@@ -437,7 +437,7 @@ def test_plan_fk_matches_the_mesh_node_convention(
 
     The overlay poses a head/abdomen node mesh by ``chain_affine`` at that node's chain
     depth and then grows it about the chain's base anchor by the data-estimated size
-    (``NmfMesh._node_transforms``). The plan bakes that same growth into its chain
+    (``ModelMesh._node_transforms``). The plan bakes that same growth into its chain
     offsets. If these ever disagree, the fitted angles and the mesh drawn from them
     describe different poses -- which is exactly what the pre-QuickIK solver did (it
     scaled the *markers* about the base while leaving the anchors at model size,
@@ -471,10 +471,10 @@ def test_plan_fk_matches_chain_affine_at_every_mesh_node_depth(
 ):
     """Every ``(chain, depth)`` the baked mesh asset asks for is reproduced by plan FK.
 
-    ``nmf_mesh.npz`` names the node slots the overlay poses; two abdomen depths carry
+    the pack's ``mesh.npz`` names the node slots the overlay poses; two abdomen depths carry
     no marker at all, so a check that only walked the markers would miss them.
     """
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     wanted = {
         (int(c), int(d))
         for c, d in zip(mesh.slot_chain, mesh.slot_depth)
@@ -563,8 +563,8 @@ def test_plan_falls_back_to_a_model_length_for_an_unmeasured_segment(
     from dataclasses import replace
 
     lens = _model_seglens(leg, fly, replace(align, seglens=seglens), sim[1])
-    a = load_nmf_mesh().kp_neutral[fly.point_names.index(leg.point_names[1])]
-    b = load_nmf_mesh().kp_neutral[fly.point_names.index(leg.point_names[2])]
+    a = load_model_mesh().kp_neutral[fly.point_names.index(leg.point_names[1])]
+    b = load_model_mesh().kp_neutral[fly.point_names.index(leg.point_names[2])]
     assert lens[2] == pytest.approx(float(np.linalg.norm(b - a)))
     assert lens[1] > 0 and lens[3] > 0
 
@@ -678,10 +678,10 @@ def test_the_overlay_mesh_and_the_plan_agree_on_the_shifted_pivot(
     ``chain_scales`` already had to hold this property -- fit and overlay must describe
     one pose -- and a base shift is the second thing that can break it. Shifting a
     chain's anchors *and* its attached points by ``d`` is exactly a post-translation of
-    the affine, so passing ``chain_offsets`` to :meth:`NmfMesh.pose` is the whole
+    the affine, so passing ``chain_offsets`` to :meth:`ModelMesh.pose` is the whole
     correction; the second half of this test is what omitting it costs.
     """
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
     shift = np.array([0.03, -0.02, -0.13])
     plan = make_plan(
@@ -693,7 +693,7 @@ def test_the_overlay_mesh_and_the_plan_agree_on_the_shifted_pivot(
         chain_offsets={"head": shift},
     )
     head = articulation.chain("head")
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     col = {n: i for i, n in enumerate(plan.angle_names)}
     row = list(plan.joint_names).index("l_antenna")
     neutral = head.marker_neutral[head.marker_index("l_antenna")]
@@ -706,13 +706,13 @@ def test_the_overlay_mesh_and_the_plan_agree_on_the_shifted_pivot(
         want = plan.kinematics().joint_positions(angles, None, None)[0, row]
 
         a, b = mesh._node_transforms(
-            angles[0], list(plan.angle_names), (1.24, 1.0), {"head": shift}
+            angles[0], list(plan.angle_names), {"head": 1.24}, {"head": shift}
         )[(0, 3)]
         np.testing.assert_allclose(a @ neutral + b, want, atol=1e-12)
 
-        a0, b0 = mesh._node_transforms(angles[0], list(plan.angle_names), (1.24, 1.0))[
-            (0, 3)
-        ]
+        a0, b0 = mesh._node_transforms(
+            angles[0], list(plan.angle_names), {"head": 1.24}
+        )[(0, 3)]
         assert np.linalg.norm((a0 @ neutral + b0) - want) == pytest.approx(
             float(np.linalg.norm(shift)), abs=1e-12
         )

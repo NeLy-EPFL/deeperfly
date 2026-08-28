@@ -330,7 +330,7 @@ body {
   gap: 4px;
 }
 
-/* A small line-style swatch inside a layer toggle's label (the "NMF skeleton" checkbox),
+/* A small line-style swatch inside a layer toggle's label (the "Model skeleton" checkbox),
    matching how the canvas draws that overlay (dotted mint). The GT / Detected / Projected
    source rows use a marker disc (.mk) instead. The full legend lives in the Help panel. */
 .swatch {
@@ -340,7 +340,7 @@ body {
   vertical-align: middle;
 }
 
-.swatch-nmf {
+.swatch-model {
   border-top: 2px dotted rgb(80, 230, 180);
 }
 

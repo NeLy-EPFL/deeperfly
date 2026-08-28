@@ -2,9 +2,9 @@
 
 The pipeline fits the model once, over the whole recording. In the editor the operator
 authors ground-truth 2D labels and the 3D pose is re-derived from them frame by frame, so
-the overlaid model has to follow: :class:`NmfLive` re-solves the inverse kinematics for a
+the overlaid model has to follow: :class:`ModelLive` re-solves the inverse kinematics for a
 *single* frame from that frame's current 3D points, and the caller poses the bundled mesh
-from the result (see :meth:`deeperfly.gui.state.EditorState.nmf_posed_verts`).
+from the result (see :meth:`deeperfly.gui.state.EditorState.model_posed_verts`).
 
 It re-solves on **the pipeline's own body plan**, read back from ``results.h5``. That
 matters for more than tidiness: the plan carries the measured segment lengths and the coxa
@@ -45,10 +45,10 @@ from ..results import PoseResult
 
 log = logging.getLogger("deeperfly")
 
-__all__ = ["NmfLive"]
+__all__ = ["ModelLive"]
 
 
-class NmfLive:
+class ModelLive:
     """Re-fits the NeuroMechFly model for one edited frame at a time.
 
     Built once per session from the full result; :meth:`refit` solves a frame's angles
@@ -115,9 +115,9 @@ class NmfLive:
         from ..config import InverseKinematicsParams
         from ..inverse_kinematics import _plan_for
 
-        if result.nmf_body_plan:
+        if result.model_body_plan:
             try:
-                return BodyPlan.from_json(result.nmf_body_plan, result.skeleton)
+                return BodyPlan.from_json(result.model_body_plan, result.skeleton)
             except Exception:
                 log.warning(
                     "the stored body plan could not be read; rebuilding it from the "
@@ -150,12 +150,12 @@ class NmfLive:
         ``None`` when the result carries none, or when its names do not line up with the
         plan's -- in which case every frame simply seeds from the neutral pose.
         """
-        if result.nmf_angles is None or not result.nmf_angle_names:
+        if result.model_angles is None or not result.model_angle_names:
             return None
-        col = {name: i for i, name in enumerate(result.nmf_angle_names)}
+        col = {name: i for i, name in enumerate(result.model_angle_names)}
         if not all(name in col for name in self.angle_names):
             return None
-        return np.asarray(result.nmf_angles, dtype=float)[
+        return np.asarray(result.model_angles, dtype=float)[
             :, [col[name] for name in self.angle_names]
         ]
 

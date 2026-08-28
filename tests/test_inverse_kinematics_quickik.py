@@ -61,13 +61,13 @@ def _index(skeleton) -> dict[str, int]:
 def _place_coxae(pts, index, articulation, sim):
     """Put the six body-fixed coxae where ``sim`` maps the model's, registering the body.
 
-    From ``articulation.coxa_neutral``, which is paired with ``coxa_points`` by position,
+    From ``articulation.anchor_neutral``, which is paired with ``anchors`` by position,
     rather than from the mesh asset's ``kp_neutral`` indexed by the run's skeleton: that
     asset carries its own point order, and indexing it with another skeleton's silently
-    reads a different point. It is also exactly the array ``_coxa_similarity`` fits
+    reads a different point. It is also exactly the array ``_anchor_similarity`` fits
     against, so the registration this synthesizes is the one the stage recovers.
     """
-    for name, neutral in zip(articulation.coxa_points, articulation.coxa_neutral):
+    for name, neutral in zip(articulation.anchor_points, articulation.anchor_neutral):
         pts[:, index[name]] = sim[1] * (sim[0] @ np.asarray(neutral)) + sim[2]
 
 
@@ -85,7 +85,7 @@ def test_the_leg_parameterisation_is_flygyms(template, fly):
     reports angles that are not flygym's, and needs joint limits that are not
     NeuroMechFly's to reach the pose.
 
-    The check needs no MuJoCo and no synthesis. ``nmf_mesh.npz`` carries the model's
+    The check needs no MuJoCo and no synthesis. the pack's ``mesh.npz`` carries the model's
     neutral keypoint positions and the articulation asset carries its spring references,
     so: feed the former in as a recording, and the fitted angles must come back as the
     latter. If they do, deeperfly's angles ARE flygym's angles and its limits mean what
@@ -96,9 +96,9 @@ def test_the_leg_parameterisation_is_flygyms(template, fly):
     where flygym has five tarsal joints, so the single angle splits the difference. Every
     other DOF lands within 5 degrees and the median is under 1.
     """
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     kp = np.asarray(mesh.kp_neutral, dtype=float)
     assert kp.shape[0] == fly.n_points, "the mesh asset is not this skeleton's"
     rest = load_articulation().leg_rest
@@ -361,11 +361,11 @@ def test_a_leg_with_no_coxa_at_all_is_left_unset(template, fly, articulation, ca
 
 
 def test_registration_failure_is_a_clear_error(template, fly):
-    """Too few coxae to register the body is an explanatory error, not a wrong fit."""
+    """Too few anchors to register the body is an explanatory error, not a wrong fit."""
     pts3d = np.full((2, fly.n_points, 3), np.nan)
     index = _index(fly)
     pts3d[:, index["rf_thorax_coxa"]] = [1.0, 0.0, 0.0]
-    with pytest.raises(ValueError, match="three of the six thorax-coxa"):
+    with pytest.raises(ValueError, match="three of its 6 anchor points"):
         solve_inverse_kinematics(pts3d, fly, template)
 
 
@@ -490,9 +490,7 @@ def test_stage_ik_fixed_body_holds_the_leg_roots_at_their_median(fly):
     pts3d[:, coxa] += rng.normal(scale=0.05, size=(8, 3))
 
     res = stage_inverse_kinematics(
-        Config.from_dict(
-            {"inverse_kinematics": {"fit_head": False, "fit_abdomen": False}}
-        ),
+        Config.from_dict({"inverse_kinematics": {"chains": []}}),
         fly,
         pts3d,
     )
@@ -528,7 +526,7 @@ def test_stage_ik_weighs_by_confidence_when_asked(fly, monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(ik_mod, "solve_inverse_kinematics", spy)
-    cfg = {"fit_head": False, "fit_abdomen": False, "weigh_by_confidence": True}
+    cfg = {"chains": [], "weigh_by_confidence": True}
     stages.stage_inverse_kinematics(
         Config.from_dict({"inverse_kinematics": cfg}), fly, pts3d, conf
     )

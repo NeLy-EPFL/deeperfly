@@ -1,6 +1,6 @@
 // @ts-check
 // A small, dependency-free 3D view of the scene -- the camera rig, the current
-// frame's triangulated pose, the fitted NeuroMechFly skeleton, and the posed NMF
+// frame's triangulated pose, the fitted model skeleton, and the posed model
 // mesh -- on a <canvas>. It is shown on demand in a floating panel (see app.js) that
 // overlays the editor without blocking it, and lets the operator inspect the 3D
 // reconstruction the overlays project.
@@ -13,9 +13,9 @@
 // double-click to reframe. Each camera is an RGB axis triad at its centre
 // (x/right=red, y/down=green, z/optical=blue) -- the same schematic the
 // bundle-adjustment notebook uses -- labelled with its name; the triangulated pose is
-// the palette-coloured skeleton and the NMF skeleton is mint (matching the 2D overlay).
+// the palette-coloured skeleton and the model skeleton is mint (matching the 2D overlay).
 //
-// The NMF mesh is rendered by the shared WebGL `MeshGL` (a callback set from app.js):
+// The model mesh is rendered by the shared WebGL `MeshGL` (a callback set from app.js):
 // this view hands it a synthetic pinhole camera built from the orbit basis -- chosen
 // so its projection matches `project()` below pixel-for-pixel -- and composites the
 // returned canvas translucently behind the schematic, so the skeletons read on top.
@@ -28,8 +28,8 @@
 
 /** @typedef {[number, number, number]} Vec3 */
 
-// The fitted NMF skeleton's colour (mint), the same the 2D reprojection overlay uses.
-const NMF_COLOR = "rgba(80,230,180,0.95)";
+// The fitted model skeleton's colour (mint), the same the 2D reprojection overlay uses.
+const MODEL_COLOR = "rgba(80,230,180,0.95)";
 
 const WORLD_UP = /** @type {Vec3} */ ([0, 0, 1]);
 const ORIGIN = /** @type {Vec3} */ ([0, 0, 0]); // the world origin, drawn as the axis triad
@@ -81,16 +81,16 @@ export class Scene3D {
     /** @type {Point3[] | null} */
     this.pts3d = null;
     /** @type {Point3[] | null} */
-    this.nmf3d = null;
+    this.model3d = null;
     // The shared WebGL mesh renderer: (cam, supersample) -> a canvas, or null when
     // the mesh is unavailable. Set from app.js; this view only supplies the camera.
     /** @type {((cam: CameraProj, ss: number) => (HTMLCanvasElement | null)) | null} */
     this.meshRenderer = null;
 
-    // What is drawn (toggled from the panel); the NMF layers are also gated by data.
+    // What is drawn (toggled from the panel); the model layers are also gated by data.
     this.showCameras = true;
     this.showPose = true;
-    this.showNmf = true;
+    this.showModel = true;
     this.showMesh = true;
     this.showAxes = true; // the world-origin X/Y/Z triad
 
@@ -145,28 +145,28 @@ export class Scene3D {
     this.draw();
   }
 
-  /** @param {Point3[] | null} pts  the fitted NMF skeleton joints for this frame */
-  setNmf3d(pts) {
-    this.nmf3d = pts;
+  /** @param {Point3[] | null} pts  the fitted model skeleton joints for this frame */
+  setModel3d(pts) {
+    this.model3d = pts;
     this.draw();
   }
 
   /**
    * @param {((cam: CameraProj, ss: number) => (HTMLCanvasElement | null)) | null} fn
-   *   renders the posed NMF mesh through a pinhole camera (the shared WebGL renderer)
+   *   renders the posed model mesh through a pinhole camera (the shared WebGL renderer)
    */
   setMeshRenderer(fn) {
     this.meshRenderer = fn;
   }
 
   /**
-   * Toggle a layer's visibility and repaint. Keys: `cameras`, `pose`, `nmf`, `mesh`, `axes`.
-   * @param {Partial<{cameras: boolean, pose: boolean, nmf: boolean, mesh: boolean, axes: boolean}>} vis
+   * Toggle a layer's visibility and repaint. Keys: `cameras`, `pose`, `model`, `mesh`, `axes`.
+   * @param {Partial<{cameras: boolean, pose: boolean, model: boolean, mesh: boolean, axes: boolean}>} vis
    */
   setVisibility(vis) {
     if (vis.cameras !== undefined) this.showCameras = vis.cameras;
     if (vis.pose !== undefined) this.showPose = vis.pose;
-    if (vis.nmf !== undefined) this.showNmf = vis.nmf;
+    if (vis.model !== undefined) this.showModel = vis.model;
     if (vis.mesh !== undefined) this.showMesh = vis.mesh;
     if (vis.axes !== undefined) this.showAxes = vis.axes;
     this.draw();
@@ -182,7 +182,7 @@ export class Scene3D {
     /** @type {Vec3[]} */
     const flyPts = [];
     for (const p of this.pts3d ?? []) if (p) flyPts.push(p);
-    for (const p of this.nmf3d ?? []) if (p) flyPts.push(p);
+    for (const p of this.model3d ?? []) if (p) flyPts.push(p);
     const focus = flyPts.length ? flyPts : camPts; // centre on the fly when present
     const all = [...camPts, ...flyPts];
     if (all.length === 0) {
@@ -302,11 +302,11 @@ export class Scene3D {
         (i) => this.colors[i] || "#fff",
         (k, a) => this.edgeColors[k] || this.colors[a] || "#fff",
       );
-    if (this.showNmf) this.drawSkeleton(this.nmf3d, basis, () => NMF_COLOR);
+    if (this.showModel) this.drawSkeleton(this.model3d, basis, () => MODEL_COLOR);
     if (this.showCameras) this.cameras.forEach((cam) => this.drawCamera(cam, basis));
   }
 
-  // Composite the posed NMF mesh (WebGL) translucently behind the schematic. The
+  // Composite the posed model mesh (WebGL) translucently behind the schematic. The
   // orbit camera matches `project()`, so it lands pixel-aligned with the skeletons.
   /** @param {number} cssW @param {number} cssH */
   drawMesh(cssW, cssH) {
@@ -352,9 +352,10 @@ export class Scene3D {
   }
 
   /**
-   * Draw a skeleton (the shared bones) from world points, each joint/bone coloured by
-   * `colorAt(pointIndex)`. Used for both the triangulated pose (palette) and the
-   * fitted NMF skeleton (mint).
+   * Draw a skeleton (the shared edges) from world points, each joint coloured by
+   * `colorAt(pointIndex)` and each edge by `edgeColorAt(edgeIndex, sourcePoint)`. Used
+   * for both the triangulated pose (palette) and the fitted model skeleton (mint) --
+   * which passes no edge accessor, so every edge takes the one flat colour.
    * @param {Point3[] | null} pts
    * @param {{eye: Vec3, forward: Vec3, right: Vec3, up: Vec3}} basis
    * @param {(i: number) => string} colorAt

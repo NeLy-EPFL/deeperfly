@@ -12,7 +12,7 @@ from deeperfly.pipeline.fingerprint import (
     RunRecord,
     cameras_source,
     fingerprint_diff,
-    nmf_source,
+    model_source,
     pose_sources,
     pts2d_source,
     pts3d_source,
@@ -310,11 +310,11 @@ def test_triangulation_fingerprint_embeds_config_rig_only_without_ba(store, came
     ) == stage_fingerprint("triangulation", geom, enabled, store)
 
 
-def test_pts3d_and_nmf_source_selectors(store, cameras):
+def test_pts3d_and_model_source_selectors(store, cameras):
     config = _cfg()
     enabled = {n: True for n in config.stage_flags()}
     assert pts3d_source(enabled, store) is None  # nothing stored
-    assert nmf_source(enabled, store) is None
+    assert model_source(enabled, store) is None
 
     _seed_pose2d(store, cameras)
     v, t, n = len(cameras), 2, 38
@@ -331,8 +331,8 @@ def test_pts3d_and_nmf_source_selectors(store, cameras):
     store.write_ik(
         angles=np.zeros((t, 4)), angle_names=["a"] * 4, model_pts3d=np.zeros((t, n, 3))
     )
-    assert nmf_source(enabled, store) == "inverse_kinematics"
-    assert nmf_source(dict(enabled, inverse_kinematics=False), store) is None
+    assert model_source(enabled, store) == "inverse_kinematics"
+    assert model_source(dict(enabled, inverse_kinematics=False), store) is None
 
 
 def test_inverse_kinematics_fingerprint_tracks_template_and_bounds(store, cameras):

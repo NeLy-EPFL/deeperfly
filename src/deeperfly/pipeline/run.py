@@ -670,7 +670,7 @@ def _run_inverse_kinematics(ctx: _RunContext) -> bool:
         # numpy left in it.
         body_plan=None if result.body_plan is None else result.body_plan.to_json(),
         meta={
-            "template": ctx.config.inverse_kinematics.template,
+            "model": ctx.config.inverse_kinematics.model,
             "solver": "quickik",
             "alignment": result.alignment.to_json(),
             "chain_scales": result.chain_scales,

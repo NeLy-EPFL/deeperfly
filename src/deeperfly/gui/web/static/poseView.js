@@ -39,7 +39,7 @@
 // emphasis are drawn once on top by drawJointOverlay, anchored at the joint's best visible
 // position, so they still read on a joint that has no GT yet (only a detected / projected / seed).
 //
-// The fitted NMF model is a read-only reference: a faint mint under-glow *beneath* the skeleton
+// The fitted model is a read-only reference: a faint mint under-glow *beneath* the skeleton
 // (so the point colours always read on top) with its *disagreement* against the placed point
 // drawn back on top as a per-joint "leash" -- silent at coincidence, growing with the residual.
 // With the combined skeleton toggled off a source/reference instead draws in its own bright,
@@ -90,7 +90,7 @@ const MARQUEE_FILL = "rgba(63,208,255,0.12)"; // its translucent fill
 const MARQUEE_ADD_STROKE = "rgba(124,252,0,0.9)"; // Ctrl/⌘-drag = add: lime, matching the add affordance
 const MARQUEE_ADD_FILL = "rgba(124,252,0,0.14)"; // its translucent fill
 
-// The fitted NMF model is a read-only reference overlay (mint) drawn UNDERNEATH the editable
+// The fitted model is a read-only reference overlay (mint) drawn UNDERNEATH the editable
 // skeleton, so the point colours always own the top layer instead of being painted over. It is
 // drawn as a soft under-glow skeleton whose overall shape is the ambient signal, with its
 // *disagreement* with the placed point at one joint -- a "leash" from the point to where the
@@ -99,9 +99,9 @@ const MARQUEE_ADD_FILL = "rgba(124,252,0,0.14)"; // its translucent fill
 // is instead its own independent overlay, the reprojected skeleton -- see drawReprojection.) On
 // its own, each overlay is identifiable without relying on colour: the editable skeleton is a
 // solid line with a filled disc, the reprojected skeleton a dashed line with hollow rings, the
-// NMF a dotted line with a hollow square.
-const NMF_RGB = "80,230,180"; // mint
-const GHOST_ALPHA = 0.4; // the NMF reference's soft under-glow (a faint halo beneath the palette)
+// the model a dotted line with a hollow square.
+const MODEL_RGB = "80,230,180"; // mint
+const GHOST_ALPHA = 0.4; // the model reference's soft under-glow (a faint halo beneath the palette)
 const LEASH_MIN_PX = 2.5; // below this editable<->reference screen gap the leash needs no connector line
 const LEASH_FULL_PX = 16; // at/above this gap the reference marker + leash reach full emphasis
 
@@ -119,7 +119,7 @@ const PROJ_DASH = [7, 5]; // ... and dashed (screen px on/off), the "derived, no
 // NOTHING else to grab (no GT / detected / reprojected point) -- a joint triangulation rejected,
 // or one the detector never fired. A small dashed hollow ring with a faint centre dot in the
 // joint's own colour, at reduced opacity, so it reads as "not observed -- drag me to place",
-// clearly apart from the observed (filled disc), reprojected (solid hollow ring) and NMF markers.
+// clearly apart from the observed (filled disc), reprojected (solid hollow ring) and model markers.
 const PLACEHOLDER_ALPHA = 0.55; // the Unplaced seed's opacity: faint, but grabbable at a glance
 const PLACEHOLDER_DASH = [2, 3]; // its dashed hollow ring (screen px on/off)
 
@@ -139,7 +139,7 @@ const ABSENT_MARK_PX = 4; // half-arm of the cross, screen px (constant under zo
 // about it. A single BAR through the joint, because the "excluded" idiom is a strike-through and
 // because a bar is the one shape the vocabulary has left: rings are sources (lime GT, dark
 // detected, hollow derived, cyan selected, amber warning), a cross is absent, a dashed ring is
-// unplaced, a dotted square is the NMF. Achromatic like the tombstone -- this is a statement about
+// unplaced, a dotted square is the model. Achromatic like the tombstone -- this is a statement about
 // the dataset, not about the animal -- and drawn as a dark casing under a light top pass so it
 // reads on a pale wing as well as on a dark background.
 const HIDDEN_COLOR = "#e6eaf0";
@@ -200,7 +200,7 @@ export class PoseView {
     /** @type {HTMLImageElement | null} */
     this.img = null;
     /** @type {HTMLCanvasElement | null} */
-    this.meshImg = null; // posed NMF mesh overlay (this view's copy), drawn when meshVisible
+    this.meshImg = null; // posed model mesh overlay (this view's copy), drawn when meshVisible
     /** @type {HTMLCanvasElement | null} */
     this.meshCanvas = null; // backing 2D canvas the GPU render is copied into
     /** @type {[number, number][]} */
@@ -216,7 +216,7 @@ export class PoseView {
     /** @type {Point[] | null} */
     this.detected = null; // raw detector prediction per point (display only) = the "detected" source
     /** @type {Point[] | null} */
-    this.nmf = null; // fitted NMF model reprojection (display only), drawn when nmfVisible
+    this.model = null; // fitted model reprojection (display only), drawn when modelVisible
     /** @type {Point[] | null} */
     this.placeholder = null; // seed position per joint ABSENT from this view (no GT / detected / projected), a faint draggable ghost so a GT can still be placed; null elsewhere
     /** @type {boolean[] | null} */
@@ -249,7 +249,7 @@ export class PoseView {
     // The "Unplaced" layer: faint, draggable ghost seeds for joints a view has nothing
     // to grab for (no GT / detected / reprojected point) -- e.g. a joint triangulation
     // rejected. On by default; dragging a ghost authors GT like any other seed.
-    this.nmfVisible = false;
+    this.modelVisible = false;
     this.meshVisible = false;
     this.labelsVisible = false;
     // A master "hide everything" switch (the `h` peek): when set, draw() renders only the frame
@@ -423,7 +423,7 @@ export class PoseView {
     img.src = url;
   }
 
-  /** @param {boolean} visible  whether the posed NMF mesh is drawn over the frame */
+  /** @param {boolean} visible  whether the posed model mesh is drawn over the frame */
   setMeshVisible(visible) {
     if (this.meshVisible === visible) return;
     this.meshVisible = visible;
@@ -495,7 +495,7 @@ export class PoseView {
    * (3-5 full-canvas redraws per view per reply); a live 3D drag streams many
    * replies, so folding them into one draw keeps the canvas from thrashing.
    *
-   * A field left `undefined` is kept as-is: the server omits `nmf` on mid-drag
+   * A field left `undefined` is kept as-is: the server omits `model` on mid-drag
    * replies (it skips the costly per-frame re-fit), so the model overlay just holds
    * until the drag settles instead of flickering off.
    *
@@ -506,7 +506,7 @@ export class PoseView {
    * @param {(number | null)[] | null} [data.conf]  per-point detector confidence (low fades the fill)
    * @param {Point[] | null} [data.latent]  the latent 3D reprojection to ghost, or null
    * @param {Point[] | null} [data.detected]  the raw detector prediction (the "detected" source), or null
-   * @param {Point[] | null} [data.nmf]  the fitted NMF model reprojection to ghost, or null
+   * @param {Point[] | null} [data.model]  the fitted model reprojection to ghost, or null
    * @param {Point[] | null} [data.placeholder]  seed positions for joints with nothing else to grab in this view (the "Unplaced" ghosts), or null
    * @param {boolean[] | null} [data.absent]  per-point "not on this animal" (amputated); drawn as a tombstone, never draggable
    * @param {number[] | null} [data.gtViews]  per-point count of views carrying GT this frame (the label-coverage check)
@@ -536,7 +536,7 @@ export class PoseView {
     // The raw detections are static within a frame, so the mid-drag stream omits them
     // (undefined) and this view keeps the set from the last plain/navigation fetch.
     if (data.detected !== undefined) this.detected = data.detected;
-    if (data.nmf !== undefined) this.nmf = data.nmf;
+    if (data.model !== undefined) this.model = data.model;
     // Placeholder seeds depend on the frame's GT / detection / 3D state, so they ride
     // the verbose (settle / navigation) reply -- omitted (undefined) mid-drag, keep as-is.
     if (data.placeholder !== undefined) this.placeholder = data.placeholder;
@@ -623,10 +623,10 @@ export class PoseView {
     if (this.coverVisible) this.draw();
   }
 
-  /** @param {boolean} visible  whether the fitted NMF model is ghosted on top */
-  setNmfVisible(visible) {
-    if (this.nmfVisible === visible) return;
-    this.nmfVisible = visible;
+  /** @param {boolean} visible  whether the fitted model is ghosted on top */
+  setModelVisible(visible) {
+    if (this.modelVisible === visible) return;
+    this.modelVisible = visible;
     this.draw();
   }
 
@@ -707,11 +707,11 @@ export class PoseView {
     }
     // "Hide all overlays" (the `h` peek): a momentary, non-destructive look at the raw frame.
     // Everything below draws an overlay, so stopping here leaves just the image -- the mesh,
-    // reprojection, NMF reference, skeleton(s), per-joint marks, reprojection warnings, and the
+    // reprojection, model reference, skeleton(s), per-joint marks, reprojection warnings, and the
     // marquee all vanish. The per-layer toggles are untouched, so clearing the peek restores
     // exactly what was shown; editing is gated too (see canGrab), so nothing can move unseen.
     if (this.overlaysHidden) return;
-    // The posed NMF mesh sits between the frame and the editable skeleton, so the
+    // The posed model mesh sits between the frame and the editable skeleton, so the
     // keypoints stay legible on top of it. The GPU renders the silhouette opaque;
     // compositing it at reduced alpha makes it a translucent overlay.
     if (this.meshVisible && this.meshImg) {
@@ -736,9 +736,9 @@ export class PoseView {
     // cell. That is also why the layer lost its toggle: the state it serves lasts from arriving
     // on a frame until the first keystroke.
     if (!this.instanceMode && this.placeholder) this.drawPlaceholders();
-    // Beneath the skeleton(s), the NMF model's faint under-glow (ghosted so the point colours own
+    // Beneath the skeleton(s), the model's faint under-glow (ghosted so the point colours own
     // the top layer when a skeleton sits on it; drawn bright + standalone when nothing does).
-    if (this.nmfVisible && this.nmf) this.drawReference(this.nmf, NMF_RGB, anySkeleton);
+    if (this.modelVisible && this.model) this.drawReference(this.model, MODEL_RGB, anySkeleton);
     // The annotation skeleton: one skeleton, each joint at its ground-truth pixel or at the
     // position derived for it. The detections are a reference overlay with their own toggle.
     this.drawSkeleton();
@@ -746,8 +746,8 @@ export class PoseView {
     // name labels, and hover emphasis -- each anchored at the joint's best visible position, so a
     // selected/hovered joint with no GT yet (only detected / projected) still reads.
     this.drawJointOverlay();
-    // The NMF's disagreement with the placed point, drawn back on top as an on-demand leash.
-    if (this.nmfVisible && this.nmf && anySkeleton) this.drawLeashes(this.nmf, NMF_RGB, "square", true);
+    // The model's disagreement with the placed point, drawn back on top as an on-demand leash.
+    if (this.modelVisible && this.model && anySkeleton) this.drawLeashes(this.model, MODEL_RGB, "square", true);
     // The reprojection-distance warning, drawn topmost among the annotations so a joint whose 2D
     // label disagrees with the multi-view 3D is impossible to miss. Needs a 3D solve (this.latent)
     // but is independent of the Projected overlay toggle -- the reprojection data is always here.
@@ -1387,7 +1387,7 @@ export class PoseView {
     ctx.restore();
   }
 
-  // A reference overlay (the NMF model) as a receding under-glow beneath the editable
+  // A reference overlay (the model) as a receding under-glow beneath the editable
   // skeleton: a soft, translucent, wider skeleton in the overlay's colour whose only
   // job is to give the reference's overall shape without competing with the palette on
   // top. When `ghost` is false (the editable skeleton is hidden) it instead draws in a
@@ -1405,7 +1405,7 @@ export class PoseView {
       // A faint, wide, round-capped glow: at coincidence it reads as a soft halo behind
       // the palette; where the reference bends away it shows as colour peeking out.
       ctx.strokeStyle = `rgba(${rgb},${GHOST_ALPHA})`;
-      ctx.lineWidth = BONE_WIDTH + 2;
+      ctx.lineWidth = EDGE_WIDTH + 2;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.beginPath();
@@ -1424,7 +1424,7 @@ export class PoseView {
     }
     // Bright, on-its-own style: the line style alone (dashed vs dotted) tells the two
     // overlays apart with the palette gone.
-    const square = rgb === NMF_RGB;
+    const square = rgb === MODEL_RGB;
     ctx.strokeStyle = `rgba(${rgb},0.95)`;
     ctx.lineWidth = 1.5;
     ctx.setLineDash(square ? [1.5, 3.5] : [5, 3]);

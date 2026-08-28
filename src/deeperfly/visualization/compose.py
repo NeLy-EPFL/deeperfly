@@ -304,17 +304,17 @@ class Sources:
     pts2d: Float[np.ndarray, "V T P 2"] | None = None
     pts3d: Float[np.ndarray, "T P 3"] | None = None
     conf: Float[np.ndarray, "V T P"] | None = None
-    nmf_pts3d: Float[np.ndarray, "T P 3"] | None = None
-    nmf_angles: Float[np.ndarray, "T D"] | None = None
-    nmf_angle_names: list[str] | None = None
-    nmf_head_scale: float = 1.0
-    nmf_abdomen_scale: float = 1.0
+    model_pts3d: Float[np.ndarray, "T P 3"] | None = None
+    model_angles: Float[np.ndarray, "T D"] | None = None
+    model_angle_names: list[str] | None = None
+    #: ``chain name -> multiplier`` overlay size per fitted chain, from the IK stage.
+    model_chain_scales: dict[str, float] = field(default_factory=dict)
     #: ``chain name -> (3,)`` model-unit shift of a chain's base onto its measured
     #: landmark, from the IK stage. The angles were fitted about the shifted pivot, so
     #: the overlay has to be drawn about it too.
-    nmf_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
-    nmf_body_scale: float = 1.0
-    nmf_hide_parts: tuple[str, ...] = ("wings",)
+    model_chain_offsets: dict[str, np.ndarray] = field(default_factory=dict)
+    model_body_scale: float = 1.0
+    model_hide_parts: tuple[str, ...] = ("wings",)
     #: Per-stage points, for panels that name a ``stage`` instead of taking whatever the
     #: result resolved to. Keyed by stage name (``"pose2d"``, ``"triangulation"``,
     #: ``"eks"``, ...); a stage absent from the file is simply absent here, and asking
@@ -379,7 +379,7 @@ class Sources:
         self._window_cache[key] = box
         return box
 
-    def nmf_posed(self, t: int) -> tuple[np.ndarray, np.ndarray]:
+    def model_posed(self, t: int) -> tuple[np.ndarray, np.ndarray]:
         """The posed mesh ``(verts, drawable_faces)`` for frame ``t`` (data-estimated scale).
 
         Memoised on the most recent frame so every view of that frame reuses one
@@ -396,34 +396,32 @@ class Sources:
         """
         key = (
             int(t),
-            self.nmf_head_scale,
-            self.nmf_abdomen_scale,
-            self.nmf_body_scale,
-            self.nmf_hide_parts,
+            tuple(sorted((k, float(v)) for k, v in self.model_chain_scales.items())),
+            self.model_body_scale,
+            self.model_hide_parts,
             tuple(
                 sorted(
                     (k, tuple(float(x) for x in np.asarray(v).reshape(3)))
-                    for k, v in self.nmf_chain_offsets.items()
+                    for k, v in self.model_chain_offsets.items()
                 )
             ),
         )
         hit = self._pose_cache.get(key)
         if hit is not None:
             return hit
-        from ..inverse_kinematics.mesh import load_nmf_mesh
+        from ..inverse_kinematics.mesh import load_model_mesh
 
-        mesh = load_nmf_mesh()
-        angles = None if self.nmf_angles is None else self.nmf_angles[t]
+        mesh = load_model_mesh()
+        angles = None if self.model_angles is None else self.model_angles[t]
         verts, valid = mesh.pose(
-            self.nmf_pts3d[t],
+            self.model_pts3d[t],
             angles,
-            self.nmf_angle_names,
-            head_scale=self.nmf_head_scale,
-            abdomen_scale=self.nmf_abdomen_scale,
-            chain_offsets=self.nmf_chain_offsets,
-            body_scale=self.nmf_body_scale,
+            self.model_angle_names,
+            chain_scales=self.model_chain_scales,
+            chain_offsets=self.model_chain_offsets,
+            body_scale=self.model_body_scale,
         )
-        posed = (verts, valid & ~mesh.hidden_face_mask(self.nmf_hide_parts))
+        posed = (verts, valid & ~mesh.hidden_face_mask(self.model_hide_parts))
         self._pose_cache.clear()  # only the current frame's pose is reused
         self._pose_cache[key] = posed
         return posed
@@ -571,8 +569,8 @@ class Sources:
     def n_frames(self) -> int:
         if self.pts3d is not None:
             return int(self.pts3d.shape[0])
-        if self.nmf_pts3d is not None:
-            return int(self.nmf_pts3d.shape[0])
+        if self.model_pts3d is not None:
+            return int(self.model_pts3d.shape[0])
         if self.pts2d is not None:
             return int(self.pts2d.shape[1])
         if self.frames:
@@ -617,14 +615,14 @@ def _op_skeleton_3d(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> N
     )
 
 
-def _op_skeleton_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
-    if src.nmf_pts3d is None:
-        raise ValueError("skeleton_nmf panel needs Sources.nmf_pts3d")
-    # The fitted model joints are in the skeleton's point order with its bones, so
+def _op_skeleton_model(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
+    if src.model_pts3d is None:
+        raise ValueError("skeleton_model panel needs Sources.model_pts3d")
+    # The fitted model joints are in the skeleton's point order with its edges, so
     # the 3D skeleton drawer reprojects them into the view directly.
     _cv.draw_skeleton_3d(
         canvas,
-        src.nmf_pts3d[t],
+        src.model_pts3d[t],
         src.camera(panel.view, panel.crop),
         src.skeleton,
         x0=panel.x0,
@@ -634,25 +632,25 @@ def _op_skeleton_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> 
     )
 
 
-def _op_mesh_nmf(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
-    if src.nmf_pts3d is None:
-        raise ValueError("mesh_nmf panel needs Sources.nmf_pts3d")
-    from ..inverse_kinematics.mesh import load_nmf_mesh
+def _op_mesh_model(canvas: np.ndarray, panel: Panel, src: Sources, t: int) -> None:
+    if src.model_pts3d is None:
+        raise ValueError("mesh_model panel needs Sources.model_pts3d")
+    from ..inverse_kinematics.mesh import load_model_mesh
     from . import mesh as _mesh
 
-    nmf = load_nmf_mesh()
+    mesh = load_model_mesh()
     # Pose once per frame (cached on Sources): every view reuses the same vertex
     # array, so the GPU rasterizer uploads the frame's geometry only once. The
     # head/abdomen size is data-estimated by the IK stage (not a panel knob).
     # Already has the configured hidden parts (default: wings) dropped, and every panel of
     # this frame gets the SAME arrays -- which is what lets the rasterizer reuse the upload.
-    verts, valid = src.nmf_posed(t)
+    verts, valid = src.model_posed(t)
     view_h, view_w = src.view_size(panel.view, panel.crop)
     _mesh.draw_mesh_overlay(
         canvas,
         verts,
-        nmf.faces,
-        nmf.face_rgb,
+        mesh.faces,
+        mesh.face_rgb,
         valid,
         src.camera(panel.view, panel.crop),
         view_h,
@@ -669,8 +667,8 @@ OPS: dict[str, Callable[[np.ndarray, Panel, Sources, int], None]] = {
     "imshow": _op_imshow,
     "skeleton_2d": _op_skeleton_2d,
     "skeleton_3d": _op_skeleton_3d,
-    "skeleton_nmf": _op_skeleton_nmf,
-    "mesh_nmf": _op_mesh_nmf,
+    "skeleton_model": _op_skeleton_model,
+    "mesh_model": _op_mesh_model,
 }
 
 
@@ -708,9 +706,9 @@ _OP_STYLE: dict[str, frozenset[str]] = {
             "outline_thickness",
         }
     ),
-    "mesh_nmf": frozenset({"alpha"}),
+    "mesh_model": frozenset({"alpha"}),
 }
-_OP_STYLE["skeleton_nmf"] = _OP_STYLE["skeleton_3d"]
+_OP_STYLE["skeleton_model"] = _OP_STYLE["skeleton_3d"]
 
 #: Every style key any op accepts -- what makes an unknown one a named error.
 _STYLE_KEYS = frozenset().union(*_OP_STYLE.values())
@@ -736,9 +734,14 @@ def _layer_style(draw: str, layer: dict, loc: str) -> dict:
     style = {k: v for k, v in layer.items() if k not in _RESERVED}
     unknown = sorted(set(style) - _STYLE_KEYS)
     if unknown:
+        hint = "".join(
+            f"\n  {k}: {RENAMED_STYLE_KEYS[k]}"
+            for k in unknown
+            if k in RENAMED_STYLE_KEYS
+        )
         raise ValueError(
             f"{loc} layer {draw!r} has unknown style key(s) {unknown}; "
-            f"allowed: {sorted(_STYLE_KEYS)}"
+            f"allowed: {sorted(_STYLE_KEYS)}" + hint
         )
     return {k: v for k, v in style.items() if k in _OP_STYLE[draw]}
 
@@ -1224,7 +1227,7 @@ def _panel_target(
 #: Draw ops that are NOT thread-safe (a shared GPU/OpenGL rasterizer context), so a
 #: spec using one is composited serially even when ``workers > 1``. The OpenCV ops
 #: (imshow, skeleton_*) release the GIL and composite fine in parallel.
-_GL_OPS = frozenset({"mesh_nmf"})
+_GL_OPS = frozenset({"mesh_model"})
 
 
 def _spec_is_thread_safe(spec: VideoSpec) -> bool:

@@ -50,8 +50,8 @@ class Session:
     image_sizes
         ``camera_name -> (height, width)`` recorded by ``pose2d`` (or ``{}``),
         used to size the canvases before the first frame loads.
-    nmf_hide_parts
-        Body parts hidden from the NMF mesh overlay (``["wings"]`` by default; from
+    model_hide_parts
+        Body parts hidden from the model mesh overlay (``["wings"]`` by default; from
         ``[gui].mesh_hide`` in the run config). The render videos carry their own
         ``[visualization].mesh_hide`` list.
     """
@@ -63,7 +63,7 @@ class Session:
     n_frames: int
     identity: dict = field(default_factory=dict)
     image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
-    nmf_hide_parts: tuple[str, ...] = ("wings",)
+    model_hide_parts: tuple[str, ...] = ("wings",)
     # Filled in by __post_init__ when not given, so every Session -- however it was
     # constructed -- has a concrete path to look for the suggestions sidecar at.
     suggestions_path: Path | None = None
@@ -98,7 +98,7 @@ class Session:
         identity: dict | None = None,
         footage: dict | None = None,
         image_sizes: dict[str, tuple[int, int]] | None = None,
-        nmf_hide_parts: "Sequence[str]" = ("wings",),
+        model_hide_parts: "Sequence[str]" = ("wings",),
         project_root: Path | None = None,
         recording_slug: str | None = None,
     ) -> Session:
@@ -130,7 +130,7 @@ class Session:
             n_frames=int(n_frames),
             identity=identity,
             image_sizes=dict(image_sizes or {}),
-            nmf_hide_parts=tuple(nmf_hide_parts),
+            model_hide_parts=tuple(model_hide_parts),
             project_root=None if project_root is None else Path(project_root),
             recording_slug=recording_slug,
         )

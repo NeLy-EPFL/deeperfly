@@ -5,7 +5,7 @@ takes from a recording, none of which needs the optional QuickIK extra. The solv
 itself lives in ``test_inverse_kinematics_quickik.py``, and the body plan and forward
 kinematics in ``test_ik_forward_bodyplan.py``.
 
-The split is not cosmetic: the mesh overlay, the reprojected NMF skeleton and the GUI's
+The split is not cosmetic: the mesh overlay, the reprojected model skeleton and the GUI's
 static-fit path all run on a plain install, so the code they need must be tested
 without the extra installed.
 """
@@ -33,9 +33,8 @@ from deeperfly.inverse_kinematics.align import (
     body_alignment,
     mirror_leg_pairs,
     symmetrize_seglens,
-    to_local,
-    to_world,
 )
+from deeperfly.inverse_kinematics.pack import ModelPack
 from deeperfly.inverse_kinematics.template import KinematicTemplate
 from deeperfly.skeleton import Skeleton
 
@@ -51,22 +50,6 @@ def fly() -> Skeleton:
 
 
 # -- alignment ---------------------------------------------------------------
-
-
-def test_alignment_frame_is_orthonormal(template, fly, rng):
-    """The body frame recovered from the coxae is a proper rotation, however posed."""
-    pts3d, _ = _synth_pose(template, fly, rng, r_body=_rot_z(0.5))
-    rb = body_alignment(pts3d, fly, template).r_body
-    np.testing.assert_allclose(rb.T @ rb, np.eye(3), atol=1e-6)
-    np.testing.assert_allclose(np.linalg.det(rb), 1.0, atol=1e-6)
-
-
-def test_to_local_to_world_round_trip(rng):
-    r = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-    origin = rng.normal(size=3)
-    pts = rng.normal(size=(5, 3))
-    back = to_world(to_local(pts, origin, r), origin, r)
-    np.testing.assert_allclose(back, pts, atol=1e-10)
 
 
 def test_measured_seglens_recovered(template, fly, rng):
@@ -302,6 +285,87 @@ def test_template_unknown_name_rejected():
         KinematicTemplate.load("not-a-template")
 
 
+def test_a_leg_declares_its_side_rather_than_spelling_it_in_its_name():
+    """The failure this replaces is silent: a wrong side mirrors axes and bounds.
+
+    ``T1_left`` does not start with an ``l``, so the prefix rule calls it a right leg
+    and hands it the mirrored ThC axes -- a fit that converges on a wrong model, with
+    no error anywhere. The declaration is read instead of the name.
+    """
+    spec = {
+        "name": "t",
+        "legs": [{"name": "T1_left", "side": "l"}, "T1_right"],
+        "joints": [
+            {
+                "name": "ThC",
+                "body": "{leg}_coxa",
+                "joint": "c_thorax-{leg}_coxa",
+                "dofs": [{"name": "yaw", "axis": [1.0, 0.0, 0.0], "mirror": True}],
+            }
+        ],
+    }
+    t = KinematicTemplate.from_spec(spec, binding=None)
+    declared, inferred = t.legs
+    assert (declared.side, inferred.side) == ("l", "r")
+    # ...and the side is what decides the mirrored axis, so the two differ in sign.
+    assert declared.joints[0].dofs[0].axis == (1.0, 0.0, 0.0)
+    assert inferred.joints[0].dofs[0].axis == (-1.0, 0.0, 0.0)
+
+
+def test_a_dof_names_its_own_angle_and_a_joint_its_own_rotation():
+    """``<joint>-<dof>`` is flygym's convention, so a model may name DOFs its own way."""
+    spec = {
+        "name": "t",
+        "legs": [{"name": "T1", "side": "l"}],
+        "joints": [
+            {
+                "name": "ThC",
+                "body": "{leg}_coxa",
+                "joint": "c_thorax-{leg}_coxa",
+                "quat": [0.0, 1.0, 0.0, 0.0],
+                "dofs": [
+                    {
+                        "name": "abduct",
+                        "axis": [1.0, 0.0, 0.0],
+                        "angle": "coxa_abduct_{leg}",
+                    }
+                ],
+            }
+        ],
+    }
+    t = KinematicTemplate.from_spec(spec, rest_axis=(0.0, 1.0, 0.0), binding=None)
+    assert t.dof_names == ["coxa_abduct_T1"]
+    assert t.rest_axis == (0.0, 1.0, 0.0)  # the pack's, not the template file's
+    assert t.legs[0].joints[0].quat == (0.0, 1.0, 0.0, 0.0)
+    # The packaged pack writes neither, and keeps flygym's convention and -z.
+    packed = KinematicTemplate.load(
+        "neuromechfly", rest_axis=ModelPack.load().rest_axis
+    )
+    assert packed.rest_axis == (0.0, 0.0, -1.0)
+    assert packed.dof_names[0] == "c_thorax-lf_coxa-yaw"
+    assert all(
+        j.quat == (1.0, 0.0, 0.0, 0.0) for leg in packed.legs for j in leg.joints
+    )
+
+
+def test_leg_fk_reads_the_rest_axis_and_the_joint_quaternions():
+    """The two are the plan's own convention, so ``leg_fk`` must apply them like it."""
+    from deeperfly.inverse_kinematics.forward import leg_fk
+
+    seglens = np.array([0.0, 2.0])
+    angles, axes, counts = np.zeros(1), np.array([[1.0, 0.0, 0.0]]), (1, 0)
+    # Rest pose down -z (the default), then along +y once the model says so.
+    np.testing.assert_allclose(leg_fk(angles, axes, seglens, counts)[1], [0, 0, -2])
+    np.testing.assert_allclose(
+        leg_fk(angles, axes, seglens, counts, rest_axis=[0.0, 1.0, 0.0])[1], [0, 2, 0]
+    )
+    # A 180-degree turn about x at the root sends the same segment the other way.
+    flip = np.array([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+    np.testing.assert_allclose(
+        leg_fk(angles, axes, seglens, counts, quats=flip)[1], [0, 0, 2], atol=1e-15
+    )
+
+
 # -- NeuroMechFly mesh overlay -----------------------------------------------
 
 
@@ -317,32 +381,32 @@ def _terminal_leg_slots(mesh) -> list[int]:
     ]
 
 
-def test_nmf_mesh_pose_at_neutral_is_identity():
+def test_model_mesh_pose_at_neutral_is_identity():
     """Posing at the model's own neutral keypoints reproduces the baked mesh.
 
     The terminal leg segment (the tarsus) is the one exception: it is stretched to
-    reach the pretarsus keypoint (see :meth:`NmfMesh._dist_anchor`), so its vertices are
-    excluded here and checked by :func:`test_nmf_mesh_tarsus_tip_reaches_pretarsus`.
+    reach the pretarsus keypoint (see :meth:`ModelMesh._dist_anchor`), so its vertices are
+    excluded here and checked by :func:`test_model_mesh_tarsus_tip_reaches_pretarsus`.
     """
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     verts, valid = mesh.pose(mesh.kp_neutral)
     assert valid.all()
     keep = ~np.isin(mesh.vert_slot, _terminal_leg_slots(mesh))
     np.testing.assert_allclose(verts[keep], mesh.vertices[keep], atol=1e-3)
 
 
-def test_nmf_mesh_tarsus_tip_reaches_pretarsus():
+def test_model_mesh_tarsus_tip_reaches_pretarsus():
     """The terminal leg segment's mesh tip lands on its pretarsus keypoint.
 
     The baked tarsus mesh stops ~11% short of the pretarsus, so the model skeleton's pretarsus
     juts past the mesh tip; skinning stretches the segment so its farthest vertex
     reaches the pretarsus keypoint (where the skeleton draws it).
     """
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     verts, _ = mesh.pose(mesh.kp_neutral)
     terminal = _terminal_leg_slots(mesh)
     assert len(terminal) == 6  # one tarsus per leg
@@ -355,11 +419,11 @@ def test_nmf_mesh_tarsus_tip_reaches_pretarsus():
         assert reach == pytest.approx(1.0, abs=1e-3)  # was ~0.89 (11% short)
 
 
-def test_nmf_mesh_drops_occluded_segment():
+def test_model_mesh_drops_occluded_segment():
     """A leg segment with missing endpoints is dropped; the rest still poses."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     pts = mesh.kp_neutral.copy()
     bone = int(np.flatnonzero(mesh.slot_prox >= 0)[0])  # first leg-bone slot
     pts[mesh.slot_prox[bone]] = np.nan  # NaN one leg bone's endpoints
@@ -371,27 +435,27 @@ def test_nmf_mesh_drops_occluded_segment():
     assert np.isfinite(verts[body]).all()
 
 
-def test_nmf_mesh_follows_a_translated_pose():
+def test_model_mesh_follows_a_translated_pose():
     """Shifting every keypoint shifts the whole posed mesh by the same offset."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     shift = np.array([3.0, -2.0, 1.0])
     base, _ = mesh.pose(mesh.kp_neutral)
     verts, _ = mesh.pose(mesh.kp_neutral + shift)
     np.testing.assert_allclose(verts, base + shift, atol=1e-3)
 
 
-def test_nmf_mesh_fixed_body_scale_holds_size_constant():
+def test_model_mesh_fixed_body_scale_holds_size_constant():
     """A fixed ``body_scale`` places the body at that size regardless of the coxae."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     # Spread the coxae out by 1.5x about their centroid: a per-frame fit would scale
     # the body up ~1.5x, but a fixed body_scale must keep the rigid body's size.
-    coxae = mesh.kp_neutral[mesh.coxa_idx]
+    coxae = mesh.kp_neutral[mesh.anchor_idx]
     pts = mesh.kp_neutral.copy()
-    pts[mesh.coxa_idx] = coxae.mean(0) + 1.5 * (coxae - coxae.mean(0))
+    pts[mesh.anchor_idx] = coxae.mean(0) + 1.5 * (coxae - coxae.mean(0))
     _, s_free, _ = mesh._body_transform(pts)
     _, s_fixed, _ = mesh._body_transform(pts, fixed_scale=0.9)
     assert s_free == pytest.approx(1.5, rel=1e-3)  # per-frame fit follows the spread
@@ -404,11 +468,11 @@ def test_nmf_mesh_fixed_body_scale_holds_size_constant():
     np.testing.assert_allclose(span_fixed / span_free, 0.9 / 1.5, rtol=1e-6)
 
 
-def test_nmf_mesh_hidden_face_mask_hides_parts():
+def test_model_mesh_hidden_face_mask_hides_parts():
     """``hidden_face_mask`` selects exactly the faces of the named body parts."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     assert "wings" in mesh.part_names  # the baked asset carries part labels
     none_hidden = mesh.hidden_face_mask([])
     assert not none_hidden.any() and none_hidden.shape == (mesh.faces.shape[0],)
@@ -818,12 +882,12 @@ def test_estimate_chain_scale_defaults_to_one_when_unobserved():
     assert estimate_chain_scale(local, chain) == 1.0
 
 
-def test_nmf_mesh_articulates_head_and_abdomen_from_angles():
+def test_model_mesh_articulates_head_and_abdomen_from_angles():
     """Passing chain angles bends the head/abdomen mesh nodes; omitting them is rigid."""
     from deeperfly.inverse_kinematics.articulation import load_articulation
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     art = load_articulation()
     names = art.dof_names
     angles = np.zeros(len(names))

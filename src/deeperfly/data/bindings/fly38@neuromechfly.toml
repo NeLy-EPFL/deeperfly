@@ -1,0 +1,89 @@
+# fly38 on NeuroMechFly: where each tracked point sits on the model.
+#
+# The ADAPTOR between one skeleton and one model, and the one artifact where a skeleton
+# point name and a model body name are allowed to appear together. A skeleton
+# (data/skeletons/fly38.toml) names no model body; a model pack
+# (data/models/neuromechfly/) names no skeleton point. Neither alone can say that
+# `abdomen0` sits 0.37 mm behind and 0.34 mm above the origin of `c_abdomen12` -- that
+# is a fact about how fly38 was LABELLED against NeuroMechFly, true of neither half, so
+# it is keyed on the pair and the filename says so.
+#
+# `[inverse_kinematics] binding` defaults to "<skeleton>@<model>", so a normal run
+# writes nothing; an unbound pair is a load error naming both halves.
+#
+# One row per tracked point: `body`, an `offset` in that body's frame (mm, default
+# zero), and two flags.
+#
+#   base = true         this point is its chain's BASE -- it says where the chain sits
+#                       and constrains none of its DOFs. `neck` sits exactly on the
+#                       c_thorax-c_head pivot the three head angles rotate about, so it
+#                       cannot be evidence about any of them, but it places that pivot
+#                       far better than the anchor registration can (which extrapolates
+#                       4.7x along the anchors' worst-determined axis and lands ~11 deg
+#                       of pitch off). A point at a chain's own origin is the one case
+#                       where "is this a joint" is not a geometric question, which is
+#                       why it is nominated rather than derived.
+#
+#   approximate = true  this placement is a MODELLING DECISION, not a measurement: the
+#                       point has no exact counterpart on this model. It is carried
+#                       into the fit and REPORTED -- the residual splits exact from
+#                       approximate rows -- and never acted on. Down-weighting these,
+#                       or fitting their offsets, would absorb real error into the
+#                       retarget, and no measurement says it helps.
+#
+# The 30 leg rows are a name convention over NeuroMechFly's bodies and the antennae are
+# the pedicel origins, so they cost nothing to state. The five abdomen rows are the
+# hand-tuned ones: fly38's dorsal-midline chain replaced DeepFly3D's two lateral ones,
+# each point sits on the sagittal plane directly above an abdominal hinge, and the
+# heights were set by eye against the dorsal crest because no closed form put all five
+# where an annotator would. The pretarsus offsets are the opposite kind: computed once from
+# the mesh's most distal vertex, not chosen, which is why a new binding wants
+# `deeperfly ik bind` rather than a text editor.
+#
+# Regenerate (and then review the approximate rows by hand):
+#     deeperfly ik bind fly38 neuromechfly --mjcf docs/keypoints/assets/model/fly.xml
+
+skeleton = "fly38"
+model = "neuromechfly"
+
+# Row order is the skeleton's point order, which is also the order a chain's marker
+# arrays come out in.
+[points]
+lf_thorax_coxa     = { body = "lf_coxa" }
+lf_coxa_trochanter = { body = "lf_trochanterfemur" }
+lf_femur_tibia     = { body = "lf_tibia" }
+lf_tibia_tarsus    = { body = "lf_tarsus1" }
+lf_pretarsus            = { body = "lf_tarsus5", offset = [-0.002266803529699187, -0.0067693715937270135, -0.10259527491906369] }
+lm_thorax_coxa     = { body = "lm_coxa" }
+lm_coxa_trochanter = { body = "lm_trochanterfemur" }
+lm_femur_tibia     = { body = "lm_tibia" }
+lm_tibia_tarsus    = { body = "lm_tarsus1" }
+lm_pretarsus            = { body = "lm_tarsus5", offset = [-0.009999042229524214, 0.008532684808572387, -0.09792126961153744] }
+lh_thorax_coxa     = { body = "lh_coxa" }
+lh_coxa_trochanter = { body = "lh_trochanterfemur" }
+lh_femur_tibia     = { body = "lh_tibia" }
+lh_tibia_tarsus    = { body = "lh_tarsus1" }
+lh_pretarsus            = { body = "lh_tarsus5", offset = [-0.015300555081816483, 0.007863145180303871, -0.0954928709753223] }
+l_antenna          = { body = "l_pedicel" }
+rf_thorax_coxa     = { body = "rf_coxa" }
+rf_coxa_trochanter = { body = "rf_trochanterfemur" }
+rf_femur_tibia     = { body = "rf_tibia" }
+rf_tibia_tarsus    = { body = "rf_tarsus1" }
+rf_pretarsus            = { body = "rf_tarsus5", offset = [-0.002266803529699187, 0.0067693715937270135, -0.10259527491906369] }
+rm_thorax_coxa     = { body = "rm_coxa" }
+rm_coxa_trochanter = { body = "rm_trochanterfemur" }
+rm_femur_tibia     = { body = "rm_tibia" }
+rm_tibia_tarsus    = { body = "rm_tarsus1" }
+rm_pretarsus            = { body = "rm_tarsus5", offset = [-0.009999042229524214, -0.008532684808572387, -0.09792126961153745] }
+rh_thorax_coxa     = { body = "rh_coxa" }
+rh_coxa_trochanter = { body = "rh_trochanterfemur" }
+rh_femur_tibia     = { body = "rh_tibia" }
+rh_tibia_tarsus    = { body = "rh_tarsus1" }
+rh_pretarsus            = { body = "rh_tarsus5", offset = [-0.015300555081816481, -0.007863145180303871, -0.09549287097532227] }
+r_antenna          = { body = "r_pedicel" }
+neck               = { body = "c_head", base = true }
+abdomen0           = { body = "c_abdomen12", offset = [-0.37, 0.0, 0.34], approximate = true }
+abdomen1           = { body = "c_abdomen3", offset = [-0.22, 0.0, 0.32], approximate = true }
+abdomen2           = { body = "c_abdomen4", offset = [-0.23, 0.0, 0.3], approximate = true }
+abdomen3           = { body = "c_abdomen5", offset = [-0.24, 0.0, 0.28], approximate = true }
+abdomen4           = { body = "c_abdomen6", offset = [-0.25, 0.0, 0.22], approximate = true }

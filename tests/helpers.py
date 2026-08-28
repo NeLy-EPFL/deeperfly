@@ -260,7 +260,7 @@ def bent_angles(chain, rng, frac=(0.3, 0.7)) -> np.ndarray:
     return lo + (hi - lo) * rng.uniform(frac[0], frac[1], size=len(lo))
 
 
-def synth_leg_pose(template, skeleton, rng, r_body=None, n_frames=3):
+def synth_leg_pose(template, skeleton, rng, n_frames=3):
     """A synthetic 3D pose: each leg placed by forward kinematics from known angles.
 
     Returns ``(pts3d (T, P, 3), truth {leg_name: angles})``. Only leg points are
@@ -268,7 +268,6 @@ def synth_leg_pose(template, skeleton, rng, r_body=None, n_frames=3):
     """
     from deeperfly.inverse_kinematics.forward import leg_fk
 
-    r_body = np.eye(3) if r_body is None else np.asarray(r_body, dtype=float)
     index = {n: i for i, n in enumerate(skeleton.point_names)}
     pts3d = np.full((n_frames, skeleton.n_points, 3), np.nan)
     truth = {}
@@ -276,7 +275,7 @@ def synth_leg_pose(template, skeleton, rng, r_body=None, n_frames=3):
         angles = bent_angles(leg, rng)
         truth[leg.name] = angles
         local = leg_fk(angles, leg.axes, IK_SEGLENS, leg.dof_counts)
-        world = local @ r_body.T + np.array(IK_COXAE[leg.name])
+        world = local + np.array(IK_COXAE[leg.name])
         for j, name in enumerate(leg.point_names):
             pts3d[:, index[name]] = world[j]
     return pts3d, truth

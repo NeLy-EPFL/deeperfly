@@ -271,8 +271,8 @@ def pose_sources(enabled: dict[str, bool], store: StageStore) -> dict[str, str |
     return {"pts2d": "pose2d", "pts3d": None}
 
 
-def nmf_source(enabled: dict[str, bool], store: StageStore) -> str | None:
-    """Whether the fitted IK model is available to draw (the ``skeleton_nmf`` overlay)."""
+def model_source(enabled: dict[str, bool], store: StageStore) -> str | None:
+    """Whether the fitted IK model is available to draw (the ``skeleton_model`` overlay)."""
     if enabled["inverse_kinematics"] and store.has("inverse_kinematics"):
         return "inverse_kinematics"
     return None
@@ -460,7 +460,7 @@ def stage_fingerprint(
                 "mesh_hide": list(config.visualization.get("mesh_hide", ["wings"])),
                 "skeleton": _skeleton_digest(config, cosmetic=True),
                 "pose_from": pose_sources(enabled, store),
-                "nmf_from": nmf_source(enabled, store),
+                "model_from": model_source(enabled, store),
                 "cameras_from": _cameras_entry(config, enabled, store),
             }
         )

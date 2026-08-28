@@ -531,7 +531,7 @@ def create_app(
         overlay is heavy enough that re-rendering every scrub would lag.
         """
         s, token = session, cache_v
-        if not s.state.has_nmf:
+        if not s.state.has_model:
             raise HTTPException(404, "no inverse-kinematics model to overlay")
         key = (token, camera, _clamp_frame(s, t))
         if key not in mesh_cache:
@@ -545,11 +545,11 @@ def create_app(
             headers={"Cache-Control": _image_cache_control(v)},
         )
 
-    @app.get("/api/nmf/asset")
-    def nmf_asset() -> Response:
-        """The static NMF mesh topology + per-vertex colors (binary), for the client."""
-        data = _nmf_asset_bytes()
-        if data is None or not session.state.has_nmf:
+    @app.get("/api/model/asset")
+    def model_asset() -> Response:
+        """The static model mesh topology + per-vertex colors (binary), for the client."""
+        data = _model_asset_bytes()
+        if data is None or not session.state.has_model:
             raise HTTPException(404, "no inverse-kinematics model to overlay")
         return Response(
             content=data,
@@ -557,14 +557,14 @@ def create_app(
             headers={"Cache-Control": "max-age=3600"},
         )
 
-    @app.get("/api/nmf/verts/{t}")
-    async def nmf_verts(t: int) -> Response:
-        """The posed NMF vertices, normals + valid-face mask for ``t`` (re-fit from edits)."""
+    @app.get("/api/model/verts/{t}")
+    async def model_verts(t: int) -> Response:
+        """The posed model vertices, normals + valid-face mask for ``t`` (re-fit from edits)."""
         s = session
-        if not s.state.has_nmf:
+        if not s.state.has_model:
             raise HTTPException(404, "no inverse-kinematics model to overlay")
         async with lock:
-            data = _nmf_verts_bytes(s, _clamp_frame(s, t))
+            data = _model_verts_bytes(s, _clamp_frame(s, t))
         if data is None:
             raise HTTPException(404, f"no mesh overlay at frame {t}")
         return Response(content=data, media_type="application/octet-stream")
@@ -1577,33 +1577,32 @@ def create_app(
 
 
 def _render_mesh_png(session: Session, camera: str, t: int) -> bytes | None:
-    """Render the posed NMF mesh for ``camera`` at frame ``t`` to RGBA PNG bytes.
+    """Render the posed model mesh for ``camera`` at frame ``t`` to RGBA PNG bytes.
 
     Sized to the camera's footage frame (so it overlays the served frame exactly).
     Returns ``None`` if the model or the packaged mesh asset is unavailable.
     """
     s = session.state
-    if s.result.nmf_pts3d is None or camera not in s.result.cameras.names:
+    if s.result.model_pts3d is None or camera not in s.result.cameras.names:
         return None
     try:
-        from ..inverse_kinematics.mesh import load_nmf_mesh
+        from ..inverse_kinematics.mesh import load_model_mesh
         from ..visualization.mesh import render_mesh_rgba_auto
     except Exception:  # pragma: no cover -- a missing asset disables the overlay
         return None
     cam = s.result.cameras[camera]
     h, w = session.image_sizes.get(camera) or _intr_size(cam)
-    mesh = load_nmf_mesh()
-    angles = None if s.result.nmf_angles is None else s.result.nmf_angles[t]
+    mesh = load_model_mesh()
+    angles = None if s.result.model_angles is None else s.result.model_angles[t]
     verts, valid = mesh.pose(
-        s.result.nmf_pts3d[t],
+        s.result.model_pts3d[t],
         angles,
-        s.result.nmf_angle_names,
-        head_scale=s.result.nmf_head_scale,
-        abdomen_scale=s.result.nmf_abdomen_scale,
-        chain_offsets=s.result.nmf_chain_offsets,
-        body_scale=s.result.nmf_body_scale,
+        s.result.model_angle_names,
+        chain_scales=dict(s.result.model_chain_scales),
+        chain_offsets=s.result.model_chain_offsets,
+        body_scale=s.result.model_body_scale,
     )
-    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.nmf_hide_parts)
+    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.model_hide_parts)
     rgba = render_mesh_rgba_auto(
         verts, mesh.faces, mesh.face_rgb, valid, cam, int(h), int(w)
     )
@@ -1620,25 +1619,25 @@ def _intr_size(cam) -> tuple[int, int]:
 
 # -- client-rendered mesh (WebGL) ---------------------------------------------
 #
-# The browser renders the posed NMF mesh on the GPU, so the server only ships the
-# geometry: the topology + per-vertex colors once (`/api/nmf/asset`) and the posed
-# vertices per frame (`/api/nmf/verts/{t}`, re-fit live from the corrected pose).
+# The browser renders the posed model mesh on the GPU, so the server only ships the
+# geometry: the topology + per-vertex colors once (`/api/model/asset`) and the posed
+# vertices per frame (`/api/model/verts/{t}`, re-fit live from the corrected pose).
 # Vertices/faces/colors are little-endian binary so the front-end can drop them
 # straight into typed arrays (no megabytes of JSON to parse on every scrub).
 
 
 @functools.lru_cache(maxsize=2)
-def _nmf_asset_bytes() -> bytes | None:
+def _model_asset_bytes() -> bytes | None:
     """The static mesh topology + per-vertex colors, packed once for the client.
 
     Layout (little-endian): ``uint32 n_verts``, ``uint32 n_faces``,
     ``uint32[n_faces * 3]`` triangle indices, ``uint8[n_verts * 3]`` vertex RGB.
     """
     try:
-        from ..inverse_kinematics.mesh import load_nmf_mesh
+        from ..inverse_kinematics.mesh import load_model_mesh
     except Exception:  # pragma: no cover -- a missing asset disables the overlay
         return None
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     faces = np.asarray(mesh.faces, dtype="<u4")
     n_verts = int(mesh.vertices.shape[0])
     # Per-vertex color from the per-face palette: each vertex belongs to one baked
@@ -1651,7 +1650,7 @@ def _nmf_asset_bytes() -> bytes | None:
     return header.tobytes() + faces.tobytes() + vrgb.tobytes()
 
 
-def _nmf_verts_bytes(session: Session, t: int) -> bytes | None:
+def _model_verts_bytes(session: Session, t: int) -> bytes | None:
     """The posed vertices + smooth normals + valid-face mask for ``t`` (re-fit from edits).
 
     Layout (little-endian): ``float32[n_verts * 3]`` world vertices (NaN -> 0), then
@@ -1660,17 +1659,17 @@ def _nmf_verts_bytes(session: Session, t: int) -> bytes | None:
     smooth-shade the overlay (no faceting), and are computed here once per frame (the
     head/abdomen size is the IK data estimate, not an operator knob).
     """
-    posed = session.state.nmf_posed_verts(t)
+    posed = session.state.model_posed_verts(t)
     if posed is None:
         return None
-    from ..inverse_kinematics.mesh import load_nmf_mesh
+    from ..inverse_kinematics.mesh import load_model_mesh
     from ..visualization.mesh import vertex_normals
 
     verts, valid = posed
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     faces = mesh.faces
     # Hide the configured body parts (default: wings) by dropping their faces.
-    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.nmf_hide_parts)
+    valid = np.asarray(valid) & ~mesh.hidden_face_mask(session.model_hide_parts)
     normals = vertex_normals(np.asarray(verts, dtype=float), faces, valid)
     verts = np.nan_to_num(np.asarray(verts, dtype="<f4"), nan=0.0)
     return (
@@ -1769,7 +1768,7 @@ def _meta_payload(
         "n_frames": session.n_frames,
         "n_points": s.n_points,
         "has_3d": s.has_3d,
-        "has_nmf": s.has_nmf,
+        "has_model": s.has_model,
         # False = no rig has been solved for this recording, so every view is an
         # independent 2D canvas: no reprojection, no derived 3D, no cross-view help. The
         # front-end shows this as a banner rather than leaving the missing overlays
@@ -1832,7 +1831,7 @@ def _points_payload(
     t: int,
     mode: str,
     *,
-    include_nmf: bool = True,
+    include_model: bool = True,
     verbose: bool = False,
 ) -> dict:
     """The per-view 2D overlay (with the fixed/invisible masks) for frame ``t`` in ``mode``.
@@ -1841,10 +1840,10 @@ def _points_payload(
     overrides) -- the display-only "latent skeleton" the front-end can ghost over
     every view; it is ``null`` when the result carries no 3D points.
 
-    ``include_nmf`` (default ``True``) controls whether the fitted-model overlay is
-    computed. The NMF reprojection needs a per-frame inverse-kinematics re-fit, so a
+    ``include_model`` (default ``True``) controls whether the fitted-model overlay is
+    computed. The model reprojection needs a per-frame inverse-kinematics re-fit, so a
     live 3D drag -- which streams one edit per animation frame -- passes ``False`` to
-    skip it (the ``nmf`` key is then *omitted*, and the front-end keeps the overlay it
+    skip it (the ``model`` key is then *omitted*, and the front-end keeps the overlay it
     has until the drag settles). It is recomputed on the pin/settle reply and on plain
     fetches.
     """
@@ -1903,9 +1902,9 @@ def _points_payload(
     # missing-joint placeholder seeds for the verbose overlay) are static enough within
     # a frame to ride only the settle/plain reply -- not the ~60x/s mid-drag stream --
     # and the raw prediction / placeholder only when the verbose overlay is on.
-    if include_nmf:
-        nmf = s.display_nmf_projected(t) if s.has_nmf else None
-        payload["nmf"] = None if nmf is None else _points_to_json(np.asarray(nmf))
+    if include_model:
+        proj = s.display_model_projected(t) if s.has_model else None
+        payload["model"] = None if proj is None else _points_to_json(np.asarray(proj))
         payload["conf"] = _conf_to_json(s.result.conf, t)
     if verbose:
         # `s.detections`, not `result.pts2d`: the Detected overlay has to be what the network
@@ -1947,16 +1946,16 @@ def _conf_to_json(conf: np.ndarray | None, t: int) -> list | None:
 
 def _scene_payload(session: Session, t: int) -> dict:
     """The frame's 3D pose for the scene view: the triangulated keypoints and the
-    fitted NMF model joints (both world frame, skeleton order), each ``null`` when
+    fitted model joints (both world frame, skeleton order), each ``null`` when
     unavailable (2D-only, or no inverse-kinematics model)."""
     s = session.state
     pts3d = s.display_pts3d(t)
-    nmf = s.nmf_fit(t) if s.has_nmf else None
-    nmf3d = None if nmf is None else np.asarray(nmf[0])
+    fit = s.model_fit(t) if s.has_model else None
+    model3d = None if fit is None else np.asarray(fit[0])
     return {
         "frame": t,
         "points3d": None if pts3d is None else _points3d_to_json(np.asarray(pts3d)),
-        "nmf3d": None if nmf3d is None else _points3d_to_json(nmf3d),
+        "model3d": None if model3d is None else _points3d_to_json(model3d),
     }
 
 
@@ -2210,7 +2209,7 @@ def _handle_edit(session: Session, msg: dict) -> dict:
     verbose = bool(msg.get("verbose", False))
     typ = msg.get("type")
     # A live 3D drag (edit_3d with fix=False) streams one edit per animation frame.
-    # The NMF overlay reprojection needs a per-frame IK re-fit, so recompute it only
+    # The model overlay reprojection needs a per-frame IK re-fit, so recompute it only
     # on the pin/settle reply -- not ~60x/s mid-drag (the dominant source of drag lag).
     live_drag = typ == "edit_3d" and not bool(msg.get("fix", False))
     # undo/redo can revert an edit on a *different* frame than the one being viewed;
@@ -2341,7 +2340,7 @@ def _handle_edit(session: Session, msg: dict) -> dict:
         log.warning("ignoring unknown edit message type %r", typ)
     reply_frame = goto if goto is not None else t
     payload = _points_payload(
-        session, reply_frame, mode, include_nmf=not live_drag, verbose=verbose
+        session, reply_frame, mode, include_model=not live_drag, verbose=verbose
     )
     # Echo the client's monotonic edit seq (when present) so the front-end can drop a
     # superseded reply -- a mid-drag re-solve that lands after release would otherwise

@@ -25,12 +25,13 @@ keypoint at once, warm-started frame to frame, rather than fitting each limb on 
 
 The result carries the joint-angle trajectories *and* the fitted model's joint positions
 in world coordinates, so the model reprojects onto the raw 2D images as an overlay (the
-GUI and the ``skeleton_nmf`` / ``mesh_nmf`` visualization ops).
+GUI and the ``skeleton_model`` / ``mesh_model`` visualization ops).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -45,9 +46,10 @@ from .articulation import (
     body_similarity,
     calibrate_chain,
     estimate_chain_scale,
+    load_articulation,
 )
 from .bodyplan import BodyPlan, build_body_plan
-from .mesh import NmfMesh, load_nmf_mesh
+from .mesh import ModelMesh, load_model_mesh
 from .template import KinematicTemplate
 
 __all__ = [
@@ -59,8 +61,8 @@ __all__ = [
     "observations",
     "unfittable_branches",
     "MissingQuickIK",
-    "NmfMesh",
-    "load_nmf_mesh",
+    "ModelMesh",
+    "load_model_mesh",
     "solve_inverse_kinematics",
 ]
 
@@ -145,6 +147,7 @@ def solve_inverse_kinematics(
     segment_len: int = _D.segment_len,
     overlap_len: int = _D.overlap_len,
     absent_points: Bool[np.ndarray, "T P"] | None = None,
+    approximate_points: Sequence[str] | None = None,
 ) -> IKResult:
     """Fit the model's joint angles to a 3D pose sequence.
 
@@ -185,6 +188,11 @@ def solve_inverse_kinematics(
         -- see :func:`unfittable_branches`. The **body plan** is built once per recording
         and so cannot vary in time: a leg lost part-way through stays in the plan, which is
         correct (it existed, and its angles up to the loss are the measurement).
+    approximate_points
+        The points whose placement on the model is a modelling decision rather than a
+        measurement (the binding's ``approximate`` rows). **Reported, never acted on**:
+        the logged residual splits these from the exact ones, so a reader can tell a bad
+        fit from a bad retarget. ``None`` reads them off ``articulation``.
 
     Returns
     -------
@@ -252,6 +260,14 @@ def solve_inverse_kinematics(
         finite,
         angles.shape[1],
     )
+    _report_residual(
+        pts3d,
+        model_pts3d,
+        skeleton,
+        approximate_points
+        if approximate_points is not None
+        else _approximate_from(articulation),
+    )
     _warn_about_pinned_limits(angles, plan)
     return IKResult(
         angles=angles,
@@ -270,6 +286,69 @@ _PINNED_TOL = 1e-4
 
 #: Report a DOF whose angle is pinned in at least this fraction of solved frames.
 _PINNED_REPORT = 0.25
+
+
+def _approximate_from(articulation: Articulation | None) -> tuple[str, ...]:
+    """The approximate marker names of every fitted chain, in chain order."""
+    if articulation is None:
+        return ()
+    return tuple(
+        name
+        for chain in articulation.chains
+        for name, approx in zip(chain.marker_names, chain.marker_approximate)
+        if approx
+    )
+
+
+def _report_residual(
+    pts3d: np.ndarray,
+    model_pts3d: np.ndarray,
+    skeleton: Skeleton,
+    approximate: Sequence[str],
+) -> None:
+    """Log the fit's 3D residual, exact rows split from approximate ones.
+
+    Joint 0 of each leg is included, and deliberately. With ``fixed_body = true`` a
+    leg's thorax-coxa sits at a baked ``offset_pos`` with no upstream DOF, so no angle
+    can move it and its residual is a floor no parameter reduces -- which looks like a
+    reason to mask it out. Measured on the 8-view example recording it is not: after the
+    ``static`` correction (the default path) the plan's baked constant IS the corrected
+    pose, so the floor is **exactly zero**; on an uncorrected pose the six roots carry
+    1.6-1.9% of the squared-error mass at a median of 0.006 against 0.015 for the
+    fittable points. So they do not inflate the number -- they are *better* than average,
+    and masking them would raise every residual quoted for this stage rather than lower
+    it. Left in, with the measurement written down so it is not re-litigated.
+
+    The split is the whole point: an approximate point has no exact counterpart on the
+    model, so part of its residual is the *retarget* -- where a human decided the point
+    sits -- and no amount of fitting removes it. Quoting one pooled number invites
+    reading a bad retarget as a bad fit. Nothing is down-weighted or reweighted on the
+    strength of it; see the binding module's note on why.
+    """
+    with np.errstate(all="ignore"):
+        err = np.linalg.norm(model_pts3d - pts3d, axis=-1)  # (T, P)
+    approx = np.array([n in set(approximate) for n in skeleton.point_names], dtype=bool)
+
+    def stat(mask: np.ndarray) -> float:
+        vals = err[:, mask]
+        vals = vals[np.isfinite(vals)]
+        return float(np.median(vals)) if vals.size else float("nan")
+
+    if not approx.any():
+        log.info(
+            "inverse kinematics: median 3D residual %.4f model units", stat(~approx)
+        )
+        return
+    log.info(
+        "inverse kinematics: median 3D residual %.4f model units over %d exact "
+        "point(s), %.4f over %d approximate one(s) (%s) -- an approximate point has no "
+        "exact counterpart on the model, so its residual is partly the retarget",
+        stat(~approx),
+        int((~approx).sum()),
+        stat(approx),
+        int(approx.sum()),
+        ", ".join(sorted(approximate)),
+    )
 
 
 def _warn_about_pinned_limits(angles: np.ndarray, plan: BodyPlan) -> None:
@@ -335,20 +414,28 @@ def _plan_for(
 ) -> BodyPlan:
     """Register the recording to the model and assemble its body plan.
 
-    The registration is one similarity transform fit from the six thorax-coxa
-    keypoints, which are body-fixed. It sets both the frame the plan is solved in and
-    the recording's :attr:`~IKResult.body_scale`.
+    The registration is one similarity transform fit from the model's anchor bodies --
+    the six coxae, which are body-fixed. It sets both the frame the plan is solved in
+    and the recording's :attr:`~IKResult.body_scale`.
     """
     index = {name: i for i, name in enumerate(skeleton.point_names)}
-    # The coxa reference lives with the baked articulation; load a chain-less copy when
-    # no chains are being fit, so a legs-only run still registers to the model frame.
-    reference = articulation if articulation is not None else Articulation.load(fit=())
-    sim = _coxa_similarity(pts3d, index, reference)
+    # The anchors live with the baked articulation; load a chain-less copy when no
+    # chains are being fit, so a legs-only run still registers to the model frame.
+    reference = articulation if articulation is not None else load_articulation(fit=())
+    sim = _anchor_similarity(pts3d, index, reference)
     if sim is None:
+        observed = [p for p in reference.anchor_points if p]
+        if not observed:
+            raise ValueError(
+                "inverse_kinematics could not register the recording to the model: no "
+                f"tracked point observes any of its {len(reference.anchors)} anchor "
+                f"bodies ({', '.join(reference.anchors)}). That is the binding's to "
+                "say, so this articulation was loaded without one."
+            )
         raise ValueError(
             "inverse_kinematics could not register the recording to the model: it "
-            "needs at least three of the six thorax-coxa keypoints "
-            f"({', '.join(reference.coxa_points)}) triangulated in some frame"
+            f"needs at least three of its {len(reference.anchors)} anchor points "
+            f"({', '.join(observed)}) triangulated in some frame"
         )
     scales: dict[str, float] = {}
     offsets: dict[str, np.ndarray] = {}
@@ -464,22 +551,24 @@ def _chain_offsets(
     return out
 
 
-def _coxa_world(pts3d: np.ndarray, index: dict[str, int], reference: Articulation):
-    """``(T, 6, 3)`` the thorax-coxa keypoints, NaN where the skeleton lacks one."""
+def _anchor_world(pts3d: np.ndarray, index: dict[str, int], reference: Articulation):
+    """``(T, N, 3)`` the points observing the anchors, NaN where the skeleton lacks one."""
     n_frames = pts3d.shape[0]
-    cols = [index.get(p, -1) for p in reference.coxa_points]
+    cols = [index.get(p, -1) for p in reference.anchor_points]
     return np.stack(
         [pts3d[:, c] if c >= 0 else np.full((n_frames, 3), np.nan) for c in cols],
         axis=1,
     )
 
 
-def _coxa_similarity(pts3d: np.ndarray, index: dict[str, int], reference: Articulation):
-    """``(R, s, t)`` mapping the model onto the recording, from the median coxae."""
-    world = _coxa_world(pts3d, index, reference)
+def _anchor_similarity(
+    pts3d: np.ndarray, index: dict[str, int], reference: Articulation
+):
+    """``(R, s, t)`` mapping the model onto the recording, from the median anchors."""
+    world = _anchor_world(pts3d, index, reference)
     with np.errstate(all="ignore"):
-        measured = np.nanmedian(world, axis=0)  # (6, 3)
-    return body_similarity(reference.coxa_neutral, measured)
+        measured = np.nanmedian(world, axis=0)  # (N, 3)
+    return body_similarity(reference.anchor_neutral, measured)
 
 
 def _chain_markers_local(

@@ -155,26 +155,26 @@ export function meshUrl(camera, frame) {
 }
 
 /**
- * The static NMF mesh topology + per-vertex colors (binary; fetched once). See
- * `_nmf_asset_bytes` in server.py for the layout.
+ * The static model mesh topology + per-vertex colors (binary; fetched once). See
+ * `_model_asset_bytes` in server.py for the layout.
  * @returns {Promise<ArrayBuffer>}
  */
-export async function fetchNmfAsset() {
-  const r = await fetch("/api/nmf/asset");
-  if (!r.ok) throw new Error(`GET /api/nmf/asset -> ${r.status}`);
+export async function fetchModelAsset() {
+  const r = await fetch("/api/model/asset");
+  if (!r.ok) throw new Error(`GET /api/model/asset -> ${r.status}`);
   return r.arrayBuffer();
 }
 
 /**
- * The posed NMF vertices + smooth normals + valid-face mask for a frame (re-fit from
+ * The posed model vertices + smooth normals + valid-face mask for a frame (re-fit from
  * the edits). The head/abdomen size is the IK data estimate (no knob). See
- * `_nmf_verts_bytes` in server.py.
+ * `_model_verts_bytes` in server.py.
  * @param {number} frame
  * @returns {Promise<ArrayBuffer>}
  */
-export async function fetchNmfVerts(frame) {
-  const r = await fetch(`/api/nmf/verts/${frame}`);
-  if (!r.ok) throw new Error(`GET /api/nmf/verts/${frame} -> ${r.status}`);
+export async function fetchModelVerts(frame) {
+  const r = await fetch(`/api/model/verts/${frame}`);
+  if (!r.ok) throw new Error(`GET /api/model/verts/${frame} -> ${r.status}`);
   return r.arrayBuffer();
 }
 

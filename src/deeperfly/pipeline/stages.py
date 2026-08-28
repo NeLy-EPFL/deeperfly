@@ -702,14 +702,17 @@ def stage_inverse_kinematics(
         )
     template = config.ik_template()
     articulation = config.ik_articulation()
+    binding = config.ik_binding()
     p = config.inverse_kinematics
     extra = [c.name for c in articulation.chains] if articulation else []
     log.info(
-        "inverse kinematics: fitting %d leg(s)%s over %d frames (template %r, %s body)",
+        "inverse kinematics: fitting %d leg(s)%s over %d frames "
+        "(model %r bound to skeleton %r, %s body)",
         len(template.legs),
         f" + {'/'.join(extra)}" if extra else "",
         pts3d.shape[0],
         template.name,
+        binding.skeleton,
         "fixed" if p.fixed_body else "free",
     )
     return solve_inverse_kinematics(
@@ -729,6 +732,7 @@ def stage_inverse_kinematics(
         segment_len=p.segment_len,
         overlap_len=p.overlap_len,
         absent_points=absent,
+        approximate_points=binding.approximate,
     )
 
 
@@ -870,29 +874,31 @@ def assemble_result(
             better2d, pts3d, reproj = _pts
             if better2d is not None:
                 pts2d = better2d
-    nmf_pts3d = nmf_angles = nmf_angle_names = nmf_body_plan = None
-    nmf_chain_scales: dict[str, float] = {}
-    nmf_chain_offsets: dict[str, np.ndarray] = {}
-    nmf_body_scale = 1.0
-    if fingerprint.nmf_source(enabled, store) is not None:
+    model_pts3d = model_angles = model_angle_names = model_body_plan = None
+    model_chain_scales: dict[str, float] = {}
+    model_chain_offsets: dict[str, np.ndarray] = {}
+    model_body_scale = 1.0
+    if fingerprint.model_source(enabled, store) is not None:
         ik = store.read_ik()
         if ik is not None:
-            nmf_angles, nmf_angle_names, nmf_pts3d = ik  # angles, names, model joints
+            model_angles, model_angle_names, model_pts3d = (
+                ik  # angles, names, model joints
+            )
             # The estimated sizes live in the stage's metadata, not its arrays. Reading
             # only the arrays (as this did) rendered the mesh overlay in the run's own
             # videos at model size and a per-frame body scale, while the GUI on the very
             # same file used the fitted ones.
             ik_meta = store.read_ik_meta()
-            nmf_chain_scales = {
+            model_chain_scales = {
                 str(k): float(v) for k, v in (ik_meta.get("chain_scales") or {}).items()
             }
-            nmf_chain_offsets = {
+            model_chain_offsets = {
                 str(k): np.asarray(v, dtype=float).reshape(3)
                 for k, v in (ik_meta.get("chain_offsets") or {}).items()
             }
             if ik_meta.get("body_scale") is not None:
-                nmf_body_scale = float(ik_meta["body_scale"])
-            nmf_body_plan = ik_meta.get("body_plan")
+                model_body_scale = float(ik_meta["body_scale"])
+            model_body_plan = ik_meta.get("body_plan")
     # The absence declaration is not a stage output -- it is an operator-authored fact about
     # the specimen -- so it is read straight from the file and carried onto the assembled
     # result. Without this the render path would disagree with the editor on the same file.
@@ -904,13 +910,13 @@ def assemble_result(
         conf=conf,
         pts3d=pts3d,
         reproj_error=reproj,
-        nmf_pts3d=nmf_pts3d,
-        nmf_angles=nmf_angles,
-        nmf_angle_names=nmf_angle_names,
-        nmf_chain_scales=nmf_chain_scales,
-        nmf_chain_offsets=nmf_chain_offsets,
-        nmf_body_scale=nmf_body_scale,
-        nmf_body_plan=nmf_body_plan,
+        model_pts3d=model_pts3d,
+        model_angles=model_angles,
+        model_angle_names=model_angle_names,
+        model_chain_scales=model_chain_scales,
+        model_chain_offsets=model_chain_offsets,
+        model_body_scale=model_body_scale,
+        model_body_plan=model_body_plan,
         absent=absent,  # type: ignore[arg-type]
         subject_id=subject_id,
     )
@@ -1122,11 +1128,11 @@ def render_videos(
                 "no 3D pose (enable [pipeline].do_triangulation or do_pictorial_structures)",
                 spec.video_name,
             )
-        elif result.nmf_pts3d is None and any(
-            p.plot in ("skeleton_nmf", "mesh_nmf") for p in spec.panels
+        elif result.model_pts3d is None and any(
+            p.plot in ("skeleton_model", "mesh_model") for p in spec.panels
         ):
             log.warning(
-                "skipping video %r: it overlays the fitted NMF model but the result "
+                "skipping video %r: it overlays the fitted model but the result "
                 "has no IK pose (enable [pipeline].do_inverse_kinematics)",
                 spec.video_name,
             )
@@ -1161,14 +1167,13 @@ def render_videos(
         pts2d=result.pts2d,
         pts3d=result.pts3d,
         conf=result.conf,
-        nmf_pts3d=result.nmf_pts3d,
-        nmf_angles=result.nmf_angles,
-        nmf_angle_names=result.nmf_angle_names,
-        nmf_head_scale=result.nmf_head_scale,
-        nmf_abdomen_scale=result.nmf_abdomen_scale,
-        nmf_chain_offsets=result.nmf_chain_offsets,
-        nmf_body_scale=result.nmf_body_scale,
-        nmf_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
+        model_pts3d=result.model_pts3d,
+        model_angles=result.model_angles,
+        model_angle_names=result.model_angle_names,
+        model_chain_scales=dict(result.model_chain_scales),
+        model_chain_offsets=result.model_chain_offsets,
+        model_body_scale=result.model_body_scale,
+        model_hide_parts=tuple(config.visualization.get("mesh_hide", ["wings"])),
         stage_pts2d=stage_pts2d,
         stage_pts3d=stage_pts3d,
     )

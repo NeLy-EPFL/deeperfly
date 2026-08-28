@@ -50,7 +50,7 @@ from jaxtyping import Bool, Float
 from ..config import AnnotationParams, TriangulationParams
 from ..results import PoseResult
 from .labels import Labels
-from .nmf_live import NmfLive
+from .model_live import ModelLive
 from .solve import solve_point_3d, solve_point_3d_drag
 
 __all__ = ["EditMode", "EditorState"]
@@ -154,9 +154,9 @@ class EditorState:
     tri: TriangulationParams = field(default_factory=TriangulationParams)
     frame: int = 0
     mode: EditMode = EditMode.view
-    #: Per-frame live NMF re-fit (model joints, angles, names), keyed by frame.
-    nmf_live: NmfLive | None = None
-    _nmf_cache: dict[int, tuple] = field(default_factory=dict)
+    #: Per-frame live model re-fit (model joints, angles, names), keyed by frame.
+    model_live: ModelLive | None = None
+    _model_cache: dict[int, tuple] = field(default_factory=dict)
     #: Per-frame derived 3D pose (P, 3), recomputed from the labels; the "cache" the
     #: whole design treats the 3D as. Updated per *point* when a point's labels change.
     #:
@@ -253,7 +253,7 @@ class EditorState:
         annotation solve policy and shared triangulation params (from the run config
         beside ``results.h5``); both default to the packaged defaults.
 
-        When the result carries a fitted NMF model and 3D pose, a :class:`NmfLive`
+        When the result carries a fitted model and 3D pose, a :class:`ModelLive`
         is built so the overlaid model re-fits to the operator's edits. ``template`` /
         ``articulation`` make that re-fit use the *same* model the pipeline did.
 
@@ -267,23 +267,25 @@ class EditorState:
             labels = Labels.empty(
                 result.n_views, result.n_frames, cls._n_points(result)
             )
-        nmf_live = None
-        if result.nmf_pts3d is not None and result.pts3d is not None:
+        model_live = None
+        if result.model_pts3d is not None and result.pts3d is not None:
             from ..inverse_kinematics._quickik import INSTALL_HINT, MissingQuickIK
 
             try:
-                nmf_live = NmfLive(result, template=template, articulation=articulation)
+                model_live = ModelLive(
+                    result, template=template, articulation=articulation
+                )
             except MissingQuickIK:
                 # Expected on a plain install, and harmless: the stored fit still draws
                 # the overlay, it just no longer follows edits. One line, not a traceback.
                 log.warning(
-                    "the NMF overlay will not follow your edits: the live re-fit needs "
+                    "the model overlay will not follow your edits: the live re-fit needs "
                     "the optional QuickIK solver (%s)",
                     INSTALL_HINT,
                 )
             except Exception:  # a refit-setup failure just disables the live overlay
                 log.exception(
-                    "could not set up the live NMF re-fit; using the static fit"
+                    "could not set up the live model re-fit; using the static fit"
                 )
         view_names = _resolve_view_names(result)
         image_sizes_wh = None
@@ -300,7 +302,7 @@ class EditorState:
             labels=labels,
             ann=ann or AnnotationParams(),
             tri=tri or TriangulationParams(),
-            nmf_live=nmf_live,
+            model_live=model_live,
             raw_pts2d=None if raw_pts2d is None else np.asarray(raw_pts2d, dtype=float),
             image_sizes_wh=image_sizes_wh,
             view_names=view_names,
@@ -339,9 +341,9 @@ class EditorState:
         return self.result.pts3d is not None
 
     @property
-    def has_nmf(self) -> bool:
-        """Whether the result carries a fitted NMF model (enables its overlay)."""
-        return self.result.nmf_pts3d is not None
+    def has_model(self) -> bool:
+        """Whether the result carries a fitted model (enables its overlay)."""
+        return self.result.model_pts3d is not None
 
     @property
     def has_cameras(self) -> bool:
@@ -740,7 +742,7 @@ class EditorState:
         self.labels.instance[t] = True
         self.labels.dirty = True
         self._invalidate_frame3d(t)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
         return True
 
     def _ensure_instance(self, t: int) -> bool:
@@ -784,7 +786,7 @@ class EditorState:
         self.labels.seeds[:, t] = seeds
         self.labels.dirty = True
         self._invalidate_frame3d(t)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
         return True
 
     def _seed_instance(
@@ -897,7 +899,7 @@ class EditorState:
             return
         self.ann = replace(self.ann, gt_wins_keep_stabilizers=bool(on))
         self._pts3d_cache.clear()
-        self._nmf_cache.clear()
+        self._model_cache.clear()
 
     def _point_obs(self, t: int, point: int):
         """``(gt_obs, pred_obs, conf, stab_obs)`` for one point at ``t``.
@@ -1039,7 +1041,7 @@ class EditorState:
         but the 3D they were taken against is gone.
         """
         self._pts3d_cache.clear()
-        self._nmf_cache.clear()
+        self._model_cache.clear()
         self._undo.clear()
         self._redo.clear()
 
@@ -1064,70 +1066,71 @@ class EditorState:
             return None
         return np.asarray(self.result.cameras.project(pts3d))
 
-    # -- NMF overlay (unchanged, driven by the derived 3D) --------------------
+    # -- model overlay (unchanged, driven by the derived 3D) --------------------
 
-    def display_nmf_projected(
+    def display_model_projected(
         self, frame: int | None = None
     ) -> Float[np.ndarray, "V P 2"] | None:
-        """The fitted NMF model joints for ``frame`` reprojected into every view."""
-        fit = self.nmf_fit(frame)
+        """The fitted model joints for ``frame`` reprojected into every view."""
+        fit = self.model_fit(frame)
         if fit is None or self.result.cameras is None:
             return None
         return np.asarray(self.result.cameras.project(fit[0]))
 
-    def nmf_fit(
+    def model_fit(
         self, frame: int | None = None
     ) -> tuple[np.ndarray, np.ndarray | None, list[str] | None] | None:
-        """The NMF fit for ``frame``: ``(model_pts3d, angles, angle_names)`` or ``None``.
+        """The model fit for ``frame``: ``(model_pts3d, angles, angle_names)`` or ``None``.
 
-        Re-solved from the frame's derived 3D pose when a :class:`NmfLive` is
+        Re-solved from the frame's derived 3D pose when a :class:`ModelLive` is
         available (so it tracks edits) and memoized per frame; otherwise the
         pipeline's static fit.
         """
         t = self._resolve_frame(frame)
-        cached = self._nmf_cache.get(t)
+        cached = self._model_cache.get(t)
         if cached is not None:
             return cached
         out: tuple | None = None
-        if self.nmf_live is not None:
+        if self.model_live is not None:
             pts3d = self.display_pts3d(t)
             if pts3d is not None:
                 # The frame index only picks the seed, and it is what keeps the re-fit a
-                # pure function of (frame, labels) -- see NmfLive's module docstring.
-                model, angles = self.nmf_live.refit(pts3d, t)
-                out = (model, angles, self.nmf_live.angle_names)
-        elif self.result.nmf_pts3d is not None:
+                # pure function of (frame, labels) -- see ModelLive's module docstring.
+                model, angles = self.model_live.refit(pts3d, t)
+                out = (model, angles, self.model_live.angle_names)
+        elif self.result.model_pts3d is not None:
             angles = (
-                None if self.result.nmf_angles is None else self.result.nmf_angles[t]
+                None
+                if self.result.model_angles is None
+                else self.result.model_angles[t]
             )
-            out = (self.result.nmf_pts3d[t], angles, self.result.nmf_angle_names)
+            out = (self.result.model_pts3d[t], angles, self.result.model_angle_names)
         if out is not None:
-            self._nmf_cache[t] = out
+            self._model_cache[t] = out
         return out
 
-    def nmf_posed_verts(
+    def model_posed_verts(
         self, frame: int | None = None
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """The frame's posed NMF mesh ``(vertices (Nv, 3), valid_faces (Nf,))``, or ``None``."""
-        fit = self.nmf_fit(frame)
+        """The frame's posed model mesh ``(vertices (Nv, 3), valid_faces (Nf,))``, or ``None``."""
+        fit = self.model_fit(frame)
         if fit is None:
             return None
-        from ..inverse_kinematics.mesh import load_nmf_mesh
+        from ..inverse_kinematics.mesh import load_model_mesh
 
         model, angles, names = fit
-        return load_nmf_mesh().pose(
+        return load_model_mesh().pose(
             model,
             angles,
             names,
-            head_scale=self.result.nmf_head_scale,
-            abdomen_scale=self.result.nmf_abdomen_scale,
-            chain_offsets=self.result.nmf_chain_offsets,
-            body_scale=self.result.nmf_body_scale,
+            chain_scales=dict(self.result.model_chain_scales),
+            chain_offsets=self.result.model_chain_offsets,
+            body_scale=self.result.model_body_scale,
         )
 
-    def _invalidate_nmf(self, t: int) -> None:
-        """Drop the cached NMF fit for ``frame`` ``t`` after its 3D pose changed."""
-        self._nmf_cache.pop(t, None)
+    def _invalidate_model(self, t: int) -> None:
+        """Drop the cached model fit for ``frame`` ``t`` after its 3D pose changed."""
+        self._model_cache.pop(t, None)
 
     # -- edits (the wire-compatible surface) ----------------------------------
 
@@ -1165,7 +1168,7 @@ class EditorState:
         self._ensure_instance(t)  # the first drag in a frame implies the skeleton
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
         # One message per gesture on this path: with no 3D to re-solve the client sends
         # nothing mid-drag and commits on release (app.js ``onDragged``), so the gesture
         # is over. A future streaming 2D client would mark its settle the way edit_3d does.
@@ -1213,7 +1216,7 @@ class EditorState:
             self._set_point3d(t, point, x_new)
         else:
             self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
         if fix:
             self._end_gesture()  # the settle: the operator released the point
         return x_new
@@ -1260,7 +1263,7 @@ class EditorState:
             self._record_undo(t, point, coalesce=False)
             self.labels.clear_gt(view, t, point)
             self._rederive_point(t, point)
-            self._invalidate_nmf(t)
+            self._invalidate_model(t)
             return False
         cur = self.display_pts2d_refine(t)
         if cur is None:
@@ -1272,7 +1275,7 @@ class EditorState:
         self._ensure_instance(t)
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
         return True
 
     def toggle_invisible(
@@ -1296,7 +1299,7 @@ class EditorState:
         self._record_undo(t, point, coalesce=False)
         now = not bool(self.labels.occluded[view, t, point])
         self.labels.set_occluded(view, t, point, now)
-        # No re-derive and no NMF invalidation: both exist to follow a changed 3D pose, and
+        # No re-derive and no model invalidation: both exist to follow a changed 3D pose, and
         # this changes none. Dropping them is not just a saving -- keeping them would mean
         # the flag *did* reach the derived pipeline, which is the coupling being removed.
         return now
@@ -1307,7 +1310,7 @@ class EditorState:
         self._record_undo(t, point, coalesce=False)
         self.labels.clear_point(t, point)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def reset_point_view(self, view: int, point: int, frame: int | None = None) -> None:
         """Reset just ``view``'s cell for ``point``: drop the GT pixel + the hidden flag."""
@@ -1315,7 +1318,7 @@ class EditorState:
         self._record_undo(t, point, coalesce=False)
         self.labels.clear_view(view, t, point)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def reset_frame(self, frame: int | None = None) -> None:
         """Retract every label in ``frame``, leaving the instance's seeds standing."""
@@ -1323,7 +1326,7 @@ class EditorState:
         self._record_undo(t, None, coalesce=False)
         self.labels.clear_frame(t)
         self._invalidate_frame3d(t)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def set_reviewed(self, value: bool, frame: int | None = None) -> None:
         """Mark ``frame`` reviewed (or clear it): the operator's "I've checked this" flag.
@@ -1354,7 +1357,7 @@ class EditorState:
         View-independent either way. Returns the point indices whose state actually
         changed (an empty list is a no-op and records no undo step).
 
-        A whole-recording change invalidates the *entire* derived-3D and NMF caches; a
+        A whole-recording change invalidates the *entire* derived-3D and model caches; a
         single-frame one only that frame's.
         """
         t = self._resolve_frame(frame)
@@ -1381,10 +1384,10 @@ class EditorState:
         if whole_recording:
             for tt in list(self._pts3d_cache):
                 self._rederive_points(tt, changed)
-            self._nmf_cache.clear()
+            self._model_cache.clear()
         else:
             self._rederive_points(t, changed)
-            self._invalidate_nmf(t)
+            self._invalidate_model(t)
         return changed
 
     # -- undo / redo + bulk confirm + explicit GT set/clear -------------------
@@ -1467,7 +1470,7 @@ class EditorState:
                         arr[p] = self._solve_point(t, p)
                 else:
                     arr[idx] = prev
-            self._nmf_cache.clear()  # a pure function of the 3D, so refitting is safe
+            self._model_cache.clear()  # a pure function of the 3D, so refitting is safe
             return
         t = entry.t
         self.labels.gt[:, t] = entry.gt
@@ -1480,7 +1483,7 @@ class EditorState:
             self._invalidate_frame3d(t)  # uncached then, so there is nothing to restore
         else:
             self._pts3d_cache[t] = entry.pts3d.copy()
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     @property
     def can_undo(self) -> bool:
@@ -1517,7 +1520,7 @@ class EditorState:
         self._ensure_instance(t)
         self.labels.set_gt(view, t, point, xy)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def clear_gt(self, view: int, point: int, frame: int | None = None) -> None:
         """Drop just ``view``'s GT pixel for ``point`` (revert to the prediction)."""
@@ -1525,7 +1528,7 @@ class EditorState:
         self._record_undo(t, point, coalesce=False)
         self.labels.clear_gt(view, t, point)
         self._rederive_point(t, point)
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def _on_image(self, view: int, xy) -> bool:
         """Is ``xy`` inside ``view``'s image (so the operator can see and drag it)?
@@ -1605,12 +1608,12 @@ class EditorState:
             changed = True
         if changed:
             self._rederive_points(t, touched)
-            self._invalidate_nmf(t)
+            self._invalidate_model(t)
         elif created:
             # Nothing was authored, but the skeleton was created on the way in: that IS a
             # change, so the entry stays and the frame keeps its instance.
             changed = True
-            self._invalidate_nmf(t)
+            self._invalidate_model(t)
         else:
             self._undo.pop()  # nothing changed: drop the no-op undo entry
             self._redo[:] = saved_redo  # ... and restore the redo _record_undo cleared
@@ -1641,7 +1644,7 @@ class EditorState:
         for view, point in targets:
             self.labels.clear_view(view, t, point)
         self._rederive_points(t, {point for _, point in targets})
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def clear_gt_targets(self, targets, frame: int | None = None) -> None:
         """Delete the GT pixel at many ``(view, point)`` cells, leaving all else alone.
@@ -1663,7 +1666,7 @@ class EditorState:
         for view, point in targets:
             self.labels.clear_gt(view, t, point)
         self._rederive_points(t, {point for _, point in targets})
-        self._invalidate_nmf(t)
+        self._invalidate_model(t)
 
     def toggle_exclude_targets(self, targets, frame: int | None = None) -> bool | None:
         """Toggle the **hidden** flag over many cells -- hold them out of the loss, or stop.

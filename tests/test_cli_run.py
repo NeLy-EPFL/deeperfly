@@ -512,7 +512,7 @@ def test_inverse_kinematics_stage_runs_via_pipeline(result, tmp_path):
     assert angles.shape[0] == result.pts3d.shape[0]  # one row per frame
     assert len(names) == angles.shape[1]
     assert model.shape == (result.pts3d.shape[0], result.skeleton.n_points, 3)
-    assert PoseResult.load(outdir / "results.h5").nmf_pts3d is not None
+    assert PoseResult.load(outdir / "results.h5").model_pts3d is not None
 
 
 # -- input resolution: multiple inputs, wildcards, --recursive ----------------

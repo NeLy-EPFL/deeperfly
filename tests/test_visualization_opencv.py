@@ -331,11 +331,13 @@ def test_a_style_key_an_op_cannot_use_is_dropped_for_that_op():
         {
             "v": {
                 "grid": [["rh"]],
-                "layers": [{"draw": "mesh_nmf", "line_thickness": 2, "alpha": 0.5}],
+                "layers": [{"draw": "mesh_model", "line_thickness": 2, "alpha": 0.5}],
             }
         }
     )
-    mesh = [p for p in compose.read_video_specs(cfg)[0].panels if p.plot == "mesh_nmf"]
+    mesh = [
+        p for p in compose.read_video_specs(cfg)[0].panels if p.plot == "mesh_model"
+    ]
     assert mesh[0].options == {"alpha": 0.5}
 
 
@@ -465,32 +467,34 @@ def test_compose_frame_overlays_skeleton_on_image(result, fly, frames):
     assert frame.any()
 
 
-def test_skeleton_nmf_op_overlays_fitted_model(result, fly, frames):
-    """The skeleton_nmf op reprojects Sources.nmf_pts3d onto each view."""
-    spec = compose.read_video_specs(_two_panel_config("skeleton_nmf"))[0]
+def test_skeleton_model_op_overlays_fitted_model(result, fly, frames):
+    """The skeleton_model op reprojects Sources.model_pts3d onto each view."""
+    spec = compose.read_video_specs(_two_panel_config("skeleton_model"))[0]
     src = compose.Sources(
-        fly, result.cameras, frames, pts2d=result.pts2d, nmf_pts3d=result.pts3d
+        fly, result.cameras, frames, pts2d=result.pts2d, model_pts3d=result.pts3d
     )
     frame = compose.compose_frame(spec, src, t=0)
     assert frame.shape == (96, 256, 3)
     assert frame.any()
 
 
-def test_skeleton_nmf_op_requires_nmf_points(result, fly, frames):
+def test_skeleton_model_op_requires_model_points(result, fly, frames):
     spec = compose.VideoSpec(
-        video_name="v", panels=[compose.Panel(plot="skeleton_nmf", view="rh")]
+        video_name="v", panels=[compose.Panel(plot="skeleton_model", view="rh")]
     )
     src = compose.Sources(fly, result.cameras, frames, pts3d=result.pts3d)
-    with pytest.raises(ValueError, match="skeleton_nmf panel needs Sources.nmf_pts3d"):
+    with pytest.raises(
+        ValueError, match="skeleton_model panel needs Sources.model_pts3d"
+    ):
         compose.compose_frame(spec, src, t=0)
 
 
 def test_mesh_rgba_rasterizes_the_posed_model(result):
     """The mesh rasterizer projects a posed model to an RGBA overlay with coverage."""
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
     from deeperfly.visualization.mesh import render_mesh_rgba
 
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     verts, valid = mesh.pose(mesh.kp_neutral)  # model near the world origin
     cam = result.cameras["rf"]
     rgba = render_mesh_rgba(verts, mesh.faces, mesh.face_rgb, valid, cam, 512, 1024)
@@ -553,13 +557,13 @@ def test_mesh_rgba_gl_matches_software_when_available(result):
     path projects with the camera's full pinhole, so it renders at the footage size
     the intrinsics describe (which is exactly how the overlay ops call it).
     """
-    from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
+    from deeperfly.inverse_kinematics.mesh import load_model_mesh
     from deeperfly.visualization.mesh import render_mesh_rgba
     from deeperfly.visualization.mesh_gl import gl_available, render_mesh_rgba_gl
 
     if not gl_available():
         pytest.skip("no headless GL context available")
-    mesh = load_nmf_mesh()
+    mesh = load_model_mesh()
     verts, valid = mesh.pose(mesh.kp_neutral)
     cam = result.cameras["rf"]
     cx, cy = float(cam.intr[2]), float(cam.intr[3])
@@ -572,22 +576,22 @@ def test_mesh_rgba_gl_matches_software_when_available(result):
     assert iou > 0.9  # same silhouette (smooth vs flat shading + exact depth test)
 
 
-def test_mesh_nmf_op_overlays_the_mesh(result, fly, frames):
+def test_mesh_model_op_overlays_the_mesh(result, fly, frames):
     cfg = _viz_config(
-        {"v": {"grid": [["rh"]], "layers": [{"draw": "mesh_nmf", "alpha": 0.6}]}}
+        {"v": {"grid": [["rh"]], "layers": [{"draw": "mesh_model", "alpha": 0.6}]}}
     )
     spec = compose.read_video_specs(cfg)[0]
-    src = compose.Sources(fly, result.cameras, frames, nmf_pts3d=result.pts3d)
+    src = compose.Sources(fly, result.cameras, frames, model_pts3d=result.pts3d)
     frame = compose.compose_frame(spec, src, t=0)  # composites without error
     assert frame.ndim == 3 and frame.any()
 
 
-def test_mesh_nmf_op_requires_nmf_points(result, fly, frames):
+def test_mesh_model_op_requires_model_points(result, fly, frames):
     spec = compose.VideoSpec(
-        video_name="v", panels=[compose.Panel(plot="mesh_nmf", view="rh")]
+        video_name="v", panels=[compose.Panel(plot="mesh_model", view="rh")]
     )
     src = compose.Sources(fly, result.cameras, frames, pts3d=result.pts3d)
-    with pytest.raises(ValueError, match="mesh_nmf panel needs Sources.nmf_pts3d"):
+    with pytest.raises(ValueError, match="mesh_model panel needs Sources.model_pts3d"):
         compose.compose_frame(spec, src, t=0)
 
 
@@ -622,8 +626,8 @@ def test_packaged_config_videos_parse():
     assert {s.video_name for s in specs} == {
         "pose2d",
         "pose3d",
-        "pose_nmf",
-        "mesh_nmf",
+        "pose_model",
+        "mesh_model",
     }
     assert all(p.plot in compose.OPS for s in specs for p in s.panels)
     # [visualization.default_layer] sets line_thickness on every skeleton panel that did

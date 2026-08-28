@@ -299,7 +299,7 @@ def build_session(
         identity=identity,
         footage=footage,
         image_sizes=image_sizes,
-        nmf_hide_parts=mesh_hide,
+        model_hide_parts=mesh_hide,
     )
 
 
@@ -310,7 +310,7 @@ def _ik_config(results_dir: Path):
     ``[gui].mesh_hide`` overlay parts to hide (default ``["wings"]``); the kinematic
     template + head/abdomen articulation the pipeline fit -- so the editor's live
     re-fit uses the **same** model (restricted legs, custom bounds,
-    ``fit_head``/``fit_abdomen``, and custom marker placement all carry over); and the
+    ``chains``, and custom marker placement all carry over); and the
     ``[annotation]`` solve policy + shared ``[triangulation]`` params so the editor's
     live 3D matches the run. ``template`` / ``articulation`` are ``None`` when no config
     snapshot is present (a bare ``results.h5``), in which case the live re-fit falls
@@ -546,7 +546,7 @@ def serve(
         jobs=queue,
     )
     # The app owns the session from here. Keeping a second reference would pin the
-    # OUTGOING session -- its decoded-frame LRU, its 3D and NMF caches, its 200-deep undo
+    # OUTGOING session -- its decoded-frame LRU, its 3D and model caches, its 200-deep undo
     # stacks -- alive for the life of the process every time the editor switches
     # recording in place (POST /api/recordings/open), so they would accumulate one per
     # switch. Dropping it here lets refcounting reclaim each one at the swap.

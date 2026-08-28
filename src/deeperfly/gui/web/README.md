@@ -7,7 +7,7 @@ ES modules served straight from `static/`.
 - `index.html` — the page shell, served at `/`.
 - `static/` — the source, served at `/static/`:
   - `app.js` — controller: layout (grid / focus + thumbnails), frame scrubbing,
-    the display toggles (skeleton, keypoint labels, 3D-estimate overlay, NMF
+    the display toggles (skeleton, keypoint labels, 3D-estimate overlay, model
     skeleton + mesh), a two-step **select → act** annotation model — build a
     multi-point selection (click / double-click a keypoint across views / Shift+drag
     marquee / `a` all / `v` this view, holding **Ctrl/⌘ to add** to the selection with
@@ -34,9 +34,9 @@ ES modules served straight from `static/`.
     floating panel (app.js owns the move/resize) that overlays the editor without
     blocking it, so the main frame scrubber still steps the 3D pose. Draws the camera rig
     (each camera an RGB axis triad x/right=red, y/down=green, z/optical=blue, as in
-    the bundle-adjustment notebook), the triangulated pose, the fitted NMF skeleton,
-    and the posed NMF mesh (composited from `meshGL.js` through a matching camera).
-  - `meshGL.js` — WebGL2 renderer for the posed NMF mesh (per-camera overlay + the
+    the bundle-adjustment notebook), the triangulated pose, the fitted model skeleton,
+    and the posed model mesh (composited from `meshGL.js` through a matching camera).
+  - `meshGL.js` — WebGL2 renderer for the posed model mesh (per-camera overlay + the
     3D view).
   - `api.js` — REST + WebSocket client.
   - `types.js` — JSDoc `@typedef`s for the server payloads (comment-only; never
