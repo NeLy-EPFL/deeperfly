@@ -24,18 +24,25 @@ distance = 107.463
 # principal_point_px = [479.5, 239.5]     # omit: inferred per view from its own frame
 
 [cameras.rh]
+video = 'camera_RH.mp4'
 azimuth_deg = -120
 [cameras.rm]
+video = 'camera_RM.mp4'
 azimuth_deg = -90
 [cameras.rf]
+video = 'camera_RF.mp4'
 azimuth_deg = -45
 [cameras.f]
+video = 'camera_F.mp4'
 azimuth_deg = 0
 [cameras.lf]
+video = 'camera_LF.mp4'
 azimuth_deg = 45
 [cameras.lm]
+video = 'camera_LM.mp4'
 azimuth_deg = 90
 [cameras.lh]
+video = 'camera_LH.mp4'
 azimuth_deg = 120
 
 # The axial hind view: the one camera seeing both sides at once, and this rig's only
@@ -46,6 +53,7 @@ azimuth_deg = 120
 # it absorbs a focal error into the distance instead of reporting it. Measured from the
 # foam ball, the one rigid object of fixed size in every view.
 [cameras.h]
+video = 'camera_H.mp4'
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168

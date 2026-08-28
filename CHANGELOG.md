@@ -88,6 +88,19 @@ recomputes from `pose2d` down. That is correct, not a regression.
 
 ### Fixed
 
+- **Five of the six example configs matched no footage.** They declared no
+  `[cameras.<name>].video`, so each camera fell back to its own name as the pattern and
+  every 8-camera example failed at `pose2d` with "resolved no files". Caught by running
+  all six end to end, which is the only gate that can see it; every one now exits 0 with
+  every enabled stage in `results.h5`, a median reprojection matching its cached v1 run to
+  three decimals, and its videos at the expected size.
+- **`scripts/build_keypoint_viewer_assets.py` deleted the committed model on failure.**
+  It `rmtree`'d `docs/keypoints/assets/model/` *before* exporting, so any error after that
+  point — a flygym/dm_control version drift is enough — left the repo without the MJCF and
+  the STLs that two scripts and the viewer read. It now exports to a scratch directory and
+  swaps it in only on success. (The script is also fixed for the v2 schema: it read a
+  `[skeleton]` table the packaged config no longer has, and `limb_points`/`limb_palette`
+  keys that no longer exist.)
 - **`tests/test_gui_browser.py` ran in no environment that existed** — 1859 lines and 53
   tests over the editor's JavaScript, the only gate there is on it, collapsed into one
   reported skip because `playwright` was in no dependency group and no CI job. It is in the

@@ -182,10 +182,18 @@ def build_model() -> mj.MjModel:
     fly.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
     fly.compile()  # bakes the "neutral" keyframe
 
+    # Export to a scratch directory and swap it in only once the export SUCCEEDS.
+    # MODEL_DIR is committed (the viewer and scripts/build_nmf_mesh_asset.py both read
+    # it), and deleting it up front means any failure downstream -- a flygym/dm_control
+    # version drift is enough -- leaves the repo without its MJCF and its meshes.
+    staging = MODEL_DIR.with_name(MODEL_DIR.name + ".new")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    mjcf.export_with_assets(fly.mjcf_root, str(staging), "fly.xml")
     if MODEL_DIR.exists():
         shutil.rmtree(MODEL_DIR)
-    MODEL_DIR.mkdir(parents=True)
-    mjcf.export_with_assets(fly.mjcf_root, str(MODEL_DIR), "fly.xml")
+    staging.rename(MODEL_DIR)
 
     model = mj.MjModel.from_xml_path(str(MODEL_DIR / "fly.xml"))
     assert model.nkey >= 1, "expected a baked 'neutral' keyframe in the exported model"
