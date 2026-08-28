@@ -173,7 +173,7 @@ def _grabbable(state, frame, *, projected_visible=True):
         """Finite is not enough: a position outside the canvas is drawn nowhere.
 
         This clause was missing, and that is precisely how a real frame lost a point --
-        IN10B014_260320_Fly2_009 frame 40 reprojected `rh_claw` to x=-5.5 in view `rf`, which is
+        IN10B014_260320_Fly2_009 frame 40 reprojected `rh_pretarsus` to x=-5.5 in view `rf`, which is
         finite, passed every grabbability test here, and was invisible in the GUI.
         """
         ok = np.isfinite(a).all(axis=-1)
@@ -199,7 +199,7 @@ def test_every_joint_stays_grabbable_after_hiding_the_whole_frame(result):
     # must change nothing about what is drawn. This was THE reason the seed layer had to
     # guarantee a handle for every cell: hiding suppressed each cell's pixel, a point the run
     # cached no 3D for then had no ghost either, and the joint disappeared with no way to
-    # select it back (regression: lm_claw vanished from a real labeled frame this way). The
+    # select it back (regression: lm_pretarsus vanished from a real labeled frame this way). The
     # flag no longer touches a position, so the frame is byte-identical across the bulk
     # toggle -- and still fully grabbable with the reprojected overlay both on and OFF.
     result.pts2d[:, :, 5] = np.nan  # a joint nothing can place: no detection, no 3D

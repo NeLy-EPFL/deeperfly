@@ -44,7 +44,7 @@ The latent is a *position* random walk, and the measurement update is a single
 Gauss-Newton step -- both as published. Together they mean the smoother's
 accuracy gain is confined to keypoints whose per-frame motion is at or below the
 detector's localization error: a tethered fly's body and proximal joints, not a
-claw mid-swing. On a target moving several times the noise floor the fitted
+pretarsus mid-swing. On a target moving several times the noise floor the fitted
 per-keypoint smoothing parameter backs the prior off, but a small lag survives
 (~10% on the median in
 ``tests/test_eks.py::test_a_fast_target_costs_little``), and raising the

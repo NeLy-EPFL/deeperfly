@@ -7,7 +7,7 @@ hide:
 
 deeperfly tracks a **38-point skeleton** on the fly. The packaged one — and the only
 one — is `fly38`: five points per leg (thorax–coxa, coxa–trochanter, femur–tibia,
-tibia–tarsus, claw) for each of the six legs, one antenna per side, the **neck**, and a
+tibia–tarsus, pretarsus) for each of the six legs, one antenna per side, the **neck**, and a
 five-point **dorsal-midline abdomen chain** — 30 + 2 + 1 + 5. The names and their
 ordering are the [`[skeleton]`](../reference/configuration.md#skeleton) table (see also
 [Conventions & glossary](conventions.md)).
@@ -29,10 +29,10 @@ bottom and top, which are not rig views.
 
 [Open the viewer full-screen ↗](../keypoints/viewer.html){:target="_blank" rel="noopener"}
 
-!!! note "Leg, claw, antenna and neck keypoints sit exactly on the model"
+!!! note "Leg, pretarsus, antenna and neck keypoints sit exactly on the model"
 
     Each leg keypoint is the *joint between two segments*, which coincides with a
-    NeuroMechFly body origin, so those points sit exactly on the model; the claw is the
+    NeuroMechFly body origin, so those points sit exactly on the model; the pretarsus is the
     distal tip of the fifth tarsal segment, each antenna sits at the pedicel–head joint,
     and the neck is the `c_thorax`–`c_head` pivot. Those four are model geometry, not a
     labeling choice — which is also why the neck cannot be dragged in the viewer: it is

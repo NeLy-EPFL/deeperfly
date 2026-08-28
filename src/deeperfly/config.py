@@ -240,7 +240,7 @@ class EksParams:
     smoothness against responsiveness: smaller follows the dynamics and smooths
     harder, larger follows the detector. Omitted (the default), it is *fitted* per
     keypoint by maximum marginal likelihood, which is the right answer far more
-    often than a hand-set value -- a fly's claw and its thorax do not move alike.
+    often than a hand-set value -- a fly's pretarsus and its thorax do not move alike.
     Set a number to override every keypoint at once.
 
     ``inflate_vars`` is the cross-view consistency check: each view's prediction is

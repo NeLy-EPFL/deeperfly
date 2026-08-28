@@ -134,7 +134,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     c = Config.from_dict(
         {
             "bundle_adjustment": {
-                "points": ["l*_claw"],
+                "points": ["l*_pretarsus"],
                 "fixed": ["*.intr"],
                 "shared": [["a.tvec[2]", "b.tvec[2]"]],
                 "weigh_by_confidence": False,
@@ -149,7 +149,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
     assert isinstance(ba, BundleAdjustmentParams)
     # The selector is resolved here, so `points_to_use` is the RESOLVED set and
     # bundle_adjustment.py goes on reading names.
-    assert ba.points_to_use == ["lf_claw", "lm_claw", "lh_claw"]
+    assert ba.points_to_use == ["lf_pretarsus", "lm_pretarsus", "lh_pretarsus"]
     assert ba.fixed == ["*.intr"]
     assert ba.shared == [["a.tvec[2]", "b.tvec[2]"]]
     assert ba.weigh_by_confidence is False
@@ -162,7 +162,7 @@ def test_bundle_adjustment_splits_keypoints_fixed_shared_and_scipy_kwargs():
 def test_the_v1_points_to_use_key_is_refused_by_name():
     with pytest.raises(ValueError, match="renamed to `points`"):
         Config.from_dict(
-            {"bundle_adjustment": {"points_to_use": ["lf_claw"]}}
+            {"bundle_adjustment": {"points_to_use": ["lf_pretarsus"]}}
         ).bundle_adjustment
 
 

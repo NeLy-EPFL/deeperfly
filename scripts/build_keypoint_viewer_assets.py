@@ -114,7 +114,7 @@ def load_skeleton(name: str | None = None) -> dict:
 # --- keypoint -> NeuroMechFly body mapping ----------------------------------
 # deeperfly tracks the *joint between* two segments; NeuroMechFly defines each
 # body's origin at its joint to the parent, so a leg keypoint is just the origin
-# of the distal body. The claw and antenna are the distal *tips* of tarsus5 and
+# of the distal body. The pretarsus and antenna are the distal *tips* of tarsus5 and
 # the arista (computed from geometry below); the abdomen markers have no exact
 # NeuroMechFly counterpart and are placed on the midline segments (approximate).
 LEG_PREFIXES = ("lf", "lm", "lh", "rf", "rm", "rh")
@@ -123,7 +123,7 @@ LEG_SUFFIX_TO_BODY = {
     "coxa_trochanter": "{leg}_trochanterfemur",
     "femur_tibia": "{leg}_tibia",
     "tibia_tarsus": "{leg}_tarsus1",
-    "claw": "{leg}_tarsus5",  # + distal tip offset
+    "pretarsus": "{leg}_tarsus5",  # + distal tip offset
 }
 # The abdomen markers have no exact NeuroMechFly counterpart; these are the
 # hand-tuned (body, body-frame offset in mm) placements per point, and they are the
@@ -204,7 +204,7 @@ def body_id(model: mj.MjModel, short_name: str) -> int:
 def distal_tip_offset(model: mj.MjModel, short_name: str) -> np.ndarray:
     """Body-frame offset to the most distal point of a body's geometry.
 
-    Used for the claw (a capsule on ``*_tarsus5``) and the antenna (the arista).
+    Used for the pretarsus (a capsule on ``*_tarsus5``) and the antenna (the arista).
     Considers mesh vertices and capsule end-caps, transformed from geom frame to
     body frame, and returns the candidate farthest from the body origin.
     """
@@ -241,7 +241,9 @@ def map_keypoint(model: mj.MjModel, name: str) -> tuple[str, np.ndarray, bool]:
     if parts[0] in LEG_PREFIXES:
         leg, suffix = parts[0], "_".join(parts[1:])
         body = LEG_SUFFIX_TO_BODY[suffix].format(leg=leg)
-        offset = distal_tip_offset(model, body) if suffix == "claw" else np.zeros(3)
+        offset = (
+            distal_tip_offset(model, body) if suffix == "pretarsus" else np.zeros(3)
+        )
         return body, offset, False
     if name in ("l_antenna", "r_antenna"):
         # The pedicel–head joint, i.e. the origin of the pedicel body.

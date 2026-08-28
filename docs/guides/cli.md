@@ -296,7 +296,7 @@ part of the list on a uniform temporal grid so the round still sees typical pose
 ```bash
 deeperfly labels-suggest recording/deeperfly_outputs              # 20 frames, >= 2 s apart
 deeperfly labels-suggest results.h5 -n 10 --min-gap-s 1 --dry-run # just look
-deeperfly labels-suggest rec/ --points '*claw' --cameras 'l*'     # score a subset
+deeperfly labels-suggest rec/ --points '*pretarsus' --cameras 'l*'     # score a subset
 ```
 
 The printed report is the whole feature without the GUI: each pick comes with its
@@ -355,7 +355,7 @@ on something already unsupervised is not a decision anyone made. **Mask** them i
 ## `deeperfly labels-absent` — mark keypoints that are not on this animal { #deeperfly-labels-absent }
 
 ```bash
-deeperfly labels-absent PATH... --points 'lf_femur_tibia,lf_tibia_tarsus,lf_claw' \
+deeperfly labels-absent PATH... --points 'lf_femur_tibia,lf_tibia_tarsus,lf_pretarsus' \
     [--frames RANGE] [--subject ID] [--clear]
 ```
 

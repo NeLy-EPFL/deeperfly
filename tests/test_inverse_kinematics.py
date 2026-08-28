@@ -209,7 +209,7 @@ def test_a_segment_seen_on_neither_side_is_left_for_the_model_fallback(
     index = {n: i for i, n in enumerate(fly.point_names)}
     for leg in ("lf", "rf"):
         chain = next(x for x in template.legs if x.name == leg)
-        pts3d[:, index[chain.point_names[4]]] = np.nan  # both claws gone
+        pts3d[:, index[chain.point_names[4]]] = np.nan  # both pretarsi gone
 
     shared = body_alignment(pts3d, fly, template, symmetric_segments=True).seglens
     assert shared["lf"][4] == 0.0 and shared["rf"][4] == 0.0
@@ -306,7 +306,7 @@ def test_template_unknown_name_rejected():
 
 
 def _terminal_leg_slots(mesh) -> list[int]:
-    """Leg slots whose distal keypoint (the claw) is no other segment's proximal one."""
+    """Leg slots whose distal keypoint (the pretarsus) is no other segment's proximal one."""
     prox = {int(p) for p in mesh.slot_prox if p >= 0}
     return [
         s
@@ -321,8 +321,8 @@ def test_nmf_mesh_pose_at_neutral_is_identity():
     """Posing at the model's own neutral keypoints reproduces the baked mesh.
 
     The terminal leg segment (the tarsus) is the one exception: it is stretched to
-    reach the claw keypoint (see :meth:`NmfMesh._dist_anchor`), so its vertices are
-    excluded here and checked by :func:`test_nmf_mesh_tarsus_tip_reaches_claw`.
+    reach the pretarsus keypoint (see :meth:`NmfMesh._dist_anchor`), so its vertices are
+    excluded here and checked by :func:`test_nmf_mesh_tarsus_tip_reaches_pretarsus`.
     """
     from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
 
@@ -333,12 +333,12 @@ def test_nmf_mesh_pose_at_neutral_is_identity():
     np.testing.assert_allclose(verts[keep], mesh.vertices[keep], atol=1e-3)
 
 
-def test_nmf_mesh_tarsus_tip_reaches_claw():
-    """The terminal leg segment's mesh tip lands on its claw keypoint.
+def test_nmf_mesh_tarsus_tip_reaches_pretarsus():
+    """The terminal leg segment's mesh tip lands on its pretarsus keypoint.
 
-    The baked tarsus mesh stops ~11% short of the claw, so the model skeleton's claw
+    The baked tarsus mesh stops ~11% short of the pretarsus, so the model skeleton's pretarsus
     juts past the mesh tip; skinning stretches the segment so its farthest vertex
-    reaches the claw keypoint (where the skeleton draws it).
+    reaches the pretarsus keypoint (where the skeleton draws it).
     """
     from deeperfly.inverse_kinematics.mesh import load_nmf_mesh
 
@@ -348,10 +348,10 @@ def test_nmf_mesh_tarsus_tip_reaches_claw():
     assert len(terminal) == 6  # one tarsus per leg
     for s in terminal:
         a0 = mesh.kp_neutral[int(mesh.slot_prox[s])]
-        claw = mesh.kp_neutral[int(mesh.slot_dist[s])]
-        u = (claw - a0) / np.linalg.norm(claw - a0)
+        pretarsus = mesh.kp_neutral[int(mesh.slot_dist[s])]
+        u = (pretarsus - a0) / np.linalg.norm(pretarsus - a0)
         v = verts[mesh.vert_slot == s]
-        reach = float(((v - a0) @ u).max() / np.linalg.norm(claw - a0))
+        reach = float(((v - a0) @ u).max() / np.linalg.norm(pretarsus - a0))
         assert reach == pytest.approx(1.0, abs=1e-3)  # was ~0.89 (11% short)
 
 

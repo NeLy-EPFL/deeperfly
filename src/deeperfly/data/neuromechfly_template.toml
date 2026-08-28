@@ -12,7 +12,7 @@
 # also every leg body's frame, since the MJCF gives each of them quat="1 0 0 0". The rest
 # leg points straight down (-z), and the model agrees: each distal body sits at a pure -z
 # offset from its parent (unit direction [0, 0, -1] to three decimals). A leg is a serial
-# chain from the body-fixed thorax-coxa (ThC) out to the claw. Each joint rotates the
+# chain from the body-fixed thorax-coxa (ThC) out to the pretarsus. Each joint rotates the
 # running frame about its DOF `axis` vectors (applied in the listed order); the next
 # joint's `segment` then offsets the position down the rest axis by the *measured* segment
 # length (lengths come from the data, not this file).
@@ -99,7 +99,7 @@ dofs = [
 
 [[joints]]
 name = "Claw"           # tarsus tip (end effector, no DOFs)
-suffix = "claw"
+suffix = "pretarsus"
 segment = "tarsus"
 
 # -- joint angle limits (degrees) --------------------------------------------

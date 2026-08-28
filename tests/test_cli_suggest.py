@@ -189,15 +189,15 @@ def test_point_and_camera_globs(outputs, capsys):
             "-n",
             "3",
             "--points",
-            "l?_claw",
+            "l?_pretarsus",
             "--cameras",
             "l*",
         ]
     )
     doc = read_suggestions(outputs / "labels_suggest.json")
-    assert doc["params"]["points"] == ["l?_claw"]
+    assert doc["params"]["points"] == ["l?_pretarsus"]
     assert doc["params"]["cameras"] == ["l*"]
-    assert "l?_claw" in " ".join(capsys.readouterr().out.split())
+    assert "l?_pretarsus" in " ".join(capsys.readouterr().out.split())
 
 
 def test_a_glob_matching_nothing_is_an_error(outputs):

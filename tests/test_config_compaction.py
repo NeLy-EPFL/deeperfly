@@ -88,7 +88,7 @@ def test_included_keys_are_overridden_wholesale():
     assert colors["neck"] == "#ffffff"
     # Wholesale, not merged: the override replaces the included colors entirely, so
     # every other point falls back to the colormap.
-    assert colors["lf_claw"] != "#0f7399"
+    assert colors["lf_pretarsus"] != "#0f7399"
 
 
 def test_a_self_contained_table_is_left_alone():

@@ -51,7 +51,7 @@ OUT_ARTIC = REPO / "src" / "deeperfly" / "data" / "nmf_articulation.json"
 
 # deeperfly skeleton order (must match Skeleton.fly().point_names / keypoints.json).
 LEGS = ["lf", "lm", "lh", "rf", "rm", "rh"]
-JOINTS = ["thorax_coxa", "coxa_trochanter", "femur_tibia", "tibia_tarsus", "claw"]
+JOINTS = ["thorax_coxa", "coxa_trochanter", "femur_tibia", "tibia_tarsus", "pretarsus"]
 # mesh-name part -> the leg segment index it belongs to (its bone spans
 # keypoints[seg] -> keypoints[seg + 1]).
 PART_SEGMENT = {

@@ -566,7 +566,12 @@ def test_nmf_live_masks_a_limb_it_cannot_fit(result):
     assert live is not None
     index = {n: i for i, n in enumerate(res.skeleton.point_names)}
     pts = np.asarray(res.pts3d)[0].copy()
-    for name in ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"):
+    for name in (
+        "rh_coxa_trochanter",
+        "rh_femur_tibia",
+        "rh_tibia_tarsus",
+        "rh_pretarsus",
+    ):
         pts[index[name]] = np.nan
     model, angles = live.refit(pts, 0)
     rh = [
@@ -576,7 +581,7 @@ def test_nmf_live_masks_a_limb_it_cannot_fit(result):
     ]
     assert rh, "the plan should carry right-hind leg DOFs"
     assert np.isnan(angles[rh]).all()
-    assert np.isnan(model[index["rh_claw"]]).all()
+    assert np.isnan(model[index["rh_pretarsus"]]).all()
 
 
 def test_corrected_endpoint_lists_edited_frames(client):

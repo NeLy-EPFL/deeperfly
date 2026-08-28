@@ -133,8 +133,8 @@ pose2d               = true
 bundle_adjustment    = true
 pictorial_structures = false  # DeepFly3D-style peak recovery over the top-K candidates
 triangulation        = true
-# MEASURED: -39% 3D jitter, at the cost of lagging a claw mid-swing (0.13% of cells).
-# Turn off if claw timing is the measurement -- configuration.md#eks has the numbers.
+# MEASURED: -39% 3D jitter, at the cost of lagging a pretarsus mid-swing (0.13% of cells).
+# Turn off if pretarsus timing is the measurement -- configuration.md#eks has the numbers.
 eks                  = true   # ensemble Kalman smoother over the 3D (de-jitters, repairs)
 # Assumes a TETHERED animal (see the chain below). Turn off for a freely-moving one.
 postprocess          = true   # the corrections below, from knowing the animal

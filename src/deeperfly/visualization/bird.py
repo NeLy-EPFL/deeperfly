@@ -17,7 +17,7 @@ mean the same thing everywhere.
 **The chirality is measured, never assumed.** Looking down at a back and looking up at a
 belly differ by a mirror, and a mirrored plan view is not obviously wrong on screen -- it
 just quietly swaps the animal's left and right legs. The sign of the dorsal axis is
-therefore settled by the claws: they are the feet, so the body must lie on the positive
+therefore settled by the pretarsi: they are the feet, so the body must lie on the positive
 side of the plane through them. Nothing here trusts a cross-product's sign by itself.
 """
 
@@ -113,14 +113,14 @@ def _orientation_groups(skeleton: "Skeleton") -> dict[str, list[int]]:
             for i, n in enumerate(names)
             if n.startswith("r") and n.endswith("_thorax_coxa")
         ],
-        "claws": [i for i, n in enumerate(names) if n.endswith("_claw")],
+        "pretarsi": [i for i, n in enumerate(names) if n.endswith("_pretarsus")],
     }
     missing = [k for k, v in groups.items() if not v]
     if missing:
         raise ValueError(
             f"this skeleton has no points for {missing}, so the dorsal plan view cannot "
             "be oriented. It needs an anterior group (neck/antenna), an abdomen "
-            "point, both sides' thorax-coxa joints, and claws (which is what fixes "
+            "point, both sides' thorax-coxa joints, and pretarsi (which is what fixes "
             f"dorsal from ventral). Points are: {names}"
         )
     return groups
@@ -139,7 +139,7 @@ def dorsal_camera(
 
     A *median* pose over the whole clip gives three anatomical axes -- ``ap`` anterior
     (abdomen tip to neck/antennae), ``lat`` the animal's left (right coxae to left
-    coxae), and ``up`` dorsal (``ap x lat``, its sign settled by the claws). The camera
+    coxae), and ``up`` dorsal (``ap x lat``, its sign settled by the pretarsi). The camera
     is placed far back along ``up`` and its focal solved so the animal's own extent fills
     the frame. Anterior points to the top of the panel, which puts the animal's left on
     the left -- what you see looking down at its back.
@@ -194,8 +194,8 @@ def dorsal_camera(
     lat = _unit(lat - float(lat @ ap) * ap, "lateral")  # orthogonalize against ap
     up = _unit(np.cross(ap, lat), "dorsal")
     thorax = np.concatenate([g["left_coxa"], g["right_coxa"]])
-    if float(up @ (centroid(thorax) - centroid(g["claws"]))) < 0:
-        up = -up  # the claws are the feet, so the body is dorsal of them
+    if float(up @ (centroid(thorax) - centroid(g["pretarsi"]))) < 0:
+        up = -up  # the pretarsi are the feet, so the body is dorsal of them
     center = centroid(np.concatenate([thorax, g["posterior"]]))
 
     # OpenCV cameras look along +z_cam. Anterior at the TOP of the panel means the

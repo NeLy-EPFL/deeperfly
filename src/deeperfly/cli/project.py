@@ -566,9 +566,13 @@ def _cmd_project_skeleton(args: argparse.Namespace) -> None:
     skeletons in different orders load each other's files happily and mean something
     different by every index. So this always reports first, moves labels **by name**, and
     refuses a destructive change without ``--apply``.
+
+    ``--rename OLD=NEW`` (repeatable, ``*`` allowed on both sides) declares that a point
+    kept its meaning and only changed name, which is the one thing the two files cannot
+    say for themselves.
     """
     from ..config import Config
-    from ..skeleton_migrate import apply_migration, plan_migration
+    from ..skeleton_migrate import apply_migration, expand_renames, plan_migration
 
     project = _open(args.project)
     try:
@@ -578,7 +582,15 @@ def _cmd_project_skeleton(args: argparse.Namespace) -> None:
             f"could not read a skeleton from {args.source}: {exc}"
         ) from None
 
-    plan = plan_migration(project, new)
+    try:
+        renames = expand_renames(
+            list(args.rename or ()),
+            project.skeleton().point_names,
+            new.point_names,
+        )
+        plan = plan_migration(project, new, renames=renames)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     _info_line("project:  ", f"{project.name}  ({project.root})")
     _info_line("points:   ", f"{len(plan.old_names)} -> {len(plan.new_names)}")
     if not plan.changes:

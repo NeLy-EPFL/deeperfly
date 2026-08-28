@@ -497,8 +497,8 @@ def test_glob_mask(fly):
     names = list(fly.point_names)
     assert glob_mask(names, None).all()
     assert glob_mask(names, []).all()
-    picked = [n for n, m in zip(names, glob_mask(names, ["l?_claw"])) if m]
-    assert picked == ["lf_claw", "lm_claw", "lh_claw"]
+    picked = [n for n, m in zip(names, glob_mask(names, ["l?_pretarsus"])) if m]
+    assert picked == ["lf_pretarsus", "lm_pretarsus", "lh_pretarsus"]
     with pytest.raises(ValueError, match="none of"):
         glob_mask(names, ["nope*"])
 

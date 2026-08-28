@@ -92,7 +92,7 @@ def test_the_leg_parameterisation_is_flygyms(template, fly):
     NeuroMechFly says.
 
     The tolerance is 8 degrees, and one DOF needs it: the tibia-tarsus pitch, because
-    deeperfly models the tarsus as ONE straight segment from ``tibia_tarsus`` to ``claw``
+    deeperfly models the tarsus as ONE straight segment from ``tibia_tarsus`` to ``pretarsus``
     where flygym has five tarsal joints, so the single angle splits the difference. Every
     other DOF lands within 5 degrees and the median is under 1.
     """
@@ -302,11 +302,11 @@ def test_pinned_joint_limits_are_reported(template, fly, articulation, caplog):
 
 
 def test_missing_distal_joint_still_fits_the_rest(template, fly, articulation):
-    """Dropping the claw still fits the leg from its remaining joints."""
+    """Dropping the pretarsus still fits the leg from its remaining joints."""
     rng = np.random.default_rng(5)
     pts3d, _ = synth_leg_pose(template, fly, rng)
     index = _index(fly)
-    pts3d[:, index["rf_claw"]] = np.nan
+    pts3d[:, index["rf_pretarsus"]] = np.nan
     res = solve_inverse_kinematics(
         pts3d, fly, template, articulation=articulation, neutral_weight=1e-5
     )
@@ -326,14 +326,19 @@ def test_a_limb_without_enough_observations_is_left_unset(template, fly, articul
     rng = np.random.default_rng(6)
     pts3d, _ = synth_leg_pose(template, fly, rng)
     index = _index(fly)
-    for name in ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"):
+    for name in (
+        "rh_coxa_trochanter",
+        "rh_femur_tibia",
+        "rh_tibia_tarsus",
+        "rh_pretarsus",
+    ):
         pts3d[:, index[name]] = np.nan  # only the coxa left: one observation
     res = solve_inverse_kinematics(pts3d, fly, template, articulation=articulation)
     col = {n: i for i, n in enumerate(res.angle_names)}
     rh = next(leg for leg in template.legs if leg.name == "rh")
     assert np.isnan(res.angles[:, [col[n] for n in rh.dof_names]]).all()
     # its distal model points go with it, while another leg is unaffected
-    assert np.isnan(res.model_pts3d[:, index["rh_claw"]]).all()
+    assert np.isnan(res.model_pts3d[:, index["rh_pretarsus"]]).all()
     lf = next(leg for leg in template.legs if leg.name == "lf")
     assert np.isfinite(res.angles[:, [col[n] for n in lf.dof_names]]).all()
 
@@ -372,7 +377,12 @@ def test_zero_weight_marks_an_observation_missing(template, fly, articulation):
     rng = np.random.default_rng(8)
     pts3d, _ = synth_leg_pose(template, fly, rng)
     index = _index(fly)
-    dropped = ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw")
+    dropped = (
+        "rh_coxa_trochanter",
+        "rh_femur_tibia",
+        "rh_tibia_tarsus",
+        "rh_pretarsus",
+    )
 
     weights = np.ones((pts3d.shape[0], fly.n_points))
     for name in dropped:
@@ -541,7 +551,7 @@ def test_an_amputated_leg_still_fits_the_stump(template, fly, articulation):
     pts3d, _ = synth_leg_pose(template, fly, rng)
     index = _index(fly)
     absent = np.zeros(len(fly.point_names), dtype=bool)
-    for name in ("lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"):
+    for name in ("lf_femur_tibia", "lf_tibia_tarsus", "lf_pretarsus"):
         pts3d[:, index[name]] = np.nan
         absent[index[name]] = True
 
@@ -582,7 +592,7 @@ def test_declaring_absence_cannot_buy_an_underdetermined_fit(
         "lf_coxa_trochanter",
         "lf_femur_tibia",
         "lf_tibia_tarsus",
-        "lf_claw",
+        "lf_pretarsus",
     ):
         pts3d[:, index[name]] = np.nan
         absent[index[name]] = True
@@ -709,7 +719,12 @@ def test_a_missing_detection_does_not_lower_the_bar(template, fly, articulation)
     rng = np.random.default_rng(13)
     pts3d, _ = synth_leg_pose(template, fly, rng)
     index = _index(fly)
-    for name in ("rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw"):
+    for name in (
+        "rh_coxa_trochanter",
+        "rh_femur_tibia",
+        "rh_tibia_tarsus",
+        "rh_pretarsus",
+    ):
         pts3d[:, index[name]] = np.nan  # only the coxa left, nothing declared absent
     res = solve_inverse_kinematics(
         pts3d,

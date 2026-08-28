@@ -125,12 +125,12 @@ name = "fly38"
 point_names = ["lf_thorax_coxa", "lf_coxa_trochanter", "..."]
 
 symmetries = [
-    ["lf_claw", "rf_claw"],
+    ["lf_pretarsus", "rf_pretarsus"],
     ["l_antenna", "r_antenna"],
 ]
 
 [skeleton.limb_points]
-lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw"]
+lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_pretarsus"]
 
 [skeleton.limb_palette]
 lf_leg = "#0f7399"
@@ -160,7 +160,7 @@ one:
 
 | Preset | Points |
 | --- | --- |
-| `fly38` | Six 5-point legs (`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `claw`), `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain `abdomen0`…`abdomen4`. 16 [symmetry pairs](#symmetries). |
+| `fly38` | Six 5-point legs (`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `pretarsus`), `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain `abdomen0`…`abdomen4`. 16 [symmetry pairs](#symmetries). |
 
 !!! note "`fly38b` still resolves — it is the same 38 points under the former name"
 
@@ -953,7 +953,7 @@ videos and `PoseResult.load`. Cost is roughly 20 s per 5000 frames × 38 keypoin
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `smooth_param` | float | *(fitted)* | Process-noise scale: smaller smooths harder. Omitted, it is fitted per keypoint by maximum marginal likelihood — usually the right call, since a claw and a thorax do not move alike. |
+| `smooth_param` | float | *(fitted)* | Process-noise scale: smaller smooths harder. Omitted, it is fitted per keypoint by maximum marginal likelihood — usually the right call, since a pretarsus and a thorax do not move alike. |
 | `inflate_vars` | bool | `true` | Test each view against the other views and down-weight the ones that disagree. Needs two **views**, not two models, so it is fully active with a single detector. This is the component that repairs outliers; leave it on. |
 | `inflate_threshold` | float | `5.0` | Mahalanobis distance at which a view is called inconsistent. Lower is more suspicious — and 5 over-flags, so the packaged config raises it to `30.0`. See the calibration caveat and the measured sweep below. |
 | `inflate_factor` | float | `10.0` | Variance multiplier per inflation round (the paper describes doubling; the reference CLI ships 10). |
@@ -977,7 +977,7 @@ that term into a measurement.
 **Where the temporal prior stops helping.** The latent is a *position* random walk and
 the update is a single Gauss-Newton step, both as published. The accuracy gain is
 therefore confined to keypoints moving no faster per frame than the detector can
-localize them — a tethered fly's body and proximal joints, not a claw mid-swing. On a
+localize them — a tethered fly's body and proximal joints, not a pretarsus mid-swing. On a
 target moving several times that floor the fitted parameter backs the prior off, but
 about 10% of median lag survives and raising `smooth_param` does not remove it. The
 de-jittering and the outlier repair are unaffected.
@@ -985,8 +985,8 @@ de-jittering and the outlier repair are unaffected.
 **What it buys and costs, measured** on a 100 fps eight-camera recording of a tethered
 fly. 3D jitter — median frame-to-frame acceleration — drops **39%**, 0.0062 → 0.0038.
 Against that, 779 cells (0.13%) reproject more than 100 px from the detector's 2D, and
-every one of them is a **claw**: exactly the lag above, not a tuning failure. Turn the
-stage off if claw timing is the measurement.
+every one of them is a **pretarsus**: exactly the lag above, not a tuning failure. Turn the
+stage off if pretarsus timing is the measurement.
 
 **Choosing `inflate_threshold`.** Reprojection cannot tell you: a sweep over
 5 / 10 / 15 / 20 / 30 on one recording moves the flag rate from 68% to 21% while the
@@ -1707,7 +1707,7 @@ negative offset is never clipped to its own footprint (only to the canvas).
 `view = "bird"` is a **derived** dorsal plan view rather than a rig camera: the body axes
 come from the 3D pose itself (anterior from the abdomen tip to the neck, lateral across
 the thorax-coxa joints, dorsal from their cross product with its sign settled by the
-claws), and the focal is solved so the animal fills the frame once for the whole clip. It
+pretarsi), and the focal is solved so the animal fills the frame once for the whole clip. It
 shows all six legs with no body in the way, which the rig cannot do — the tether is above
 the animal. It has no footage, so give it a `skeleton_3d`/`skeleton_nmf` panel and no
 `imshow`. A real camera of that name takes precedence.

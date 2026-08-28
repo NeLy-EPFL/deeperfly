@@ -191,7 +191,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
     names = [n.strip() for n in str(args.points).split(",") if n.strip()]
     if not names:
         raise SystemExit(
-            "--points is empty; pass e.g. --points 'lf_femur_tibia,lf_claw'"
+            "--points is empty; pass e.g. --points 'lf_femur_tibia,lf_pretarsus'"
         )
 
     frame_spec = getattr(args, "frames", None)

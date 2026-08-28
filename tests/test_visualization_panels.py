@@ -443,7 +443,7 @@ def test_the_plan_view_is_framed_once_so_the_pair_is_comparable(fly, result, fra
 def _posed_fly(skeleton: Skeleton, *, roll=0.0) -> np.ndarray:
     """A synthetic animal with a KNOWN anatomy, so the view's axes can be checked.
 
-    Anterior is +x, the animal's left is +y, dorsal is +z; the claws sit below the
+    Anterior is +x, the animal's left is +y, dorsal is +z; the pretarsi sit below the
     body. ``roll`` rotates the whole animal about its own long axis, which is what
     tells a dorsal view apart from a ventral one.
     """
@@ -453,7 +453,7 @@ def _posed_fly(skeleton: Skeleton, *, roll=0.0) -> np.ndarray:
         side = 1.0 if n.startswith("l") else -1.0
         if n.endswith("_thorax_coxa"):
             p[i] = [0.2, 0.4 * side, 0.0]
-        elif n.endswith("_claw"):
+        elif n.endswith("_pretarsus"):
             p[i] = [0.3, 0.9 * side, -0.6]  # feet: ventral
         elif n in ("l_antenna", "r_antenna", "neck"):
             p[i] = [1.0, 0.15 * side, 0.05]
@@ -495,10 +495,10 @@ def test_dorsal_view_puts_anterior_up_and_the_animal_s_left_on_the_left(fly):
     )
 
 
-def test_dorsal_view_is_settled_by_the_claws_not_by_a_cross_product(fly):
+def test_dorsal_view_is_settled_by_the_pretarsi_not_by_a_cross_product(fly):
     """Rolling the animal upside down must NOT flip the panel.
 
-    The dorsal direction is chosen so the body is on the far side of the claws. Without
+    The dorsal direction is chosen so the body is on the far side of the pretarsi. Without
     that the sign comes from a cross product of two axes that both rolled, and the view
     would silently mirror -- swapping the animal's left and right legs on screen.
     """

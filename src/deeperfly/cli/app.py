@@ -406,7 +406,7 @@ def labels_absent(
         typer.Option(
             "--points",
             help="comma-separated keypoint names or fnmatch globs, e.g. "
-            "'lf_femur_tibia,lf_tibia_tarsus,lf_claw' or 'lf_*'. An unmatched name is an "
+            "'lf_femur_tibia,lf_tibia_tarsus,lf_pretarsus' or 'lf_*'. An unmatched name is an "
             "error, so a typo cannot silently declare nothing.",
         ),
     ],
@@ -1050,6 +1050,14 @@ def project_skeleton(
         ),
     ],
     project: ProjectArg = None,
+    rename: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--rename",
+            help="OLD=NEW: a point that only changed name, so its labels move with it "
+            "(repeatable; '*' on both sides renames a family, e.g. '*_claw=*_pretarsus')",
+        ),
+    ] = None,
     apply: Annotated[
         bool,
         typer.Option("--apply", help="actually migrate (otherwise this only reports)"),
@@ -1064,12 +1072,17 @@ def project_skeleton(
     is reported and counted before anything is written; and a deleted point's labels are
     QUARANTINED rather than destroyed, so re-adding the point brings them back.
 
+    A rename is the one edit the two files cannot describe: "the claw point is now called
+    pretarsus" and "claw is gone, pretarsus is new" are the same diff, and the second
+    quarantines every label on it. One in place is inferred; declare the rest with
+    --rename OLD=NEW.
+
     Reports and writes nothing without --apply. Applying snapshots the project to a .dfpkg
     first.
     """
     _configure_logging(log_level.value)
     _cmd_project_skeleton(
-        argparse.Namespace(project=project, source=source, apply=apply)
+        argparse.Namespace(project=project, source=source, rename=rename, apply=apply)
     )
 
 

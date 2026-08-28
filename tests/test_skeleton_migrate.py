@@ -23,6 +23,7 @@ from deeperfly.skeleton import Skeleton
 from deeperfly.skeleton_migrate import (
     apply_migration,
     diff_skeletons,
+    expand_renames,
     plan_migration,
 )
 
@@ -430,3 +431,63 @@ def test_changing_the_pairs_is_reported_and_is_not_destructive(fly):
     assert not any(c.destructive for c in changes)
     # Every point keeps its index: the pairing is metadata, not indexing.
     assert mapping == {i: i for i in range(fly.n_points)}
+
+
+def test_declared_renames_carry_labels_a_positional_guess_would_quarantine(tmp_path):
+    """The bulk case: six `*_claw` become `*_pretarsus` in one edit.
+
+    Two at once is exactly what `diff_skeletons` refuses to guess at, so without the
+    declaration these labels would be quarantined as deletes.
+    """
+    project, entry = _project(
+        tmp_path,
+        ("l_claw", "r_claw"),
+        cells={(0, 0, 0): (1.0, 2.0), (0, 1, 1): (3.0, 4.0)},
+    )
+    new = _skeleton(["l_pretarsus", "r_pretarsus"])
+    renames = expand_renames(
+        ["*_claw=*_pretarsus"], project.skeleton().point_names, new.point_names
+    )
+    assert renames == {"l_claw": "l_pretarsus", "r_claw": "r_pretarsus"}
+
+    plan = plan_migration(project, new, renames=renames)
+    assert [c.kind for c in plan.changes if c.kind in ("rename", "delete", "add")] == [
+        "rename",
+        "rename",
+    ]
+    assert plan.quarantined == 0
+
+    apply_migration(project, new, plan, snapshot=False)
+    identity = labels_identity(
+        point_names=["l_pretarsus", "r_pretarsus"],
+        camera_names=list(CAMERA_NAMES),
+        n_frames=4,
+        image_sizes=SIZES,
+    )
+    labels = load_labels(project.labels_path(entry), identity=identity)
+    np.testing.assert_allclose(labels.gt[0, 0, 0], [1.0, 2.0])
+    np.testing.assert_allclose(labels.gt[0, 1, 1], [3.0, 4.0])
+
+
+def test_a_rename_onto_a_surviving_point_is_refused():
+    """It would merge two points' labels into one column."""
+    old, new = _skeleton(["a", "b"]), _skeleton(["a", "c"])
+    with pytest.raises(ValueError, match="merge two points into one"):
+        diff_skeletons(old, new, renames={"b": "a"})
+
+
+def test_a_rename_of_a_point_that_did_not_move_is_refused():
+    old, new = _skeleton(["a", "b"]), _skeleton(["a", "c"])
+    with pytest.raises(ValueError, match="not a point the new skeleton dropped"):
+        diff_skeletons(old, new, renames={"a": "c"})
+
+
+def test_a_rename_pattern_that_matches_nothing_is_an_error():
+    """Expanding to nothing would silently fall back to delete-plus-add."""
+    with pytest.raises(ValueError, match="matched no point"):
+        expand_renames(["*_claw=*_pretarsus"], ["a", "b"], ["a", "b"])
+
+
+def test_a_rename_pattern_must_land_in_the_new_skeleton():
+    with pytest.raises(ValueError, match="which the new skeleton does not have"):
+        expand_renames(["*_claw=*_tip"], ["l_claw"], ["l_pretarsus"])

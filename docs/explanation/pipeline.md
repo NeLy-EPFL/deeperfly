@@ -280,9 +280,9 @@ inflated until the smoother stops believing it, so the 3D point stays on the ani
 view's reported 2D becomes the trajectory reprojected.
 
 What it costs is honest and small: 779 cells (0.13%) on that recording reproject more than
-100 px from the detector's 2D, and every one of them is a **claw**. The latent is a position
+100 px from the detector's 2D, and every one of them is a **pretarsus**. The latent is a position
 random walk, so the accuracy gain is confined to keypoints moving no faster per frame than
-the detector can localize them; a claw mid-swing lags. Turn the stage off if claw timing is
+the detector can localize them; a pretarsus mid-swing lags. Turn the stage off if pretarsus timing is
 the measurement.
 
 Its `reproj_error` means something different from the other stages': its `points` *is*

@@ -15,13 +15,13 @@
 name = "fly38_deepfly3d"
 
 points = [
-    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
-    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
-    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_pretarsus",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_pretarsus",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_pretarsus",
     "l_antenna", "l_abdomen0", "l_abdomen1", "l_abdomen2",
-    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
-    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
-    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_pretarsus",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_pretarsus",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_pretarsus",
     "r_antenna", "r_abdomen0", "r_abdomen1", "r_abdomen2",
 ]
 
@@ -33,17 +33,17 @@ symmetries = [
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],
     ["lf_femur_tibia",     "rf_femur_tibia"],
     ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
-    ["lf_claw",            "rf_claw"],
+    ["lf_pretarsus",            "rf_pretarsus"],
     ["lm_thorax_coxa",     "rm_thorax_coxa"],
     ["lm_coxa_trochanter", "rm_coxa_trochanter"],
     ["lm_femur_tibia",     "rm_femur_tibia"],
     ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
-    ["lm_claw",            "rm_claw"],
+    ["lm_pretarsus",            "rm_pretarsus"],
     ["lh_thorax_coxa",     "rh_thorax_coxa"],
     ["lh_coxa_trochanter", "rh_coxa_trochanter"],
     ["lh_femur_tibia",     "rh_femur_tibia"],
     ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
-    ["lh_claw",            "rh_claw"],
+    ["lh_pretarsus",            "rh_pretarsus"],
     ["l_antenna",          "r_antenna"],
     ["l_abdomen0",         "r_abdomen0"],
     ["l_abdomen1",         "r_abdomen1"],
@@ -52,13 +52,13 @@ symmetries = [
 
 # The bones, as point pairs; written source-first, which is the color an edge takes.
 edges = [
-    ["lf_thorax_coxa", "lf_coxa_trochanter"], ["lf_coxa_trochanter", "lf_femur_tibia"], ["lf_femur_tibia", "lf_tibia_tarsus"], ["lf_tibia_tarsus", "lf_claw"],
-    ["lm_thorax_coxa", "lm_coxa_trochanter"], ["lm_coxa_trochanter", "lm_femur_tibia"], ["lm_femur_tibia", "lm_tibia_tarsus"], ["lm_tibia_tarsus", "lm_claw"],
-    ["lh_thorax_coxa", "lh_coxa_trochanter"], ["lh_coxa_trochanter", "lh_femur_tibia"], ["lh_femur_tibia", "lh_tibia_tarsus"], ["lh_tibia_tarsus", "lh_claw"],
+    ["lf_thorax_coxa", "lf_coxa_trochanter"], ["lf_coxa_trochanter", "lf_femur_tibia"], ["lf_femur_tibia", "lf_tibia_tarsus"], ["lf_tibia_tarsus", "lf_pretarsus"],
+    ["lm_thorax_coxa", "lm_coxa_trochanter"], ["lm_coxa_trochanter", "lm_femur_tibia"], ["lm_femur_tibia", "lm_tibia_tarsus"], ["lm_tibia_tarsus", "lm_pretarsus"],
+    ["lh_thorax_coxa", "lh_coxa_trochanter"], ["lh_coxa_trochanter", "lh_femur_tibia"], ["lh_femur_tibia", "lh_tibia_tarsus"], ["lh_tibia_tarsus", "lh_pretarsus"],
     ["l_abdomen0", "l_abdomen1"], ["l_abdomen1", "l_abdomen2"],
-    ["rf_thorax_coxa", "rf_coxa_trochanter"], ["rf_coxa_trochanter", "rf_femur_tibia"], ["rf_femur_tibia", "rf_tibia_tarsus"], ["rf_tibia_tarsus", "rf_claw"],
-    ["rm_thorax_coxa", "rm_coxa_trochanter"], ["rm_coxa_trochanter", "rm_femur_tibia"], ["rm_femur_tibia", "rm_tibia_tarsus"], ["rm_tibia_tarsus", "rm_claw"],
-    ["rh_thorax_coxa", "rh_coxa_trochanter"], ["rh_coxa_trochanter", "rh_femur_tibia"], ["rh_femur_tibia", "rh_tibia_tarsus"], ["rh_tibia_tarsus", "rh_claw"],
+    ["rf_thorax_coxa", "rf_coxa_trochanter"], ["rf_coxa_trochanter", "rf_femur_tibia"], ["rf_femur_tibia", "rf_tibia_tarsus"], ["rf_tibia_tarsus", "rf_pretarsus"],
+    ["rm_thorax_coxa", "rm_coxa_trochanter"], ["rm_coxa_trochanter", "rm_femur_tibia"], ["rm_femur_tibia", "rm_tibia_tarsus"], ["rm_tibia_tarsus", "rm_pretarsus"],
+    ["rh_thorax_coxa", "rh_coxa_trochanter"], ["rh_coxa_trochanter", "rh_femur_tibia"], ["rh_femur_tibia", "rh_tibia_tarsus"], ["rh_tibia_tarsus", "rh_pretarsus"],
     ["r_abdomen0", "r_abdomen1"], ["r_abdomen1", "r_abdomen2"],
 ]
 

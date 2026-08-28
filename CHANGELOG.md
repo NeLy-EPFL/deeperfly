@@ -29,6 +29,20 @@ recomputes from `pose2d` down. That is correct, not a regression.
   file without it reads back on a colormap, which is acceptable because colours are
   cosmetic. The symmetries are now checked to be an **automorphism of the edges**, which is
   strictly stronger than the chain-consistency check it replaces.
+- **The six leg-tip points are `*_pretarsus`, not `*_claw`.** The tarsus is five
+  tarsomeres and the pretarsus is the segment distal to the fifth, carrying the claws, the
+  pulvilli and the empodium; at this recording resolution a claw is not something anyone
+  localizes, so the point was named after a structure it never resolved. Nothing else about
+  the skeleton moved — same points, same order, same edges, same pairs — but names are the
+  identity, so labels and weights authored under the old names need the rename declared:
+  `deeperfly project skeleton <skeleton.toml> --rename '*_claw=*_pretarsus' --apply` for a
+  project's labels, `scripts/rename_checkpoint_points.py` for an exported checkpoint.
+- **`deeperfly project skeleton --rename OLD=NEW`** (repeatable; one `*` per side renames a
+  family). A rename is the one skeleton edit the two files cannot describe between them —
+  "the claw point is now called pretarsus" and "claw is gone, pretarsus is new" are the same
+  diff, and the second quarantines every label on those points. One name changed in place is
+  still inferred; more than one has to be declared, because a whole block of points can be
+  replaced in place and that is a different point set, not a rename.
 - **One point selector for every point set.** An entry in `[bundle_adjustment] points`, the
   `static`/`symmetrize` ops' `points`/`midline`, or `[skeleton.colors]` is a point name or
   a `*` pattern. `points_to_use` and `symmetrize`'s `pairs` are refused by name.

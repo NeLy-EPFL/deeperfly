@@ -176,7 +176,7 @@ def _header_name(line: str) -> str | None:
 
     Line-local, so it cannot tell a header from a *continuation line of a multi-line
     array* that happens to begin with ``[`` -- which ``[skeleton].symmetries`` does, one
-    ``["lf_claw", "rf_claw"],`` row per line. Callers must go through
+    ``["lf_pretarsus", "rf_pretarsus"],`` row per line. Callers must go through
     :func:`_header_scan`, which supplies the missing bracket-depth context.
     """
     stripped = line.strip()

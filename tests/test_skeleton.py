@@ -32,7 +32,7 @@ def test_colors_are_per_point(fly):
     hole in the table.
     """
     color = dict(zip(fly.point_names, fly.point_colors))
-    assert color["lf_claw"] == color["lf_thorax_coxa"] == "#0f7399"
+    assert color["lf_pretarsus"] == color["lf_thorax_coxa"] == "#0f7399"
     assert color["l_antenna"] == "#0a4f6b"  # exact name, not caught by "l*"
     assert color["r_antenna"] == "#8c1525"
     # The packaged skeleton's neck and abdomen are MIDLINE structures, so they take a
@@ -178,7 +178,7 @@ def test_flip_perm_matches_the_deepfly3d_block_layout(deepfly3d):
 
 
 def test_partner(fly):
-    assert fly.point_names[fly.partner("lf_claw")] == "rf_claw"
+    assert fly.point_names[fly.partner("lf_pretarsus")] == "rf_pretarsus"
     assert fly.point_names[fly.partner("r_antenna")] == "l_antenna"
     assert fly.partner(0) == fly.point_names.index("rf_thorax_coxa")
     # A midline point has no partner at all -- None, not itself.
@@ -221,17 +221,17 @@ def test_symmetries_are_canonicalized_so_declaration_order_carries_no_meaning():
 @pytest.mark.parametrize(
     "pairs, message",
     [
-        ([["lf_claw", "lf_claw"]], "with itself"),
+        ([["lf_pretarsus", "lf_pretarsus"]], "with itself"),
         (
-            [["lf_claw", "rf_claw"], ["lf_claw", "rm_claw"]],
+            [["lf_pretarsus", "rf_pretarsus"], ["lf_pretarsus", "rm_pretarsus"]],
             "more than one symmetry pair",
         ),
-        ([["lf_claw", "nope"]], "unknown point name"),
-        ([["lf_claw"]], "exactly 2 points"),
-        ([["lf_claw", "rf_claw", "rm_claw"]], "exactly 2 points"),
+        ([["lf_pretarsus", "nope"]], "unknown point name"),
+        ([["lf_pretarsus"]], "exactly 2 points"),
+        ([["lf_pretarsus", "rf_pretarsus", "rm_pretarsus"]], "exactly 2 points"),
         ([[0, 999]], "outside"),
-        (["lf_claw"], "2-element pair"),
-        ("lf_claw", "list of 2-element pairs"),
+        (["lf_pretarsus"], "2-element pair"),
+        ("lf_pretarsus", "list of 2-element pairs"),
     ],
 )
 def test_malformed_symmetries_are_rejected_with_a_pointed_message(fly, pairs, message):
@@ -292,8 +292,8 @@ def test_an_exact_name_beats_a_pattern(fly):
     [
         (["lf_nope"], "not a point of this skeleton"),
         (["zz_*"], "matches no point"),
-        (["lf_*", "*_claw"], "both match"),
-        ("lf_claw", "not a string"),
+        (["lf_*", "*_pretarsus"], "both match"),
+        ("lf_pretarsus", "not a string"),
     ],
 )
 def test_the_selector_refuses_what_it_cannot_mean(fly, entries, message):
@@ -309,7 +309,7 @@ def test_the_selector_logs_what_it_resolved(fly, caplog):
     from deeperfly.skeleton import resolve_points
 
     with caplog.at_level("INFO", logger="deeperfly"):
-        resolve_points(["*_claw"], fly.point_names, where="[test] points")
+        resolve_points(["*_pretarsus"], fly.point_names, where="[test] points")
     assert "[test] points -> 6 points" in caplog.text
 
 

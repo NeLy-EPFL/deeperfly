@@ -66,7 +66,7 @@ def test_skeleton_chains_partition_fly(fly):
     assert covered == list(range(fly.n_points))  # exact partition, no dupes
     # fly38b: six 5-point legs, a 5-point midline abdomen, two antennae and the neck.
     assert sorted(len(c) for c in chains) == [1, 1, 1, 5, 5, 5, 5, 5, 5, 5]
-    # Each leg chain is a contiguous thorax_coxa..claw run.
+    # Each leg chain is a contiguous thorax_coxa..pretarsus run.
     legs = [c for c in chains if len(c) == 5]
     for c in legs:
         assert c == list(range(c[0], c[0] + 5))

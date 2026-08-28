@@ -13,6 +13,21 @@
 # This file was called `fly38b` up to the 0.2 release, when it became the only packaged
 # skeleton and took the plain name. `include = "fly38b"` still resolves here.
 #
+# The six leg-tip points were `*_claw` until 0.3. `pretarsus` is the segment that is
+# actually there -- the tarsus is five tarsomeres and the pretarsus is what sits distal
+# to the fifth, carrying the claws, the pulvilli and the empodium -- and at this
+# recording resolution a claw is not a thing anyone localizes. NOTHING ELSE MOVED: same
+# points in the same order, same edges, same pairs, so the six names are the whole edit
+# and the digest below moved only because names are part of it. Files written under the
+# old names are migrated by declaring the rename, which is the only way anything can
+# know the two names mean one point:
+#
+#     deeperfly project skeleton skeleton.toml --rename '*_claw=*_pretarsus' --apply
+#
+# A checkpoint records its own channel names and is compared against them on every run
+# (deeperfly.pose2d.stream), so weights exported before 0.3 are refused until they are
+# re-stamped: `scripts/rename_checkpoint_points.py`.
+#
 # It is NOT the historical DeepFly3D set, which also had 38 points and is what `fly38`
 # named before 1.0: that one carried two three-marker abdomen SIDE chains
 # (l_abdomen0..2 / r_abdomen0..2) and no neck. Same count, different points, different
@@ -28,13 +43,13 @@ name = "fly38"
 # The points IN ORDER: channel i of the detector is points[i]. This is the contract
 # with the weights, checked every time they load.
 points = [
-    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_claw",
-    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_claw",
-    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_claw",
+    "lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_pretarsus",
+    "lm_thorax_coxa", "lm_coxa_trochanter", "lm_femur_tibia", "lm_tibia_tarsus", "lm_pretarsus",
+    "lh_thorax_coxa", "lh_coxa_trochanter", "lh_femur_tibia", "lh_tibia_tarsus", "lh_pretarsus",
     "l_antenna",
-    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_claw",
-    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_claw",
-    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_claw",
+    "rf_thorax_coxa", "rf_coxa_trochanter", "rf_femur_tibia", "rf_tibia_tarsus", "rf_pretarsus",
+    "rm_thorax_coxa", "rm_coxa_trochanter", "rm_femur_tibia", "rm_tibia_tarsus", "rm_pretarsus",
+    "rh_thorax_coxa", "rh_coxa_trochanter", "rh_femur_tibia", "rh_tibia_tarsus", "rh_pretarsus",
     "r_antenna",
     "neck",
     "abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4",
@@ -46,17 +61,17 @@ points = [
 # edge -- tracked points with no bone.
 edges = [
     ["lf_thorax_coxa", "lf_coxa_trochanter"], ["lf_coxa_trochanter", "lf_femur_tibia"],
-    ["lf_femur_tibia", "lf_tibia_tarsus"], ["lf_tibia_tarsus", "lf_claw"],
+    ["lf_femur_tibia", "lf_tibia_tarsus"], ["lf_tibia_tarsus", "lf_pretarsus"],
     ["lm_thorax_coxa", "lm_coxa_trochanter"], ["lm_coxa_trochanter", "lm_femur_tibia"],
-    ["lm_femur_tibia", "lm_tibia_tarsus"], ["lm_tibia_tarsus", "lm_claw"],
+    ["lm_femur_tibia", "lm_tibia_tarsus"], ["lm_tibia_tarsus", "lm_pretarsus"],
     ["lh_thorax_coxa", "lh_coxa_trochanter"], ["lh_coxa_trochanter", "lh_femur_tibia"],
-    ["lh_femur_tibia", "lh_tibia_tarsus"], ["lh_tibia_tarsus", "lh_claw"],
+    ["lh_femur_tibia", "lh_tibia_tarsus"], ["lh_tibia_tarsus", "lh_pretarsus"],
     ["rf_thorax_coxa", "rf_coxa_trochanter"], ["rf_coxa_trochanter", "rf_femur_tibia"],
-    ["rf_femur_tibia", "rf_tibia_tarsus"], ["rf_tibia_tarsus", "rf_claw"],
+    ["rf_femur_tibia", "rf_tibia_tarsus"], ["rf_tibia_tarsus", "rf_pretarsus"],
     ["rm_thorax_coxa", "rm_coxa_trochanter"], ["rm_coxa_trochanter", "rm_femur_tibia"],
-    ["rm_femur_tibia", "rm_tibia_tarsus"], ["rm_tibia_tarsus", "rm_claw"],
+    ["rm_femur_tibia", "rm_tibia_tarsus"], ["rm_tibia_tarsus", "rm_pretarsus"],
     ["rh_thorax_coxa", "rh_coxa_trochanter"], ["rh_coxa_trochanter", "rh_femur_tibia"],
-    ["rh_femur_tibia", "rh_tibia_tarsus"], ["rh_tibia_tarsus", "rh_claw"],
+    ["rh_femur_tibia", "rh_tibia_tarsus"], ["rh_tibia_tarsus", "rh_pretarsus"],
     ["abdomen0", "abdomen1"], ["abdomen1", "abdomen2"], ["abdomen2", "abdomen3"], ["abdomen3", "abdomen4"],
 ]
 
@@ -71,17 +86,17 @@ symmetries = [
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],
     ["lf_femur_tibia",     "rf_femur_tibia"],
     ["lf_tibia_tarsus",    "rf_tibia_tarsus"],
-    ["lf_claw",            "rf_claw"],
+    ["lf_pretarsus",            "rf_pretarsus"],
     ["lm_thorax_coxa",     "rm_thorax_coxa"],
     ["lm_coxa_trochanter", "rm_coxa_trochanter"],
     ["lm_femur_tibia",     "rm_femur_tibia"],
     ["lm_tibia_tarsus",    "rm_tibia_tarsus"],
-    ["lm_claw",            "rm_claw"],
+    ["lm_pretarsus",            "rm_pretarsus"],
     ["lh_thorax_coxa",     "rh_thorax_coxa"],
     ["lh_coxa_trochanter", "rh_coxa_trochanter"],
     ["lh_femur_tibia",     "rh_femur_tibia"],
     ["lh_tibia_tarsus",    "rh_tibia_tarsus"],
-    ["lh_claw",            "rh_claw"],
+    ["lh_pretarsus",            "rh_pretarsus"],
     ["l_antenna",          "r_antenna"],
 ]
 

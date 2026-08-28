@@ -22,7 +22,7 @@ from deeperfly.skeleton import Skeleton
 #: Points held exactly still in the synthetic truth -- the tethered-thorax set.
 RIGID = ("lf_thorax_coxa", "rf_thorax_coxa", "lm_thorax_coxa")
 #: A point that genuinely moves, to check the freeze does not reach past its list.
-MOVING = "lf_claw"
+MOVING = "lf_pretarsus"
 
 N_FRAMES = 40
 NOISE_PX = 1.5
@@ -71,7 +71,7 @@ def _validate_method(method: str) -> str:
         np.zeros((1, 1, 1, 2)),
         np.zeros((1, 1, 3)),
         skeleton=Skeleton.fly(),
-        spec={"op": "static", "method": method, "points": ["lf_claw"]},
+        spec={"op": "static", "method": method, "points": ["lf_pretarsus"]},
     )
 
 

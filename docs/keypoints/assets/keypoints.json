@@ -88,7 +88,7 @@
    ]
   },
   {
-   "name": "lf_claw",
+   "name": "lf_pretarsus",
    "limb": "lf_leg",
    "color": "#0f7399",
    "body": "lf_tarsus5",
@@ -143,7 +143,7 @@
    ]
   },
   {
-   "name": "lm_claw",
+   "name": "lm_pretarsus",
    "limb": "lm_leg",
    "color": "#1a8daf",
    "body": "lm_tarsus5",
@@ -198,7 +198,7 @@
    ]
   },
   {
-   "name": "lh_claw",
+   "name": "lh_pretarsus",
    "limb": "lh_leg",
    "color": "#75becb",
    "body": "lh_tarsus5",
@@ -264,7 +264,7 @@
    ]
   },
   {
-   "name": "rf_claw",
+   "name": "rf_pretarsus",
    "limb": "rf_leg",
    "color": "#ba1e31",
    "body": "rf_tarsus5",
@@ -319,7 +319,7 @@
    ]
   },
   {
-   "name": "rm_claw",
+   "name": "rm_pretarsus",
    "limb": "rm_leg",
    "color": "#c9564f",
    "body": "rm_tarsus5",
@@ -374,7 +374,7 @@
    ]
   },
   {
-   "name": "rh_claw",
+   "name": "rh_pretarsus",
    "limb": "rh_leg",
    "color": "#d58579",
    "body": "rh_tarsus5",

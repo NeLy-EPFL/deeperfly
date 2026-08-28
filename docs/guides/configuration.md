@@ -237,8 +237,8 @@ Three of these deserve a sentence before you keep them.
 [`[eks]`](../reference/configuration.md#eks) fits one 3D trajectory per keypoint to the
 whole recording, which de-jitters the pose (measured: **39% less** frame-to-frame
 acceleration) and repairs blown detections — at the cost of lagging a keypoint that moves
-faster per frame than the detector localizes it, which at 100 fps means a claw in swing
-(0.13% of cells reproject >100 px, and every one is a claw). Turn it off if claw timing is
+faster per frame than the detector localizes it, which at 100 fps means a pretarsus in swing
+(0.13% of cells reproject >100 px, and every one is a pretarsus). Turn it off if pretarsus timing is
 the measurement.
 
 [`[inverse_kinematics]`](../reference/configuration.md#inverse_kinematics) fits a
@@ -683,7 +683,7 @@ The orbit parameters (`look_at`, `distance`, `azimuth_deg`, `elevation_deg`,
 ## Skeleton — `[skeleton]`
 
 `fly38` is the **one** packaged skeleton: 38 points — six 5-point legs
-(`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `claw`),
+(`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `pretarsus`),
 `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain
 `abdomen0`…`abdomen4`. 16 left/right symmetry pairs.
 

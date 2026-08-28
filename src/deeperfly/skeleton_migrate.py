@@ -41,6 +41,7 @@ __all__ = [
     "SkeletonChange",
     "MigrationPlan",
     "diff_skeletons",
+    "expand_renames",
     "plan_migration",
     "apply_migration",
 ]
@@ -129,15 +130,122 @@ class MigrationPlan:
         }
 
 
-def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
+def _check_renames(
+    renames: dict[str, str], gone: list[str], fresh: list[str]
+) -> dict[str, str]:
+    """Validate a declared ``{old: new}`` against what the edit actually did.
+
+    A declaration is only a rename if the old name really left and the new one really
+    arrived. Anything else is a different edit wearing a rename's clothes -- renaming onto
+    a point that already exists merges two points' labels into one column, and renaming a
+    point the new skeleton still has silently duplicates it -- so every one of those is a
+    refusal, not a warning.
+    """
+    if not renames:
+        return {}
+    problems = []
+    for was, now in renames.items():
+        if was not in gone:
+            problems.append(
+                f"{was!r} is not a point the new skeleton dropped, so renaming it "
+                "would not move any label"
+            )
+        if now not in fresh:
+            problems.append(
+                f"{now!r} is not a point the new skeleton introduced, so renaming "
+                f"{was!r} onto it would merge two points into one"
+            )
+    targets = list(renames.values())
+    for now in sorted({n for n in targets if targets.count(n) > 1}):
+        problems.append(f"{now!r} is the target of more than one rename")
+    if problems:
+        raise ValueError("; ".join(problems))
+    return dict(renames)
+
+
+def expand_renames(specs: list[str], old_names, new_names=None) -> dict[str, str]:
+    """``["*_claw=*_pretarsus"]`` -> ``{"lf_claw": "lf_pretarsus", ...}``.
+
+    The command-line form of a declared rename. A ``*`` stands for a run of characters
+    captured from the old name and substituted into the new one, which is what makes the
+    six-legs-at-once case one flag instead of six: the ``lf_``/``rh_`` prefixes this
+    package's point names are built from are exactly what varies. At most one ``*`` per
+    side, and both sides must agree on whether there is one.
+
+    A pattern that matches no point raises rather than expanding to nothing -- a silent
+    no-op here means the migration falls through to delete-plus-add and quarantines the
+    labels the rename was written to save. ``new_names`` additionally checks that every
+    expansion lands on a point the new skeleton has; pass ``None`` where there is no new
+    skeleton to check against (renaming a checkpoint's recorded channels).
+    """
+    out: dict[str, str] = {}
+    for spec in specs:
+        was, sep, now = spec.partition("=")
+        if not sep or not was or not now:
+            raise ValueError(f"--rename wants OLD=NEW, got {spec!r}")
+        if was.count("*") > 1 or now.count("*") > 1:
+            raise ValueError(f"--rename allows at most one '*' per side, got {spec!r}")
+        if ("*" in was) != ("*" in now):
+            raise ValueError(
+                f"--rename needs a '*' on both sides or neither, got {spec!r}"
+            )
+        if "*" not in was:
+            matched = [was] if was in tuple(old_names) else []
+            out[was] = now
+        else:
+            head, _, tail = was.partition("*")
+            matched = [
+                n
+                for n in old_names
+                if len(n) >= len(head) + len(tail)
+                and n.startswith(head)
+                and n.endswith(tail)
+            ]
+            for name in matched:
+                stem = (
+                    name[len(head) : len(name) - len(tail)]
+                    if tail
+                    else name[len(head) :]
+                )
+                out[name] = now.replace("*", stem)
+        if not matched:
+            raise ValueError(
+                f"--rename {spec!r} matched no point in the project's skeleton"
+            )
+    missing = (
+        []
+        if new_names is None
+        else [n for n in out.values() if n not in tuple(new_names)]
+    )
+    if missing:
+        raise ValueError(
+            f"--rename would produce {missing}, which the new skeleton does not have"
+        )
+    return out
+
+
+def diff_skeletons(
+    old, new, *, renames: dict[str, str] | None = None
+) -> tuple[list[SkeletonChange], dict[int, int]]:
     """``(changes, old->new index mapping)`` between two :class:`~deeperfly.skeleton.Skeleton`.
 
-    Renames are detected **positionally**, and only when the rest of the ordering is
-    otherwise unchanged: a name that vanished while a new one appeared at the same index is
-    reported as a rename rather than a delete-plus-add, because that is what an operator
-    typing over a name did. When more than one name changed at once the inference is unsafe,
-    so each is reported as its own delete and add -- and the delete then requires
-    confirmation, which is the correct outcome for an ambiguous edit.
+    A rename is a claim that two differently-named points **mean the same thing**, and
+    nothing in the two files says so: to a diff, "the claw point is now called pretarsus"
+    and "the claw point is gone and a pretarsus point is new" are the same edit. So a
+    rename is either declared or inferred from the one case where the inference is safe:
+
+    ``renames``
+        An explicit ``{old_name: new_name}`` the caller vouches for -- from
+        ``deeperfly project skeleton --rename``, which is how a bulk rename (all six
+        ``*_claw`` at once) is done. Each key must be a name the new skeleton dropped and
+        each value one it introduced, or this raises: a "rename" of a point that still
+        exists would silently merge two points into one.
+    positional inference
+        With no declaration, a name that vanished while exactly one new name appeared at
+        the same index is a rename -- what an operator typing over a name did. Two at once
+        is ambiguous (a whole block of points can be replaced in place, which is a
+        different point set, not six renames), so each is reported as its own delete and
+        add, and the delete then requires confirmation.
     """
     old_names, new_names = tuple(old.point_names), tuple(new.point_names)
     changes: list[SkeletonChange] = []
@@ -145,13 +253,18 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
     gone = [n for n in old_names if n not in new_names]
     fresh = [n for n in new_names if n not in old_names]
 
-    renames: dict[str, str] = {}
-    if len(gone) == len(fresh) == 1:
+    declared = _check_renames(renames or {}, gone, fresh)
+    if declared:
+        for was, now in declared.items():
+            changes.append(SkeletonChange("rename", f"{was} -> {now}", (was, now)))
+            gone.remove(was)
+            fresh.remove(now)
+    elif len(gone) == len(fresh) == 1:
         # One out, one in: a rename iff they sit at the same index, i.e. nothing moved.
         old_at = old_names.index(gone[0])
         new_at = new_names.index(fresh[0])
         if old_at == new_at:
-            renames[gone[0]] = fresh[0]
+            declared[gone[0]] = fresh[0]
             changes.append(
                 SkeletonChange(
                     "rename",
@@ -160,6 +273,7 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
                 )
             )
             gone, fresh = [], []
+    renames = declared
 
     if fresh:
         changes.append(SkeletonChange("add", f"added {fresh}", tuple(fresh)))
@@ -200,7 +314,9 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
     return changes, mapping
 
 
-def plan_migration(project, new_skeleton) -> MigrationPlan:
+def plan_migration(
+    project, new_skeleton, *, renames: dict[str, str] | None = None
+) -> MigrationPlan:
     """What changing ``project``'s skeleton to ``new_skeleton`` would do.
 
     Counts, per ``labels.h5``, how many rows would **move** (their point index rewritten)
@@ -212,6 +328,10 @@ def plan_migration(project, new_skeleton) -> MigrationPlan:
         The :class:`~deeperfly.project.Project`.
     new_skeleton
         The proposed :class:`~deeperfly.skeleton.Skeleton`.
+    renames
+        Points the caller declares are the same point under a new name, ``{old: new}``.
+        See :func:`diff_skeletons`: without it a bulk rename reads as delete-plus-add and
+        quarantines every label on those points.
 
     Returns
     -------
@@ -232,7 +352,7 @@ def plan_migration(project, new_skeleton) -> MigrationPlan:
     every label silently transposed and then restamped as consistent.
     """
     old = project.skeleton()
-    changes, mapping = diff_skeletons(old, new_skeleton)
+    changes, mapping = diff_skeletons(old, new_skeleton, renames=renames)
     plan = MigrationPlan(
         old_names=tuple(old.point_names),
         new_names=tuple(new_skeleton.point_names),

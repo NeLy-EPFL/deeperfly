@@ -1717,7 +1717,7 @@ def _color_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
     For ``fly38`` that is the same ten swatches the per-limb legend used to draw.
 
     Each group is labelled by the **shared prefix** of its points' names, trimmed of a
-    trailing separator (``lf_thorax_coxa`` + ``lf_claw`` -> ``lf``), falling back to the
+    trailing separator (``lf_thorax_coxa`` + ``lf_pretarsus`` -> ``lf``), falling back to the
     first point's own name when they share nothing -- which is what a hand-written colour
     table that groups unrelated points deserves. ``colors`` is the per-point RGB already
     computed for the overlay, so the legend and the canvas cannot disagree.

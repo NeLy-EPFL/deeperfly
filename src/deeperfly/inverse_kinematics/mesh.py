@@ -168,11 +168,11 @@ class NmfMesh:
         """``(n_slots, 3)`` neutral distal endpoint each leg bone is skinned to.
 
         Normally a bone's distal *keypoint*. But the **terminal** leg segment -- the
-        tarsus, whose distal keypoint (the claw) is no other segment's proximal joint
+        tarsus, whose distal keypoint (the pretarsus) is no other segment's proximal joint
         -- has a baked mesh that stops short of that keypoint, so the model skeleton's
-        claw juts past the mesh tip. For such a segment the distal anchor is instead
+        pretarsus juts past the mesh tip. For such a segment the distal anchor is instead
         the segment mesh's own farthest point along the bone, so skinning stretches it
-        out to land its tip on the live claw keypoint (where the skeleton draws it),
+        out to land its tip on the live pretarsus keypoint (where the skeleton draws it),
         removing the gap. Non-terminal / non-leg slots keep their distal keypoint (or
         ``NaN`` when there is none).
         """
@@ -269,7 +269,9 @@ class NmfMesh:
                 out[rows] = scale * ((v @ a.T + b) @ rot.T) + trans
             elif self.slot_prox[slot] >= 0:  # leg bone -> skin between its endpoints
                 a0 = self.kp_neutral[self.slot_prox[slot]]
-                b0 = self._dist_anchor[slot]  # tarsus tip is stretched out to the claw
+                b0 = self._dist_anchor[
+                    slot
+                ]  # tarsus tip is stretched out to the pretarsus
                 a1 = pts3d[self.slot_prox[slot]]
                 b1 = pts3d[self.slot_dist[slot]]
                 if not (np.isfinite(a1).all() and np.isfinite(b1).all()):
