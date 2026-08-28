@@ -16,6 +16,13 @@ Two ops survive, and neither is spelled in a config any more:
 camera named in ``[pose2d] auto_crops``). Until the search fills it in, every geometric
 method raises :class:`UnresolvedAutoCrop`.
 
+:class:`FrameOp` is the contract those three satisfy. It is a :class:`typing.Protocol`
+(structural) rather than a base class, because the ops share no implementation to put in
+one -- :class:`AutoCrop` reaches its geometry by *holding* a :class:`Crop`, not by
+inheriting from it. Each op applies to **any** array type through a single
+:meth:`~FrameOp.apply`; only :class:`Resize` has to tell NumPy and torch apart, and it
+does so behind that method.
+
 What went with the op grammar in 0.3.0: ``fliplr``, ``flipud``, ``rot90``, and ``resize``
 as a config op. The flips existed for the mirrored detection pathway -- one source detected
 twice, once flipped, for a side-agnostic 19-channel checkpoint -- and that pathway is not
@@ -26,16 +33,15 @@ chain there is no handedness to reverse either, so ``reverses_handedness`` goes 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Union
+from typing import Any, Protocol
 
 import numpy as np
+from jaxtyping import Float, Shaped
 
 from .io.base import to_numpy
 
-if TYPE_CHECKING:
-    pass
-
 __all__ = [
+    "FrameOp",
     "Crop",
     "AutoCrop",
     "UnresolvedAutoCrop",
@@ -44,6 +50,56 @@ __all__ = [
 ]
 
 _INTERPOLATIONS = ("bilinear", "nearest")
+
+
+def _is_torch(frames) -> bool:
+    """Whether ``frames`` is a torch tensor, decided without importing torch.
+
+    ``detach`` and ``device`` together are unique to torch among the array types that
+    reach here: a NumPy array has neither, a JAX array has ``device`` but no ``detach``.
+    """
+    return hasattr(frames, "detach") and hasattr(frames, "device")
+
+
+class FrameOp(Protocol):
+    """One image operation in a :class:`FrameTransform` chain.
+
+    The three implementations (:class:`Crop`, :class:`AutoCrop`, :class:`Resize`) are
+    frozen dataclasses that satisfy this structurally -- nothing inherits from it, and
+    nothing needs to: the protocol exists to write the contract down in one place, not
+    to share code.
+
+    The contract is a *pairing*, and it is the whole reason a detection can be carried
+    back to raw footage pixels: :meth:`affine` must be the exact pixel map that
+    :meth:`apply` performs, and :meth:`output_size` the size it produces. Every op maps
+    an axis-aligned rectangle to an axis-aligned rectangle. An implementation that
+    breaks the pairing breaks :meth:`FrameTransform.unmap_points` silently -- points
+    land in the wrong place rather than raising.
+    """
+
+    def is_identity(self) -> bool:
+        """Whether this op provably leaves *any* frame untouched (see the chain)."""
+        ...
+
+    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
+        """The ``(height, width)`` a frame of ``(height, width)`` ``size`` becomes."""
+        ...
+
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
+        """The ``3x3`` homogeneous pixel map this op applies to a ``size`` frame."""
+        ...
+
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
+        """Apply the op to a ``(..., H, W, C)`` batch of any array type.
+
+        The input's array type and device are preserved: a NumPy array stays NumPy, a
+        torch tensor stays a tensor on its device.
+        """
+        ...
+
+    def to_json(self) -> dict:
+        """The op as a canonical JSON-able dict (fingerprints, logs)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -77,18 +133,16 @@ class Crop:
             )
         return (self.height, self.width)
 
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
         self.output_size(size)  # bounds check
         return np.array(
             [[1.0, 0.0, -float(self.x)], [0.0, 1.0, -float(self.y)], [0.0, 0.0, 1.0]]
         )
 
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        self.output_size((arr.shape[-3], arr.shape[-2]))  # never truncate silently
-        return arr[..., self.y : self.y + self.height, self.x : self.x + self.width, :]
-
-    def apply_torch(self, frames):
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
+        # Bounds-check first, so an out-of-frame window raises instead of truncating.
         self.output_size((frames.shape[-3], frames.shape[-2]))
+        # One expression for every array type: NumPy and torch slice alike.
         return frames[
             ..., self.y : self.y + self.height, self.x : self.x + self.width, :
         ]
@@ -194,14 +248,11 @@ class AutoCrop:
     def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
         return self._crop().output_size(size)
 
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
         return self._crop().affine(size)
 
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        return self._crop().apply_numpy(arr)
-
-    def apply_torch(self, frames):
-        return self._crop().apply_torch(frames)
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
+        return self._crop().apply(frames)
 
     def to_json(self) -> dict:
         """The DECLARATION (``auto`` plus the seed), never the resolved window."""
@@ -265,7 +316,7 @@ class Resize:
             max(1, int(np.floor(w * self.scale + 0.5))),
         )
 
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
         h, w = size
         oh, ow = self.output_size(size)
         # Half-pixel convention: x' = (x + 0.5) * sx - 0.5, with the *actual*
@@ -275,11 +326,20 @@ class Resize:
             [[sx, 0.0, (sx - 1.0) / 2.0], [0.0, sy, (sy - 1.0) / 2.0], [0.0, 0.0, 1.0]]
         )
 
-    def apply_numpy(self, arr: np.ndarray) -> np.ndarray:
-        h, w = arr.shape[-3], arr.shape[-2]
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
+        h, w = frames.shape[-3], frames.shape[-2]
         oh, ow = self.output_size((h, w))
         if (oh, ow) == (h, w):
-            return arr
+            return frames
+        # The one op whose backends genuinely differ: cv2 (or an index gather) on the
+        # host, F.interpolate on whatever device the tensor already lives on.
+        if _is_torch(frames):
+            return self._resize_torch(frames, (oh, ow))
+        return self._resize_numpy(frames, (oh, ow))
+
+    def _resize_numpy(self, arr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        oh, ow = size
+        h, w = arr.shape[-3], arr.shape[-2]
         if self.interpolation == "nearest":
             rows = _nearest_indices(oh, h)
             cols = _nearest_indices(ow, w)
@@ -294,11 +354,8 @@ class Resize:
             ).reshape(oh, ow, -1)
         return out.reshape(arr.shape[:-3] + (oh, ow) + arr.shape[-1:])
 
-    def apply_torch(self, frames):
-        h, w = frames.shape[-3], frames.shape[-2]
-        oh, ow = self.output_size((h, w))
-        if (oh, ow) == (h, w):
-            return frames
+    def _resize_torch(self, frames, size: tuple[int, int]):
+        oh, ow = size
         import torch
         import torch.nn.functional as F  # noqa: N812
 
@@ -327,10 +384,9 @@ class Resize:
         return out
 
 
-FrameOp = Union[Crop, AutoCrop, Resize]
-
-
-def _apply_affine(a: np.ndarray, pts: np.ndarray) -> np.ndarray:
+def _apply_affine(
+    a: Float[np.ndarray, "3 3"], pts: Float[np.ndarray, "*N 2"]
+) -> Float[np.ndarray, "*N 2"]:
     """Apply a 3x3 homogeneous pixel map ``a`` to ``(..., 2)`` points ``(x, y)``."""
     pts = np.asarray(pts, dtype=float)
     return pts @ a[:2, :2].T + a[:2, 2]
@@ -399,7 +455,7 @@ class FrameTransform:
             )
         )
 
-    def apply(self, frames):
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
         """Apply the op sequence to a frame batch, on the ``(H, W)`` axes (-3, -2).
 
         Parameters
@@ -414,13 +470,13 @@ class FrameTransform:
         """
         if self.is_identity():
             return frames
-        if hasattr(frames, "rot90") and hasattr(frames, "flip"):  # torch.Tensor
+        if _is_torch(frames):
             for op in self.ops:
-                frames = op.apply_torch(frames)
+                frames = op.apply(frames)
             return frames
         arr = to_numpy(frames)  # NumPy already (the CPU-decode path)
         for op in self.ops:
-            arr = op.apply_numpy(arr)
+            arr = op.apply(arr)
         return np.ascontiguousarray(arr)
 
     def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
@@ -429,7 +485,7 @@ class FrameTransform:
             size = op.output_size(size)
         return (int(size[0]), int(size[1]))
 
-    def affine(self, size: tuple[int, int]) -> np.ndarray:
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
         """The composed ``3x3`` raw-to-canonical pixel map for a ``size`` frame.
 
         Homogeneous pixel-center coordinates ``(x, y, 1)`` (x = column,
@@ -442,7 +498,9 @@ class FrameTransform:
             size = op.output_size(size)
         return a
 
-    def map_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    def map_points(
+        self, pts: Float[np.ndarray, "*N 2"], size: tuple[int, int]
+    ) -> Float[np.ndarray, "*N 2"]:
         """Map raw-frame pixel points ``(x, y)`` into the transformed frame.
 
         Parameters
@@ -459,7 +517,9 @@ class FrameTransform:
         """
         return _apply_affine(self.affine(size), pts)
 
-    def unmap_points(self, pts: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    def unmap_points(
+        self, pts: Float[np.ndarray, "*N 2"], size: tuple[int, int]
+    ) -> Float[np.ndarray, "*N 2"]:
         """Map transformed-frame pixel points ``(x, y)`` back to the raw frame.
 
         The inverse of :meth:`map_points`: a detector/model peak located in the
