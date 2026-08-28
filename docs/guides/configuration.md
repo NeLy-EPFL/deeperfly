@@ -12,8 +12,9 @@
     $ python -c "import deeperfly.config as c; print(c.DEFAULT_CONFIG_PATH.read_text())"
     ```
 
-    What changed, in one list: `[[sources]]` → `[cameras.<name>].video` (a regex, or a
-    list of them CONCATENATED); `[cameras.defaults]` → `[default_camera]`;
+    What changed, in one list: `[[sources]]` → `[cameras.<name>].video` (a glob, or a
+    regex wrapped in `/.../`, or a list of them CONCATENATED); `[cameras.defaults]` →
+    `[default_camera]`;
     `[cameras].calibration` → `[calibration].path`; `[cameras.<n>].mirror` gone;
     `[[pose2d.models]]`/`[[pose2d.pathways]]`/`[[pose2d.preprocessors]]`/`[pose2d.output_points]`
     → `[pose2d] class`/`weights` + `[pose2d.crops]` + `auto_crops`; `[pose2d.autocrop]` →

@@ -314,7 +314,7 @@ def test_footage_is_resolved_against_the_config_the_run_will_use(tmp_path, monke
     # only the run's own config can.
     (outdir / "config.toml").write_text(
         DEFAULT_CONFIG_PATH.read_text() + "\n[cameras.extra]\nazimuth_deg = 30\n"
-        f"video = 'camera_{len(FLY_CAMERAS)}\\.mp4'\n"
+        f"video = 'camera_{len(FLY_CAMERAS)}.mp4'\n"
     )
 
     seen = {}
@@ -389,9 +389,9 @@ def _footage_cfg(tmp_path):
     cfg.write_text(
         '[pose2d]\nclass = "hrnet"\nweights = "w.pth"\ninput_size = [256, 512]\n'
         "[cameras.cam0]\nazimuth_deg = 0\ndistance = 10\nfocal_length_px = 100\n"
-        "video = 'cam0\\..+'\n"
+        "video = '/cam0\\..+/'\n"
         "[cameras.cam1]\nazimuth_deg = 90\ndistance = 10\nfocal_length_px = 100\n"
-        "video = 'cam1\\..+'\n"
+        "video = '/cam1\\..+/'\n"
         "[pipeline]\npose2d = true\nbundle_adjustment = false\n"
         "triangulation = false\nvisualization = false\n"
     )
@@ -522,9 +522,10 @@ _RES_CFG = Config.from_dict(
         "default_camera": {"distance": 100.0, "focal_length_px": 1.0},
         "cameras": {
             # A `video` pattern is a full match on the filename, extension included; the
-            # optional `_<n>` covers this fixture's image sequences.
-            "cam0": {"azimuth_deg": 0, "video": r"cam0(_\d+)?\..+"},
-            "cam1": {"azimuth_deg": 90, "video": r"cam1(_\d+)?\..+"},
+            # optional `_<n>` covers this fixture's image sequences. Regex (`/.../`) for
+            # the optional group and the digit run -- glob cannot express either.
+            "cam0": {"azimuth_deg": 0, "video": r"/cam0(_\d+)?\..+/"},
+            "cam1": {"azimuth_deg": 90, "video": r"/cam1(_\d+)?\..+/"},
         },
     }
 )
@@ -1517,7 +1518,7 @@ def test_grayscale_decode_is_requested_only_when_every_model_accepts_it(monkeypa
         }
         try:
             pose2d_stream.detect_2d(
-                Config.from_dict({"cameras": {"s": {"video": r"a\.mp4"}}}),
+                Config.from_dict({"cameras": {"s": {"video": "a.mp4"}}}),
                 SimpleNamespace(n_views=1, n_points=1, pathways=[], sources=["s"]),
                 models,
                 sources={"s": ["a.mp4"]},

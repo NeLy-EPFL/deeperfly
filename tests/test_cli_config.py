@@ -65,10 +65,13 @@ def test_init_refuses_to_clobber(tmp_path, capsys):
 
 
 def test_camera_files_matches_the_pattern_in_full(tmp_path):
-    """A full match on the filename, extension included -- nothing is inferred."""
+    """A full match on the filename, extension included -- nothing is inferred.
+
+    A plain filename needs no escaping: glob is the default, and `.` is literal.
+    """
     (tmp_path / "camera_0.mp4").write_bytes(b"x")
     (tmp_path / "camera_0_extra.mp4").write_bytes(b"x")
-    assert camera_files(tmp_path, r"camera_0\.mp4") == [tmp_path / "camera_0.mp4"]
+    assert camera_files(tmp_path, "camera_0.mp4") == [tmp_path / "camera_0.mp4"]
 
 
 def test_camera_files_finds_an_image_sequence_natsorted(tmp_path):
@@ -76,7 +79,7 @@ def test_camera_files_finds_an_image_sequence_natsorted(tmp_path):
     # the same rule a SPLIT recording follows.
     for i in (0, 2, 10):
         (tmp_path / f"camera_0_img_{i}.jpg").write_bytes(b"x")
-    assert camera_files(tmp_path, r"camera_0_img_\d+\.jpg") == [
+    assert camera_files(tmp_path, "camera_0_img_*.jpg") == [
         tmp_path / "camera_0_img_0.jpg",
         tmp_path / "camera_0_img_2.jpg",
         tmp_path / "camera_0_img_10.jpg",
@@ -87,7 +90,7 @@ def test_several_videos_concatenate_rather_than_keeping_the_first(tmp_path):
     """The v1 rule was "keep the first, warn"; a split recording is one stream now."""
     for i in range(3):
         (tmp_path / f"camera_0_{i}.mp4").write_bytes(b"x")
-    files = camera_files(tmp_path, r"camera_0_\d+\.mp4")
+    files = camera_files(tmp_path, "camera_0_*.mp4")
     assert [p.name for p in files] == [
         "camera_0_0.mp4",
         "camera_0_1.mp4",
@@ -102,7 +105,7 @@ def test_mixed_extensions_are_an_error_not_a_silent_pick(tmp_path):
     (tmp_path / "camera_0.mp4").write_bytes(b"x")
     (tmp_path / "camera_0.jpg").write_bytes(b"x")
     with pytest.raises(ValueError, match="not parts of one series"):
-        camera_files(tmp_path, r"camera_0\..+")
+        camera_files(tmp_path, r"/camera_0\..+/")
 
 
 def test_camera_files_missing_returns_empty(tmp_path):

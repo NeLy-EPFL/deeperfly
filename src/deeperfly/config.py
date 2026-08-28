@@ -792,23 +792,30 @@ def _params(data: dict, path: tuple[str, ...], cls, *, ignore: frozenset = froze
     return cls(**{k: v for k, v in sub.items() if k in fields})
 
 
-#: What makes a `video` entry a REGEX rather than a literal filename. A list of entries
-#: none of which holds one of these is v1's "alternate names, first match wins" -- which
-#: under v2 concatenates them instead.
-_REGEX_METACHARACTERS = set(r"\^$.|?*+()[]{}")
+#: What makes a `video` entry a PATTERN rather than a literal filename: a glob wildcard,
+#: or the leading+trailing `/` that switches it to a regex (see
+#: :func:`deeperfly.recordings._compile_pattern`). A list of entries none of which has
+#: either is v1's "alternate names, first match wins" -- which under v2 concatenates
+#: them instead.
+_GLOB_WILDCARDS = set("*?[")
+
+
+def _looks_like_a_pattern(entry: str) -> bool:
+    is_regex = len(entry) >= 2 and entry.startswith("/") and entry.endswith("/")
+    return is_regex or bool(set(entry) & _GLOB_WILDCARDS)
 
 
 def _video_pattern(video, name: str) -> str | list[str]:
-    """Validate a ``[cameras.<name>].video`` value: one regex, or a list to concatenate.
+    """Validate a ``[cameras.<name>].video`` value: one pattern, or a list to concatenate.
 
     The list form is **the one v2 key whose v1 shape still parses and now means something
     else**: ``["camera_RH.mp4", "camera_0.mp4"]`` used to be alternate names with the
     first match winning, and now names two parts of one stream to be decoded back to
     back. Silently doubling a recording is the one migration failure that produces a
     plausible result instead of an error, so it gets its own check rather than the generic
-    one: a list of literal filenames -- no regex metacharacter anywhere in it -- is
-    refused by name. Alternates belong inside the regex -- ``camera_(RH|0)`` plus
-    an extension.
+    one: a list of literal filenames -- no glob wildcard and no ``/.../`` regex anywhere
+    in it -- is refused by name. Alternates belong inside a regex --
+    ``/camera_(RH|0)\\.mp4/``.
 
     Raises
     ------
@@ -822,24 +829,22 @@ def _video_pattern(video, name: str) -> str | list[str]:
         raise ValueError(
             f"[cameras.{name}] 'video' must be a string or list of strings, got {video!r}"
         )
-    if len(video) > 1 and not any(
-        set(entry) & _REGEX_METACHARACTERS for entry in video
-    ):
+    if len(video) > 1 and not any(_looks_like_a_pattern(entry) for entry in video):
         raise ValueError(
             f"[cameras.{name}] video = {video!r} is a list of literal filenames, which "
             "under v2 CONCATENATES them into one stream -- v1 read it as alternate names "
             "with the first match winning, so honoring it would silently double the "
-            "recording. Alternates go inside the regex:\n"
+            "recording. Alternates go inside a regex:\n"
             f"    video = '{_alternates_hint(video)}'"
         )
     return video
 
 
 def _alternates_hint(entries: list[str]) -> str:
-    """The v1 alternates rewritten as one regex, for the error message above."""
+    """The v1 alternates rewritten as one `/.../`-delimited regex, for the error above."""
     import re as _re
 
-    return "|".join(f"({_re.escape(e)})" for e in entries)
+    return "/" + "|".join(f"({_re.escape(e)})" for e in entries) + "/"
 
 
 #: Per-camera keys that a config may no longer carry, ``key -> what to write instead``.
@@ -1793,10 +1798,10 @@ class Config:
         recording discovery stays cheap. A camera with no ``video`` key uses its own name
         as the pattern.
 
-        The value is one regex or a **list** of them; the list means CONCATENATION, in
-        written order, and everything one entry matches is one stream in natural order (see
-        :func:`deeperfly.recordings.camera_files`). Nothing is inferred from the camera
-        name or its index.
+        The value is one glob (or, wrapped in ``/.../``, a regex) or a **list** of them;
+        the list means CONCATENATION, in written order, and everything one entry matches
+        is one stream in natural order (see :func:`deeperfly.recordings.camera_files`).
+        Nothing is inferred from the camera name or its index.
 
         Returns
         -------

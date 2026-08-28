@@ -23,8 +23,10 @@ def _cfg(*names: str, filenames: list[str] | None = None) -> Config:
     for i, name in enumerate(names):
         spec: dict = {"azimuth_deg": 60 * i, "distance": 100, "focal_length_px": 1}
         # A `video` pattern is a full match on the FILENAME, extension included --
-        # nothing is inferred from the camera's name.
-        spec["video"] = filenames[i] if filenames is not None else rf"{name}(_\d+)?\..+"
+        # nothing is inferred from the camera's name. Regex (`/.../`) for the optional
+        # group and the digit run -- glob cannot express either.
+        default = rf"/{name}(_\d+)?\..+/"
+        spec["video"] = filenames[i] if filenames is not None else default
         cameras[name] = spec
     return Config.from_dict({"cameras": cameras})
 
@@ -76,13 +78,14 @@ def test_camera_files_returns_image_sequence_natsorted(tmp_path):
     _touch(tmp_path / "cam_10.jpg")
     _touch(tmp_path / "cam_2.jpg")
     _touch(tmp_path / "cam_1.jpg")
-    files = rec.camera_files(tmp_path, r"cam_\d+\.jpg")
+    files = rec.camera_files(tmp_path, "cam_*.jpg")
     assert [p.name for p in files] == ["cam_1.jpg", "cam_2.jpg", "cam_10.jpg"]
 
 
 def test_camera_files_single_video(tmp_path):
+    """A plain filename needs no escaping: glob is the default, and `.` is literal."""
     _touch(tmp_path / "camera_0.mp4")
-    assert rec.camera_files(tmp_path, r"camera_0\.mp4") == [tmp_path / "camera_0.mp4"]
+    assert rec.camera_files(tmp_path, "camera_0.mp4") == [tmp_path / "camera_0.mp4"]
 
 
 def test_the_pattern_is_a_full_match_on_the_filename():
@@ -97,15 +100,15 @@ def test_the_pattern_is_a_full_match_on_the_filename():
 
 def test_the_pattern_is_case_insensitive(tmp_path):
     _touch(tmp_path / "CAMERA_rh.MP4")
-    assert [p.name for p in rec.camera_files(tmp_path, r"camera_RH\.mp4")] == [
+    assert [p.name for p in rec.camera_files(tmp_path, "camera_RH.mp4")] == [
         "CAMERA_rh.MP4"
     ]
 
 
-def test_alternate_names_go_inside_the_regex(tmp_path):
-    """The anatomical-or-positional pair the packaged default admits."""
+def test_a_leading_and_trailing_slash_switches_to_regex(tmp_path):
+    """The escape hatch for what glob cannot express: alternation."""
     _touch(tmp_path / "camera_0.mp4")
-    pattern = r"camera_(RH|0)\.mp4"
+    pattern = r"/camera_(RH|0)\.mp4/"
     assert [p.name for p in rec.camera_files(tmp_path, pattern)] == ["camera_0.mp4"]
     _touch(tmp_path / "camera_RH.mp4")
     # Both present is not "pick one": they are not one series, so it is an error.
@@ -117,7 +120,7 @@ def test_split_parts_concatenate(tmp_path):
     """The behavioral change: everything one pattern matches is ONE stream."""
     for i in (0, 1, 2):
         _touch(tmp_path / f"camera_RH_{i}.mp4")
-    got = rec.camera_files(tmp_path, r"camera_RH_\d+\.mp4")
+    got = rec.camera_files(tmp_path, "camera_RH_*.mp4")
     assert [p.name for p in got] == [
         "camera_RH_0.mp4",
         "camera_RH_1.mp4",
@@ -128,14 +131,14 @@ def test_split_parts_concatenate(tmp_path):
 def test_a_list_of_patterns_concatenates_in_written_order(tmp_path):
     _touch(tmp_path / "take_b.mp4")
     _touch(tmp_path / "take_a.mp4")
-    got = rec.camera_files(tmp_path, [r"take_a\.mp4", r"take_b\.mp4"])
+    got = rec.camera_files(tmp_path, ["take_a.mp4", "take_b.mp4"])
     assert [p.name for p in got] == ["take_a.mp4", "take_b.mp4"]
 
 
 def test_two_entries_matching_one_file_is_refused(tmp_path):
     _touch(tmp_path / "take_a.mp4")
     with pytest.raises(ValueError, match="matched by two of"):
-        rec.camera_files(tmp_path, [r"take_a\.mp4", r"take_.\.mp4"])
+        rec.camera_files(tmp_path, ["take_a.mp4", "take_?.mp4"])
 
 
 def test_mixed_extensions_are_an_error_not_a_silent_pick(tmp_path):
@@ -143,23 +146,72 @@ def test_mixed_extensions_are_an_error_not_a_silent_pick(tmp_path):
     _touch(tmp_path / "cam_0.mp4")
     _touch(tmp_path / "cam_0.avi")
     with pytest.raises(ValueError, match="not parts of one series"):
-        rec.camera_files(tmp_path, r"cam_0\..+")
+        rec.camera_files(tmp_path, r"/cam_0\..+/")
 
 
 def test_camera_files_empty_when_no_footage(tmp_path):
     _touch(tmp_path / "notes.txt")  # not a footage extension
-    assert rec.camera_files(tmp_path, r"notes\.txt") == []
+    assert rec.camera_files(tmp_path, "notes.txt") == []
 
 
-def test_a_pattern_never_traverses_into_a_subdirectory(tmp_path):
-    (tmp_path / "sub").mkdir()
+# -- subdirectories ------------------------------------------------------------
+
+
+def test_a_pattern_can_reach_into_a_subdirectory(tmp_path):
+    """A `/` in a pattern is a path separator, one matcher per level."""
     _touch(tmp_path / "sub" / "cam_0.mp4")
-    assert rec.camera_files(tmp_path, r"sub/cam_0\.mp4") == []
+    assert rec.camera_files(tmp_path, "sub/cam_0.mp4") == [
+        tmp_path / "sub" / "cam_0.mp4"
+    ]
+
+
+def test_a_pattern_can_reach_two_levels_deep(tmp_path):
+    _touch(tmp_path / "sub" / "sub2" / "cam_0.mp4")
+    assert rec.camera_files(tmp_path, "sub/sub2/cam_0.mp4") == [
+        tmp_path / "sub" / "sub2" / "cam_0.mp4"
+    ]
+
+
+def test_a_regex_pattern_can_also_reach_a_subdirectory(tmp_path):
+    _touch(tmp_path / "sub" / "camera_0.mp4")
+    pattern = r"/sub/camera_(RH|0)\.mp4/"
+    assert [p.name for p in rec.camera_files(tmp_path, pattern)] == ["camera_0.mp4"]
+
+
+def test_a_wildcard_does_not_recurse_into_a_subdirectory(tmp_path):
+    """The safety property the whole design rests on.
+
+    `deeperfly run` defaults its output to `<recording>/deeperfly_outputs/`, nested
+    INSIDE the recording directory it just read footage from, and that directory fills
+    with rendered videos. A pattern that searched recursively would eventually match
+    those on a second run and try to decode a rendered visualization as camera footage.
+    So a wildcard is scoped to the level it appears at, never deeper: `*.mp4` at the top
+    level must never see `deeperfly_outputs/pose2d.mp4`.
+    """
+    _touch(tmp_path / "camera_0.mp4")
+    _touch(tmp_path / "deeperfly_outputs" / "pose2d.mp4")
+    assert [p.name for p in rec.camera_files(tmp_path, "*.mp4")] == ["camera_0.mp4"]
+
+
+def test_a_pattern_must_be_relative(tmp_path):
+    _touch(tmp_path / "camera_0.mp4")
+    with pytest.raises(ValueError, match="may not start with '/'"):
+        rec.camera_files(tmp_path, "/camera_0.mp4")
+
+
+def test_a_leading_slash_inside_a_regex_is_also_refused(tmp_path):
+    with pytest.raises(ValueError, match="may not start with '/'"):
+        rec.camera_files(tmp_path, r"//camera_0\.mp4/")
+
+
+def test_a_pattern_must_not_contain_dotdot(tmp_path):
+    with pytest.raises(ValueError, match="must not contain '..'"):
+        rec.camera_files(tmp_path, "../camera_0.mp4")
 
 
 def test_an_invalid_regex_says_so(tmp_path):
     with pytest.raises(ValueError, match="not a valid regex"):
-        rec.camera_files(tmp_path, "cam_(0")
+        rec.camera_files(tmp_path, "/cam_(0/")
 
 
 # -- find_recording ----------------------------------------------------------

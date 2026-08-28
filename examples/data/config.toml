@@ -28,25 +28,25 @@ distance = 107.463
 # principal_point_px = [479.5, 239.5]     # omit: inferred per view from its own frame
 
 [cameras.rh]
-video = 'camera_0\.mp4'
+video = 'camera_0.mp4'
 azimuth_deg = -120
 [cameras.rm]
-video = 'camera_1\.mp4'
+video = 'camera_1.mp4'
 azimuth_deg = -90
 [cameras.rf]
-video = 'camera_2\.mp4'
+video = 'camera_2.mp4'
 azimuth_deg = -45
 [cameras.f]
-video = 'camera_3\.mp4'
+video = 'camera_3.mp4'
 azimuth_deg = 0
 [cameras.lf]
-video = 'camera_4\.mp4'
+video = 'camera_4.mp4'
 azimuth_deg = 45
 [cameras.lm]
-video = 'camera_5\.mp4'
+video = 'camera_5.mp4'
 azimuth_deg = 90
 [cameras.lh]
-video = 'camera_6\.mp4'
+video = 'camera_6.mp4'
 azimuth_deg = 120
 
 

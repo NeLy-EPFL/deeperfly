@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from fnmatch import translate as _glob_translate
 from pathlib import Path
 
 from .config import Config
@@ -78,68 +79,139 @@ def _series_key(name: str) -> str:
     return _DIGITS.sub("#", name)
 
 
-def _entry_matches(root: Path, pattern: str, camera: str) -> list[Path]:
-    """Every filename directly inside ``root`` that ``pattern`` fully matches.
+def _compile_pattern(pattern: str, camera: str) -> list[re.Pattern[str]]:
+    """``pattern`` as one compiled, case-insensitive matcher per path level.
 
-    ``re.fullmatch``, case-insensitively, on the FILENAME only -- a pattern never
-    traverses into a subdirectory. Naturally sorted, and checked to be parts of one
-    series (see :func:`_series_key`), which is the whole safety of letting a pattern match
-    several files: everything one entry matches is concatenated into one stream, so a
-    pattern loose enough to catch two naming schemes would silently splice two recordings.
+    A **glob** (``fnmatch``: ``*``, ``?``, ``[seq]``) by default; wrapped in a leading
+    and trailing ``/`` -- ``/.../`` -- it is a **regex** instead, for what glob cannot
+    express (alternation: ``/camera_(RH|0)\\.mp4/``). A ``/`` inside either form is a
+    path separator, not a literal character: the pattern splits into one matcher per
+    level, so ``cam/0.mp4`` walks into a ``cam`` subdirectory rather than requiring a
+    filename that literally contains a slash (impossible on any filesystem).
+
+    ``pattern`` must be relative and must not contain ``..``, so it can never resolve
+    outside the recording directory -- in particular never into the run's own
+    ``deeperfly_outputs/``, which an unrestricted recursive search would eventually
+    reach.
+
+    Parameters
+    ----------
+    pattern
+        One ``video`` entry.
+    camera
+        The camera's name, for the error messages.
+
+    Returns
+    -------
+    list of re.Pattern
+        One compiled matcher per ``/``-separated level, root to leaf.
 
     Raises
     ------
     ValueError
-        If ``pattern`` is not a valid regex, or if its matches are not one series (the
-        message names the files and the camera).
+        If ``pattern`` is absolute, contains ``..``, or (regex) is not a valid regex.
+    """
+    is_regex = len(pattern) >= 2 and pattern.startswith("/") and pattern.endswith("/")
+    body = pattern[1:-1] if is_regex else pattern
+    segments = body.split("/")
+    if segments[0] == "":
+        raise ValueError(
+            f"[cameras.{camera}] video = {pattern!r} must be relative to the "
+            "recording directory: it may not start with '/'."
+        )
+    if ".." in segments:
+        raise ValueError(
+            f"[cameras.{camera}] video = {pattern!r} must not contain '..'."
+        )
+    levels = []
+    for segment in segments:
+        source = segment if is_regex else _glob_translate(segment)
+        try:
+            levels.append(re.compile(source, re.IGNORECASE))
+        except re.error as exc:
+            raise ValueError(
+                f"[cameras.{camera}] video = {pattern!r} is not a valid regex: {exc}. "
+                "Write patterns as TOML LITERAL strings (single quotes) -- a backslash "
+                "in a basic string is an escape."
+            ) from exc
+    return levels
+
+
+def _walk(
+    directory: Path, levels: list[re.Pattern[str]], exts: tuple[str, ...] | None
+) -> list[Path]:
+    """Every file reachable from ``directory`` through ``levels``, one matcher per level.
+
+    The last level matches FILES, optionally narrowed to ``exts``; every level before it
+    matches DIRECTORIES to recurse into. So a pattern only ever looks where its own
+    segments point, never an unrestricted recursive search of ``directory``.
+    """
+    level, *rest = levels
+    if not rest:
+        return [
+            p
+            for p in directory.iterdir()
+            if p.is_file()
+            and (exts is None or p.suffix.lower() in exts)
+            and level.fullmatch(p.name)
+        ]
+    out: list[Path] = []
+    for p in directory.iterdir():
+        if p.is_dir() and level.fullmatch(p.name):
+            out += _walk(p, rest, exts)
+    return out
+
+
+def _entry_matches(root: Path, pattern: str, camera: str) -> list[Path]:
+    """Every file under ``root`` that ``pattern`` matches (see :func:`_compile_pattern`).
+
+    Naturally sorted, and checked to be parts of one series in one directory (see
+    :func:`_series_key`), which is the whole safety of letting a pattern match several
+    files: everything one entry matches is concatenated into one stream, so a pattern
+    loose enough to catch two naming schemes -- or, across a wildcard directory segment,
+    two directories -- would silently splice two recordings.
+
+    Raises
+    ------
+    ValueError
+        If ``pattern`` is malformed (see :func:`_compile_pattern`), or if its matches
+        are not one series (the message names the files and the camera).
     """
     from natsort import natsorted
 
-    try:
-        rx = re.compile(pattern, re.IGNORECASE)
-    except re.error as exc:
-        raise ValueError(
-            f"[cameras.{camera}] video = {pattern!r} is not a valid regex: {exc}. "
-            "Write patterns as TOML LITERAL strings (single quotes) -- a backslash in a "
-            "basic string is an escape."
-        ) from exc
-    exts = _footage_exts()
-    files = natsorted(
-        p
-        for p in root.iterdir()
-        if p.is_file() and p.suffix.lower() in exts and rx.fullmatch(p.name)
-    )
-    keys = {_series_key(p.name) for p in files}
+    levels = _compile_pattern(pattern, camera)
+    files = natsorted(_walk(root, levels, _footage_exts()))
+    keys = {(p.parent, _series_key(p.name)) for p in files}
     if len(keys) > 1:
         raise ValueError(
             f"recording {root}: [cameras.{camera}] video = {pattern!r} matches "
             f"{len(files)} files that are not parts of one series: "
-            f"{[p.name for p in files]}. Everything one pattern matches is decoded as ONE "
-            "stream, so these would be spliced together. Narrow the pattern, or put the "
-            "alternatives in a list if they really are consecutive parts."
+            f"{[str(p.relative_to(root)) for p in files]}. Everything one pattern "
+            "matches is decoded as ONE stream, so these would be spliced together. "
+            "Narrow the pattern, or put the alternatives in a list if they really are "
+            "consecutive parts."
         )
-    return list(files)
+    return files
 
 
 def camera_files(root: Path, pattern: str | list[str]) -> list[Path]:
     """A camera's footage under ``root``: everything its ``video`` pattern matches.
 
-    One regex, or a list of them **concatenated in order**. Each entry contributes its
-    matches in natural order, and the entries are laid end to end -- so a split recording
-    (``camera_RH_0.mp4``, ``camera_RH_1.mp4``) and an image sequence are the same rule,
-    and alternate NAMES go inside the regex (``camera_(RH|0)`` plus an extension) rather
-    than in the list.
+    One pattern (glob by default, or regex wrapped in ``/.../`` -- see
+    :func:`_compile_pattern`), or a list of them **concatenated in order**. Each entry
+    contributes its matches in natural order, and the entries are laid end to end -- so
+    a split recording (``camera_RH_0.mp4``, ``camera_RH_1.mp4``) and an image sequence
+    are the same rule, and alternate NAMES go inside a regex
+    (``/camera_(RH|0)\\.mp4/``) rather than in the list.
 
     Empty when nothing matches, so the caller can treat the camera as absent.
 
     Parameters
     ----------
     root
-        The recording directory to look inside (filenames only, no recursion).
+        The recording directory to resolve patterns against.
     pattern
-        The camera's ``video`` value: a regex, or a list of them.
-    camera
-        The camera's name, for the error messages.
+        The camera's ``video`` value: a glob or regex, or a list of them.
 
     Returns
     -------
@@ -149,8 +221,8 @@ def camera_files(root: Path, pattern: str | list[str]) -> list[Path]:
     Raises
     ------
     ValueError
-        If a pattern is not a valid regex, if one entry's matches are not parts of one
-        series, or if two entries match the same file.
+        If a pattern is malformed (see :func:`_compile_pattern`), if one entry's
+        matches are not parts of one series, or if two entries match the same file.
     """
     entries = [pattern] if isinstance(pattern, str) else list(pattern)
     out: list[Path] = []
@@ -178,19 +250,19 @@ def _camera_hint(pattern) -> str:
 def _raw_matches(root: Path, pattern: str | list[str]) -> list[Path]:
     """Like :func:`camera_files`, but keeping every matched file rather than only footage.
 
-    So a caller can tell "matched, but not footage" from "matched nothing".
+    So a caller can tell "matched, but not footage" from "matched nothing". A malformed
+    entry (bad regex, absolute, ``..``) is skipped rather than raised -- ``camera_files``
+    is the authoritative validator and raises properly for the same pattern.
     """
     entries = [pattern] if isinstance(pattern, str) else list(pattern)
     out: list[Path] = []
     for entry in entries:
         try:
-            rx = re.compile(entry, re.IGNORECASE)
-        except re.error:
+            levels = _compile_pattern(entry, _camera_hint(pattern))
+        except ValueError:
             continue
-        out += [
-            p for p in sorted(root.iterdir()) if p.is_file() and rx.fullmatch(p.name)
-        ]
-    return out
+        out += _walk(root, levels, None)
+    return sorted(out)
 
 
 def source_patterns(config: Config) -> dict[str, str | list[str]]:

@@ -373,6 +373,25 @@ def test_source_patterns_and_camera_table():
     assert set(cams) == {"rh", "lf"}
 
 
+def test_a_list_of_literal_filenames_is_refused():
+    """v1's alternates ("first match wins") now concatenate -- silently doubling the
+    recording -- so a list with no pattern in it (no glob wildcard, no `/.../` regex)
+    is refused by name rather than honored.
+    """
+    c = Config.from_dict(
+        {"cameras": {"rh": {"video": ["camera_RH.mp4", "camera_0.mp4"]}}}
+    )
+    with pytest.raises(ValueError, match="is a list of literal filenames"):
+        c.source_patterns()
+
+
+def test_a_list_with_one_pattern_entry_is_a_split_recording():
+    # A glob wildcard in even one entry is enough to read the list as v2 concatenation.
+    video = ["camera_RH_*.mp4", "extra.mp4"]
+    c = Config.from_dict({"cameras": {"rh": {"video": video}}})
+    assert c.source_patterns() == {"rh": video}
+
+
 # -- visualization: typed VideoSpec list -------------------------------------
 
 

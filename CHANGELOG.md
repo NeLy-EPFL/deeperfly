@@ -42,12 +42,17 @@ recomputes from `pose2d` down. That is correct, not a regression.
   `[pose2d.output_points]` are gone, with the mirrored pathway and the preprocessing op
   grammar (`fliplr`/`flipud`/`rot90`/config-level `resize`). A 19-channel side-agnostic
   checkpoint is not expressible and runs under a v1 tag.
-- **`[cameras.<name>].video` is a regex** (`re.fullmatch`, case-insensitive, over the
-  filenames in the recording directory), or a list of them **concatenated in order**. This
-  is the one behavioral change in the release: a split recording is now one stream, read
-  through a new `ConcatReader` under one global frame index. Alternate NAMES go inside the
-  regex; a list of literal filenames is refused by name, because honoring it as v1 did
-  would silently double a recording.
+- **`[cameras.<name>].video` is a glob by default** (`fnmatch`, case-insensitive, over
+  the filenames in the recording directory), or, wrapped in a leading and trailing `/`,
+  a regex (`re.fullmatch`) for what glob cannot express -- alternate NAMES go inside it,
+  `/camera_(RH|0)\.mp4/`. A `/` in either form is a path separator, not a literal
+  character, so a pattern may reach into a subdirectory; it must be relative (no leading
+  `/`) and must not contain `..`, so it can never resolve outside the recording
+  directory. `video` may also be a list of patterns **concatenated in order**. This is
+  the one behavioral change in the release: a split recording is now one stream, read
+  through a new `ConcatReader` under one global frame index. A list of literal
+  filenames -- no glob wildcard, no `/.../` regex -- is refused by name, because
+  honoring it as v1 did would silently double a recording.
 - **`[pipeline] do_<stage>` → `<stage>`.** `[inverse_kinematics.head]`/`.abdomen` →
   `[inverse_kinematics.markers.<chain>]`. `[pose2d.autocrop]` → `[pose2d.crop_search]`.
 - **A video is a `grid` plus `layers`**, keyed by name

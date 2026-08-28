@@ -58,12 +58,17 @@ distance = 107.463
 # nothing but cameras: shared values live in [default_camera] and the solved rig in
 # [calibration].
 #
-# `video` is a case-insensitive `re.fullmatch` over the filenames directly inside the
-# recording directory, or a list of them, and everything it matches is ONE stream
-# (matches of each entry in natural order, entries in written order, concatenated). A
-# split recording and an image sequence are the same rule. Alternate names go inside
-# the regex -- `camera_(RH|0)` takes anatomical or DeepFly3D positional naming. Nothing
-# is inferred from the camera name or its index.
+# `video` is a glob by default (`*`, `?`, `[seq]`, case-insensitive and matched in full:
+# fnmatch.translate + re.fullmatch), or a list of them, and everything it matches is ONE
+# stream (matches of each entry in natural order, entries in written order,
+# concatenated). A split recording and an image sequence are the same rule. A `/` in a
+# pattern is a path separator, not a literal character -- `sub/camera_0.mp4` reaches a
+# subdirectory -- and the pattern must be relative (no leading `/`) and must not contain
+# `..`, so it can never resolve outside the recording directory.
+#
+# Wrap a pattern in a leading and trailing `/` for a REGEX instead, for what glob cannot
+# express. Alternate names go inside it -- `/camera_(RH|0)\.mp4/` takes anatomical or
+# DeepFly3D positional naming. Nothing is inferred from the camera name or its index.
 #
 # The matches of one entry must be PARTS OF ONE SERIES: identical once runs of digits
 # are masked. `camera_RH_0.mp4` + `camera_RH_1.mp4` concatenate; `camera_RH.mp4` +
@@ -72,31 +77,31 @@ distance = 107.463
 # The default stays tight -- containers only -- because a looser pattern also picks up
 # sidecars and stray takes. The two shapes it does not match:
 #
-#     video = 'camera_(RH|0)_\d+\.(mp4|avi|mov|mkv|webm|m4v)'    # a split recording
-#     video = 'camera_(RH|0)_\d+\.(png|jpe?g|tiff?|bmp|webp)'    # an image sequence
+#     video = '/camera_(RH|0)_\d+\.(mp4|avi|mov|mkv|webm|m4v)/'    # a split recording
+#     video = '/camera_(RH|0)_\d+\.(png|jpe?g|tiff?|bmp|webp)/'    # an image sequence
 #
-# Write patterns as TOML LITERAL strings (single quotes) -- `\d` in a basic string is
-# an invalid escape and the config will not parse.
+# Write a regex as a TOML LITERAL string (single quotes) -- `\d` in a basic string is an
+# invalid escape and the config will not parse.
 [cameras.rh]
-video = 'camera_(RH|0)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(RH|0)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = -120
 [cameras.rm]
-video = 'camera_(RM|1)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(RM|1)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = -90
 [cameras.rf]
-video = 'camera_(RF|2)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(RF|2)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = -45
 [cameras.f]
-video = 'camera_(F|3)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(F|3)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = 0
 [cameras.lf]
-video = 'camera_(LF|4)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(LF|4)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = 45
 [cameras.lm]
-video = 'camera_(LM|5)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(LM|5)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = 90
 [cameras.lh]
-video = 'camera_(LH|6)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(LH|6)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = 120
 
 # The axial hind view: the rig's only left/right BRIDGE, and the reason the shipped
@@ -112,7 +117,7 @@ azimuth_deg = 120
 # A recording WITHOUT this camera needs no edit here: the run narrows itself to the footage
 # it finds, drops this view, and says so. Below two views it refuses instead.
 [cameras.h]
-video = 'camera_(H|7)\.(mp4|avi|mov|mkv|webm|m4v)'
+video = '/camera_(H|7)\.(mp4|avi|mov|mkv|webm|m4v)/'
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168
