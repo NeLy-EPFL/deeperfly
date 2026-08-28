@@ -136,7 +136,10 @@ def test_cli_run_resume_pose3d_and_info(result, tmp_path, capsys):
 
     cli.main(["inspect", str(outdir / "results.h5")])
     printed = capsys.readouterr().out
-    assert "skeleton: fly38  (38 points)" in printed
+    # Reported as `<name>@<digest>`: the name alone is not an identity, and two
+    # 38-point skeletons have already shared one.
+    assert f"skeleton: {out.skeleton.label}  (38 points)" in printed
+    assert printed.count("fly38@") == 1
     assert "has 3D:   True" in printed
 
 

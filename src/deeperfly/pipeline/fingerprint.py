@@ -148,7 +148,7 @@ def _skeleton_digest(config: Config, *, cosmetic: bool = False) -> dict:
     skel = config.skeleton()
     digest = {
         "point_names": list(skel.point_names),
-        "bones": skel.bones.tolist(),
+        "edges": skel.edges.tolist(),
     }
     if cosmetic:  # the visualization stage also draws the colors
         digest["point_colors"] = list(skel.point_colors)

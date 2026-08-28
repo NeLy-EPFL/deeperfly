@@ -17,9 +17,9 @@
 
 
 # == Skeleton ================================================================
-# Normally absent, as it is here: the skeleton is points, edges, symmetries and colors in
-# a version-controlled file of its own (src/deeperfly/data/skeletons/fly38.toml), and a
-# run resolves the packaged one. `[skeleton] include = "<name or path>"` overrides that,
+# Normally absent, as it is here: the skeleton is points, edges, point_symmetries and
+# colors in a version-controlled file of its own (src/deeperfly/data/skeletons/fly38.toml),
+# and a run resolves the packaged one. `[skeleton] include = "<name or path>"` overrides that,
 # and any key written alongside replaces that skeleton's.
 #
 # It must be the skeleton the detector was TRAINED on: a dense detector's channels ARE a
@@ -28,6 +28,7 @@
 # what makes it a real check: this file was called `fly38b` before 0.2 (that spelling
 # still resolves), and the DeepFly3D set that `fly38` named until then was also 38
 # points, sharing 32 of these in a different order. A count could not tell them apart.
+# deeperfly prints the skeleton as `<name>@<digest>` so the two read apart at a glance.
 #
 # [skeleton]
 # include = "fly38"
@@ -358,7 +359,7 @@ cell = [480, 240]           # grid cell size, in pixels
 # instead of vanishing (`outline_thickness = 0` restores fill-only markers).
 [visualization.default_layer]
 line_thickness = 2
-# bone_color = "#404040"    # every bone this one color, joints keeping theirs
+# edge_color = "#404040"    # every edge this one color, joints keeping theirs
 
 # Right-side cameras in the LEFT column, so the montage reads as the animal from above.
 [visualization.videos.pose2d]             # camera frames with the raw 2D detections

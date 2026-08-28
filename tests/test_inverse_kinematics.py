@@ -101,7 +101,7 @@ def _asymmetric_pose(template, fly, rng, *, stretch=1.10):
 
 
 def test_mirror_leg_pairs_come_from_the_skeletons_declared_symmetries(template, fly):
-    """The pairing is derived from ``[skeleton].symmetries``, not from the leg names."""
+    """The pairing is derived from ``[skeleton].point_symmetries``, not the leg names."""
     assert set(map(frozenset, mirror_leg_pairs(template, fly))) == {
         frozenset(("lf", "rf")),
         frozenset(("lm", "rm")),
@@ -125,7 +125,7 @@ def test_a_skeleton_declaring_no_symmetries_symmetrizes_nothing(
     """
     from dataclasses import replace
 
-    asymmetric = replace(fly, symmetries=np.empty((0, 2), np.int64))
+    asymmetric = replace(fly, point_symmetries=np.empty((0, 2), np.int64))
     pts3d, _ = _asymmetric_pose(template, asymmetric, rng)
     assert mirror_leg_pairs(template, asymmetric) == ()
     with caplog.at_level("WARNING", logger="deeperfly"):

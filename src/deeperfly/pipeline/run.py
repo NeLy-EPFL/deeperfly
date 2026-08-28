@@ -242,7 +242,9 @@ def _refuse_a_foreign_skeleton(config: Config, store: StageStore) -> None:
     Two 38-point skeletons load each other's files perfectly happily, so a count check
     cannot see this -- only the ordered names can. That is also why the check is by name
     list and not by the skeleton's *name*: a preset can be renamed without a single
-    coordinate changing, and a name can be reused for a different point order.
+    coordinate changing, and a name can be reused for a different point order. The
+    message quotes each side's :attr:`~deeperfly.skeleton.Skeleton.label` -- name plus
+    content digest -- so the two read apart even when the names are identical.
     """
     stored = store.read_skeleton()
     if stored is None:  # a fresh output directory: pose2d will write the record
@@ -256,8 +258,8 @@ def _refuse_a_foreign_skeleton(config: Config, store: StageStore) -> None:
     raise SystemExit(
         f"this output directory holds a pose on a different skeleton than the config "
         f"resolves, so its arrays cannot be read against it.\n"
-        f"  stored in results.h5 : {len(have)} points, named {stored.name!r}\n"
-        f"  the config resolves  : {len(want)} points, named {config.skeleton().name!r}\n"
+        f"  stored in results.h5 : {len(have)} points, {stored.label}\n"
+        f"  the config resolves  : {len(want)} points, {config.skeleton().label}\n"
         + (f"  only in the stored one: {', '.join(gone[:6])}\n" if gone else "")
         + (f"  only in the config's  : {', '.join(extra[:6])}\n" if extra else "")
         + (

@@ -604,16 +604,16 @@ class EditorState:
             shown = np.where(fill[..., None], shown, proj)
         shown_ok = np.isfinite(shown).all(axis=-1)  # (V, P)
 
-        bones = np.asarray(self.result.skeleton.bones, dtype=int).reshape(-1, 2)
+        edges = np.asarray(self.result.skeleton.edges, dtype=int).reshape(-1, 2)
         lo, hi = max(0, t - window), min(self.n_frames - 1, t + window)
         for v in range(n_views):
             for p in np.nonzero(need[v])[0]:
                 out[v, p] = self._seed_position(
-                    v, int(p), t, bones, shown, shown_ok, lo, hi
+                    v, int(p), t, edges, shown, shown_ok, lo, hi
                 )
         return out
 
-    def _seed_position(self, v, p, t, bones, shown, shown_ok, lo, hi) -> np.ndarray:
+    def _seed_position(self, v, p, t, edges, shown, shown_ok, lo, hi) -> np.ndarray:
         """One placeholder seed via the fallback chain (see :meth:`placeholder_pts2d`)."""
         raw = self.detections
         # 1. the reprojection of the derived 3D, when this cell has one -- the joint's
@@ -640,9 +640,9 @@ class EditorState:
                 if np.all(np.isfinite(raw[v, tt, p])):
                     return np.asarray(raw[v, tt, p], dtype=float)
         # 4. the mean of connected skeleton neighbors shown in this view.
-        if bones.size:
+        if edges.size:
             nbrs = np.unique(
-                np.concatenate([bones[bones[:, 0] == p, 1], bones[bones[:, 1] == p, 0]])
+                np.concatenate([edges[edges[:, 0] == p, 1], edges[edges[:, 1] == p, 0]])
             )
             npos = [
                 shown[v, q] for q in nbrs if 0 <= q < shown.shape[1] and shown_ok[v, q]

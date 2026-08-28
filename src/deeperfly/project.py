@@ -107,26 +107,35 @@ def skeleton_preset_names() -> tuple[str, ...]:
 SKELETON_PRESETS = skeleton_preset_names()
 
 _BLANK_SKELETON = """\
-# The project's skeleton: FOUR things -- points, edges, symmetries, colors.
+# The project's skeleton: FOUR things -- points, edges, point_symmetries, colors.
 #
 # `points` is the source of truth for the tracked-point ORDER, which every
 # (V, T, P, ...) array and every stored label indexes into positionally -- so adding a
 # point is safe, and reordering or renaming one is a migration.
 #
-# `edges` is the whole topology, as point pairs: the bones drawn in the editor, the
-# length prior, pictorial structures' graph. There is no grouping concept -- a point in
-# no edge is still tracked, and what a group name was for is a `*` pattern in `colors`.
+# `edges` is the whole topology, as point pairs: what the editor draws between the
+# joints, the length prior, pictorial structures' graph. There is no grouping concept --
+# a point in no edge is still tracked, and what a group name was for is a `*` pattern in
+# `point_colors`.
 #
-# `symmetries` pairs each point with its mirror; the loader checks the pairs are an
+# `point_symmetries` pairs each point with its mirror; the loader checks the pairs are an
 # automorphism of `edges`, which is what makes hand-written rows safe.
+#
+# `name` is a LABEL, not an identity -- deeperfly prints it with a content digest
+# (`<name>@<8 hex>`) and compares the point names themselves. Never repurpose a name for
+# a different point set.
 [skeleton]
 name = "unnamed"
 points = []
 # edges = [["hip", "knee"], ["knee", "ankle"]]
-# symmetries = [["l_hip", "r_hip"]]
+# point_symmetries = [["l_hip", "r_hip"]]
 
-[skeleton.colors]
+[skeleton.point_colors]
 # "l_*" = "#0f7399"
+
+# Optional; an edge nothing names here averages its two endpoints' colors.
+# [skeleton.edge_colors]
+# "hip--knee" = "#404040"
 """
 
 #: Top-level config tables a project's ``rig.toml`` owns: the cameras (their shared

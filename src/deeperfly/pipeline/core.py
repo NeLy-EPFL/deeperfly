@@ -292,7 +292,7 @@ def bundle_adjust_cameras(
             masked = True
 
     bone_pairs = bone_targets = None
-    if bone_prior and skeleton is not None and skeleton.bones.size:
+    if bone_prior and skeleton is not None and skeleton.edges.size:
         bone_pairs, bone_targets = _bone_prior(cameras, p, skeleton)
         finite = np.isfinite(bone_targets)  # drop bones with no selected triangulation
         bone_pairs, bone_targets = bone_pairs[finite], bone_targets[finite]

@@ -412,7 +412,7 @@ class SymmetrizeParams:
     relationship.
 
     ``pairs`` is the RESOLVED left/right pairs, and it is deliberately **not** defaulted
-    from ``[skeleton] symmetries``. That list pairs every point including the legs, and at
+    from ``[skeleton] point_symmetries``. That list pairs every point including the legs, and at
     any instant a fly's left and right legs are in *different gait phases* -- that
     asymmetry is the behavior being measured. Symmetrizing it would be a serious
     corruption wearing the costume of a correction. Only body-fixed pairs belong here; on
@@ -961,18 +961,23 @@ SKELETON_ALIASES = {"fly38b": "fly38"}
 
 #: ``[skeleton]`` keys this release no longer honors, ``key -> what to write instead``.
 #:
-#: The whole grouping half of the v1 table. A key that was quietly ignored is worse than
-#: one that errors, and these are the two whose absence would be invisible: a
-#: ``limb_palette`` still in a config would leave the skeleton on the colormap, and
-#: ``point_names`` would leave it on the packaged points -- both of which look like a
-#: working run.
+#: The whole grouping half of the v1 table, plus the two names v2 settled during its own
+#: development. A key that was quietly ignored is worse than one that errors, and every
+#: one of these would be invisible: a ``limb_palette`` or a ``colors`` still in a file
+#: leaves the skeleton on the colormap, ``point_names`` leaves it on the packaged points,
+#: and a ``symmetries`` table leaves it with no mirror pairs -- so flip augmentation and
+#: the ``symmetrize`` correction silently switch off. All of them look like a working run.
 RETIRED_SKELETON_KEYS = {
     "point_names": "renamed: points = [...] (in the skeleton FILE, not the config)",
     "limb_points": "gone: edges = [[a, b], ...] is the whole topology, with no grouping "
-    "concept. Chains are derived from the bone graph where they are needed "
+    "concept. Chains are derived from the edge graph where they are needed "
     "(deeperfly.pictorial.skeleton_chains).",
-    "limb_palette": 'gone: [skeleton.colors] is per POINT -- "lf_*" = "#0f7399" colors '
-    "the five points of one leg, and the edges written from them.",
+    "limb_palette": 'gone: [skeleton.point_colors] is per POINT -- "lf_*" = "#0f7399" '
+    "colors the five points of one leg, and the edges between them.",
+    "colors": "renamed: [skeleton.point_colors], which pairs with the new "
+    "[skeleton.edge_colors] instead of being the only color table.",
+    "symmetries": "renamed: point_symmetries = [[a, b], ...], to say what is symmetric "
+    "the way point_names and point_colors do.",
     "name": None,  # still legal; listed so the loop below can skip it
     "file": 'renamed: include = "skeleton.toml"',
 }
@@ -1018,9 +1023,12 @@ def _load_skeleton_file(path: Path) -> dict:
         raise ValueError(
             f"{path} carries no [skeleton] table with 'points'; it is not a skeleton "
             "file (the format is data/skeletons/fly38.toml -- points, edges, "
-            "symmetries, colors)"
+            "point_symmetries, colors)"
         )
-    log.info("skeleton %r from %s", loaded.get("name", path.stem), path)
+    # Only the source, here. The skeleton names ITSELF (with its digest) once it is
+    # built -- see `Skeleton.from_spec` -- because a dict has no digest and a config that
+    # overrode keys alongside `include` would otherwise be logged as the file's contents.
+    log.info("skeleton table from %s", path)
     return loaded
 
 
@@ -1071,7 +1079,7 @@ def _resolve_skeleton(data: dict, source: Path | None) -> dict:
             raise ValueError(
                 f"[skeleton] carries {key!r}, which this release no longer honors.\n"
                 f"  {advice}\n"
-                "  A skeleton is points, edges, symmetries and colors, in a file of its "
+                "  A skeleton is points, edges, point_symmetries and colors, in a file of its "
                 "own; see data/skeletons/fly38.toml."
             )
 
@@ -1256,7 +1264,7 @@ class Config:
         Resolved here rather than in :mod:`deeperfly.postprocess`, which goes on reading
         the fields it always read: the ops' ``points`` / ``midline`` become plain name
         lists, and ``symmetrize``'s ``points`` becomes the ``pairs`` it takes -- one half
-        of each pair is enough, because ``[skeleton] symmetries`` already says the
+        of each pair is enough, because ``[skeleton] point_symmetries`` already says the
         partner. Restating the pairs was the config repeating the skeleton.
         """
         params = _params(self.data, ("postprocess",), PostprocessParams)
@@ -1286,7 +1294,7 @@ class Config:
         if "pairs" in out:
             raise ValueError(
                 f"{where} carries 'pairs', which this release no longer honors: name "
-                "either half of each pair in `points` ([skeleton] symmetries knows the "
+                "either half of each pair in `points` ([skeleton] point_symmetries knows the "
                 'partner) -- points = ["l*_thorax_coxa"] is the packaged default\'s three.'
             )
         for key in ("points", "midline"):
@@ -1300,7 +1308,7 @@ class Config:
                 if partner is None:
                     raise ValueError(
                         f"{where} points names {point!r}, which has no partner in "
-                        "[skeleton] symmetries -- a point with no mirror image cannot be "
+                        "[skeleton] point_symmetries -- a point with no mirror image cannot be "
                         "symmetrized. Midline points go in `midline`."
                     )
                 pair = sorted((point, skeleton.point_names[partner]))

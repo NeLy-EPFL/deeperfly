@@ -574,7 +574,7 @@ def test_dorsal_view_names_the_landmarks_it_cannot_find(result, frames):
     bare = Skeleton(
         name="bare",
         point_names=("a", "b", "c"),
-        bones=np.zeros((0, 2), int),
+        edges=np.zeros((0, 2), int),
     )
     with pytest.raises(ValueError, match="anterior"):
         dorsal_camera(np.zeros((2, 3, 3)), bare)

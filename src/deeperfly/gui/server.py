@@ -53,7 +53,7 @@ from fastapi import (
 from fastapi.staticfiles import StaticFiles
 
 from ..labels_suggest import read_suggestions, suggestions_staleness
-from ..visualization._palette import point_colors_rgb
+from ..visualization._palette import edge_colors_rgb, point_colors_rgb
 from .labels import save_labels
 from .session import Session
 
@@ -1713,7 +1713,8 @@ def _color_legend(skel: Skeleton, colors: np.ndarray) -> list[dict]:
 
     Grouped by COLOUR rather than by any structure the skeleton declares, because it
     declares none: a skeleton is points, edges, symmetries and colours, so the only
-    grouping there is to show is the one the operator authored in ``[skeleton.colors]``.
+    grouping there is to show is the one the operator authored in
+    ``[skeleton.point_colors]``.
     For ``fly38`` that is the same ten swatches the per-limb legend used to draw.
 
     Each group is labelled by the **shared prefix** of its points' names, trimmed of a
@@ -1758,6 +1759,7 @@ def _meta_payload(
     s = session.state
     skel = s.result.skeleton
     colors = (np.asarray(point_colors_rgb(skel)) * 255).round().astype(int)
+    edge_colors = (np.asarray(edge_colors_rgb(skel)) * 255).round().astype(int)
     return {
         "results_path": session.results_path,
         # Stamped into the frame/mesh URLs so one recording's images can never be
@@ -1785,9 +1787,14 @@ def _meta_payload(
             name: [int(h), int(w)] for name, (h, w) in session.image_sizes.items()
         },
         "point_names": list(skel.point_names),
-        "bones": np.asarray(skel.bones, dtype=int).reshape(-1, 2).tolist(),
+        # Printed in the title bar: `fly38@a1b2c3d4`, the label an error would quote.
+        "skeleton_label": skel.label,
+        "edges": np.asarray(skel.edges, dtype=int).reshape(-1, 2).tolist(),
         "point_colors": colors.tolist(),
-        "colors": _color_legend(skel, colors),
+        # Per EDGE, not looked up through an endpoint: an edge the skeleton colored
+        # explicitly is not any of its points' color.
+        "edge_colors": edge_colors.tolist(),
+        "color_legend": _color_legend(skel, colors),
         "cameras_3d": _cameras_3d(session),
         "cameras_proj": _cameras_proj(session),
         "dirty": bool(s.dirty),

@@ -973,7 +973,7 @@ class App {
       this.cells.push(cell);
 
       const view = new PoseView(v, canvas, cb);
-      view.setSkeleton(this.meta.bones, this.meta.point_colors);
+      view.setSkeleton(this.meta.edges, this.meta.point_colors, this.meta.edge_colors);
       view.setPointNames(this.meta.point_names);
       const size = this.meta.image_sizes[name];
       if (size) view.setImageSize(size[0], size[1]);
@@ -1842,7 +1842,7 @@ class App {
         // 7 -- re-seed the 3D scene in place; never `new Scene3D` on the same canvas.
         if (this.scene) {
           this.scene.setCameras(this.meta.cameras_3d);
-          this.scene.setSkeleton(this.meta.bones, this.meta.point_colors);
+          this.scene.setSkeleton(this.meta.edges, this.meta.point_colors, this.meta.edge_colors);
           this.scene.setPoints3d(null);
           this.scene.setNmf3d(null);
         }
@@ -3470,7 +3470,7 @@ class App {
     if (this.scene) return this.scene;
     this.scene = new Scene3D(this.sceneCanvas);
     this.scene.setCameras(this.meta.cameras_3d);
-    this.scene.setSkeleton(this.meta.bones, this.meta.point_colors);
+    this.scene.setSkeleton(this.meta.edges, this.meta.point_colors, this.meta.edge_colors);
     // The mesh is drawn by the shared WebGL renderer; the scene only hands it the
     // orbit camera. Null until the current frame's posed verts are uploaded.
     this.scene.setMeshRenderer((cam, ss) =>
@@ -3748,7 +3748,7 @@ class App {
   buildLegend() {
     const esc = (s) =>
       String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-    const groups = (this.meta.colors || [])
+    const groups = (this.meta.color_legend || [])
       .map((sw) => {
         const [r, g, b] = sw.color;
         const name = esc(sw.name).replace(/_/g, " ");

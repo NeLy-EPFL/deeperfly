@@ -14,7 +14,7 @@ counts what it would touch, and -- for anything destructive -- a refusal to proc
     add a point         none (a new column, all-unset)                       silent
     rename a point      remap by identity; names rewritten in labels.h5      notice
     reorder points      remap by name; on-disk COO indices rewritten         notice
-    add/remove a bone   none (bones are display + the BA prior only)         silent
+    add/remove an edge  none (edges are display + the BA prior only)         silent
     change a colour     none                                                 silent
     change symmetries   none (read by flip augmentation)                     silent
     delete a point      its labels are QUARANTINED, not deleted              confirm
@@ -50,7 +50,7 @@ log = logging.getLogger("deeperfly")
 
 #: Change kinds, and whether each needs the operator to confirm.
 #:
-#: Only deletion does. Everything else either cannot lose a label (adding, bones, colours) or
+#: Only deletion does. Everything else either cannot lose a label (adding, edges, colours) or
 #: moves it deterministically by name (rename, reorder) -- and asking about a safe edit trains
 #: people to click through the dangerous one.
 DESTRUCTIVE = ("delete",)
@@ -60,7 +60,7 @@ DESTRUCTIVE = ("delete",)
 class SkeletonChange:
     """One difference between two skeletons."""
 
-    kind: str  # "add"|"delete"|"rename"|"reorder"|"bones"|"colors"|"symmetries"
+    kind: str  # "add"|"delete"|"rename"|"reorder"|"edges"|"colors"|"symmetries"
     detail: str
     points: tuple[str, ...] = ()
 
@@ -105,7 +105,7 @@ class MigrationPlan:
         metadata: no label row moves and no sidecar is rewritten, so such an edit needs
         neither a rewrite nor a confirmation.
         """
-        return all(c.kind in ("bones", "colors", "symmetries") for c in self.changes)
+        return all(c.kind in ("edges", "colors", "symmetries") for c in self.changes)
 
     @property
     def quarantined(self) -> int:
@@ -290,13 +290,15 @@ def diff_skeletons(
         )
 
     if not np.array_equal(
-        np.asarray(old.bones).reshape(-1, 2), np.asarray(new.bones).reshape(-1, 2)
+        np.asarray(old.edges).reshape(-1, 2), np.asarray(new.edges).reshape(-1, 2)
     ):
         changes.append(
-            SkeletonChange("bones", "the edges changed (display + the BA prior only)")
+            SkeletonChange("edges", "the edges changed (display + the BA prior only)")
         )
-    if tuple(old.point_colors) != tuple(new.point_colors):
-        changes.append(SkeletonChange("colors", "the point colours changed"))
+    if tuple(old.point_colors) != tuple(new.point_colors) or tuple(
+        old.edge_colors
+    ) != tuple(new.edge_colors):
+        changes.append(SkeletonChange("colors", "the colours changed"))
     # Symmetry is compared by NAME, not by index: a pure reorder moves both indices of
     # every pair, so an index comparison would report a symmetry change for an edit that
     # left the pairing untouched. Names are also what the emitted `[skeleton]` fragment
@@ -589,13 +591,13 @@ def _skeleton_toml(skeleton) -> str:
     names = tuple(skeleton.point_names)
     edges = [
         [names[int(a)], names[int(b)]]
-        for a, b in np.asarray(skeleton.bones, dtype=int).reshape(-1, 2)
+        for a, b in np.asarray(skeleton.edges, dtype=int).reshape(-1, 2)
     ]
     if edges:
         lines += [
             "",
-            "# The bones, as point pairs; an edge takes the colour of the point it is",
-            "# written FROM.",
+            "# The edges, as point pairs. Direction is kept but carries no colour",
+            "# meaning; an unnamed edge averages its two endpoints.",
             f"edges = {_toml.value(edges)}",
         ]
     if skeleton.n_symmetries:
@@ -603,15 +605,48 @@ def _skeleton_toml(skeleton) -> str:
             "",
             "# Left/right mirror pairs (unordered; each point in at most one pair). The",
             "# loader checks they are an automorphism of the edges above.",
-            f"symmetries = {_toml.value([list(p) for p in skeleton.symmetry_names])}",
+            "point_symmetries = "
+            f"{_toml.value([list(p) for p in skeleton.symmetry_names])}",
         ]
     # Per point and spelled out rather than compacted into `*` patterns: a generated
     # pattern would be a guess about which points are meant to share a colour, and the
     # only fact in hand is that these ones do.
-    lines += ["", "[skeleton.colors]"]
+    lines += ["", "[skeleton.point_colors]"]
     for name, color in zip(skeleton.point_names, skeleton.point_colors):
         lines.append(f"{_toml.key(name)} = {_toml.value(color)}")
+    # Only the edges whose colour the endpoint average would NOT reproduce. Emitting all
+    # of them would round-trip just as exactly and bury the handful that were chosen
+    # deliberately under one line per leg segment.
+    explicit = [
+        (f"{names[int(a)]}--{names[int(b)]}", color)
+        for (a, b), color, derived in zip(
+            np.asarray(skeleton.edges, dtype=int).reshape(-1, 2),
+            skeleton.edge_colors,
+            _derived_edge_colors(skeleton),
+        )
+        if color != derived
+    ]
+    if explicit:
+        lines += [
+            "",
+            "# Edges whose colour is not their endpoints' average.",
+            "[skeleton.edge_colors]",
+        ]
+        for key, color in explicit:
+            lines.append(f"{_toml.key(key)} = {_toml.value(color)}")
     return "\n".join(lines) + "\n"
+
+
+def _derived_edge_colors(skeleton) -> tuple[str, ...]:
+    """What ``edge_colors`` would default to for ``skeleton`` -- its endpoint averages."""
+    from .skeleton import Skeleton
+
+    return Skeleton(
+        name=skeleton.name,
+        point_names=skeleton.point_names,
+        edges=skeleton.edges,
+        point_colors=skeleton.point_colors,
+    ).edge_colors
 
 
 def _stamp() -> str:

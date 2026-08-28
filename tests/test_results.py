@@ -77,10 +77,10 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     assert sk.name == "fly38"
     assert sk.point_names == Skeleton.fly().point_names
     assert sk.point_colors == Skeleton.fly().point_colors
-    np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
+    np.testing.assert_array_equal(sk.edges, Skeleton.fly().edges)
     # The editor reads its skeleton from here, so losing the pairs on the way would leave
     # every consumer of them falling back to name inference for every run.
-    np.testing.assert_array_equal(sk.symmetries, Skeleton.fly().symmetries)
+    np.testing.assert_array_equal(sk.point_symmetries, Skeleton.fly().point_symmetries)
 
 
 def test_a_results_file_written_before_symmetry_or_colors_still_loads(
@@ -100,12 +100,50 @@ def test_a_results_file_written_before_symmetry_or_colors_still_loads(
     path = tmp_path / "old.h5"
     _result(cameras, rng).save(path)
     with h5py.File(path, "r+") as f:
-        del f["skeleton/symmetries"]
+        del f["skeleton/point_symmetries"]
         del f["skeleton/point_colors"]
+        del f["skeleton/edge_colors"]
     sk = PoseResult.load(path).skeleton
     assert sk.n_symmetries == 0
     assert sk.point_names == Skeleton.fly().point_names
     assert sk.point_colors[:2] == TAB10_HEX[:2]
+    # The edges follow the points, so a file with neither table still draws. Under the
+    # colormap the first edge joins two DIFFERENT swatches, so it is a real blend --
+    # unlike on a skeleton whose colours group by limb.
+    assert len(sk.edge_colors) == sk.n_edges
+    assert sk.edge_colors[0] not in (TAB10_HEX[0], TAB10_HEX[1])
+
+
+def test_a_v3_skeleton_group_reads_under_its_old_dataset_names(cameras, rng, tmp_path):
+    """v4 renamed `bones` -> `edges` and `symmetries` -> `point_symmetries` in place.
+
+    Nothing about a v3 file needs converting -- the arrays are identical -- so the reader
+    takes either spelling rather than `repack` taking a dataset rename. This rebuilds a
+    real v3 skeleton group (old names, stamped v3) instead of deleting datasets, because
+    the failure this guards is reading the ~351 already-written files, not a truncated
+    one.
+    """
+    import h5py
+
+    path = tmp_path / "v3.h5"
+    fly = Skeleton.fly()
+    _result(cameras, rng).save(path)
+    with h5py.File(path, "r+") as f:
+        g = f["skeleton"]
+        for name in ("edges", "point_symmetries", "edge_colors"):
+            del g[name]
+        g.create_dataset("bones", data=fly.edges)
+        g.create_dataset("symmetries", data=fly.point_symmetries)
+        f.attrs["deeperfly_format_version"] = 3
+    sk = PoseResult.load(path).skeleton
+    np.testing.assert_array_equal(sk.edges, fly.edges)
+    np.testing.assert_array_equal(sk.point_symmetries, fly.point_symmetries)
+    # The rule such a file was DRAWN under (an edge takes its source point's colour) and
+    # the one it is read back under (the endpoint average) agree on every edge that sits
+    # inside one coloured group -- which is every edge of every packaged skeleton.
+    assert sk.edge_colors == tuple(
+        sk.point_colors[int(a)] for a, _ in np.asarray(sk.edges).reshape(-1, 2)
+    )
 
 
 def test_optional_fields_absent(cameras, rng, tmp_path):

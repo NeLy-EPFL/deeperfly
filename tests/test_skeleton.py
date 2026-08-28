@@ -12,15 +12,15 @@ from deeperfly.skeleton import Skeleton
 
 def test_counts(fly):
     assert fly.n_points == 38
-    assert fly.n_bones == 28
-    assert fly.bones.shape == (28, 2)
+    assert fly.n_edges == 28
+    assert fly.edges.shape == (28, 2)
     assert len(fly.point_names) == 38
     assert len(fly.point_colors) == 38
 
 
-def test_bone_indices_in_range(fly):
-    assert fly.bones.min() >= 0
-    assert fly.bones.max() < fly.n_points
+def test_edge_indices_in_range(fly):
+    assert fly.edges.min() >= 0
+    assert fly.edges.max() < fly.n_points
 
 
 def test_colors_are_per_point(fly):
@@ -46,12 +46,18 @@ def test_colors_are_per_point(fly):
     assert not set(fly.point_colors) & set(TAB10_HEX)
 
 
-def test_a_bone_takes_the_color_of_the_point_it_is_written_from(fly):
-    """Which is why `edges` is written source-first: one table colors joints and bones."""
-    assert len(fly.bone_colors) == fly.n_bones
+def test_an_undeclared_edge_color_is_the_average_of_its_endpoints(fly):
+    """And on `fly38` that reproduces the retired source-first rule exactly.
+
+    Every one of its 28 edges sits inside one colored group (`lf_*` ... `abdomen*`), so
+    both endpoints carry the same hex and the average is that hex -- which is what makes
+    the derivation safe to adopt without recoloring a single existing drawing.
+    """
+    assert len(fly.edge_colors) == fly.n_edges
     color = dict(zip(fly.point_names, fly.point_colors))
-    for (a, _b), bone in zip(fly.bones, fly.bone_colors):
-        assert bone == color[fly.point_names[int(a)]]
+    for (a, b), edge in zip(fly.edges, fly.edge_colors):
+        assert color[fly.point_names[int(a)]] == color[fly.point_names[int(b)]]
+        assert edge == color[fly.point_names[int(a)]]
 
 
 def test_left_right_legs_disjoint(fly):
@@ -63,10 +69,10 @@ def test_left_right_legs_disjoint(fly):
     assert left.max() < right.min()
 
 
-def test_bone_index_pairs(fly):
-    i, j = fly.bone_index_pairs()
+def test_edge_endpoints(fly):
+    i, j = fly.edge_endpoints()
     assert i.shape == j.shape == (28,)
-    np.testing.assert_array_equal(np.stack([i, j], axis=1), fly.bones)
+    np.testing.assert_array_equal(np.stack([i, j], axis=1), fly.edges)
 
 
 def test_from_config_dict_roundtrip():
@@ -75,24 +81,24 @@ def test_from_config_dict_roundtrip():
             "name": "toy",
             "points": ["a", "b", "c"],
             "edges": [["a", "b"], ["b", "c"]],
-            "colors": {"a": "#123456"},
+            "point_colors": {"a": "#123456"},
         }
     }
     s = Skeleton.from_config(Config.from_dict(spec))
     assert s.n_points == 3
-    np.testing.assert_array_equal(s.bones, [[0, 1], [1, 2]])
+    np.testing.assert_array_equal(s.edges, [[0, 1], [1, 2]])
     assert s.point_colors[0] == "#123456"
 
 
 def test_edges_are_the_whole_topology(fly):
-    """No grouping concept: the bones ARE the edge list, in declaration order.
+    """No grouping concept: the edge list IS the topology, in declaration order.
 
     A leg's five points are written as a four-edge chain; the antennae and the neck
-    appear in no edge at all -- tracked points with no bone, which a chain could not
+    appear in no edge at all -- tracked points with no edge, which a chain could not
     express without a one-point chain existing only to be a color key.
     """
-    np.testing.assert_array_equal(fly.bones[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
-    touched = set(np.asarray(fly.bones).reshape(-1).tolist())
+    np.testing.assert_array_equal(fly.edges[:4], [[0, 1], [1, 2], [2, 3], [3, 4]])
+    touched = set(np.asarray(fly.edges).reshape(-1).tolist())
     loose = [n for i, n in enumerate(fly.point_names) if i not in touched]
     assert loose == ["l_antenna", "r_antenna", "neck"]
 
@@ -128,7 +134,7 @@ def test_the_deepfly3d_set_declares_a_pair_for_every_point(deepfly3d):
     points on the same side.
     """
     assert deepfly3d.n_symmetries == 19
-    pairs = np.asarray(deepfly3d.symmetries)
+    pairs = np.asarray(deepfly3d.point_symmetries)
     assert pairs.shape == (19, 2)
     assert sorted(pairs.reshape(-1).tolist()) == list(range(38))
     np.testing.assert_array_equal(pairs[:, 1] - pairs[:, 0], np.full(19, 19))
@@ -143,7 +149,7 @@ def test_the_packaged_skeleton_pairs_every_point_that_has_a_side(fly):
     flip augmentation and the mirror check -- so "16 pairs" is asserted as *which* six
     points are left over, not as a count.
     """
-    paired = {fly.point_names[i] for pair in fly.symmetries for i in pair}
+    paired = {fly.point_names[i] for pair in fly.point_symmetries for i in pair}
     unpaired = [n for n in fly.point_names if n not in paired]
     assert unpaired == [
         "neck",
@@ -208,14 +214,14 @@ def test_symmetries_are_canonicalized_so_declaration_order_carries_no_meaning():
 
     def build(pairs):
         return Skeleton.from_config(
-            Config.from_dict({"skeleton": {"points": names, "symmetries": pairs}})
+            Config.from_dict({"skeleton": {"points": names, "point_symmetries": pairs}})
         )
 
     forward = build([["l_a", "r_a"], ["l_b", "r_b"]])
     shuffled = build([["r_b", "l_b"], ["r_a", "l_a"]])  # reversed rows, reversed order
     by_index = build([[2, 3], [1, 0]])
-    np.testing.assert_array_equal(forward.symmetries, shuffled.symmetries)
-    np.testing.assert_array_equal(forward.symmetries, by_index.symmetries)
+    np.testing.assert_array_equal(forward.point_symmetries, shuffled.point_symmetries)
+    np.testing.assert_array_equal(forward.point_symmetries, by_index.point_symmetries)
 
 
 @pytest.mark.parametrize(
@@ -235,7 +241,7 @@ def test_symmetries_are_canonicalized_so_declaration_order_carries_no_meaning():
     ],
 )
 def test_malformed_symmetries_are_rejected_with_a_pointed_message(fly, pairs, message):
-    spec = {"skeleton": {"points": list(fly.point_names), "symmetries": pairs}}
+    spec = {"skeleton": {"points": list(fly.point_names), "point_symmetries": pairs}}
     with pytest.raises(ValueError, match=message):
         Skeleton.from_config(Config.from_dict(spec))
 
@@ -251,8 +257,8 @@ def test_a_point_in_two_pairs_is_rejected_however_the_skeleton_was_built(fly):
         Skeleton(
             name="t",
             point_names=fly.point_names,
-            bones=np.empty((0, 2), int),
-            symmetries=np.array([[0, 19], [0, 20]]),
+            edges=np.empty((0, 2), int),
+            point_symmetries=np.array([[0, 19], [0, 20]]),
         )
 
 
@@ -319,8 +325,8 @@ def test_the_selector_logs_what_it_resolved(fly, caplog):
 def test_the_packaged_symmetries_are_an_automorphism_of_the_edges(fly):
     """The whole safety of writing 16 pairs by hand, asserted on the packaged file."""
     perm = fly.flip_perm()
-    edges = {frozenset((int(a), int(b))) for a, b in fly.bones}
-    assert {frozenset((int(perm[a]), int(perm[b]))) for a, b in fly.bones} == edges
+    edges = {frozenset((int(a), int(b))) for a, b in fly.edges}
+    assert {frozenset((int(perm[a]), int(perm[b]))) for a, b in fly.edges} == edges
 
 
 @pytest.mark.parametrize(
@@ -339,19 +345,19 @@ def test_the_packaged_symmetries_are_an_automorphism_of_the_edges(fly):
 def test_symmetries_that_are_not_a_mirror_of_the_edges_are_refused(fly, symmetries):
     spec = {
         "points": list(fly.point_names),
-        "edges": [[int(a), int(b)] for a, b in fly.bones],
-        "symmetries": symmetries,
+        "edges": [[int(a), int(b)] for a, b in fly.edges],
+        "point_symmetries": symmetries,
     }
     with pytest.raises(ValueError, match="not a mirror of"):
         Skeleton.from_spec(spec)
 
 
 def test_a_skeleton_with_no_edges_passes_trivially(fly):
-    """Points with no bones have no topology to violate, so the check has to allow it."""
+    """Points with no edges have no topology to violate, so the check has to allow it."""
     Skeleton.from_spec(
         {
             "points": list(fly.point_names),
-            "symmetries": [list(p) for p in fly.symmetry_names],
+            "point_symmetries": [list(p) for p in fly.symmetry_names],
         }
     )
 
@@ -361,24 +367,111 @@ def test_a_skeleton_with_no_edges_passes_trivially(fly):
 
 def test_a_color_key_that_names_no_point_is_refused():
     with pytest.raises(ValueError, match="not a point of this skeleton"):
-        Skeleton.from_spec({"points": ["a", "b"], "colors": {"z": "#fff"}})
+        Skeleton.from_spec({"points": ["a", "b"], "point_colors": {"z": "#fff"}})
 
 
 def test_two_color_patterns_over_one_point_are_refused():
     with pytest.raises(ValueError, match="both match"):
         Skeleton.from_spec(
-            {"points": ["l_a", "l_b"], "colors": {"l_*": "#fff", "*_a": "#000"}}
+            {"points": ["l_a", "l_b"], "point_colors": {"l_*": "#fff", "*_a": "#000"}}
         )
 
 
 def test_a_malformed_color_is_refused_at_load():
     with pytest.raises(ValueError, match="not a #rgb or #rrggbb color"):
-        Skeleton.from_spec({"points": ["a"], "colors": {"a": "reddish"}})
+        Skeleton.from_spec({"points": ["a"], "point_colors": {"a": "reddish"}})
 
 
 def test_an_uncolored_point_takes_the_colormap():
     """`colors` is optional and may be partial -- DeepLabCut's default is the colormap."""
     from deeperfly.skeleton import TAB10_HEX
 
-    s = Skeleton.from_spec({"points": ["a", "b"], "colors": {"a": "#123456"}})
+    s = Skeleton.from_spec({"points": ["a", "b"], "point_colors": {"a": "#123456"}})
     assert s.point_colors == ("#123456", TAB10_HEX[1])
+
+
+# -- edge colors --------------------------------------------------------------
+
+
+#: Four points in two colour groups, joined in a chain -- so the middle edge is the one
+#: that crosses groups and is the only one the average visibly blends.
+_TWO_GROUPS = {
+    "points": ["a", "b", "c", "d"],
+    "edges": [["a", "b"], ["b", "c"], ["c", "d"]],
+    "point_colors": {"a": "#ff0000", "b": "#ff0000", "c": "#0000ff", "d": "#0000ff"},
+}
+
+
+def test_an_edge_across_two_color_groups_blends():
+    """The only case where the average differs from either endpoint."""
+    s = Skeleton.from_spec(_TWO_GROUPS)
+    assert s.edge_colors == ("#ff0000", "#800080", "#0000ff")
+
+
+def test_a_declared_edge_color_wins_and_matches_either_orientation():
+    """`c--b` names an edge stored as `b--c`; an edge selector is unordered.
+
+    Requiring the stored order would make a correct-looking key a silent miss, which is
+    the one thing a colour table cannot report for itself.
+    """
+    s = Skeleton.from_spec({**_TWO_GROUPS, "edge_colors": {"c--b": "#404040"}})
+    assert s.edge_colors == ("#ff0000", "#404040", "#0000ff")
+
+
+@pytest.mark.parametrize(
+    "table, message",
+    [
+        ({"a": "#fff"}, "not an edge selector"),
+        ({"a--b--c": "#fff"}, "not an edge selector"),
+        ({"a--z": "#fff"}, "not a point of this skeleton"),
+        ({"a--d": "#fff"}, "matches no edge"),  # both real points, not joined
+        ({"a--b": "#fff", "*--b": "#000"}, "two keys both match"),
+        ({"a--b": "reddish"}, "not a #rgb or #rrggbb color"),
+    ],
+)
+def test_a_malformed_edge_color_key_is_refused_at_load(table, message):
+    with pytest.raises(ValueError, match=message):
+        Skeleton.from_spec({**_TWO_GROUPS, "edge_colors": table})
+
+
+def test_edge_colors_of_the_wrong_length_are_refused():
+    """The field is index-aligned with `edges`, so a mismatch is not silently padded."""
+    with pytest.raises(ValueError, match="edge_colors has 1 entries for 3 edges"):
+        Skeleton.from_spec(_TWO_GROUPS).__class__(
+            name="x",
+            point_names=("a", "b", "c", "d"),
+            edges=np.array([[0, 1], [1, 2], [2, 3]]),
+            edge_colors=("#fff",),
+        )
+
+
+# -- identity -----------------------------------------------------------------
+
+
+def test_the_digest_separates_two_skeletons_a_name_cannot(fly, deepfly3d):
+    """The exact collision the project already had: 38 points under one name, twice."""
+    assert fly.n_points == deepfly3d.n_points == 38
+    assert fly.digest != deepfly3d.digest
+    assert fly.label == f"{fly.name}@{fly.digest}"
+    assert len(fly.digest) == 8
+
+
+def test_the_digest_ignores_color_and_name_but_not_structure(fly):
+    """Colours change no stage's answer and move no label, so they are out of it.
+
+    The name is out for the same reason it is out of the stage fingerprint: two skeletons
+    agreeing on the points and the edges compute the same result whatever they are called.
+    """
+    import dataclasses
+
+    recolored = dataclasses.replace(
+        fly, name="something else", point_colors=("#000000",) * 38, edge_colors=()
+    )
+    assert recolored.digest == fly.digest
+
+    reordered = Skeleton(
+        name=fly.name, point_names=fly.point_names[::-1], edges=fly.edges
+    )
+    assert reordered.digest != fly.digest
+    no_pairs = Skeleton(name=fly.name, point_names=fly.point_names, edges=fly.edges)
+    assert no_pairs.digest != fly.digest  # the symmetry pairs are in it

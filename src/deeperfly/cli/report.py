@@ -58,7 +58,7 @@ def _cmd_inspect(args: argparse.Namespace) -> None:
     _info_line("views:    ", f"{result.n_views}  {result.cameras.names}")
     _info_line("frames:   ", result.n_frames)
     _info_line(
-        "skeleton: ", f"{result.skeleton.name}  ({result.skeleton.n_points} points)"
+        "skeleton: ", f"{result.skeleton.label}  ({result.skeleton.n_points} points)"
     )
     _info_line("has 3D:   ", result.pts3d is not None)
     if result.reproj_error is not None:

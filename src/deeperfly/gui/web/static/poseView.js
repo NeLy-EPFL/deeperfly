@@ -18,7 +18,7 @@
 // gesture picks, Ctrl/Cmd adds to it (Ctrl/Cmd+click toggles a single joint).
 // Right-click toggles a point's fixed flag. A joint whose cell is Hidden (held out of the
 // training loss) is drawn exactly like any other -- same position, same source marker, same
-// bones, same hit-test -- with one bar struck through it (drawHidden); dragging it is allowed and
+// edges, same hit-test -- with one bar struck through it (drawHidden); dragging it is allowed and
 // leaves the mark standing, because where a joint is and whether it is trained on are two facts.
 // Hovering a joint reports it via `onHover` so the app can emphasize the same point
 // across every view. The app stays in control of what a drag does to the 3D point.
@@ -64,15 +64,15 @@
  */
 
 const POINT_RADIUS_PX = 4; // drawn joint radius in screen px (constant under zoom)
-const HOVER_SCALE = 1.6; // how much a hovered joint grows (its bones thicken too, so it needn't balloon)
-const HOVER_BONE_WIDTH = 3; // a hovered joint's connected bones thicken to this (screen px)
+const HOVER_SCALE = 1.6; // how much a hovered joint grows (its edges thicken too, so it needn't balloon)
+const HOVER_EDGE_WIDTH = 3; // a hovered joint's connected edges thicken to this (screen px)
 const HIT_TOLERANCE_PX = 14; // how close a click must be to grab a joint, screen px
 const DRAG_THRESHOLD_PX = 3; // movement (screen px) before a press becomes a drag
 const MAX_ZOOM = 10; // cap on the user wheel-zoom factor over fit
 const WHEEL_ZOOM_RATE = 0.007; // mouse-wheel delta -> zoom factor sensitivity (~2x per notch)
 const PINCH_ZOOM_RATE = 0.01; // trackpad pinch: a higher gain than the wheel (its per-event delta is tiny) so the pinch tracks the fingers
 const WHEEL_NOTCH_MIN = 50; // |deltaY| (px) below which a step is a tiny one (trackpad pinch or accelerated mouse notch) and gets the higher zoom gain; at/above it's a chunky wheel notch
-const BONE_WIDTH = 1.5; // the editable skeleton's bone width (screen px)
+const EDGE_WIDTH = 1.5; // the editable skeleton's edge width (screen px)
 
 // Each joint marker encodes its *source* -- the whole point of the unified editor is
 // that one glance tells you where a point came from:
@@ -204,9 +204,11 @@ export class PoseView {
     /** @type {HTMLCanvasElement | null} */
     this.meshCanvas = null; // backing 2D canvas the GPU render is copied into
     /** @type {[number, number][]} */
-    this.bones = [];
+    this.edges = [];
     /** @type {string[]} */
     this.colors = [];
+    /** @type {string[]} */
+    this.edgeColors = [];
     /** @type {Point[]} */
     this.pts = [];
     /** @type {Point[] | null} */
@@ -367,12 +369,21 @@ export class PoseView {
   // -- setup ------------------------------------------------------------------
 
   /**
-   * @param {[number, number][]} bones
-   * @param {[number, number, number][]} colors
+   * @param {[number, number][]} edges
+   * @param {[number, number, number][]} colors  one per POINT
+   * @param {[number, number, number][]} [edgeColors]  one per EDGE; the skeleton's own,
+   *   which is not any endpoint's colour once an edge is coloured explicitly.
    */
-  setSkeleton(bones, colors) {
-    this.bones = bones;
-    this.colors = colors.map(([r, g, b]) => `rgb(${r},${g},${b})`);
+  setSkeleton(edges, colors, edgeColors) {
+    const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
+    this.edges = edges;
+    this.colors = colors.map(css);
+    this.edgeColors = (edgeColors || []).map(css);
+  }
+
+  /** The colour of edge `k`, falling back to its source point's. */
+  edgeColor(k, a) {
+    return this.edgeColors[k] || this.colors[a] || "#fff";
   }
 
   /** @param {string[]} names  per-point labels, drawn when labels are visible */
@@ -865,7 +876,7 @@ export class PoseView {
   /** @param {number} i @returns {{ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null} */
   nodeAt(i) {
     // An absent joint is not on the animal, so it precedes every other source: it must never
-    // resolve to GT / detected / projected, and drawSkeleton drops the bones that touch it.
+    // resolve to GT / detected / projected, and drawSkeleton drops the edges that touch it.
     if (this.isAbsent(i)) {
       const ap = this.absentPos(i);
       return ap ? { pos: ap, src: "absent" } : null;
@@ -928,7 +939,7 @@ export class PoseView {
   }
 
 
-  // The editable skeleton: the colored bones (a bone touching the hovered joint thickens, so
+  // The editable skeleton: the colored edges (an edge touching the hovered joint thickens, so
   // hover reads on the whole limb, not just the dot), then each joint drawn with a marker
   // whose fill + ring encode its source. Each joint
   // is GT if authored, else the detector's point, else its reprojected point when neither exists
@@ -949,17 +960,18 @@ export class PoseView {
     /** @type {({ pos: Point, src: "gt" | "detected" | "projected" | "placeholder" | "absent" } | null)[]} */
     const nodes = new Array(n);
     for (let i = 0; i < n; i++) nodes[i] = this.nodeAt(i);
-    for (const [a, b] of this.bones) {
+    for (let k = 0; k < this.edges.length; k++) {
+      const [a, b] = this.edges[k];
       const na = nodes[a];
       const nb = nodes[b];
       if (!na || !nb) continue;
-      // A limb that is not on the animal has no bones. This is the one node source that
+      // A limb that is not on the animal has no edges. This is the one node source that
       // breaks the chain on purpose -- a placeholder deliberately keeps it connected.
       if (na.src === "absent" || nb.src === "absent") continue;
       const [ax, ay] = this.toCanvas(na.pos[0], na.pos[1]);
       const [bx, by] = this.toCanvas(nb.pos[0], nb.pos[1]);
-      ctx.strokeStyle = this.colors[a] || "#fff";
-      ctx.lineWidth = a === hi || b === hi ? HOVER_BONE_WIDTH : BONE_WIDTH;
+      ctx.strokeStyle = this.edgeColor(k, a);
+      ctx.lineWidth = a === hi || b === hi ? HOVER_EDGE_WIDTH : EDGE_WIDTH;
       ctx.beginPath();
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
@@ -974,7 +986,7 @@ export class PoseView {
       // hidden the node is still here (the instance owns a position for every cell), so it
       // draws the hollow ring itself -- same vocabulary, so the joint never becomes a bone that
       // ends in empty space.
-      if (node.src === "placeholder") continue; // bones only; drawPlaceholders draws its marker
+      if (node.src === "placeholder") continue; // edges only; drawPlaceholders draws its marker
       if (node.src === "absent") continue; // drawAbsent draws its tombstone
       if (node.src === "projected") {
         if (!this.projectedVisible) {
@@ -1007,7 +1019,7 @@ export class PoseView {
       ctx.fill();
       ctx.globalAlpha = 1;
       // RING: ground truth gets a bold lime ring; a detected point a thin dark ring, or a
-      // white one under the cursor. Hover still grows the disc and thickens the bones.
+      // white one under the cursor. Hover still grows the disc and thickens the edges.
       if (node.src === "gt") {
         ctx.strokeStyle = FIXED_COLOR;
         ctx.lineWidth = 2.5;
@@ -1236,13 +1248,14 @@ export class PoseView {
     ctx.lineJoin = "round";
     ctx.lineWidth = PROJ_WIDTH;
     ctx.setLineDash(PROJ_DASH);
-    for (const [a, b] of this.bones) {
+    for (let k = 0; k < this.edges.length; k++) {
+      const [a, b] = this.edges[k];
       const pa = pts[a];
       const pb = pts[b];
       if (!pa || !pb) continue;
       const [ax, ay] = this.toCanvas(pa[0], pa[1]);
       const [bx, by] = this.toCanvas(pb[0], pb[1]);
-      ctx.strokeStyle = this.colors[a] || "#fff";
+      ctx.strokeStyle = this.edgeColor(k, a);
       ctx.beginPath();
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
@@ -1312,7 +1325,7 @@ export class PoseView {
 
   // The "Hidden" pass: one bar struck through every joint whose cell is held out of the training
   // loss. It draws over the marker the joint already has and changes nothing about it -- the
-  // position, the source ring, the bones and the hit-test are all exactly as they would be without
+  // position, the source ring, the edges and the hit-test are all exactly as they would be without
   // the flag, which is the point: whether a cell is supervised is a separate fact from where its
   // keypoint is, and the display now says both instead of conflating them.
   //
@@ -1396,7 +1409,7 @@ export class PoseView {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.beginPath();
-      for (const [a, b] of this.bones) {
+      for (const [a, b] of this.edges) {
         const pa = pts[a];
         const pb = pts[b];
         if (!pa || !pb) continue;
@@ -1416,7 +1429,7 @@ export class PoseView {
     ctx.lineWidth = 1.5;
     ctx.setLineDash(square ? [1.5, 3.5] : [5, 3]);
     ctx.lineCap = square ? "round" : "butt";
-    for (const [a, b] of this.bones) {
+    for (const [a, b] of this.edges) {
       const pa = pts[a];
       const pb = pts[b];
       if (!pa || !pb) continue;

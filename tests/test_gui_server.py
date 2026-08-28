@@ -58,11 +58,11 @@ def test_meta_payload(client, result):
     assert meta["has_nmf"] is False  # the default result carries no fitted NMF model
     assert list(meta["camera_names"]) == list(result.cameras.names)
     assert len(meta["point_colors"]) == result.pts2d.shape[2]
-    assert len(meta["bones"]) == len(result.skeleton.bones)
+    assert len(meta["edges"]) == len(result.skeleton.edges)
     # The colour legend is data-driven from the skeleton: one {name, color} per DISTINCT
     # colour, labelled by the shared prefix of its points, so the front-end never
     # hard-codes a left/right palette and the skeleton declares no grouping to read.
-    swatches = meta["colors"]
+    swatches = meta["color_legend"]
     assert len(swatches) == len(set(result.skeleton.point_colors))
     assert [sw["name"] for sw in swatches][:3] == ["lf", "lm", "lh"]
     assert all(len(sw["color"]) == 3 for sw in swatches)

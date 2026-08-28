@@ -73,9 +73,11 @@ export class Scene3D {
     /** @type {Camera3D[]} */
     this.cameras = [];
     /** @type {[number, number][]} */
-    this.bones = [];
+    this.edges = [];
     /** @type {string[]} */
     this.colors = [];
+    /** @type {string[]} */
+    this.edgeColors = [];
     /** @type {Point3[] | null} */
     this.pts3d = null;
     /** @type {Point3[] | null} */
@@ -125,12 +127,16 @@ export class Scene3D {
   }
 
   /**
-   * @param {[number, number][]} bones
-   * @param {[number, number, number][]} colors
+   * @param {[number, number][]} edges
+   * @param {[number, number, number][]} colors  one per POINT
+   * @param {[number, number, number][]} [edgeColors]  one per EDGE; the skeleton's own,
+   *   which is not any endpoint's colour once an edge is coloured explicitly.
    */
-  setSkeleton(bones, colors) {
-    this.bones = bones;
-    this.colors = colors.map(([r, g, b]) => `rgb(${r},${g},${b})`);
+  setSkeleton(edges, colors, edgeColors) {
+    const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
+    this.edges = edges;
+    this.colors = colors.map(css);
+    this.edgeColors = (edgeColors || []).map(css);
   }
 
   /** @param {Point3[] | null} pts  the triangulated pose for this frame */
@@ -289,7 +295,13 @@ export class Scene3D {
     // top, so the skeletons stay legible over (and through) the body.
     this.drawMesh(cssW, cssH);
     if (this.showAxes) this.drawAxes(basis);
-    if (this.showPose) this.drawSkeleton(this.pts3d, basis, (i) => this.colors[i] || "#fff");
+    if (this.showPose)
+      this.drawSkeleton(
+        this.pts3d,
+        basis,
+        (i) => this.colors[i] || "#fff",
+        (k, a) => this.edgeColors[k] || this.colors[a] || "#fff",
+      );
     if (this.showNmf) this.drawSkeleton(this.nmf3d, basis, () => NMF_COLOR);
     if (this.showCameras) this.cameras.forEach((cam) => this.drawCamera(cam, basis));
   }
@@ -346,17 +358,19 @@ export class Scene3D {
    * @param {Point3[] | null} pts
    * @param {{eye: Vec3, forward: Vec3, right: Vec3, up: Vec3}} basis
    * @param {(i: number) => string} colorAt
+   * @param {((k: number, a: number) => string)=} edgeColorAt
    */
-  drawSkeleton(pts, basis, colorAt) {
+  drawSkeleton(pts, basis, colorAt, edgeColorAt) {
     if (!pts) return;
     const ctx = this.ctx;
     const screen = pts.map((p) => (p ? this.project(p, basis) : null));
     ctx.lineWidth = 2;
-    for (const [a, b] of this.bones) {
+    for (let k = 0; k < this.edges.length; k++) {
+      const [a, b] = this.edges[k];
       const sa = screen[a];
       const sb = screen[b];
       if (!sa || !sb) continue;
-      ctx.strokeStyle = colorAt(a);
+      ctx.strokeStyle = edgeColorAt ? edgeColorAt(k, a) : colorAt(a);
       ctx.beginPath();
       ctx.moveTo(sa[0], sa[1]);
       ctx.lineTo(sb[0], sb[1]);

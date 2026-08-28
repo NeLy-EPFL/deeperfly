@@ -65,7 +65,7 @@ def _cmd_project_new(args: argparse.Namespace) -> None:
     _info_line("id:       ", project.id)
     _info_line(
         "skeleton: ",
-        f"{skeleton.name}  ({skeleton.n_points} points, {skeleton.n_bones} bones)"
+        f"{skeleton.label}  ({skeleton.n_points} points, {skeleton.n_edges} edges)"
         if skeleton.n_points
         else f"{skeleton.name}  (empty -- edit {project.skeleton_file})",
     )
@@ -181,7 +181,7 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
     _info_line("iteration:", project.iteration)
     try:
         skeleton = project.skeleton()
-        _info_line("skeleton: ", f"{skeleton.name}  ({skeleton.n_points} points)")
+        _info_line("skeleton: ", f"{skeleton.label}  ({skeleton.n_points} points)")
     except (FileNotFoundError, KeyError, ValueError) as exc:
         _info_line("skeleton: ", f"[unreadable: {exc}]")
     _info_line(

@@ -1,14 +1,19 @@
 # fly38 -- the 38 tracked points of a tethered Drosophila: six 5-point legs, two
 # antennae, the neck, and a 5-point dorsal-midline abdomen chain (the tergite stripes).
 #
-# A skeleton is FOUR things: points, edges, symmetries, colors. Nothing else -- no
+# A skeleton is FOUR things: points, edges, point_symmetries, colors. Nothing else -- no
 # groups, no chains, no subset names. Same shape as SLEAP and DeepLabCut.
 #
 # Referenced, not copied: a run config says nothing at all about the skeleton and takes
-# the packaged one, or names another with `[skeleton] include`. NEVER edit a published
-# skeleton in place -- a model trained under `fly38` resolves to whatever this file says
-# today, and the points-equality check against the checkpoint is all that stands between
-# a silent edit and silently mislabeled joints. Add a new name instead.
+# the packaged one, or names another with `[skeleton] include`.
+#
+# THE NAME IS A LABEL, NOT AN IDENTITY, so: never edit a published skeleton in place --
+# a model trained under `fly38` resolves to whatever this file says today, and the
+# points-equality check against the checkpoint is all that stands between a silent edit
+# and silently mislabeled joints. A changed point set gets a NEW FILE with a new name.
+# What tells two apart is the digest deeperfly prints beside the name
+# (`<name>@<8 hex>`): sha256 over the points, the edges and the symmetry pairs, so it
+# moves when any of those do and stays put when only a color does.
 #
 # This file was called `fly38b` up to the 0.2 release, when it became the only packaged
 # skeleton and took the plain name. `include = "fly38b"` still resolves here.
@@ -55,10 +60,10 @@ points = [
     "abdomen0", "abdomen1", "abdomen2", "abdomen3", "abdomen4",
 ]
 
-# The bones, as pairs of points; written source-first, which is the color an uncolored
-# edge inherits. Used for the length prior, pictorial structures' graph, seeding a
-# missing point in the editor, and the overlays. The antennae and neck appear in no
-# edge -- tracked points with no bone.
+# The edges, as pairs of points. Used for the bone-length prior, pictorial structures'
+# graph, seeding a missing point in the editor, and the overlays. Direction is kept (it
+# is what `edge_endpoints` reports and the direction the editor seeds along) but carries
+# no color meaning. The antennae and neck appear in no edge -- tracked points, no edge.
 edges = [
     ["lf_thorax_coxa", "lf_coxa_trochanter"], ["lf_coxa_trochanter", "lf_femur_tibia"],
     ["lf_femur_tibia", "lf_tibia_tarsus"], ["lf_tibia_tarsus", "lf_pretarsus"],
@@ -81,7 +86,7 @@ edges = [
 # 16 rows is 16 chances to swap a side silently, so the loader checks the permutation
 # against `edges`: applying it must give `edges` back. A wrong side, or two joints of
 # one leg exchanged, breaks that and is named.
-symmetries = [
+point_symmetries = [
     ["lf_thorax_coxa",     "rf_thorax_coxa"],
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],
     ["lf_femur_tibia",     "rf_femur_tibia"],
@@ -101,13 +106,19 @@ symmetries = [
 ]
 
 # One color per point; a key is a point name or a `*` pattern. Two patterns matching one
-# point is an error, not a precedence rule; an exact name beats a pattern. Edges take
-# the color of the point they are written FROM, so this colors both.
+# point is an error, not a precedence rule; an exact name beats a pattern.
 #
 # Optional -- without it points take a colormap by index. This palette is left = blue,
 # right = red, lightening front -> hind, midline on its own green ramp from neck to
 # abdomen, so a point's side reads at a glance.
-[skeleton.colors]
+#
+# This colors the edges too: an edge nothing else names takes the AVERAGE of its two
+# endpoints, so every edge here comes out its own limb's color exactly (both endpoints
+# share one) and only an edge crossing two groups would blend. Name one explicitly with
+#
+#     [skeleton.edge_colors]
+#     "abdomen*--abdomen*" = "#404040"   # each side a point name or a `*` pattern
+[skeleton.point_colors]
 "lf_*" = "#0f7399"
 "lm_*" = "#1a8daf"
 "lh_*" = "#75becb"

@@ -71,7 +71,7 @@ def scalar(v) -> str:
 def value(v) -> str:
     """One TOML value: a scalar, or an array of them -- nested to any depth.
 
-    Recursive rather than flat-only because ``[skeleton].symmetries`` is an array of
+    Recursive rather than flat-only because ``[skeleton].point_symmetries`` is an array of
     2-element arrays. A ``str`` is a scalar, never iterated.
     """
     if isinstance(v, np.ndarray):
@@ -175,7 +175,7 @@ def _header_name(line: str) -> str | None:
     segment in each case -- which is the granularity a section extractor works at.
 
     Line-local, so it cannot tell a header from a *continuation line of a multi-line
-    array* that happens to begin with ``[`` -- which ``[skeleton].symmetries`` does, one
+    array* that happens to begin with ``[`` -- which ``[skeleton].point_symmetries`` does, one
     ``["lf_pretarsus", "rf_pretarsus"],`` row per line. Callers must go through
     :func:`_header_scan`, which supplies the missing bracket-depth context.
     """

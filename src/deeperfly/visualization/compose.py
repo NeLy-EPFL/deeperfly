@@ -689,7 +689,7 @@ _OP_STYLE: dict[str, frozenset[str]] = {
     "skeleton_2d": frozenset(
         {
             "colors",
-            "bone_color",
+            "edge_color",
             "point_radius",
             "line_thickness",
             "line_dash",
@@ -700,7 +700,7 @@ _OP_STYLE: dict[str, frozenset[str]] = {
     "skeleton_3d": frozenset(
         {
             "colors",
-            "bone_color",
+            "edge_color",
             "point_radius",
             "line_thickness",
             "line_dash",
@@ -714,6 +714,14 @@ _OP_STYLE["skeleton_nmf"] = _OP_STYLE["skeleton_3d"]
 
 #: Every style key any op accepts -- what makes an unknown one a named error.
 _STYLE_KEYS = frozenset().union(*_OP_STYLE.values())
+
+#: Style keys this release renamed, ``old -> what to write instead``. The unknown-key
+#: error already lists what IS allowed; this turns "one of these 8" into the one line the
+#: operator needs.
+RENAMED_STYLE_KEYS = {
+    "bone_color": 'renamed: edge_color = "#404040". A skeleton has edges, not bones -- '
+    "and two of these points (the antennae) are in no edge at all."
+}
 
 
 def _layer_style(draw: str, layer: dict, loc: str) -> dict:

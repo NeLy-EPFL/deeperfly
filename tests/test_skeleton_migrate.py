@@ -45,7 +45,7 @@ def _skeleton(point_names, edges=None, name="test", colors=None):
                 "name": name,
                 "points": points,
                 "edges": edges,
-                "colors": colors if colors is not None else {"*": "#123456"},
+                "point_colors": colors if colors is not None else {"*": "#123456"},
             }
         }
     ).skeleton()
@@ -360,7 +360,7 @@ def test_the_rewritten_skeleton_file_round_trips(tmp_path):
 
     back = project.skeleton()
     assert back.point_names == ("c", "a", "b")
-    np.testing.assert_array_equal(back.bones, new.bones)
+    np.testing.assert_array_equal(back.edges, new.edges)
     assert back.point_colors == new.point_colors
 
 
@@ -372,9 +372,9 @@ def test_the_real_fly_skeleton_round_trips_through_a_migration(tmp_path):
 
     back = project.skeleton()
     assert back.point_names == fly.point_names
-    np.testing.assert_array_equal(back.bones, fly.bones)
+    np.testing.assert_array_equal(back.edges, fly.edges)
     assert back.point_colors == fly.point_colors
-    np.testing.assert_array_equal(back.symmetries, fly.symmetries)
+    np.testing.assert_array_equal(back.point_symmetries, fly.point_symmetries)
 
 
 # -- symmetry pairs -----------------------------------------------------------
@@ -392,7 +392,7 @@ def test_symmetries_survive_the_emitted_skeleton_fragment(fly):
     from deeperfly.skeleton_migrate import _skeleton_toml
 
     back = Skeleton.from_config(Config.from_dict(tomllib.loads(_skeleton_toml(fly))))
-    np.testing.assert_array_equal(back.symmetries, fly.symmetries)
+    np.testing.assert_array_equal(back.point_symmetries, fly.point_symmetries)
     assert back.symmetry_names == fly.symmetry_names
     # And a round trip is not itself reported as a change.
     assert diff_skeletons(fly, back)[0] == []
@@ -425,7 +425,7 @@ def test_changing_the_pairs_is_reported_and_is_not_destructive(fly):
     but it must still be *reported*, because it changes what three consumers do."""
     import dataclasses
 
-    dropped = dataclasses.replace(fly, symmetries=fly.symmetries[:-1])
+    dropped = dataclasses.replace(fly, point_symmetries=fly.point_symmetries[:-1])
     changes, mapping = diff_skeletons(fly, dropped)
     assert [c.kind for c in changes] == ["symmetries"]
     assert not any(c.destructive for c in changes)

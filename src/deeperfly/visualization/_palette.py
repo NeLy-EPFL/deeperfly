@@ -1,7 +1,7 @@
 """Per-point RGB from a skeleton's colors, with no plotting deps.
 
-A skeleton carries one hex color per point (and one per bone, the color of the point the
-edge is written from). The OpenCV overlay and compositor
+A skeleton carries one hex color per point and one per edge. The OpenCV overlay and
+compositor
 (:mod:`deeperfly.visualization.opencv`, :mod:`deeperfly.visualization.compose`) draw
 straight into image arrays, so the conversion to RGB lives here as plain NumPy with no
 matplotlib dependency.
@@ -58,8 +58,22 @@ def point_colors_rgb(
     return np.asarray([hex_to_rgb(h) for h in hexes], dtype=float).reshape(-1, 3)
 
 
-def bone_colors_rgb(skeleton: Skeleton) -> np.ndarray:
-    """``(B, 3)`` RGB floats in ``[0, 1]``, one per bone (its source point's color)."""
-    return np.asarray(
-        [hex_to_rgb(h) for h in skeleton.bone_colors], dtype=float
-    ).reshape(-1, 3)
+def edge_colors_rgb(
+    skeleton: Skeleton, colors: Sequence[str] | None = None
+) -> np.ndarray:
+    """``(E, 3)`` RGB floats in ``[0, 1]``, one per edge.
+
+    ``colors`` is the same per-POINT hex override :func:`point_colors_rgb` takes. Given
+    one, the edges are re-derived from it by the endpoint average rather than read off
+    the skeleton -- an override that recolors the joints has to recolor what joins them,
+    or a drawing in someone else's palette keeps the skeleton's own edges.
+    """
+    if colors is None:
+        return np.asarray(
+            [hex_to_rgb(h) for h in skeleton.edge_colors], dtype=float
+        ).reshape(-1, 3)
+    pts = point_colors_rgb(skeleton, colors)
+    rows = np.asarray(skeleton.edges).reshape(-1, 2)
+    if not len(rows):
+        return np.empty((0, 3), dtype=float)
+    return (pts[rows[:, 0]] + pts[rows[:, 1]]) / 2.0

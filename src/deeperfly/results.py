@@ -7,7 +7,7 @@ be re-run later from pristine upstream outputs:
 .. code-block:: text
 
     attrs["meta"]            json: {deeperfly_format_version: 3, created_utc, ...}
-    skeleton/                the skeleton (point names, bones, symmetries, colors)
+    skeleton/                the skeleton (point names, edges, symmetries, colors)
     pose2d/
         points               (V, T, P, 2) arg-max 2D detections (visibility-masked)
         conf                 (V, T, P) detection confidences
@@ -100,13 +100,19 @@ if TYPE_CHECKING:
 
 __all__ = ["PoseResult", "StageStore", "repack"]
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 #: Schema versions this build can *read*. v3 dropped only datasets that are exactly
-#: reconstructible from the ones it kept, so the readers here -- which prefer a stored
-#: array and reconstruct only what is missing -- serve both without a version branch.
+#: reconstructible from the ones it kept, and v4 only renamed two inside ``skeleton/``
+#: (``bones`` -> ``edges``, ``symmetries`` -> ``point_symmetries``) and added a third
+#: (``edge_colors``) -- so the readers here, which prefer a stored array and reconstruct
+#: only what is missing, serve all three without a version branch.
+#:
+#: The v4 bump exists for the OTHER direction: an older build reading a v4 file would
+#: find no ``skeleton/bones`` and raise a bare ``KeyError``. Refusing on the version is
+#: the whole point of gating reads on it.
 #: Writing is always the current version; :func:`repack` converts.
-READABLE_VERSIONS = (2, FORMAT_VERSION)
+READABLE_VERSIONS = (2, 3, FORMAT_VERSION)
 
 _STR = h5py.string_dtype("utf-8")
 
@@ -1272,9 +1278,9 @@ _POINT_STAGES = ("pictorial_structures", "triangulation", "eks", "postprocess")
 def repack(path: str | Path, *, dst: str | Path | None = None) -> tuple[int, int]:
     """Rewrite a ``results.h5`` in the current schema, in place by default.
 
-    Reads whatever :data:`READABLE_VERSIONS` allows and writes v3: point arrays narrowed
-    to float32 and deflated, and any 2D or reprojection error a reader can rebuild left
-    out. Nothing is recomputed -- the pose in the file is the pose that comes out, to
+    Reads whatever :data:`READABLE_VERSIONS` allows and writes the current version:
+    point arrays narrowed to float32 and deflated, and any 2D or reprojection error a
+    reader can rebuild left out. Nothing is recomputed -- the pose in the file is the pose that comes out, to
     within the float32 storage step -- so this is the way to shrink an existing recording
     without re-running the pipeline over it.
 
@@ -1510,7 +1516,12 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.create_dataset(
         "point_names", data=np.array(s.point_names, dtype=object), dtype=_STR
     )
-    g.create_dataset("bones", data=s.bones)
+    # The printable identity, for a human reading the file or an error quoting it.
+    # Nothing ever compares it -- what is compared is `point_names` (see
+    # `deeperfly.pipeline.run._refuse_a_foreign_skeleton`), and a stored digest that
+    # disagreed with the recomputed one would mean a corrupt file, not another skeleton.
+    g.attrs["digest"] = s.digest
+    g.create_dataset("edges", data=s.edges)
     # One hex per POINT, in point order. Replaces the `limb_names` / `limb_id` /
     # `palette` trio, which stored the grouping the skeleton no longer has. A file
     # written before this reads back with the colormap (below), which is acceptable
@@ -1518,26 +1529,48 @@ def _write_skeleton(g: h5py.Group, s: Skeleton) -> None:
     g.create_dataset(
         "point_colors", data=np.array(s.point_colors, dtype=object), dtype=_STR
     )
+    # One hex per EDGE. Stored rather than re-derived because the derivation (the
+    # endpoint average) is only the DEFAULT: an edge the skeleton colored explicitly
+    # would come back a different color if this were reconstructed.
+    g.create_dataset(
+        "edge_colors", data=np.array(s.edge_colors, dtype=object), dtype=_STR
+    )
     # Additive, and read back with a default: a results.h5 written before symmetry
     # existed has no such dataset and loads as a skeleton with no pairs, which only
     # disables the pair-driven features for that file.
-    g.create_dataset("symmetries", data=np.asarray(s.symmetries).reshape(-1, 2))
+    g.create_dataset(
+        "point_symmetries", data=np.asarray(s.point_symmetries).reshape(-1, 2)
+    )
 
 
 def _read_skeleton(g: h5py.Group) -> Skeleton:
     decode = lambda arr: tuple(  # noqa: E731
         x.decode() if isinstance(x, bytes) else x for x in arr
     )
-    sym = g.get("symmetries")
+    # v4 renamed both of these; a v2/v3 file still carries the old spelling and there is
+    # nothing to convert, so the reader takes either rather than the repack taking a
+    # dataset rename. `digest` is not read at all -- it is written for humans.
+    edges = g.get("edges")
+    if edges is None:
+        edges = g["bones"]
+    sym = g.get("point_symmetries")
+    if sym is None:
+        sym = g.get("symmetries")
     stored = g.get("point_colors")
+    edge_stored = g.get("edge_colors")
     return Skeleton(
         name=str(g.attrs["name"]),
         point_names=decode(g["point_names"][()]),  # type: ignore[index]
-        bones=g["bones"][()],  # type: ignore[index]
+        edges=edges[()],  # type: ignore[index]
         # Absent in a file written before colors were per point: the skeleton then
         # defaults to the colormap by index rather than guessing at a limb palette.
         point_colors=() if stored is None else decode(stored[()]),
-        symmetries=(
+        # Absent before v4, and then derived from the points -- which reproduces exactly
+        # what such a file was drawn with, because the rule it was written under (the
+        # source point's color) and the average agree whenever an edge sits inside one
+        # colored group, and every edge of every packaged skeleton does.
+        edge_colors=() if edge_stored is None else decode(edge_stored[()]),
+        point_symmetries=(
             np.empty((0, 2), np.int64)
             if sym is None
             else np.asarray(sym[()]).reshape(-1, 2)

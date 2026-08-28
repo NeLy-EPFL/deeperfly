@@ -19,7 +19,7 @@ from deeperfly import _toml
 
 
 def test_value_nests():
-    """``[skeleton].symmetries`` is an array of arrays, so ``value`` has to recurse."""
+    """``[skeleton].point_symmetries`` is an array of arrays, so ``value`` has to recurse."""
     assert _toml.value([["a", "b"], ["c", "d"]]) == '[["a", "b"], ["c", "d"]]'
     assert _toml.value([1, 2.5, True]) == "[1, 2.5, true]"
     assert _toml.value(np.array([[0, 19], [1, 20]])) == "[[0, 19], [1, 20]]"
@@ -33,11 +33,11 @@ _ARRAY_OF_ARRAYS = """\
 [skeleton]
 name = "toy"
 points = ["l_a", "r_a"]
-symmetries = [
+point_symmetries = [
     ["l_a", "r_a"],
 ]
 
-[skeleton.colors]
+[skeleton.point_colors]
 "*" = "#000000"
 
 [cameras.a]
@@ -55,9 +55,9 @@ def test_extract_section_is_not_ended_by_an_array_continuation_line():
     section = _toml.extract_section(_ARRAY_OF_ARRAYS, "skeleton")
     parsed = tomllib.loads(section)  # would raise on a truncated array
     assert set(parsed) == {"skeleton"}
-    assert parsed["skeleton"]["symmetries"] == [["l_a", "r_a"]]
+    assert parsed["skeleton"]["point_symmetries"] == [["l_a", "r_a"]]
     # Sub-tables of the section come along; the next top-level table does not.
-    assert parsed["skeleton"]["colors"] == {"*": "#000000"}
+    assert parsed["skeleton"]["point_colors"] == {"*": "#000000"}
 
 
 def test_top_level_tables_ignores_array_continuation_lines():
@@ -67,7 +67,7 @@ def test_top_level_tables_ignores_array_continuation_lines():
 def test_extract_tables_ignores_array_continuation_lines():
     kept = tomllib.loads(_toml.extract_tables(_ARRAY_OF_ARRAYS, ["skeleton"]))
     assert set(kept) == {"skeleton"}
-    assert kept["skeleton"]["symmetries"] == [["l_a", "r_a"]]
+    assert kept["skeleton"]["point_symmetries"] == [["l_a", "r_a"]]
 
 
 def test_a_bracket_inside_a_comment_or_a_string_is_not_a_header():

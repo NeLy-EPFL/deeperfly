@@ -6,7 +6,7 @@ image, then a skeleton on top -- into one frame (see
 :mod:`deeperfly.visualization.compose`). Drawing goes directly into the array with ``cv2``,
 far faster than matplotlib for video.
 
-For 3D, bones and joints are ordered back-to-front by camera-space depth (the
+For 3D, edges and joints are ordered back-to-front by camera-space depth (the
 painter's algorithm), so nearer limbs occlude farther ones; points behind the
 camera are dropped. Buffers are RGB throughout.
 """
@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 from jaxtyping import Float
 
-from ._palette import point_colors_rgb
+from ._palette import edge_colors_rgb, point_colors_rgb
 
 if TYPE_CHECKING:  # avoid importing the camera/skeleton modules at drawing time
     from ..cameras import Camera
@@ -199,7 +199,13 @@ def _colors_u8(skeleton: "Skeleton", colors=None) -> np.ndarray:
     )
 
 
-#: A bone dash pattern: ``0`` / ``None`` for solid, one number (equal on/off runs) or an
+def _edge_colors_u8(skeleton: "Skeleton", colors=None) -> np.ndarray:
+    return np.clip(edge_colors_rgb(skeleton, colors) * 255.0 + 0.5, 0, 255).astype(
+        np.uint8
+    )
+
+
+#: An edge dash pattern: ``0`` / ``None`` for solid, one number (equal on/off runs) or an
 #: ``(on, off)`` pair, in **canvas** pixels.
 Dash = float | tuple[float, float] | list[float] | None
 
@@ -228,7 +234,7 @@ def _dash_pattern(dash: Dash) -> tuple[float, float] | None:
     return on, off
 
 
-def _draw_bone(
+def _draw_edge(
     canvas: np.ndarray,
     a: tuple[int, int],
     b: tuple[int, int],
@@ -236,13 +242,13 @@ def _draw_bone(
     thickness: int,
     dash: tuple[float, float] | None,
 ) -> None:
-    """One bone from ``a`` to ``b``: a solid line, or dashes when ``dash`` is given.
+    """One edge from ``a`` to ``b``: a solid line, or dashes when ``dash`` is given.
 
     Dashes are laid out by arc length along the segment *in canvas pixels*, so the
     pattern is the same visual size in every panel however the view is scaled -- which is
     the point of a dashed overlay: it has to read as "the reference" at a glance, and a
     pattern that shrank with the panel would read as a thinner solid line instead.
-    Stepping is `while` over the run length rather than a fixed dash count so a long bone
+    Stepping is `while` over the run length rather than a fixed dash count so a long edge
     gets more dashes and not longer ones.
 
     The pattern is geometric arc length (as in SVG or matplotlib), NOT the fraction of
@@ -259,7 +265,7 @@ def _draw_bone(
     on, off = dash
     (x0, y0), (x1, y1) = a, b
     length = float(np.hypot(x1 - x0, y1 - y0))
-    if length < 1.0:  # a bone shorter than a pixel: one dot, not an empty gap
+    if length < 1.0:  # an edge shorter than a pixel: one dot, not an empty gap
         cv2.line(canvas, a, b, color, thickness, cv2.LINE_AA)
         return
     ux, uy = (x1 - x0) / length, (y1 - y0) / length
@@ -319,6 +325,7 @@ def _draw(
     skeleton: "Skeleton",
     *,
     colors: np.ndarray,
+    edge_colors: np.ndarray,
     depth: np.ndarray | None,
     conf: np.ndarray | None,
     x0: int,
@@ -330,14 +337,13 @@ def _draw(
     draw_points: bool,
     outline_thickness: int,
     line_dash: Dash = None,
-    bone_color: str | None = None,
+    edge_color: str | None = None,
 ) -> np.ndarray:
-    """Draw bones then joints, back-to-front when ``depth`` is given.
+    """Draw edges then joints, back-to-front when ``depth`` is given.
 
-    A bone takes the colour of the point its edge is written FROM, which is why the
-    skeleton writes its edges source-first. ``bone_color`` overrides that for every bone
-    at once, joints keeping theirs -- DeepLabCut's ``skeleton_color``, and the standard
-    figure look of coloured joints on grey bones.
+    Each edge takes its own colour from the skeleton (``edge_colors``). ``edge_color``
+    overrides that for every edge at once, joints keeping theirs -- DeepLabCut's
+    ``skeleton_color``, and the standard figure look of coloured joints on grey bones.
     """
     pts = np.asarray(pts, dtype=float)
     finite: np.ndarray = np.asarray(np.isfinite(pts).all(-1))
@@ -348,23 +354,23 @@ def _draw(
         )
 
     dash = _dash_pattern(line_dash)
-    flat = None if bone_color is None else _hex_u8(bone_color)
-    bones = skeleton.bones
-    bone_order = range(len(bones))
-    if depth is not None and len(bones):
+    flat = None if edge_color is None else _hex_u8(edge_color)
+    edges = skeleton.edges
+    edge_order = range(len(edges))
+    if depth is not None and len(edges):
         d = np.asarray(depth, dtype=float)
         mid = np.array(
             [
                 (d[a] + d[b]) / 2.0 if (finite[a] and finite[b]) else -np.inf
-                for a, b in bones
+                for a, b in edges
             ]
         )
-        bone_order = np.argsort(-mid)  # farthest (largest z) first
-    for k in bone_order:
-        a, b = int(bones[k][0]), int(bones[k][1])
+        edge_order = np.argsort(-mid)  # farthest (largest z) first
+    for k in edge_order:
+        a, b = int(edges[k][0]), int(edges[k][1])
         if finite[a] and finite[b]:
-            color: Color = flat or tuple(map(int, colors[a]))  # type: ignore[assignment]
-            _draw_bone(canvas, xy(a), xy(b), color, line_thickness, dash)
+            color: Color = flat or tuple(map(int, edge_colors[k]))  # type: ignore[assignment]
+            _draw_edge(canvas, xy(a), xy(b), color, line_thickness, dash)
 
     if not draw_points:
         return canvas
@@ -396,16 +402,16 @@ def draw_skeleton_2d(
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
     colors: Sequence[str] | None = None,
-    bone_color: str | None = None,
+    edge_color: str | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
     draw_points: bool = True,
     outline_thickness: int = 1,
 ) -> np.ndarray:
-    """Draw a single view's 2D joints + bones onto ``canvas`` at ``(x0, y0)``.
+    """Draw a single view's 2D joints + edges onto ``canvas`` at ``(x0, y0)``.
 
-    NaN joints (and their bones) are skipped; there is no depth ordering. Each
+    NaN joints (and their edges) are skipped; there is no depth ordering. Each
     joint is a solid outline ring whose fill opacity is its ``conf`` (so a
     low-confidence joint fades to just its ring rather than vanishing); set
     ``outline_thickness=0`` for the old fill-only markers.
@@ -417,7 +423,7 @@ def draw_skeleton_2d(
     pts2d
         The view's 2D joints of shape ``(P, 2)`` in image pixels.
     skeleton
-        Skeleton supplying the bones and per-point colors.
+        Skeleton supplying the edges and their colors.
     x0, y0
         Top-left pixel offset.
     scale
@@ -429,14 +435,14 @@ def draw_skeleton_2d(
     colors
         Optional per-point hex override of the skeleton's own colors.
     point_radius, line_thickness
-        Joint and bone sizes in pixels.
+        Joint and edge sizes in pixels.
     line_dash
-        Bone dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
+        Edge dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
         number gives equal on/off runs, and an ``(on, off)`` pair sets them
         separately. Dashing one of two overlaid skeletons is how a before/after pair
         reads as a comparison rather than as one thicker skeleton.
     draw_points
-        Whether to draw joints (bones are always drawn).
+        Whether to draw joints (edges are always drawn).
     outline_thickness
         Joint outline-ring thickness in pixels (``0`` to draw only the
         confidence-shaded fill).
@@ -452,7 +458,8 @@ def draw_skeleton_2d(
         pts2d,
         skeleton,
         colors=_colors_u8(skeleton, colors),
-        bone_color=bone_color,
+        edge_colors=_edge_colors_u8(skeleton, colors),
+        edge_color=edge_color,
         depth=None,
         conf=conf,
         x0=x0,
@@ -478,7 +485,7 @@ def draw_skeleton_3d(
     scale: Scale = 1.0,
     conf: Float[np.ndarray, "P"] | None = None,
     colors: Sequence[str] | None = None,
-    bone_color: str | None = None,
+    edge_color: str | None = None,
     point_radius: int = 3,
     line_thickness: int = 1,
     line_dash: Dash = None,
@@ -500,7 +507,7 @@ def draw_skeleton_3d(
     camera
         The camera the skeleton is reprojected through (distortion included).
     skeleton
-        Skeleton supplying the bones and per-point colors.
+        Skeleton supplying the edges and their colors.
     x0, y0
         Top-left pixel offset.
     scale
@@ -512,14 +519,14 @@ def draw_skeleton_3d(
     colors
         Optional per-point hex override of the skeleton's own colors.
     point_radius, line_thickness
-        Joint and bone sizes in pixels.
+        Joint and edge sizes in pixels.
     line_dash
-        Bone dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
+        Edge dash pattern in canvas pixels: ``None`` / ``0`` draws solid lines, one
         number gives equal on/off runs, and an ``(on, off)`` pair sets them
         separately. Dashing one of two overlaid skeletons is how a before/after pair
         reads as a comparison rather than as one thicker skeleton.
     draw_points
-        Whether to draw joints (bones are always drawn).
+        Whether to draw joints (edges are always drawn).
     outline_thickness
         Joint outline-ring thickness in pixels (``0`` to draw only the
         confidence-shaded fill).
@@ -540,7 +547,8 @@ def draw_skeleton_3d(
         pts2d,
         skeleton,
         colors=_colors_u8(skeleton, colors),
-        bone_color=bone_color,
+        edge_colors=_edge_colors_u8(skeleton, colors),
+        edge_color=edge_color,
         depth=depth,
         conf=conf,
         x0=x0,

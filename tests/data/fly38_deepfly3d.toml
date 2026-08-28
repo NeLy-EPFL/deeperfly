@@ -8,6 +8,11 @@
 # be restated on the current skeleton: that file stores (T, 38, 3) poses with no point
 # names beside them, so its columns mean whatever THIS order says they mean.
 #
+# Its leg-tip points were renamed `*_claw` -> `*_pretarsus` with the rest of the
+# package. Only the NAMES moved: the order is untouched, which is the only thing
+# ik_baseline_scipy.npz depends on. A real file authored under the old names is
+# migrated with `deeperfly project skeleton --rename '*_claw=*_pretarsus'`.
+#
 # Referenced from a config by path -- `[skeleton] include = "fly38_deepfly3d.toml"` --
 # because it is no longer resolvable by name.
 
@@ -28,7 +33,7 @@ points = [
 # Left/right mirror pairs. Written out rather than inferred from the name tokens so that
 # renaming a point cannot quietly re-pair the skeleton. Read by flip augmentation, the
 # symmetrize correction; the loader checks they are an automorphism of `edges`.
-symmetries = [
+point_symmetries = [
     ["lf_thorax_coxa",     "rf_thorax_coxa"],
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],
     ["lf_femur_tibia",     "rf_femur_tibia"],
@@ -64,7 +69,7 @@ edges = [
 
 # Left = blue / right = red, lightening front -> hind. One color per POINT; a key is a
 # point name or a `*` pattern.
-[skeleton.colors]
+[skeleton.point_colors]
 "lf_*" = "#0f7399"
 "lm_*" = "#1a8daf"
 "lh_*" = "#75becb"

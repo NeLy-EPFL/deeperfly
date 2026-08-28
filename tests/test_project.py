@@ -114,8 +114,8 @@ def test_the_fly38_preset_round_trips_to_the_packaged_skeleton(project):
     got, want = project.skeleton(), Skeleton.fly()
     assert got.point_names == want.point_names
     assert got.point_colors == want.point_colors
-    np.testing.assert_array_equal(got.bones, want.bones)
-    np.testing.assert_array_equal(got.symmetries, want.symmetries)
+    np.testing.assert_array_equal(got.edges, want.edges)
+    np.testing.assert_array_equal(got.point_symmetries, want.point_symmetries)
 
 
 def test_the_fly38_preset_keeps_its_comments(project):

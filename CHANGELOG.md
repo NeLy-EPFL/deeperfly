@@ -21,14 +21,21 @@ change their VALUES (a pathway and a preprocessor are now a camera), so a first 
 recomputes from `pose2d` down. That is correct, not a regression.
 
 - **The skeleton leaves the run config.** It is four things — `points`, `edges`,
-  `symmetries`, `colors` — in a version-controlled file, and a config normally says nothing
-  at all (`[skeleton] include = "<name or path>"` overrides). The limb/chain concept goes
-  with the declaration that created it: `Skeleton` loses `limb_names`, `limb_id`, `n_limbs`
-  and the limb-keyed `palette`, and carries one hex colour per point instead.
+  `point_symmetries`, colours — in a version-controlled file, and a config normally says
+  nothing at all (`[skeleton] include = "<name or path>"` overrides). The limb/chain concept
+  goes with the declaration that created it: `Skeleton` loses `limb_names`, `limb_id`,
+  `n_limbs` and the limb-keyed `palette`, and carries one hex colour per point instead.
   `results.h5` stops writing `limb_names`/`limb_id`/`palette` and writes `point_colors`; a
   file without it reads back on a colormap, which is acceptable because colours are
   cosmetic. The symmetries are now checked to be an **automorphism of the edges**, which is
   strictly stronger than the chain-consistency check it replaces.
+- **A skeleton's name is a label; `Skeleton.digest` is the identity.** `fly38` has meant two
+  different 38-point sets, so nothing compares skeletons by name — every check is on the
+  ordered `point_names`, as before. What is new is the printable form of that: 8 hex over
+  the points, the edges and the symmetry pairs, shown beside the name everywhere a skeleton
+  is named (`skeleton: fly38@42da66d9`) and quoted on both sides of a mismatch. Colours are
+  deliberately out of it — recolouring changes no stage's answer and moves no label. Stored
+  in `results.h5` as an attribute, and never compared there.
 - **The six leg-tip points are `*_pretarsus`, not `*_claw`.** The tarsus is five
   tarsomeres and the pretarsus is the segment distal to the fifth, carrying the claws, the
   pulvilli and the empodium; at this recording resolution a claw is not something anyone
@@ -43,9 +50,24 @@ recomputes from `pose2d` down. That is correct, not a regression.
   diff, and the second quarantines every label on those points. One name changed in place is
   still inferred; more than one has to be declared, because a whole block of points can be
   replaced in place and that is a different point set, not a rename.
+- **`bones` is `edges`, everywhere.** The file format, the docstrings and the retired-key
+  messages already said `edges`; the Python attribute, the `results.h5` dataset and the GUI
+  JSON were the holdouts. `Skeleton.bones` → `.edges`, `n_bones` → `n_edges`,
+  `bone_index_pairs()` → `edge_endpoints()`. `[skeleton] symmetries` → `point_symmetries`
+  and `[skeleton.colors]` → `[skeleton.point_colors]`, to say what they are tables *of*
+  the way `point_names` does; both old spellings are refused by name. The layer style key
+  `bone_color` → `edge_color`. Bundle adjustment's bone-length prior keeps its name: it
+  names a physical rigid segment, not the graph.
+- **`[skeleton.edge_colors]`, and a new default.** `Skeleton` carries one hex per edge as a
+  real field, declarable with an `"<a>--<b>"` endpoint pattern
+  (`"abdomen*--abdomen*" = "#404040"`; either orientation matches). An edge nothing names
+  takes the **average of its two endpoints' colours**, replacing "the colour of the point
+  the edge is written from" — which is why the file no longer has to explain that edges are
+  written source-first. On every packaged skeleton the two rules agree exactly (each edge
+  sits inside one colour group), so no existing drawing changes.
 - **One point selector for every point set.** An entry in `[bundle_adjustment] points`, the
-  `static`/`symmetrize` ops' `points`/`midline`, or `[skeleton.colors]` is a point name or
-  a `*` pattern. `points_to_use` and `symmetrize`'s `pairs` are refused by name.
+  `static`/`symmetrize` ops' `points`/`midline`, or `[skeleton.point_colors]` is a point
+  name or a `*` pattern. `points_to_use` and `symmetrize`'s `pairs` are refused by name.
 - **The rig table splits three ways**: `[default_camera]`, `[cameras.<name>]`,
   `[calibration].path`. `[cameras.<n>].mirror` is deleted (nothing read it since 0.2.0;
   it is derivable from `azimuth_deg`).
@@ -73,7 +95,7 @@ recomputes from `pose2d` down. That is correct, not a regression.
   (`[visualization.videos.pose3d]`), with `[visualization.default_video]` and
   `[visualization.default_layer]` for the shared values. Layers draw in order, which is how
   a before/after pair is written. `panels`, the per-op `kwargs` tables, video-level
-  `plot`/`stage` and `video_name` are gone; new layer style key `bone_color`.
+  `plot`/`stage` and `video_name` are gone; new layer style key `edge_color`.
 
 ### Removed
 
@@ -111,6 +133,15 @@ recomputes from `pose2d` down. That is correct, not a regression.
 
 ### Changed
 
+- **`results.h5` schema v4.** `skeleton/bones` → `skeleton/edges`,
+  `skeleton/symmetries` → `skeleton/point_symmetries`, plus a new `skeleton/edge_colors`
+  dataset and a `digest` attribute. Nothing needs converting — the renamed arrays are
+  identical — so the reader takes either spelling and `deeperfly repack` is **not**
+  required; v2 and v3 both still read. The version bump is for the other direction: an
+  older build reading a v4 file would find no `skeleton/bones` and fail with a bare
+  `KeyError`. A v3 file's edges come back coloured exactly as it was drawn, because the
+  rule it was written under and the endpoint average agree on every edge inside one colour
+  group.
 - **The default 2D detector now has a PADDED heatmap field.** `[pose2d].models` names
   `mvt_r28_pad48_gray_fly38.pth` (sha `ae482d3a…`, 86,082,205 bytes) in place of
   `mvt_alt8_r27_gray_fly38.pth`. Every earlier MVT was structurally unable to report a joint

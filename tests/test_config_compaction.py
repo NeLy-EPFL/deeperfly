@@ -32,8 +32,8 @@ def _skeleton_signature(s):
     return (
         s.name,
         tuple(s.point_names),
-        tuple(map(tuple, s.bones)),
-        s.symmetries.tolist(),
+        tuple(map(tuple, s.edges)),
+        s.point_symmetries.tolist(),
         tuple(s.point_colors),
     )
 
@@ -67,7 +67,7 @@ def test_a_retired_skeleton_name_still_resolves():
     aliased = Config.from_dict({"skeleton": {"include": "fly38b"}}).skeleton()
     current = Config.from_dict({"skeleton": {"include": "fly38"}}).skeleton()
     assert list(aliased.point_names) == list(current.point_names)
-    assert aliased.bones.tolist() == current.bones.tolist()
+    assert aliased.edges.tolist() == current.edges.tolist()
 
 
 @pytest.mark.parametrize("preset", ["fly38"])
@@ -82,7 +82,7 @@ def test_include_matches_the_same_table_written_out(preset):
 
 def test_included_keys_are_overridden_wholesale():
     cfg = Config.from_dict(
-        {"skeleton": {"include": "fly38", "colors": {"neck": "#ffffff"}}}
+        {"skeleton": {"include": "fly38", "point_colors": {"neck": "#ffffff"}}}
     )
     colors = dict(zip(cfg.skeleton().point_names, cfg.skeleton().point_colors))
     assert colors["neck"] == "#ffffff"
@@ -132,7 +132,7 @@ def test_a_file_without_a_skeleton_table_is_refused(tmp_path):
     [
         ("point_names", "points"),
         ("limb_points", "edges"),
-        ("limb_palette", r"\[skeleton.colors\]"),
+        ("limb_palette", r"\[skeleton.point_colors\]"),
         ("file", "include"),
     ],
 )

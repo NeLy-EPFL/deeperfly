@@ -326,7 +326,7 @@ def bone_length_targets(
     Returns
     -------
     i, j : np.ndarray
-        Bone endpoint index arrays (the columns of :attr:`Skeleton.bones`).
+        Bone endpoint index arrays (the columns of :attr:`Skeleton.edges`).
     targets : np.ndarray
         Per-bone median target length of shape ``(B,)`` (NaN for a bone never
         triangulated).
@@ -336,7 +336,7 @@ def bone_length_targets(
     from .triangulation import triangulate
 
     pts3d0 = triangulate(cameras, pts2d)  # (F, P, 3)
-    i, j = skeleton.bone_index_pairs()
+    i, j = skeleton.edge_endpoints()
     lengths = np.linalg.norm(pts3d0[:, i] - pts3d0[:, j], axis=-1)  # (F, B)
     with warnings.catch_warnings():  # a never-triangulated bone -> NaN target (ok)
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -350,7 +350,7 @@ def bone_length_targets(
 def skeleton_chains(skeleton: Skeleton) -> list[list[int]]:
     """Decompose the 2D bones into ordered simple chains (paths).
 
-    Each connected component of :attr:`Skeleton.bones` is a path (max degree 2),
+    Each connected component of :attr:`Skeleton.edges` is a path (max degree 2),
     returned as an ordered joint list walked from an endpoint; isolated points come
     back as singletons. :func:`_chain_dp` runs exact Viterbi over this ordering.
 
@@ -365,7 +365,7 @@ def skeleton_chains(skeleton: Skeleton) -> list[list[int]]:
         Ordered joint-index chains (singletons for isolated points).
     """
     adj: dict[int, list[int]] = defaultdict(list)
-    for a, b in skeleton.bones:
+    for a, b in skeleton.edges:
         adj[int(a)].append(int(b))
         adj[int(b)].append(int(a))
 
