@@ -84,15 +84,15 @@ tensor — with the MVT it does, by construction.
 
 ## Where a detector plugs in
 
-A detection plan is `sources → preprocessors → models → pathways`. Only three
-stations belong to the architecture — input preparation, the forward, and the decode.
-Everything either side is shared code in `pose2d/pathways.py` and
-`pose2d/inference.py`.
+A detection plan is one pass per camera — `footage → window → detector` — synthesized
+from the camera table rather than declared. Only three stations belong to the
+architecture: input preparation, the forward, and the decode. Everything either side is
+shared code in `pose2d/pathways.py` and `pose2d/inference.py`.
 
 ```mermaid
 flowchart LR
   win(["footage window<br>(T, H_raw, W_raw, 1) uint8"])
-  tf["pathway transform<br>crop · mirror"]
+  tf["detection window<br>(crop)"]
 
   subgraph OWN["owned by the model class"]
     direction LR
@@ -388,7 +388,7 @@ and the `(B·V)` axis is batch-major so the reshape groups a frame's own views.
 
 With `view_embed = off` there is no per-view table — the artifact is refused if it says
 otherwise — so the function is permutation-equivariant over views by construction and `V` is
-free: a seven-camera rig declares seven pathways and nothing else changes. No camera name is
+free: a seven-camera rig declares seven cameras and nothing else changes. No camera name is
 read anywhere in the module. Verified on the shipped artifact: permuting eight views and
 undoing the permutation moves a point by under **0.005 model pixels**.
 
@@ -592,17 +592,17 @@ point of a dense plan: **channel *i* is point *i* of the pathway's view**, so th
 nothing to map. `n_out_channels` defaults to the skeleton's point count, and `input_size`,
 the normalization and (for the MVT) the precision come from the checkpoint.
 
-The identity default is claimed by *naming the pathway after its view*, and it is gated on
-the channel count: a model emitting something other than the skeleton's point count has no
-identity to fall back on and is told to write a table.
+The identity is not a default any more but the **only** mapping: a detector emitting
+something other than the skeleton's point count is refused at load rather than given a
+table to explain itself with.
 
-`[pose2d.output_points]` therefore still exists and is still supported — it is how one view
-can be fed by several pathways, and how a plan whose channels are not a whole skeleton says
-what they are. The shipped configs simply declare none. It was not always optional: the
-retired 19-channel detector predicted one body side, so each side camera ran twice and the
-config carried a mapping row per channel per pass — 122 of them for the 7-view rig — which is
-why a command existed to generate them. A contralateral point now arrives as a prediction to
-correct rather than a gap to author.
+That is what removed `[pose2d.output_points]`, which used to say which channel of which
+pass became which point of which view. It was not always optional: the retired 19-channel
+detector predicted one body side, so each side camera ran twice and the config carried a
+mapping row per channel per pass — 122 of them for the 7-view rig — which is why a command
+existed to generate them. A contralateral point now arrives as a prediction to correct
+rather than a gap to author, so the table has nothing left to say and a side-agnostic
+checkpoint is not expressible under this schema.
 
 ## What each class refuses at load { #refusals }
 

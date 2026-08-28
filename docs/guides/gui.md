@@ -262,8 +262,7 @@ the frame the edit was on.
 
 A retractable side panel holds a strip of tabs showing one pane at a time, of which
 **Labeled** and **Suggested** are the frame lists below. The rest are **Instance** (this
-frame's annotation skeleton), **Landmarks** ([calibration landmarks](#calibration-landmarks)),
-**Jobs** ([pipeline commands](#running-the-pipeline-from-the-editor)), **Bundle adjust**
+frame's annotation skeleton), **Jobs** ([pipeline commands](#running-the-pipeline-from-the-editor)), **Bundle adjust**
 (solve the rig from the ground truth you placed, save it as a new calibration, and choose
 which calibration the editor derives from), **Settings** (generated from the pipeline's own
 parameter dataclasses) and **Recording** (the project's others) — the last of which appear
@@ -315,11 +314,11 @@ When the result carries a fitted inverse-kinematics model — which
 [`do_inverse_kinematics`](../reference/configuration.md#inverse_kinematics) now produces by
 default — three extra overlays are available:
 
-- **NMF skeleton** (`m`) — the fitted model joints, reprojected onto each view.
-- **NMF mesh** (`Shift+M`) — the posed NeuroMechFly mesh, smooth-shaded on the client
+- **Model skeleton** (`m`) — the fitted model joints, reprojected onto each view.
+- **Model mesh** (`Shift+M`) — the posed model mesh, smooth-shaded on the client
   GPU at the view's resolution.
 - **3D view** (`c`) — a floating panel showing the cameras, the derived pose, and the
-  NMF skeleton/mesh together in 3D. Drag to orbit, `Shift`/right-drag to pan, scroll to
+  model skeleton/mesh together in 3D. Drag to orbit, `Shift`/right-drag to pan, scroll to
   zoom; it overlays the editor without blocking it, so the frame slider still scrubs.
 
 Both overlays **re-fit to your labels**: as the derived 3D moves under your edits the
@@ -438,45 +437,27 @@ Press `?` in the editor for the full, context-aware list. The essentials:
 | `Ctrl`/`Cmd`+`Z` / `Ctrl`/`Cmd`+`Y` | Undo / redo |
 | `s` / `n` / `p` | Toggle skeleton / labels / 3D estimate |
 | `w` / `u` | Toggle the two checks: reprojection distance / under-labeled joints |
-| `m` / `Shift+M` / `c` | Toggle NMF skeleton / NMF mesh / 3D view |
+| `m` / `Shift+M` / `c` | Toggle the model skeleton / model mesh / 3D view |
 | `j` | Show / hide the labeled-frames list |
 | `Ctrl`/`Cmd`+`S` | Save labels — every recording holding unsaved work |
 | `?` / `Esc` | Show shortcuts / close an overlay |
 
-## Calibration landmarks
+## The animal is the calibration target { #calibration-target }
 
-A from-scratch project has no camera rig, and the rig is solved from labels — but *which*
-labels decides whether it converges:
+A from-scratch project has no camera rig, and the rig is solved from the labels you place
+— the tracked keypoints, which is what every rig here was in fact solved from. There is
+**no separate landmark namespace**: no `landmarks.toml`, no Landmarks tab, and no amber
+diamonds. Nothing ever shipped one.
 
-> A skeleton keypoint at frame *t* is a **different 3D point** from the same keypoint at
-> *t+1*, because the animal moved. So *N* labeled frames of *P* keypoints add `3·N·P`
-> unknowns, all inside a 3 mm blob near the middle of the field. A **static** landmark — a
-> scratch on the coverslip, the tip of the tether, a dust speck on the glass — is **one** 3D
-> point observed in `V·N` images, spread through the scene *volume*. That is what conditions
-> the solve.
+The cost of that is worth knowing while you label. A skeleton keypoint at frame *t* is a
+**different 3D point** from the same keypoint at *t+1*, because the animal moved, so *N*
+labeled frames of *P* keypoints add `3·N·P` unknowns — all inside a ~3 mm blob near the
+middle of the field, where a static feature would have been one 3D point observed
+throughout the scene volume. What follows is practical: **spread the labeled frames**, and
+watch the readiness meter's weakest-view-pair row rather than the raw frame count.
 
-Declare them in the project's `landmarks.toml`, then place them in the **Landmarks** tab:
-
-1. Click a landmark row to **arm** it (the row highlights and the cursor becomes a crosshair
-   over every view).
-2. Click the same feature in as many views as can see it. Each click places one observation.
-3. Click the row again — or leave the tab — to disarm.
-
-Landmarks draw as **amber diamonds**, deliberately a different *shape* from keypoints rather
-than just a different color: a landmark is a different kind of thing, and shape survives
-color blindness and a busy frame.
-
-The gesture is a click, not a drag, for a structural reason: a landmark has no detection to
-grab and no reprojection to nudge, so until one exists there is nothing on the canvas to
-start a drag from.
-
-A **static** landmark keeps one 3D position for the whole recording, so re-placing it in more
-frames sharpens it — but always on *the same feature*. `deeperfly calibrate` reports each
-static landmark's pixel **scatter**, and a large value means it was not actually static, or
-was placed on a different speck in a different frame. Both corrupt the solve.
-
-Landmarks live in their own namespace in `labels.h5` and never touch the skeleton: they cannot
-reach the detector, the IK body plan, the bone-length priors or the training export.
+`deeperfly calibrate --dry-run` (and the **Bundle adjust** tab) report that meter, phrased
+as the labeling that would fix each shortfall.
 
 ## Running the pipeline from the editor
 

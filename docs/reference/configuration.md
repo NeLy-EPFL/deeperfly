@@ -1,33 +1,5 @@
 # Configuration reference
 
-!!! danger "This page still describes the v1 schema"
-
-    The 0.3.0 config schema landed in the code and in the packaged
-    `default_config.toml`, but **this page has not been rewritten yet** — it is organized
-    around the v1 tables, and most key names on it are refused by name if you write them.
-    Until it is rewritten, the authority is the packaged config itself:
-
-    ```console
-    $ deeperfly config show                # every section, with its defaults
-    $ python -c "import deeperfly.config as c; print(c.DEFAULT_CONFIG_PATH.read_text())"
-    ```
-
-    What changed, in one list: `[[sources]]` → `[cameras.<name>].video` (a glob, or a
-    regex wrapped in `/.../`, or a list of them CONCATENATED); `[cameras.defaults]` →
-    `[default_camera]`;
-    `[cameras].calibration` → `[calibration].path`; `[cameras.<n>].mirror` gone;
-    `[[pose2d.models]]`/`[[pose2d.pathways]]`/`[[pose2d.preprocessors]]`/`[pose2d.output_points]`
-    → `[pose2d] class`/`weights` + `[pose2d.crops]` + `auto_crops`; `[pose2d.autocrop]` →
-    `[pose2d.crop_search]`; `[pipeline] do_<stage>` → `<stage>`; `[skeleton]` out of the
-    config entirely (a file, resolved for you; `include` overrides), with `point_names` →
-    `points`, `limb_points` → `edges`, `limb_palette` → `[skeleton.colors]`;
-    `[bundle_adjustment] points_to_use` → `points` (a `*` selector); `symmetrize`'s
-    `pairs` → `points`; `[inverse_kinematics.head]`/`.abdomen` →
-    `[inverse_kinematics.markers.<chain>]`; `[[visualization.videos]]` +
-    `panels`/`kwargs`/`plot` → `[visualization.videos.<name>]` with `grid` + `layers`, plus
-    `[visualization.default_video]` / `.default_layer`. Calibration landmarks and
-    calibration-stage scale pinning are gone.
-
 Every key of the `config.toml`, by section. For a task-oriented walkthrough of
 how to customize a config, start with [Writing configs](../guides/configuration.md);
 this page is the exhaustive listing.
@@ -35,9 +7,10 @@ this page is the exhaustive listing.
 A config is one TOML file. Each stage reads its parameters through a typed
 accessor whose **defaults are the single source of truth** (the frozen `*Params`
 dataclasses in `src/deeperfly/config.py`). An unknown key in a stage table is a
-hard error that names the allowed keys. Performance-only knobs (`batch_size`,
-`decode_buffer`, `[io.image]`) never invalidate a stage's cache; everything else
-that affects a result does.
+hard error that names the allowed keys, and a key this release *removed* is refused by
+name with the table that replaced it — a v1 config does not load, and there is no
+migrator. Performance-only knobs (`batch_size`, `decode_buffer`, `[io.image]`) never
+invalidate a stage's cache; everything else that affects a result does.
 
 **A stage table you leave out runs on its defaults**, and the packaged
 `default_config.toml` deliberately omits the ones it does not change — it carries the
@@ -56,45 +29,71 @@ file full of defaults cannot answer.
 The top-level layout:
 
 ```toml
-sources = [...]        # footage globs (shared input); or [[sources]] blocks
+[calibration]          # a solved rig to read instead of building one
+[default_camera]       # rig geometry: what every camera shares
+[cameras.<name>]       # rig geometry + which footage is this camera's
 [io.image]             # image-sequence decode
-[skeleton]             # tracked points and limbs (or a preset name)
-[cameras.defaults]     # rig geometry: shared defaults
-[cameras.<name>]       # rig geometry: per-view overrides
+[skeleton]             # normally ABSENT: the skeleton is a file, resolved for you
 [pipeline]             # which stages run
-[pose2d]               # 2D detection: knobs + detection plan sub-tables
+[pose2d]               # 2D detection: the detector, its crops, its knobs
 [bundle_adjustment]    # camera refinement
 [pictorial_structures] # peak recovery -- the one stage off by default
 [triangulation]        # 2D -> 3D
 [eks]                  # ensemble Kalman smoother over the 3D pose
 [postprocess]          # corrections that come from knowing the animal
-[inverse_kinematics]   # 3D -> NeuroMechFly joint angles (needs the `ik` extra)
+[inverse_kinematics]   # 3D -> a model's joint angles (needs the `ik` extra)
 [visualization]        # output videos
 ```
 
-Every array-of-tables section (`[[pose2d.models]]`, `[[pose2d.pathways]]`,
-`[[pose2d.preprocessors]]`, `[cameras.<name>]`) can equivalently be written as an array
-of inline tables — `models = [{ name = "m", class = "mvt", weights = "x.pth" }]` — which
-is what the packaged config does. TOML parses the two identically.
+There is no footage section. **A camera declares its own footage**, because a source
+that no camera claimed was never anything but a camera without geometry.
 
-!!! warning "`[[sources]]` is the exception"
-    Keep the footage list as `[[sources]]` blocks. `deeperfly project` lifts whole TOML
-    *tables* out of a config by their headers, and a bare top-level `sources = [...]`
-    key is not a header — a project's `rig.toml` would silently come out with no footage.
+## What this release removed { #removed }
 
-## `[[sources]]` — footage { #sources }
+A v1 config fails to load with an error naming the table that replaced the offending
+one. The whole list, so a search for an old key lands here:
 
-An array of tables; each names a footage glob matched inside the recording
-directory. A source can feed several pathways and a visualization `imshow` panel.
+| v1 | v2 |
+| --- | --- |
+| `[[sources]]` / `sources = [...]` | `[cameras.<name>].video` — a glob, a `/regex/`, or a **list** of them concatenated |
+| `[cameras.defaults]` | `[default_camera]` |
+| `[cameras].calibration` | `[calibration].path` |
+| `[cameras.<n>].mirror` | gone — nothing read it, and it is derivable from `azimuth_deg` |
+| `[[pose2d.models]]` / `model` | `[pose2d] class` + `weights` — one detector per run |
+| `[[pose2d.pathways]]` | gone — one pathway per camera, channel `i` -> point `i` |
+| `[[pose2d.preprocessors]]` | `[pose2d.crops]`, keyed by camera; the op grammar has no consumer left |
+| `[pose2d.output_points]` | gone — channel `i` is point `i` |
+| `[pose2d.autocrop]` | `[pose2d.crop_search]`; which cameras are searched is `[pose2d] auto_crops` |
+| `[pipeline] do_<stage>` | `[pipeline] <stage>` |
+| `[skeleton] point_names` | `points`, in a skeleton **file** |
+| `[skeleton] limb_points` | `edges = [[a, b], ...]` — the whole topology, no grouping concept |
+| `[skeleton] limb_palette` | `[skeleton.point_colors]`, per point (`"lf_*" = "#0f7399"`) |
+| `[skeleton] file` | `include` |
+| `[bundle_adjustment] points_to_use` | `points` — a point name or a `*` pattern |
+| `symmetrize`'s `pairs` | `points` (either half of each pair; the partner comes from the skeleton) |
+| `[inverse_kinematics] template` | `model` — a model **pack**, not one of its three assets |
+| `[inverse_kinematics] fit_head` / `fit_abdomen` | `chains = ["head", "abdomen"]` |
+| `[inverse_kinematics.head]` / `.abdomen` | `[inverse_kinematics.markers.<chain>]` |
+| `[[visualization.videos]]` + `panels` / `kwargs` / `plot` | `[visualization.videos.<name>]` with `grid` + `layers` |
+| `[visualization]` bare keys | `[visualization.default_video]` / `[visualization.default_layer]` |
+| calibration landmarks, and calibration-stage scale pinning | gone — the animal is the calibration target, and scale first becomes physical at the IK |
+
+Fingerprints keep their shape but change their **values** (a pathway and a preprocessor
+are now a camera), so a first v2 run recomputes from `pose2d` down. That is correct, not
+a regression. Output-dir `config.toml` snapshots written by v1 fail to load the same way;
+the fix is to re-point `-c` at a v2 config.
+
+## `[calibration]` — a solved rig { #calibration }
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `name` | str | *required* | Source identifier (referenced by pathways and views). |
-| `filename` | str | the `name` | Glob inside the recording dir: a named file (`camera_0.mp4`), a bare prefix (`camera_1` → `camera_1*`, a video or image sequence), or a wildcard. |
+| `path` | str | — | A `calibration.toml` to read the rig from, relative to this config. Omit to build the rig from `[default_camera]` + `[cameras.*]` and let the `bundle_adjustment` stage refine it. |
 
-A source's footage is one video file or a naturally-sorted image sequence. A
-directory is a valid recording only when every source matches footage with the
-same file/frame count.
+There are no calibration landmarks and no scale pinning here. The animal is the
+calibration target — which is what every rig here was already solved from — and
+everything through triangulation is in **arbitrary units by design**. Scale first
+becomes physical at inverse kinematics, where `body_scale` fits the point cloud to the
+model's own defined dimensions.
 
 ## `[io.image]` — image decode { #io }
 
@@ -106,67 +105,120 @@ Video files use PyAV; image sequences use OpenCV. The only knob:
 
 ## `[skeleton]` — tracked points { #skeleton }
 
-The tracked points and their structure. Omit the section entirely to use `fly38`, the
-one packaged skeleton: 38 points — six 5-point legs, two antennae, `neck`, and a
-5-point dorsal-midline abdomen chain (`abdomen0`…`abdomen4`).
+**A config normally says nothing at all here.** A skeleton is four things — `points`,
+`edges`, `point_symmetries`, colours — in a version-controlled file of its own, and the
+run resolves it from the detector's recorded skeleton name. Write this table only to
+override that.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `name` | str | `"skeleton"` | Skeleton identifier, **or a packaged preset to load** (below). |
-| `file` | str | *unset* | Load a skeleton from this path (relative to *this* config), instead of a preset. |
-| `point_names` | list[str] | *required* | Ordered tracked-point names; the length is `P`. |
-| `symmetries` | list[[str, str]] | `[]` | Left/right mirror pairs (see below). Unordered within a pair; each point in at most one pair. |
-| `limb_points` | table | `{}` | `[skeleton.limb_points]`: each limb name → its points in kinematic-chain order. |
-| `limb_palette` | table | `{}` | `[skeleton.limb_palette]`: each limb name → a hex plotting color. Limbs without an entry fall back to a default colormap. |
+| `include` | str | *the detector's* | A packaged skeleton name (`"fly38"`) or a path to a skeleton file, relative to *this* config. |
+| `name` | str | the file's | A human **label**, recorded in `results.h5`. Not an identity — see [naming a skeleton](#skeleton-identity). |
+| `points` | list[str] | the file's | Ordered tracked-point names; channel `i` of the detector is `points[i]`. |
+| `edges` | list[[str, str]] | the file's | The edge graph, as point-name pairs. The whole topology — there is no grouping concept. |
+| `point_symmetries` | list[[str, str]] | the file's | Left/right mirror pairs ([below](#point_symmetries)). |
+| `point_colors` | table | the file's | `[skeleton.point_colors]`: a point name or a `*` pattern → a hex plotting colour. |
+| `edge_colors` | table | the file's | `[skeleton.edge_colors]`: an `"<a>--<b>"` endpoint pattern → a hex colour ([below](#edge-colours)). Optional; an edge nothing names averages its endpoints. |
+
+Keys written here **replace the included skeleton's, per key** — a `point_colors` table
+replaces that skeleton's rather than merging into it.
 
 ```toml
 [skeleton]
-name = "fly38"
-point_names = ["lf_thorax_coxa", "lf_coxa_trochanter", "..."]
-
-symmetries = [
-    ["lf_pretarsus", "rf_pretarsus"],
-    ["l_antenna", "r_antenna"],
-]
-
-[skeleton.limb_points]
-lf_leg = ["lf_thorax_coxa", "lf_coxa_trochanter", "lf_femur_tibia", "lf_tibia_tarsus", "lf_pretarsus"]
-
-[skeleton.limb_palette]
-lf_leg = "#0f7399"
+include = "skeleton.toml"   # a project's own, resolved next to this config
 ```
 
-Which view sees which point is **not** set here — it is the union of the
-[`[pose2d.output_points]`](#output_points) tables.
+The packaged skeletons live in `src/deeperfly/data/skeletons/`, and as of 0.2 there is
+exactly one:
 
-#### Presets — naming a skeleton instead of spelling one { #skeleton-presets }
-
-A skeleton is ~80 lines that almost never differ between recordings of the same animal,
-and when they do differ they differ completely. So a table that declares **no
-`point_names`** is read as a *reference* and expanded at load:
-
-```toml
-[skeleton]
-name = "fly38"           # the packaged skeleton
-```
-
-```toml
-[skeleton]
-file = "skeleton.toml"   # a project's own, resolved next to this config
-```
-
-Packaged presets live in `src/deeperfly/data/skeletons/`, and as of 0.2 there is exactly
-one:
-
-| Preset | Points |
+| Name | Points |
 | --- | --- |
-| `fly38` | Six 5-point legs (`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `pretarsus`), `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain `abdomen0`…`abdomen4`. 16 [symmetry pairs](#symmetries). |
+| `fly38` | Six 5-point legs (`thorax_coxa` → `coxa_trochanter` → `femur_tibia` → `tibia_tarsus` → `pretarsus`), `l_antenna` / `r_antenna`, `neck`, and a 5-point **dorsal-midline** abdomen chain `abdomen0`…`abdomen4`. 16 [symmetry pairs](#point_symmetries). |
+
+### There are no limbs, and no groups { #no-limbs }
+
+`limb_points` and `limb_palette` are gone with the concept that created them. Where a
+group name used to be the way to say "these five points", the answer is a **point
+selector**: an entry in a points-naming table is a point name or a `*` pattern
+(`fnmatch`, case-sensitive), an exact name beats a pattern, and resolution refuses two
+patterns matching one point, refuses a pattern matching nothing (always a typo), and
+logs the set it resolved — because over-matching is the one failure a selector cannot
+detect for itself.
+
+```toml
+[skeleton.point_colors]
+"lf_*"    = "#0f7399"   # the five points of the left front leg, and the edges between them
+l_antenna = "#0a4f6b"   # an exact name beats the pattern
+"abdomen*" = "#61e47b"
+```
+
+The same grammar drives [`[bundle_adjustment] points`](#bundle_adjustment) and the
+[`static`](#op-static) / [`symmetrize`](#op-symmetrize) ops. Chains, where anything
+needs them, are derived from the edge graph (`deeperfly.pictorial.skeleton_chains`).
+
+`results.h5` stops writing `limb_names` / `limb_id` / `palette` and writes
+`point_colors`; a file without it reads back on a colormap, which is acceptable because
+colours are cosmetic. (The stored *format* still says `limb_id` in one place —
+`_write_skeleton` / `_read_skeleton` — which is a documented mismatch between the file
+and the code, and where such a difference belongs.)
+
+### Naming a skeleton { #skeleton-identity }
+
+**`name` is a label, not an identity.** `fly38` meant the DeepFly3D point set before 1.0
+and means the midline-abdomen one now; `fly38b` was renamed to `fly38` without a
+coordinate moving. No alias table can disentangle a name that has meant two point sets,
+so nothing in deeperfly compares skeletons by name — every check is on the ordered
+`point_names`.
+
+What makes that legible is the **digest**: `sha256` over the points, the edges and the
+symmetry pairs, truncated to 8 hex characters, printed beside the name everywhere a
+skeleton is named.
+
+```
+$ deeperfly inspect out/results.h5
+skeleton: fly38@42da66d9  (38 points)
+```
+
+It moves when any of those three do and stays put when only a colour does — colours are
+cosmetic, change no stage's answer and move no label, so a digest that tracked the palette
+would report a different skeleton where there is none. Two skeletons with the same digest
+mean the same thing by every index; two with the same *name* need not.
+
+Practically, that gives one rule: **never edit a published skeleton in place.** A model
+trained under `fly38` resolves to whatever that file says today, and the points-equality
+check against the checkpoint is all that stands between a silent edit and silently
+mislabelled joints. A changed point set gets a new file with a new name.
+
+### `edge_colors` — colouring the edges { #edge-colours }
+
+An edge nothing names takes the **average of its two endpoints' colours**, so
+`[skeleton.point_colors]` alone colours the whole drawing. On a skeleton whose colours
+group by limb — every packaged one — both endpoints of every edge carry the same hex, so
+each edge comes out its group's colour exactly and only an edge crossing two groups
+blends.
+
+Name one explicitly with an `"<a>--<b>"` key, each side a point name or a `*` pattern:
+
+```toml
+[skeleton.edge_colors]
+"abdomen*--abdomen*" = "#404040"   # the whole abdomen chain in grey
+"neck--abdomen0"     = "#888888"   # one edge, by exact names
+```
+
+An edge matches **in either orientation**, so `"abdomen1--abdomen0"` is not a silent miss
+on an edge stored the other way round. The refusals mirror `point_colors`: a key that is
+not one `--`-separated pair, a key matching no edge (always a typo), and two keys claiming
+one edge are each an error.
+
+There is no keying by edge *index*: reordering `edges` would then silently recolour the
+drawing. And a layer that wants one flat colour for every edge says so with
+[`edge_color`](#visualization), which overrides this.
 
 !!! note "`fly38b` still resolves — it is the same 38 points under the former name"
 
     Until 0.2 this point set was called `fly38b`, and `fly38` named the historical
     DeepFly3D set (two 3-marker abdomen **side** chains `l_abdomen0..2` / `r_abdomen0..2`,
-    no `neck`). The rename kept one alias, `config.SKELETON_ALIASES`: `name = "fly38b"`
+    no `neck`). The rename kept one alias, `config.SKELETON_ALIASES`: `include = "fly38b"`
     resolves to `fly38` and logs that it did, so old configs and old run snapshots keep
     loading with their point order unchanged.
 
@@ -179,47 +231,27 @@ one:
 
     The retired DeepFly3D set is no longer packaged. It survives as test data,
     `tests/data/fly38_deepfly3d.toml`, which is a complete skeleton file: point
-    `file = ".../fly38_deepfly3d.toml"` at it to keep running a config written against it.
+    `include = ".../fly38_deepfly3d.toml"` at it to keep running a config written against
+    it.
 
-!!! warning "A skeleton the packaged articulation cannot fully reach"
+!!! warning "A skeleton the packaged model cannot fully reach"
 
-    The packaged NeuroMechFly articulation targets **`fly38`**: a body plan built against
-    it covers **38 of 38 points**, both the head and the abdomen chain fit, and both are
-    sized from measurement. A skeleton that labels neither the head's `neck` nor the
-    midline `abdomen0`…`abdomen4` — the retired DeepFly3D set is exactly that case, covering
-    **32 of 38**, its six abdomen side markers having nothing on the model to attach to —
-    gets **no abdomen fit at all** (all ten of that chain's DOFs come back NaN in every
-    frame, since a chain with no fittable marker is left unset rather than reported at the
-    neutral pose) and no measured head or abdomen size, so both chains are drawn at the
-    model's own. Nothing fails, and both are warned about rather than silent.
-    Retarget either chain with [`[inverse_kinematics.markers.head]` / `[inverse_kinematics.markers.abdomen]`](#ik-markers)
-    if your labeling scheme differs — where a point sits on the model is a
-    labeling-scheme decision, and the packaged placements are tabulated in
-    [Keypoint locations](../explanation/keypoints.md).
-
-A preset file is a complete `[skeleton]` table, in exactly the format a project's own
-`skeleton.toml` is written in — which is what makes the two interchangeable, and what lets
-a project be handed a skeleton by copying one file.
-
-Keys written in the config **override the referenced ones wholesale, per key** — a
-`limb_palette` here replaces the referenced palette rather than merging into it. A table
-that *does* spell out `point_names` is already self-contained and is left exactly as it
-is, so every config written before presets existed keeps its meaning and `name` goes on
-being a free-text label for those.
-
-The reference is what the run snapshot records, and the *resolved* point names reach the
-`pose2d` fingerprint — so a preset that changes underneath a cached run invalidates it
-rather than silently passing.
+    Where a tracked point sits on the fitted model is neither the skeleton's fact nor the
+    model's, but the **pair's**, and it lives in a *binding*
+    ([`[inverse_kinematics] binding`](#inverse_kinematics)). The packaged
+    `fly38@neuromechfly` binding covers **38 of 38** points, so both the head and the
+    abdomen chain fit and both are sized from measurement. An unbound pair is a load error
+    naming both halves, rather than a fit against all-NaN observations.
 
 !!! warning "The skeleton must be the one the detector was trained on"
     A dense detector's channels **are** a skeleton, and a count check cannot tell two
     skeletons apart: `fly38` and the retired DeepFly3D set are both 38 points sharing 32
     of them in a different order, so routing one through the other's config attaches six
     points to the wrong joints and shifts the rest — a wrong limb, not a crash. The
-    checkpoint's own recorded channel names are compared against `[skeleton]` on **every
-    run** (`deeperfly.pose2d.stream.load_models`), which is the point: a generator only
-    ever sees the moment it writes the file, and cannot see a `weights` path later
-    repointed or a `[skeleton]` swapped underneath.
+    checkpoint's own recorded channel names are compared against the resolved skeleton on
+    **every run** (`deeperfly.pose2d.stream.load_models`), which is the point: a generator
+    only ever sees the moment it writes the file, and cannot see a `weights` path later
+    repointed or a skeleton swapped underneath.
 
     A checkpoint that records **no** channel names is refused outright rather than trusted.
     Every detector class this build ships records them, so a nameless artifact is either
@@ -227,7 +259,7 @@ rather than silently passing.
     check standing between a mis-stamped config and a fly with its limbs on the wrong
     joints.
 
-### `symmetries` — left/right pairs { #symmetries }
+### `point_symmetries` — left/right pairs { #point_symmetries }
 
 The same relation SLEAP models as a `type 2` skeleton edge: two points that mirror
 each other across the animal's sagittal plane. Which side comes first carries no
@@ -238,10 +270,15 @@ Two things read the pairs, and both fail *silently* without them:
 
 | Consumer | What it does with them | What its absence costs |
 | --- | --- | --- |
-| [`[pose2d.output_points]`](#output_points) validation | Checks that a pathway whose preprocessor **mirrors** the frame lands on the *mirrored* points | A one-word typo in one of 122 rows swaps a body side. The detector still fires and triangulation still converges — the reconstruction is just a fly with its legs crossed. |
-| Flip augmentation (out of tree; see [`mirror`](#cameras)) | Permutes the point channels by `Skeleton.flip_perm()` and relabels the sample with the mirrored camera | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
+| [`symmetrize`](#op-symmetrize) | Looks up each named point's partner, so the op states one half of a pair instead of restating both | The op has nothing to mirror across and refuses. |
+| Flip augmentation (out of tree) | Permutes the point channels by `Skeleton.flip_perm()` and relabels the sample with the mirrored camera | Every left channel trains on a right joint. No error, no warning; it looks like a model that will not converge. |
 
-Omitting the key switches both off — correct for an asymmetric subject, wrong
+The pairs are also checked to be an **automorphism of the edges** — mirroring every
+point must map the edge graph onto itself — which is strictly stronger than the
+chain-consistency check it replaces, and catches a pair that swaps a body side without
+naming a point twice.
+
+Omitting the key switches the consumers off — correct for an asymmetric subject, wrong
 for a fly. `deeperfly.skeleton.infer_symmetries_by_name` proposes pairs from name
 tokens (`l*`/`r*`, `*_L`/`*_R`, `left_*`/`right_*`); the packaged skeleton writes out the
 pairs that inference proposes (16 for `fly38`, against the retired DeepFly3D set's 19 —
@@ -251,13 +288,18 @@ skeleton.
 
 Editing the pairs is a **non-destructive** skeleton migration: no label moves and no
 sidecar is rewritten, but the change is still reported, because it changes what the
-three consumers above do.
+consumers above do.
 
-## `[cameras.*]` — rig geometry { #cameras }
+## `[default_camera]` and `[cameras.<name>]` — the rig { #cameras }
 
-Each `[cameras.<name>]` is a geometric view: pure intrinsics + extrinsics, no
-footage. `[cameras.defaults]` is merged into every view; per-view tables override
-it. A view's intrinsics describe the raw frame of the source feeding it.
+A `[cameras.<name>]` is one camera: its geometry **and its footage**. `[default_camera]`
+is merged into every one of them; per-camera tables override it. A camera's intrinsics
+describe the raw frame of its own footage.
+
+The rig table split three ways, and each half now says what it is: `[calibration]` is a
+solved rig to read instead of building one, `[default_camera]` is what every camera
+shares, and `[cameras.<name>]` is one camera. A camera named `defaults` used to be
+indistinguishable from the shared table; it is now just a camera.
 
 The packaged rig declares **eight** views as of 0.2: `rh`, `rm`, `rf`, `f`, `lf`, `lm`,
 `lh` — each setting just its `azimuth_deg` over the shared defaults — and `h`, the axial
@@ -304,16 +346,54 @@ someone built, and half-specifying it with raw extrinsics is rejected rather tha
 guessed at. To use raw, solved extrinsics, point at a calibration file instead
 (below). The internal `CameraGroup` still uses `rvec` / `tvec`.
 
-**Non-geometry keys.** A `[cameras.<name>]` table also carries per-view keys owned
+### `video` — which footage is this camera's { #video }
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `video` | str or list[str] | the camera's own name | What to match inside the recording directory. A **glob** by default (`camera_RH.mp4`, `cam*_rh.*`); a **regex** when wrapped in slashes (`/camera_(RH|0)\.mp4/`, `re.fullmatch`, case-insensitive). A **list** is concatenated, in the order written. |
+
+There is no footage section, and nothing is inferred from a camera's index. A source
+that no camera claimed was never anything but a camera without geometry, so footage is
+where the camera is.
+
+Everything one pattern matches is **one stream**, in natural order — which is what makes
+a split recording and an image sequence the same rule. The matches must be parts of one
+series (identical once digit runs are masked), which is what stops `/camera_(RH|0)/`
+from concatenating two naming schemes in a directory holding both. So alternates live
+inside the pattern, and a **list means concatenation**:
+
+```toml
+[cameras.rh]
+video = 'camera_RH.mp4'                       # a glob
+azimuth_deg = -120
+
+[cameras.rm]
+video = '/camera_(RM|1)\.mp4/'                 # either name, one stream
+azimuth_deg = -90
+
+[cameras.rf]
+video = ['rf_part1.mp4', 'rf_part2.mp4']      # read end to end, in this order
+azimuth_deg = -45
+```
+
+!!! danger "This is the one key whose v1 shape still parses and now means something else"
+
+    A v1 `video = ["a.mp4", "b.mp4"]` meant *alternates*; it now means **concatenation**,
+    and a frame-index error in a concatenated read is silent — the run succeeds and every
+    keypoint after the boundary belongs to the wrong frame. A list is therefore checked
+    explicitly rather than left to the generic v1 error.
+
+**Non-geometry keys.** A `[cameras.<name>]` table also carries per-camera keys owned
 by other stages, which are stripped before the rig is parsed:
 
 !!! warning "`preprocess` was retired in 0.2 and is now refused"
 
     A per-camera `preprocess` list used to crop and turn a view's frames. Frame ops belong
-    to the detection [pathway](#pose2d) instead, and the difference decides which of the two
-    a run can have: a pathway's ops are **inverted on the way back**, so a detection reaches
-    its camera in raw footage pixels however it was windowed to get to the model, and the
-    camera's intrinsics go on describing the raw frame. The retired key moved the *camera*
+    A detection window belongs to [`[pose2d.crops]`](#crops) instead, and the difference
+    decides which of the two a run can have: a detection window is **inverted on the way
+    back**, so a detection reaches its camera in raw footage pixels however it was
+    windowed to get to the model, and the camera's intrinsics go on describing the raw
+    frame. The retired key moved the *camera*
     into cropped-pixel space. Honoring both would double-correct by exactly the crop offset
     — a fly reprojecting off with nothing in the output to point at.
 
@@ -322,34 +402,14 @@ by other stages, which are stripped before the rig is parsed:
     nothing was the one to reach for where being wrong costs most. It is now a hard error
     naming its replacement.
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `input` | str | *unset* | Footage glob for this view. |
-| `mirror` | str | *unset* | The view that sees **this view's mirror image**. |
+!!! warning "`mirror` was removed in this release"
 
-`mirror` is what makes flip augmentation honest. The animal is bilaterally
-symmetric, so a horizontally-flipped right-side view is a valid left-side view —
-which is what makes the augmentation legal at all, and why the flipped sample must
-be relabeled with the *mirrored* camera: a metric that splits ipsilateral from
-contralateral error reads the camera id, so without the remap it reports every
-swapped channel under the wrong side.
+    It named the view seeing a camera's mirror image, for an out-of-tree flip
+    augmentation. Nothing in the package has read it since 0.2, and it is derivable from
+    `azimuth_deg` on any rig where it is true at all, so it is refused by name rather
+    than kept as a key that documents a relation nothing checks.
 
-The relation must be **symmetric**, and a camera on the midline names itself — on the
-packaged rig both `f` and `h` do, a flipped axial view still being an axial view. A
-half-declared pairing is rejected rather than tolerated — it reads as correct and behaves
-as a silent side swap on one camera. A view that declares no `mirror` is left unremapped.
-
-It is declared rather than derived from the extrinsics because which camera mirrors
-which is a fact about how the rig was built, and it stays true before there is a
-calibration to compute it from. (For the packaged rig it happens to be `-azimuth`,
-but that is a coincidence of a symmetric layout, not something another rig
-inherits.)
-
-**A solved rig:** `[cameras].calibration`
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `calibration` | str | *unset* | Path to a `calibration.toml`. Relative paths resolve **next to this config file**. |
+**A solved rig:** [`[calibration] path`](#calibration)
 
 When set it **wins** over every orbit spec, and the `[cameras.<name>]` tables are
 read only for their *order* (the view axis of every points array is positional).
@@ -361,8 +421,8 @@ enabled writes its refined rig to `<outdir>/calibration.toml`, and
 rig solved once on recording A can drive recording B:
 
 ```toml
-[cameras]
-calibration = "calibration.toml"
+[calibration]
+path = "calibration.toml"
 ```
 
 A calibration records the footage frame its intrinsics describe, so pointing a run
@@ -377,7 +437,7 @@ Covering **none** of them still refuses: that is the wrong-rig case, and it is t
 subset cannot explain away. Extra cameras the run does not use are reported and ignored.
 
 ```toml
-[cameras.defaults]
+[default_camera]
 focal_length_px = [22388.125, 22388.125]
 distortion_coefficients = []
 look_at = [0.0, 0.0, 0.0]
@@ -386,14 +446,14 @@ elevation_deg = 0.0
 roll_deg = 0.0
 
 [cameras.rh]
+video = 'camera_RH.mp4'
 azimuth_deg = -120
-mirror = "lh"
 
 [cameras.h]                       # the axial hind view, on its own lens
+video = 'camera_H.mp4'
 azimuth_deg = 180
 focal_length_px = 24168.591
 distance = 158.9168
-mirror = "h"
 ```
 
 #### A run narrows itself to the footage present { #narrowing-to-the-footage-present }
@@ -402,28 +462,25 @@ One config also routinely describes more rig than one *recording* holds, and a r
 missing a camera is not malformed. Rather than refuse it or invent the footage,
 `Config.narrowed_to_sources` narrows the run, in dependency order:
 
-- a `[[sources]]` entry that resolves **no files** is dropped, and with it every
-  `[[pose2d.pathways]]` reading that source (a source may feed several, so this is not
-  one-to-one);
-- a `[cameras.<name>]` view **no surviving pathway feeds** leaves the rig. This is the one
-  that shortens the `V` axis, and it has to: dropping a pathway alone would leave a view
-  whose 2D is all-NaN, which reads as a detected-and-empty camera rather than an absent
-  one — and which bundle adjustment would then export into `calibration.toml` at its
-  unrefined nominal pose with nothing marking it unmeasured;
-- `[pose2d.output_points.<view>]` rows naming a dropped view or pathway go with them;
-- an `{ auto = true }` `[[pose2d.preprocessors]]` no surviving pathway uses is dropped,
-  because an orphaned automatic crop is otherwise a hard error;
-- `[[visualization.videos]]` grid cells naming a dropped view are **blanked** (`""`) rather
-  than removed, so the montage keeps its shape and the remaining cameras stay in the cells
-  the reader expects; explicit `panels` naming one are dropped.
+- a `[cameras.<name>]` whose `video` resolves **no files** leaves the rig, taking its
+  detection pass with it. This is what shortens the `V` axis, and it has to: keeping
+  the camera would leave a view whose 2D is all-NaN, which reads as a
+  detected-and-empty camera rather than an absent one — and which bundle adjustment
+  would then export into `calibration.toml` at its unrefined nominal pose with nothing
+  marking it unmeasured;
+- its `[pose2d.crops]` entry and its place in `auto_crops` go with it, because an
+  orphaned automatic crop is otherwise a hard error;
+- `[visualization.videos.<name>].grid` cells naming a dropped camera are **blanked**
+  (`""`) rather than removed, so the montage keeps its shape and the remaining cameras
+  stay in the cells the reader expects.
 
-Point-name sections (`[bundle_adjustment].points_to_use`, `[postprocess].ops`,
-`[inverse_kinematics]`) are view-agnostic and untouched. One warning names the sources, the
-pathways and the views, and the view count it is proceeding on.
+Point-naming sections (`[bundle_adjustment] points`, `[postprocess].ops`,
+`[inverse_kinematics]`) are camera-agnostic and untouched. One warning names the cameras
+that went and the count it is proceeding on.
 
 Narrowing happens **before** the snapshot and the fingerprints, and only the parsed data
-narrows — the snapshot goes on recording what was *asked for*, exactly as a `[skeleton]`
-preset reference does. That split is what keeps the cache honest: a run that proceeded on
+narrows — the snapshot goes on recording what was *asked for*, exactly as a `[skeleton]
+include` reference does. That split is what keeps the cache honest: a run that proceeded on
 seven views records a **seven-view** fingerprint and recomputes when the eighth camera
 turns up.
 
@@ -435,8 +492,13 @@ nothing, so a refusal is the only honest answer.
 
 ## `[pipeline]` — which stages run { #pipeline }
 
-One `do_<stage>` boolean per stage. Each enabled stage reads its own `[<stage>]`
-table.
+One boolean per stage, named after the stage. Each enabled stage reads its own
+`[<stage>]` table.
+
+The `do_` prefix is gone: it was a prefix on a key inside a table already called
+`pipeline`, which said what the booleans were about. A `do_<stage>` key is **refused by
+name** rather than ignored, because an ignored one leaves the stage at its default and
+reads as "the flag did nothing".
 
 The **Default** column below is `deeperfly.config.STAGE_DEFAULTS` — what a config that
 omits the flag gets — and as of 0.2 the packaged `default_config.toml` states every flag at
@@ -445,23 +507,23 @@ because it changes anything.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `do_pose2d` | bool | `true` | Detect 2D pose in every view. |
-| `do_bundle_adjustment` | bool | `true` | Refine the cameras. |
-| `do_pictorial_structures` | bool | `false` | DeepFly3D-style peak recovery — the one stage off by default ([why](#pictorial_structures)). |
-| `do_triangulation` | bool | `true` | Triangulate 2D → 3D. |
-| `do_eks` | bool | `true` | Smooth the 3D pose with the ensemble Kalman smoother. |
-| `do_postprocess` | bool | `true` | Apply the `[postprocess].ops` correction chain to the 3D pose. |
-| `do_inverse_kinematics` | bool | `true` | Fit NeuroMechFly joint angles to the 3D pose. Skips with a logged reason when the optional [`ik` extra](#inverse_kinematics) is absent. |
-| `do_visualization` | bool | `true` | Render the videos. |
+| `pose2d` | bool | `true` | Detect 2D pose in every view. |
+| `bundle_adjustment` | bool | `true` | Refine the cameras. |
+| `pictorial_structures` | bool | `false` | DeepFly3D-style peak recovery — the one stage off by default ([why](#pictorial_structures)). |
+| `triangulation` | bool | `true` | Triangulate 2D → 3D. |
+| `eks` | bool | `true` | Smooth the 3D pose with the ensemble Kalman smoother. |
+| `postprocess` | bool | `true` | Apply the `[postprocess].ops` correction chain to the 3D pose. |
+| `inverse_kinematics` | bool | `true` | Fit the configured model's joint angles to the 3D pose. Skips with a logged reason when the optional [`ik` extra](#inverse_kinematics) is absent. |
+| `visualization` | bool | `true` | Render the videos. |
 
-`do_pose2d = false` reconstructs from a **cached** 2D pose without re-detecting. The 2D
+`pose2d = false` reconstructs from a **cached** 2D pose without re-detecting. The 2D
 cache always feeds downstream, while a derived stage's cached output is used only while
 that stage is on. An enabled stage whose input is unavailable is skipped, with the reason
 logged, rather than failing the run.
 
 !!! note "Turning a stage off from the command line"
 
-    `deeperfly config set pipeline.do_<stage> false` works as of 0.2, and did not before:
+    `deeperfly config set pipeline.<stage> false` works as of 0.2, and did not before:
     the writer appended an override table, TOML forbids declaring a table twice, and the
     packaged config states every `[pipeline]` flag — so every stage flag was unsettable in
     exactly the file people edit. An **existing** key is now rewritten in place, which
@@ -473,28 +535,35 @@ logged, rather than failing the run.
 
 ## `[pose2d]` — 2D detection { #pose2d }
 
-The `[pose2d]` table holds the detector's performance knobs *and* (as sub-tables)
-the detection plan — what to detect and how.
+The `[pose2d]` table holds the detector and its knobs. **Detection is dense and
+one-to-one**, and the plan is *synthesized* from the camera table: one detector, run once
+per camera, channel `i` → point `i`.
 
-**A plan is DENSE.** Both remaining detector classes emit every tracked point for every
-view, so channel `i` is point `i` of the pathway's view and **no mapping table is needed**:
-one pathway per camera, `n_out_channels` defaulting to the skeleton's point count, and
-`input_size` plus the normalization coming from the checkpoint. Selecting a detector is two
-lines:
+That is why there is no plan to declare. Both remaining detector classes emit every
+tracked point for every view, `n_out_channels` defaults to the skeleton's point count,
+and `input_size` plus the normalization come from the checkpoint. Selecting a detector is
+two lines:
 
 ```toml
 [pose2d]
-model = "dense38mv"
-models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
-]
+class = "mvt"
+weights = "mvt_r28_pad48_gray_fly38.pth"
 ```
 
-The [`[pose2d.output_points]`](#output_points) mapping table still exists and is still
-supported — it is how one view can be fed by several pathways — but the shipped configs
-declare none. (The historical 19-channel detector predicted one body side, ran each side
-camera twice and needed 122 hand-written mapping rows; a contralateral point now arrives as
-a prediction to correct rather than a gap to author from nothing.)
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `class` | str | `"mvt"` | The detector class: `"mvt"` (multiview transformer) or `"hrnet"`. |
+| `weights` | str | *the packaged checkpoint* | Checkpoint path or a packaged name. Its recorded channel names are checked against the resolved skeleton on every run. |
+| `crops` | table | `{}` | [`[pose2d.crops]`](#crops): per camera, the detection window, always a box. |
+| `auto_crops` | list[str] | `[]` | The cameras whose window is **searched** rather than written ([below](#auto-crop)). |
+| `crop_search` | table | `{}` | [`[pose2d.crop_search]`](#pose2d-crop-search): the search's own knobs. |
+
+Everything the retired plan carried is gone and refused by name:
+`[[pose2d.models]]` / `model` (one detector per run), `[[pose2d.pathways]]` (implied by
+the camera table), `[[pose2d.preprocessors]]` (a detection window is `[pose2d.crops]`,
+and `fliplr` / `flipud` / `rot90` / `resize` have no consumer left), and
+`[pose2d.output_points]` (channel `i` is point `i`). A 19-channel side-agnostic
+checkpoint is not expressible under this schema and runs under a v1 tag.
 
 **Performance knobs:**
 
@@ -505,7 +574,7 @@ a prediction to correct rather than a gap to author from nothing.)
 | `decode_buffer` | int | `4` | Decode queue depth, in multiples of `batch_size`. Clamped to ≥ 1. Peak frames/camera ≈ `(decode_buffer + 2) * batch_size`. |
 
 **`batch_size` is in images, not frames.** `detect_sequence` forwards
-`batch_size // pathways` whole frames at a time, so on the packaged eight-camera rig
+`batch_size // cameras` whole frames at a time, so on the packaged eight-camera rig
 anything below 8 is **one frame per forward** — which is why the default is not smaller.
 Measured on an RTX 4090, 8 views at 256×512, on the **r27** multiview transformer — the
 packaged r28 default pads its input and is slower by about 1.9× throughout (24.4 fps against
@@ -521,50 +590,50 @@ blocking the GPU: before that the same sweep read 31 fps flat at every value, be
 bottleneck was a YUV→RGB conversion, a device round trip and a PIL grayscale that no batch
 size touches. A batch knob buys throughput only once the thing it feeds is the bottleneck.
 
-### `[[pose2d.preprocessors]]`
+### `[pose2d.crops]` — the detection window { #crops }
 
-Named, reusable frame-op pipelines, referenced by a pathway's `preprocessor`.
+One entry per camera, and always a box. There is no op grammar: `fliplr`, `flipud`,
+`rot90` and `resize` had no consumer left once detection went dense and one-to-one, and
+a window is the one thing a camera genuinely needs.
 
-| Key | Type | Description |
+```toml
+[pose2d.crops]
+f = { x = 400, y = 290, width = 800, height = 400 }
+h = { x = 380, y = 250, width = 840, height = 460 }
+```
+
+| Field | Type | Description |
 | --- | --- | --- |
-| `name` | str | Preprocessor identifier. |
-| `ops` | list[table] | Ordered frame ops (below); `[]` = identity. |
+| `x`, `y` | int | Top-left corner of the window, in raw-frame pixels. |
+| `width`, `height` | int | Window size. |
 
-**Ops** (run in written order; flips/rotations do not commute):
-
-| Op | Fields | Effect |
-| --- | --- | --- |
-| `fliplr` | — | Left–right flip. |
-| `flipud` | — | Up–down flip. |
-| `rot90` | `k` (int) | `k` counter-clockwise quarter-turns (any sign). |
-| `crop` | `x`, `y`, `width`, `height`, or `auto` | Keep a window — written down, or [searched per recording](#autocrop). |
-| `resize` | `scale`, or `width`/`height`; optional `interpolation` (`"bilinear"`/`"nearest"`) | Rescale. |
-
-Detections are mapped back into the raw frame by inverting these ops, so a
-preprocessor never moves the stored 2D or the reconstructed 3D.
+Detections are mapped back into the raw frame by inverting the crop, so a window never
+moves the stored 2D or the reconstructed 3D, and a camera's intrinsics go on describing
+its raw frame.
 
 <a id="autocrop"></a>
-### The searched crop: `{ op = "crop", auto = true }`
+### The searched crop: `auto_crops` { #auto-crop }
 
 A detector is trained through a box, and a differently framed camera puts the animal at the
 wrong apparent scale — the one thing no augmentation in the recipe undoes. On this rig the six
 side cameras match training full-frame and the two **axial** ones (front and hind, 1600×1008
-against the side cameras' 960×512) do not, so those are the two that usually need a box. The
-packaged config gives both `f` and `h` a `{ op = "crop", auto = true }` preprocessor. `auto`
-says the box should be *measured* for this recording rather than copied from the last one:
+against the side cameras' 960×512) do not, so those are the two that usually need a box.
+`auto_crops` names the cameras whose box should be *measured* for this recording rather
+than copied from the last one:
 
 ```toml
-[[pose2d.preprocessors]]
-name = "crop_h"
-ops = [{ op = "crop", auto = true }]                       # blind: cover the whole frame
+[pose2d]
+auto_crops = ["f", "h"]              # search these two
 
-[[pose2d.preprocessors]]
-name = "crop_f"
-ops = [{ op = "crop", auto = true, x = 400, y = 290, width = 800, height = 400 }]  # seeded
+[pose2d.crops]
+f = { x = 400, y = 290, width = 800, height = 400 }   # a SEED for the search
+                                                      # `h` has none: search blind
 ```
 
-The four box keys become a **seed** when `auto = true` — all four or none. A seed is not the
-answer, it is where the search starts, and it narrows the search to its neighborhood.
+A `[pose2d.crops]` entry for a camera in `auto_crops` becomes a **seed** — all four keys
+or none. A seed is not the answer, it is where the search starts, and it narrows the
+search to its neighborhood. A camera in `auto_crops` with no entry searches blind, over
+the whole frame.
 
 The `pose2d` stage resolves it before detecting anything: the detector's own confidence covers
 the `(center, width)` space at ~11 ms a probe, then **agreement with the other cameras' 3D** —
@@ -578,7 +647,7 @@ its own and prints the TOML that freezes it permanently.
 **The SEARCH needs no rig; the ACCEPT GATE does.** These are worth keeping apart, because the
 short version ("auto-crop needs a solved rig") is wrong and has been stated that way before.
 The grid over `(center, width)` is scored by detector **confidence**, which needs nothing but
-footage — so `auto = true` is worth turning on from the first run. What needs a solved rig is
+footage — so listing a camera in `auto_crops` is worth doing from the first run. What needs a solved rig is
 the gate that *chooses* among what confidence proposed: reprojection agreement with the other
 cameras' 3D.
 
@@ -596,19 +665,20 @@ cameras it was built from cannot be believed about a held-out one. Failing that 
 search says so and falls back to **confidence alone**, which comes out a box ~1.7× too wide —
 still far better than dropping the whole frame in, which is the 255 px collapse above.
 
-So: run once, `deeperfly calibration export`, point [`[cameras].calibration`](#cameras) at the
-result, and the gate engages on the next run. `gate = false` in
-[`[pose2d.autocrop]`](#pose2d-autocrop) takes confidence's box unchecked, for a rig that will
-never have a calibration.
+So: run once, `deeperfly calibration export`, point [`[calibration] path`](#calibration) at
+the result, and the gate engages on the next run. `gate = false` in
+[`[pose2d.crop_search]`](#pose2d-crop-search) takes confidence's box unchecked, for a rig
+that will never have a calibration.
 
 Anything that asks an unresolved automatic crop for its geometry raises
 `UnresolvedAutoCrop` rather than quietly falling back to the whole frame — including a
 visualization panel with `crop = "pose2d"` in a run where `pose2d` never ran and no box was
 recorded.
 
-### `[pose2d.autocrop]` { #pose2d-autocrop }
+### `[pose2d.crop_search]` { #pose2d-crop-search }
 
-Knobs for the search above. Its stencil (how many widths, how many centers, how many rounds)
+Knobs for the search above — the SEARCH's own, which is what the rename says. Which
+cameras are searched is `[pose2d] auto_crops`. Its stencil (how many widths, how many centers, how many rounds)
 is measured and fixed in code; these are the parts a recording can genuinely need to differ on.
 
 | Key | Type | Default | Description |
@@ -621,16 +691,15 @@ is measured and fixed in code; these are the parts a recording can genuinely nee
 | `probe_batch` | int | `8` | Forward batch in probes. Performance only. |
 | `agreement_warn_px` | float | `20.0` | Agreement above which a view is reported as *still* not framing the animal. |
 
-### `[[pose2d.models]]`
+### The detector: `class` and `weights` { #detector }
 
-A detector network and its input contract. In practice only `name`, `class` and
-`weights` are written — everything else is a property of the checkpoint.
+One detector per run, named where it is used. In practice only `class` and `weights` are
+written — everything else is a property of the checkpoint.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `name` | str | *required* | Model identifier (referenced by pathways). |
-| `class` | str | *required* | Network registry key: `"hrnet"` (= `"hrnet_timm"`) or `"mvt"` (= `"multiview_transformer"`). Both dense; see below. An unrecognized spelling is **refused** by `class_defaults`. |
-| `weights` | str | *required* | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. Nothing downloads. |
+| `class` | str | `"mvt"` | Network registry key: `"hrnet"` (= `"hrnet_timm"`) or `"mvt"` (= `"multiview_transformer"`). Both dense; see below. An unrecognized spelling is **refused** by `class_defaults`. |
+| `weights` | str | the packaged checkpoint | A bare filename found on `$DEEPERFLY_MODELS`, or an outright path. Nothing downloads. |
 | `input_size` | [int, int] | from the class | `(height, width)` of the **reported frame**: frames are resized to it and peaks scaled back against it. Not always the network's own input — an `mvt` artifact declaring `arch.hm_margin_px` is fed `input_size + 2 × margin` (352×608 for the packaged default), padded inside the class. |
 | `mean` | float | from the class | Scalar subtracted after `/255` normalization. |
 | `n_out_channels` | int | from the class | Output heatmap count (validated against the weights). |
@@ -774,99 +843,34 @@ downloaded" is not a question any more. Several directories can be listed, separ
     view's output is bit-identical whatever the padding holds (and the mask is load-bearing:
     1.8e-03 leaks without it), and the exported artifact rebuilds the same detector.
 
-### `[[pose2d.pathways]]`
+### There are no pathways, and no output-points table { #no-pathways }
 
-A named `source → preprocessor → model` inference run. Says *what to detect on*.
+A pathway was a named `source → preprocessor → model` run, and an
+`[pose2d.output_points.<view>]` table said which of its channels became which point of
+which view. Both are gone, and both are refused by name.
 
-| Key | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | str | yes | Unique pathway identifier (referenced by `output_points`). |
-| `source` | str | yes | The `[[sources]]` name to detect on. |
-| `model` | str | no | The `[[pose2d.models]]` name to use; omit for [the default](#pathway-model). |
-| `preprocessor` | str | no | A `[[pose2d.preprocessors]]` name; omit for identity. |
+Dense one-to-one detection removes what they carried. The plan is *synthesized* from the
+camera table — one source, one crop, one identity-mapped pathway per camera — so a
+pathway was the same string repeated once per camera, and the mapping table's default was
+already the identity: channel `i` of camera `v` is point `i` of camera `v`.
 
-#### The model a pathway takes when it names none { #pathway-model }
+What the mapping table said that the identity cannot is that a single view is fed by
+**several** pathways, which is what a *side-agnostic* detector needed: the historical
+19-channel model predicted one body side, each side camera ran twice (once through a
+`fliplr`), and 122 hand-written rows decided which channel meant a left joint and which a
+right. That model is not expressible under this schema and runs under a v1 tag. A
+contralateral point now arrives as a prediction to correct rather than a gap to author
+from nothing.
 
-A dense plan is one pathway per camera through **one** detector, so writing the model on
-every pathway was the same string repeated once per view, existing only to point at the
-single entry above it. It is hoisted instead:
+The left/right check those rows needed goes with them. What replaces it is stronger and
+sits on the skeleton itself: [`point_symmetries`](#point_symmetries) must be an **automorphism of the
+edges**, checked at load, so a pair that swaps a body side is refused whether or not any
+detection plan exists.
 
-```toml
-[pose2d]
-model = "dense38mv"                  # the default for every pathway below
-models = [
-    { name = "dense38mv", class = "mvt", weights = "mvt_r28_pad48_gray_fly38.pth" },
-]
-pathways = [
-    { name = "rh", source = "vid_rh" },
-    { name = "f",  source = "vid_f", preprocessor = "crop_f" },
-    { name = "h",  source = "vid_h", model = "axial" },   # this one overrides it
-]
-```
-
-Resolution, in order: the pathway's own `model`, then `[pose2d].model`, then — when
-`models` has exactly **one** entry — that entry. So a single-detector plan need not name
-it anywhere.
-
-The last step is deliberately *not* "the first model". Adding a second entry to a plan
-whose pathways are bare raises an error naming both, rather than silently deciding which
-camera runs which detector:
-
-```
-[[pose2d.pathways]][0] ('rh') names no model and there is no default: this plan
-declares 2 models (['axial', 'dense38mv']), so write 'model' on the pathway, or
-[pose2d].model to set one for all of them
-```
-
-### `[pose2d.output_points.<view>]` { #output_points }
-
-For each view, where every tracked point's data comes from.
-
-**Optional, and omitted by every shipped config.** A dense plan needs no mapping — channel
-`i` is point `i` of the pathway's own view — so the table's default *is* the identity. It is
-still parsed and still supported, because it says one thing the identity cannot: that a
-single view is fed by **several** pathways. `tests/data/fly38_sparse_config.toml` keeps a
-worked example (a 19-channel one-body-side plan, 122 rows) as the fixture the per-view
-visibility and mirror-check tests are written against.
-
-A table keyed by point name:
-
-```toml
-[pose2d.output_points.rh]
-rf_thorax_coxa = { pathway = "rh", out_channel = 0 }
-```
-
-`point = { pathway, out_channel }` fills that point of the view from output
-channel `out_channel` of the named pathway. Keying by `(view, point)` means each
-point has exactly one source (a repeat is an error); a `(view, point)` left out
-stays unobserved (`NaN`). That union is the visibility.
-
-**The mirror check.** These tables are also where the plan's left/right identities
-are decided. The side cameras all feed one *side-agnostic* model and the left-side
-views reach its convention through a `fliplr` preprocessor, so whether a channel
-means a left or a right joint is settled here and nowhere else — 122 hand-written
-rows with, historically, nothing checking them.
-
-When the skeleton declares [`symmetries`](#symmetries) the invariant becomes
-decidable and is enforced at load: for each `(model, channel)`, every point an
-**un-mirrored** pathway maps it to must be the **symmetry partner** of every point
-a **mirrored** pathway maps it to. A pathway counts as mirrored when its
-preprocessor reverses handedness — an *odd* number of `fliplr`/`flipud` ops, so
-`fliplr` + `flipud` is a half-turn and reverses nothing.
-
-```
-ValueError: [pose2d.output_points] disagrees with [skeleton].symmetries about left/right:
-  - model 'sided19' channel 2: un-mirrored -> 'rf_femur_tibia' ('rf' -> view 'rf')
-    but mirrored -> 'rf_femur_tibia' ('f_flip' -> view 'f'). Mirroring the frame
-    mirrors the animal, so the mirrored pathway must land on 'lf_femur_tibia' --
-    as declared in [skeleton].symmetries.
-```
-
-The check is skipped when the skeleton declares no pairs (there is nothing to check
-against), and per channel when only one parity maps it — a one-sided rig's pathways
-are all un-mirrored, which is legal. One channel feeding several points also stays
-legal: `output_points` constrains where a *point's* data comes from, not a channel's
-fan-out.
+One consequence worth stating: **fingerprints keep their shape but change their values**,
+because a pathway name and a preprocessor name are now a camera name. A first run under
+this schema recomputes from `pose2d` down. The autocrop sidecar's version is bumped for
+the same reason — its keys were preprocessor names and are now camera names.
 
 ## `[bundle_adjustment]` — camera refinement { #bundle_adjustment }
 
@@ -874,7 +878,7 @@ Fly-as-target bundle adjustment over `scipy.optimize.least_squares`.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `points_to_use` | list[str] or omitted | *unset* → all keypoints | Skeleton point names that drive BA. The packaged config names the 30 leg points: they sit at sharp limb corners and detect most reliably. |
+| `points` | list[str] or omitted | *unset* → all keypoints | Which points drive BA, as [point selectors](#no-limbs): a point name or a `*` pattern. The packaged config writes `["l*_*", "r*_*"]`-style patterns for the 30 leg points, which sit at sharp limb corners and detect most reliably. `points_to_use` is refused by name. |
 | `fixed` | list[str] | `[]` | Parameters held constant (grammar below); anchors the world gauge. |
 | `shared` | list[list[str]] | `[]` | Groups of parameters tied together, e.g. `[["lf.tvec[2]", "rf.tvec[2]"]]`. |
 | `weigh_by_confidence` | bool | `true` | Scale each reprojection residual by `sqrt(confidence)`; zero/non-finite confidences drop the observation (all-zero falls back to uniform). |
@@ -933,7 +937,7 @@ How the per-view 2D points become one 3D point.
 
 ## `[eks]` — ensemble Kalman smoother { #eks }
 
-**On by default** as of 0.2 (`do_eks = true`), after triangulation and starting from its
+**On by default** as of 0.2 (`eks = true`), after triangulation and starting from its
 3D. Where triangulation solves each frame on its own, this fits **one 3D trajectory per
 keypoint to the whole recording at once**, with the rig's own projection as the observation
 model — the nonlinear multi-view EKS of Lightning Pose 3D (Aharon, Whiteway et al.
@@ -1028,8 +1032,7 @@ the body is bilaterally symmetric. Those are priors
 rather than measurements, and keeping them out of the estimating stages is deliberate: an
 estimator already told the answer cannot be checked against it.
 
-The chain is an array of tables, applied in the order written — the same shape as
-[`[[pose2d.preprocessors]]`](#pose2d):
+The chain is an array of tables, applied in the order written:
 
 ```toml
 [[postprocess.ops]]
@@ -1063,6 +1066,25 @@ Each op logs how far it moved the points it touched, and its report is stored in
 stage's `meta` under `ops`, one entry per op in order. That number is the only check on an
 op's premise.
 
+!!! note "This stage is not redundant with the IK's `body_alignment`"
+
+    The alignment takes the **same medians of the same seven body-fixed points**, which
+    makes the two look like duplicates. They are not: they produce the same *number* for
+    different *destinations*. This stage writes a corrected `points3d` — a pose — while
+    the alignment bakes an `offset_pos` into the body plan — a model parameter. Only the
+    pose exists on an install without the optional Rust solver.
+
+    They agree by **ordering, not by merging**. A median over an already-constant point
+    returns that constant exactly, and the alignment builds its frame from
+    left-minus-right and front-minus-hind coxa centroids, so mirror-symmetric origins
+    *induce* a frame whose x-z plane **is** this stage's midline plane rather than a
+    competing estimate of it. Nothing coordinates them, and the recomputation must not be
+    "deduplicated" later.
+
+    `[inverse_kinematics] symmetric_segments` is a third axis again, not the other half of
+    `symmetrize`: it symmetrizes **lengths** (a model parameter, consumed by the plan)
+    where the op moves **positions** (a pose).
+
 ### `{ op = "static" }` — keypoints that do not move { #op-static }
 
 Collapses each listed point to **one position for the whole recording** — in 3D, and
@@ -1072,7 +1094,7 @@ the estimate does over time is per-frame noise.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `points` | list[str] | `[]` | Skeleton point names to hold static. A name not in the skeleton is a hard error. |
+| `points` | list[str] | `[]` | Which points to hold static, as [point selectors](#no-limbs): a point name or a `*` pattern. A pattern matching nothing is a hard error (always a typo), and the resolved set is logged. |
 | `method` | str | `"median"` | Which center (below). |
 | `trim` | float | `0.1` | `"trimmed_mean"` only: the fraction dropped from **each** tail; must be in `[0, 0.5)`. |
 
@@ -1108,12 +1130,12 @@ sense in which two *different cameras'* pixels mirror each other.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `pairs` | list[[str, str]] | `[]` | Left/right pairs to symmetrize. |
-| `midline` | list[str] | `[]` | Points lying **on** the plane, projected onto it. |
+| `points` | list[str] | `[]` | **Either half** of each pair to symmetrize, as [point selectors](#no-limbs); the partner is looked up in the skeleton's [`point_symmetries`](#point_symmetries) rather than restated here. `pairs` is refused by name. |
+| `midline` | list[str] | `[]` | Points lying **on** the plane, projected onto it. Selectors too. |
 | `per_frame` | bool | `false` | Fit a fresh plane per frame instead of one for the recording. |
 | `strength` | float | `1.0` | Scales the correction; 0.5 moves each side half-way to the mirror of the other, 0.0 is a no-op. |
 
-!!! warning "Neither list is defaulted from `[skeleton].symmetries`, and that is not an oversight"
+!!! warning "Neither list is defaulted from the skeleton's whole `point_symmetries` set, and that is not an oversight"
 
     - That list pairs the **legs** too, and at any instant a fly's left and right legs are
       in different gait phases. That asymmetry *is* the behavior being measured;
@@ -1123,7 +1145,7 @@ sense in which two *different cameras'* pixels mirror each other.
       laterally, so `abdomen0`…`abdomen4` are unpaired and still off-plane. On `fly38` the
       honest midline set is `neck` alone.
 
-The plane is fitted from `pairs` **only** — each pair's midpoint lies on it, each pair's
+The plane is fitted from `points`' pairs **only** — each pair's midpoint lies on it, each pair's
 difference vector is normal to it — so a point named in `midline` never votes on where the
 plane it is about to be moved onto should go, and a laterally-bent abdomen can never drag
 it. Fewer than two usable pairs is under-determined (one pair fixes a normal but no offset
@@ -1162,8 +1184,8 @@ five-segment chain reaching the abdomen markers, each segment bending **vertical
 laterally** — and never twisting about the abdomen's own long axis). The head and abdomen
 use fixed model geometry baked from the NeuroMechFly MJCF, sized to this fly by a
 per-recording scale estimated from the data. Writes the joint angles **and** the fitted
-model joints (which reproject onto the raw images — see the `skeleton_nmf` / `mesh_nmf`
-panels and the GUI's NMF overlays) to `results.h5`.
+model joints (which reproject onto the raw images — see the `skeleton_model` / `mesh_model`
+panels and the GUI's model overlays) to `results.h5`.
 
 !!! note "Needs the `ik` extra"
 
@@ -1192,10 +1214,10 @@ scale the camera rig happens to be gauged at.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `template` | str | `"neuromechfly"` | A packaged template name, or a path to a template TOML. |
-| `legs` | list[str] | all | Which legs to fit (e.g. `["rf", "lf"]`). |
-| `fit_head` | bool | `true` | Fit the head chain (yaw/pitch/roll) from the antenna tips. |
-| `fit_abdomen` | bool | `true` | Fit the abdomen pitch chain from the abdomen markers. |
+| `model` | str | `"neuromechfly"` | A packaged model **pack** name, or a path to one's `model.toml` ([below](#model-packs)). |
+| `binding` | str | `"<skeleton>@<model>"` | The (skeleton, model) binding — where each tracked point sits on the model ([below](#ik-binding)). A normal run writes nothing. |
+| `legs` | list[str] | all | Which of the pack's legs to fit (e.g. `["rf", "lf"]`). |
+| `chains` | list[str] | every chain the pack defines | Which non-leg chains to fit, by name (`["head", "abdomen"]`). `[]` fits the legs only. `fit_head` / `fit_abdomen` are refused by name. |
 | `n_iterations` | int | `60` | Gauss-Newton steps per frame. |
 | `neutral_weight` | float | `0.001` | Weight of the pull toward each DOF's neutral value. This is what pins DOFs the keypoints do not determine (the abdomen's interior hinges, a leg's redundant thorax-coxa rotation); raise it if a sparsely-observed limb wanders, at the cost of some bias. |
 | `damping` | float | `0.1` | Levenberg-Marquardt damping — see the note below; far above QuickIK's own suggested ~`1e-6`, on purpose. |
@@ -1207,6 +1229,88 @@ scale the camera rig happens to be gauged at.
 | `parallel` | bool | `false` | Solve in overlapping segments across worker threads. Off by default: each segment restarts from the neutral pose and only warm-starts within itself, so the angle traces can step at a seam — a poor trade for a joint-angle time series unless the recording is long enough to need the speed. |
 | `segment_len` | int | `200` | Frames per segment (includes the overlap); `parallel` only. |
 | `overlap_len` | int | `10` | Frames shared with the next segment; `parallel` only. |
+
+### The model is a pack, selected by name { #model-packs }
+
+The mechanical model this stage fits is not wired into Python. `model` names a **pack** —
+a directory holding a `model.toml` manifest and the three assets it names, selected as one
+unit:
+
+```
+src/deeperfly/data/models/neuromechfly/
+    model.toml          # the manifest: name, rest axis, anchor bodies, the three paths
+    template.toml       # the leg chains: joints, DOF axes, bounds, angle names
+    articulation.json    # the chains whose joints are NOT keypoints, + every body's frame
+    mesh.npz            # the overlay mesh
+```
+
+The config **lost** a key doing this. `template` named one of the three assets and left
+the other two unreachable — `Articulation.load` took a path the config never passed, and
+the overlay mesh was not selectable at all — so it is refused by name in favour of
+`model`, which selects all three.
+
+The manifest carries the few facts that are true of the model as a whole and that used to
+be assumed by the code: its `rest_axis` (the direction a segment extends along in its
+parent joint's frame; NeuroMechFly's is `-z`, flybody's is `+y`) and its `anchors` (the
+model **bodies** whose observed positions register the recording — the six coxae). A
+pack's template also declares each leg's `side` rather than having it inferred from the
+leg id's first letter, which is the one hardcode here that used to fail *silently*: a leg
+named `T1_left` resolved to side `"r"` and got mirrored axes and the wrong bounds with no
+error anywhere.
+
+**A pack names no skeleton point and carries no offset**, which is a greppable invariant
+and a test.
+
+### The binding — where a point sits on the model { #ik-binding }
+
+Because the pack names no point and the skeleton names no body, a third artifact says
+where each tracked point sits on the model:
+`src/deeperfly/data/bindings/<skeleton>@<model>.toml`.
+
+```toml
+[points]
+lf_femur_tibia = { body = "lf_tibia" }
+lf_pretarsus        = { body = "lf_tarsus5", offset = [0.0, 0.0, -0.107] }
+neck           = { body = "c_head", base = true }
+abdomen0       = { body = "c_abdomen12", offset = [-0.37, 0.0, 0.34], approximate = true }
+```
+
+That is the axis the fact belongs on. `abdomen0` sitting 0.37 behind and 0.34 above the
+origin of `c_abdomen12` is a statement about how **fly38 was labelled against
+NeuroMechFly** — true of neither half alone. Binding `fly38` to a second model means
+writing five different numbers there and changing nothing else; relabelling the abdomen
+means changing them for every model.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `body` | str | *required* | The model body the point is rigidly attached to. |
+| `offset` | [float, float, float] | `[0, 0, 0]` | Where on that body, in the body's own frame. |
+| `base` | bool | `false` | This point is its chain's **base landmark**: it says where the chain sits and constrains none of its DOFs. |
+| `approximate` | bool | `false` | The placement is a modelling decision, not a measurement. |
+
+`base` is nominated rather than derived, and `neck` is why: it sits exactly on the
+`c_thorax-c_head` pivot the three head angles rotate about, so it can be evidence about
+none of them — but it places that pivot far better than the anchor registration can (which
+extrapolates 4.7× along the anchors' worst-determined axis and lands ~11° of pitch off). A
+point at a chain's own origin is the one case where "is this a joint" is not a geometric
+question.
+
+`approximate` is **carried and reported, never acted on**. The stage's logged residual
+splits exact rows from approximate ones, so a reader can tell a bad fit from a bad
+retarget. Down-weighting them, or fitting their offsets, would absorb real error into the
+retarget, and no measurement says it helps.
+
+An **unbound pair is a load error** naming both halves, rather than a fit against all-NaN
+observations. A binding is not fully hand-authorable — the pretarsus offset is the most distal
+vertex of the last tarsus, computed rather than chosen — so a new pair is generated:
+
+```console
+$ uv run --with mujoco deeperfly ik bind fly38 neuromechfly --mjcf model/fly.xml
+```
+
+and then the `approximate` rows are reviewed, because those are the ones no rule can
+decide. `[inverse_kinematics.markers.<chain>]` stays a per-run **patch** over the binding,
+which is what it already was.
 
 ### Left/right symmetry — `symmetric_segments` { #ik-symmetric-segments }
 
@@ -1231,9 +1335,9 @@ Two things it deliberately does **not** do:
   [`{ op = "symmetrize" }`](#op-symmetrize)'s — which is what the example configs use it
   for, on the thorax-coxa joints and never on the legs.
 
-!!! note "It reads the skeleton's declared `symmetries`"
+!!! note "It reads the skeleton's declared `point_symmetries`"
 
-    Which leg mirrors which is derived from [`[skeleton].symmetries`](#skeleton) — the
+    Which leg mirrors which is derived from [`[skeleton].point_symmetries`](#skeleton) — the
     same declared relation the training mirror augmentation reads —
     and not from the `l`/`r` name prefix. A skeleton that declares no pairs is stating
     that its subject is not bilaterally symmetric, so nothing is shared and the stage
@@ -1515,7 +1619,7 @@ The joint geometry (anchors, axes) stays the model's; only the markers move. Omi
 both tables to keep the packaged NeuroMechFly markers. Custom markers also flow into
 the GUI's live re-fit (it reads this same config beside `results.h5`).
 
-The `mesh_nmf` overlay (videos + GUI) renders the posed model mesh on the GPU when a
+The `mesh_model` overlay (videos + GUI) renders the posed model mesh on the GPU when a
 headless OpenGL (EGL) context is available — roughly 10× faster than, and with exact
 depth ordering over, the pure-CPU rasterizer it falls back to where no GL device is
 present. The body, head, and abdomen are placed at the recording's single
@@ -1531,81 +1635,108 @@ vocabulary is `wings` / `halteres` / `eyes` / `antennae` / `head` / `thorax` /
 
 ## `[visualization]` — output videos { #visualization }
 
-Global settings plus one `[[visualization.videos]]` per output MP4.
+One MP4 per `[visualization.videos.<name>]`, keyed by name — so the output filename *is*
+the table key, and a duplicate is a TOML error rather than two videos overwriting each
+other. `[visualization]` itself holds nothing; its former bare keys moved into two
+defaults tables.
 
-**Global (`[visualization]`):**
+**`[visualization.default_video]`** — what every video is unless it says otherwise. The
+same keys a video entry takes:
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `background` | str or [r, g, b] | `"black"` | Canvas fill (overridable per video / per panel). |
-| `output_fps` | float | input fps | Explicit output frame rate for every video. |
+| `background` | str or [r, g, b] | `"black"` | Canvas fill. |
+| `crop` | [x, y, w, h] or str | whole frame | Panel window. `"pose2d"` resolves per camera to its own detection window — see [`crop`](#panel-crop). |
+| `cell` | [int, int] | from the footage | Grid cell size in pixels. |
+| `output_fps` | float | input fps | Explicit output frame rate. |
 | `speed` | float | `1.0` | Scale the input fps instead (`0.5` = slow motion). `output_fps` wins if both are set. |
-| `crop` | [x, y, w, h] or str | whole frame | Default panel window (overridable per video / per panel). `"pose2d"` resolves per view — see [`crop`](#panel-crop) below. |
-| `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the videos (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). |
 
-**`[visualization.kwargs]`** — draw-op defaults shared by every video, keyed by
-the `plot` op name (`imshow`, `skeleton_2d`, `skeleton_3d`). Kwargs merge across
-three levels — global → per-video `kwargs` → per-panel extra keys — most specific
-winning.
+**`[visualization.default_layer]`** — the style every layer takes unless it overrides it
+(`line_thickness`, `point_radius`, `line_dash`, `edge_color`, …).
 
-**`[[visualization.videos]]`:**
+Resolution is now exactly **default → explicit**, once per collection. The three-level
+`[visualization.kwargs]` → per-video `kwargs` → per-panel merge is gone, and so is the
+namespace collision it created, where `width` meant either a draw argument or a layer
+size depending on where it was written.
+
+**`[visualization.videos.<name>]`:**
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `video_name` | str | *required* | Output filename (`<video_name>.mp4`). |
-| `grid` | list[list[str]] | *unset* | A montage, as rows of view names — expands to panels (below). |
-| `plot` | str | *required with `grid`* | The overlay op drawn on each grid cell. |
-| `cell` | [int, int] | from `imshow` kwargs | Grid cell size in pixels. |
-| `panels` | list[table] | *unset* | Ordered panels (below); they draw in order, so a skeleton panel over an `imshow` at the same offset overlays it. Appended *after* any `grid` expansion. |
-| `stage` | str | most-derived | Forwarded to every panel the `grid` expands to. |
-| `width`, `height` | int | auto-size | Canvas size in pixels; omit to fit all panels. |
-| `background` | str or [r, g, b] | inherits global | Per-video canvas fill. |
-| `crop` | [x, y, w, h] or str | inherits global | Per-video panel window. |
-| `kwargs` | table | `{}` | Per-video draw-op kwargs (merges over the global). |
+| `grid` | list[list[str]] | *unset* | A montage, as rows of camera names — expands to panels (below). |
+| `layers` | list[table] | `[]` | The overlays drawn over every cell, **in order**. Each is `{ draw, stage, ...style }`. |
+| `footage` | bool | `true` | Draw each camera cell's own frame underneath. `false` drops it. |
+| `mesh_hide` | list[str] | `["wings"]` | Model-mesh body parts to hide (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). |
+| `width`, `height` | int | auto-size | Canvas size in pixels; omit to fit the grid. |
+| *`default_video` keys* | — | inherited | `background`, `crop`, `cell`, `output_fps`, `speed`. |
 
-#### `grid` — a montage without the arithmetic { #grid }
+**A layer:**
 
-A montage is the overwhelmingly common video and it is pure repetition: every panel is
-the same two ops at a position that is a row and a column times the cell size. `grid`
-says the shape and lets the offsets be computed:
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `draw` | str | *required* | `"skeleton_2d"` (the camera's 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into it), `"skeleton_model"` (the fitted model's skeleton reprojected), or `"mesh_model"` (the fitted model's *mesh*, shaded; `alpha` sets its opacity). |
+| `stage` | str | most-derived | Which stage's points to draw: `"pose2d"`, `"pictorial_structures"`, `"triangulation"`, `"eks"`, `"postprocess"`. |
+| *style keys* | — | from `default_layer` | `point_radius`, `line_thickness`, `line_dash`, `edge_color`, `alpha`, … |
+
+`edge_color` is new (DeepLabCut's `skeleton_color`): every edge in one colour, joints
+keeping theirs. It falls out of the per-point colour array the skeleton now carries.
+
+### Footage is implicit, and layers are ordered { #layers }
+
+The `imshow` op is gone as a thing to write: a camera cell gets its own frame
+underneath, and `footage = false` drops it. That removes the commonest mistake in a v1
+video — a grid whose `imshow` panel and overlay panel disagreed about `crop`.
+
+**Layers draw in order**, which is how a before/after is written in one video rather than
+two: the dashed reference first, the solid fit over it.
 
 ```toml
-[[visualization.videos]]
-video_name = "pose3d"
-plot  = "skeleton_3d"
-stage = "triangulation"
-grid  = [["rf", "f",    "lf"],
-         ["rm", "bird", "lm"],
-         ["rh", "h",    "lh"]]
+[visualization.videos.pose_model]
+grid = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "skeleton_3d",  stage = "postprocess", line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
+    { draw = "skeleton_model", point_radius = 3 },
+]
 ```
 
-That is exactly equivalent to seventeen hand-written panels — an `imshow` plus a
-`skeleton_3d` for each of the eight cameras, and a lone `skeleton_3d` for `bird`.
+`_expand_grid` runs once per layer and appends, so layer order *is* draw order. The same
+ordering puts a skeleton over a `mesh_model` grid, where it is not optional: a skeleton
+drawn *under* a translucent surface is a smear.
 
-- **Cell size** comes from the resolved `imshow` `width`/`height` (the same
-  `[visualization.kwargs]` the panels already read), or from an explicit `cell = [w, h]`.
-- **A cell whose view is not a camera** gets no `imshow` — the synthetic `bird` plan view
-  has no footage. With `plot = "skeleton_2d"` such a cell is skipped entirely, since
-  there are no 2D detections to draw. This is derived from `[cameras.*]`, so a rig that
-  gains a camera gains a drawable cell without a second list to edit.
-- **`""`, `"-"` or `"."`** leaves a tile empty.
-- **`panels` still works**, alone or alongside — explicit panels are appended after the
-  expansion, so a one-off tile can be added to a grid without abandoning it.
+`line_dash` is arc length in canvas pixels (a number for equal on/off runs, or an
+`[on, off]` pair), and `0` draws solid; bias the gap, because antialiased end caps light
+more than the nominal duty cycle suggests (a `[6, 6]` pattern reads as a ragged solid
+line at `line_thickness = 2`).
 
-**Panel** — one draw op for one view at a pixel offset:
+Everything the v1 shape carried and this one does not is refused by name: `panels`, the
+per-op `kwargs` tables, video-level `plot` and `stage`, and `video_name` (the table key).
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `plot` | str | *required* | `"imshow"` (the view's frame), `"skeleton_2d"` (its 2D detections), `"skeleton_3d"` (the 3D skeleton reprojected into the view), `"skeleton_nmf"` (the fitted inverse-kinematics model skeleton reprojected into the view), or `"mesh_nmf"` (the fitted NeuroMechFly *mesh*, shaded and reprojected; `alpha` sets its opacity). |
-| `view` | str | *required* | Camera/view name, or the reserved `"bird"` (below). |
-| `x0`, `y0` | int | `0` | Top-left pixel of the panel. |
-| `scale` | float | `1.0` | Uniform scale. |
-| `width`, `height` | int | from `scale` | Target box (priority over `scale`); one given → the other follows to keep aspect. |
-| `crop` | [x, y, w, h] or str | whole frame | Show only this window of the view's raw frame, and size the panel to it. A string borrows the window from `[pose2d]` instead of restating it (below). |
-| `clip` | bool | `true` | Keep the op inside the panel's footprint. |
-| `stage` | str | most-derived | Which stage's points to draw: `"pose2d"`, `"pictorial_structures"`, `"triangulation"`, `"eks"`, `"postprocess"`. |
-| `background` | str or [r, g, b] | inherits | Per-panel fill. |
-| *extra keys* | — | — | Forwarded as draw-op kwargs (`point_radius`, `line_thickness`, `line_dash`, `palette`, …). |
+### `grid` — a montage without the arithmetic { #grid }
+
+A montage is the overwhelmingly common video and it is pure repetition: every cell is the
+same layers at a position that is a row and a column times the cell size. `grid` says the
+shape and lets the offsets be computed:
+
+```toml
+[visualization.videos.pose3d]
+grid   = [["rf", "f",    "lf"],
+          ["rm", "bird", "lm"],
+          ["rh", "h",    "lh"]]
+layers = [{ draw = "skeleton_3d", stage = "triangulation" }]
+```
+
+Right-side cameras in the **left** column, so the montage reads as the animal seen from
+above.
+
+- **Cell size** is `[visualization.default_video] cell`, or a per-video `cell = [w, h]`,
+  or the footage's own size.
+- **A cell whose name is not a camera** gets no footage — the synthetic `bird` plan view
+  has none. With a `skeleton_2d` layer such a cell is skipped entirely, since there are
+  no 2D detections to draw. This is derived from `[cameras.*]`, so a rig that gains a
+  camera gains a drawable cell without a second list to edit.
+- **`""`, `"-"` or `"."`** leaves a tile empty. A camera that a run
+  [narrowed away](#narrowing-to-the-footage-present) is blanked rather than removed, so
+  the montage keeps its shape.
 
 <a id="panel-crop"></a>
 `crop` is for a camera whose animal is a small part of a wide frame — an axial view at
@@ -1617,109 +1748,90 @@ Usually the window you want is the one the detector already looks through, and
 `crop = "pose2d"` says so instead of repeating the numbers:
 
 ```toml
-[visualization]
-crop = "pose2d"    # every panel shows the window ITS OWN view's pathway detects through
+[visualization.default_video]
+crop = "pose2d"    # every cell shows the window ITS OWN camera detects through
 ```
 
-Resolved per view from `[[pose2d.pathways]]`, so one line covers a mixed rig: a view whose
-pathway runs full-frame stays uncropped, and a view no pathway writes — the derived `bird`
-plan view, say — is left alone. `crop = "<preprocessor name>"`
-borrows one `[[pose2d.preprocessors]]` chain by name instead, for a panel the per-view rule
-cannot answer. `crop` resolves across the same three levels as the draw-op kwargs
-(`[visualization]` → the video entry → the panel), most specific winning, so an explicit
-box on one panel still overrides a global setting.
+Resolved per camera from `[pose2d.crops]`, so one line covers a mixed rig: a camera whose
+camera that detects full-frame stays uncropped, and a cell that is not a camera — the
+derived `bird` plan view, say — is left alone. `crop` resolves **default → explicit**,
+once, so an explicit box on one video still overrides `[visualization.default_video]`.
 
-Prefer the reference to a copy of the box. `[[pose2d.preprocessors]]` is **per
-recording** — `{ op = "crop", auto = true }` searches its own window, so the numbers differ
-from one recording to the next — and a hand-copied panel box then keeps showing the
-*previous* recording's window under an overlay that still looks perfectly well-formed: a
-rendering bug that reads as a calibration error. The reference also travels into the
-visualization fingerprint, so moving the detector's crop re-renders the videos instead of
-reusing stale MP4s.
+Prefer the reference to a copy of the box. A detection window is **per recording** — a
+camera listed in `auto_crops` searches its own, so the numbers differ from one recording
+to the next — and a hand-copied box then keeps showing the *previous* recording's window
+under an overlay that still looks perfectly well-formed: a rendering bug that reads as a
+calibration error. The reference also travels into the visualization fingerprint, so
+moving the detector's crop re-renders the videos instead of reusing stale MP4s.
 
-Only the *region* transfers, not the orientation: a chain that also mirrors or turns the
-frame is logged, and the panel shows that region in the view's own orientation (the overlay
-is projected into view pixels, and a crop cannot express a reflection). A crop that does not
-fit the footage — a box from a differently-sized recording — fails loudly rather than
-truncating into a plausible-looking panel. And when two pathways window one view
-differently, the panel says so instead of picking one.
+A crop that does not fit the footage — a box from a differently-sized recording — fails
+loudly rather than truncating into a plausible-looking panel.
 
-`stage` pins what a video means. Left unset, a panel draws whatever the result resolved
+`stage` pins what a video means. Left unset, a layer draws whatever the result resolved
 to — the most-derived stage in the file — so enabling a later stage silently changes an
-existing video: turn on `do_eks` and `pose3d` becomes the smoother's output, while
+existing video: turn on `eks` and `pose3d` becomes the smoother's output, while
 `pose2d` stops showing the detector (EKS writes a corrected 2D as well). Naming the stage
 also makes a before/after pair expressible, as videos differing only in this key:
 
 ```toml
-[[visualization.videos]]
-video_name = "pose3d"          # before
-panels = [{ plot = "skeleton_3d", view = "rf", stage = "triangulation" }]
+[visualization.videos.pose3d]        # before
+grid   = [["rf", "f", "lf"]]
+layers = [{ draw = "skeleton_3d", stage = "triangulation" }]
 
-[[visualization.videos]]
-video_name = "pose3d_eks"      # after the smoother
-panels = [{ plot = "skeleton_3d", view = "rf", stage = "eks" }]
+[visualization.videos.pose3d_eks]    # after the smoother
+grid   = [["rf", "f", "lf"]]
+layers = [{ draw = "skeleton_3d", stage = "eks" }]
 
-[[visualization.videos]]
-video_name = "pose3d_post"     # ... and after the postprocess chain
-panels = [{ plot = "skeleton_3d", view = "rf", stage = "postprocess" }]
+[visualization.videos.pose3d_post]   # ... and after the postprocess chain
+grid   = [["rf", "f", "lf"]]
+layers = [{ draw = "skeleton_3d", stage = "postprocess" }]
 ```
 
-A panel naming a stage the file does not have skips its whole video with a logged reason
+A layer naming a stage the file does not have skips its whole video with a logged reason
 rather than falling back — a fallback would render the pair as two copies of one array.
 
 <a id="panel-two-layers"></a>
 A before/after pair can also be *one* video rather than two, when what matters is the
-difference and not each pose on its own. A `grid` draws exactly one overlay op per cell,
-but explicit `panels` are appended after the expansion and therefore draw on top of it —
-so the reference goes in the grid and the comparison layer in `panels`, and `line_dash`
-says which is which:
+difference and not each pose on its own — which is what ordered layers are for. The
+reference goes first, the comparison over it, and `line_dash` says which is which:
 
 ```toml
-[[visualization.videos]]
-video_name = "pose3d_post_vs_ik"
-plot  = "skeleton_3d"          # dashed, underneath: the pose the fit was given
-stage = "postprocess"
-grid  = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
-panels = [                     # solid, on top: forward kinematics of the fitted angles
-    { plot = "skeleton_nmf", view = "rf", x0 = 0, y0 = 0 },
-    # ... one per cell, at column * cell_width, row * cell_height
+[visualization.videos.pose_model]
+grid   = [["rf", "f", "lf"], ["rm", "bird", "lm"], ["rh", "h", "lh"]]
+layers = [
+    { draw = "skeleton_3d", stage = "postprocess",     # dashed, underneath: the target
+      line_thickness = 1, line_dash = [4, 9], point_radius = 2 },
+    { draw = "skeleton_model", point_radius = 3 },     # solid, on top: the fit
 ]
-
-[visualization.videos.kwargs]
-skeleton_3d  = { line_dash = [4, 9], point_radius = 2 }
-skeleton_nmf = { line_thickness = 2, point_radius = 3 }
 ```
 
-The explicit panels carry their own `x0`/`y0` because they are outside the grid's
-expansion — column times the cell width, row times its height. `line_dash` is arc length
-in canvas pixels (a number for equal on/off runs, or an `[on, off]` pair), and `0` draws
-solid; bias the gap, because antialiased end caps light more than the nominal duty cycle
-suggests (a `[6, 6]` pattern reads as a ragged solid line at `line_thickness = 2`).
+`line_dash` is arc length in canvas pixels (a number for equal on/off runs, or an
+`[on, off]` pair), and `0` draws solid; bias the gap, because antialiased end caps light
+more than the nominal duty cycle suggests (a `[6, 6]` pattern reads as a ragged solid line
+at `line_thickness = 2`).
 
-The same layering puts a skeleton over a `mesh_nmf` grid, where the order is not
-optional: a skeleton drawn *under* a translucent surface is a smear.
+The same ordering puts a skeleton over a `mesh_model` grid, where it is not optional: a
+skeleton drawn *under* a translucent surface is a smear.
 
-`clip` exists because the draw ops honour `x0`/`y0` but do not stop at the panel edge, so
-in a grid a limb projecting out of its cell would be painted over the neighboring
-camera's picture. Turn it off for a panel that is meant to spill. A panel placed at a
-negative offset is never clipped to its own footprint (only to the canvas).
+A cell's overlays are clipped to its own footprint, so a limb projecting out of one cell
+is not painted over the neighbouring camera's picture.
 
-`view = "bird"` is a **derived** dorsal plan view rather than a rig camera: the body axes
+`bird` is a **derived** dorsal plan view rather than a rig camera: the body axes
 come from the 3D pose itself (anterior from the abdomen tip to the neck, lateral across
 the thorax-coxa joints, dorsal from their cross product with its sign settled by the
 pretarsi), and the focal is solved so the animal fills the frame once for the whole clip. It
 shows all six legs with no body in the way, which the rig cannot do — the tether is above
-the animal. It has no footage, so give it a `skeleton_3d`/`skeleton_nmf` panel and no
-`imshow`. A real camera of that name takes precedence.
+the animal. It has no footage, so its cell draws only the layers. A real camera of that
+name takes precedence.
 
-A `skeleton_3d` panel needs a 3D pose, and the `skeleton_nmf` / `mesh_nmf` panels
+A `skeleton_3d` layer needs a 3D pose, and the `skeleton_model` / `mesh_model` layers
 need the inverse-kinematics model; a video that requires one is skipped (with a
 logged reason) when the result has none. Videos are encoded H.264 / libx264 via
 PyAV on the CPU.
 
 The `inverse_kinematics` overlays are also available live in `deeperfly gui`: the
-**NMF skeleton** toggle ghosts the fitted model joints over each view and the **NMF
-mesh** toggle renders the posed NeuroMechFly mesh on the client GPU (smooth-shaded
+**Model skeleton** toggle ghosts the fitted model joints over each view and the **Model
+mesh** toggle renders the posed model mesh on the client GPU (smooth-shaded
 WebGL, rendered at the view's display resolution). They can also be inspected in 3D
 together with the cameras and the triangulated pose via the **3D view** button. It
 opens a floating panel that overlays the editor without blocking it — drag its title
@@ -1731,7 +1843,7 @@ frame and the overlay follows. The legs skin to the corrected keypoints; the hea
 and abdomen are fixed model geometry, sized to this fly by a per-recording scale the
 IK stage **estimates from the data** ([one uniform multiplier per chain](#ik-chain-size),
 from the marker separations its joints cannot change — analogous to the coxa-derived
-body scale), so a longer abdomen or bigger head is matched without a manual knob. The same scale is used by the `mesh_nmf` video op,
+body scale), so a longer abdomen or bigger head is matched without a manual knob. The same scale is used by the `mesh_model` video op,
 whose GPU rasterizer uploads each frame's posed geometry once and renders every
 camera from it (so a multi-view mesh video renders an order of magnitude faster than
 the old per-view software path).
@@ -1743,7 +1855,7 @@ read from the `config.toml` snapshot beside the `results.h5`.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `mesh_hide` | list[str] | `["wings"]` | NMF overlay body parts to hide in the editor (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). The rendered videos use `[visualization].mesh_hide`. |
+| `mesh_hide` | list[str] | `["wings"]` | Model-overlay body parts to hide in the editor (`wings`/`halteres`/`eyes`/`antennae`/`head`/`thorax`/`abdomen`/`legs`). The rendered videos carry their own list. |
 
 ## `[annotation]` — ground-truth annotation { #annotation }
 

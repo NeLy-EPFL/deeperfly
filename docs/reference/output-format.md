@@ -17,7 +17,7 @@ deeperfly_outputs/
 
 ## `results.h5`
 
-A self-contained HDF5 file (schema **version 3**). Each pipeline stage writes its
+A self-contained HDF5 file (schema **version 4**). Each pipeline stage writes its
 own group, so a stage never overwrites another's data and any downstream stage
 can be re-run later from pristine upstream outputs. The file fully reconstructs
 the cameras and skeleton, so results are portable without the original config.
@@ -29,9 +29,9 @@ arithmetic silently changes precision because of which build wrote the file — 
 [what a stage stores](#what-a-stage-stores) for why the narrower dtype costs nothing.
 
 ```text
-attrs["meta"]               json: {deeperfly_format_version: 3, created_utc, ...}
-skeleton/                   attrs["name"]; point_names, limb_names, limb_id, bones,
-                            symmetries, palette/
+attrs["meta"]               json: {deeperfly_format_version: 4, created_utc, ...}
+skeleton/                   attrs["name"], attrs["digest"]; point_names, edges,
+                            point_symmetries, point_colors, edge_colors
 animal/                     absent (P,) bool + attrs["subject_id"] -- written only when
                             something is declared; NOT a stage, so no recompute drops it
 pose2d/
@@ -131,21 +131,22 @@ the 112 frozen numbers — stay float64 and uncompressed.
 
 ### Schema versions and `deeperfly repack` { #schema-versions }
 
-Writing is always v3; **v2 is still read**, so an existing corpus opens unchanged. A v2
-file stores every array, so it simply never takes the reconstruction path — which is why
-the readers need no version branch, and why a v2 file and a repacked copy of it hand back
-the same 2D and error to within the float32 storage step.
+Writing is always v4; **v2 and v3 are still read**, so an existing corpus opens
+unchanged. A v2 file stores every array, so it simply never takes the reconstruction path;
+a v3 file differs from v4 only in two dataset names inside `skeleton/`, which the reader
+takes either way. That is why the readers need no version branch, and why an old file and
+a repacked copy of it hand back the same 2D and error to within the float32 storage step.
 
 What a v2 file cannot do is be *extended*. `StageStore.has()` reports every stage
 incomplete on one, so a run recomputes from `pose2d` (whose write truncates the file and
-makes the whole thing current) rather than appending v3 groups beside v2 ones in a file
-whose recorded version names only one of them. Reading an old file is safe; extending one
+makes the whole thing current) rather than appending current groups beside v2 ones in a
+file whose recorded version names only one of them. Reading an old file is safe; extending one
 is not.
 
 [`deeperfly repack`](../guides/cli.md#deeperfly-repack) is the migration, and the way to
 keep an old file's contents without recomputing them: it reads whatever this build can
-read and writes v3, narrowing the point arrays and leaving out every 2D and error a reader
-can rebuild. **Nothing is recomputed** — the pose in the file is the pose that comes out.
+read and writes the current version, narrowing the point arrays and leaving out every 2D
+and error a reader can rebuild. **Nothing is recomputed** — the pose in the file is the pose that comes out.
 Groups this schema knows nothing about are copied through rather than dropped: a
 `dfpose_predict/` group is somebody else's record of what they did to the file, and losing
 it during a *space* optimization would be the same silent loss of provenance the
@@ -167,7 +168,7 @@ reprojection-error rule above exists to prevent.
 `rf_trochanterfemur-rf_tibia-pitch` / `rf_tibia-rf_tarsus1-pitch` for a leg,
 `c_thorax-c_head-{yaw,pitch,roll}` for the head, and `c_thorax-c_abdomen12-{pitch,roll}`
 … `c_abdomen5-c_abdomen6-{pitch,roll}` for the abdomen (the head/abdomen columns are
-present only when `fit_head` / `fit_abdomen` are on). With `fly38` and both chains on
+present only when `[inverse_kinematics] chains` selects them). With `fly38` and both on
 that is 55 columns: seven per leg, three for the head, two for each of the abdomen's five
 hinges.
 
@@ -199,7 +200,7 @@ chain's base landmark is not counted at all: the head's `neck` sits on the very 
 three head DOFs turn about, so no angle can move it.
 
 `points3d` carries the model's prediction for every fitted keypoint in skeleton order, so
-it reprojects with the skeleton's own bones. With `fly38` that is every column — 30 leg
+it reprojects with the skeleton's own edges. With `fly38` that is every column — 30 leg
 joints, two antennae, the `neck` and the five abdomen markers are all markers of the plan
 — so a `NaN` there is a frame that could not be fitted, never a point the model has no
 opinion about.
@@ -278,12 +279,31 @@ zeros. The bundle-adjusted rig's group additionally carries `units`, `scale_sour
 [`calibration.toml`](#calibrationtoml) holds, so an exporter passes a rig's real
 provenance through instead of inventing one.
 
-The `skeleton/` group stores the skeleton's `name` (an attribute) plus `point_names`,
-`limb_names`, `limb_id`, `bones`, `symmetries` (`(S, 2)` left/right mirror pairs — see
-[`[skeleton].symmetries`](configuration.md#symmetries)), and a `palette/` subgroup of
-limb → hex color. The name is whatever the config resolved at detect time, so a file
-written before the skeleton was renamed records `fly38b` and loads unchanged (`fly38b`
-is an alias of `fly38`).
+The `skeleton/` group stores the skeleton's `name` and `digest` (attributes) plus
+`point_names`, `edges`, `point_symmetries` (`(S, 2)` left/right mirror pairs — see
+[`point_symmetries`](configuration.md#point_symmetries)), `point_colors` (one hex colour
+per point) and `edge_colors` (one per edge). The name is whatever the config resolved at
+detect time, so a file written before the skeleton was renamed records `fly38b` and loads
+unchanged (`fly38b` is an alias of `fly38`).
+
+`digest` is written for a human reading the file or an error quoting it, and is **never
+compared** — a stored digest disagreeing with the recomputed one would mean a corrupt
+file, not another skeleton. What is compared is `point_names`.
+
+`edge_colors` is stored rather than re-derived because the endpoint average is only the
+*default*: an edge the skeleton coloured explicitly would come back a different colour if
+it were reconstructed.
+
+`limb_names`, `limb_id` and the `palette/` subgroup are **no longer written**: the limb
+concept went with the declaration that created it. A file that has them reads back on its
+`point_names` and edges as before, and one that lacks `point_colors` reads back on a
+colormap, which is acceptable because colours are cosmetic.
+
+!!! note "The stored format still says `limb_id` in one place"
+
+    `_write_skeleton` / `_read_skeleton` keep the name for the on-disk dataset while the
+    config and the code say `chain`. One documented mismatch, and this is where a
+    format-versus-code naming difference belongs — but it is a mismatch.
 
 That record is what gives the `P` axis its meaning: every array here is `(..., P, ...)`
 with no names beside it. So a run whose config resolves a **different ordered point set**
@@ -293,10 +313,16 @@ happily — and neither can the skeleton's name, which is why the check compares
 `point_names`. The same choice is why renaming a preset costs nothing: the name is in no
 stage fingerprint either.
 
-`symmetries` is additive and **did not bump the format version**: a file written before
-it existed simply has no such dataset and loads as a skeleton with no declared pairs, so
-a pair-driven consumer falls back to inferring pairs from the point names rather than
-refusing to open the file.
+`point_symmetries` is additive: a file written before it existed simply has no such
+dataset and loads as a skeleton with no declared pairs, so a pair-driven consumer falls
+back to inferring pairs from the point names rather than refusing to open the file. So is
+`edge_colors`, which a file without takes from its points.
+
+v4 **renamed** two datasets inside `skeleton/` (`bones` → `edges`, `symmetries` →
+`point_symmetries`). Nothing needs converting — the arrays are identical — so the reader
+takes either spelling and `repack` is not required. The version bump is for the other
+direction: an older build reading a v4 file would find no `skeleton/bones` and fail with a
+bare `KeyError`, and refusing on the version is exactly what the version is for.
 
 ### What the library reads back
 
@@ -312,7 +338,7 @@ what v3 chose to leave out:
 | `reproj_error` | `postprocess` → `eks` → `triangulation` → `pictorial_structures` |
 | `cameras` | `bundle_adjustment` → `pose2d` (config rig) |
 | `conf` | `pose2d` |
-| `nmf_pts3d`, `nmf_angles`, `nmf_angle_names`, `nmf_body_plan`, `nmf_chain_scales`, `nmf_chain_offsets`, `nmf_body_scale` | `inverse_kinematics` |
+| `model_pts3d`, `model_angles`, `model_angle_names`, `model_body_plan`, `model_chain_scales`, `model_chain_offsets`, `model_body_scale` | `inverse_kinematics` |
 | `absent` (the whole-recording `(P,)` declaration), `subject_id` | `animal/` (both `None` when nothing is declared) |
 
 `PoseResult.save(path)` is the library one-shot (no staged groups): it writes
@@ -484,9 +510,10 @@ model.
 
 Three deliberate choices about what a fingerprint sees:
 
-- **The skeleton's name is not in it** — the ordered `point_names` and the `bones` are.
+- **The skeleton's name is not in it** — the ordered `point_names` and the `edges` are.
   Two skeletons agreeing on both compute the same result whatever they are called, so
-  renaming a preset must not buy a full re-detection.
+  renaming a preset must not buy a full re-detection. (`Skeleton.digest` hashes the same
+  two, plus the symmetry pairs, and is the printable form of that same identity.)
 - **The rig is, including the calibration's *contents*** — not just the path, because
   re-solving a calibration rewrites it under the same name, which is the common case and
   the one a path alone cannot see.
@@ -536,13 +563,11 @@ absent/                          v3; missing in a v1/v2 file -> nothing absent
         xy      (N', 2) float64
     void_occluded/
         index   (M', 3) int32
-landmarks/                       calibration landmarks placed by hand, when any --
-                                 a namespace of its own, not skeleton points:
-    names       (L,)   str       the recording's landmark names
-    static      (L,)   bool      which is one fixed 3D point over time
-    index       (O, 3) int32     [view, frame, landmark]
-    xy          (O, 2) float64
 ```
+
+There is no `landmarks/` group. The calibration-landmark namespace was removed with the
+schema: the animal is the calibration target, which is what every rig here was solved
+from, and no recording ever carried one.
 
 **Absence** (`absent/`) is "this joint is not on this animal" — categorically different
 from `occluded` ("it exists but no camera here can see it") and from unlabeled ("nobody

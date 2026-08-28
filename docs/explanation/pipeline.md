@@ -62,7 +62,7 @@ already paid for detection.
 ## Data flow
 
 The two diagrams below show what happens when we run deeperfly on the example dataset with
-the default config: eight cameras, one detection pathway each, one model emitting every
+the default config: eight cameras, one detection pass each, one model emitting every
 tracked point for every view.
 
 | symbol | meaning | default |
@@ -77,7 +77,7 @@ tracked point for every view.
 | $P$ | skeleton keypoints (the `P` axis in code) | 38 |
 
 $C_\text{out} = P$ is what **dense** means, and it is why there is no routing table to
-write: channel *i* is point *i* of the pathway's view. What the field *covers* is a property
+write: channel *i* is point *i* of that camera. What the field *covers* is a property
 of the detector class rather than of the pipeline — the single-view detectors pad the head's
 output by 25% a side, the transformer pads its own input by 48 px a side, and either way a
 joint the crop cut off still has a cell to peak in — see
@@ -93,7 +93,7 @@ flowchart TD
   crop["searched crop<br>(op = crop, auto = true)"]
   prep["resize to 256×512, normalize<br>one gray plane"]
   net["the detector<br>38 heatmaps per view"]
-  peak["decode peaks,<br>invert the pathway's transform"]
+  peak["decode peaks,<br>invert the detection window"]
 
   out(["2D keypoints<br>(V, T, P, 2)"])
   conf(["confidence<br>(V, T, P)"])
@@ -107,7 +107,7 @@ flowchart TD
   peak --> conf
 ```
 
-One camera, one source, one pathway, one column of the `V` axis. The six side cameras match
+One camera, one column of the `V` axis. The six side cameras match
 the framing the detector was trained through and go in whole; the two axial ones (1600 × 1008
 against the side cameras' 960 × 512) do not, and get a
 [searched crop](../reference/configuration.md#the-searched-crop-op-crop-auto-true)
@@ -172,10 +172,10 @@ anything corrected before it is followed straight back off.
 
 ### 1. `pose2d` — 2D detection
 
-- **Consumes:** the recording's footage (the `[[sources]]` globs), the detection plan
-  (`[[pose2d.preprocessors]]` / `[[pose2d.models]]` / `[[pose2d.pathways]]`, plus
-  `[pose2d.output_points]` when the identity mapping is not what is wanted), and the
-  skeleton — whose ordered point names are checked against the checkpoint's own.
+- **Consumes:** the recording's footage (each camera's own `video` pattern), the detector
+  (`[pose2d] class` + `weights`) and its per-camera windows (`[pose2d.crops]` /
+  `auto_crops`), and the skeleton — whose ordered point names are checked against the
+  checkpoint's own.
 - **Produces:** `pts2d` `(V, T, P, 2)` and `conf` `(V, T, P)`, the config camera rig as
   built at detect time, the raw image sizes, the footage that was resolved, any searched
   crop window (in `<outdir>/autocrop.json`), and — when `pictorial_structures` is enabled —
@@ -183,15 +183,13 @@ anything corrected before it is followed straight back off.
 - **Cached in:** `pose2d/` (the whole `results.h5` is rewritten when this stage runs, since
   everything downstream derives from it).
 
-Each pathway runs its source's frames (optionally preprocessed, e.g. cropped or mirrored)
-through its detector network, locates the heatmap peaks, maps them back into the raw source
-frame, and scatters each output channel into its `(view, point)` slot. With a **dense**
-detector that scatter is the identity — channel *i* is point *i* of the pathway's view — so
-the packaged config writes no mapping at all. `[pose2d.output_points]` still exists and is
-still honored; it is how a view can be fed by several pathways, and it is what a detector
-whose channels mean different points in different views would need. A `(view, point)` no
-pathway fills is left `NaN` — that union *is* the visibility, with no separate mask, and a
-dense plan leaves none.
+Each camera's frames run through the detector (optionally through a window), the heatmap
+peaks are located and mapped back into the raw frame, and each output channel is scattered
+into its `(camera, point)` slot. That scatter is the **identity** — channel *i* is point
+*i* of that camera — which is what dense one-to-one detection means, and why the plan is
+synthesized from the camera table rather than declared. A `(camera, point)` nothing fills
+is left `NaN` — that union *is* the visibility, with no separate mask, and a dense
+detector leaves none.
 
 Both shipped classes take [**one grayscale plane**](detectors.md#one-plane). The shared
 preparation (`LoadedModel.prepare`) emits `(..., 1, H, W)`, and the transformer's own host-side
@@ -357,8 +355,8 @@ each limb on its own — with a toward-neutral prior pinning the DOFs the keypoi
 undetermined and each frame warm-started from the last.
 
 Because the fitted *joint positions* are written alongside the angles, the model reprojects
-onto the raw views with the skeleton's own bones: that is what the `skeleton_nmf` and
-`mesh_nmf` panels and the GUI's NMF overlays draw.
+onto the raw views with the skeleton's own edges: that is what the `skeleton_model` and
+`mesh_model` panels and the GUI's model overlays draw.
 
 ### 8. `visualization` — render videos
 
@@ -385,22 +383,19 @@ The packaged config describes the eight-camera rig, and a recording missing a ca
 malformed — a project's older recordings predate the camera being added. Rather than refuse
 the recording, the run narrows itself (`Config.narrowed_to_sources`), in dependency order:
 
-- a `[[sources]]` entry that resolves no files invalidates the `[[pose2d.pathways]]` reading
-  it (a source may feed several, so this is not one-to-one);
-- a `[cameras.<name>]` view no surviving pathway feeds **leaves the rig** — which is what
-  shortens the `V` axis. Dropping the pathway alone would leave a view whose 2D is all-`NaN`,
-  which reads as a detected-and-empty camera rather than an absent one, and which bundle
-  adjustment would then export into `calibration.toml` at its unrefined nominal pose with
-  nothing marking it as unmeasured;
-- `[pose2d.output_points]` rows naming a dropped view or pathway go with them, as does an
-  `auto = true` preprocessor no surviving pathway uses (an orphaned automatic crop is
-  otherwise a hard error);
-- `[visualization.videos]` grid cells naming a dropped view are **blanked** rather than
-  removed, so the montage keeps its shape and the remaining cameras stay where the reader
-  expects them.
+- a `[cameras.<name>]` whose `video` resolves no files **leaves the rig** — which is what
+  shortens the `V` axis. Keeping it would leave a camera whose 2D is all-`NaN`, which reads
+  as a detected-and-empty camera rather than an absent one, and which bundle adjustment
+  would then export into `calibration.toml` at its unrefined nominal pose with nothing
+  marking it as unmeasured;
+- its `[pose2d.crops]` entry and its place in `auto_crops` go with it (an orphaned
+  automatic crop is otherwise a hard error);
+- `[visualization.videos.<name>].grid` cells naming a dropped camera are **blanked** rather
+  than removed, so the montage keeps its shape and the remaining cameras stay where the
+  reader expects them.
 
-One warning names the source, the pathways and the views, and reports how many views the run
-is proceeding on. Below `config.MIN_VIEWS_FOR_3D` (two) it refuses instead, because one view
+One warning names the cameras that went and reports how many views the run is proceeding
+on. Below `config.MIN_VIEWS_FOR_3D` (two) it refuses instead, because one view
 fails *silently*: triangulation returns all-`NaN` without raising, RANSAC gives a single
 observation zero inliers and then erases it, and bundle adjustment reports success at a cost
 near zero.
@@ -480,10 +475,10 @@ Each stage records the config subset that produced it in `<outdir>/run.json` (a
 and its output is present; it recomputes when its parameters changed, its output is missing,
 `--overwrite` selects it, or an upstream stage recomputed (the cascade). Performance-only
 knobs (`batch_size`, `decode_buffer`, `[io.image]`) never invalidate a cache. The `pose2d`
-cache always feeds downstream (so `do_pose2d = false` reconstructs from a stored 2D pose); a
+cache always feeds downstream (so `pose2d = false` reconstructs from a stored 2D pose); a
 *derived* stage's output feeds downstream only while that stage is enabled.
 
-The skeleton enters every stage's fingerprint as its ordered `point_names` and `bones`, and
+The skeleton enters every stage's fingerprint as its ordered `points` and `edges`, and
 deliberately **not** as its name: two skeletons agreeing on both compute the same result
 whatever they are called, so renaming a preset — which is what `fly38b` → `fly38` was — must
 not buy a full re-detection. What a name change cannot do is make one point set readable as

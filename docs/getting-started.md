@@ -184,15 +184,15 @@ deeperfly run examples/data/
 ```
 
 ```
-WARNING  recording examples/data has footage for 7 of 8 configured source(s) -- absent: ['vid_h'].
-         The run will use the ['vid_f', 'vid_lf', ...] it has; check the [[sources]] `filename`
-         globs if that is not what you expect
-WARNING  narrowing this run to the footage present: source(s) ['vid_h'] resolved no files, so
-         pathway(s) ['h'] and view(s) ['h'] are dropped -- running on 7 view(s):
+WARNING  narrowing this run to the footage present: camera 'h' matched no files, so it is
+         dropped from the rig -- running on 7 view(s):
          ['rh', 'rm', 'rf', 'f', 'lf', 'lm', 'lh']
 INFO     stages: pose2d=on, bundle_adjustment=on, pictorial_structures=off, triangulation=on,
          eks=on, postprocess=on, inverse_kinematics=on, visualization=on
 ```
+
+A camera's footage is its own `video` pattern, so if that is not what you expected, that
+is the key to check.
 
 Narrowing happens *before* the snapshot and the fingerprints, so this is recorded as a
 7-view run — and when the eighth camera turns up, the pathway list has changed and the
@@ -222,9 +222,9 @@ run to pay for.
 
     A detector is trained through a box, and a differently framed camera puts the animal
     at the wrong apparent *scale* — the one thing no augmentation undoes. The packaged
-    config therefore gives its two axial views a **searched** crop —
-    `{ op = "crop", auto = true }` in `[pose2d].preprocessors`. Here that is only `f`:
-    `h`'s preprocessor was dropped along with the view it fed.
+    config therefore names its two axial cameras in `[pose2d] auto_crops`, so their box
+    is **searched** for this recording. Here that is only `f`: `h` was dropped along with
+    its footage.
 
     The **search** is a coarse-to-fine grid over (center, width) scored by detector
     confidence, and needs no camera rig at all. What needs a solved rig is the **accept
@@ -249,8 +249,8 @@ examples/data/deeperfly_outputs/
 ├── autocrop.json      # the crop window the search settled on, so a re-run neither re-searches nor re-detects
 ├── pose2d.mp4         # camera montage with the 2D detections drawn on
 ├── pose3d.mp4         # same montage with the triangulated 3D skeleton reprojected, plus a synthetic plan view
-├── pose_nmf.mp4       # the fitted NeuroMechFly skeleton
-└── pose_mesh.mp4      # the fitted NeuroMechFly mesh
+├── pose_model.mp4     # the fitted model's skeleton
+└── mesh_model.mp4     # the fitted model's mesh
 ```
 
 The last two need the `ik` extra; without it those two videos are skipped with the

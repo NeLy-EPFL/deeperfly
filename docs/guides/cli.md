@@ -137,7 +137,7 @@ deeperfly run recording/ --overwrite                       # recompute everythin
 deeperfly run recording/ --overwrite pose2d visualization  # just these (+ what follows)
 ```
 
-The cached 2D pose always feeds the stages downstream, so `do_pose2d = false`
+The cached 2D pose always feeds the stages downstream, so `pose2d = false`
 reconstructs 3D from a stored 2D pose without re-detecting. A *derived* stage's
 cached output (bundle adjustment, pictorial structures, triangulation) feeds
 downstream only while that stage is enabled. An enabled stage whose input is
@@ -202,10 +202,10 @@ $ deeperfly auto-crop recording/ -c config.toml
 
 recorded in recording/deeperfly_outputs/autocrop.json -- the next run reuses it
 
-To freeze a searched window as an explicit box (so nothing re-searches), replace that
-preprocessor's op with:
-  [[pose2d.preprocessors]]  name = "crop_f"
-  ops = [{ op = "crop", x = 395, y = 304, width = 955, height = 478 }]
+To freeze a searched window as an explicit box, drop the camera from `auto_crops` and
+write it down:
+  [pose2d.crops]
+  f = { x = 395, y = 304, width = 955, height = 478 }
 ```
 
 The last column is `accepted` when the searched box replaced the incumbent and `kept` when
@@ -639,8 +639,8 @@ The from-scratch path: label 2D with no calibration at all, then recover the cam
 from those labels.
 
 ```bash
-deeperfly calibrate [PROJECT] --dry-run                     # readiness only
-deeperfly calibrate [PROJECT] --points both --focal-px 22388 --accept
+deeperfly calibrate [PROJECT] --dry-run                # readiness only
+deeperfly calibrate [PROJECT] --focal-px 22388 --accept
 ```
 
 ### Run it with `--dry-run` while you label
@@ -653,29 +653,27 @@ $ deeperfly calibrate --dry-run
 ┡━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ OK │ views with labels      │ 7 / 7             │                            │
 │ OK │ co-visibility          │ connected         │                            │
-│ !  │ static landmarks       │ 0                 │ one static point is worth   │
-│    │                        │                   │ more than many keypoint     │
-│    │                        │                   │ frames                      │
-│ OK │ observations/unknowns  │ 4.21x             │                            │
-│ !  │ scale reference        │ none              │ angles yes, lengths no      │
+│ OK │ labeled frames         │ 24                │                            │
+│ OK │ observations / unknowns│ 4.21x             │                            │
+│ OK │ weakest view pair      │ rh+lh  31 shared  │                            │
 └────┴────────────────────────┴───────────────────┴────────────────────────────┘
 ```
 
 Each shortfall is phrased as the labeling that would fix it, so "enough" is never a guess.
 
-### `--points landmarks | keypoints | both`
+### The animal is the calibration target { #calibration-target }
 
-Your choice of what drives the solve, and it matters more than it looks:
+There is no separate landmark namespace, and no `--points` flag: the solve is driven by
+the tracked keypoints, which is what every rig here was already solved from. Nothing ever
+shipped a `landmarks.toml` or a `landmarks/` group.
 
-> A skeleton keypoint at frame *t* is a **different 3D point** from the same keypoint at
-> *t+1* — the animal moved. So *N* frames of *P* points add `3·N·P` unknowns, all inside a
-> 3 mm blob near the field center. A **static** landmark — a coverslip scratch, the tether
-> tip, a dust speck — is **one** 3D point observed in `V·T` images, spread through the
-> scene volume. That is what conditions the solve.
-
-Declare landmarks in the project's `landmarks.toml`; `scope = "rig"` shares one 3D point
-across every recording on the rig (the strongest constraint available, and the easiest to
-get wrong if the rig is bumped — the report always breaks its residual down per recording).
+The cost is real and worth stating. A skeleton keypoint at frame *t* is a **different 3D
+point** from the same keypoint at *t+1* — the animal moved — so *N* frames of *P* points
+add `3·N·P` unknowns, all inside a ~3 mm blob near the field centre, where a static
+landmark would have been one 3D point observed in `V·T` images spread through the scene
+volume. The equation-count half of that argument is not binding here (a track seen in 8
+views runs about 5.3x against the 1.5x the meter wants); the *conditioning* half is the
+one to watch, and the readiness meter's weakest-view-pair row is what reports it.
 
 ### Intrinsics are never guessed
 
@@ -702,10 +700,38 @@ good one would be the most destructive thing this command could do.
 Only frames marked **reviewed** are used, unless `--include-unreviewed`: a half-labeled
 frame contributes a systematically biased 3D point, and no residual reveals that afterwards.
 
-Scale: `--scale-from A,B=1.8` pins it with a known distance between two landmarks (which
-reuses the bundle adjuster's existing bone-length prior). Without one the rig is valid *up
-to scale* — angles are meaningful, lengths and velocities are not, and the calibration
-records `units = "arbitrary"` so nothing downstream can forget.
+**Scale is not a calibration-stage concern.** Images cannot determine it, so a solved rig
+is *always* valid only up to scale — angles are meaningful, lengths and velocities are
+not — and the calibration records `units = "arbitrary"` so nothing downstream can forget.
+There is nothing an operator can do about that here, which is why the meter has no scale
+row and there is no `--scale-from`. Physical scale first enters at inverse kinematics,
+where `body_scale` fits the point cloud to the model's own defined dimensions.
+
+## `deeperfly ik bind` — adapt a skeleton to a model { #deeperfly-ik-bind }
+
+A binding says where each tracked point sits on the fitted model, and it is the one
+artifact where a skeleton point name and a model body name may appear together. The
+packaged `fly38@neuromechfly` pair ships; a different skeleton, or a second model, needs
+one file — and an unbound pair is a load error naming both halves rather than a fit
+against all-NaN observations.
+
+```bash
+uv run --with mujoco deeperfly ik bind [SKELETON] [MODEL] --mjcf model/fly.xml [-o OUT]
+```
+
+It expands the name conventions (a leg keypoint is the origin of the distal body),
+resolves the geometry that cannot be hand-authored (the pretarsus is the most distal vertex of
+the last tarsus), and marks the rows no rule can decide `approximate = true`.
+
+**Read the approximate rows.** They are the placements a human chose — for `fly38` those
+are the five dorsal-midline abdomen points, which have no exact counterpart on
+NeuroMechFly — and this command only reproduces the choice already made. Binding a new
+skeleton means deciding them again. The flag reaches the fit and is reported, never acted
+on: the stage's residual splits exact rows from approximate ones, so a reader can tell a
+bad fit from a bad retarget.
+
+It needs MuJoCo, which deeperfly does not depend on, so run the one command with it
+injected. The generated file is what ships.
 
 ## `deeperfly labels-merge` — reconcile a second label set { #deeperfly-labels-merge }
 
@@ -833,6 +859,7 @@ Three cases now, and the middle one is the fix:
 Either way the result is validated by loading it through the same strict loader a run uses,
 so `set` cannot write a key or a value a run would then reject.
 
-Four things are **not** described: `[cameras]`, `[skeleton]`, `[[sources]]` and the
-`[pose2d]` detection plan. They are structural or open-ended, and a half-schema for them
-would be a fiction — they belong in the file, or (for the skeleton and rig) in the project.
+Three things are **not** described: `[calibration]` / `[default_camera]` / `[cameras.*]`,
+`[skeleton]`, and `[visualization]`'s videos. They are structural or open-ended, and a
+half-schema for them would be a fiction — they belong in the file, or (for the skeleton
+and the rig) in the project.

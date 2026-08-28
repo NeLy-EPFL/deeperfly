@@ -32,10 +32,10 @@ Single-image helpers (e.g. `CameraGroup.project`) drop the `T` axis and use
 There is no separate visibility mask. A keypoint that a view does not observe is
 stored as `NaN`, and the same convention carries through:
 
-- A `(view, point)` no pathway's mapping writes stays `NaN`. Every shipped detector is
-  dense — channel *i* is point *i* of the pathway's view — so the packaged plan writes
-  every cell and the detector's own 2D has no missing entries; where a plan *does* declare
-  `[pose2d.output_points]` tables, their union is the visibility.
+- A `(camera, point)` nothing writes stays `NaN`. Every shipped detector is dense —
+  channel *i* is point *i* of that camera — so every cell is written and the detector's
+  own 2D has no missing entries. What each camera observes *is* the visibility, and under
+  a dense detector it is total.
 - Triangulation ignores `NaN` views and returns `NaN` for a point seen by fewer
   than `min_inliers` views.
 - The HDF5 datasets preserve `NaN`, so it round-trips through `results.h5`. Point arrays
@@ -84,43 +84,52 @@ refit but not the inlier vote, which stays a pure geometric reprojection test.
 
 ## Glossary
 
-**Source** — a named footage glob (`[[sources]]`), decoded once. Decoupled from
-cameras and pathways, which reference it by name, so one source can feed several
-pathways.
+**Camera** — one entry of `[cameras.<name>]`: its geometry (intrinsics + orbit
+extrinsics) **and** its footage. A camera's `video` pattern says which files are its
+own; a source that no camera claimed was never anything but a camera without geometry,
+so the two are one thing.
 
-**Pathway** — one `source → preprocessor → model` inference run
-(`[[pose2d.pathways]]`). It says *what to detect on*. Where its outputs land is
-`[pose2d.output_points]` when that table names it, and otherwise the dense identity:
-channel *i* → point *i* of the view the pathway is *named after*. The mapping stays
-required for a model whose channel count is not the skeleton's point count.
+**Detection window** — the box a camera is detected through (`[pose2d.crops]`, one entry
+per camera). Inverted on the way back, so a detection lands in the camera's raw frame,
+which is what its intrinsics describe. There is no op grammar: flips and rotations had no
+consumer left once detection went one-to-one.
 
-**Preprocessor** — a named, reusable list of frame ops (flip/crop/rotate/resize)
-applied to a pathway's frames before the model (`[[pose2d.preprocessors]]`).
-
-**Model** — a detector network plus its weights and input contract
-(`[[pose2d.models]]`). Two classes ship, both dense: `class = "hrnet"` is the per-view
+**Detector** — the network plus its weights and input contract (`[pose2d] class` +
+`weights`). One per run. Two classes ship, both dense: `class = "hrnet"` is the per-view
 detector (and the loader that also runs the HGNetV2 checkpoint), `class = "mvt"` the
 multiview transformer, which encodes a frame's views together. Anything else is refused
 rather than defaulted — see [the dense-38 detectors](detectors.md).
 
-**Detection plan** — the parsed whole of `[[sources]]` + the `[pose2d]`
-sub-tables: the mapping of footage through pathways into the skeleton's per-view
-2D points.
+**Detection plan** — *synthesized*, not declared: one source, one window and one
+identity-mapped pass per camera, derived from the camera table.
 
-**View / camera** — a geometric camera in the rig (`[cameras.<name>]`): pure
-intrinsics + extrinsics. A pathway maps its 2D points back into a view's raw
-frame.
+**Model pack** — the mechanical model the inverse-kinematics stage fits
+(`[inverse_kinematics] model`): a leg template, a baked articulation and an overlay mesh
+selected as one unit. A pack names no skeleton point.
+
+**Binding** — where each tracked point sits on a model
+(`data/bindings/<skeleton>@<model>.toml`). A fact about the *pair*, so it lives in
+neither half; it is the one artifact where a skeleton point name and a model body name
+may appear together.
 
 **Rig / `CameraGroup`** — the set of named cameras as one object.
 
-**Skeleton** — the tracked points and their structure (`[skeleton]`):
-`point_names`, the `limb_points` kinematic chains, the `limb_palette`, and the
-`symmetries` (mirror pairs, which is what makes a left/right check decidable). `fly38` is
-the one packaged skeleton — 38 points: six 5-point legs, two antennae, `neck`, and the
-5-point dorsal-midline `abdomen0..4` chain. `name = "fly38b"` still resolves to it.
+**Skeleton** — the tracked points and their structure (`[skeleton]`), and exactly four
+things: `points`, `edges`, `point_symmetries` (mirror pairs, which is what makes a
+left/right check decidable) and the two colour tables. There is no grouping concept — no
+limbs, no chains, no names for subsets of points; chains are derived from the edge graph
+where anything needs them. `fly38` is the one packaged skeleton — 38 points: six 5-point
+legs, two antennae, `neck`, and the 5-point dorsal-midline `abdomen0..4` chain.
+`include = "fly38b"` still resolves to it.
 
-**Limb** — a named chain of points (e.g. a 5-joint leg) used for the bone-length
-prior and for drawing.
+A skeleton's `name` is a **label**, not an identity: `fly38` has meant two different point
+sets. What identifies one is its ordered `point_names`, which is what every check compares,
+and its `digest` — 8 hex over the points, edges and symmetry pairs — which is the printable
+form of that, shown as `fly38@42da66d9`.
+
+**Edge** — a pair of points the skeleton joins (`edges`). Used for the bone-length prior,
+pictorial structures' graph, seeding a missing joint in the editor, and drawing. A point in
+no edge is still tracked — the antennae and `neck` are.
 
 **Candidates** — the detector's top-`k` heatmap peaks per joint, cached by
 `pose2d` when `pictorial_structures` is enabled; the input the peak-recovery stage
