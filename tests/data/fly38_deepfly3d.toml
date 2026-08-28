@@ -4,15 +4,9 @@
 #
 # TEST DATA, not a packaged skeleton. It shipped as `fly38` until the 0.2 release
 # retired it in favour of the midline-abdomen set that now owns that name, and it is
-# kept here because two things in the suite are defined against it and cannot be
-# restated on the current skeleton:
-#
-#   * tests/data/ik_baseline_scipy.npz stores (T, 38, 3) poses with no point names
-#     beside them, so its columns mean whatever THIS order says they mean;
-#   * a clean 19-left / 19-right block layout, which the chirality QC tests build a
-#     deliberately-mirrored pose on top of. The current skeleton puts six unpaired
-#     midline points in the middle of the index range, so the same pose cannot be
-#     written as `concatenate([left, right])` there.
+# kept here because tests/data/ik_baseline_scipy.npz is defined against it and cannot
+# be restated on the current skeleton: that file stores (T, 38, 3) poses with no point
+# names beside them, so its columns mean whatever THIS order says they mean.
 #
 # Referenced from a config by path -- `[skeleton] include = "fly38_deepfly3d.toml"` --
 # because it is no longer resolvable by name.
@@ -33,8 +27,7 @@ points = [
 
 # Left/right mirror pairs. Written out rather than inferred from the name tokens so that
 # renaming a point cannot quietly re-pair the skeleton. Read by flip augmentation, the
-# symmetrize correction and the chirality QC; the loader checks they are an automorphism
-# of `edges`.
+# symmetrize correction; the loader checks they are an automorphism of `edges`.
 symmetries = [
     ["lf_thorax_coxa",     "rf_thorax_coxa"],
     ["lf_coxa_trochanter", "rf_coxa_trochanter"],

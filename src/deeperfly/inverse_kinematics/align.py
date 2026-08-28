@@ -198,8 +198,7 @@ def mirror_leg_pairs(
 
     Two legs pair when *every* joint of one mirrors the joint at the same depth of the
     other, by the skeleton's own ``symmetries`` -- the same declared relation the
-    training mirror augmentation and the chirality QC read
-    (:mod:`deeperfly.skeleton`). Derived rather than matched on the ``l``/``r`` name
+    training mirror augmentation reads (:mod:`deeperfly.skeleton`). Derived rather than matched on the ``l``/``r`` name
     prefix on purpose: the prefix is a convention of *this* template and this skeleton,
     while the symmetry pairs are the config's explicit statement of which point is which
     point's mirror image, and a skeleton that declares none is stating that its subject

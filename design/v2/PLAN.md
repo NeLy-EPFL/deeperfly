@@ -182,7 +182,7 @@ Until this lands, **the limb rename has no JS gate**, and W1 should not be treat
 - `project.py`: the skeleton template it writes, the preset detection at line 1468.
 - `skeleton_migrate.py`: its emitter and its `limbs` / `symmetries` change-kinds move to
   `edges`.
-- Gate: `test_skeleton`, `test_skeleton_migrate`, `test_project`, `test_chirality`,
+- Gate: `test_skeleton`, `test_skeleton_migrate`, `test_project`,
   `test_gui_server`, plus `test_gui_browser` for the 22 JS references -- which means **W0a
   first**, since that file runs nowhere today.
 
@@ -250,8 +250,8 @@ Until this lands, **the limb rename has no JS gate**, and W1 should not be treat
 - Gate: `test_pathways`, `test_autocrop`, `test_config_narrowing`, `test_pose2d`,
   `test_fingerprint`. Fixture churn: `tests/data/fly38_sparse_config.toml` and
   `fly38_deepfly3d.toml` are deleted; the tests behind them (partial per-view
-  visibility, the mirrored-pathway left/right check, `test_chirality`) either move to a
-  hand-built `pts2d` with NaN columns -- which is what they are actually about -- or go.
+  visibility, the mirrored-pathway left/right check) either move to a hand-built
+  `pts2d` with NaN columns -- which is what they are actually about -- or go.
 
 ### W4. Footage: regex matching and concatenation
 
@@ -427,7 +427,7 @@ Two commits, because the second is only reachable once the first has removed the
   lookup, nothing to do with calibration) so the word stops colliding.
 - **Do not touch** the IK sense of the word: a chain's **base landmark** in
   `inverse_kinematics/{__init__,articulation,bodyplan}.py`, `results.py:471`,
-  `config.py:584`, and the prose in `chirality.py:249` and `pathways.py:330`.
+  `config.py:584`, and the prose in `pathways.py:330`.
 - Gate: `test_calibration_solve` (38 references), `test_calibrate_cli` (32),
   `test_cli_suggest` (13), `test_gui_ba`. Plus one end-to-end cold-start solve from
   keypoints alone on an example recording, checked for a reprojection error in the same

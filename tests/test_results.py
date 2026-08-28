@@ -79,7 +79,7 @@ def test_roundtrip_reconstructs_skeleton(cameras, rng, tmp_path):
     assert sk.point_colors == Skeleton.fly().point_colors
     np.testing.assert_array_equal(sk.bones, Skeleton.fly().bones)
     # The editor reads its skeleton from here, so losing the pairs on the way would leave
-    # the chirality check falling back to name inference for every run.
+    # every consumer of them falling back to name inference for every run.
     np.testing.assert_array_equal(sk.symmetries, Skeleton.fly().symmetries)
 
 

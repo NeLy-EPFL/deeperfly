@@ -157,7 +157,7 @@ def test_a_skeleton_path_keeps_only_the_skeleton_section(tmp_path):
     assert set(tomllib.loads(text)) == {"skeleton"}
     assert project.skeleton().n_points == 38
     # The pairs must survive the lift, or a project seeded this way silently loses the
-    # mirror check, flip augmentation and the chirality QC. Sixteen, not nineteen: the
+    # mirror check and flip augmentation. Sixteen, not nineteen: the
     # packaged skeleton's neck and five abdomen points are ON the midline and so
     # correctly have no mirror partner.
     assert project.skeleton().n_symmetries == 16

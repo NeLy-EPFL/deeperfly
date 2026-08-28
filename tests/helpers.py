@@ -36,8 +36,8 @@ def seven_camera_default() -> Config:
     :func:`rig_arrays` / :func:`make_cameras`, which build every camera from one
     :data:`FOCAL_PX` and one :data:`DISTANCE_MM` -- and the axial view is on a different
     lens, with a different focal AND a different distance. An eighth entry there would
-    fabricate a wrong camera for dozens of unrelated geometry, bundle-adjustment and
-    chirality tests.
+    fabricate a wrong camera for dozens of unrelated geometry and bundle-adjustment
+    tests.
     """
     cfg = Config.default()
     keep = [n for n in cfg.source_patterns() if n != "h"]
@@ -167,11 +167,8 @@ def fly38_skeleton():
 def deepfly3d_skeleton():
     """The retired DeepFly3D point set, for tests defined against ITS layout.
 
-    Two things in the suite are: the recorded IK baseline
-    (:data:`IK_BASELINE_PATH`, whose 38 columns have no names beside them and mean what
-    this order says) and the chirality QC tests, which build a deliberately-mirrored pose
-    as ``concatenate([left19, right19])`` -- expressible only on a skeleton whose two
-    halves are contiguous index blocks.
+    The recorded IK baseline is: :data:`IK_BASELINE_PATH`'s 38 columns have no names
+    beside them and mean what this order says.
 
     Loaded by PATH: it is no longer a packaged preset, and ``fly38`` now names a different
     point set.

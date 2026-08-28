@@ -120,7 +120,7 @@ def test_a_skeleton_declaring_no_symmetries_symmetrizes_nothing(
 ):
     """Declaring no pairs means "this subject is not bilaterally symmetric" -- obey it.
 
-    The same convention :meth:`Skeleton.flip_perm` and the chirality QC follow. Silence
+    The same convention :meth:`Skeleton.flip_perm` follows. Silence
     would be wrong here: the config asked for symmetric segments and did not get them.
     """
     from dataclasses import replace

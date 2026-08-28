@@ -25,7 +25,7 @@ delete. What a chain name did for the rest of the schema is now a **point select
 
 **Symmetry** (``symmetries``) is the same relation SLEAP models as a ``type 2`` skeleton
 edge: an unordered pair of points that mirror each other across the animal's sagittal
-plane. Which side comes first carries no meaning, so a pair is stored sorted. Three
+plane. Which side comes first carries no meaning, so a pair is stored sorted. Two
 things read it, and they are worth naming because each fails differently without it:
 
 :meth:`Skeleton.flip_perm`
@@ -37,13 +37,11 @@ things read it, and they are worth naming because each fails differently without
 :meth:`Skeleton.partner`
     Which point is the other half of a pair -- what lets the ``symmetrize``
     correction name one side and get both.
-:mod:`deeperfly.chirality`
-    Flags hand labels whose left/right identities look swapped.
 
 16 rows is 16 chances to swap a side silently, so the loader checks the permutation
 against the edges: applying it to ``edges`` must give ``edges`` back
 (:func:`_check_automorphism`). A row carrying the wrong side, or two joints of one leg
-exchanged, breaks that and is named. Declaring no pairs is legal and switches the three
+exchanged, breaks that and is named. Declaring no pairs is legal and switches both
 consumers off -- the right default for a genuinely asymmetric subject.
 """
 

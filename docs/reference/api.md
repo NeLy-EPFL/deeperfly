@@ -30,11 +30,6 @@ The portable form of a solved rig — see
 
 ::: deeperfly.skeleton.resolve_points
 
-
-## Chirality (left/right swap detection)
-
-::: deeperfly.chirality
-
 ## Results
 
 ::: deeperfly.results.PoseResult

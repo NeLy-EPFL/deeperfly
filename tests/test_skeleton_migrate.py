@@ -381,8 +381,8 @@ def test_the_real_fly_skeleton_round_trips_through_a_migration(tmp_path):
 
 def test_symmetries_survive_the_emitted_skeleton_fragment(fly):
     """A migration rewrites the whole ``[skeleton]`` table, so dropping the pairs here
-    would silently disable the mirror check, flip augmentation and the chirality QC on the
-    first skeleton edit a project ever makes.
+    would silently disable the mirror check and flip augmentation on the first skeleton
+    edit a project ever makes.
     """
     import tomllib
 

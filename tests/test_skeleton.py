@@ -140,7 +140,7 @@ def test_the_packaged_skeleton_pairs_every_point_that_has_a_side(fly):
     """``fly38b``'s unpaired points are exactly the midline ones, and no others.
 
     A point off the midline with no partner is a real defect -- it silently drops out of
-    flip augmentation and the chirality check -- so "16 pairs" is asserted as *which* six
+    flip augmentation and the mirror check -- so "16 pairs" is asserted as *which* six
     points are left over, not as a count.
     """
     paired = {fly.point_names[i] for pair in fly.symmetries for i in pair}

@@ -16,7 +16,7 @@ counts what it would touch, and -- for anything destructive -- a refusal to proc
     reorder points      remap by name; on-disk COO indices rewritten         notice
     add/remove a bone   none (bones are display + the BA prior only)         silent
     change a colour     none                                                 silent
-    change symmetries   none (read by flip augmentation / the chirality QC)  silent
+    change symmetries   none (read by flip augmentation)                     silent
     delete a point      its labels are QUARANTINED, not deleted              confirm
 
 The one rule everything else follows from: **labels move by name, never by index.** The same
@@ -193,8 +193,8 @@ def diff_skeletons(old, new) -> tuple[list[SkeletonChange], dict[int, int]]:
         changes.append(
             SkeletonChange(
                 "symmetries",
-                "the left/right symmetry pairs changed (flip augmentation, the "
-                "symmetrize correction and the chirality QC read them; no label moves)",
+                "the left/right symmetry pairs changed (flip augmentation and the "
+                "symmetrize correction read them; no label moves)",
             )
         )
     return changes, mapping
@@ -453,9 +453,9 @@ def _skeleton_toml(skeleton) -> str:
     Written from the object rather than lifted from a file, because a migrated skeleton has
     no source file yet. Every one of the four is emitted by NAME, so the fragment survives
     a later reorder -- and all four are emitted, because a migration rewrites the whole
-    table: dropping the symmetries here would silently disable flip augmentation and the
-    chirality QC on the first skeleton edit a project ever makes, and dropping the colours
-    would drop the operator's palette back to a colormap.
+    table: dropping the symmetries here would silently disable flip augmentation on the
+    first skeleton edit a project ever makes, and dropping the colours would drop the
+    operator's palette back to a colormap.
     """
     from . import _toml
 

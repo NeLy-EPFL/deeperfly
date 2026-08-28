@@ -86,8 +86,8 @@ concatenation.
 
 **The word survives in a different sense and must not be swept up.** A chain's **base
 landmark** in `inverse_kinematics/` (the head's `neck`) is an IK marker, unrelated to
-calibration; so is the prose in `results.py:471`, `config.py:584`, `chirality.py:249`
-and `pathways.py:330`. `visualization/bird.py`'s local `_landmarks` helper is an
+calibration; so is the prose in `results.py:471`, `config.py:584` and
+`pathways.py:330`. `visualization/bird.py`'s local `_landmarks` helper is an
 orientation-group lookup and should be renamed to stop the collision.
 
 ## Scale: where physical units actually enter
