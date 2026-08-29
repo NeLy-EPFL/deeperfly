@@ -24,10 +24,14 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import HTTPException, WebSocket
 from starlette.requests import HTTPConnection
+
+if TYPE_CHECKING:
+    from ..project.jobs import JobQueue
 
 from . import payloads
 from .session import Session
@@ -187,7 +191,7 @@ class EditorApp:
     #: -- what a bare `results.h5` session gets, which leaves `/api/jobs` reporting
     #: `enabled: false` rather than absent, so the front-end can say *why* the buttons
     #: are missing instead of just not showing them.
-    jobs: object | None = None
+    jobs: JobQueue | None = None
 
     #: Serializes edits against the shared session.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

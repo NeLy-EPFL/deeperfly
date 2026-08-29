@@ -254,7 +254,7 @@ def ik_bind(
     from ..inverse_kinematics.pack import ModelPack
 
     spec = {} if not skeleton else {"skeleton": {"include": skeleton}}
-    skeleton = Config.from_dict(spec).skeleton()
+    skel = Config.from_dict(spec).skeleton()
     pack = ModelPack.load(model)
     if not mjcf:
         sys.exit(
@@ -263,9 +263,9 @@ def ik_bind(
         )
     model = mj.MjModel.from_xml_path(str(mjcf))
 
-    rows = {n: _row(model, pack.name, n) for n in skeleton.point_names}
-    text = render(skeleton, pack.name, rows)
-    out = Path(output or BINDING_DIR / f"{skeleton.name}@{pack.name}.toml")
+    rows = {n: _row(model, pack.name, n) for n in skel.point_names}
+    text = render(skel, pack.name, rows)
+    out = Path(output or BINDING_DIR / f"{skel.name}@{pack.name}.toml")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
     n_approx = sum(1 for r in rows.values() if r[2])

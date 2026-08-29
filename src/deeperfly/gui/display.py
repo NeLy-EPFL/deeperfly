@@ -16,17 +16,52 @@ never leak back into the labels.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from jaxtyping import Bool, Float
 
 from .solve import solve_point_3d
 
+if TYPE_CHECKING:
+    from ..config import AnnotationParams, TriangulationParams
+    from ..labels import Labels
+    from ..results import PoseResult
+    from .model_live import ModelLive
+
 log = logging.getLogger("deeperfly")
 
 
 class _DisplayMixin:
     """The derived-display half of :class:`~deeperfly.gui.state.EditorState`."""
+
+    if TYPE_CHECKING:
+        # What this half reads off the class it is mixed into. Declared, not assigned,
+        # and only for a type checker: a bare annotation in a non-dataclass base is not
+        # a dataclass field, and this block does not run at all. Without it every
+        # `self.x` here is an error against `_DisplayMixin` rather than being checked
+        # against `EditorState`, which is the whole value of writing it down.
+        result: PoseResult
+        labels: Labels
+        ann: AnnotationParams
+        tri: TriangulationParams
+        model_live: ModelLive | None
+        nongt_display: str
+        raw_pts2d: np.ndarray | None
+        image_sizes_wh: np.ndarray | None
+        _model_cache: dict[int, tuple]
+
+        def _resolve_frame(self, t: int | None) -> int: ...
+        def _ensure_pts3d(self, t: int) -> np.ndarray: ...
+        def has_instance(self, t: int | None = None) -> bool: ...
+        @property
+        def has_3d(self) -> bool: ...
+        @property
+        def n_views(self) -> int: ...
+        @property
+        def n_frames(self) -> int: ...
+        @property
+        def n_points(self) -> int: ...
 
     @property
     def detections(self) -> Float[np.ndarray, "V T P 2"]:

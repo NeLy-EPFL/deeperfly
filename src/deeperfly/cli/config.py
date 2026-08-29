@@ -79,7 +79,7 @@ def config_show(
     described here; they live in the file (or, for the skeleton and rig, in the project).
     """
     _configure_logging(log_level.value)
-    config = _load(config)
+    cfg = _load(config)
     wanted = [section] if section else sections()
 
     if section in (None, "pipeline"):
@@ -88,12 +88,12 @@ def config_show(
         # getting that wrong prints an em-dash for every flag, which is what it did -- and
         # which reads as "unset" for exactly the keys a reader is most likely to be
         # checking. (The field name and the stage name are the same word now.)
-        declared = config.data.get("pipeline", {}) or {}
+        declared = cfg.data.get("pipeline", {}) or {}
         _print_section(
             stage_flags_spec(),
             {
                 stage: (on, stage not in declared)
-                for stage, on in config.stage_flags().items()
+                for stage, on in cfg.stage_flags().items()
             },
         )
         if section == "pipeline":
@@ -103,7 +103,7 @@ def config_show(
     for name in wanted:
         try:
             spec = describe(name)
-            values = effective(config, name)
+            values = effective(cfg, name)
         except KeyError as exc:
             raise SystemExit(str(exc).strip("'")) from None
         except (

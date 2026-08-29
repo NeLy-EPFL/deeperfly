@@ -180,7 +180,7 @@ def project_add(
     no-op and a backup copy is recognized as the same recording.
     """
     _configure_logging(log_level.value)
-    project = _open(project)
+    proj = _open(project)
     config = None
     if config:
         from ..config import Config
@@ -190,8 +190,8 @@ def project_add(
     added, failed = [], []
     for source in sources:
         try:
-            before = {e.id for e in project.recordings}
-            entry = project.add_recording(
+            before = {e.id for e in proj.recordings}
+            entry = proj.add_recording(
                 source,
                 link=not copy,
                 slug=slug if len(sources) == 1 else None,
@@ -208,7 +208,7 @@ def project_add(
             )
             continue
         added.append(entry)
-        outputs = project.outputs_dir(entry)
+        outputs = proj.outputs_dir(entry)
         how = (
             "linked"
             if outputs.is_symlink()
@@ -221,7 +221,7 @@ def project_add(
         console.print(f"[red]{len(failed)} source(s) could not be adopted[/red]")
     if added:
         console.print(
-            f"{len(added)} recording(s) added; {len(project.recordings)} in the project"
+            f"{len(added)} recording(s) added; {len(proj.recordings)} in the project"
         )
 
 
@@ -232,20 +232,20 @@ def project_ls(
 ) -> None:
     """List a project's recordings."""
     _configure_logging(log_level.value)
-    project = _open(project)
-    if not project.recordings:
+    proj = _open(project)
+    if not proj.recordings:
         console.print(
-            f"{project.name} has no recordings yet -- "
-            f"'deeperfly project add {project.root} <recording>'"
+            f"{proj.name} has no recordings yet -- "
+            f"'deeperfly project add {proj.root} <recording>'"
         )
         return
-    table = Table(title=f"{project.name}  ({len(project.recordings)} recordings)")
+    table = Table(title=f"{proj.name}  ({len(proj.recordings)} recordings)")
     table.add_column("slug", style="bold")
     table.add_column("id", style="dim")
     table.add_column("frames", justify="right")
     table.add_column("subject")
     table.add_column("outputs")
-    for row in project.status():
+    for row in proj.status():
         entry = row["entry"]
         table.add_row(
             entry.slug,
@@ -280,26 +280,26 @@ def project_status(
     truth, matching what an export and a training set will see.
     """
     _configure_logging(log_level.value)
-    project = _open(project)
-    rows = project.status()
-    totals = project.totals(rows)
+    proj = _open(project)
+    rows = proj.status()
+    totals = proj.totals(rows)
 
-    _info_line("project:  ", f"{project.name}  ({project.root})")
-    _info_line("id:       ", project.id)
-    _info_line("iteration:", project.iteration)
+    _info_line("project:  ", f"{proj.name}  ({proj.root})")
+    _info_line("id:       ", proj.id)
+    _info_line("iteration:", proj.iteration)
     try:
-        skeleton = project.skeleton()
+        skeleton = proj.skeleton()
         _info_line("skeleton: ", f"{skeleton.label}  ({skeleton.n_points} points)")
     except (FileNotFoundError, KeyError, ValueError) as exc:
         _info_line("skeleton: ", f"[unreadable: {exc}]")
     _info_line(
         "calib:    ",
-        project.calibration or "none (uncalibrated -- no 3D until a rig is solved)",
+        proj.calibration or "none (uncalibrated -- no 3D until a rig is solved)",
     )
 
     if not rows:
         console.print(
-            f"\nno recordings yet -- 'deeperfly project add {project.root} <recording>'"
+            f"\nno recordings yet -- 'deeperfly project add {proj.root} <recording>'"
         )
         return
 
@@ -357,12 +357,12 @@ def project_rm(
 ) -> None:
     """Drop a recording from the project index (its files are left alone)."""
     _configure_logging(log_level.value)
-    project = _open(project)
+    proj = _open(project)
     try:
-        entry = project.recording(recording)
+        entry = proj.recording(recording)
     except KeyError as exc:
         raise SystemExit(str(exc).strip("'")) from None
-    outputs = project.outputs_dir(entry)
+    outputs = proj.outputs_dir(entry)
     if delete and outputs.exists() and not outputs.is_symlink():
         console.print(
             f"[red]refusing[/red] to --delete {entry.slug}: its outputs at {outputs} are "
@@ -370,7 +370,7 @@ def project_rm(
             "its labels. Move them out first, or drop the entry without --delete."
         )
         raise SystemExit(1)
-    project.remove_recording(entry.id, delete=delete)
+    proj.remove_recording(entry.id, delete=delete)
     console.print(
         f"[green]removed[/green] {entry.slug} from the index"
         + (" (and its project directory)" if delete else "")
@@ -416,9 +416,9 @@ def project_config(
     without restating 132 detector channel mappings.
     """
     _configure_logging(log_level.value)
-    project = _open(project)
+    proj = _open(project)
     try:
-        text = project.compose_config(profile=profile, base=base)
+        text = proj.compose_config(profile=profile, base=base)
     except (ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from None
 
@@ -436,7 +436,7 @@ def project_config(
     except Exception as exc:
         raise SystemExit(
             f"the composed config is not valid: {exc}\nThis is a project-file problem -- "
-            f"check {project.rig_path().name}, {project.skeleton_file} and the profile"
+            f"check {proj.rig_path().name}, {proj.skeleton_file} and the profile"
         ) from None
 
     if output:
@@ -468,9 +468,9 @@ def project_rig(
     recording carrying its own copy, and is what lets one calibration serve all of them.
     """
     _configure_logging(log_level.value)
-    project = _open(project)
+    proj = _open(project)
     try:
-        path = project.write_rig(source)
+        path = proj.write_rig(source)
     except (ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from None
     console.print(f"[green]wrote[/green] {path}")
@@ -508,9 +508,9 @@ def project_export(
     _configure_logging(log_level.value)
     from ..project.package import export_package
 
-    project = _open(project)
+    proj = _open(project)
     try:
-        report = export_package(project, output, embed=embed)
+        report = export_package(proj, output, embed=embed)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
 
@@ -652,7 +652,7 @@ def project_import_outputs(
     absent_explicit = on_absent is not None
     from ..project.import_outputs import find_outputs, import_outputs
 
-    project = _open(project)
+    proj = _open(project)
     sources = []
     for raw in sources:
         try:
@@ -671,13 +671,13 @@ def project_import_outputs(
     if not sources:
         raise SystemExit("no outputs directories found in what you passed")
 
-    _info_line("project:  ", f"{project.name}  ({project.root})")
-    _info_line("iteration:", str(project.iteration))
+    _info_line("project:  ", f"{proj.name}  ({proj.root})")
+    _info_line("iteration:", str(proj.iteration))
     _info_line("sources:  ", str(len(sources)))
 
     try:
         plans = import_outputs(
-            project,
+            proj,
             sources,
             recording=recording,
             on_conflict=on_conflict,
@@ -730,7 +730,7 @@ def project_import_outputs(
         return
 
     applied = import_outputs(
-        project,
+        proj,
         [p.source for p in mergeable],
         recording=recording,
         on_conflict=on_conflict,
@@ -743,7 +743,7 @@ def project_import_outputs(
                 f"[red]failed[/red] {plan.slug}: {plan.reason}", highlight=False
             )
             continue
-        console.print(f"[green]imported[/green] into {project.labels_path(plan.entry)}")
+        console.print(f"[green]imported[/green] into {proj.labels_path(plan.entry)}")
         if plan.snapshot is not None:
             console.print(f"  pre-import snapshot: {plan.snapshot}", highlight=False)
         if plan.merge is not None and plan.merge.unresolved:
@@ -752,7 +752,7 @@ def project_import_outputs(
                 "were left as the destination had them",
                 highlight=False,
             )
-    console.print(f"project iteration is now {project.iteration}", highlight=False)
+    console.print(f"project iteration is now {proj.iteration}", highlight=False)
 
 
 def _print_import(plan) -> None:
@@ -869,7 +869,7 @@ def project_skeleton(
     from ..config import Config
     from ..project.migrate import apply_migration, expand_renames, plan_migration
 
-    project = _open(project)
+    proj = _open(project)
     try:
         new = Config.from_toml(source).skeleton()
     except Exception as exc:
@@ -878,13 +878,13 @@ def project_skeleton(
     try:
         renames = expand_renames(
             list(rename or ()),
-            project.skeleton().point_names,
+            proj.skeleton().point_names,
             new.point_names,
         )
-        plan = plan_migration(project, new, renames=renames)
+        plan = plan_migration(proj, new, renames=renames)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    _info_line("project:  ", f"{project.name}  ({project.root})")
+    _info_line("project:  ", f"{proj.name}  ({proj.root})")
     _info_line("points:   ", f"{len(plan.old_names)} -> {len(plan.new_names)}")
     if not plan.changes:
         console.print("no change -- the skeletons are identical")
@@ -919,7 +919,7 @@ def project_skeleton(
         )
         return
     try:
-        result = apply_migration(project, new, plan)
+        result = apply_migration(proj, new, plan)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     console.print(

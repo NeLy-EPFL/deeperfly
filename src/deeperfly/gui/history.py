@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from ..labels import Labels
 
 log = logging.getLogger("deeperfly")
 
@@ -83,6 +87,21 @@ class _AbsentEntry:
 
 class _HistoryMixin:
     """The undo/redo half of :class:`~deeperfly.gui.state.EditorState`."""
+
+    if TYPE_CHECKING:
+        # See the note in `deeperfly.gui.display`: declared for the type checker only,
+        # so `self.x` here is checked against `EditorState` rather than against this
+        # mixin. Not assigned, so no dataclass field is created.
+        labels: Labels
+        _undo: list
+        _redo: list
+        _drag_open: tuple[int, int] | None
+        _pts3d_cache: dict[int, np.ndarray]
+        _model_cache: dict[int, tuple]
+
+        def _solve_point(self, t: int, point: int) -> np.ndarray: ...
+        def _invalidate_frame3d(self, t: int) -> None: ...
+        def _invalidate_model(self, t: int | None = None) -> None: ...
 
     def _snapshot(self, t: int, point: int | None, coalesce: bool) -> _UndoEntry:
         cached = self._pts3d_cache.get(t)

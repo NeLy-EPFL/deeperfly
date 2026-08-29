@@ -136,9 +136,9 @@ def labels_merge(
     _configure_logging(log_level.value)
     from .project import _open
 
-    project = _open(project)
-    entry = project.recording(recording)
-    dest_path = project.labels_path(entry)
+    proj = _open(project)
+    entry = proj.recording(recording)
+    dest_path = proj.labels_path(entry)
     source_path = Path(source)
     if source_path.is_dir():
         for candidate in (
@@ -168,7 +168,7 @@ def labels_merge(
         # never been labeled, and the labels live beside a *different* copy of it. Merging
         # into an empty overlay is the right move -- and it still goes through the same
         # name-based reconciliation, which a plain `cp` would have skipped entirely.
-        dest_identity = _derived_identity(project, entry)
+        dest_identity = _derived_identity(proj, entry)
         if dest_identity is None:
             raise SystemExit(
                 f"{entry.slug} has no labels.h5 and no results.h5, so there is nothing "
@@ -222,13 +222,13 @@ def labels_merge(
         # losing it costs that grouping -- but the destination's own answer wins.
         subject_id=dest.subject_id or source.subject_id,
     )
-    project.bump_iteration()
+    proj.bump_iteration()
     console.print(f"[green]merged[/green] into {dest_path}")
     if snapshot is not None:
         console.print(f"pre-merge snapshot: {snapshot}", highlight=False)
-    console.print(f"project iteration is now {project.iteration}", highlight=False)
+    console.print(f"project iteration is now {proj.iteration}", highlight=False)
     if report.unresolved:
-        queue = _write_queue(project, entry.slug, report)
+        queue = _write_queue(proj, entry.slug, report)
         console.print(
             f"[yellow]{len(report.unresolved)} cell(s) need a human decision[/yellow] "
             f"-- written to {queue}. They were left as the destination had them.",

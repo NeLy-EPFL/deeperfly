@@ -429,8 +429,8 @@ def calibrate(
     Nothing becomes the project's calibration without --accept.
     """
     _configure_logging(log_level.value)
-    project = _open(project)
-    per_recording, notes = _gather(project, recordings, include_unreviewed)
+    proj = _open(project)
+    per_recording, notes = _gather(proj, recordings, include_unreviewed)
     for note in notes["notes"]:
         log.warning("%s", note)
     if not per_recording:
@@ -447,7 +447,7 @@ def calibrate(
         )
 
     cond = conditioning(obs, free_focal=free_focal, free_k1=free_k1)
-    _info_line("project:  ", f"{project.name}  ({project.root})")
+    _info_line("project:  ", f"{proj.name}  ({proj.root})")
     _info_line(
         "using:    ",
         f"{obs.n_tracks} keypoint tracks, {obs.n_observations} observations",
@@ -464,7 +464,7 @@ def calibrate(
         )
 
     intrs, dists, intr_source = _intrinsics(
-        project,
+        proj,
         obs,
         from_calibration=from_calibration,
         focal_px=focal_px,
@@ -512,7 +512,7 @@ def calibrate(
     calibration = Calibration.from_camera_group(
         result.cameras,
         name=name,
-        image_sizes=_image_sizes(project, obs),
+        image_sizes=_image_sizes(proj, obs),
         # Images cannot determine scale, so a correspondence-only solve is honestly
         # arbitrary units. Physical scale enters at inverse kinematics.
         units="arbitrary",
@@ -530,7 +530,7 @@ def calibrate(
         },
         quality=result.quality,
     )
-    path = project.root / "calibrations" / f"{name}.toml"
+    path = proj.root / "calibrations" / f"{name}.toml"
     calibration.save(path)
     report_path = path.with_suffix(".report.json")
     _write_report(report_path, result, cond, obs)
@@ -538,10 +538,10 @@ def calibrate(
     console.print(f"[green]wrote[/green] {report_path}")
 
     if accept:
-        project.calibration = str(path.relative_to(project.root))
-        project.save()
+        proj.calibration = str(path.relative_to(proj.root))
+        proj.save()
         console.print(
-            f"[green]accepted[/green] -- {project.name} now uses {calibration.name}; "
+            f"[green]accepted[/green] -- {proj.name} now uses {calibration.name}; "
             "the editor will show 3D on its next open"
         )
     else:

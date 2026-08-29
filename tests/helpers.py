@@ -7,13 +7,16 @@ Importable as a top-level module thanks to ``pythonpath = ["tests"]`` in
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 from deeperfly import geometry as geom
 from deeperfly.config import Config
 from deeperfly.rig.cameras import CameraGroup
+from deeperfly.skeleton import Skeleton
 
 # Reference rig parameters.
 FOCAL_PX = 22388.125
@@ -329,3 +332,41 @@ def rot_z(angle: float) -> np.ndarray:
     """Rotation about the world z axis."""
     c, s = np.cos(angle), np.sin(angle)
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _write_v2(path, cameras, rng, *, t=6):
+    """A schema-v2 file: every stage storing every array, the way older builds wrote them.
+
+    Built by hand rather than by the store, because the store only writes the current
+    schema -- which is the thing :func:`repack` has to be fed an older file to test.
+    """
+    from deeperfly.results.core import _write_cameras, _write_skeleton
+
+    v, n = len(cameras), 38
+    pts3d = rng.uniform(-1.5, 1.5, size=(t, n, 3))
+    proj = np.array(cameras.project(pts3d), dtype=float)
+    pts2d = proj + rng.normal(scale=3.0, size=proj.shape)
+    pts2d[0, 0, 0] = np.nan
+    err = np.linalg.norm(proj - pts2d, axis=-1)
+    with h5py.File(path, "w") as f:
+        f.attrs["meta"] = json.dumps(
+            {"deeperfly_format_version": 2, "created_utc": "2026-01-01T00:00:00+00:00"}
+        )
+        _write_skeleton(f.create_group("skeleton"), Skeleton.fly())
+        g = f.create_group("pose2d")
+        g.create_dataset("points", data=pts2d)
+        g.create_dataset("conf", data=rng.uniform(size=(v, t, n)))
+        _write_cameras(g.create_group("cameras"), cameras)
+        _write_cameras(
+            f.create_group("bundle_adjustment").create_group("cameras"), cameras
+        )
+        for stage, s2 in (
+            ("triangulation", pts2d),
+            ("eks", proj),
+            ("postprocess", proj),
+        ):
+            gs = f.create_group(stage)
+            gs.create_dataset("points", data=s2)
+            gs.create_dataset("points3d", data=pts3d)
+            gs.create_dataset("reproj_error", data=err)
+    return pts2d, pts3d, proj

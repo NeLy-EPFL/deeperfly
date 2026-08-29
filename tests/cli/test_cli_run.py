@@ -1856,7 +1856,7 @@ def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
     """``deeperfly repack`` over a directory: every results.h5 under it, once each."""
 
     import h5py
-    from test_results import _write_v2
+    from helpers import _write_v2
 
     from deeperfly.cli.report import repack
     from deeperfly.results import FORMAT_VERSION

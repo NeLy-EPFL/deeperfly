@@ -78,15 +78,13 @@ def auto_crop(
 
     for rec in recordings:
         console.rule(str(rec.outdir))
-        config = Config.read_for_run(config, rec.outdir)
+        cfg = Config.read_for_run(config, rec.outdir)
         # Searching is the point of this command, so an already-recorded box is ignored
         # rather than reused (`ensure_resolved(force=True)` below does the same).
-        config.auto_crops = {}
+        cfg.auto_crops = {}
         if no_gate:
-            config.data.setdefault("pose2d", {}).setdefault("autocrop", {})["gate"] = (
-                False
-            )
-        plan = config.detection_plan()
+            cfg.data.setdefault("pose2d", {}).setdefault("autocrop", {})["gate"] = False
+        plan = cfg.detection_plan()
         todo = autocrop.targets(plan)
         if not todo:
             raise SystemExit(
@@ -94,19 +92,19 @@ def auto_crop(
                 '`{ op = "crop", auto = true }` to a [[pose2d.preprocessors]] the view '
                 "needs one for (usually the front and hind cameras), then run this again."
             )
-        source_sizes = source_image_sizes(config, sources=rec.sources)
+        source_sizes = source_image_sizes(cfg, sources=rec.sources)
         view_sources = plan.view_sources()
-        cameras = config.camera_group(
+        cameras = cfg.camera_group(
             image_sizes={
                 v: source_sizes[s] for v, s in view_sources.items() if s in source_sizes
             }
         )
         models = load_models(plan)
         for name, model in models.items():
-            model.set_precision(model.spec.precision or config.pose2d.precision)
+            model.set_precision(model.spec.precision or cfg.pose2d.precision)
             log.info("model %r on %s", name, model.device())
         _, resolutions = autocrop.ensure_resolved(
-            config,
+            cfg,
             plan,
             models=models,
             cameras=cameras,

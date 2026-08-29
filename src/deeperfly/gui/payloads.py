@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
