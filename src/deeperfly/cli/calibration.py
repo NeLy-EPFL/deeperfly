@@ -22,9 +22,10 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import typer
 
-from ..results import PoseResult, StageStore
+from ..results import StageStore
 from ..rig.calibration import CALIBRATION_FILENAME, Calibration, quality_from_errors
 from .console import LogLevel, LogLevelOption, _configure_logging
 
@@ -122,20 +123,29 @@ def calibration_export(
     if cameras is None:
         raise SystemExit(f"{results_path} stores no camera rig to export")
 
-    # Residuals of the rig being exported, measured on the result's own 2D. Recomputed
-    # rather than read from `triangulation/reproj_error`, which may describe a
-    # *different* rig (or a substituted 2D layer) than the one going into this file.
+    # Residuals of the rig being exported, measured on the DETECTIONS. Recomputed rather
+    # than read from `triangulation/reproj_error`, which may describe a *different* rig
+    # (or a substituted 2D layer) than the one going into this file.
+    #
+    # `pose2d/points` and not `PoseResult.load(...).pts2d`: the latter is the most-derived
+    # stage, and after triangulation a stage's 2D is `project(points3d)`. Triangulating a
+    # reprojection and reprojecting it again returns where it started, so the measurement
+    # was ~0 by construction -- 0.0000 px median on a recording whose detections give
+    # 6.12 px. A rig quality block is only meaningful against pixels the rig did not
+    # produce.
     quality: dict = {}
     try:
         from ..rig.triangulation import reprojection_error, triangulate
 
-        result = PoseResult.load(results_path)
-        pts2d = result.pts2d
+        pose2d = store.read_pose2d()
+        if pose2d is None:
+            raise ValueError("no pose2d group")
+        pts2d = np.asarray(pose2d[0], dtype=float)
         quality = quality_from_errors(
             reprojection_error(cameras, triangulate(cameras, pts2d), pts2d),
             cameras.names,
         )
-    except Exception:  # a 2D-only or unreadable result still exports its rig
+    except Exception:  # a rig-only or unreadable result still exports its rig
         log.warning(
             "could not measure this rig's reprojection error; exporting without it"
         )
