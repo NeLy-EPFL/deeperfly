@@ -69,6 +69,39 @@ def inspect(
             f"median {np.nanmedian(result.reproj_error):.3f} px"
             f"  max {np.nanmax(result.reproj_error):.3f} px",
         )
+    _inspect_eks(input)
+
+
+def _inspect_eks(path: str) -> None:
+    """Print the smoother's own uncertainty, when the file carries it.
+
+    ``eks/posterior_var`` and ``eks/smooth_param`` are stored precisely so nobody has to
+    re-run the smoother to get them, and until this line nothing surfaced them -- a stored
+    array no tool reads is indistinguishable from one that is not worth storing.
+
+    Reported as a standard deviation, not a variance: the pose it qualifies is in world
+    units, and a reader comparing "how sure is this point" against "how far did it move"
+    should not have to take a square root first.
+    """
+    from ..results import StageStore
+
+    store = StageStore(path)
+    var = store.read_point_extra("eks", "posterior_var")
+    if var is not None:
+        sd = np.sqrt(np.asarray(var, dtype=float))
+        _info_line(
+            "eks sd:   ",
+            f"median {np.nanmedian(sd):.4f}  p90 {np.nanpercentile(sd, 90):.4f} "
+            "(world units, per axis)",
+        )
+    param = store.read_point_extra("eks", "smooth_param")
+    if param is not None:
+        param = np.asarray(param, dtype=float)
+        _info_line(
+            "eks fit:  ",
+            f"smooth_param {np.nanmin(param):.4g} - {np.nanmax(param):.4g} "
+            f"over {param.size} keypoints",
+        )
 
 
 # -- repack: rewrite result files in the current schema ------------------------
