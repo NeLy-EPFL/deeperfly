@@ -2,31 +2,35 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
+import typer
 from rich.text import Text
 
 from ..config import DEFAULT_CONFIG_PATH
 from ..results import PoseResult
-from .console import _info_line, console
+from .console import LogLevel, LogLevelOption, _configure_logging, _info_line, console
 
 log = logging.getLogger("deeperfly")
 
 
-def _cmd_init(args: argparse.Namespace) -> None:
-    """Write the packaged default config to ``args.output``.
-
-    Parameters
-    ----------
-    args
-        The ``init`` namespace (``output``, ``overwrite``).
-    """
-    dst = Path(args.output)
-    if dst.exists() and not args.overwrite:
+def init(
+    output: Annotated[
+        str, typer.Argument(help="destination (defaults to config.toml)")
+    ] = "config.toml",
+    overwrite: Annotated[
+        bool, typer.Option("--overwrite", help="overwrite an existing file")
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Write a default config.toml to edit (destination defaults to config.toml)."""
+    _configure_logging(log_level.value)
+    dst = Path(output)
+    if dst.exists() and not overwrite:
         console.print(
             f"[yellow]{dst} already exists[/yellow]; pass --overwrite to replace it "
             "(left unchanged)"
@@ -45,16 +49,14 @@ def _cmd_init(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_inspect(args: argparse.Namespace) -> None:
-    """Print a summary of the result file at ``args.input``.
-
-    Parameters
-    ----------
-    args
-        The ``inspect`` namespace (``input``).
-    """
-    result = PoseResult.load(args.input)
-    _info_line("file:     ", args.input)
+def inspect(
+    input: Annotated[str, typer.Argument(help="path to a result .h5 file")],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Print a summary of a result .h5 file."""
+    _configure_logging(log_level.value)
+    result = PoseResult.load(input)
+    _info_line("file:     ", input)
     _info_line("views:    ", f"{result.n_views}  {result.cameras.names}")
     _info_line("frames:   ", result.n_frames)
     _info_line(
@@ -90,23 +92,29 @@ def _results_files(targets: "list[str]") -> "list[Path]":
     return sorted(found)
 
 
-def _cmd_repack(args: argparse.Namespace) -> None:
-    """Rewrite result files in the current schema, reporting what each one saved.
-
-    Nothing is recomputed: the pose in the file is the pose that comes out. Files already
-    in the current schema are left alone, because :func:`~deeperfly.results.repack` would
-    have nothing to take out of them.
-
-    Parameters
-    ----------
-    args
-        The ``repack`` namespace (``paths``, ``dry_run``).
-    """
+def repack(
+    paths: Annotated[
+        list[str],
+        typer.Argument(
+            help="result .h5 files, or directories to search for results.h5"
+        ),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="report what each file would shrink to without replacing it",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Rewrite result .h5 files in the current schema, smaller, without recomputing."""
+    _configure_logging(log_level.value)
     import tempfile
 
     from ..results import FORMAT_VERSION, repack, stored_version
 
-    files = _results_files(list(args.paths))
+    files = _results_files(list(paths))
     if not files:
         console.print("[yellow]no results.h5 found[/yellow] at the given paths")
         return
@@ -118,7 +126,7 @@ def _cmd_repack(args: argparse.Namespace) -> None:
             log.debug("%s is already schema v%d", path, FORMAT_VERSION)
             continue
         try:
-            if args.dry_run:
+            if dry_run:
                 # A dry run still does the work -- it is the only honest way to report
                 # the size -- and throws the result away instead of moving it into place.
                 with tempfile.TemporaryDirectory(dir=str(path.parent)) as tmp:
@@ -133,11 +141,11 @@ def _cmd_repack(args: argparse.Namespace) -> None:
         total_before += before
         total_after += after
         console.print(
-            f"{'would repack' if args.dry_run else 'repacked'} {path}  "
+            f"{'would repack' if dry_run else 'repacked'} {path}  "
             f"{_fmt_bytes(before)} -> {_fmt_bytes(after)}  "
             f"[green]{before / max(after, 1):.2f}x[/green]"
         )
-    verb = "would save" if args.dry_run else "saved"
+    verb = "would save" if dry_run else "saved"
     _info_line(
         "files:    ", f"{done} repacked, {skipped} already current, {failed} failed"
     )
@@ -265,21 +273,9 @@ def _probe_torch() -> dict:
     return info
 
 
-def _cmd_doctor(args: argparse.Namespace) -> None:
-    """Report the installation and what this machine can run.
-
-    Covers version + location, Python/OS, CPU/GPU inference (torch CUDA/MPS), the
-    frame I/O (PyAV for video, OpenCV for image sequences), whether the detector
-    weights are downloaded and where, and the default config path. Imports are lazy
-    and each probe guarded, so a missing or broken piece is reported rather than
-    crashing.
-
-    Parameters
-    ----------
-    args
-        The ``doctor`` namespace (no fields are read; kept for symmetry with the
-        other command workers).
-    """
+def doctor(log_level: LogLevelOption = LogLevel.info) -> None:
+    """Report installation/runtime: accelerators, frame I/O, weights."""
+    _configure_logging(log_level.value)
     import importlib.metadata
     import importlib.util
     import platform

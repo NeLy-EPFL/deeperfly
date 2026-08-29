@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.text import Text
@@ -17,7 +17,14 @@ from ..recordings import (
     plan_outdirs,
     resolve_recordings,
 )
-from .console import _rich_progress, console, log
+from .console import (
+    LogLevel,
+    LogLevelOption,
+    _configure_logging,
+    _rich_progress,
+    console,
+    log,
+)
 
 
 def _footage_for_run(
@@ -53,42 +60,90 @@ def _footage_for_run(
     return resolved if resolved else discovered
 
 
-def _cmd_run(args: argparse.Namespace) -> None:
-    """Run the pipeline for each recording the inputs resolve to.
+def run(
+    inputs: Annotated[
+        list[Path],
+        typer.Argument(
+            metavar="INPUT...",
+            help="one or more recording dirs or wildcard patterns (per-camera videos "
+            "or image folders); several inputs / a wildcard run as a batch",
+        ),
+    ],
+    recursive: Annotated[
+        bool,
+        typer.Option(
+            "-r",
+            "--recursive",
+            help="treat each INPUT as a parent directory and run every recording "
+            "nested under it (each subdirectory holding the configured per-camera "
+            "footage)",
+        ),
+    ] = False,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c",
+            "--config",
+            help="merged config TOML (from 'deeperfly init'); "
+            "defaults to the packaged default config",
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output-dir",
+            help="output directory (default: <input>/deeperfly_outputs; created if "
+            "missing). For a batch of several recordings: end it with '/' to "
+            "collect one subdirectory per recording under it (colliding names "
+            "fall back to mirroring the input tree, after confirmation); a "
+            "relative name without '/' creates that directory inside each "
+            "recording.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--overwrite",
+            help="force stages to recompute even though their config is unchanged "
+            "(config changes are detected automatically). A bare --overwrite "
+            "recomputes everything; name stages to recompute only those (e.g. "
+            "--overwrite pose2d visualization). Recomputing a stage also "
+            "refreshes the stages after it.",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """detect 2D -> reconstruct 3D -> visualization (the enabled stages, reusing cache).
 
-    ``args.inputs`` is one or more recording directories and/or wildcard/recursive
-    patterns (see :func:`deeperfly.recordings.resolve_recordings`); each recording's
-    output directory comes from :func:`deeperfly.recordings.plan_outdirs` (a
-    name-collision fallback is confirmed with the user up front, before any run
-    starts). Each resolved recording is handed to
-    :func:`deeperfly.pipeline.run_recording` with the Rich-backed progress factory.
-    In a batch each run is independent and a failure is logged and skipped; a
-    single recording fails fast.
+    INPUT is one or more recording directories (per-camera videos or image folders)
+    and/or wildcards matching several (e.g. 'fly*' -> fly1/, fly2/, ...), each run
+    in turn. Several inputs or a wildcard run as a batch, keeping only the valid
+    recordings. With -r/--recursive, each INPUT is a parent directory and every
+    recording nested under it is run in turn.
 
-    Parameters
-    ----------
-    args
-        The ``run`` namespace (``inputs``, ``recursive``, ``config``, ``output``,
-        ``overwrite``).
+    A stage already in the output dir is reused when its config is unchanged, so
+    re-running a finished recording is a cheap no-op -- and editing the config
+    recomputes exactly the affected stages (tweak the triangulation or the videos
+    and re-run; the slow 2D detection is reused). Pass --overwrite to force a
+    recompute anyway: bare redoes every stage, or name stages to redo only those
+    (plus the stages after them).
 
-    Raises
-    ------
-    SystemExit
-        If no inputs are given, the collision fallback cannot be confirmed
-        non-interactively, or (in a batch) if any recording failed.
+    Everything else is set in the config: the do_<stage> toggles choose which stages
+    run, alongside fps, background and each stage's parameters. -c wins when given;
+    with no -c, a run reuses the config.toml already in the output dir, else the
+    packaged default.
     """
-    if not args.inputs:
+    _configure_logging(log_level.value)
+    log_level = log_level.value
+    if not inputs:
         raise SystemExit("give at least one recording directory (or wildcard) to run")
     # Only used to RECOGNIZE recording directories while resolving the inputs; each run
     # then resolves its own config against its output dir (Config.read_for_run), and its
     # footage is re-resolved against that config below.
-    discovery_config = (
-        Config.from_toml(args.config) if args.config else Config.default()
-    )
-    found = resolve_recordings(
-        args.inputs, recursive=args.recursive, config=discovery_config
-    )
-    plan = plan_outdirs([d for d, _ in found], args.output)
+    discovery_config = Config.from_toml(config) if config else Config.default()
+    found = resolve_recordings(inputs, recursive=recursive, config=discovery_config)
+    plan = plan_outdirs([d for d, _ in found], output)
     if plan.mirror_confirm:
         if not sys.stdin.isatty():
             raise SystemExit(
@@ -97,7 +152,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
             )
         typer.confirm(plan.mirror_confirm + "\nproceed?", abort=True)
     recordings = [
-        Recording(_footage_for_run(root, src, outdir, args.config), outdir)
+        Recording(_footage_for_run(root, src, outdir, config), outdir)
         for (root, src), outdir in zip(found, plan.outdirs)
     ]
     batch = len(recordings) > 1
@@ -116,10 +171,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
             )
         try:
             run_recording(
-                args.config,
+                config,
                 rec.outdir,
                 sources=rec.sources,  # footage resolved up front by discovery
-                overwrite=getattr(args, "overwrite", None),
+                overwrite=overwrite,
                 progress=_rich_progress,
             )
         except (Exception, SystemExit) as exc:  # noqa: BLE001

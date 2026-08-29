@@ -8,48 +8,81 @@ a number someone can read, not a search that reruns.
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from ..config import Config
 from ..recordings import Recording, plan_outdirs, resolve_recordings
-from .console import console, log
+from .console import LogLevel, LogLevelOption, _configure_logging, console, log
 
 
-def _cmd_auto_crop(args: argparse.Namespace) -> None:
-    """Search every automatic crop of each resolved recording and print the outcome.
-
-    Parameters
-    ----------
-    args
-        The ``auto-crop`` namespace (``inputs``, ``config``, ``output``, ``recursive``,
-        ``write``, ``no_gate``).
-
-    Raises
-    ------
-    SystemExit
-        If no inputs are given, or the config declares no automatic crop to search.
-    """
+def auto_crop(
+    inputs: Annotated[
+        list[Path],
+        typer.Argument(
+            metavar="INPUT...",
+            help="one or more recording dirs or wildcard patterns",
+        ),
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c", "--config", help="config TOML declaring the automatic crop(s)"
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output-dir", help="output directory (as for 'run')"),
+    ] = None,
+    recursive: Annotated[
+        bool,
+        typer.Option(
+            "-r", "--recursive", help="run every recording nested under INPUT"
+        ),
+    ] = False,
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write/--no-write",
+            help="record the searched box in <outdir>/autocrop.json, so the next run "
+            "detects through it instead of searching again",
+        ),
+    ] = True,
+    no_gate: Annotated[
+        bool,
+        typer.Option(
+            "--no-gate",
+            help="accept whatever confidence proposed, without checking it against the "
+            "other cameras' 3D. Measurably unsafe on its own -- a box can get more "
+            "confident and less accurate -- so only for a rig with no usable calibration",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Search the detector crop for each view whose config says { op = "crop", auto = true }."""
+    _configure_logging(log_level.value)
     from ..pose2d import autocrop
     from ..pose2d.stream import load_models
     from ..recordings import source_image_sizes
 
-    if not args.inputs:
+    if not inputs:
         raise SystemExit("give at least one recording directory (or wildcard)")
-    discovery = Config.from_toml(args.config) if args.config else Config.default()
-    found = resolve_recordings(args.inputs, recursive=args.recursive, config=discovery)
-    outdirs = plan_outdirs([d for d, _ in found], args.output)
+    discovery = Config.from_toml(config) if config else Config.default()
+    found = resolve_recordings(inputs, recursive=recursive, config=discovery)
+    outdirs = plan_outdirs([d for d, _ in found], output)
     recordings = [
         Recording(src, outdir) for (_, src), outdir in zip(found, outdirs.outdirs)
     ]
 
     for rec in recordings:
         console.rule(str(rec.outdir))
-        config = Config.read_for_run(args.config, rec.outdir)
+        config = Config.read_for_run(config, rec.outdir)
         # Searching is the point of this command, so an already-recorded box is ignored
         # rather than reused (`ensure_resolved(force=True)` below does the same).
         config.auto_crops = {}
-        if args.no_gate:
+        if no_gate:
             config.data.setdefault("pose2d", {}).setdefault("autocrop", {})["gate"] = (
                 False
             )
@@ -78,10 +111,10 @@ def _cmd_auto_crop(args: argparse.Namespace) -> None:
             models=models,
             cameras=cameras,
             sources=rec.sources,
-            outdir=rec.outdir if args.write else None,
+            outdir=rec.outdir if write else None,
             force=True,
         )
-        _report(resolutions, rec.outdir if args.write else None)
+        _report(resolutions, rec.outdir if write else None)
 
 
 def _report(resolutions, outdir: Path | None) -> None:

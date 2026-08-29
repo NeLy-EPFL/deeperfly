@@ -223,10 +223,9 @@ def test_cli_set_will_not_edit_the_packaged_default():
     Typer refuses with a usage error before the worker runs, which is the better place for
     it -- the worker keeps its own guard for library callers.
     """
-    import argparse
 
     from deeperfly import cli
-    from deeperfly.cli.config import _cmd_config_set
+    from deeperfly.cli.config import config_set
 
     with pytest.raises(SystemExit) as usage:
         cli.main(
@@ -235,9 +234,7 @@ def test_cli_set_will_not_edit_the_packaged_default():
     assert usage.value.code == 2  # a usage error, not a traceback
 
     with pytest.raises(SystemExit, match="refusing to edit the packaged default"):
-        _cmd_config_set(
-            argparse.Namespace(key="triangulation.method", value="dlt", config=None)
-        )
+        config_set(key="triangulation.method", value="dlt", config=None)
 
 
 def test_cli_set_rewrites_a_key_the_file_already_states(tmp_path):

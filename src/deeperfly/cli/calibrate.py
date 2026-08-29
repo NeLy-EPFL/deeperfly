@@ -6,7 +6,7 @@ discards. Nothing is made *current* without an explicit ``--accept``: a calibrat
 silently replaced a good one would be the most destructive thing this feature could do.
 
 Also serves the **readiness meter** (``--dry-run``, and
-:func:`_cmd_calibration_readiness`): the same gate, reported while there is still labeling
+``deeperfly calibrate --dry-run``): the same gate, reported while there is still labeling
 to do, with each shortfall phrased as the labeling that would fix it. That is the
 difference between a feature that gets used and one that gets abandoned -- an operator
 cannot be expected to guess how many frames "enough" is.
@@ -14,11 +14,12 @@ cannot be expected to guess how many frames "enough" is.
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
+import typer
 from rich.table import Table
 
 from ..project import Project
@@ -30,7 +31,14 @@ from ..rig.solve import (
     merge_observations,
     solve_rig,
 )
-from .console import _info_line, console
+from .console import (
+    LogLevel,
+    LogLevelOption,
+    ProjectArg,
+    _configure_logging,
+    _info_line,
+    console,
+)
 
 log = logging.getLogger("deeperfly")
 
@@ -45,7 +53,9 @@ def _open(path: str | None) -> Project:
 # -- gathering -----------------------------------------------------------------
 
 
-def _gather(project: Project, args) -> tuple[list, dict]:
+def _gather(
+    project: Project, recordings: list[str] | None, include_unreviewed: bool
+) -> tuple[list, dict]:
     """``(per-recording observations, notes)`` for the selected recordings.
 
     Only frames the operator marked **reviewed** are eligible unless
@@ -54,7 +64,7 @@ def _gather(project: Project, args) -> tuple[list, dict]:
     """
     from ..labels import load_labels
 
-    wanted = args.recordings or [e.slug for e in project.recordings]
+    wanted = recordings or [e.slug for e in project.recordings]
     notes: list[str] = []
     per_recording = []
 
@@ -77,7 +87,7 @@ def _gather(project: Project, args) -> tuple[list, dict]:
             notes.append(f"{entry.slug}: labels.h5 is empty")
             continue
         frames = None
-        if not args.include_unreviewed:
+        if not include_unreviewed:
             frames = np.nonzero(labels.reviewed)[0].tolist()
             if not frames:
                 notes.append(
@@ -126,7 +136,15 @@ def _identity_for(project: Project, entry) -> dict | None:
 # -- intrinsics ----------------------------------------------------------------
 
 
-def _intrinsics(project: Project, args, obs) -> tuple[np.ndarray, np.ndarray, str]:
+def _intrinsics(
+    project: Project,
+    obs,
+    *,
+    from_calibration: str | None,
+    focal_px: float | None,
+    lens_mm: float | None,
+    sensor_mm: float | None,
+) -> tuple[np.ndarray, np.ndarray, str]:
     """``(intrs (V,4), dists (V,K), source)`` for the solve.
 
     Deliberately never *derived from the labels*. Extrinsics are recoverable from
@@ -140,14 +158,14 @@ def _intrinsics(project: Project, args, obs) -> tuple[np.ndarray, np.ndarray, st
         If no intrinsics source was given, listing the three ways to supply one.
     """
     n_views = obs.n_views
-    if args.from_calibration:
-        cal = Calibration.load(args.from_calibration)
+    if from_calibration:
+        cal = Calibration.load(from_calibration)
         # Strict here, unlike a run: this is where the intrinsics to SOLVE with come from,
         # and a view seeded from nothing is not a narrower rig, it is an unsolvable one.
         covered = cal.check_camera_names(obs.view_names)
         if missing := [n for n in obs.view_names if n not in covered]:
             raise SystemExit(
-                f"--from-calibration {args.from_calibration} has no camera(s) {missing}, "
+                f"--from-calibration {from_calibration} has no camera(s) {missing}, "
                 "and their intrinsics are what this solve would start from. Supply a "
                 "calibration covering every view being solved, or pass the intrinsics "
                 "another way (--optics / --focal)."
@@ -164,18 +182,18 @@ def _intrinsics(project: Project, args, obs) -> tuple[np.ndarray, np.ndarray, st
         )
         return intrs, dists, cal.provenance.get("intrinsics", "imported")
 
-    if args.focal_px:
-        focal = float(args.focal_px)
+    if focal_px:
+        focal = float(focal_px)
         source = "given"
-    elif args.lens_mm and args.sensor_mm:
+    elif lens_mm and sensor_mm:
         # f_px = f_mm * W_px / W_mm -- two numbers off a datasheet.
         width = _widest(project, obs)
-        focal = float(args.lens_mm) * width / float(args.sensor_mm)
+        focal = float(lens_mm) * width / float(sensor_mm)
         source = "optics"
         log.info(
             "focal from optics: %.4g mm lens / %.4g mm sensor over %d px = %.1f px",
-            args.lens_mm,
-            args.sensor_mm,
+            lens_mm,
+            sensor_mm,
             width,
             focal,
         )
@@ -311,16 +329,108 @@ def _print_readiness(rows: list[tuple], cond: dict) -> None:
 # -- the command ---------------------------------------------------------------
 
 
-def _cmd_calibration_readiness(args: argparse.Namespace) -> None:
-    """Report how close a project is to a solvable rig (``deeperfly calibrate --dry-run``)."""
-    args.dry_run = True
-    _cmd_calibrate(args)
+def calibrate(
+    project: ProjectArg = None,
+    recordings: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--recording",
+            help="restrict to these recordings (repeatable; default: all). Several "
+            "recordings' tracks are concatenated into one solve",
+        ),
+    ] = None,
+    from_calibration: Annotated[
+        str | None,
+        typer.Option(
+            "--from-calibration",
+            help="take intrinsics AND the initial extrinsics from an existing "
+            "calibration (a board solve, or a previous run) instead of solving cold",
+        ),
+    ] = None,
+    lens_mm: Annotated[
+        float | None,
+        typer.Option("--lens-mm", help="lens focal length in mm (with --sensor-mm)"),
+    ] = None,
+    sensor_mm: Annotated[
+        float | None,
+        typer.Option("--sensor-mm", help="sensor width in mm (with --lens-mm)"),
+    ] = None,
+    focal_px: Annotated[
+        float | None,
+        typer.Option("--focal-px", help="focal length in pixels, stated directly"),
+    ] = None,
+    free_focal: Annotated[
+        bool,
+        typer.Option(
+            "--free-focal",
+            help="let the solver adjust focal length. Off by default and rarely right: "
+            "focal error trades against depth, so the residual improves while the rig "
+            "gets worse",
+        ),
+    ] = False,
+    free_k1: Annotated[
+        bool,
+        typer.Option(
+            "--free-k1",
+            help="let the solver adjust the first radial distortion coefficient. Needs "
+            "plenty of well-spread labels to be identifiable",
+        ),
+    ] = False,
+    include_unreviewed: Annotated[
+        bool,
+        typer.Option(
+            "--include-unreviewed",
+            help="use frames that are not marked reviewed. Off by default: a "
+            "half-labeled frame contributes a systematically biased point, and no "
+            "residual will reveal that afterwards",
+        ),
+    ] = False,
+    loss: Annotated[
+        str,
+        typer.Option("--loss", help="robust loss: linear / huber / cauchy / arctan"),
+    ] = "cauchy",
+    f_scale: Annotated[
+        float, typer.Option("--f-scale", help="robust loss scale, in pixels")
+    ] = 4.0,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="calibration name (default: 'from-labels')"),
+    ] = None,
+    accept: Annotated[
+        bool,
+        typer.Option(
+            "--accept",
+            help="make the solved rig the project's current calibration. Without it the "
+            "file is written but nothing switches over, so a bad solve cannot silently "
+            "replace a good one",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="report readiness only: what is labeled, what is still weak, and what "
+            "labeling would fix it. Solves nothing and writes nothing",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Solve a project's camera rig from its hand labels.
 
+    The from-scratch path: label 2D by hand with no calibration, then recover the rig from
+    those labels. Run it with --dry-run while you are still labeling -- it reports exactly
+    what is still weak and what labeling would fix it.
 
-def _cmd_calibrate(args: argparse.Namespace) -> None:
-    """Solve a project's rig from its labels."""
-    project = _open(args.project)
-    per_recording, notes = _gather(project, args)
+    Intrinsics are never derived from the labels. Extrinsics can be recovered from
+    correspondences; focal length essentially cannot, and a solve permitted to guess it
+    reports a small residual for a wrong rig. Supply --from-calibration (best),
+    --lens-mm/--sensor-mm, or --focal-px.
+
+    Nothing becomes the project's calibration without --accept.
+    """
+    _configure_logging(log_level.value)
+    project = _open(project)
+    per_recording, notes = _gather(project, recordings, include_unreviewed)
     for note in notes["notes"]:
         log.warning("%s", note)
     if not per_recording:
@@ -336,14 +446,14 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
             "label the same points in at least two cameras"
         )
 
-    cond = conditioning(obs, free_focal=args.free_focal, free_k1=args.free_k1)
+    cond = conditioning(obs, free_focal=free_focal, free_k1=free_k1)
     _info_line("project:  ", f"{project.name}  ({project.root})")
     _info_line(
         "using:    ",
         f"{obs.n_tracks} keypoint tracks, {obs.n_observations} observations",
     )
     _print_readiness(_readiness(obs, cond, notes), cond)
-    if args.dry_run:
+    if dry_run:
         return
     if not cond["ok"]:
         for reason in cond["reasons"]:
@@ -353,8 +463,15 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
             "plausible-looking and then misproject every point downstream"
         )
 
-    intrs, dists, intr_source = _intrinsics(project, args, obs)
-    cold = not args.from_calibration
+    intrs, dists, intr_source = _intrinsics(
+        project,
+        obs,
+        from_calibration=from_calibration,
+        focal_px=focal_px,
+        lens_mm=lens_mm,
+        sensor_mm=sensor_mm,
+    )
+    cold = not from_calibration
     if cold:
         console.print("initializing from scratch (essential matrix + PnP)...")
         rvecs, tvecs, init = initialize_extrinsics(obs, intrs, dists)
@@ -372,10 +489,10 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
             highlight=False,
         )
     else:
-        prior = Calibration.load(args.from_calibration)
+        prior = Calibration.load(from_calibration)
         rvecs = np.stack([prior.cameras[n].rvec for n in obs.view_names])
         tvecs = np.stack([prior.cameras[n].tvec for n in obs.view_names])
-        init = {"seed_pair": None, "from": str(args.from_calibration)}
+        init = {"seed_pair": None, "from": str(from_calibration)}
 
     result = solve_rig(
         obs,
@@ -383,15 +500,15 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         dists=dists,
         rvecs=rvecs,
         tvecs=tvecs,
-        free_focal=args.free_focal,
-        free_k1=args.free_k1,
+        free_focal=free_focal,
+        free_k1=free_k1,
         cold_start=cold,
-        loss=args.loss,
-        f_scale=args.f_scale,
+        loss=loss,
+        f_scale=f_scale,
     )
     _report(result, obs, cond)
 
-    name = args.name or "from-labels"
+    name = name or "from-labels"
     calibration = Calibration.from_camera_group(
         result.cameras,
         name=name,
@@ -407,7 +524,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
                 {t.recording for t in obs.tracks if t.recording} or {"?"}
             ),
             "frames": obs.summary()["frames"],
-            "reviewed_only": not args.include_unreviewed,
+            "reviewed_only": not include_unreviewed,
             "init": {k: str(v) for k, v in init.items() if k in ("seed_pair", "from")},
             "solver": result.report["solver"],
         },
@@ -420,7 +537,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
     console.print(f"[green]wrote[/green] {path}")
     console.print(f"[green]wrote[/green] {report_path}")
 
-    if args.accept:
+    if accept:
         project.calibration = str(path.relative_to(project.root))
         project.save()
         console.print(

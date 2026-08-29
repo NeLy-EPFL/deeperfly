@@ -7,9 +7,13 @@ import happens inside :func:`deeperfly.gui.serve`, so importing ``deeperfly``
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from .console import LogLevel, LogLevelOption, _configure_logging
 
 log = logging.getLogger("deeperfly")
 
@@ -53,35 +57,78 @@ def _find_results(path: Path) -> Path:
     )
 
 
-def _cmd_gui(args: argparse.Namespace) -> None:
-    """Serve the web GUI on the result resolved from ``args.path``.
+def gui(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a project directory, a results.h5 file, or a directory containing "
+            "one (e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    footage_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--footage-dir",
+            help="directory to search for the footage if the paths recorded in "
+            "results.h5 no longer resolve",
+        ),
+    ] = None,
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help="address to bind the server to; the loopback default keeps the "
+            "editor private (bind a routable address only behind a trusted "
+            "network -- it is unauthenticated; prefer an 'ssh -L' tunnel)",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="TCP port to serve on (0 picks a free one)"),
+    ] = 8000,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="do not open a browser on startup"),
+    ] = False,
+    keep_alive: Annotated[
+        bool,
+        typer.Option(
+            "--keep-alive",
+            help="keep the server running after the browser is closed (by default "
+            "it stops a few seconds after the last tab closes; a refresh reconnects)",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Serve the interactive web viewer/corrector for a result.
 
-    Parameters
-    ----------
-    args
-        The ``gui`` namespace (``path``, ``footage_dir``, ``host``, ``port``,
-        ``no_browser``, ``keep_alive``).
+    Starts a local server and opens a browser editor. View every camera with its
+    2D skeleton overlay and drag keypoints to annotate the ground-truth 2D pose;
+    the 3D point is re-derived live from your labels and every view updates.
+    Ground-truth labels are written to a labels.h5 sidecar and never modify
+    results.h5. It runs headless and
+    can be reached from another machine's browser (default-bound to localhost;
+    tunnel with 'ssh -L' for remote use).
 
-    Raises
-    ------
-    SystemExit
-        If no result is found, or the web stack fails to import (an incomplete
-        install -- FastAPI + uvicorn are core dependencies).
+    Point it at a PROJECT to get all of its recordings: the first one opens, and the
+    editor's recording picker (the toolbar button, or 'b') switches between them
+    without restarting.
     """
+    _configure_logging(log_level.value)
     # A project directory resolves inside `serve` (it opens the first of its recordings,
     # and one with no results.h5 opens uncalibrated); anything else is resolved here so
     # a bad path fails before the server starts. `recording` is not a CLI option: which
     # recording to open is a question the editor's own picker answers, live.
     from ..project import PROJECT_FILENAME
 
-    target = Path(args.path)
+    target = Path(path)
     is_project = (target / PROJECT_FILENAME).exists()
     results_path = target if is_project else _find_results(target)
-    if args.host not in _LOOPBACK:
+    if host not in _LOOPBACK:
         log.warning(
             "binding %s exposes the editor on the network without authentication; "
             "prefer the default localhost and an `ssh -L` tunnel for remote use",
-            args.host,
+            host,
         )
     try:
         from ..gui import serve
@@ -90,32 +137,59 @@ def _cmd_gui(args: argparse.Namespace) -> None:
     try:
         serve(
             results_path,
-            footage_dir=args.footage_dir,
-            recording=getattr(args, "recording", None),
-            host=args.host,
-            port=args.port,
-            open_browser=not args.no_browser,
-            exit_on_close=not args.keep_alive,
+            footage_dir=footage_dir,
+            recording=None,
+            host=host,
+            port=port,
+            open_browser=not no_browser,
+            exit_on_close=not keep_alive,
         )
     except ImportError as exc:
         raise SystemExit(str(exc)) from exc
 
 
-def _cmd_labels_export(args: argparse.Namespace) -> None:
-    """Export the saved ground-truth labels (``labels.h5``) as an ``.npz`` dataset.
+def labels_export(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(the labels.h5 beside it is exported)"
+        ),
+    ],
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .npz (default: labels_gt.npz beside results.h5)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Export saved ground-truth labels (labels.h5) as a training/eval dataset (.npz).
 
-    Resolves ``results.h5`` (a file or a directory holding one), loads the ``labels.h5``
-    beside it (refusing a sidecar from a different recording), and writes the GT pixels plus
-    the **hidden** mask (still named ``occluded`` in the file) in footage pixel space. The two
-    are independent arrays and the consumer conjoins them; see :func:`export_gt`. Raises
-    ``SystemExit`` when there are no saved labels to export.
+    Writes the GT pixels + the hidden mask in footage pixel space
+    (arrays ``gt_xy`` (V,T,P,2), ``gt_mask`` (V,T,P), ``occluded`` (V,T,P), ``absent``
+    (P,), plus ``point_names`` / ``camera_names``). Annotate and Save in 'deeperfly gui'
+    first.
+
+    ``occluded`` is the editor's **Hidden** flag: "hold this cell out of the training loss".
+    It keeps its array name for compatibility, and it is a *separate* axis from ``gt_mask``,
+    not a filter already applied to it -- a cell can carry a pixel and be held out. Your loss
+    mask is ``gt_mask & ~occluded``.
+
+    Keypoints declared **absent** (not on this animal -- an amputated leg) are excluded
+    from *both* ``gt_mask`` and ``occluded``, and reported separately in ``absent``: such a
+    keypoint is not ground truth, and a hold-out mark on something already unsupervised is
+    not a decision anyone made. Mask it in training.
     """
+    _configure_logging(log_level.value)
     import numpy as np
 
     from ..labels import export_absent, export_gt, labels_identity, load_labels
     from ..results import PoseResult, StageStore
 
-    results_path = _find_results(Path(args.path))
+    results_path = _find_results(Path(path))
     result = PoseResult.load(results_path)
     store = StageStore(results_path)
     identity = labels_identity(
@@ -134,7 +208,7 @@ def _cmd_labels_export(args: argparse.Namespace) -> None:
         )
     gt_xy, gt_mask, occluded = export_gt(labels)
     absent = export_absent(labels)
-    out = Path(args.output) if args.output else results_path.parent / "labels_gt.npz"
+    out = Path(output) if output else results_path.parent / "labels_gt.npz"
     np.savez(
         out,
         gt_xy=gt_xy,
@@ -163,20 +237,67 @@ def _cmd_labels_export(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_labels_absent(args: argparse.Namespace) -> None:
-    """Declare keypoints absent (not on this animal) in one or more label sidecars.
+def labels_absent(
+    paths: Annotated[
+        list[str],
+        typer.Argument(
+            help="one or more results.h5 files, or directories containing one "
+            "(e.g. <recording>/deeperfly_outputs). Pass every clip of the same animal."
+        ),
+    ],
+    points: Annotated[
+        str,
+        typer.Option(
+            "--points",
+            help="comma-separated keypoint names or fnmatch globs, e.g. "
+            "'lf_femur_tibia,lf_tibia_tarsus,lf_pretarsus' or 'lf_*'. An unmatched name is an "
+            "error, so a typo cannot silently declare nothing.",
+        ),
+    ],
+    subject: Annotated[
+        str | None,
+        typer.Option(
+            "--subject",
+            help="optional animal identifier stamped into the sidecar, so one animal's "
+            "several recordings can be grouped later",
+        ),
+    ] = None,
+    frames: Annotated[
+        str | None,
+        typer.Option(
+            "--frames",
+            help="restrict to a frame or half-open range: '900' (that frame), '900:' "
+            "(from 900 to the end -- a leg lost mid-recording), '0:900', ':900'. "
+            "Omit for the whole recording, which is the usual case.",
+        ),
+    ] = None,
+    clear: Annotated[
+        bool,
+        typer.Option(
+            "--clear",
+            help="un-declare instead of declare. Nothing is lost either way: the labels "
+            "an absence declaration hides are quarantined, not deleted.",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Mark keypoints as absent -- not on this animal -- in one or more labels.h5.
 
-    The batch, pre-GUI counterpart of the editor's ``x`` gesture. The scientist usually
-    knows a leg is gone before the camera rolls, and one animal is typically recorded
-    several times -- so this takes many recordings at once and writes the same
-    point-indexed declaration to each. Point-indexing is what makes that safe: the
-    declaration carries no frame or view indices, so it means the same thing in every clip
-    of the same animal.
+    For an amputated leg or an ablated antenna: the keypoint does not exist, which is
+    different from **Hidden** (it exists and keeps its position; only the training loss
+    skips that cell) and from "unlabeled". The declaration is per keypoint and, by default,
+    covers the whole recording -- one command replaces marking every frame and every view by
+    hand. Pass ``--frames`` for a limb lost part-way through (``--frames 900:``).
 
-    Refuses to touch a sidecar whose ``labels.h5`` is being edited elsewhere is *not*
-    something it can detect -- ``save_labels`` is a whole-file rewrite -- so it warns
-    loudly instead. Close the GUI first.
+    Downstream, an absent keypoint is dropped from the 3D solve, excluded from the
+    training export in *both* directions (neither ground truth nor hidden), and removed
+    from labeling-progress denominators.
+
+    The editor has the same gesture (select a joint, press ``x``). Close any running
+    'deeperfly gui' on these directories first: saving is a whole-file rewrite, so an open
+    session would overwrite what this writes.
     """
+    _configure_logging(log_level.value)
     import numpy as np
 
     from ..labels import (
@@ -188,13 +309,13 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
     )
     from ..results import PoseResult, StageStore
 
-    names = [n.strip() for n in str(args.points).split(",") if n.strip()]
+    names = [n.strip() for n in str(points).split(",") if n.strip()]
     if not names:
         raise SystemExit(
             "--points is empty; pass e.g. --points 'lf_femur_tibia,lf_pretarsus'"
         )
 
-    frame_spec = getattr(args, "frames", None)
+    frame_spec = frames
     span: tuple[int, int] | None = None
     if frame_spec:
         # "900:" (from 900 to the end), "0:900", ":900", "900" (that frame alone).
@@ -210,7 +331,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
                 "'0:900' (end exclusive)"
             ) from None
 
-    for raw in args.paths:
+    for raw in paths:
         results_path = _find_results(Path(raw))
         result = PoseResult.load(results_path)
         store = StageStore(results_path)
@@ -234,7 +355,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
             )
         before = labels.absent.copy()
         if span is None:
-            labels.set_absent(idx, not args.clear)  # the whole recording
+            labels.set_absent(idx, not clear)  # the whole recording
         else:
             lo, hi = span
             hi = result.n_frames if hi < 0 else min(hi, result.n_frames)
@@ -243,7 +364,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
                     f"{results_path}: --frames {frame_spec!r} is empty or out of range "
                     f"for a {result.n_frames}-frame recording"
                 )
-            labels.set_absent(idx, not args.clear, frames=range(lo, hi))
+            labels.set_absent(idx, not clear, frames=range(lo, hi))
         after = labels.absent
         if np.array_equal(before, after):
             log.info("%s: already as requested, not rewritten", labels_path)
@@ -257,7 +378,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
             labels_path,
             labels,
             identity=identity,
-            subject_id=args.subject or labels.subject_id,
+            subject_id=subject or labels.subject_id,
         )
         whole = after.all(axis=0)
         partial = after.any(axis=0) & ~whole

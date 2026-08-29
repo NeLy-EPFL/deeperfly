@@ -1854,12 +1854,11 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
 
 def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
     """``deeperfly repack`` over a directory: every results.h5 under it, once each."""
-    import argparse
 
     import h5py
     from test_results import _write_v2
 
-    from deeperfly.cli.report import _cmd_repack
+    from deeperfly.cli.report import repack
     from deeperfly.results import FORMAT_VERSION
 
     sizes = {}
@@ -1869,14 +1868,14 @@ def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
         _write_v2(path, cameras, rng, t=40)
         sizes[path] = path.stat().st_size
 
-    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=True))
+    repack(paths=[str(tmp_path)], dry_run=True)
     for path, size in sizes.items():  # a dry run replaces nothing
         assert path.stat().st_size == size
         with h5py.File(path, "r") as f:
             assert json.loads(f.attrs["meta"])["deeperfly_format_version"] == 2
     assert not list(tmp_path.rglob("*.repack"))
 
-    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=False))
+    repack(paths=[str(tmp_path)], dry_run=False)
     for path, size in sizes.items():
         assert path.stat().st_size < size
         with h5py.File(path, "r") as f:
@@ -1886,6 +1885,6 @@ def test_repack_cli_shrinks_a_tree_and_is_idempotent(tmp_path, cameras, rng):
             )
 
     after = {p: p.stat().st_size for p in sizes}
-    _cmd_repack(argparse.Namespace(paths=[str(tmp_path)], dry_run=False))
+    repack(paths=[str(tmp_path)], dry_run=False)
     for path, size in after.items():  # already current: skipped, byte-for-byte
         assert path.stat().st_size == size

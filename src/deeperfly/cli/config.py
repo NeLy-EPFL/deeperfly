@@ -11,16 +11,17 @@ where 690 lines are defaults reads as 706 decisions.
 
 from __future__ import annotations
 
-import argparse
 import logging
 import re
+from typing import Annotated
 
+import typer
 from rich.table import Table
 from rich.text import Text
 
 from ..config import DEFAULT_CONFIG_PATH, Config
 from ..config.schema import describe, effective, sections, stage_flags_spec
-from .console import console
+from .console import LogLevel, LogLevelOption, _configure_logging, console
 
 log = logging.getLogger("deeperfly")
 
@@ -42,12 +43,46 @@ def _fmt(value) -> str:
     return str(value)
 
 
-def _cmd_config_show(args: argparse.Namespace) -> None:
-    """Print a section's keys with their values, defaults and documentation."""
-    config = _load(args.config)
-    wanted = [args.section] if args.section else sections()
+config_app = typer.Typer(
+    no_args_is_help=True,
+    help="Discover and set config keys without reading the whole file. Every key, its "
+    "default and its documentation are derived from the code, so they cannot drift from "
+    "it.",
+)
 
-    if args.section in (None, "pipeline"):
+
+@config_app.command("show")
+def config_show(
+    section: Annotated[
+        str | None,
+        typer.Argument(
+            help="one section (e.g. triangulation, pipeline, annotation); omit for all"
+        ),
+    ] = None,
+    config: Annotated[
+        str | None,
+        typer.Option("-c", "--config", help="config TOML (default: the packaged one)"),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="also print what each key means"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Print a config section's keys, values, defaults and documentation.
+
+    Keys you actually set are marked; everything else is a default. That distinction is
+    what a config file cannot show you -- a 706-line file where 690 lines are defaults
+    reads as 706 decisions.
+
+    The detection plan, cameras, skeleton and video specs are open-ended and are not
+    described here; they live in the file (or, for the skeleton and rig, in the project).
+    """
+    _configure_logging(log_level.value)
+    config = _load(config)
+    wanted = [section] if section else sections()
+
+    if section in (None, "pipeline"):
         # `[pipeline]` has no params dataclass, so its rows are built here rather than by
         # `effective()`. Each row is `(value, is_default)` rather than a bare bool;
         # getting that wrong prints an em-dash for every flag, which is what it did -- and
@@ -61,7 +96,7 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
                 for stage, on in config.stage_flags().items()
             },
         )
-        if args.section == "pipeline":
+        if section == "pipeline":
             return
         wanted = [s for s in wanted if s != "pipeline"]
 
@@ -75,7 +110,7 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
             ValueError
         ) as exc:  # an unknown key in the file -- Config's own validator
             raise SystemExit(f"[{name}] in this config is invalid: {exc}") from None
-        _print_section(spec, values, verbose=args.verbose)
+        _print_section(spec, values, verbose=verbose)
 
 
 def _print_section(
@@ -110,22 +145,31 @@ def _print_section(
         console.print(f"  {spec.doc}", markup=False, highlight=False, style="dim")
 
 
-def _cmd_config_set(args: argparse.Namespace) -> None:
-    """Set one ``section.key`` in a config file, validating it through ``Config``.
+@config_app.command("set")
+def config_set(
+    key: Annotated[str, typer.Argument(help="SECTION.KEY, e.g. triangulation.method")],
+    value: Annotated[str, typer.Argument(help="the new value")],
+    config: Annotated[
+        str,
+        typer.Option("-c", "--config", help="the config TOML to edit (required)"),
+    ],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Set one config key, validated the same way a run would validate it.
 
-    Writes by *appending* an override table rather than rewriting the file, so every
-    comment survives. The value is validated by loading the result through ``Config`` --
-    the same strict loader a run uses -- so this cannot admit a key a run would reject.
+    Appends rather than rewriting, so comments survive. The result is loaded through the
+    same strict validator a run uses, so this cannot write a key a run would reject.
     """
+    _configure_logging(log_level.value)
     import tomllib
 
     from .. import _toml
 
-    if "." not in args.key:
+    if "." not in key:
         raise SystemExit(
-            f"expected SECTION.KEY (e.g. triangulation.method), got {args.key!r}"
+            f"expected SECTION.KEY (e.g. triangulation.method), got {key!r}"
         )
-    section, key = args.key.split(".", 1)
+    section, key = key.split(".", 1)
     try:
         spec = describe(section) if section != "pipeline" else stage_flags_spec()
     except KeyError as exc:
@@ -134,16 +178,16 @@ def _cmd_config_set(args: argparse.Namespace) -> None:
     if key not in known:
         raise SystemExit(f"[{section}] has no key {key!r}; it accepts {sorted(known)}")
 
-    path = args.config
+    path = config
     if path is None:
         raise SystemExit(
             "pass -c/--config: refusing to edit the packaged default in place "
             f"({DEFAULT_CONFIG_PATH}). 'deeperfly init' writes a copy to edit"
         )
     text = open(path).read()
-    value = _coerce(args.value)
+    value = _coerce(value)
     addition = (
-        f"\n# set by 'deeperfly config set {args.key}'\n"
+        f"\n# set by 'deeperfly config set {key}'\n"
         f"[{section}]\n{_toml.key(key)} = {_toml.value(value)}\n"
     )
     # Three cases, and the middle one is why this is not just an append. TOML forbids
@@ -183,10 +227,10 @@ def _cmd_config_set(args: argparse.Namespace) -> None:
                 {"pictorial_structures": "pictorial"}.get(section, section)
             )
     except Exception as exc:
-        raise SystemExit(f"{args.key} = {args.value!r} is not valid: {exc}") from None
+        raise SystemExit(f"{key} = {value!r} is not valid: {exc}") from None
 
     open(path, "w").write(candidate)
-    console.print(f"[green]set[/green] {args.key} = {_fmt(value)} in {path}")
+    console.print(f"[green]set[/green] {key} = {_fmt(value)} in {path}")
 
 
 def _has_table(text: str, section: str) -> bool:

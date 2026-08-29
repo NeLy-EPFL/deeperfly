@@ -9,36 +9,146 @@ source, and a list that came up short of ``-n``).
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
+import typer
 
-from .console import _info_line, console
+from .console import LogLevel, LogLevelOption, _configure_logging, _info_line, console
 from .gui import _find_results
 
 log = logging.getLogger("deeperfly")
 
 
-def _cmd_labels_suggest(args: argparse.Namespace) -> None:
-    """Rank frames by multi-view disagreement and write the suggestions sidecar.
+def labels_suggest(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    count: Annotated[
+        int, typer.Option("-n", "--count", help="how many frames to suggest")
+    ] = 20,
+    min_gap_s: Annotated[
+        float,
+        typer.Option(
+            "--min-gap-s",
+            help="HARD minimum spacing between suggestions, in seconds; also keeps "
+            "them away from the frames already labeled. At 100 fps adjacent frames "
+            "are near-duplicates, so without this a top-N is one hard moment "
+            "sampled N times",
+        ),
+    ] = 2.0,
+    fps: Annotated[
+        float | None,
+        typer.Option(
+            "--fps",
+            help="capture rate for --min-gap-s (default: the fps recorded in "
+            "results.h5, else 100 with a warning)",
+        ),
+    ] = None,
+    reserve_diversity: Annotated[
+        float,
+        typer.Option(
+            "--reserve-diversity",
+            help="fraction of -n taken on a uniform temporal grid instead of by "
+            "score, so the round still sees typical poses and not only the tail",
+        ),
+    ] = 0.25,
+    threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            help="px; the RANSAC inlier gate and the 'this cell disagrees' gate in "
+            "the reported reasons (a ranking knob, not an accuracy claim)",
+        ),
+    ] = 15.0,
+    cap: Annotated[
+        float,
+        typer.Option(
+            "--cap",
+            help="px; per-cell residual saturation, so one blown view cannot turn "
+            "the ranking into a single-outlier lottery",
+        ),
+    ] = 60.0,
+    top_k: Annotated[
+        int,
+        typer.Option(
+            "--top-k",
+            help="how many of the worst joints are averaged into a frame's score "
+            "(a frame is worth a pass when several joints are wrong)",
+        ),
+    ] = 8,
+    min_views: Annotated[
+        int,
+        typer.Option(
+            "--min-views",
+            help="observing views a joint needs to be scorable; below 3 a joint "
+            "reprojects onto its own two views by construction, which reads as "
+            "agreement it has not earned",
+        ),
+    ] = 3,
+    points: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--points",
+            help="glob(s) over the skeleton point names to score (repeatable; "
+            "default all), e.g. --points '*tibia*'",
+        ),
+    ] = None,
+    cameras: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--cameras",
+            help="glob(s) over the camera names to score (repeatable; default all). "
+            "Triangulation always uses every view",
+        ),
+    ] = None,
+    exclude_labeled: Annotated[
+        bool,
+        typer.Option(
+            "--exclude-labeled/--no-exclude-labeled",
+            help="skip frames that already carry human work, read from the "
+            "labels.h5 sidecar (and keep suggestions --min-gap-s away from them)",
+        ),
+    ] = True,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .json (default: labels_suggest.json beside results.h5)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="print the ranking and write nothing"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Rank the frames worth labeling next (active learning) -> labels_suggest.json.
 
-    Parameters
-    ----------
-    args
-        The ``labels-suggest`` namespace (``path``, ``count``, ``min_gap_s``,
-        ``fps``, ``reserve_diversity``, ``threshold``, ``cap``, ``top_k``,
-        ``min_views``, ``points``, ``cameras``, ``exclude_labeled``, ``output``,
-        ``dry_run``).
+    Scores each frame by the multi-view disagreement of the detector's own 2D: every
+    joint is RANSAC-triangulated from the pristine pose2d detections and each view's
+    detection is compared to the reprojection. Views cannot conspire, so a large
+    residual means the model is probably wrong -- which is where a human label buys
+    the most. Detector confidence is deliberately not used: it is confidently wrong
+    exactly where it is wrong.
 
-    Raises
-    ------
-    SystemExit
-        If no result is found, the file cannot be scored (no ``pose2d``/no rig), a
-        ``--points``/``--cameras`` glob matches nothing, or the ``labels.h5``
-        beside it belongs to a different recording.
+    The ranking is never the raw top-N. A hard --min-gap-s keeps the picks (and the
+    frames already labeled) apart, since at 100 fps neighbouring frames are the
+    same pose; --reserve-diversity spends part of the list on a uniform temporal
+    grid; and every pick is reported with the joints and views that drove it, so
+    the list is usable straight from this output.
+
+    Writes a JSON sidecar beside results.h5 for 'deeperfly gui' to navigate;
+    results.h5 and labels.h5 are only ever read.
     """
+    _configure_logging(log_level.value)
     from ..labels.suggest import (
         SCORE_DESCRIPTION,
         SUGGESTIONS_FILENAME,
@@ -52,25 +162,25 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         write_suggestions,
     )
 
-    results_path = _find_results(Path(args.path))
+    results_path = _find_results(Path(path))
     try:
         inputs = prepare_inputs(results_path)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    fps, stamped = inputs.fps(args.fps)
+    fps, stamped = inputs.fps(fps)
     if not stamped:
         log.warning(
             "results.h5 records no fps; assuming %g fps for the >= %g s spacing "
             "(pass --fps to be exact)",
             fps,
-            args.min_gap_s,
+            min_gap_s,
         )
-    min_gap_frames = max(1, int(round(args.min_gap_s * fps)))
+    min_gap_frames = max(1, int(round(min_gap_s * fps)))
 
     try:
-        point_mask = glob_mask(inputs.point_names, args.points)
-        camera_mask = glob_mask(inputs.camera_names, args.cameras)
+        point_mask = glob_mask(inputs.point_names, points)
+        camera_mask = glob_mask(inputs.camera_names, cameras)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -98,7 +208,7 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         # Report the whole-recording subset: "absent in some frames" is a different
         # statement and belongs in the per-frame accounting, not the headline.
         absent_points = [int(i) for i in _np.nonzero(absent_mask.all(axis=0))[0]]
-    if args.exclude_labeled:
+    if exclude_labeled:
         try:
             labels = read_labeled_frames(labels_path, identity=inputs.identity)
         except ValueError as exc:
@@ -114,38 +224,38 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
     scores = score_frames(
         inputs.cameras,
         inputs.pts2d,
-        threshold=args.threshold,
-        cap=args.cap,
-        top_k=args.top_k,
-        min_views=args.min_views,
+        threshold=threshold,
+        cap=cap,
+        top_k=top_k,
+        min_views=min_views,
         point_mask=point_mask,
         camera_mask=camera_mask,
         absent_mask=absent_mask,
     )
     picks, shortfall = select_frames(
         scores,
-        count=args.count,
+        count=count,
         min_gap_frames=min_gap_frames,
-        reserve_diversity=args.reserve_diversity,
+        reserve_diversity=reserve_diversity,
         exclude=excluded,
     )
 
     params = {
-        "count": int(args.count),
-        "min_gap_s": float(args.min_gap_s),
+        "count": int(count),
+        "min_gap_s": float(min_gap_s),
         "fps": float(fps),
         "fps_from": "meta"
-        if stamped and args.fps is None
-        else ("option" if args.fps else "default"),
+        if stamped and fps is None
+        else ("option" if fps else "default"),
         "min_gap_frames": int(min_gap_frames),
-        "reserve_diversity": float(args.reserve_diversity),
-        "threshold_px": float(args.threshold),
-        "cap_px": float(args.cap),
-        "top_k": int(args.top_k),
-        "min_views": int(args.min_views),
-        "points": list(args.points) if args.points else None,
-        "cameras": list(args.cameras) if args.cameras else None,
-        "exclude_labeled": bool(args.exclude_labeled),
+        "reserve_diversity": float(reserve_diversity),
+        "threshold_px": float(threshold),
+        "cap_px": float(cap),
+        "top_k": int(top_k),
+        "min_views": int(min_views),
+        "points": list(points) if points else None,
+        "cameras": list(cameras) if cameras else None,
+        "exclude_labeled": bool(exclude_labeled),
         "absent_points": absent_points,
         "absent_point_names": [
             str(inputs.point_names[i])
@@ -154,9 +264,7 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         ],
         "score": SCORE_DESCRIPTION,
     }
-    out = (
-        Path(args.output) if args.output else results_path.parent / SUGGESTIONS_FILENAME
-    )
+    out = Path(output) if output else results_path.parent / SUGGESTIONS_FILENAME
     doc = build_suggestions(
         inputs,
         scores,
@@ -174,10 +282,10 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         results_path=results_path,
         labels=labels,
         excluded=excluded,
-        trap=stored_vs_pose2d(inputs, scores, threshold=args.threshold),
+        trap=stored_vs_pose2d(inputs, scores, threshold=threshold),
     )
 
-    if args.dry_run:
+    if dry_run:
         console.print("[yellow]--dry-run[/yellow]: nothing written")
         return
     written = write_suggestions(out, doc)

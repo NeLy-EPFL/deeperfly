@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from enum import Enum
+from typing import Annotated
 
+import typer
 from rich.console import Console
 from rich.highlighter import RegexHighlighter
 from rich.logging import RichHandler
@@ -181,3 +184,38 @@ def _info_line(label: str, value: object) -> None:
     line = Text(label, style="bold cyan")
     line.append(str(value))
     console.print(line)
+
+
+class LogLevel(str, Enum):
+    """``--log-level`` choices, shared by every subcommand. A ``str`` enum, so each
+    member's ``.value`` is the name :func:`_configure_logging` expects."""
+
+    debug = "debug"
+    info = "info"
+    warning = "warning"
+    error = "error"
+    critical = "critical"
+
+
+#: The shared ``--log-level`` option, declared once as a reusable parameter
+#: annotation and spread across every command. ``case_sensitive=False`` accepts
+#: INFO/Info/info.
+LogLevelOption = Annotated[
+    LogLevel,
+    typer.Option(
+        case_sensitive=False,
+        help="logging verbosity; 'warning' or higher hides the per-stage logs and "
+        "the progress bar",
+    ),
+]
+
+
+#: The shared project-directory argument, declared once and spread across the commands
+#: that take one. Optional: omitted, the command finds the nearest project enclosing the
+#: working directory.
+ProjectArg = Annotated[
+    str | None,
+    typer.Argument(
+        help="the project directory (default: the nearest one enclosing the cwd)"
+    ),
+]

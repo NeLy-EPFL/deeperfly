@@ -11,18 +11,26 @@ is a ``labels.h5`` full of irreplaceable hand work, so "I'll just try it" has to
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from rich.table import Table
 
 from ..labels import Labels, load_labels, save_labels
 from ..labels.merge import merge_labels
-from .console import _info_line, console
+from .console import (
+    LogLevel,
+    LogLevelOption,
+    ProjectArg,
+    _configure_logging,
+    _info_line,
+    console,
+)
 
 log = logging.getLogger("deeperfly")
 
@@ -80,14 +88,58 @@ def _derived_identity(project, entry) -> dict | None:
         return None
 
 
-def _cmd_labels_merge(args: argparse.Namespace) -> None:
-    """Merge ``--from`` labels into a project recording's labels.h5."""
+def labels_merge(
+    recording: Annotated[
+        str, typer.Argument(help="the project recording to merge INTO (slug or id)")
+    ],
+    source: Annotated[
+        str,
+        typer.Argument(
+            metavar="SOURCE",
+            help="the labels.h5 to merge FROM, or a directory containing one",
+        ),
+    ],
+    project: ProjectArg = None,
+    on_conflict: Annotated[
+        str,
+        typer.Option(
+            "--on-conflict",
+            help="how to settle a cell both sides authored differently: 'manual' "
+            "(default -- leave it and queue it for review), 'ours', 'theirs', or "
+            "'newest'. Two disagreeing labels are two operators disagreeing, and nothing "
+            "in the data ranks one above the other, so the default is to ask",
+        ),
+    ] = "manual",
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="actually write. Without it this is a dry run that changes nothing. "
+            "Applying always snapshots the destination labels.h5 first",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Merge a second label set into a project recording's labels.
+
+    For ground truth that ended up in two places -- an earlier round, another annotator's
+    directory, the same recording under a different tree. A project indexes a recording
+    once (by content), so the other copy's labels are otherwise invisible.
+
+    Points and cameras are matched BY NAME, never by index: two same-sized skeletons in
+    different orders are the one case where an index-based copy would silently corrupt
+    every label while leaving each cell looking plausible. A same-named camera whose
+    footage size differs is refused outright -- ground truth is stored in footage pixels.
+
+    Dry run by default.
+    """
+    _configure_logging(log_level.value)
     from .project import _open
 
-    project = _open(args.project)
-    entry = project.recording(args.recording)
+    project = _open(project)
+    entry = project.recording(recording)
     dest_path = project.labels_path(entry)
-    source_path = Path(args.source)
+    source_path = Path(source)
     if source_path.is_dir():
         for candidate in (
             source_path / "labels.h5",
@@ -97,7 +149,7 @@ def _cmd_labels_merge(args: argparse.Namespace) -> None:
                 source_path = candidate
                 break
     if not source_path.exists():
-        raise SystemExit(f"no labels.h5 at {args.source}")
+        raise SystemExit(f"no labels.h5 at {source}")
     if source_path.resolve() == dest_path.resolve():
         raise SystemExit("the source and destination are the same file")
 
@@ -143,14 +195,14 @@ def _cmd_labels_merge(args: argparse.Namespace) -> None:
         camera_names_source=list(source_identity["camera_names"]),
         image_sizes_dest=dest_identity.get("image_sizes"),
         image_sizes_source=source_identity.get("image_sizes"),
-        on_conflict=args.on_conflict,
-        apply=args.apply,
+        on_conflict=on_conflict,
+        apply=apply,
     )
-    _print(report, entry.slug, source_path, applying=args.apply)
+    _print(report, entry.slug, source_path, applying=apply)
 
     if not report.ok:
         raise SystemExit("refusing to merge (see above)")
-    if not args.apply:
+    if not apply:
         console.print(
             "dry run -- nothing written. Re-run with --apply to merge "
             f"(a snapshot of {dest_path.name} is taken first)",

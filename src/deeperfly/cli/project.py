@@ -1,8 +1,8 @@
 """``deeperfly project`` -- create projects and adopt recordings into them.
 
-The workers behind the ``project`` command group. Each takes an argparse-style namespace
-so it stays callable as a library and from the tests, matching the other ``_cmd_*``
-workers.
+Every command of the ``project`` group, declared on :data:`project_app` and mounted by
+:mod:`deeperfly.cli.app`. Each is an ordinary function with ordinary parameters, so it is
+callable as a library and from the tests as readily as from the command line.
 
 The listing commands (``ls`` / ``status``) are deliberately tolerant: a project with one
 unreadable ``labels.h5`` or one recording whose share is unmounted must still print every
@@ -11,14 +11,22 @@ other row. A status listing that dies on a bad row is useless exactly when it is
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from rich.table import Table
 
 from ..project import PROJECT_FILENAME, Project
-from .console import _info_line, console
+from .console import (
+    LogLevel,
+    LogLevelOption,
+    ProjectArg,
+    _configure_logging,
+    _info_line,
+    console,
+)
 
 log = logging.getLogger("deeperfly")
 
@@ -48,14 +56,51 @@ def _open(path: str | None) -> Project:
     return Project.load(found)
 
 
-def _cmd_project_new(args: argparse.Namespace) -> None:
-    """Create a project directory (``deeperfly project new``)."""
+project_app = typer.Typer(
+    no_args_is_help=True,
+    help="Group related recordings into a project: one skeleton, shared camera rigs, "
+    "and one place to see what is labeled. A project INDEXES recordings -- their "
+    "results.h5 / labels.h5 stay where they are and are adopted by symlink, so no "
+    "label is ever copied or moved to create one.",
+)
+
+
+@project_app.command("new")
+def project_new(
+    root: Annotated[str, typer.Argument(help="directory to create the project in")],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="project name (default: the directory's name)"),
+    ] = None,
+    skeleton: Annotated[
+        str,
+        typer.Option(
+            "--skeleton",
+            help="'fly38' (the packaged 38-point Drosophila skeleton), 'blank' (define "
+            "your own), or a path to a TOML file with a [skeleton] table",
+        ),
+    ] = "fly38",
+    description: Annotated[
+        str | None, typer.Option("--description", help="free-text description")
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Create a project: a skeleton, a place for rigs, and an empty recording index.
+
+    Writes a project.toml (the index) and a skeleton.toml (what is tracked). Nothing
+    else -- recordings are adopted afterwards with 'deeperfly project add', and a camera
+    rig is either solved later or pointed at with a calibration file.
+
+    Start from 'blank' for a new animal or rig: you then label with no calibration at
+    all and solve the rig from those labels once there are enough correspondences.
+    """
+    _configure_logging(log_level.value)
     try:
         project = Project.create(
-            args.root,
-            name=args.name,
-            skeleton=args.skeleton,
-            description=args.description or "",
+            root,
+            name=name,
+            skeleton=skeleton,
+            description=description or "",
         )
     except (FileExistsError, ValueError) as exc:
         raise SystemExit(str(exc)) from None
@@ -76,29 +121,81 @@ def _cmd_project_new(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_project_add(args: argparse.Namespace) -> None:
-    """Adopt one or more recordings (``deeperfly project add``).
+@project_app.command("add")
+def project_add(
+    project: Annotated[str, typer.Argument(help="the project directory to adopt into")],
+    sources: Annotated[
+        list[str],
+        typer.Argument(
+            metavar="RECORDING...",
+            help="one or more recordings: a recording directory, its "
+            "deeperfly_outputs/, or a results.h5",
+        ),
+    ],
+    copy: Annotated[
+        bool,
+        typer.Option(
+            "--copy",
+            help="copy each recording's outputs into the project instead of linking "
+            "them. The copy is a SNAPSHOT: labels authored in the original will not "
+            "appear in the project, and vice versa",
+        ),
+    ] = False,
+    slug: Annotated[
+        str | None,
+        typer.Option(
+            "--slug",
+            help="name for the recording inside the project (single source only; "
+            "default: the recording directory's name)",
+        ),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option(
+            "--subject",
+            help="animal identifier, so one specimen's several clips group together "
+            "(read from results.h5 when it records one)",
+        ),
+    ] = None,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "-c",
+            "--config",
+            help="config supplying the per-camera footage globs. Without it, each "
+            "video file in the recording directory becomes a camera named after the "
+            "file (which is what a from-scratch recording wants)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Adopt recordings into a project, by reference.
 
-    Each source is adopted independently: one that cannot be identified is reported and
-    skipped rather than aborting the batch, so adopting a directory of twenty recordings
-    is not defeated by one whose footage has moved.
+    Each recording's deeperfly_outputs/ is SYMLINKED into the project, so the labels.h5
+    the editor writes is the very file a training set reads -- adopting copies nothing
+    and can lose nothing. A recording with no outputs yet (just videos) is adopted too;
+    that is the from-scratch starting point.
+
+    Recordings are identified by content, not path, so adopting the same one twice is a
+    no-op and a backup copy is recognized as the same recording.
     """
-    project = _open(args.project)
+    _configure_logging(log_level.value)
+    project = _open(project)
     config = None
-    if args.config:
+    if config:
         from ..config import Config
 
-        config = Config.from_toml(args.config)
+        config = Config.from_toml(config)
 
     added, failed = [], []
-    for source in args.sources:
+    for source in sources:
         try:
             before = {e.id for e in project.recordings}
             entry = project.add_recording(
                 source,
-                link=not args.copy,
-                slug=args.slug if len(args.sources) == 1 else None,
-                subject=args.subject,
+                link=not copy,
+                slug=slug if len(sources) == 1 else None,
+                subject=subject,
                 config=config,
             )
         except (FileNotFoundError, ValueError, FileExistsError) as exc:
@@ -128,9 +225,14 @@ def _cmd_project_add(args: argparse.Namespace) -> None:
         )
 
 
-def _cmd_project_ls(args: argparse.Namespace) -> None:
-    """List a project's recordings (``deeperfly project ls``)."""
-    project = _open(args.project)
+@project_app.command("ls")
+def project_ls(
+    project: ProjectArg = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """List a project's recordings."""
+    _configure_logging(log_level.value)
+    project = _open(project)
     if not project.recordings:
         console.print(
             f"{project.name} has no recordings yet -- "
@@ -165,14 +267,20 @@ def _outputs_note(row: dict) -> str:
     return kind
 
 
-def _cmd_project_status(args: argparse.Namespace) -> None:
-    """Report labeling progress across a project (``deeperfly project status``).
+@project_app.command("status")
+def project_status(
+    project: ProjectArg = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Report labeling progress across a project.
 
-    The per-recording counts come from each ``labels.h5``'s sparse indices, so the
-    numbers are the *live* rows -- a keypoint declared absent is not counted as ground
+    Per recording: frames, frames carrying labels, frames marked reviewed, ground-truth
+    points, occlusion marks, and whether its outputs are present. The counts are the
+    LIVE rows of each labels.h5 -- a keypoint declared absent is not counted as ground
     truth, matching what an export and a training set will see.
     """
-    project = _open(args.project)
+    _configure_logging(log_level.value)
+    project = _open(project)
     rows = project.status()
     totals = project.totals(rows)
 
@@ -230,49 +338,87 @@ def _cmd_project_status(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_project_rm(args: argparse.Namespace) -> None:
-    """Drop a recording from the index (``deeperfly project rm``).
-
-    The adopted outputs are left alone by default -- a symlinked project must not be able
-    to delete the originals by accident. ``--delete`` removes the project's own directory
-    for the recording, which for a linked one removes only the link.
-    """
-    project = _open(args.project)
+@project_app.command("rm")
+def project_rm(
+    recording: Annotated[
+        str, typer.Argument(help="a recording's slug, id, or unambiguous id prefix")
+    ],
+    project: ProjectArg = None,
+    delete: Annotated[
+        bool,
+        typer.Option(
+            "--delete",
+            help="also remove the project's own directory for the recording. For a "
+            "linked recording that removes only the link; it refuses when the outputs "
+            "are a real directory, since that would be the only copy of the labels",
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Drop a recording from the project index (its files are left alone)."""
+    _configure_logging(log_level.value)
+    project = _open(project)
     try:
-        entry = project.recording(args.recording)
+        entry = project.recording(recording)
     except KeyError as exc:
         raise SystemExit(str(exc).strip("'")) from None
     outputs = project.outputs_dir(entry)
-    if args.delete and outputs.exists() and not outputs.is_symlink():
+    if delete and outputs.exists() and not outputs.is_symlink():
         console.print(
             f"[red]refusing[/red] to --delete {entry.slug}: its outputs at {outputs} are "
             "a real directory, not a link, so deleting would destroy the only copy of "
             "its labels. Move them out first, or drop the entry without --delete."
         )
         raise SystemExit(1)
-    project.remove_recording(entry.id, delete=args.delete)
+    project.remove_recording(entry.id, delete=delete)
     console.print(
         f"[green]removed[/green] {entry.slug} from the index"
-        + (" (and its project directory)" if args.delete else "")
+        + (" (and its project directory)" if delete else "")
     )
-    if not args.delete:
+    if not delete:
         console.print(
             f"its files are untouched at {Path(entry.origin.get('from', outputs))}",
             highlight=False,
         )
 
 
-def _cmd_project_config(args: argparse.Namespace) -> None:
-    """Print or write the project's resolved run config (``deeperfly project config``).
+@project_app.command("config")
+def project_config(
+    project: ProjectArg = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="write to this file instead of stdout"),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile", help="profile filename under profiles/ (default: default.toml)"
+        ),
+    ] = None,
+    base: Annotated[
+        str | None,
+        typer.Option(
+            "--base",
+            help="config to take the remaining tables from -- the detection plan and "
+            "visualization, which are open-ended (default: the packaged config)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.warning,
+) -> None:
+    """Compose the project's resolved run config from its parts.
 
-    The composition is skeleton + rig + calibration + profile + whatever the base config
-    still supplies. A run consumes the *result*, so layering never reaches the pipeline as
-    ambiguity -- what gets snapshotted and fingerprinted is one resolved text, exactly as
-    before.
+    A project keeps its skeleton, its rig and its algorithm deltas in separate files; a run
+    consumes one config. This combines them, validates the result through the same strict
+    loader a run uses, and prints or writes it.
+
+    So layering is an AUTHORING convenience only: what a run snapshots and fingerprints is a
+    single resolved text, exactly as before. Change one triangulation knob in the profile
+    without restating 132 detector channel mappings.
     """
-    project = _open(args.project)
+    _configure_logging(log_level.value)
+    project = _open(project)
     try:
-        text = project.compose_config(profile=args.profile, base=args.base)
+        text = project.compose_config(profile=profile, base=base)
     except (ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from None
 
@@ -293,8 +439,8 @@ def _cmd_project_config(args: argparse.Namespace) -> None:
             f"check {project.rig_path().name}, {project.skeleton_file} and the profile"
         ) from None
 
-    if args.output:
-        out = Path(args.output)
+    if output:
+        out = Path(output)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text)
         console.print(f"[green]wrote[/green] {out}  ({len(text.splitlines())} lines)")
@@ -303,11 +449,28 @@ def _cmd_project_config(args: argparse.Namespace) -> None:
         print(text, end="")
 
 
-def _cmd_project_rig(args: argparse.Namespace) -> None:
-    """Lift the rig tables out of a config into the project (``deeperfly project rig``)."""
-    project = _open(args.project)
+@project_app.command("rig")
+def project_rig(
+    project: ProjectArg = None,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="config to lift the rig out of (default: the packaged config)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Lift a config's camera rig into the project as rig.toml.
+
+    The rig -- footage sources, camera topology, per-camera preprocessing -- is a property
+    of the SETUP, shared by every recording on it. Making it the project's stops each
+    recording carrying its own copy, and is what lets one calibration serve all of them.
+    """
+    _configure_logging(log_level.value)
+    project = _open(project)
     try:
-        path = project.write_rig(args.source)
+        path = project.write_rig(source)
     except (ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from None
     console.print(f"[green]wrote[/green] {path}")
@@ -318,36 +481,79 @@ def _cmd_project_rig(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_project_export(args: argparse.Namespace) -> None:
-    """Package a project into one shareable file (``deeperfly project export``)."""
+@project_app.command("export")
+def project_export(
+    output: Annotated[str, typer.Argument(help="destination .dfpkg")],
+    project: ProjectArg = None,
+    embed: Annotated[
+        str,
+        typer.Option(
+            "--embed",
+            help="which frames' PIXELS to include: 'user' (default -- the frames carrying "
+            "human labels), 'all' (also the suggested ones), or 'none' (index only, for a "
+            "collaborator who shares the filesystem)",
+        ),
+    ] = "user",
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Package a project into one shareable file.
+
+    Carries everything the project OWNS -- skeleton, rig, calibrations, landmarks, manifest
+    -- plus each recording's labels.h5 byte for byte and, by default, the frames those
+    labels annotate. That last part is affordable because only the labeled frames matter:
+    on this project's own corpus, 50 frames out of 4,073.
+
+    Footage is never packaged. A package makes the LABELS portable, not the videos.
+    """
+    _configure_logging(log_level.value)
     from ..project.package import export_package
 
-    project = _open(args.project)
+    project = _open(project)
     try:
-        report = export_package(project, args.output, embed=args.embed)
+        report = export_package(project, output, embed=embed)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
 
-    _info_line("wrote:    ", str(args.output))
+    _info_line("wrote:    ", str(output))
     _info_line("size:     ", f"{report.bytes_written / 1e6:.1f} MB")
     _info_line("recordings:", f"{report.recordings} ({report.label_files} with labels)")
-    _info_line("frames:   ", f"{report.embedded_frames} embedded ({args.embed})")
+    _info_line("frames:   ", f"{report.embedded_frames} embedded ({embed})")
     for note in report.notes:
         console.print(f"[yellow]note:[/yellow] {note}", highlight=False)
     for skipped in report.skipped:
         console.print(f"[yellow]skipped:[/yellow] {skipped}", highlight=False)
 
 
-def _cmd_project_import(args: argparse.Namespace) -> None:
-    """Unpack a ``.dfpkg`` into a new project (``deeperfly project import``)."""
+@project_app.command("import")
+def project_import(
+    package: Annotated[str, typer.Argument(help="the .dfpkg to unpack")],
+    dest: Annotated[str, typer.Argument(help="directory to create the project in")],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply", help="actually write (otherwise this lists the contents)"
+        ),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Unpack a .dfpkg into a NEW project directory.
+
+    Only into a new or empty directory. Importing into an existing project is a merge --
+    with skeleton reconciliation, content dedup and a conflict policy ('deeperfly
+    labels-merge') -- and overwriting files instead would be the destructive shortcut that
+    looks like it worked.
+
+    Lists the contents and writes nothing without --apply.
+    """
+    _configure_logging(log_level.value)
     from ..project.package import describe_package, import_package
 
     try:
-        described = describe_package(args.package)
+        described = describe_package(package)
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from None
 
-    _info_line("package:  ", str(args.package))
+    _info_line("package:  ", str(package))
     _info_line("created:  ", described["created_utc"] or "unknown")
     _info_line("embed:    ", described["embed"] or "none")
     table = Table(title="contents")
@@ -364,14 +570,14 @@ def _cmd_project_import(args: argparse.Namespace) -> None:
         )
     console.print(table)
 
-    if not args.apply:
+    if not apply:
         console.print(
-            f"dry run -- nothing written. Re-run with --apply to unpack into {args.dest}",
+            f"dry run -- nothing written. Re-run with --apply to unpack into {dest}",
             highlight=False,
         )
         return
-    report = import_package(args.package, args.dest, apply=True)
-    console.print(f"[green]imported[/green] into {args.dest}")
+    report = import_package(package, dest, apply=True)
+    console.print(f"[green]imported[/green] into {dest}")
     for note in report.notes:
         console.print(f"[yellow]note:[/yellow] {note}", highlight=False)
     console.print(
@@ -381,13 +587,74 @@ def _cmd_project_import(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
-    """Merge stray ``deeperfly_outputs/`` corrections in (``deeperfly project import-outputs``)."""
+@project_app.command("import-outputs")
+def project_import_outputs(
+    project: Annotated[
+        str, typer.Argument(help="the project to import the corrections INTO")
+    ],
+    sources: Annotated[
+        list[str],
+        typer.Argument(
+            metavar="SOURCE...",
+            help="one or more deeperfly_outputs/ dirs, recording dirs, or a tree "
+            "containing them (every deeperfly_outputs/ underneath is found)",
+        ),
+    ],
+    recording: Annotated[
+        str | None,
+        typer.Option(
+            "--recording",
+            help="force every source onto this recording (slug, id, or id prefix). The "
+            "escape hatch for an archived recording whose content id cannot be derived",
+        ),
+    ] = None,
+    on_conflict: Annotated[
+        str,
+        typer.Option(
+            "--on-conflict",
+            help="a cell BOTH sides authored differently: manual (queue it, the "
+            "default), ours, theirs, newest",
+        ),
+    ] = "manual",
+    on_absent: Annotated[
+        str | None,
+        typer.Option(
+            "--on-absent",
+            help="an incoming absence declaration that would quarantine ground truth "
+            "this project counts: union (accept) or ours (ignore the source's). Must be "
+            "chosen explicitly when there is a cost",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="actually import (otherwise this only reports)"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Add corrections from a stray deeperfly_outputs/ to the recording it belongs to.
+
+    For labels made in the standalone editor, outside the project -- the gap 'project add'
+    reports and cannot fix, because one recording is one entry, so a second label set beside
+    a second copy of the footage reads as zero.
+
+    Which recording is answered from CONTENT identity, not from a name you type. Three
+    answers: the project already reads that very file (nothing to do -- the normal state for
+    a symlink-adopted recording); the same recording in a different file (merge); or a
+    recording this project does not index, which is 'deeperfly project add' instead -- and
+    better, because adding SYMLINKS the outputs and needs no merge at all.
+
+    Labels move by NAME, never by index. Predictions are never promoted to ground truth: a
+    source's seeds arrive as seeds. Dry-run by default, and every destination labels.h5 is
+    snapshotted before the first write.
+    """
+    _configure_logging(log_level.value)
+    on_absent = on_absent or "union"
+    absent_explicit = on_absent is not None
     from ..project.import_outputs import find_outputs, import_outputs
 
-    project = _open(args.project)
+    project = _open(project)
     sources = []
-    for raw in args.sources:
+    for raw in sources:
         try:
             found = find_outputs(raw)
         except FileNotFoundError as exc:
@@ -412,9 +679,9 @@ def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
         plans = import_outputs(
             project,
             sources,
-            recording=args.recording,
-            on_conflict=args.on_conflict,
-            on_absent=args.on_absent,
+            recording=recording,
+            on_conflict=on_conflict,
+            on_absent=on_absent,
             apply=False,
         )
     except ValueError as exc:
@@ -440,7 +707,7 @@ def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
 
     # A quarantine cost must be chosen, not absorbed: the project's live GT total would drop.
     cost = [p for p in mergeable if p.quarantined_dest_gt]
-    if cost and args.on_absent == "union" and not args.absent_explicit:
+    if cost and on_absent == "union" and not absent_explicit:
         total = sum(p.quarantined_dest_gt for p in cost)
         raise SystemExit(
             f"the incoming absence declarations would quarantine {total} ground-truth "
@@ -450,7 +717,7 @@ def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
             "ignore the source's declarations"
         )
 
-    if not args.apply:
+    if not apply:
         if mergeable:
             console.print(
                 "dry run -- nothing written. Re-run with --apply to import "
@@ -465,9 +732,9 @@ def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
     applied = import_outputs(
         project,
         [p.source for p in mergeable],
-        recording=args.recording,
-        on_conflict=args.on_conflict,
-        on_absent=args.on_absent,
+        recording=recording,
+        on_conflict=on_conflict,
+        on_absent=on_absent,
         apply=True,
     )
     for plan in applied:
@@ -559,32 +826,58 @@ def _print_import(plan) -> None:
         )
 
 
-def _cmd_project_skeleton(args: argparse.Namespace) -> None:
-    """Change a project's skeleton as a migration (``deeperfly project skeleton``).
+@project_app.command("skeleton")
+def project_skeleton(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="a TOML file with a [skeleton] table (a config, or a skeleton.toml)"
+        ),
+    ],
+    project: ProjectArg = None,
+    rename: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--rename",
+            help="OLD=NEW: a point that only changed name, so its labels move with it "
+            "(repeatable; '*' on both sides renames a family, e.g. '*_claw=*_pretarsus')",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="actually migrate (otherwise this only reports)"),
+    ] = False,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Change the project's skeleton, migrating every label onto the new point order.
 
-    A skeleton edit can invalidate every label in the project, and quietly: two same-sized
-    skeletons in different orders load each other's files happily and mean something
-    different by every index. So this always reports first, moves labels **by name**, and
-    refuses a destructive change without ``--apply``.
+    A skeleton edit can invalidate every label in the project -- and quietly, because two
+    same-sized skeletons in different orders load each other's files happily and mean
+    something different by every index. So labels move BY NAME, never by index; the change
+    is reported and counted before anything is written; and a deleted point's labels are
+    QUARANTINED rather than destroyed, so re-adding the point brings them back.
 
-    ``--rename OLD=NEW`` (repeatable, ``*`` allowed on both sides) declares that a point
-    kept its meaning and only changed name, which is the one thing the two files cannot
-    say for themselves.
+    A rename is the one edit the two files cannot describe: "the claw point is now called
+    pretarsus" and "claw is gone, pretarsus is new" are the same diff, and the second
+    quarantines every label on it. One in place is inferred; declare the rest with
+    --rename OLD=NEW.
+
+    Reports and writes nothing without --apply. Applying snapshots the project to a .dfpkg
+    first.
     """
+    _configure_logging(log_level.value)
     from ..config import Config
     from ..project.migrate import apply_migration, expand_renames, plan_migration
 
-    project = _open(args.project)
+    project = _open(project)
     try:
-        new = Config.from_toml(args.source).skeleton()
+        new = Config.from_toml(source).skeleton()
     except Exception as exc:
-        raise SystemExit(
-            f"could not read a skeleton from {args.source}: {exc}"
-        ) from None
+        raise SystemExit(f"could not read a skeleton from {source}: {exc}") from None
 
     try:
         renames = expand_renames(
-            list(args.rename or ()),
+            list(rename or ()),
             project.skeleton().point_names,
             new.point_names,
         )
@@ -618,7 +911,7 @@ def _cmd_project_skeleton(args: argparse.Namespace) -> None:
             "point restores them -- but nothing downstream will see them meanwhile.",
             highlight=False,
         )
-    if not args.apply:
+    if not apply:
         console.print(
             "dry run -- nothing written. Re-run with --apply to migrate "
             "(a pre-migration .dfpkg snapshot is written first)",

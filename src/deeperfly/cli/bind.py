@@ -28,8 +28,12 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
+import typer
+
+from .console import LogLevel, LogLevelOption, _configure_logging
 
 log = logging.getLogger("deeperfly")
 
@@ -193,8 +197,47 @@ def render(skeleton, model_name: str, rows: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def _cmd_ik_bind(args) -> None:
-    """Generate ``bindings/<skeleton>@<model>.toml`` and write it for review."""
+ik_app = typer.Typer(
+    no_args_is_help=True,
+    help="Model packs and the bindings that adapt a skeleton to one.",
+)
+
+
+@ik_app.command("bind")
+def ik_bind(
+    skeleton: Annotated[
+        str | None,
+        typer.Argument(help="the skeleton to bind (default: the packaged one)"),
+    ] = None,
+    model: Annotated[
+        str, typer.Argument(help="the model pack to bind it to")
+    ] = "neuromechfly",
+    mjcf: Annotated[
+        str | None,
+        typer.Option("--mjcf", help="the model's MJCF, which the rules are read from"),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("-o", "--output", help="where to write (default: data/bindings/)"),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Generate a (skeleton, model) binding, for review.
+
+    A binding says where each tracked point sits on the model, and it is the one
+    artifact where a skeleton point name and a model body name may appear together. It
+    is not fully hand-authorable -- a pretarsus's offset is the most distal vertex of the
+    last tarsus, computed from the geometry -- so this expands the name conventions,
+    resolves that geometry, and marks the rows no rule can decide `approximate = true`.
+
+    **Read the approximate rows.** They are placements a human chose, and this command
+    only reproduces the choice that was made before; binding a new skeleton means
+    deciding them again.
+
+    Needs MuJoCo, which deeperfly does not depend on:
+    `uv run --with mujoco deeperfly ik bind fly38 neuromechfly --mjcf model/fly.xml`.
+    """
+    _configure_logging(log_level.value)
     try:
         import mujoco  # noqa: F401
     except ImportError:
@@ -210,19 +253,19 @@ def _cmd_ik_bind(args) -> None:
     from ..inverse_kinematics.binding import BINDING_DIR
     from ..inverse_kinematics.pack import ModelPack
 
-    spec = {} if not args.skeleton else {"skeleton": {"include": args.skeleton}}
+    spec = {} if not skeleton else {"skeleton": {"include": skeleton}}
     skeleton = Config.from_dict(spec).skeleton()
-    pack = ModelPack.load(args.model)
-    if not args.mjcf:
+    pack = ModelPack.load(model)
+    if not mjcf:
         sys.exit(
             "give --mjcf: the model's MJCF is what the conventions and the geometry "
             "are read from, and a pack ships only its baked assets"
         )
-    model = mj.MjModel.from_xml_path(str(args.mjcf))
+    model = mj.MjModel.from_xml_path(str(mjcf))
 
     rows = {n: _row(model, pack.name, n) for n in skeleton.point_names}
     text = render(skeleton, pack.name, rows)
-    out = Path(args.output or BINDING_DIR / f"{skeleton.name}@{pack.name}.toml")
+    out = Path(output or BINDING_DIR / f"{skeleton.name}@{pack.name}.toml")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
     n_approx = sum(1 for r in rows.values() if r[2])

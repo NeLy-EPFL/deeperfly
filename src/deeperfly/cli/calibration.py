@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from ..results import PoseResult, StageStore
 from ..rig.calibration import CALIBRATION_FILENAME, Calibration, quality_from_errors
+from .console import LogLevel, LogLevelOption, _configure_logging
 
 log = logging.getLogger("deeperfly")
 
@@ -49,20 +53,60 @@ def _resolve_results(path: str | Path) -> Path:
     return p
 
 
-def _cmd_calibration_show(args) -> None:
-    """Print a summary of a calibration file (``deeperfly calibration show``)."""
-    print(Calibration.load(args.path).summary())
+calibration_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and extract solved camera rigs (calibration.toml).",
+)
 
 
-def _cmd_calibration_export(args) -> None:
-    """Write a ``calibration.toml`` from a result's stored rig.
+@calibration_app.command("show")
+def calibration_show(
+    path: Annotated[
+        str,
+        typer.Argument(help="a calibration.toml, or a directory containing one"),
+    ],
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Print a calibration's cameras, provenance and reprojection residuals.
 
-    Prefers the bundle-adjusted rig and falls back to the config rig ``pose2d``
-    recorded, saying which it used -- an unrefined rig is still worth exporting (it is
-    what the run actually projected with), but the provenance must not claim it was
-    solved.
+    The residuals are the part worth reading. A rig that reprojects at 15 px is not a
+    rig you want triangulating a fly, and nothing downstream will tell you so.
     """
-    results_path = _resolve_results(args.path)
+    _configure_logging(log_level.value)
+    print(Calibration.load(path).summary())
+
+
+@calibration_app.command("export")
+def calibration_export(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="a results.h5 file, or a directory containing one "
+            "(e.g. <recording>/deeperfly_outputs)"
+        ),
+    ],
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="output .toml (default: calibration.toml beside results.h5)",
+        ),
+    ] = None,
+    log_level: LogLevelOption = LogLevel.info,
+) -> None:
+    """Extract a portable calibration.toml from a result's stored camera rig.
+
+    The bundle-adjusted rig in a results.h5 can only be used by the recording that
+    produced it. Exporting turns it into a file a *second* recording can be pointed at
+    ([cameras] calibration = "..." in its config), diffed against a later solve, or
+    shared with a collaborator.
+
+    The bundle-adjusted rig is preferred; a result with no bundle adjustment exports
+    the un-refined config rig it detected with, with a warning and honest provenance.
+    """
+    _configure_logging(log_level.value)
+    results_path = _resolve_results(path)
     store = StageStore(results_path)
 
     cameras = store.read_cameras("bundle_adjustment")
@@ -96,9 +140,7 @@ def _cmd_calibration_export(args) -> None:
             "could not measure this rig's reprojection error; exporting without it"
         )
 
-    out = (
-        Path(args.output) if args.output else results_path.parent / CALIBRATION_FILENAME
-    )
+    out = Path(output) if output else results_path.parent / CALIBRATION_FILENAME
     # Pass the rig's OWN units/scale/intrinsics through when the result recorded them, and
     # only fall back to the config-orbit answer when it did not. Hardcoding them re-labelled
     # a millimeter board calibration as an arbitrary-scale orbit guess -- a false claim on
