@@ -21,7 +21,8 @@ The end-to-end pipeline is reusable without the CLI:
 
 - :func:`deeperfly.resolve_recordings` -- expand recording dirs / wildcards into the
   per-camera footage to process (:mod:`deeperfly.recordings`).
-  (:mod:`deeperfly.pose2d.detector`); :func:`deeperfly.detect_2d` streams 2D
+- :func:`deeperfly.pose2d.load_model` -- build a detector from a name + weights
+  (:mod:`deeperfly.pose2d.models`); :func:`deeperfly.detect_2d` streams 2D
   detection over a recording given a detection plan + loaded models
   (:mod:`deeperfly.pose2d.stream`).
 - :func:`deeperfly.run_recording` -- run a recording's enabled stages against an

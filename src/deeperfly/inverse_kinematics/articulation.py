@@ -46,6 +46,7 @@ __all__ = [
     "body_similarity",
     "estimate_chain_scale",
     "chain_affine",
+    "umeyama",
     "DEFAULT_ARTICULATION_PATH",
 ]
 
@@ -425,7 +426,7 @@ def body_similarity(
     good = np.isfinite(measured_anchors).all(axis=1)
     if int(good.sum()) < 3:
         return None
-    return _umeyama(neutral_anchors[good], measured_anchors[good])
+    return umeyama(neutral_anchors[good], measured_anchors[good])
 
 
 def estimate_chain_scale(
@@ -840,8 +841,12 @@ def _group_positions(
     return out
 
 
-def _umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
-    """Least-squares similarity transform (rotation, scale, translation) ``src -> dst``."""
+def umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
+    """Least-squares similarity transform (rotation, scale, translation) ``src -> dst``.
+
+    Umeyama (1991). Shared with :mod:`deeperfly.inverse_kinematics.mesh`, which fits the
+    same transform to register a mesh's anchor vertices.
+    """
     mu_s, mu_d = src.mean(axis=0), dst.mean(axis=0)
     s0, d0 = src - mu_s, dst - mu_d
     cov = (d0.T @ s0) / len(src)

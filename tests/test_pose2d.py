@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from deeperfly.config import Config
-from deeperfly.pose2d import detector, inference
+from deeperfly.pose2d import inference, runtime
 from deeperfly.pose2d.models import LoadedModel, ModelSpec
 
 # -- heatmap decoding --------------------------------------------------------
@@ -81,9 +81,9 @@ def module() -> "torch.nn.Module":
 def test_set_precision_accepts_and_rejects(module):
     model = module
     for p in ("float32", "float16", "bfloat16"):
-        detector.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
+        runtime.set_precision(model, p)  # all valid; autocast is a CUDA no-op here
     with pytest.raises(ValueError, match="unknown detector precision"):
-        detector.set_precision(model, "int8")
+        runtime.set_precision(model, "int8")
 
 
 def test_heatmap_to_points_subpixel_recovers_offgrid_gaussian():

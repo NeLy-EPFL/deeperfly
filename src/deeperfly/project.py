@@ -173,10 +173,6 @@ _BLANK_PROFILE = """\
 _SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _slugify(text: str) -> str:
     """A filesystem- and URL-safe slug from arbitrary text (never empty)."""
     out = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text)).strip("-._")
@@ -578,7 +574,7 @@ class Project:
             name=name or root.resolve().name,
             id=project_id(),
             description=description,
-            created_utc=_now(),
+            created_utc=datetime.now(timezone.utc).isoformat(),
         )
         project.save()
         return project
@@ -684,7 +680,7 @@ class Project:
             "format_version": self.format_version,
             "name": self.name,
             "id": self.id,
-            "created_utc": self.created_utc or _now(),
+            "created_utc": self.created_utc or datetime.now(timezone.utc).isoformat(),
             # Bumped by every merge/import, so a training set is attributable to a
             # project state rather than to "whatever the directory held that day".
             "iteration": self.iteration,
@@ -1124,7 +1120,7 @@ class Project:
             subject=subject,
             n_frames=n_frames,
             fps=fps,
-            added_utc=_now(),
+            added_utc=datetime.now(timezone.utc).isoformat(),
             origin={"kind": "adopted", "from": str(rec_root.resolve())},
         )
         _write_recording_file(dest / RECORDING_FILENAME, entry, footage, result_footage)

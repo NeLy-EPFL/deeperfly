@@ -65,10 +65,6 @@ TERMINAL_STATES = ("done", "failed", "cancelled")
 _TAIL_LINES = 200
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 @dataclass
 class Job:
     """One queued or finished command."""
@@ -80,7 +76,9 @@ class Job:
     label: str = ""
     recording: str | None = None
     state: str = "queued"
-    created_utc: str = field(default_factory=_now)
+    created_utc: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     started_utc: str | None = None
     finished_utc: str | None = None
     returncode: int | None = None
@@ -260,7 +258,7 @@ class JobQueue:
             if job_id in self._pending:
                 self._pending.remove(job_id)
                 job.state = "cancelled"
-                job.finished_utc = _now()
+                job.finished_utc = datetime.now(timezone.utc).isoformat()
                 return True
             if self._current_id == job_id and self._current is not None:
                 proc = self._current
@@ -316,7 +314,7 @@ class JobQueue:
         """Run one job to completion, streaming its output to the log and the tail."""
         argv = [self.python, "-m", "deeperfly", *job.argv]
         job.state = "running"
-        job.started_utc = _now()
+        job.started_utc = datetime.now(timezone.utc).isoformat()
         job._started_at = time.monotonic()
         env = {
             **os.environ,
@@ -357,7 +355,7 @@ class JobQueue:
                 if job.returncode:
                     job.error = f"exited {job.returncode}"
         finally:
-            job.finished_utc = _now()
+            job.finished_utc = datetime.now(timezone.utc).isoformat()
             job._finished_at = time.monotonic()
             with self._lock:
                 self._current, self._current_id = None, None

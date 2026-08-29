@@ -535,9 +535,9 @@ class LoadedModel:
 
     def set_precision(self, precision: str) -> None:
         """Set the forward precision (``float32``/``float16``/``bfloat16``)."""
-        from . import detector
+        from .runtime import set_precision
 
-        detector.set_precision(self.module, precision)
+        set_precision(self.module, precision)
 
     def device(self) -> str:
         """The device the model's parameters live on."""

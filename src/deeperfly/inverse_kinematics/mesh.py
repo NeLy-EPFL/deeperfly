@@ -370,7 +370,9 @@ class ModelMesh:
         if int(good.sum()) < 3:  # too few anchors to place the body
             fallback = 1.0 if fixed_scale is None else float(fixed_scale)
             return np.eye(3), fallback, np.zeros(3)
-        rot, scale, trans = _umeyama(src[good], dst[good])
+        from .articulation import umeyama
+
+        rot, scale, trans = umeyama(src[good], dst[good])
         if fixed_scale is not None:
             scale = float(fixed_scale)
             trans = dst[good].mean(axis=0) - scale * (rot @ src[good].mean(axis=0))
@@ -411,19 +413,3 @@ def _skin_bone(
         return np.full_like(v, np.nan)
     rot = _bone_basis(d1, up) @ _bone_basis(d0, np.array([0.0, 0.0, 1.0])).T
     return a1 + (len1 / len0) * ((v - a0) @ rot.T)
-
-
-def _umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
-    """Least-squares similarity transform (rotation, scale, translation) ``src -> dst``."""
-    mu_s, mu_d = src.mean(axis=0), dst.mean(axis=0)
-    s0, d0 = src - mu_s, dst - mu_d
-    cov = (d0.T @ s0) / len(src)
-    u, sigma, vt = np.linalg.svd(cov)
-    correction = np.eye(3)
-    if np.linalg.det(u) * np.linalg.det(vt) < 0:
-        correction[2, 2] = -1.0
-    rot = u @ correction @ vt
-    var = (s0**2).sum() / len(src)
-    scale = float(np.trace(np.diag(sigma) @ correction) / var) if var > _EPS else 1.0
-    trans = mu_d - scale * (rot @ mu_s)
-    return rot, scale, trans

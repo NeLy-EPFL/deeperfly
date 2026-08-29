@@ -1,15 +1,20 @@
 """The torch-free seam in front of the 2D detectors.
 
 What is left here is what every detector class shares and no class owns: where its
-parameters live (:func:`detector_device`), what precision its forward may use
-(:func:`set_precision`, which records it -- see :mod:`deeperfly.pose2d.runtime`), and how
-much GPU memory there is to size a batch against (:func:`gpu_memory_bytes`).
+parameters live (:func:`detector_device`) and how much GPU memory there is to size a
+batch against (:func:`gpu_memory_bytes`). Both answer their question without importing
+torch at module scope, which is the whole point of the seam -- :mod:`deeperfly.pose2d`
+imports this module eagerly, and :mod:`deeperfly.pose2d.runtime` (which does import
+torch) must stay behind a lazy import.
 
-The forward and the decode are NOT here. Both shipped classes own theirs -- the dense HRNet
-because its heatmap field is padded past its input, the multiview transformer because its
-soft-argmax lives inside the module -- so there is no shared implementation to front, only
-a shared vocabulary. Torch imports lazily, so importing :mod:`deeperfly.pose2d` never
-imports torch.
+Setting the forward precision is deliberately NOT here: it writes to a live
+``nn.Module``, so every caller already holds torch by the time it asks, and a seam in
+front of it would front nothing. Use :func:`deeperfly.pose2d.runtime.set_precision`.
+
+The forward and the decode are NOT here either. Both shipped classes own theirs -- the
+dense HRNet because its heatmap field is padded past its input, the multiview transformer
+because its soft-argmax lives inside the module -- so there is no shared implementation to
+front, only a shared vocabulary.
 """
 
 from __future__ import annotations
@@ -17,25 +22,6 @@ from __future__ import annotations
 import logging
 
 log = logging.getLogger("deeperfly")
-
-
-def set_precision(model, precision: str = "float32") -> None:
-    """Set the detector forward precision: ``"float32"``, ``"float16"``, or ``"bfloat16"``.
-
-    ``"float16"`` / ``"bfloat16"`` run under CUDA autocast (faster, negligible
-    keypoint drift; bfloat16 trades a little speed for a wider, overflow-proof
-    range); a no-op on CPU/MPS. Stored on the model, so the next forward honors it.
-
-    Parameters
-    ----------
-    model
-        The detector (the precision is stored on it).
-    precision
-        ``"float32"``, ``"float16"`` or ``"bfloat16"``.
-    """
-    from .runtime import set_precision as _set
-
-    _set(model, precision)
 
 
 def detector_device(model) -> str:
