@@ -32,6 +32,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from deeperfly.project.migrate import expand_renames  # noqa: E402
 
 
+def _load(path: Path):
+    """Read a checkpoint under ``weights_only=True``, with ``pathlib`` allowlisted.
+
+    The HRNet exports record the run directory they came from as a `PosixPath` and the
+    torch version they were written under as a `TorchVersion`, neither of which the
+    safe unpickler allows by default. Both are inert data, so they are allowlisted
+    here rather than dropping the whole file's guard to ``weights_only=False``.
+    """
+    import pathlib
+
+    import torch
+
+    allowed = [
+        pathlib.PosixPath,
+        pathlib.WindowsPath,
+        pathlib.PurePosixPath,
+        torch.torch_version.TorchVersion,
+    ]
+    with torch.serialization.safe_globals(allowed):
+        return torch.load(path, map_location="cpu", weights_only=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("checkpoint", type=Path)
@@ -48,7 +70,7 @@ def main() -> None:
 
     import torch
 
-    ck = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    ck = _load(args.checkpoint)
     names = list(ck.get("point_names") or [])
     if not names:
         raise SystemExit(
