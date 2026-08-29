@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from helpers import HEIGHT, WIDTH
 from websockets.sync.client import connect as ws_connect
 
-from deeperfly.gui import EditorState, FrameSource, Session, server
+from deeperfly.gui import EditorState, FrameSource, Session, payloads
 from deeperfly.gui.server import create_app
 
 
@@ -127,7 +127,7 @@ def test_encoded_frame_cache_evicts_by_bytes():
     A count-based bound would mean something different for every rig, and the one number
     that matters -- how much memory the cache may hold -- would not be the one set.
     """
-    cache = server._EncodedFrames(budget=100)
+    cache = payloads._EncodedFrames(budget=100)
     cache.put(("tok", "a", 0), b"x" * 40)
     cache.put(("tok", "a", 1), b"y" * 40)
     assert cache.get(("tok", "a", 0)) is not None  # 80 bytes: both still fit
@@ -173,7 +173,7 @@ def test_cache_token_differs_between_recordings(session, tmp_path, result):
         labels_path=other_dir / "labels.h5",
         image_sizes=image_sizes,
     )
-    assert server._session_version(session) != server._session_version(other)
+    assert payloads._session_version(session) != payloads._session_version(other)
 
 
 def test_cache_token_survives_a_results_rewrite(result, tmp_path):
@@ -200,13 +200,13 @@ def test_cache_token_survives_a_results_rewrite(result, tmp_path):
             image_sizes=image_sizes,
         )
 
-    before = server._session_version(build())
+    before = payloads._session_version(build())
     results_path.write_bytes(b"after the absence declaration was mirrored in")
-    assert server._session_version(build()) == before
+    assert payloads._session_version(build()) == before
 
     # Re-pointing the result at different footage *does* retire it.
     video.write_bytes(b"a different recording's video file entirely")
-    assert server._session_version(build()) != before
+    assert payloads._session_version(build()) != before
 
 
 def test_index_declares_favicon(client):
@@ -938,7 +938,7 @@ def test_suggestions_go_through_the_labels_suggest_reader(client, session, monke
         calls.append(Path(path))
         return _suggestions_doc([_pick(4, rank=1)])
 
-    monkeypatch.setattr(server, "read_suggestions", read_suggestions)
+    monkeypatch.setattr(payloads, "read_suggestions", read_suggestions)
     _write_suggestions(session, [_pick(1, rank=1)])  # different content than the stub
     payload = client.get("/api/suggestions").json()
     assert calls == [session.suggestions_path]
@@ -951,7 +951,7 @@ def test_suggestions_survive_a_broken_reader(client, session, monkeypatch):
     def read_suggestions(path):
         raise ValueError("boom")
 
-    monkeypatch.setattr(server, "read_suggestions", read_suggestions)
+    monkeypatch.setattr(payloads, "read_suggestions", read_suggestions)
     _write_suggestions(session, [_pick(1, rank=1)])
     assert client.get("/api/suggestions").json()["present"] is False
 
@@ -1771,7 +1771,7 @@ def test_absent_rides_every_points_payload(client, session, result):
 
 
 def test_set_absent_edit_collapses_targets_to_a_point_set(session):
-    from deeperfly.gui.server import _handle_edit
+    from deeperfly.gui.routes import _handle_edit
 
     s = session.state
     # A (view, point) selection spanning several views is ONE fact about the animal.
@@ -1792,7 +1792,7 @@ def test_set_absent_edit_collapses_targets_to_a_point_set(session):
 
 
 def test_set_absent_defaults_to_this_frame_only(session):
-    from deeperfly.gui.server import _handle_edit
+    from deeperfly.gui.routes import _handle_edit
 
     s = session.state
     payload = _handle_edit(
@@ -1811,7 +1811,7 @@ def test_set_absent_defaults_to_this_frame_only(session):
 
 
 def test_edit_on_an_absent_point_is_refused_with_a_notice(session):
-    from deeperfly.gui.server import _handle_edit
+    from deeperfly.gui.routes import _handle_edit
 
     s = session.state
     s.set_absent([4], True, whole_recording=True)
@@ -1844,7 +1844,7 @@ def test_save_mirrors_absence_into_results_h5(client, session, result, tmp_path)
 def test_the_mid_drag_reply_omits_the_heavy_fields_rather_than_nulling_them(session):
     """`include_model=False` is the lean drag stream; the keys must be *absent*, not null,
     so the front-end can tell "unchanged" from "gone" and leave the overlay as it is."""
-    from deeperfly.gui.server import _points_payload
+    from deeperfly.gui.payloads import _points_payload
 
     lean = _points_payload(session, 0, "edit_3d", include_model=False)
     full = _points_payload(session, 0, "edit_3d", include_model=True)

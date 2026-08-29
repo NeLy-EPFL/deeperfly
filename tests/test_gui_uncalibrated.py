@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.gui.server import _meta_payload, _points_payload
+from deeperfly.gui.payloads import _meta_payload, _points_payload
 from deeperfly.gui.state import EditorState
 from deeperfly.results import PoseResult
 from deeperfly.skeleton import Skeleton

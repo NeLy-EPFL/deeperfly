@@ -31,7 +31,15 @@ from fastapi.testclient import TestClient
 from helpers import HEIGHT, WIDTH
 from websockets.sync.client import connect as ws_connect
 
-from deeperfly.gui import EditorState, FrameSource, Session, open_target, server
+from deeperfly.gui import (
+    EditorState,
+    FrameSource,
+    Session,
+    appstate,
+    open_target,
+    payloads,
+    routes,
+)
 from deeperfly.gui.server import create_app
 from deeperfly.labels import Labels, labels_identity, save_labels
 from deeperfly.project import Project
@@ -203,7 +211,7 @@ def test_a_stale_cache_stamp_is_never_served_as_immutable(client, monkeypatch):
     header. Both routes share ``_image_cache_control``.
     """
     monkeypatch.setattr(EditorState, "has_model", property(lambda self: True))
-    monkeypatch.setattr(server, "_render_mesh_png", lambda s, camera, t: b"png")
+    monkeypatch.setattr(payloads, "_render_mesh_png", lambda s, camera, t: b"png")
     before = client.get("/api/meta").json()["cache_v"]
     client.post("/api/recordings/open", json={"recording": "flyB"})
     after = client.get("/api/meta").json()["cache_v"]
@@ -232,7 +240,7 @@ def test_the_mesh_overlay_is_never_served_from_the_previous_recording(
     """
     monkeypatch.setattr(EditorState, "has_model", property(lambda self: True))
     monkeypatch.setattr(
-        server, "_render_mesh_png", lambda s, camera, t: s.results_path.encode()
+        payloads, "_render_mesh_png", lambda s, camera, t: s.results_path.encode()
     )
     first = client.get(f"/api/mesh/{CAMERAS[0]}/0")
     assert first.status_code == 200
@@ -306,13 +314,13 @@ def test_a_restored_recording_is_not_read_from_disk_again(client, monkeypatch):
     assertion still passed.
     """
     opens = []
-    real = server._open_for_switch
+    real = routes._open_for_switch
 
     def counted(root, slug):
         opens.append(slug)
         return real(root, slug)
 
-    monkeypatch.setattr(server, "_open_for_switch", counted)
+    monkeypatch.setattr(routes, "_open_for_switch", counted)
     client.post("/api/recordings/open", json={"recording": "flyB"})
     client.post("/api/recordings/open", json={"recording": "flyA"})
     assert opens == ["flyB"], "flyA was opened again instead of restored"
@@ -397,7 +405,7 @@ def test_a_clean_recording_is_pruned_but_an_unsaved_one_never_is(client, monkeyp
     visible in one run: flyA comes back from disk when it was saved, and from memory when
     it was not.
     """
-    monkeypatch.setattr(server, "_SESSION_KEEP", 0)
+    monkeypatch.setattr(appstate, "_SESSION_KEEP", 0)
     client.post("/api/recordings/open", json={"recording": "flyB"})
     assert (
         client.post("/api/recordings/open", json={"recording": "flyA"}).json()[
@@ -698,7 +706,7 @@ def test_the_switcher_ids_agree_across_the_assets(client):
     ``el()`` throws on a missing id, which takes the whole editor down at boot -- so a
     renamed id in one file and not the other is a blank page, not a missing button.
     """
-    from deeperfly.gui.server import _WEB_DIR
+    from deeperfly.gui.appstate import _WEB_DIR
 
     page = client.get("/").text
     app_js = (_WEB_DIR / "static" / "app.js").read_text()
