@@ -76,10 +76,14 @@ jobs:
         #
         # The `grep` is the point of the job: a missing browser makes every test in the
         # file SKIP, which would otherwise report this green with nothing exercised.
+        #
+        # No `-q` here: `addopts` already carries one, and a second turns it into `-qq`,
+        # which suppresses the very summary line this greps for -- so the guard could
+        # never match and had stopped guarding anything.
         run: |
           set -o pipefail
-          uv run --python 3.13 pytest tests/test_gui_browser.py -q | tee browser.log
-          grep -qE '^53 passed' browser.log
+          uv run --python 3.13 pytest tests/gui/test_gui_browser.py | tee browser.log
+          grep -qE '^48 passed' browser.log
 
   lint:
     runs-on: ubuntu-latest

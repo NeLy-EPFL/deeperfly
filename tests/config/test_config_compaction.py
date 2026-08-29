@@ -519,7 +519,7 @@ BARE = [{"name": "a", "source": "vid_a"}, {"name": "b", "source": "vid_b"}]
 
 # -- every config in the repo, held to the same shape -------------------------
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 #: Every config a user is meant to read or run, packaged and staged alike.
 ALL_CONFIGS = [DEFAULT_CONFIG_PATH, *sorted(REPO.glob("examples/*/config.toml"))]
 

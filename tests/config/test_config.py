@@ -83,7 +83,7 @@ def test_a_section_the_template_omits_resolves_to_the_python_defaults():
 
 
 @pytest.mark.parametrize(
-    "example", sorted((Path(__file__).parents[1] / "examples").glob("*/config.toml"))
+    "example", sorted((Path(__file__).parents[2] / "examples").glob("*/config.toml"))
 )
 def test_every_example_config_still_validates(example):
     """Every checked-in example config must still parse and validate.
