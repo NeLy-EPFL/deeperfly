@@ -9,9 +9,9 @@ from __future__ import annotations
 import tomllib
 
 from deeperfly import cli
-from deeperfly.cameras import CameraGroup
 from deeperfly.config import DEFAULT_CONFIG_PATH, Config
 from deeperfly.recordings import camera_files, source_patterns
+from deeperfly.rig.cameras import CameraGroup
 from deeperfly.skeleton import Skeleton
 
 # -- deeperfly init ----------------------------------------------------------

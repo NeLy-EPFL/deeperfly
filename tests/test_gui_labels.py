@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from deeperfly.gui.labels import (
+from deeperfly.labels import (
     LABELS_FORMAT_VERSION,
     Labels,
     export_absent,

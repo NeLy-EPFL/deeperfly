@@ -1,4 +1,4 @@
-"""Tests for :mod:`deeperfly.cameras`.
+"""Tests for :mod:`deeperfly.rig.cameras`.
 
 Covers the extrinsic resolver (the orbit spec: look_at / distance /
 azimuth_deg / elevation_deg / roll_deg), the :class:`Camera` conveniences, and
@@ -20,8 +20,8 @@ from helpers import (
 )
 
 from deeperfly import geometry as geom
-from deeperfly.cameras import Camera, CameraGroup, resolve_extrinsics
 from deeperfly.config import Config
+from deeperfly.rig.cameras import Camera, CameraGroup, resolve_extrinsics
 
 
 @pytest.fixture

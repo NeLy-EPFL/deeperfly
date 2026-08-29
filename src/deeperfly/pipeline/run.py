@@ -221,7 +221,7 @@ def _rig_coverage(config: Config) -> list[str]:
     if path is None:
         return declared
     try:
-        from ..calibration import Calibration
+        from ..rig.calibration import Calibration
 
         have = set(Calibration.load(path).cameras.cameras)
     except Exception:  # noqa: BLE001 -- not this function's error to report
@@ -398,7 +398,7 @@ def _rig_meta(ctx: _RunContext, report: dict) -> dict:
     path = ctx.config.calibration_path()
     if path is not None:
         try:
-            from ..calibration import Calibration
+            from ..rig.calibration import Calibration
 
             parent_cal = Calibration.load(path)
             units = parent_cal.units
@@ -434,12 +434,12 @@ def _write_calibration(ctx: _RunContext, refined, report: dict) -> None:
     ``results.h5`` already holds these cameras, but only as arrays inside one
     recording's file: nothing can point a *second* recording at them, diff them against
     a later solve, or read their residuals without opening HDF5. The calibration file is
-    the same rig in the form that travels (see :mod:`deeperfly.calibration`).
+    the same rig in the form that travels (see :mod:`deeperfly.rig.calibration`).
 
     Best-effort: a rig that cannot be written must not fail a run whose real output
     (``results.h5``) is already committed.
     """
-    from ..calibration import CALIBRATION_FILENAME, Calibration
+    from ..rig.calibration import CALIBRATION_FILENAME, Calibration
 
     meta = _rig_meta(ctx, report)
     try:

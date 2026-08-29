@@ -1,7 +1,7 @@
-"""Tests for :mod:`deeperfly.calibration` -- the solved-rig artifact.
+"""Tests for :mod:`deeperfly.rig.calibration` -- the solved-rig artifact.
 
 The artifact exists because a config camera is an *orbit* and a solver's output is
-raw ``(rvec, tvec)``, which :func:`deeperfly.cameras.resolve_extrinsics` refuses. So the
+raw ``(rvec, tvec)``, which :func:`deeperfly.rig.cameras.resolve_extrinsics` refuses. So the
 tests here are mostly about the two things that make a stored rig safe to reuse: that it
 round-trips exactly (a rig quietly rounded on every rewrite is worse than no rig) and
 that it *refuses* to be applied to footage or a camera set it does not describe.
@@ -19,14 +19,14 @@ from helpers import (
     seven_camera_default_text,
 )
 
-from deeperfly.calibration import (
+from deeperfly.config import Config
+from deeperfly.rig.calibration import (
     CALIBRATION_FILENAME,
     CALIBRATION_FORMAT_VERSION,
     Calibration,
     quality_from_errors,
 )
-from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config
+from deeperfly.rig.cameras import CameraGroup
 
 SIZES = {name: (HEIGHT, WIDTH) for name in CAMERA_NAMES}
 

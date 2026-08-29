@@ -11,8 +11,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.gui.labels import Labels
-from deeperfly.merge import map_by_name, merge_labels, remap_labels
+from deeperfly.labels import Labels
+from deeperfly.labels.merge import map_by_name, merge_labels, remap_labels
 
 POINTS = ["head", "thorax", "abdomen"]
 CAMS = ["left", "right"]
@@ -330,7 +330,7 @@ def _project_with(tmp_path, dest_cells, source_cells, *, dest_labels=True):
     """A project whose recording has ``dest_cells``, plus a separate source labels.h5."""
     from helpers import CAMERA_NAMES, seven_camera_default
 
-    from deeperfly.gui.labels import labels_identity, save_labels
+    from deeperfly.labels import labels_identity, save_labels
     from deeperfly.project import Project
     from deeperfly.results import StageStore
     from deeperfly.skeleton import Skeleton

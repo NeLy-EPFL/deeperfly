@@ -11,7 +11,7 @@ Four things have to be reconciled, and one of them is a trap:
 **Skeleton.** Matched **by name, never by index**. Two 38-point skeletons in different
 orders are the nightmare case: index-based copying between them is a silent, total
 corruption, and every cell would still look plausible afterwards. Today's exact-match
-identity check (:func:`deeperfly.gui.labels._check_identity`) is what prevents it by
+identity check (:func:`deeperfly.labels.store._check_identity`) is what prevents it by
 refusing outright; merging replaces that refusal with a name-based remap, and index copying
 is *not implemented at all* so it cannot be reached by accident.
 
@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .gui.labels import Labels
+from .store import Labels
 
 __all__ = [
     "SkeletonMapping",

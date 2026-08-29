@@ -20,7 +20,7 @@ On top of those, the *staged* run (shared by the CLI and a library caller):
   :func:`deeperfly.eks.smooth`, which a caller of :func:`run_from_points2d` can
   apply to that function's own output. ``stage_postprocess`` then applies the
   ``[postprocess].ops`` chain -- the corrections that come from knowing the animal
-  rather than the pixels (see :mod:`deeperfly.postprocess`).
+  rather than the pixels (see :mod:`deeperfly.pipeline.postprocess`).
 - :mod:`deeperfly.pipeline.fingerprint` -- the per-stage config fingerprints
   that decide when a cached stage output can be reused.
 - :func:`run_recording` -- run a single recording's enabled stages against an output

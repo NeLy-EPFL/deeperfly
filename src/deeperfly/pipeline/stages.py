@@ -17,16 +17,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..pictorial import Candidates
+    from .pictorial import Candidates
 
 import numpy as np
 
-from ..cameras import CameraGroup
 from ..config import STAGES, Config
 from ..pose2d import autocrop
 from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
 from ..recordings import source_image_sizes
 from ..results import PoseResult, StageStore
+from ..rig.cameras import CameraGroup
 from ..skeleton import Skeleton
 from . import fingerprint
 
@@ -125,7 +125,7 @@ def stage_pose2d(
     pts2d, conf : np.ndarray
         The detections ``(V, T, P, 2)`` and confidences ``(V, T, P)``. A
         ``(view, point)`` pair no pathway maps is ``NaN``.
-    candidates : deeperfly.pictorial.Candidates or None
+    candidates : deeperfly.pipeline.pictorial.Candidates or None
         The top-K peak set when ``want_candidates``, else ``None``.
     image_sizes : dict
         ``camera_name -> (height, width)`` of the raw footage frames.
@@ -258,9 +258,9 @@ def stage_bundle_adjustment(
         The skeleton (the bone-length prior).
     report
         Optional dict the stage fills in with what it measured but does not return:
-        ``quality`` (see :func:`deeperfly.calibration.quality_from_errors`) and
+        ``quality`` (see :func:`deeperfly.rig.calibration.quality_from_errors`) and
         ``n_frames``. The caller writes the calibration artifact
-        (:class:`deeperfly.calibration.Calibration`), which needs the residuals this
+        (:class:`deeperfly.rig.calibration.Calibration`), which needs the residuals this
         stage already computes for its log line -- passing them out is cheaper than
         triangulating the whole recording a second time to recover them.
 
@@ -269,7 +269,7 @@ def stage_bundle_adjustment(
     CameraGroup
         The refined rig.
     """
-    from ..triangulation import reprojection_error, triangulate
+    from ..rig.triangulation import reprojection_error, triangulate
     from .core import apply_absent, bundle_adjust_cameras
 
     ba = config.bundle_adjustment
@@ -312,7 +312,7 @@ def stage_bundle_adjustment(
         np.nanmax(err),
     )
     if report is not None:
-        from ..calibration import quality_from_errors
+        from ..rig.calibration import quality_from_errors
 
         report["quality"] = quality_from_errors(err, refined.names)
         report["n_frames"] = int(t)
@@ -348,7 +348,7 @@ def stage_pictorial_structures(
         The corrected per-view 2D, the initial 3D estimate, and its
         reprojection error.
     """
-    from .. import pictorial
+    from . import pictorial
 
     if skeleton is None:
         raise ValueError(
@@ -402,7 +402,7 @@ def stage_triangulation(
     pts2d, pts3d, reproj_error : np.ndarray
         The (possibly cleaned) 2D, the 3D points, and the reprojection error.
     """
-    from ..triangulation import reprojection_error, triangulate
+    from ..rig.triangulation import reprojection_error, triangulate
     from .core import (
         _validate_triangulation,
         apply_absent,
@@ -490,7 +490,7 @@ def stage_eks(
         the caller persists alongside the arrays.
     """
     from ..eks import smooth
-    from ..triangulation import reprojection_error
+    from ..rig.triangulation import reprojection_error
     from .core import apply_absent
 
     opts = config.eks
@@ -571,7 +571,7 @@ def stage_postprocess(
 ):
     """Apply the ``[postprocess].ops`` chain to a finished 3D pose.
 
-    A thin wrapper: the corrections themselves live in :mod:`deeperfly.postprocess`, one
+    A thin wrapper: the corrections themselves live in :mod:`deeperfly.pipeline.postprocess`, one
     pure function per op, so a new correction is an entry in that registry plus a line in
     a config's ``ops`` -- not a new pipeline stage. This function resolves the config,
     runs the chain, re-measures the residual and logs what each op did.
@@ -602,9 +602,9 @@ def stage_postprocess(
         One entry per op, in order, recording what it measurably did. The caller
         persists them as the stage's metadata.
     """
-    from ..postprocess import apply_ops
-    from ..triangulation import reprojection_error
+    from ..rig.triangulation import reprojection_error
     from .core import apply_absent
+    from .postprocess import apply_ops
 
     if skeleton is None:
         raise ValueError(
@@ -630,7 +630,7 @@ def stage_postprocess(
 
 def _columns_for(names, skeleton, where: str) -> list[int]:
     """Skeleton point names -> column indices, erroring with the config key that failed."""
-    from ..postprocess import _columns
+    from .postprocess import _columns
 
     return _columns(names, skeleton, where=where)
 

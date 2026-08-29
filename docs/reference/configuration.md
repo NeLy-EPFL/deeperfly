@@ -154,7 +154,7 @@ l_antenna = "#0a4f6b"   # an exact name beats the pattern
 
 The same grammar drives [`[bundle_adjustment] points`](#bundle_adjustment) and the
 [`static`](#op-static) / [`symmetrize`](#op-symmetrize) ops. Chains, where anything
-needs them, are derived from the edge graph (`deeperfly.pictorial.skeleton_chains`).
+needs them, are derived from the edge graph (`deeperfly.pipeline.pictorial.skeleton_chains`).
 
 `results.h5` stops writing `limb_names` / `limb_id` / `palette` and writes
 `point_colors`; a file without it reads back on a colormap, which is acceptable because
@@ -918,7 +918,7 @@ detection).
 the top-K peaks of a detector that predicted **one body side**; a dense detector already
 predicts every point in every view, so there is nothing to recover. Switching it on rewires
 triangulation *and* the smoother onto its committed 2D, which is `NaN` in every view with
-no candidate within 15 px (`deeperfly.pictorial.DEFAULT_INLIER_PX`) — so on a dense run it
+no candidate within 15 px (`deeperfly.pipeline.pictorial.DEFAULT_INLIER_PX`) — so on a dense run it
 would silently *un-densify* the result. It also adds a `candidates` key to the `pose2d`
 fingerprint, re-detecting every cached tree in existence.
 

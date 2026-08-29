@@ -195,7 +195,7 @@ def symmetrize_seglens(
 
     A fly's left and right femurs are the same bone measured twice, so at most one of the
     two measured lengths can be anatomy. Averaging the two medians is what does not
-    privilege a side (the same argument :func:`~deeperfly.postprocess.symmetrize_3d`
+    privilege a side (the same argument :func:`~deeperfly.pipeline.postprocess.symmetrize_3d`
     makes for the body-fixed points, and the reason this is a *mean* rather than a pooled
     median over both sides' frames: pooling weights the side with more triangulated
     frames).

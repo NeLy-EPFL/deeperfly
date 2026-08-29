@@ -13,9 +13,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly import postprocess as pp
 from deeperfly.config import Config
 from deeperfly.pipeline import fingerprint, stages
+from deeperfly.pipeline import postprocess as pp
 from deeperfly.results import PoseResult, StageStore
 from deeperfly.skeleton import Skeleton
 

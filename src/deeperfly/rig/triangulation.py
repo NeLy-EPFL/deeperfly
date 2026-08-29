@@ -1,7 +1,7 @@
 """Skeleton-aware triangulation helpers over a :class:`CameraGroup`.
 
 Thin NumPy-facing wrappers around :mod:`deeperfly.geometry` and
-:class:`deeperfly.cameras.CameraGroup`. The contract with the geometry layer is
+:class:`deeperfly.rig.cameras.CameraGroup`. The contract with the geometry layer is
 the **NaN convention**: a 2D observation of ``NaN`` means "this camera did not
 (or cannot) see this point", so visibility is expressed purely as NaNs -- no
 separate mask array travels downstream.

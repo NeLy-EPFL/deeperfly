@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 from helpers import deepfly3d_skeleton, make_cameras, rig_arrays
 
-from deeperfly.cameras import CameraGroup
 from deeperfly.results import PoseResult
+from deeperfly.rig.cameras import CameraGroup
 from deeperfly.skeleton import Skeleton
 
 

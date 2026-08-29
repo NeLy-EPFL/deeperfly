@@ -97,7 +97,7 @@ def refine_peaks(
     """Refine integer peak cells ``(row, col)`` to sub-pixel ``(cx, cy)`` (heatmap px).
 
     Shared by :func:`heatmap_to_points` and
-    :func:`deeperfly.pictorial.peak_candidates` so the single arg-max peak and the
+    :func:`deeperfly.pipeline.pictorial.peak_candidates` so the single arg-max peak and the
     top-K candidate peaks are localized the same way. ``hm`` holds ``M`` heatmaps;
     each carries ``K`` peaks to refine (``K = 1`` for the arg-max, the top-``K``
     for candidates). All three estimators are seeded by the arg-max cell:
@@ -497,7 +497,7 @@ def detect_candidates_sequence(
 
     The same forward yields the single-peak ``(pts2d, conf)`` -- used by
     bundle adjustment and triangulation -- and a
-    :class:`deeperfly.pictorial.Candidates` set of the top-``k`` peaks per
+    :class:`deeperfly.pipeline.pictorial.Candidates` set of the top-``k`` peaks per
     (view, joint), consumed by the pictorial-structures corrector. Candidates a
     pathway does not map (or that no pathway produces) stay ``NaN``.
 
@@ -513,7 +513,7 @@ def detect_candidates_sequence(
         Number of candidate peaks kept per (view, joint).
     threshold, threshold_rel
         Absolute and relative peak gates
-        (:func:`deeperfly.pictorial.peak_candidates`). Required along with ``k``: all
+        (:func:`deeperfly.pipeline.pictorial.peak_candidates`). Required along with ``k``: all
         three are run configuration, and their shipped values live in
         :class:`deeperfly.config.PictorialParams` rather than being restated here.
     method, radius
@@ -527,12 +527,12 @@ def detect_candidates_sequence(
         Arg-max 2D pixels of shape ``(V, T, P, 2)``.
     conf : np.ndarray
         Per-point confidence of shape ``(V, T, P)``.
-    candidates : deeperfly.pictorial.Candidates
+    candidates : deeperfly.pipeline.pictorial.Candidates
         The top-``k`` candidate peak set.
     """
     import torch
 
-    from .. import pictorial
+    from ..pipeline import pictorial
 
     # A PADDED field is decoded through the MODEL's own cell geometry
     # (`LoadedModel.cells_to_normalized`), never `heatmap_to_points`' normalization, which

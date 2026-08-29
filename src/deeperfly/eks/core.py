@@ -80,7 +80,7 @@ def project_all(
         A world point of shape ``(3,)``.
     rvecs, tvecs, intrs, dists
         The rig's stacked camera parameters (see
-        :class:`~deeperfly.cameras.CameraGroup`).
+        :class:`~deeperfly.rig.cameras.CameraGroup`).
 
     Returns
     -------

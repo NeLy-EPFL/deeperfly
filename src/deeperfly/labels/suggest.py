@@ -60,8 +60,8 @@ from pathlib import Path
 import numpy as np
 from jaxtyping import Bool, Float
 
-from .cameras import CameraGroup
-from .triangulation import reprojection_error, triangulate_ransac
+from ..rig.cameras import CameraGroup
+from ..rig.triangulation import reprojection_error, triangulate_ransac
 
 __all__ = [
     "SUGGESTIONS_FILENAME",
@@ -725,8 +725,8 @@ def prepare_inputs(results_path: str | Path) -> SuggestInputs:
     """
     import h5py
 
-    from .gui.labels import labels_identity
-    from .results import StageStore
+    from ..results import StageStore
+    from .store import labels_identity
 
     path = Path(results_path)
     store = StageStore(path)
@@ -949,7 +949,7 @@ def read_labeled_frames(labels_path: str | Path, *, identity: dict) -> dict | No
     ValueError
         If the sidecar belongs to a different recording (identity mismatch).
     """
-    from .gui.labels import absent_to_spans, load_labels
+    from .store import absent_to_spans, load_labels
 
     path = Path(labels_path)
     labels = load_labels(path, identity=identity)
@@ -1177,7 +1177,7 @@ def suggestions_staleness(
         A document from :func:`read_suggestions`.
     identity
         The live recording fingerprint
-        (:func:`~deeperfly.gui.labels.labels_identity`); skipped when ``None``.
+        (:func:`~deeperfly.labels.store.labels_identity`); skipped when ``None``.
     results_path
         The live ``results.h5``; skipped when ``None``.
     labeled_frames

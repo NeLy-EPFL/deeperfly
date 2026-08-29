@@ -30,14 +30,14 @@ import webbrowser
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..labels_suggest import SUGGESTIONS_FILENAME
-from ..results import PoseResult, StageStore
-from .labels import (
+from ..labels import (
     Labels,
     labels_identity,
     load_labels,
     save_labels,
 )
+from ..labels.suggest import SUGGESTIONS_FILENAME
+from ..results import PoseResult, StageStore
 from .readers import FrameSource, resolve_camera_files, resolve_footage
 from .session import Session
 from .state import EditMode, EditorState
@@ -535,7 +535,7 @@ def serve(
     # reports `enabled: false` instead.
     queue = None
     if session.project_root is not None:
-        from ..jobs import JobQueue
+        from ..project.jobs import JobQueue
 
         queue = JobQueue(session.project_root)
 

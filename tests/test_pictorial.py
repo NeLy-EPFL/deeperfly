@@ -12,8 +12,7 @@ import numpy as np
 import pytest
 from helpers import fly_masked
 
-from deeperfly import pictorial
-from deeperfly.pipeline import _bone_prior, reconstruct, run_from_points2d
+from deeperfly.pipeline import _bone_prior, pictorial, reconstruct, run_from_points2d
 from deeperfly.results import PoseResult
 
 

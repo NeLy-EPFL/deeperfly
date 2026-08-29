@@ -1,7 +1,7 @@
 """The calibration artifact: a solved camera rig as a standalone, shareable file.
 
 A deeperfly config describes cameras as an **orbit** -- ``distance`` away from a
-``look_at`` target at some azimuth/elevation (:func:`deeperfly.cameras.resolve_extrinsics`).
+``look_at`` target at some azimuth/elevation (:func:`deeperfly.rig.cameras.resolve_extrinsics`).
 That is a good way for a human to *specify* a rig they built, and a deliberately bad way
 to write down one a *solver* produced: bundle adjustment returns an arbitrary
 ``(rvec, tvec)`` per camera, and the orbit parser rejects those keys outright rather than
@@ -29,8 +29,8 @@ things that make one safe to reuse:
 sees and clicks in, and the frame every ``(V, T, P, 2)`` array in deeperfly is expressed
 in. This is worth stating because :class:`~deeperfly.preprocessing.FrameTransform` *can*
 map intrinsics into a preprocessed frame (:meth:`~deeperfly.preprocessing.FrameTransform.map_intrinsics`)
-and :meth:`deeperfly.cameras.Camera.from_spec` accepts a ``transform`` -- but
-:meth:`deeperfly.cameras.CameraGroup.from_config` never passes one, and a pathway's
+and :meth:`deeperfly.rig.cameras.Camera.from_spec` accepts a ``transform`` -- but
+:meth:`deeperfly.rig.cameras.CameraGroup.from_config` never passes one, and a pathway's
 preprocessing is inverted back into the view's raw frame before any point is stored
 (:func:`deeperfly.pose2d.pathways.normalized_peaks_to_original_pixels`). Raw footage
 pixels is therefore the one coordinate system a calibration ever needs to name.
@@ -55,9 +55,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ._toml import key as _key
-from ._toml import table_lines as _table_lines
-from ._toml import value as _value
+from .._toml import key as _key
+from .._toml import table_lines as _table_lines
+from .._toml import value as _value
 from .cameras import Camera, CameraGroup
 
 __all__ = [
@@ -164,7 +164,7 @@ class Calibration:
         provenance: dict | None = None,
         quality: dict | None = None,
     ) -> Calibration:
-        """Wrap a solved :class:`~deeperfly.cameras.CameraGroup` as an artifact.
+        """Wrap a solved :class:`~deeperfly.rig.cameras.CameraGroup` as an artifact.
 
         Parameters
         ----------
@@ -348,7 +348,7 @@ class Calibration:
         """Raise if this rig does not describe the footage it is about to be used on.
 
         The analogue of the labels sidecar's identity check
-        (:func:`deeperfly.gui.labels._check_identity`), and for the same reason: the
+        (:func:`deeperfly.labels.store._check_identity`), and for the same reason: the
         intrinsics are pixel quantities, so footage that was rescaled, cropped or
         rotated since the solve would be *silently* misprojected. A size this
         calibration does not record cannot be checked and is skipped, so a rig whose

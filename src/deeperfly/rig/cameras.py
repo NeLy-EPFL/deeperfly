@@ -8,7 +8,7 @@ image point under :mod:`deeperfly.geometry`'s conventions: world to camera is
 
 A :class:`CameraGroup` is an ordered collection of named cameras, typically built
 from a TOML config (see :meth:`CameraGroup.from_config`). The config describes
-*only* the cameras; the wrapper in :mod:`deeperfly.bundle_adjustment` pairs a
+*only* the cameras; the wrapper in :mod:`deeperfly.rig.bundle_adjustment` pairs a
 ``CameraGroup`` with a separate ``[bundle_adjustment]`` section.
 
 Extrinsics are specified as an orbit around a ``look_at`` target: the camera
@@ -29,7 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Float
 
-from .geometry import (
+from ..geometry import (
     backproject_ray_one,
     intr_to_kmat,
     project_full,
@@ -39,7 +39,7 @@ from .geometry import (
 )
 
 if TYPE_CHECKING:
-    from .config import Config
+    from ..config import Config
 
 __all__ = ["Camera", "CameraGroup", "resolve_extrinsics"]
 
@@ -470,7 +470,7 @@ class CameraGroup:
         (:meth:`from_config`) and raw arrays (:meth:`from_arrays`). It exists because
         :func:`resolve_extrinsics` deliberately refuses ``rvec``/``tvec`` in a camera
         spec -- a half-specified orbit must not silently carry raw extrinsics -- which
-        left a *solved* rig with nowhere to live. See :mod:`deeperfly.calibration`.
+        left a *solved* rig with nowhere to live. See :mod:`deeperfly.rig.calibration`.
 
         Parameters
         ----------
@@ -516,7 +516,7 @@ class CameraGroup:
         provenance: dict | None = None,
         quality: dict | None = None,
     ):
-        """Wrap this rig as a saveable :class:`~deeperfly.calibration.Calibration`.
+        """Wrap this rig as a saveable :class:`~deeperfly.rig.calibration.Calibration`.
 
         Parameters
         ----------
@@ -526,11 +526,11 @@ class CameraGroup:
             ``camera_name -> (height, width)`` of the raw footage the intrinsics
             describe (recorded so a later consumer can be refused).
         units, scale_source, provenance, quality
-            See :class:`~deeperfly.calibration.Calibration`.
+            See :class:`~deeperfly.rig.calibration.Calibration`.
 
         Returns
         -------
-        deeperfly.calibration.Calibration
+        deeperfly.rig.calibration.Calibration
             The artifact; call ``.save(path)`` to write it.
         """
         from .calibration import Calibration

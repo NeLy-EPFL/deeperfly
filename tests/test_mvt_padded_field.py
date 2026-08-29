@@ -91,7 +91,7 @@ def test_the_padded_field_can_express_a_joint_outside_the_reported_frame():
     """A peak in the margin decodes to a coordinate outside ``[0, 1]``, not to the border.
 
     The whole point. Values outside the unit square are a location and must not be clipped;
-    ``deeperfly.triangulation`` and the bundle adjustment both consume them as pixels.
+    ``deeperfly.rig.triangulation`` and the bundle adjustment both consume them as pixels.
     """
     hm = _field(MARGIN)
     # a sharp peak in the very first cell of the field == up and left of the reported frame
@@ -205,7 +205,7 @@ def test_a_flat_map_is_far_less_confident_than_a_peak():
 def test_the_confidence_floor_reports_nan_rather_than_a_border_point():
     """Below the floor a point is ABSENT, not located.
 
-    NaN is what ``deeperfly.triangulation`` already means by "this camera cannot see this
+    NaN is what ``deeperfly.rig.triangulation`` already means by "this camera cannot see this
     point", so a gated joint is dropped from the fit instead of dragging it.
     """
     ungated = mvt.predict_points(

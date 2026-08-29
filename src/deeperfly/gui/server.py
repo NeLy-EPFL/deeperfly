@@ -52,9 +52,9 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from ..labels_suggest import read_suggestions, suggestions_staleness
+from ..labels import save_labels
+from ..labels.suggest import read_suggestions, suggestions_staleness
 from ..visualization._palette import edge_colors_rgb, point_colors_rgb
-from .labels import save_labels
 from .session import Session
 
 if TYPE_CHECKING:
@@ -145,8 +145,8 @@ def _live_label_stats(session: Session) -> dict:
     on-disk sidecar -- "unlabeled" next to an hour of work that has not reached disk
     yet. The four counts must mean exactly what the disk ones mean, so each is the
     in-memory twin of the group ``label_stats`` counts rows of: the vetoed masks
-    (:attr:`~deeperfly.gui.labels.Labels.has_gt`,
-    :attr:`~deeperfly.gui.labels.Labels.occluded_effective`), because an absent point's
+    (:attr:`~deeperfly.labels.store.Labels.has_gt`,
+    :attr:`~deeperfly.labels.store.Labels.occluded_effective`), because an absent point's
     labels are quarantined out of ``gt/index`` on the way out.
     """
     labels = session.state.labels
@@ -237,7 +237,7 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI app serving and editing ``session``.
 
-    ``jobs``, when given, is a :class:`~deeperfly.jobs.JobQueue` the browser may submit
+    ``jobs``, when given, is a :class:`~deeperfly.project.jobs.JobQueue` the browser may submit
     work to (``/api/jobs``). ``None`` -- the default, and what a bare ``results.h5``
     session gets -- leaves the endpoints reporting ``enabled: false`` rather than absent,
     so the front-end can say *why* the buttons are missing instead of just not showing
@@ -441,7 +441,7 @@ def create_app(
     def schema(section: str | None = None) -> dict:
         """The settable config keys, their defaults and their documentation.
 
-        Derived from the ``*Params`` dataclasses (:mod:`deeperfly.config_schema`), never
+        Derived from the ``*Params`` dataclasses (:mod:`deeperfly.config.schema`), never
         from a parallel description -- so a new field appears in the GUI's forms on the
         next reload with no second place to update, and its help text is the prose already
         written for it.
@@ -449,7 +449,7 @@ def create_app(
         Sections that have no schema (the detection plan, cameras, the skeleton, video
         specs) are open-ended and are reported as such rather than shown as empty forms.
         """
-        from ..config_schema import describe, sections, stage_flags_spec
+        from ..config.schema import describe, sections, stage_flags_spec
 
         if section is not None:
             try:
@@ -620,7 +620,7 @@ def create_app(
     @app.get("/api/config")
     def get_config() -> dict:
         """Every describable section's current values, with which ones were actually set."""
-        from ..config_schema import effective, sections, stage_flags_spec
+        from ..config.schema import effective, sections, stage_flags_spec
 
         if session.project_root is None:
             return {"enabled": False, "reason": "no project", "sections": {}}
@@ -850,7 +850,7 @@ def create_app(
             # Cold start: intrinsics are never derived from labels, so they must come from
             # the config's own camera specs (the orbit rig's focal length).
             try:
-                from ..cameras import CameraGroup
+                from ..rig.cameras import CameraGroup
 
                 prior = CameraGroup.from_config(config, image_sizes=session.image_sizes)
                 intrs = np.stack([prior[n].intr for n in names])
@@ -1078,7 +1078,7 @@ def create_app(
         labels unless ``discard`` is set, exactly as a recording switch does.
         """
         nonlocal cache_v
-        from ..cameras import CameraGroup
+        from ..rig.cameras import CameraGroup
         from . import ba
 
         project = _project()
@@ -1355,7 +1355,7 @@ def create_app(
     async def submit_job(payload: dict) -> dict:
         """Queue a job. ``{"kind": ..., "argv": [...], "label": ..., "recording": ...}``.
 
-        Only allow-listed kinds are accepted (:data:`~deeperfly.jobs.JOB_KINDS`) -- the
+        Only allow-listed kinds are accepted (:data:`~deeperfly.project.jobs.JOB_KINDS`) -- the
         editor is reachable over HTTP, and a queue that ran arbitrary argv would be a
         remote shell.
         """
@@ -1995,7 +1995,7 @@ def _points3d_to_json(pts: np.ndarray) -> list:
 # `_suggestions_notes` lifts the facts most likely to mislead (an under-delivered count, a
 # reseeded result, uncalibrated cameras) out of the CLI log and onto the screen.
 #
-# `deeperfly.labels_suggest` owns the sidecar format, so both parsing (`read_suggestions`)
+# `deeperfly.labels.suggest` owns the sidecar format, so both parsing (`read_suggestions`)
 # and the staleness tiers (`suggestions_staleness`) are ITS functions, imported here
 # rather than reimplemented -- a second interpretation of the format is exactly how a
 # panel ends up quietly disagreeing with the file it is displaying. Nothing here writes:
@@ -2100,7 +2100,7 @@ def _number(value) -> float | None:
 def _read_suggestions(path: Path | None) -> dict | None:
     """The parsed sidecar at ``path``, or ``None`` when there is nothing to show.
 
-    Thin wrapper over :func:`deeperfly.labels_suggest.read_suggestions`, which already
+    Thin wrapper over :func:`deeperfly.labels.suggest.read_suggestions`, which already
     returns ``None`` for a file that is absent, unreadable, not a JSON object, or
     stamped with a format version it does not know. The extra guard here is only that
     an unexpected exception from the reader must not take the editor down with it: "no
@@ -2122,7 +2122,7 @@ def _suggestions_stale(session: Session, data: dict, *, n_done: int) -> dict:
     """How out of date the queue is, as ``{"level", "reasons"}``.
 
     The two tiers that need to *inspect files* are delegated to
-    :func:`deeperfly.labels_suggest.suggestions_staleness`, so they are decided in one place:
+    :func:`deeperfly.labels.suggest.suggestions_staleness`, so they are decided in one place:
     the recording fingerprint (``hard`` -- the queue's frame indices mean something else
     entirely, and the panel then renders no rows at all) and ``results.h5``'s
     stat-then-md5 fingerprint (``predictions`` -- the ranking describes predictions that

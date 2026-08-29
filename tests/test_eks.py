@@ -151,7 +151,7 @@ def test_missing_views_are_marginalized_exactly(cameras, truth3d, noisy):
     variance, which should make the recursion identical to the one for the observed
     dimensions alone -- to floating-point, not approximately.
     """
-    from deeperfly.cameras import CameraGroup
+    from deeperfly.rig.cameras import CameraGroup
 
     _, obs, conf = noisy
     keep = cameras.names[:-2]

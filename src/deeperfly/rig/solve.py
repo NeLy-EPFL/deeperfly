@@ -9,7 +9,7 @@ is that inversion, in five steps.
     1  assemble    hand labels          -> observations, one 3D unknown per "track"
     2  gate        conditioning check   -> refuse, with the reason, before solving
     3  initialize  orbit prior, else incremental SfM (essential matrix + PnP)
-    4  bundle      deeperfly.bundle_adjustment, gauge-fixed, robust loss
+    4  bundle      deeperfly.rig.bundle_adjustment, gauge-fixed, robust loss
     5  report      per-camera residuals, co-visibility, scatter -> accept or discard
 
 **What a "track" is.** One 3D unknown: a skeleton keypoint at one frame, because the animal
@@ -700,7 +700,7 @@ def solve_rig(
     ``scale_pair`` / ``scale_distance`` pair that used to pin it from a measured
     landmark-to-landmark distance went with the landmarks.
 
-    Reuses :func:`deeperfly.bundle_adjustment.bundle_adjust` unchanged.
+    Reuses :func:`deeperfly.rig.bundle_adjustment.bundle_adjust` unchanged.
     ``fixed=["<view0>.rvec", "<view0>.tvec"]`` nails six of the seven gauge freedoms by
     making the first view the world frame; the seventh -- scale -- is left to the solver,
     which has no reason to move along it, so the rig stays at whatever scale the
@@ -854,7 +854,7 @@ def _rebase_to_first_view(rvecs, tvecs, view_names):
 
     Returns ``(rvecs, tvecs)`` describing the identical geometry in the new frame.
     """
-    from .geometry import rmat_to_rvec, rvec_to_rmat
+    from ..geometry import rmat_to_rvec, rvec_to_rmat
 
     rvecs = np.asarray(rvecs, dtype=float).copy()
     tvecs = np.asarray(tvecs, dtype=float).copy()

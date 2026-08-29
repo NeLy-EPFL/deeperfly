@@ -13,16 +13,16 @@ coordinate conventions these functions share, see
 
 ## Cameras
 
-::: deeperfly.cameras.Camera
+::: deeperfly.rig.cameras.Camera
 
-::: deeperfly.cameras.CameraGroup
+::: deeperfly.rig.cameras.CameraGroup
 
 ## Camera calibration files
 
 The portable form of a solved rig — see
 [`calibration.toml`](output-format.md#calibrationtoml) for the file itself.
 
-::: deeperfly.calibration.Calibration
+::: deeperfly.rig.calibration.Calibration
 
 ## Skeleton
 
@@ -46,9 +46,9 @@ The portable form of a solved rig — see
 
 ## Bundle adjustment
 
-::: deeperfly.bundle_adjustment.bundle_adjust
+::: deeperfly.rig.bundle_adjustment.bundle_adjust
 
-::: deeperfly.bundle_adjustment.bundle_adjust_from_config
+::: deeperfly.rig.bundle_adjustment.bundle_adjust_from_config
 
 ## Pipeline
 
@@ -74,7 +74,7 @@ The portable form of a solved rig — see
 
 ## Triangulation helpers
 
-::: deeperfly.triangulation
+::: deeperfly.rig.triangulation
 
 ## Ensemble Kalman smoother
 
@@ -89,7 +89,7 @@ The portable form of a solved rig — see
 The `postprocess` stage's op chain — one pure function per correction, registered in
 `OPS`; see [`[postprocess]`](configuration.md#postprocess) for the config side.
 
-::: deeperfly.postprocess
+::: deeperfly.pipeline.postprocess
 
 ## Inverse kinematics
 
@@ -105,11 +105,11 @@ is what the pipeline stage catches to skip rather than fail the run.
 
 ## Label suggestion (active learning)
 
-::: deeperfly.labels_suggest
+::: deeperfly.labels.suggest
 
 ## Pictorial structures
 
-::: deeperfly.pictorial
+::: deeperfly.pipeline.pictorial
 
 ## Frame I/O
 

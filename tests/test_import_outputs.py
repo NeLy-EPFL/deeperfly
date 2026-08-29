@@ -16,14 +16,14 @@ import numpy as np
 import pytest
 from helpers import CAMERA_NAMES
 
-from deeperfly.gui.labels import (
+from deeperfly.labels import (
     Labels,
     labels_identity,
     load_labels,
     save_labels,
 )
-from deeperfly.import_outputs import find_outputs, identify, import_outputs
 from deeperfly.project import Project
+from deeperfly.project.import_outputs import find_outputs, identify, import_outputs
 from deeperfly.results import StageStore
 
 N_FRAMES = 6

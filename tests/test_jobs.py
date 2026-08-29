@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from deeperfly.jobs import JOB_KINDS, JobQueue
+from deeperfly.project.jobs import JOB_KINDS, JobQueue
 
 
 def _wait(job, *, timeout=60.0):

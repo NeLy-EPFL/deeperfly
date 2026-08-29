@@ -320,7 +320,7 @@ def _cmd_project_rig(args: argparse.Namespace) -> None:
 
 def _cmd_project_export(args: argparse.Namespace) -> None:
     """Package a project into one shareable file (``deeperfly project export``)."""
-    from ..package import export_package
+    from ..project.package import export_package
 
     project = _open(args.project)
     try:
@@ -340,7 +340,7 @@ def _cmd_project_export(args: argparse.Namespace) -> None:
 
 def _cmd_project_import(args: argparse.Namespace) -> None:
     """Unpack a ``.dfpkg`` into a new project (``deeperfly project import``)."""
-    from ..package import describe_package, import_package
+    from ..project.package import describe_package, import_package
 
     try:
         described = describe_package(args.package)
@@ -383,7 +383,7 @@ def _cmd_project_import(args: argparse.Namespace) -> None:
 
 def _cmd_project_import_outputs(args: argparse.Namespace) -> None:
     """Merge stray ``deeperfly_outputs/`` corrections in (``deeperfly project import-outputs``)."""
-    from ..import_outputs import find_outputs, import_outputs
+    from ..project.import_outputs import find_outputs, import_outputs
 
     project = _open(args.project)
     sources = []
@@ -572,7 +572,7 @@ def _cmd_project_skeleton(args: argparse.Namespace) -> None:
     say for themselves.
     """
     from ..config import Config
-    from ..skeleton_migrate import apply_migration, expand_renames, plan_migration
+    from ..project.migrate import apply_migration, expand_renames, plan_migration
 
     project = _open(args.project)
     try:

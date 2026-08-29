@@ -455,7 +455,7 @@ def detect_2d(
         Detected 2D of shape ``(V, T, P, 2)``.
     conf : np.ndarray
         Per-point confidence of shape ``(V, T, P)``.
-    candidates : deeperfly.pictorial.Candidates or None
+    candidates : deeperfly.pipeline.pictorial.Candidates or None
         The top-K candidate set when ``want_candidates``, else ``None``.
 
     Raises
@@ -464,7 +464,7 @@ def detect_2d(
         If the detector received no frames.
     """
     from .. import io
-    from ..pictorial import Candidates
+    from ..pipeline.pictorial import Candidates
     from ..recordings import source_sources
     from . import inference
 

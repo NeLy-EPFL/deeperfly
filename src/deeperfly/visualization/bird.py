@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from ..cameras import Camera
+    from ..rig.cameras import Camera
     from ..skeleton import Skeleton
 
 __all__ = ["BIRD_VIEW", "dorsal_camera"]
@@ -156,7 +156,7 @@ def dorsal_camera(
     like
         A rig camera to copy the distortion *shape* from; the synthetic camera is
         distortion-free, and this only keeps the coefficient vector the same length so
-        it sits in a :class:`~deeperfly.cameras.CameraGroup` beside the real ones.
+        it sits in a :class:`~deeperfly.rig.cameras.CameraGroup` beside the real ones.
     image_hw, margin, pct
         The synthetic frame size, the air left around the animal, and the percentile
         trimmed off each end of its extent.
@@ -168,7 +168,7 @@ def dorsal_camera(
     """
     import cv2
 
-    from ..cameras import Camera
+    from ..rig.cameras import Camera
 
     pts3d = np.asarray(pts3d, dtype=float)
     if pts3d.ndim != 3 or pts3d.shape[-1] != 3:

@@ -8,9 +8,9 @@ import h5py
 import numpy as np
 import pytest
 
-from deeperfly.cameras import CameraGroup
-from deeperfly.pictorial import Candidates
+from deeperfly.pipeline.pictorial import Candidates
 from deeperfly.results import FORMAT_VERSION, PoseResult, StageStore
+from deeperfly.rig.cameras import CameraGroup
 from deeperfly.skeleton import Skeleton
 
 
@@ -606,7 +606,7 @@ def test_the_true_distortion_lengths_survive_the_round_trip(tmp_path, fly):
     camera authored `dist = []` read back as five zeros -- a textual round-trip failure.
     Numerically harmless, but it made the HDF5 group a lossy copy of a calibration.toml.
     """
-    from deeperfly.cameras import Camera
+    from deeperfly.rig.cameras import Camera
 
     # Built from Cameras directly: `from_arrays` cannot express a ragged dist, which is
     # itself the reason the padded array is the only thing that ever reached disk.
@@ -808,7 +808,7 @@ def _write_v2(path, cameras, rng, *, t=6):
     Built by hand rather than by the store, because the store only writes the current
     schema -- which is the thing :func:`repack` has to be fed an older file to test.
     """
-    from deeperfly.results import _write_cameras, _write_skeleton
+    from deeperfly.results.core import _write_cameras, _write_skeleton
 
     v, n = len(cameras), 38
     pts3d = rng.uniform(-1.5, 1.5, size=(t, n, 3))

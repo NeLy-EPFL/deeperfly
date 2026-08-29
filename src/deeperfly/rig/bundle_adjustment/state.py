@@ -11,7 +11,7 @@ caller can fix individual elements and tie parameters across cameras together
 without touching index arithmetic.
 
 The same packed state is consumed by the solver in
-:mod:`deeperfly.bundle_adjustment.core`.
+:mod:`deeperfly.rig.bundle_adjustment.core`.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, Int
 
-from ..geometry import intr_to_kmat, rvec_to_rmat, triangulate_dlt
+from ...geometry import intr_to_kmat, rvec_to_rmat, triangulate_dlt
 
 # Parameter names accepted in fixed/shared references, mapped to their group.
 # ``kmat`` is accepted as an alias of the packed intrinsics ``intr``.

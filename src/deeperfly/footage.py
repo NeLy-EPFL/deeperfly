@@ -120,7 +120,7 @@ def resolve(
 def basenames(spec) -> list[str]:
     """One camera's footage basenames, **sorted** -- the identity projection.
 
-    Deliberately byte-identical to what :func:`deeperfly.gui.labels.labels_identity` already
+    Deliberately byte-identical to what :func:`deeperfly.labels.store.labels_identity` already
     stored, so adopting the canonical pointer cannot invalidate a single existing label.
     Prefers ``rel`` over ``abs`` for the same reason the old readers did.
     """

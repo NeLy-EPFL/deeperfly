@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 from helpers import fly_masked, leg_indices, small_rotation
 
-from deeperfly.cameras import CameraGroup
 from deeperfly.pipeline import (
     _validate_triangulation,
     bundle_adjust_cameras,
@@ -21,6 +20,7 @@ from deeperfly.pipeline import (
     run_from_points2d,
 )
 from deeperfly.results import PoseResult
+from deeperfly.rig.cameras import CameraGroup
 
 
 def fly_motion(rng, n_frames=12, n_pts=38):
@@ -519,7 +519,7 @@ def test_run_weigh_by_confidence_uses_conf(cameras, fly, rng):
 @pytest.mark.parametrize("triangulation", ["ransac", "greedy", "dlt"])
 def test_run_pictorial_then_triangulator(cameras, fly, rng, triangulation):
     """pictorial recovers the peak, then the chosen triangulation fits the 3D."""
-    from deeperfly import pictorial
+    from deeperfly.pipeline import pictorial
 
     pts3d = fly_motion(rng, n_frames=5)
     proj = np.asarray(cameras.project(pts3d))  # (V, T, 38, 2)

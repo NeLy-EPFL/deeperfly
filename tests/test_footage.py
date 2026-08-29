@@ -153,7 +153,7 @@ def test_the_stored_labels_identity_footage_is_unchanged(tmp_path, result):
     """The regression guard that matters: if this projection changed, every existing
     labels.h5 in every project would stop loading.
     """
-    from deeperfly.gui.labels import labels_identity
+    from deeperfly.labels import labels_identity
 
     footage = {
         name: {"rel": [f"{name}.mp4"], "abs": [f"/data/{name}.mp4"]}

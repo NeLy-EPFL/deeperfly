@@ -11,7 +11,7 @@ vertices, their smooth per-vertex normals, and an index buffer over the drawable
 faces are uploaded **once per frame**, and each camera is rendered by changing only
 the model-view-projection uniform (the same trick MuJoCo's renderer uses -- upload
 the geometry once, re-render per camera). The vertex shader projects with the exact
-pinhole matrix :meth:`deeperfly.cameras.CameraGroup.project` uses, and the fragment
+pinhole matrix :meth:`deeperfly.rig.cameras.CameraGroup.project` uses, and the fragment
 shader smooth-shades against a headlight at the camera, so the overlay is both fast
 and free of the flat-shaded faceting the software path shows.
 
@@ -36,7 +36,7 @@ import numpy as np
 from .mesh import vertex_normals
 
 if TYPE_CHECKING:
-    from ..cameras import Camera
+    from ..rig.cameras import Camera
 
 __all__ = ["render_mesh_rgba_gl", "gl_available"]
 

@@ -5,7 +5,7 @@ Two verbs, both cheap and read-only where they can be:
 ``show``
     Print a calibration's cameras, provenance and residuals. The residuals are the
     point: a rig is not a set of numbers to be trusted on sight, and the whole reason
-    :class:`~deeperfly.calibration.Calibration` carries a quality block is so a human
+    :class:`~deeperfly.rig.calibration.Calibration` carries a quality block is so a human
     (or a script) can refuse one.
 
 ``export``
@@ -21,8 +21,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..calibration import CALIBRATION_FILENAME, Calibration, quality_from_errors
 from ..results import PoseResult, StageStore
+from ..rig.calibration import CALIBRATION_FILENAME, Calibration, quality_from_errors
 
 log = logging.getLogger("deeperfly")
 
@@ -83,7 +83,7 @@ def _cmd_calibration_export(args) -> None:
     # *different* rig (or a substituted 2D layer) than the one going into this file.
     quality: dict = {}
     try:
-        from ..triangulation import reprojection_error, triangulate
+        from ..rig.triangulation import reprojection_error, triangulate
 
         result = PoseResult.load(results_path)
         pts2d = result.pts2d

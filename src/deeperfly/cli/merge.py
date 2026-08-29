@@ -20,8 +20,8 @@ from pathlib import Path
 
 from rich.table import Table
 
-from ..gui.labels import Labels, load_labels, save_labels
-from ..merge import merge_labels
+from ..labels import Labels, load_labels, save_labels
+from ..labels.merge import merge_labels
 from .console import _info_line, console
 
 log = logging.getLogger("deeperfly")
@@ -59,7 +59,7 @@ def _derived_identity(project, entry) -> dict | None:
     merge writes is the identity the editor will later validate against. Returns ``None``
     when there is no result either.
     """
-    from ..gui.labels import labels_identity
+    from ..labels import labels_identity
     from ..results import PoseResult, StageStore
 
     results_path = project.results_path(entry)

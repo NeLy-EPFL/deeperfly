@@ -33,7 +33,7 @@ import warnings
 
 import numpy as np
 
-from .config import StaticPointsParams, SymmetrizeParams
+from ..config import StaticPointsParams, SymmetrizeParams
 
 log = logging.getLogger("deeperfly")
 
@@ -517,7 +517,7 @@ def apply_ops(pts2d, pts3d, *, ops, skeleton, absent=None):
     # the operator declared gone part-way through, and re-erasing after each op would
     # only differ if a later op read the resurrected cell -- which for a *static* point
     # is the same constant either way.
-    from .pipeline.core import apply_absent
+    from ..pipeline.core import apply_absent
 
     pts2d, _ = apply_absent(pts2d, None, absent)
     return pts2d, _erase_absent_3d(pts3d, absent), reports

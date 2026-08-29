@@ -7,7 +7,7 @@ into a sparse SciPy matrix via the precomputed sparsity pattern. The kernels are
 :func:`jax.jit`-wrapped and run on CPU JAX; the problems are small.
 
 The packed-state convention (``values`` + ``fixed`` + ``*_idx`` arrays +
-``pts2d``) lives in :mod:`deeperfly.bundle_adjustment.state`; build it with
+``pts2d``) lives in :mod:`deeperfly.rig.bundle_adjustment.state`; build it with
 :func:`build_state`.
 """
 
@@ -23,7 +23,7 @@ from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import csr_matrix
 
-from ..geometry import project_full_one
+from ...geometry import project_full_one
 
 
 class BASolution(NamedTuple):
@@ -107,12 +107,12 @@ def bundle_adjust(
     """Bundle adjustment with a JAX-computed analytic Jacobian.
 
     Low-level solver over the packed state. For the config-driven, camera-aware
-    entry point see :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+    entry point see :func:`deeperfly.rig.bundle_adjustment.bundle_adjust`.
 
     Parameters
     ----------
     values, fixed, rvecs_idx, tvecs_idx, intrs_idx, dists_idx, pts3d_idx, pts2d
-        See :class:`deeperfly.bundle_adjustment.state.BAState`.
+        See :class:`deeperfly.rig.bundle_adjustment.state.BAState`.
     loss, f_scale, max_nfev, **kwargs
         Forwarded to :func:`scipy.optimize.least_squares`. Use ``loss="huber"``
         with ``f_scale`` set to a pixel threshold for robust bundle adjustment.

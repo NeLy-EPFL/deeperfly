@@ -796,7 +796,7 @@ def test_the_uncalibrated_editor_hides_the_reprojection_layer(uncal_page_and_err
 @pytest.fixture
 def jobs_page_and_errors(browser_session, tmp_path):
     """The editor with a job queue attached, loaded in a real browser."""
-    from deeperfly.jobs import JobQueue
+    from deeperfly.project.jobs import JobQueue
 
     queue = JobQueue(tmp_path / "proj")
     browser_session.project_root = tmp_path / "proj"
@@ -886,8 +886,8 @@ def _open_marks(page):
 @pytest.fixture
 def settings_page_and_errors(result, tmp_path):
     """The editor with a project, so its Settings panel has a profile to write to."""
-    from deeperfly.jobs import JobQueue
     from deeperfly.project import Project
+    from deeperfly.project.jobs import JobQueue
 
     project = Project.create(tmp_path / "proj")
     sizes = {name: (HEIGHT, WIDTH) for name in result.cameras.names}
@@ -1665,9 +1665,9 @@ def mixed_rig_page_and_errors(tmp_path, rig, fly):
     """
     from test_gui_recordings import _make_recording
 
-    from deeperfly.cameras import CameraGroup
     from deeperfly.gui import open_target
     from deeperfly.project import Project
+    from deeperfly.rig.cameras import CameraGroup
 
     def group(names):
         idx = [rig["names"].index(n) for n in names]

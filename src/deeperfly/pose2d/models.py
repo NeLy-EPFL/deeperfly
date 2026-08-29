@@ -454,7 +454,7 @@ class LoadedModel:
         field that convention is wrong by the margin AND by the ``(w + 2m) / w`` scale. On
         the r28 multiview transformer that is 46 model px at the frame's edge, which is
         three times what a candidate is allowed to sit from its hypothesis
-        (:data:`deeperfly.pictorial.DEFAULT_INLIER_PX`), so every edge candidate would be
+        (:data:`deeperfly.pipeline.pictorial.DEFAULT_INLIER_PX`), so every edge candidate would be
         silently discarded. This dispatch is what the candidate path used to refuse rather
         than guess.
 

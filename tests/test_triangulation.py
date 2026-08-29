@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.triangulation import (
+from deeperfly.rig.triangulation import (
     reprojection_error,
     triangulate,
     triangulate_ransac,

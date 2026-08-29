@@ -69,7 +69,7 @@ starts moving pixels per frame, gets the right answer without editing this modul
 ``reproj_error`` is dropped only when a recomputation reproduces it *and* the stage's
 2D was not stored whole. The second half is not an optimization but a safeguard: the
 stored error is the only witness that an outside tool overwrote a stage's 2D with
-something other than the detections (see :func:`deeperfly.labels_suggest.stored_vs_pose2d`),
+something other than the detections (see :func:`deeperfly.labels.suggest.stored_vs_pose2d`),
 and a recomputed error agrees with the stored 3D by construction, so it can never
 disagree with itself. Deriving it would silently retire that check.
 
@@ -91,12 +91,12 @@ import h5py
 import numpy as np
 from jaxtyping import Bool, Float
 
-from .cameras import CameraGroup
-from .config import STAGES
-from .skeleton import Skeleton
+from ..config import STAGES
+from ..rig.cameras import CameraGroup
+from ..skeleton import Skeleton
 
 if TYPE_CHECKING:
-    from .pictorial import Candidates
+    from ..pipeline.pictorial import Candidates
 
 __all__ = ["PoseResult", "StageStore", "repack"]
 
@@ -310,7 +310,7 @@ def _keep_reproj_error(reproj_error, pts3d, obs2d, cameras, *, kind: str) -> boo
     2. ``kind == "full"`` -- the stage's 2D is stored whole, which is exactly the 2D an
        outside tool can overwrite. The stored error is then the only witness to that
        substitution, because a recomputed one agrees with the stored 3D by construction.
-       See :func:`deeperfly.labels_suggest.stored_vs_pose2d`, which reads it for that.
+       See :func:`deeperfly.labels.suggest.stored_vs_pose2d`, which reads it for that.
     """
     if reproj_error is None:
         return False
@@ -897,7 +897,7 @@ class StageStore:
                 {name: [int(h), int(w)] for name, (h, w) in image_sizes.items()}
             )
             if footage:
-                from .footage import write_pointer
+                from ..footage import write_pointer
 
                 outdir = self.path.parent
                 g.attrs["footage"] = json.dumps(
@@ -1194,7 +1194,7 @@ class StageStore:
 
     def read_candidates(self) -> "Candidates | None":
         """The cached top-K candidate peaks, or ``None`` if not stored."""
-        from .pictorial import Candidates
+        from ..pipeline.pictorial import Candidates
 
         with self._open() as f:
             if f is None or "pose2d/candidates/xy" not in f:

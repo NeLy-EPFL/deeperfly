@@ -1,4 +1,4 @@
-"""Tests for :mod:`deeperfly.bundle_adjustment`.
+"""Tests for :mod:`deeperfly.rig.bundle_adjustment`.
 
 Three layers are exercised:
 
@@ -17,15 +17,15 @@ import pytest
 from helpers import AZIMUTHS_DEG, CAMERA_NAMES, DISTANCE_MM, small_rotation
 
 from deeperfly import geometry as geom
-from deeperfly.bundle_adjustment import (
+from deeperfly.config import Config
+from deeperfly.rig.bundle_adjustment import (
     build_state,
     bundle_adjust,
     bundle_adjust_from_config,
     core,
     initialize_pts3d,
 )
-from deeperfly.cameras import CameraGroup
-from deeperfly.config import Config
+from deeperfly.rig.cameras import CameraGroup
 
 
 def make_group(rig) -> CameraGroup:

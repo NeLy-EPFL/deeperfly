@@ -1,7 +1,7 @@
 """The multiview transformer's side of the top-K CANDIDATE path.
 
 ``decode_points`` reduces a whole channel to one soft-argmax, so it cannot serve a caller
-that keeps several peaks per channel: :func:`deeperfly.pictorial.peak_candidates` holds
+that keeps several peaks per channel: :func:`deeperfly.pipeline.pictorial.peak_candidates` holds
 sub-pixel FIELD cells and has to place them itself. The shared ``(c + 0.5) / W_field``
 convention it falls back to is right only when the field spans the reported frame, and this
 model's does not -- it is the PADDED input's, so that convention is wrong by both the margin
@@ -152,7 +152,7 @@ def test_the_shared_convention_would_be_wrong_by_tens_of_model_pixels():
     dropped rather than merely misplaced. Silent, and worst exactly at the frame edge where
     an off-frame joint's candidate is the one worth having.
     """
-    from deeperfly.pictorial import DEFAULT_INLIER_PX
+    from deeperfly.pipeline.pictorial import DEFAULT_INLIER_PX
 
     cell = np.array([float(FIELD[1] - 1), float(FIELD[0] - 1)])
     ours = _to_model_px(mvt.cells_to_input_normalized(_Geom, cell))

@@ -22,7 +22,7 @@ from jaxtyping import Float
 from ._palette import edge_colors_rgb, point_colors_rgb
 
 if TYPE_CHECKING:  # avoid importing the camera/skeleton modules at drawing time
-    from ..cameras import Camera
+    from ..rig.cameras import Camera
     from ..skeleton import Skeleton
 
 __all__ = [

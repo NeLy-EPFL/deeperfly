@@ -18,14 +18,14 @@ import numpy as np
 import pytest
 from helpers import CAMERA_NAMES, HEIGHT, WIDTH, seven_camera_default
 
-from deeperfly.calibration_solve import (
+from deeperfly.rig.cameras import CameraGroup
+from deeperfly.rig.solve import (
     MIN_EQUATION_RATIO,
     Observations,
     build_observations,
     conditioning,
     solve_rig,
 )
-from deeperfly.cameras import CameraGroup
 
 SIZES = {name: (HEIGHT, WIDTH) for name in CAMERA_NAMES}
 
@@ -220,6 +220,6 @@ def test_the_quality_block_is_per_camera(truth):
 
 
 def test_merging_nothing_is_empty_not_an_error():
-    from deeperfly.calibration_solve import merge_observations
+    from deeperfly.rig.solve import merge_observations
 
     assert merge_observations([]).n_tracks == 0

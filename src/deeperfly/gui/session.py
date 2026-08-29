@@ -14,8 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..labels_suggest import SUGGESTIONS_FILENAME
-from .labels import labels_identity
+from ..labels import labels_identity
+from ..labels.suggest import SUGGESTIONS_FILENAME
 from .readers import FrameSource
 from .state import EditorState
 
@@ -35,7 +35,7 @@ class Session:
     results_path
         Path to the ``results.h5`` (recorded in the saved sidecar's metadata).
     labels_path
-        Where :func:`~deeperfly.gui.labels.save_labels` writes the ``labels.h5`` sidecar.
+        Where :func:`~deeperfly.labels.store.save_labels` writes the ``labels.h5`` sidecar.
     suggestions_path
         Where ``deeperfly labels-suggest`` writes its ranked-frame sidecar
         (``labels_suggest.json``). Defaults to the file of that name beside
@@ -43,7 +43,7 @@ class Session:
         the Suggested tab then just says how to produce it.
     identity
         The recording fingerprint stamped into ``labels.h5`` (see
-        :func:`~deeperfly.gui.labels.labels_identity`), so a stale sidecar is refused.
+        :func:`~deeperfly.labels.store.labels_identity`), so a stale sidecar is refused.
     n_frames
         The playable frame count: the result's frames clipped to what the
         footage actually covers (so scrubbing never runs past the video).

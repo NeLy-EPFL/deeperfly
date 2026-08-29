@@ -1,9 +1,9 @@
-"""Bundle adjustment over a :class:`~deeperfly.cameras.CameraGroup`.
+"""Bundle adjustment over a :class:`~deeperfly.rig.cameras.CameraGroup`.
 
 :func:`bundle_adjust` takes a (bundle-adjustment-unaware) ``CameraGroup`` plus
 the observed 2D points and ``fixed`` / ``shared`` specifications, builds the
-packed state (:func:`deeperfly.bundle_adjustment.state.build_state`), runs the
-core solver (:mod:`deeperfly.bundle_adjustment.core`), and returns an optimized
+packed state (:func:`deeperfly.rig.bundle_adjustment.state.build_state`), runs the
+core solver (:mod:`deeperfly.rig.bundle_adjustment.core`), and returns an optimized
 ``CameraGroup`` alongside the refined 3D points.
 
 :func:`bundle_adjust_from_config` is the config-driven entry point: it reads the
@@ -26,7 +26,7 @@ from . import core
 from .state import BAState, build_state, initialize_pts3d
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ...config import Config
 
 __all__ = [
     "bundle_adjust",
@@ -58,7 +58,7 @@ def bundle_adjust(
         Observed 2D points of shape ``(V, N, 2)`` with NaNs for missing.
     fixed, shared
         Parameter references to hold constant / tie together; see
-        :func:`deeperfly.bundle_adjustment.state.build_state`.
+        :func:`deeperfly.rig.bundle_adjustment.state.build_state`.
     pts3d
         Initial 3D points; triangulated from ``cameras`` if omitted.
     **solver_kwargs

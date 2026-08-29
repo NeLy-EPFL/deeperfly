@@ -17,15 +17,15 @@ import numpy as np
 import pytest
 from helpers import CAMERA_NAMES
 
-from deeperfly.gui.labels import Labels, labels_identity, load_labels, save_labels
+from deeperfly.labels import Labels, labels_identity, load_labels, save_labels
 from deeperfly.project import Project, label_stats
-from deeperfly.skeleton import Skeleton
-from deeperfly.skeleton_migrate import (
+from deeperfly.project.migrate import (
     apply_migration,
     diff_skeletons,
     expand_renames,
     plan_migration,
 )
+from deeperfly.skeleton import Skeleton
 
 SIZES = {name: (48, 64) for name in CAMERA_NAMES}
 
@@ -388,8 +388,8 @@ def test_symmetries_survive_the_emitted_skeleton_fragment(fly):
     import tomllib
 
     from deeperfly.config import Config
+    from deeperfly.project.migrate import _skeleton_toml
     from deeperfly.skeleton import Skeleton
-    from deeperfly.skeleton_migrate import _skeleton_toml
 
     back = Skeleton.from_config(Config.from_dict(tomllib.loads(_skeleton_toml(fly))))
     np.testing.assert_array_equal(back.point_symmetries, fly.point_symmetries)
@@ -403,8 +403,8 @@ def test_the_pairs_are_emitted_by_name_so_a_reorder_carries_them(fly):
     import tomllib
 
     from deeperfly.config import Config
+    from deeperfly.project.migrate import _skeleton_toml
     from deeperfly.skeleton import Skeleton
-    from deeperfly.skeleton_migrate import _skeleton_toml
 
     reversed_names = tuple(reversed(fly.point_names))
     spec = tomllib.loads(_skeleton_toml(fly))

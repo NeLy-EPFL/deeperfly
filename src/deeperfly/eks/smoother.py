@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Bool, Float
 
-from ..cameras import CameraGroup
+from ..rig.cameras import CameraGroup
 from .core import fit_smooth_param, smooth_keypoint
 from .ensemble import ensemble_statistics, inflate_variances, stack_views
 

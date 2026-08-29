@@ -192,7 +192,7 @@ def test_the_warning_names_the_camera_it_dropped(caplog):
 
 def _config_with_partial_calibration(tmp_path, drop="h"):
     """The packaged config pointed at a calibration that covers every view but ``drop``."""
-    from deeperfly.cameras import CameraGroup
+    from deeperfly.rig.cameras import CameraGroup
 
     cfg = Config.default()
     sizes = {n: (512, 1024) for n in cfg.camera_table()[1]}

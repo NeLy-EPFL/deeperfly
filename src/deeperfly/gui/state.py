@@ -9,7 +9,7 @@ recomputed from the labels + the detector's predictions and cached per frame.
 The unit of annotation is an **instance**: one skeleton per frame, created from the
 detections and owning a position for every ``(view, point)`` thereafter. Per cell the
 operator authors two facts on two independent axes
-(:class:`~deeperfly.gui.labels.Labels`): a GT pixel -- *where* the keypoint is -- and the
+(:class:`~deeperfly.labels.store.Labels`): a GT pixel -- *where* the keypoint is -- and the
 **hidden** flag -- *whether this cell is included in the training loss*. Nothing in this
 module lets one decide the other: hiding a cell moves no joint, removes no position, gates
 no verb and changes no solve, and placing a pixel neither sets nor clears the flag. The
@@ -48,8 +48,8 @@ import numpy as np
 from jaxtyping import Bool, Float
 
 from ..config import AnnotationParams, TriangulationParams
+from ..labels import Labels
 from ..results import PoseResult
-from .labels import Labels
 from .model_live import ModelLive
 from .solve import solve_point_3d, solve_point_3d_drag
 

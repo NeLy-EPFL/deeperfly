@@ -18,7 +18,7 @@ Following Gunel et al. (DeepFly3D, 2019):
    so the MAP over the bone-length-coupled model is exact -- no loopy belief
    propagation. An optional temporal term penalizes 3D jumps.
 
-Everything is plain NumPy over a :class:`~deeperfly.cameras.CameraGroup` and
+Everything is plain NumPy over a :class:`~deeperfly.rig.cameras.CameraGroup` and
 :class:`~deeperfly.skeleton.Skeleton`. The detector forward and heatmap decode
 happen upstream; this module consumes only candidate peaks + bundle-adjusted cameras.
 """
@@ -33,9 +33,9 @@ from itertools import combinations
 import numpy as np
 from jaxtyping import Float
 
-from .cameras import CameraGroup
-from .skeleton import Skeleton
-from .triangulation import reprojection_error
+from ..rig.cameras import CameraGroup
+from ..rig.triangulation import reprojection_error
+from ..skeleton import Skeleton
 
 __all__ = [
     "Candidates",
@@ -150,7 +150,7 @@ def peak_candidates(
     """
     from scipy.ndimage import maximum_filter
 
-    from .pose2d.inference import refine_peaks
+    from ..pose2d.inference import refine_peaks
 
     hm = np.asarray(heatmaps, dtype=float)
     hh, ww = hm.shape[-2:]
@@ -268,7 +268,7 @@ def elect_frame(
         Elected 2D per view, ``(V, P, 2)``, in the same pixel frame as ``cand_xy``.
         Never NaN where the arg-max was finite.
     """
-    from .triangulation import triangulate_ransac
+    from ..rig.triangulation import triangulate_ransac
 
     v, n, _k, _ = cand_xy.shape
     arg = cand_xy[:, :, 0, :]  # (V, P, 2) -- the incumbent
@@ -333,7 +333,7 @@ def bone_length_targets(
     """
     import warnings
 
-    from .triangulation import triangulate
+    from ..rig.triangulation import triangulate
 
     pts3d0 = triangulate(cameras, pts2d)  # (F, P, 3)
     i, j = skeleton.edge_endpoints()

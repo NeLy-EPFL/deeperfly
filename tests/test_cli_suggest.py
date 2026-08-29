@@ -15,10 +15,10 @@ import numpy as np
 import pytest
 
 from deeperfly import cli
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
-from deeperfly.labels_suggest import file_md5, read_suggestions
+from deeperfly.labels import Labels, labels_identity, save_labels
+from deeperfly.labels.suggest import file_md5, read_suggestions
 from deeperfly.results import StageStore
-from deeperfly.triangulation import reprojection_error
+from deeperfly.rig.triangulation import reprojection_error
 
 # -- a synthetic recording directory ------------------------------------------
 
@@ -297,7 +297,7 @@ def test_labels_absent_declares_and_clears(tmp_path, result, capsys):
     import argparse
 
     from deeperfly.cli.gui import _cmd_labels_absent
-    from deeperfly.gui.labels import labels_identity, load_labels
+    from deeperfly.labels import labels_identity, load_labels
 
     outdir = tmp_path / "deeperfly_outputs"
     outdir.mkdir()
@@ -342,7 +342,7 @@ def test_labels_absent_accepts_a_frame_range(tmp_path, result):
     import argparse
 
     from deeperfly.cli.gui import _cmd_labels_absent
-    from deeperfly.gui.labels import labels_identity, load_labels
+    from deeperfly.labels import labels_identity, load_labels
 
     outdir = tmp_path / "deeperfly_outputs"
     outdir.mkdir()

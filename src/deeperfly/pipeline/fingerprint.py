@@ -159,7 +159,7 @@ def _camera_geometry(config: Config) -> dict:
     """The rig the config describes -- the orbit tables *and* the calibration it points at.
 
     ``camera_table()`` deliberately drops the scalar ``calibration`` key (it is a path, not a
-    view), and that key is what :meth:`~deeperfly.cameras.CameraGroup.from_config` actually
+    view), and that key is what :meth:`~deeperfly.rig.cameras.CameraGroup.from_config` actually
     builds the rig from when it is set. Fingerprinting only the tables therefore made the
     solved rig **invisible to the cache**: pointing a project at a different calibration, or
     re-solving one in place, changed no stage's fingerprint, so cached
@@ -170,7 +170,7 @@ def _camera_geometry(config: Config) -> dict:
     rewrites it under the same name -- which is the common case, and the one a path alone
     cannot see.
     """
-    from ..cameras import _rig_keys
+    from ..rig.cameras import _rig_keys
 
     defaults, cams = config.camera_table()
     # `_rig_keys` strips the footage pattern: `video` lives in the camera table under v2

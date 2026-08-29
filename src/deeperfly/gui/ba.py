@@ -21,7 +21,7 @@ also means a handful of labels cannot damage a rig that took a whole recording t
 
 **Cold start.** No calibration exists (a fresh project: every view is an independent 2D
 canvas). Bundle adjustment cannot start from nothing, so the extrinsics must be *initialized*
-first -- :func:`deeperfly.calibration_solve.initialize_extrinsics`, which uses an orbit prior
+first -- :func:`deeperfly.rig.solve.initialize_extrinsics`, which uses an orbit prior
 when the config declares one and otherwise runs incremental SfM (essential matrix + PnP). Here
 the gauge is free and so is scale: without a known distance the solved rig is correct up to
 scale, angles are meaningful and lengths are not, and the calibration records
@@ -483,7 +483,7 @@ def preflight(obs: Observations, settings: BaSettings, camera_names) -> dict:
 
 def _residuals(cameras, pts2d, pts3d) -> dict:
     """Per-view and overall reprojection error, in pixels."""
-    from ..triangulation import reprojection_error
+    from ..rig.triangulation import reprojection_error
 
     err = np.asarray(reprojection_error(cameras, pts3d, pts2d), dtype=float)
     out: dict[str, Any] = {}
@@ -517,12 +517,12 @@ def solve(
 ) -> dict:
     """Bundle-adjust ``cameras`` against ``obs``, returning the new rig and a report.
 
-    Reuses :func:`deeperfly.bundle_adjustment.bundle_adjust` unchanged -- the same solver the
+    Reuses :func:`deeperfly.rig.bundle_adjustment.bundle_adjust` unchanged -- the same solver the
     pipeline runs. The only thing different here is that the observations are hand labels and
     the fix/free split came from the operator.
     """
-    from ..bundle_adjustment import bundle_adjust
-    from ..cameras import CameraGroup
+    from ..rig.bundle_adjustment import bundle_adjust
+    from ..rig.cameras import CameraGroup
 
     names = list(obs.view_names)
     problems = check_gauge(settings.fixed, names)
@@ -534,7 +534,7 @@ def solve(
         )
 
     if cold_start:
-        from ..calibration_solve import initialize_extrinsics
+        from ..rig.solve import initialize_extrinsics
 
         intrs = np.asarray(intrinsics, dtype=float)
         dsts = np.asarray(dists, dtype=float)
@@ -650,7 +650,7 @@ def still_provisional(path: Path, current) -> list[str]:
     anywhere else (a board solve, an import) carries no such list -- then the honest
     reading is that it IS a calibration for these cameras, so nothing stays provisional.
     """
-    from ..calibration import Calibration
+    from ..rig.calibration import Calibration
 
     want = [str(c) for c in (current or ())]
     if not want:
@@ -689,7 +689,7 @@ def apply_active_calibration(
     regression check -- has to make exactly this choice, and a second copy of the promotion
     rule would drift from the one the GUI actually uses.
     """
-    from ..cameras import CameraGroup
+    from ..rig.cameras import CameraGroup
 
     name = stored_meta(results_path).get("active_calibration")
     if not name or project_root is None:
@@ -747,9 +747,9 @@ def save_calibration(
 
     ``image_sizes`` is ``camera -> (height, width)``, the convention
     :meth:`deeperfly.results.StageStore.read_image_sizes` returns and
-    :class:`~deeperfly.calibration.Calibration` stores.
+    :class:`~deeperfly.rig.calibration.Calibration` stores.
     """
-    from ..calibration import Calibration
+    from ..rig.calibration import Calibration
 
     quality = {
         "reprojection_median_px": report["after"]["median"],
@@ -808,7 +808,7 @@ def delete_calibration(path: Path, *, active: Path | None = None) -> None:
     this GUI did not write -- a board solve, an imported rig -- is not the editor's to throw
     away, however cluttered the list looks.
     """
-    from ..calibration import Calibration
+    from ..rig.calibration import Calibration
 
     path = Path(path)
     if not path.is_file():
@@ -833,7 +833,7 @@ def delete_calibration(path: Path, *, active: Path | None = None) -> None:
 
 def list_calibrations(directory: Path, *, active: Path | None = None) -> list[dict]:
     """Every calibration in ``directory``, newest first, with enough to choose between them."""
-    from ..calibration import Calibration
+    from ..rig.calibration import Calibration
 
     rows = []
     for path in sorted(Path(directory).glob("*.toml")):

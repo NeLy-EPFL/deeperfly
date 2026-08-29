@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from deeperfly.skeleton_migrate import expand_renames  # noqa: E402
+from deeperfly.project.migrate import expand_renames  # noqa: E402
 
 
 def main() -> None:

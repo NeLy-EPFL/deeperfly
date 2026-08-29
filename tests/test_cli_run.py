@@ -188,7 +188,7 @@ def _stub_detect(monkeypatch, tmp_path):
     )
 
     def fake_detect_2d(config, plan, models, *, want_candidates=False, k=5, **kw):
-        from deeperfly.pictorial import Candidates
+        from deeperfly.pipeline.pictorial import Candidates
 
         calls.append(True)
         v = len(FLY_CAMERAS)
@@ -276,7 +276,7 @@ def _with_calibration(text, filename=None):
     ``[calibration]`` in prose before declaring it, so a first-occurrence replace lands
     inside a comment. A top-level table is order-independent in TOML.
     """
-    from deeperfly.calibration import CALIBRATION_FILENAME as _default
+    from deeperfly.rig.calibration import CALIBRATION_FILENAME as _default
 
     name = filename or _default
     return f'[calibration]\npath = "{name}"\n\n' + text
@@ -1195,7 +1195,7 @@ def test_bundle_adjustment_always_starts_from_config_rig(tmp_path, monkeypatch):
     def spy_ba(config, cameras, pts2d, conf, skeleton, absent=None, **_):
         seen.append(cameras)
         # return a recognizably different rig (the "refined" output)
-        from deeperfly.cameras import CameraGroup
+        from deeperfly.rig.cameras import CameraGroup
 
         return CameraGroup.from_arrays(
             cameras.names,
@@ -1718,7 +1718,7 @@ def test_bundle_adjustment_writes_a_reusable_calibration(tmp_path, monkeypatch):
     the real solve cannot run here); what is under test is that whatever rig the stage
     returns is mirrored to disk, in the order and with the provenance a reuser needs.
     """
-    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
+    from deeperfly.rig.calibration import CALIBRATION_FILENAME, Calibration
 
     cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
     _stub_detect(monkeypatch, tmp_path)
@@ -1750,9 +1750,9 @@ def test_a_run_can_be_driven_by_the_calibration_a_previous_run_wrote(
     A's calibration is deliberately *moved* off the orbit before B reads it, so B
     matching A proves B used the file rather than re-deriving the same orbit.
     """
-    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
-    from deeperfly.cameras import CameraGroup
     from deeperfly.results import StageStore
+    from deeperfly.rig.calibration import CALIBRATION_FILENAME, Calibration
+    from deeperfly.rig.cameras import CameraGroup
 
     cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
     _stub_detect(monkeypatch, tmp_path)
@@ -1805,8 +1805,8 @@ def test_a_scaled_calibrations_units_are_inherited_not_overwritten(
     an unnamed orbit unit. Bundle adjustment does not move along that gauge freedom, so the
     honest answer is inherited from whatever rig was refined.
     """
-    from deeperfly.calibration import CALIBRATION_FILENAME, Calibration
     from deeperfly.results import StageStore
+    from deeperfly.rig.calibration import CALIBRATION_FILENAME, Calibration
 
     cfg = _default_cfg(tmp_path, triangulation=False, visualization=False)
     _stub_detect(monkeypatch, tmp_path)

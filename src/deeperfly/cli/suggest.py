@@ -1,6 +1,6 @@
 """The ``labels-suggest`` command worker: rank the frames worth labeling next.
 
-Presentation only -- the ranking itself lives in :mod:`deeperfly.labels_suggest`, so
+Presentation only -- the ranking itself lives in :mod:`deeperfly.labels.suggest`, so
 the GUI (which reads the JSON sidecar) and the tests share exactly the code the
 CLI runs. The printed report is the *whole* feature without the GUI: the ranked
 frames, why each was picked, and the two facts most likely to mislead (a reseeded
@@ -39,7 +39,7 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
         ``--points``/``--cameras`` glob matches nothing, or the ``labels.h5``
         beside it belongs to a different recording.
     """
-    from ..labels_suggest import (
+    from ..labels.suggest import (
         SCORE_DESCRIPTION,
         SUGGESTIONS_FILENAME,
         build_suggestions,
@@ -88,7 +88,7 @@ def _cmd_labels_suggest(args: argparse.Namespace) -> None:
     if _lab and _lab.get("absent_spans"):
         import numpy as _np
 
-        from ..gui.labels import spans_to_absent
+        from ..labels import spans_to_absent
 
         absent_mask = spans_to_absent(
             _np.asarray(_lab["absent_spans"], dtype=int).reshape(-1, 3),

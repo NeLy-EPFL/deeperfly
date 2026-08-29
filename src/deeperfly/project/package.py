@@ -253,7 +253,7 @@ def _frames_to_embed(project, entry, policy: str) -> list[int]:
     Only the labeled frames matter, which is what keeps a package small -- on this project's
     own corpus, 50 frames out of 4,073.
     """
-    from .project import _coo_rows
+    from .core import _coo_rows
 
     frames: set[int] = set()
     labels_path = project.labels_path(entry)
@@ -291,8 +291,8 @@ def _embed_frames(project, entry, group, policy: str, report: PackageReport) -> 
     if not wanted:
         return 0
     try:
-        from .gui import _recording_footage
-        from .gui.readers import FrameSource
+        from ..gui import _recording_footage
+        from ..gui.readers import FrameSource
     except Exception:  # pragma: no cover -- the GUI package is a core dep
         return 0
 
@@ -392,7 +392,7 @@ def import_package(
 
     Deliberately only into a **new or empty** directory. Importing *into* an existing
     project is a merge -- with skeleton reconciliation, content dedup and conflict policy
-    (see :mod:`deeperfly.merge`) -- and quietly overwriting files instead would be the
+    (see :mod:`deeperfly.labels.merge`) -- and quietly overwriting files instead would be the
     destructive shortcut that looks like it worked.
 
     Parameters
@@ -493,7 +493,7 @@ def _write_recording_toml(group, slug: str, rec_dir: Path) -> None:
     thing on any machine. That is enough for ``--footage-dir`` to find the footage, and
     enough to re-derive the recording's content id.
     """
-    from . import _toml
+    from .. import _toml
 
     rec_dir.mkdir(parents=True, exist_ok=True)
     try:

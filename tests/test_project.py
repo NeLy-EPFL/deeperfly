@@ -28,7 +28,7 @@ from helpers import CAMERA_NAMES, HEIGHT, WIDTH
 
 from deeperfly import cli
 from deeperfly.config import Config
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
+from deeperfly.labels import Labels, labels_identity, save_labels
 from deeperfly.project import (
     PROJECT_FILENAME,
     Project,
@@ -719,7 +719,7 @@ def test_a_smaller_but_disjoint_second_label_set_is_still_reported(
     Comparing totals returned early here and said nothing at all -- the incoming set is
     smaller, so it "looked" like a subset. Cells are what matter, not counts.
     """
-    from deeperfly.gui.labels import Labels, labels_identity, save_labels
+    from deeperfly.labels import Labels, labels_identity, save_labels
 
     big = _make_recording(tmp_path / "big" / "flyA")
     small = _make_recording(tmp_path / "small" / "flyA")

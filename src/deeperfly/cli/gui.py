@@ -112,7 +112,7 @@ def _cmd_labels_export(args: argparse.Namespace) -> None:
     """
     import numpy as np
 
-    from ..gui.labels import export_absent, export_gt, labels_identity, load_labels
+    from ..labels import export_absent, export_gt, labels_identity, load_labels
     from ..results import PoseResult, StageStore
 
     results_path = _find_results(Path(args.path))
@@ -179,7 +179,7 @@ def _cmd_labels_absent(args: argparse.Namespace) -> None:
     """
     import numpy as np
 
-    from ..gui.labels import (
+    from ..labels import (
         Labels,
         labels_identity,
         load_labels,

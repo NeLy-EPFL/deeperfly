@@ -140,7 +140,7 @@ def test_symmetry_does_not_privilege_a_side_and_leaves_the_input_alone(
 ):
     """Averaging into one side would import that side's error into both.
 
-    The same argument :func:`~deeperfly.postprocess.symmetrize_3d` makes for the pose.
+    The same argument :func:`~deeperfly.pipeline.postprocess.symmetrize_3d` makes for the pose.
     Swapping which side is stretched must give the identical answer.
     """
     left_long, _ = _asymmetric_pose(template, fly, rng, stretch=1.10)
@@ -212,7 +212,7 @@ def test_symmetric_segments_reports_the_gap_it_closed(template, fly, rng, caplog
 
 def test_freeze_3d_collapses_to_temporal_median():
     """A jittered column is replaced by its temporal nanmedian; NaN frames filled."""
-    from deeperfly.postprocess import freeze_3d
+    from deeperfly.pipeline.postprocess import freeze_3d
 
     rng = np.random.default_rng(0)
     pts3d = rng.normal(size=(20, 4, 3))
@@ -231,7 +231,7 @@ def test_freeze_3d_collapses_to_temporal_median():
 
 def test_freeze_3d_all_nan_column_stays_nan():
     """A point that is never observed stays all-NaN (its leg is skipped downstream)."""
-    from deeperfly.postprocess import freeze_3d
+    from deeperfly.pipeline.postprocess import freeze_3d
 
     pts3d = np.zeros((5, 3, 3))
     pts3d[:, 2] = np.nan

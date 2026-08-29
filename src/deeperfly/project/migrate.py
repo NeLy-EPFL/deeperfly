@@ -1,7 +1,7 @@
 """Skeleton edits as typed migrations -- the guard on the sharpest hazard in the project.
 
 A skeleton's ``point_names`` is fingerprinted into every ``labels.h5``
-(:func:`deeperfly.gui.labels.labels_identity`) *and* written into every ``results.h5``. So a
+(:func:`deeperfly.labels.store.labels_identity`) *and* written into every ``results.h5``. So a
 GUI that lets an operator edit the skeleton can invalidate every label in a project with one
 click, and the invalidation is not even loud: two 38-point skeletons in different orders load
 each other's files happily and mean something completely different by every index.
@@ -20,12 +20,12 @@ counts what it would touch, and -- for anything destructive -- a refusal to proc
     delete a point      its labels are QUARANTINED, not deleted              confirm
 
 The one rule everything else follows from: **labels move by name, never by index.** The same
-rule merging obeys (:mod:`deeperfly.merge`), for the same reason, and the reason index-based
+rule merging obeys (:mod:`deeperfly.labels.merge`), for the same reason, and the reason index-based
 copying is not implemented anywhere in this package.
 
 Deletion reuses the existing quarantine mechanism rather than inventing one: an absence
 declaration already parks vetoed rows under ``absent/void_*`` and restores them if it is
-lifted (see :mod:`deeperfly.gui.labels`). A deleted point's labels go the same way, so
+lifted (see :mod:`deeperfly.labels.store`). A deleted point's labels go the same way, so
 "delete" is recoverable by re-adding the point.
 """
 
@@ -346,7 +346,7 @@ def plan_migration(
     -----
     The axis check is the load-bearing one. ``mapping`` is derived from ``skeleton.toml``
     alone, and :func:`_rewrite` reads each sidecar's identity *out of the sidecar*, so
-    :func:`~deeperfly.gui.labels._check_identity` compares that file with itself and can
+    :func:`~deeperfly.labels.store._check_identity` compares that file with itself and can
     never fire. Nothing else asks a ``labels.h5`` which point order its rows are actually
     on. Without this comparison, a project whose ``skeleton.toml`` has drifted from its
     sidecars -- by a hand edit, or just by adopting a recording produced under a different
@@ -421,7 +421,7 @@ def _count(path: Path, survivors: set[int], mapping: dict[int, int]) -> dict:
     """How many rows in one sidecar would move / be quarantined."""
     import h5py
 
-    from .project import _coo_rows
+    from .core import _coo_rows
 
     moved = quarantined = occluded = 0
     with h5py.File(path, "r") as f:
@@ -522,8 +522,8 @@ def _rewrite(path: Path, plan: MigrationPlan, new_skeleton) -> tuple[int, int]:
 
     import h5py
 
-    from .gui.labels import load_labels, save_labels
-    from .merge import SkeletonMapping, remap_labels
+    from ..labels.merge import SkeletonMapping, remap_labels
+    from ..labels.store import load_labels, save_labels
 
     with h5py.File(path, "r") as f:
         identity = json.loads(f.attrs["meta"])["identity"]
@@ -579,7 +579,7 @@ def _skeleton_toml(skeleton) -> str:
     first skeleton edit a project ever makes, and dropping the colours would drop the
     operator's palette back to a colormap.
     """
-    from . import _toml
+    from .. import _toml
 
     lines = [
         "# The project's skeleton. Rewritten by a skeleton migration; the prose from the",
@@ -639,7 +639,7 @@ def _skeleton_toml(skeleton) -> str:
 
 def _derived_edge_colors(skeleton) -> tuple[str, ...]:
     """What ``edge_colors`` would default to for ``skeleton`` -- its endpoint averages."""
-    from .skeleton import Skeleton
+    from ..skeleton import Skeleton
 
     return Skeleton(
         name=skeleton.name,

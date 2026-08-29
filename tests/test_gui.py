@@ -894,7 +894,7 @@ def test_an_absent_point_has_no_instance_position(result):
 
 def test_seeds_survive_a_save_load_round_trip(tmp_path, result):
     """Unpersisted seeds would silently re-solve every non-GT point on reopen."""
-    from deeperfly.gui.labels import labels_identity, load_labels, save_labels
+    from deeperfly.labels import labels_identity, load_labels, save_labels
 
     state = EditorState.from_result(result)
     state.create_instance(1, mode="copy")
@@ -1547,7 +1547,7 @@ def test_absent_is_not_a_labeled_frame(result):
 def test_per_frame_absence_survives_a_labels_roundtrip(tmp_path, result):
     # The whole point of spans: a partial declaration must persist exactly, and a
     # whole-recording one must not blow up to one row per frame.
-    from deeperfly.gui.labels import labels_identity, load_labels, save_labels
+    from deeperfly.labels import labels_identity, load_labels, save_labels
 
     state = EditorState.from_result(result)
     state.set_absent([4], True, frame=1)

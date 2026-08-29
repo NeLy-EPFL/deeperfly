@@ -579,7 +579,7 @@ def cells_to_input_normalized(model, cells):
 
     The piece of this decode's geometry that :func:`decode_points` cannot expose, because
     it reduces a whole channel to ONE soft-argmax: a caller keeping several peaks per
-    channel (the top-K candidate path, :func:`deeperfly.pictorial.peak_candidates`) has to
+    channel (the top-K candidate path, :func:`deeperfly.pipeline.pictorial.peak_candidates`) has to
     place the cells itself, and the shared ``(c + 0.5) / W_field`` convention is wrong here
     twice over -- the field is the PADDED input's, not the reported frame's, so it is off by
     both the margin and the ``(w + 2m) / w`` scale.
@@ -597,7 +597,7 @@ def cells_to_input_normalized(model, cells):
     0.50 px and the next by 0.014 -- which is the bicubic upsample having no data past the
     edge to spread its mass into, so its expectation is pulled inward. That is the
     upsample clamping, not a disagreement about the mapping, and it is bounded by half a
-    model pixel where a candidate is allowed 15 (:data:`deeperfly.pictorial.DEFAULT_INLIER_PX`).
+    model pixel where a candidate is allowed 15 (:data:`deeperfly.pipeline.pictorial.DEFAULT_INLIER_PX`).
 
     Values outside ``[0, 1]`` are meaningful and must not be clipped -- representing them is
     what the padded field is for (:attr:`deeperfly.pose2d.models.LoadedModel.padded_field`).
@@ -1025,7 +1025,7 @@ def predict_points(
         # trained to answer that with a FLAT map (see dfpose's `off_frame_target=uniform`),
         # the confidence separates the two answers by ~500x, so a floor turns "a confident
         # point pinned to the border" -- which RANSAC and the bundle adjustment both believe
-        # -- into NaN, which `deeperfly.triangulation` already means by "this camera cannot
+        # -- into NaN, which `deeperfly.rig.triangulation` already means by "this camera cannot
         # see this point". Zero, i.e. off, unless the artifact sets a floor: on a checkpoint
         # trained without flat targets the confidence does NOT track off-frame-ness, and a
         # floor would drop good points on the strength of a number that does not mean what

@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from deeperfly import geometry as geom
-from deeperfly.cameras import CameraGroup
 from deeperfly.config import Config
+from deeperfly.rig.cameras import CameraGroup
 
 # Reference rig parameters.
 FOCAL_PX = 22388.125
@@ -95,7 +95,7 @@ def leg_indices(skeleton, side: str) -> np.ndarray:
 def reference_rmat(yaw_rad: float) -> np.ndarray:
     """Reference world->camera rotation for a camera at azimuth ``yaw_rad``.
 
-    This is the project's ground-truth convention that :mod:`deeperfly.cameras`
+    This is the project's ground-truth convention that :mod:`deeperfly.rig.cameras`
     must reproduce from an orbit (``look_at`` / ``azimuth`` / ``distance``) spec.
     The camera looks toward the origin with image-down along world ``-z``.
     """
@@ -131,7 +131,7 @@ def rig_arrays() -> dict:
 
 
 def make_cameras() -> CameraGroup:
-    """:func:`rig_arrays` as a :class:`~deeperfly.cameras.CameraGroup`."""
+    """:func:`rig_arrays` as a :class:`~deeperfly.rig.cameras.CameraGroup`."""
     r = rig_arrays()
     return CameraGroup.from_arrays(
         r["names"], r["rvecs"], r["tvecs"], r["intrs"], r["dists"]

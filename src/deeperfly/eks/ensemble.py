@@ -25,7 +25,7 @@ import numpy as np
 from jax import lax
 from jaxtyping import Bool, Float
 
-from ..cameras import CameraGroup
+from ..rig.cameras import CameraGroup
 from .core import project_all
 
 __all__ = ["ensemble_statistics", "stack_views", "unstack_views", "inflate_variances"]

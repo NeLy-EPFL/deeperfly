@@ -1,4 +1,4 @@
-"""Tests for :mod:`deeperfly.labels_suggest` -- the active-learning frame ranking.
+"""Tests for :mod:`deeperfly.labels.suggest` -- the active-learning frame ranking.
 
 The tests that matter most here are the ones guarding the two ways this feature can
 fail *silently*: scoring a substituted (reseeded) layer, whose residual is 0 by
@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 from helpers import make_cameras
 
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
-from deeperfly.labels_suggest import (
+from deeperfly.labels import Labels, labels_identity, save_labels
+from deeperfly.labels.suggest import (
     SUGGESTIONS_FORMAT_VERSION,
     Pick,
     _spacing_capacity,
@@ -33,7 +33,7 @@ from deeperfly.labels_suggest import (
     write_suggestions,
 )
 from deeperfly.results import StageStore
-from deeperfly.triangulation import reprojection_error, triangulate
+from deeperfly.rig.triangulation import reprojection_error, triangulate
 
 # -- fixtures -----------------------------------------------------------------
 
@@ -656,7 +656,7 @@ def test_pipeline_end_to_end_on_a_synthetic_file(tmp_path, cameras, fly, rng):
     picks, shortfall = select_frames(scores, count=5, min_gap_frames=100)
     assert [p.frame for p in picks][:2] == [150, 400]
 
-    from deeperfly.labels_suggest import build_suggestions
+    from deeperfly.labels.suggest import build_suggestions
 
     doc = build_suggestions(
         inputs,

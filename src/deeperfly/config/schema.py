@@ -33,7 +33,7 @@ import dataclasses
 import re
 from dataclasses import dataclass, field
 
-from .config import (
+from .core import (
     STAGE_DEFAULTS,
     AnnotationParams,
     BundleAdjustmentParams,

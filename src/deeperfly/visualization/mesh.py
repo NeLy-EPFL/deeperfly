@@ -22,7 +22,7 @@ import numpy as np
 from jaxtyping import Float
 
 if TYPE_CHECKING:
-    from ..cameras import Camera
+    from ..rig.cameras import Camera
 
 __all__ = [
     "render_mesh_rgba",

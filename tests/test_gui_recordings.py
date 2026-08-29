@@ -32,8 +32,8 @@ from helpers import HEIGHT, WIDTH
 from websockets.sync.client import connect as ws_connect
 
 from deeperfly.gui import EditorState, FrameSource, Session, open_target, server
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
 from deeperfly.gui.server import create_app
+from deeperfly.labels import Labels, labels_identity, save_labels
 from deeperfly.project import Project
 from deeperfly.results import StageStore
 

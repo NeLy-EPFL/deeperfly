@@ -39,7 +39,7 @@ import numpy as np
 
 from ..config import AnnotationParams, TriangulationParams
 from ..geometry import closest_point_on_ray, undistort_one
-from ..triangulation import triangulate, triangulate_ransac
+from ..rig.triangulation import triangulate, triangulate_ransac
 
 __all__ = [
     "solve_point_3d",

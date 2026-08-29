@@ -14,7 +14,7 @@ import tomllib
 import pytest
 
 from deeperfly.config import Config, TriangulationParams
-from deeperfly.config_schema import (
+from deeperfly.config.schema import (
     SECTIONS,
     describe,
     effective,

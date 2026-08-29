@@ -12,13 +12,13 @@ import numpy as np
 import pytest
 from helpers import CAMERA_NAMES
 
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
-from deeperfly.package import (
+from deeperfly.labels import Labels, labels_identity, save_labels
+from deeperfly.project import Project
+from deeperfly.project.package import (
     describe_package,
     export_package,
     import_package,
 )
-from deeperfly.project import Project
 from deeperfly.skeleton import Skeleton
 
 SIZES = {name: (48, 64) for name in CAMERA_NAMES}
@@ -219,7 +219,7 @@ def test_a_calibration_travels(cameras, tmp_path):
     export_package(project, tmp_path / "out.dfpkg", embed="none")
     import_package(tmp_path / "out.dfpkg", tmp_path / "back")
 
-    from deeperfly.calibration import Calibration
+    from deeperfly.rig.calibration import Calibration
 
     back = Project.load(tmp_path / "back")
     assert back.calibration == "calibrations/rig.toml"
@@ -234,7 +234,7 @@ def test_a_per_recording_calibration_travels(cameras, tmp_path):
     per-recording -- which is what solving one in the GUI produces, and what every recording
     in the working corpus carries -- packaged ZERO of them and reported success.
     """
-    from deeperfly.calibration import Calibration
+    from deeperfly.rig.calibration import Calibration
 
     project, entry = _project(tmp_path)
     solved = project.root / "calibrations" / entry.slug

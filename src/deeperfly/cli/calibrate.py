@@ -21,15 +21,15 @@ from pathlib import Path
 import numpy as np
 from rich.table import Table
 
-from ..calibration import Calibration
-from ..calibration_solve import (
+from ..project import Project
+from ..rig.calibration import Calibration
+from ..rig.solve import (
     build_observations,
     conditioning,
     initialize_extrinsics,
     merge_observations,
     solve_rig,
 )
-from ..project import Project
 from .console import _info_line, console
 
 log = logging.getLogger("deeperfly")
@@ -52,7 +52,7 @@ def _gather(project: Project, args) -> tuple[list, dict]:
     ``--include-unreviewed``: a half-labeled frame contributes a systematically biased 3D
     point, and no residual can reveal that after the fact.
     """
-    from ..gui.labels import load_labels
+    from ..labels import load_labels
 
     wanted = args.recordings or [e.slug for e in project.recordings]
     notes: list[str] = []

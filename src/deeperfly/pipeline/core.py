@@ -26,16 +26,16 @@ import numpy as np
 from jaxtyping import Bool, Float, Int
 from scipy.optimize import OptimizeResult
 
-from .. import pictorial
-from ..bundle_adjustment import bundle_adjust
-from ..cameras import CameraGroup
 from ..results import PoseResult
-from ..skeleton import Skeleton
-from ..triangulation import (
+from ..rig.bundle_adjustment import bundle_adjust
+from ..rig.cameras import CameraGroup
+from ..rig.triangulation import (
     reprojection_error,
     triangulate,
     triangulate_ransac,
 )
+from ..skeleton import Skeleton
+from . import pictorial
 
 #: Frame-subsampling strategies understood by :func:`_subsample`.
 FRAME_SAMPLERS = ("even", "confidence", "coverage", "diversity")
@@ -179,7 +179,7 @@ def _bone_prior(
 
     Targets are the median bone length across frames from an initial
     triangulation -- a soft, robust prior (shared with the pictorial-structures
-    corrector via :func:`deeperfly.pictorial.bone_length_targets`).
+    corrector via :func:`deeperfly.pipeline.pictorial.bone_length_targets`).
 
     Parameters
     ----------
@@ -252,12 +252,12 @@ def bundle_adjust_cameras(
         triangulated afterward by :func:`reconstruct`.
     fixed, shared
         Camera parameter groups held fixed or tied together to anchor the gauge,
-        as in :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+        as in :func:`deeperfly.rig.bundle_adjustment.bundle_adjust`.
     bone_prior
         Whether to add the soft bone-length prior to the residual.
     bone_weight, loss, f_scale, max_nfev
         Solver knobs forwarded to
-        :func:`deeperfly.bundle_adjustment.bundle_adjust`.
+        :func:`deeperfly.rig.bundle_adjustment.bundle_adjust`.
     max_frames
         Subsample to at most this many frames before fitting; ``None`` uses
         every frame.
@@ -401,7 +401,7 @@ def reconstruct_ransac(
 
     Unlike :func:`reconstruct`, which deletes the worst view from a contaminated
     fit, this builds each point from the *largest set of mutually consistent
-    views* (:func:`deeperfly.triangulation.triangulate_ransac`), so a badly
+    views* (:func:`deeperfly.rig.triangulation.triangulate_ransac`), so a badly
     mislocated detection never enters the fit. NaN views never count as inliers.
 
     Parameters
@@ -416,7 +416,7 @@ def reconstruct_ransac(
         Minimum number of agreeing views for a point to be triangulated.
     weights
         Optional per-observation weights ``(V, T, P)``. Passed through to
-        :func:`deeperfly.triangulation.triangulate_ransac` to weight the
+        :func:`deeperfly.rig.triangulation.triangulate_ransac` to weight the
         candidate fits and final refit; consensus scoring stays unweighted.
 
     Returns
@@ -556,7 +556,7 @@ def run_from_points2d(
         consensus vote. Default ``False`` (uniform weights).
     do_pictorial
         When ``True``, first run pictorial-structures peak recovery over the
-        detector's top-K ``candidates`` (:func:`deeperfly.pictorial.reconstruct`,
+        detector's top-K ``candidates`` (:func:`deeperfly.pipeline.pictorial.reconstruct`,
         accepting ``ps_kwargs`` like ``temporal`` / ``lam`` / ``max_hyp``), then
         feed its committed 2D into ``triangulation`` (``"dlt"`` keeps the PS
         estimate). Bundle adjustment always uses the arg-max ``pts2d``.
@@ -564,7 +564,7 @@ def run_from_points2d(
         The detector's top-K candidate peaks; required when ``do_pictorial``.
     ps_kwargs
         Keyword arguments forwarded to the pictorial-structures corrector. Must
-        include ``lam``, which :func:`deeperfly.pictorial.reconstruct` requires: no
+        include ``lam``, which :func:`deeperfly.pipeline.pictorial.reconstruct` requires: no
         default is filled in here, because a default written on the way through would
         be a second copy of ``[pictorial_structures] lam``.
     ransac_threshold, min_inliers, reproj_threshold, max_drops

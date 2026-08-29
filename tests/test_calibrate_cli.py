@@ -14,7 +14,7 @@ import pytest
 from helpers import CAMERA_NAMES, seven_camera_default
 
 from deeperfly import cli
-from deeperfly.gui.labels import Labels, labels_identity, save_labels
+from deeperfly.labels import Labels, labels_identity, save_labels
 from deeperfly.project import Project
 
 HEIGHT, WIDTH = 512, 960

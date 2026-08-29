@@ -79,9 +79,9 @@ from . import opencv as _cv
 from .bird import BIRD_VIEW as _BIRD_VIEW
 
 if TYPE_CHECKING:
-    from ..cameras import Camera, CameraGroup
     from ..config import Config
     from ..preprocessing import FrameTransform
+    from ..rig.cameras import Camera, CameraGroup
     from ..skeleton import Skeleton
 
 log = logging.getLogger("deeperfly")

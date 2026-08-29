@@ -11,8 +11,8 @@ import pytest
 from helpers import small_rotation
 
 from deeperfly import geometry as geom
-from deeperfly.bundle_adjustment import bundle_adjust, core
-from deeperfly.cameras import CameraGroup
+from deeperfly.rig.bundle_adjustment import bundle_adjust, core
+from deeperfly.rig.cameras import CameraGroup
 
 
 def make_group(rig, rvecs=None, tvecs=None) -> CameraGroup:

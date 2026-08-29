@@ -2,7 +2,7 @@
 
 The packaged config is 706 lines across 50 tables. Someone changing one triangulation knob
 should not have to read 132 detector channel mappings to find it, and should not have to
-guess what the knob means. Both come from :mod:`deeperfly.config_schema`, which derives the
+guess what the knob means. Both come from :mod:`deeperfly.config.schema`, which derives the
 answer from the dataclasses that already define it -- so this cannot drift from the code.
 
 ``show`` distinguishes **set** from **default**, which a config file cannot: a 706-line file
@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..config import DEFAULT_CONFIG_PATH, Config
-from ..config_schema import describe, effective, sections, stage_flags_spec
+from ..config.schema import describe, effective, sections, stage_flags_spec
 from .console import console
 
 log = logging.getLogger("deeperfly")

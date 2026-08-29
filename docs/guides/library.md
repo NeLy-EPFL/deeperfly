@@ -54,7 +54,7 @@ gauge with the same grammar as the config (`"*.intr"`, `"f.rvec"`, tying
 
 The lower-level `deeperfly.geometry` module holds the JAX projection /
 triangulation / Rodrigues primitives (JIT- and grad-friendly, float64 on the
-CPU), and `deeperfly.triangulation` the NaN-aware DLT and RANSAC helpers.
+CPU), and `deeperfly.rig.triangulation` the NaN-aware DLT and RANSAC helpers.
 
 ## The full 2D→3D pipeline from a 2D detection array
 

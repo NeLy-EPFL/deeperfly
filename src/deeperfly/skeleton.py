@@ -21,7 +21,7 @@ coordinate moving. No alias table can disentangle that, so nothing in this packa
 compares skeletons by name -- every check is on the ordered ``point_names``
 (:func:`deeperfly.pose2d.stream._check_channel_names`,
 :func:`deeperfly.pipeline.run._refuse_a_foreign_skeleton`,
-:func:`deeperfly.gui.labels.labels_identity`). :attr:`Skeleton.digest` is the printable
+:func:`deeperfly.labels.store.labels_identity`). :attr:`Skeleton.digest` is the printable
 form of that identity and :attr:`Skeleton.label` pairs it with the name, so
 "same name, different points" reads as one line instead of a 38-item diff. It is only
 ever *printed*; the comparisons stay on the names themselves.
@@ -29,7 +29,7 @@ ever *printed*; the comparisons stay on the names themselves.
 **Chains were never primitive.** They existed as ``limb_points``, a compaction of the
 edge list that also served as the color-grouping table -- so rearranging the colors
 silently changed which channel was which, and a chain could only ever express a *path*
-(it could not attach an antenna to a head). :func:`deeperfly.pictorial.skeleton_chains`
+(it could not attach an antenna to a head). :func:`deeperfly.pipeline.pictorial.skeleton_chains`
 already derived the chains it needs from the edge graph, which is what made them safe to
 delete. What a chain name did for the rest of the schema is now a **point selector** (see
 :func:`resolve_points`): an entry in any point set is a name or a ``*`` pattern.

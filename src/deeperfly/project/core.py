@@ -22,7 +22,7 @@ moving any data**:
     myproject/
         project.toml                  the manifest: identity, settings, recording index
         skeleton.toml                 the project's skeleton (a [skeleton] config fragment)
-        calibrations/<name>.toml      solved rigs (deeperfly.calibration)
+        calibrations/<name>.toml      solved rigs (deeperfly.rig.calibration)
         recordings/<slug>/
             recording.toml            this recording's footage pointers
             deeperfly_outputs/        -> symlink to the adopted outputs, or a real dir
@@ -39,7 +39,7 @@ one (see :func:`recording_fingerprint`):
     file, no decode. Byte size means a re-encode yields a *different* id, which is
     correct: ground truth is in footage pixels, so re-encoded footage is a different
     recording to label against (the same reasoning as
-    :func:`deeperfly.gui.labels.labels_identity`).
+    :func:`deeperfly.labels.store.labels_identity`).
 
 ``result``
     ``camera:basename`` plus the frame count, read from ``results.h5``. The fallback for
@@ -61,7 +61,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _toml
+from .. import _toml
 
 __all__ = [
     "Project",
@@ -98,7 +98,7 @@ def skeleton_preset_names() -> tuple[str, ...]:
     Derived rather than listed, so a skeleton added to the package is offered here
     without a second place to remember.
     """
-    from .config import skeleton_presets
+    from ..config import skeleton_presets
 
     return (*sorted(skeleton_presets()), "blank")
 
@@ -251,7 +251,7 @@ def recording_fingerprint(
 
 def _basenames(spec) -> list[str]:
     """Sorted footage basenames from any footage pointer (see :mod:`deeperfly.footage`)."""
-    from .footage import basenames
+    from ..footage import basenames
 
     return basenames(spec)
 
@@ -301,13 +301,13 @@ def discover_footage(root: Path, config=None) -> dict[str, list[Path]]:
     """
     root = Path(root)
     if config is not None:
-        from .recordings import find_recording
+        from ..recordings import find_recording
 
         return find_recording(root, config) or {}
 
     from natsort import natsorted
 
-    from .io import VIDEO_EXTS
+    from ..io import VIDEO_EXTS
 
     videos = natsorted(
         p for p in root.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS
@@ -360,7 +360,7 @@ def _gt_cells(labels_path: Path) -> set[tuple[int, int, int]]:
 def label_stats(labels_path: Path) -> dict:
     """Counts from a ``labels.h5``, read straight out of HDF5.
 
-    Deliberately does **not** go through :func:`deeperfly.gui.labels.load_labels`: that
+    Deliberately does **not** go through :func:`deeperfly.labels.store.load_labels`: that
     validates the sidecar's identity against a result, which a status listing has no
     business requiring (and which would make the whole listing fail on one stale file).
     The sparse indices are all that is needed to count.
@@ -369,7 +369,7 @@ def label_stats(labels_path: Path) -> dict:
     under ``absent/void_*`` -- is not counted as ground truth.
 
     ``gt_points`` is every stored row, which is exactly what
-    :func:`deeperfly.gui.labels.export_gt` yields: there is one kind of ground truth -- a
+    :func:`deeperfly.labels.store.export_gt` yields: there is one kind of ground truth -- a
     pixel the operator created -- so the progress number and the export cannot disagree.
 
     Parameters
@@ -727,7 +727,7 @@ class Project:
         FileNotFoundError
             If the skeleton file is missing.
         """
-        from .config import Config
+        from ..config import Config
 
         path = self.skeleton_path()
         if not path.exists():
@@ -780,8 +780,8 @@ class Project:
             If two fragments would declare the same top-level table -- which TOML forbids
             and which would otherwise produce an invalid config only at parse time.
         """
-        from . import _toml
-        from .config import DEFAULT_CONFIG_PATH
+        from .. import _toml
+        from ..config import DEFAULT_CONFIG_PATH
 
         if base is None:
             base_text = DEFAULT_CONFIG_PATH.read_text()
@@ -898,8 +898,8 @@ class Project:
             If the result would not load through ``Config``'s own strict validator -- the
             same one a run uses, so the GUI cannot store a key a run would reject.
         """
-        from .config import Config
-        from .config_schema import SECTIONS
+        from ..config import Config
+        from ..config.schema import SECTIONS
 
         data = self.profile_values(profile)
         table = dict(data.get(section) or {})
@@ -942,8 +942,8 @@ class Project:
         property of the *setup*, shared by every recording on it. Lifting it into the
         project is what stops each recording carrying its own copy.
         """
-        from . import _toml
-        from .config import DEFAULT_CONFIG_PATH
+        from .. import _toml
+        from ..config import DEFAULT_CONFIG_PATH
 
         text = Path(base).read_text() if base else DEFAULT_CONFIG_PATH.read_text()
         fragment = _toml.extract_tables(text, RIG_TABLES)
@@ -1059,7 +1059,7 @@ class Project:
         result_footage: dict | None = None
         n_frames = fps = None
         if results is not None and results.exists():
-            from .results import StageStore
+            from ..results import StageStore
 
             store = StageStore(results)
             try:
@@ -1405,7 +1405,7 @@ def _write_recording_file(
         # file's own directory. `rel` is what the plan specified and the implementation had
         # dropped -- and it is what survives the recording being moved with its project,
         # where an absolute path does not. `bytes` makes the content id re-derivable.
-        from .footage import write_pointer
+        from ..footage import write_pointer
 
         lines += ["", "# camera -> the footage files this recording was adopted from."]
         for camera in sorted(footage):
@@ -1440,7 +1440,7 @@ def _skeleton_text(skeleton: str) -> str:
         If ``skeleton`` is neither a known preset nor a readable file with a
         ``[skeleton]`` table.
     """
-    from .config import skeleton_presets
+    from ..config import skeleton_presets
 
     if skeleton == "blank":
         return _BLANK_SKELETON

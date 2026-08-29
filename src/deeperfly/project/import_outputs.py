@@ -4,7 +4,7 @@ The gap this closes is the one :meth:`Project._warn_unseen_labels` reports and c
 A recording is one entry, so a second label set sitting beside a second copy of the same
 footage reads as zero -- and that warning's two suggestions both lose something: re-point
 the entry (abandoning one set) or re-adopt under an explicit ``--id`` (duplicating the
-recording). Reconciling them is a merge, and :mod:`deeperfly.merge` has done that since it
+recording). Reconciling them is a merge, and :mod:`deeperfly.labels.merge` has done that since it
 landed. This connects the two.
 
 **Identification is the part a merge cannot do for itself.** ``deeperfly labels-merge``
@@ -26,7 +26,7 @@ update one.
 **Safety.** The source is opened read-only and never written; ``results.h5`` is never
 written at all; every destination is snapshotted before the first write; the default is a dry
 run; and nothing is ever copied by index -- points and cameras go through
-:func:`deeperfly.merge.map_by_name`.
+:func:`deeperfly.labels.merge.map_by_name`.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .merge import MergeReport, merge_labels
-from .project import OUTPUTS_DIRNAME, Project, RecordingEntry, label_stats
+from ..labels.merge import MergeReport, merge_labels
+from .core import OUTPUTS_DIRNAME, Project, RecordingEntry, label_stats
 
 __all__ = [
     "OutputsSource",
@@ -204,8 +204,8 @@ def _id_from_results(
     ``(None, None, ())`` when there is nothing recording-specific to fingerprint. See
     :attr:`OutputsSource.rec_id_candidates` for why there is more than one candidate.
     """
-    from .project import recording_fingerprint, recording_id
-    from .results import StageStore
+    from ..results import StageStore
+    from .core import recording_fingerprint, recording_id
 
     try:
         store = StageStore(results)
@@ -358,7 +358,7 @@ def import_outputs(
         Force every source onto this recording (slug, id, or id prefix). The escape hatch
         for an archived recording whose id cannot be derived.
     on_conflict
-        One of :data:`deeperfly.merge.CONFLICT_POLICIES` for cells both sides authored.
+        One of :data:`deeperfly.labels.merge.CONFLICT_POLICIES` for cells both sides authored.
     on_absent
         One of :data:`ABSENT_POLICIES`.
     apply
@@ -497,8 +497,8 @@ def _run_merge(
     """
     import numpy as np
 
-    from .cli.merge import _derived_identity, _identity
-    from .gui.labels import Labels, load_labels
+    from ..cli.merge import _derived_identity, _identity
+    from ..labels.store import Labels, load_labels
 
     entry = plan.entry
     dest_path = project.labels_path(entry)
@@ -602,7 +602,7 @@ def _write(
     project: Project, plan: OutputsImport, *, on_conflict: str, on_absent: str
 ) -> None:
     """Apply one planned import. The snapshot is already taken."""
-    from .gui.labels import save_labels
+    from ..labels.store import save_labels
 
     _run_merge(project, plan, on_conflict=on_conflict, on_absent=on_absent, apply=True)
     if plan.merge is None or not plan.merge.ok:

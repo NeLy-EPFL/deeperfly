@@ -449,7 +449,7 @@ def test_the_packaged_config_states_only_what_it_changes():
     back to its default shows up here as a line to delete, rather than as one more line
     nobody reads.
     """
-    from deeperfly import config_schema as cs
+    from deeperfly.config import schema as cs
 
     cfg = Config.default()
     redundant = {}
@@ -532,7 +532,7 @@ def test_every_config_states_only_what_it_changes(path):
     `[pictorial_structures]` at their defaults is how they reached 600 lines, and it is
     also how a default change silently stops reaching them.
     """
-    from deeperfly import config_schema as cs
+    from deeperfly.config import schema as cs
 
     cfg = Config.from_toml(path)
     redundant = {}

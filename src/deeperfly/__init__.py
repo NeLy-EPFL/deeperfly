@@ -5,13 +5,13 @@ Public surface:
 - :mod:`deeperfly.geometry` -- low-level projection / triangulation / Rodrigues
   primitives (JIT- and grad-friendly JAX on the CPU). Also used by bundle
   adjustment, which needs autodiff for the Jacobian.
-- :class:`deeperfly.cameras.Camera` / :class:`deeperfly.cameras.CameraGroup` --
+- :class:`deeperfly.rig.cameras.Camera` / :class:`deeperfly.rig.cameras.CameraGroup` --
   camera models and config-driven rigs (built on :mod:`deeperfly.geometry`).
 - :func:`deeperfly.eks.smooth` -- the nonlinear multi-view ensemble Kalman
   smoother, a post-process that fits one temporally-coherent 3D trajectory per
   keypoint against every view at once (:mod:`deeperfly.eks`).
-- :func:`deeperfly.bundle_adjustment.bundle_adjust` and
-  :func:`deeperfly.bundle_adjustment.bundle_adjust_from_config` -- bundle
+- :func:`deeperfly.rig.bundle_adjustment.bundle_adjust` and
+  :func:`deeperfly.rig.bundle_adjustment.bundle_adjust_from_config` -- bundle
   adjustment over a ``CameraGroup`` (also on the CPU).
 
 JAX (CPU) powers that geometry; the 2D detector (:mod:`deeperfly.pose2d`) is
@@ -32,15 +32,15 @@ The end-to-end pipeline is reusable without the CLI:
 
 from __future__ import annotations
 
-from . import eks, geometry, pictorial, pipeline, recordings, triangulation
-from .bundle_adjustment import bundle_adjust, bundle_adjust_from_config
-from .cameras import Camera, CameraGroup
+from . import eks, geometry, pipeline, recordings
 from .config import Config
 from .inverse_kinematics import KinematicTemplate, solve_inverse_kinematics
-from .pipeline import run_from_points2d, run_recording
+from .pipeline import pictorial, run_from_points2d, run_recording
 from .pose2d.stream import detect_2d
 from .recordings import Recording, resolve_recordings
 from .results import PoseResult
+from .rig import bundle_adjust, bundle_adjust_from_config, triangulation
+from .rig.cameras import Camera, CameraGroup
 from .skeleton import Skeleton
 
 __all__ = [
