@@ -630,6 +630,7 @@ def bundle_adjust_run(payload: dict, editor: EditorApp = Depends(get_editor)) ->
     express "these cameras fixed, those free, with this loss" atomically, and a half-
     applied split would solve something the operator never asked for.
     """
+    from ..rig import store as rigstore
     from . import ba
 
     project, names, config = _ba_context(editor)
@@ -681,7 +682,7 @@ def bundle_adjust_run(payload: dict, editor: EditorApp = Depends(get_editor)) ->
             ) from None
 
     recording = editor.session.recording_slug
-    cal_dir = ba.recording_dir(Path(project.root), recording)
+    cal_dir = rigstore.recording_dir(Path(project.root), recording)
     sizes = dict(editor.session.image_sizes)
 
     def work():
@@ -694,7 +695,7 @@ def bundle_adjust_run(payload: dict, editor: EditorApp = Depends(get_editor)) ->
                 intrinsics=intrs,
                 dists=dists,
             )
-            path = ba.save_calibration(
+            path = rigstore.save_calibration(
                 cal_dir,
                 report["cameras"],
                 name=name,
@@ -753,7 +754,7 @@ def bundle_adjust_status(editor: EditorApp = Depends(get_editor)) -> dict:
 @router.get("/api/calibrations")
 def list_calibrations(editor: EditorApp = Depends(get_editor)) -> dict:
     """Every calibration in the project, and which rig the editor is using now."""
-    from . import ba
+    from ..rig import store as rigstore
 
     if editor.session.project_root is None:
         return {
@@ -765,9 +766,11 @@ def list_calibrations(editor: EditorApp = Depends(get_editor)) -> dict:
     project = editor.project()
     # Per recording: a rig belongs to the session it was solved in, and a flat list mixed
     # every recording's calibrations together with no way to tell which applied here.
-    cal_dir = ba.recording_dir(Path(project.root), editor.session.recording_slug)
+    cal_dir = rigstore.recording_dir(Path(project.root), editor.session.recording_slug)
     current = getattr(editor.session, "active_calibration", None)
-    items = ba.list_calibrations(cal_dir, active=Path(current) if current else None)
+    items = rigstore.list_calibrations(
+        cal_dir, active=Path(current) if current else None
+    )
     for row in items:
         cams = set(row.get("cameras") or ())
         row["covers_session"] = (
@@ -783,14 +786,14 @@ def list_calibrations(editor: EditorApp = Depends(get_editor)) -> dict:
 
 
 def _still_provisional(path: Path, current) -> list[str]:
-    """Which of ``current`` this calibration did NOT solve -- see :func:`ba.still_provisional`.
+    """Which of ``current`` this calibration did NOT solve -- see :func:`rigstore.still_provisional`.
 
     The rule lives in ``ba`` so that anything reproducing the editor's derived 3D
     outside the editor makes the identical promotion decision.
     """
-    from . import ba
+    from ..rig import store as rigstore
 
-    return ba.still_provisional(path, current)
+    return rigstore.still_provisional(path, current)
 
 
 def _meta_patch(sess, **changes) -> None:
@@ -824,9 +827,9 @@ def _restore_active_calibration(sess) -> None:
     silently reverts to the rig in results.h5 and the operator's 3D quietly changes
     underneath work they already did against the other one.
     """
-    from . import ba
+    from ..rig import store as rigstore
 
-    path = ba.apply_active_calibration(
+    path = rigstore.apply_active_calibration(
         sess.state, sess.results_path, sess.project_root, sess.recording_slug
     )
     if path is None:
@@ -836,10 +839,10 @@ def _restore_active_calibration(sess) -> None:
 
 
 def _base_provisional(sess) -> list[str]:
-    """Views the rig in ``results.h5`` never calibrated -- see :func:`ba.base_provisional`."""
-    from . import ba
+    """Views the rig in ``results.h5`` never calibrated -- see :func:`rigstore.base_provisional`."""
+    from ..rig import store as rigstore
 
-    return ba.base_provisional(sess.results_path, sess.state.camera_names)
+    return rigstore.base_provisional(sess.results_path, sess.state.camera_names)
 
 
 def _persist_provisional(sess, views) -> None:
@@ -867,7 +870,7 @@ async def delete_calibration(
     payload: dict, editor: EditorApp = Depends(get_editor)
 ) -> dict:
     """Remove a calibration this editor solved (never the one in use)."""
-    from . import ba
+    from ..rig import store as rigstore
 
     project = editor.project()
     raw = str(payload.get("calibration") or "")
@@ -876,11 +879,12 @@ async def delete_calibration(
     path = Path(raw)
     if not path.is_absolute():
         path = (
-            ba.recording_dir(Path(project.root), editor.session.recording_slug) / path
+            rigstore.recording_dir(Path(project.root), editor.session.recording_slug)
+            / path
         )
     async with editor.lock:
         try:
-            ba.delete_calibration(
+            rigstore.delete_calibration(
                 path, active=getattr(editor.session, "active_calibration", None)
             )
         except FileNotFoundError as exc:
@@ -903,8 +907,8 @@ async def select_calibration(
     ray-slide the labels cannot reproduce -- so this refuses while there are unsaved
     labels unless ``discard`` is set, exactly as a recording switch does.
     """
+    from ..rig import store as rigstore
     from ..rig.cameras import CameraGroup
-    from . import ba
 
     project = editor.project()
     raw = str(payload.get("calibration") or "")
@@ -942,7 +946,8 @@ async def select_calibration(
     path = Path(raw)
     if not path.is_absolute():
         path = (
-            ba.recording_dir(Path(project.root), editor.session.recording_slug) / path
+            rigstore.recording_dir(Path(project.root), editor.session.recording_slug)
+            / path
         )
     if not path.is_file():
         raise HTTPException(404, f"no such calibration: {path}")
