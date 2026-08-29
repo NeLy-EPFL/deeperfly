@@ -38,8 +38,8 @@ pose2d/
     points                  (V, T, P, 2)  arg-max 2D detections (NaN for a (view, point)
                                           no pathway writes -- with a dense plan, none)
     conf                    (V, T, P)     detection confidences
-    cameras/                the config rig as built at detect time
-    attrs["image_sizes"]    json {camera_name: [h, w]} of the raw footage frames
+    cameras/                the config rig as built at detect time, carrying the
+                            (h, w) of each camera's raw footage frames
     attrs["footage"]        json {camera_name: {abs, rel, names, bytes}}, so a viewer
                             handed only this file can find the videos
     candidates/             top-K peaks (xy, score) -- only if pictorial_structures

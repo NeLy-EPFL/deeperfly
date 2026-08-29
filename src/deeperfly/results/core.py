@@ -11,8 +11,8 @@ be re-run later from pristine upstream outputs:
     pose2d/
         points               (V, T, P, 2) arg-max 2D detections (visibility-masked)
         conf                 (V, T, P) detection confidences
-        cameras/             the config rig as built at detect time
-        attrs["image_sizes"] json {camera_name: [h, w]} of the raw footage frames
+        cameras/             the config rig as built at detect time, with the
+                             (h, w) of each camera's raw footage frames
         candidates/          top-K peaks (xy, score) -- present iff the
                              pictorial_structures stage was enabled at detect time
     bundle_adjustment/
@@ -889,13 +889,10 @@ class StageStore:
             if conf is not None:
                 _put(g, "conf", np.asarray(conf, dtype=float))
             _write_animal(f, absent=carried_absent, subject_id=carried_subject)
-            # The image sizes go in BOTH places: in the camera group (so the rig carries its
-            # own pixel frame, like a calibration.toml does) and in the legacy sibling attr,
-            # which every existing reader uses and which stays authoritative for now.
+            # In the camera group only, so the rig carries its own pixel frame the way a
+            # calibration.toml does. There used to be a second copy in a sibling attr
+            # here; :meth:`read_image_sizes` still reads it for the files that have it.
             _write_cameras(g.create_group("cameras"), cameras, image_sizes=image_sizes)
-            g.attrs["image_sizes"] = json.dumps(
-                {name: [int(h), int(w)] for name, (h, w) in image_sizes.items()}
-            )
             if footage:
                 from ..footage import write_pointer
 
@@ -1205,10 +1202,21 @@ class StageStore:
             )
 
     def read_image_sizes(self) -> dict[str, tuple[int, int]] | None:
-        """``camera_name -> (height, width)`` recorded by ``pose2d``, or ``None``."""
+        """``camera_name -> (height, width)`` recorded by ``pose2d``, or ``None``.
+
+        From ``pose2d/cameras/image_sizes``, which is where a rig carries its own pixel
+        frame -- the same place a ``calibration.toml`` keeps it, and the place the BA rig
+        keeps it too. The sibling ``pose2d.attrs["image_sizes"]`` was a second copy of
+        the same fact; it is no longer written, and is read here only so files that have
+        it keep working.
+        """
         with self._open() as f:
             if f is None or "pose2d" not in f:
                 return None
+            if "pose2d/cameras" in f:
+                sizes = _read_camera_meta(f["pose2d/cameras"]).get("image_sizes")  # type: ignore[arg-type]
+                if sizes:
+                    return sizes
             raw = f["pose2d"].attrs.get("image_sizes")
             if raw is None:
                 return None
