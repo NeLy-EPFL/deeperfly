@@ -668,12 +668,17 @@ def test_a_2d_that_is_its_3d_reprojected_is_not_stored(cameras, rng, tmp_path):
     np.testing.assert_allclose(got3d, pts3d, rtol=0, atol=1e-6)
 
 
-def test_a_2d_frozen_over_time_is_stored_as_an_override(cameras, rng, tmp_path):
-    """The correction chain freezes a few columns in pixel space; only those are stored.
+def test_a_legacy_override_still_reads_back_as_the_pose_it_stored(
+    cameras, rng, tmp_path
+):
+    """Files written while ``{ op = "static" }`` also froze the 2D must not be re-derived.
 
-    They are not recoverable from the 3D -- that is the whole point of ``freeze_2d``,
-    which takes each view's own temporal center rather than reprojecting -- but they are
-    constant over time, so the payload is per-view constants and not an array per frame.
+    Nothing writes ``points2d_override`` any more -- the correction chain corrects the
+    3D and leaves the 2D to be ``project(points3d)``. But a file that has one holds a
+    pose whose frozen columns the 3D does *not* reproject to (1.4 px median, measured on
+    a real recording), so dropping the read would not fail on those files, it would hand
+    back a subtly different pose. Written here by hand, since only an older build made
+    them.
     """
     store = StageStore(tmp_path / "results.h5")
     _write_base(store, cameras, rng)
@@ -681,21 +686,38 @@ def test_a_2d_frozen_over_time_is_stored_as_an_override(cameras, rng, tmp_path):
     frozen = [3, 11]
     pts2d = proj.copy()
     pts2d[:, :, frozen, :] = proj[:, :1, frozen, :] + 5.0  # per view, constant in time
-    store.write_points("postprocess", pts2d=pts2d, pts3d=pts3d, reproj_error=None)
-
-    with h5py.File(store.path, "r") as f:
+    store.write_points("postprocess", pts2d=None, pts3d=pts3d, reproj_error=None)
+    with h5py.File(store.path, "a") as f:
         g = f["postprocess"]
-        assert "points" not in g
-        assert g.attrs["points2d_storage"] == "override"
-        assert list(g["points2d_override_cols"][()]) == frozen
-        # (V, len(frozen), 2) and nothing per frame -- the saving is the whole reason.
-        assert g["points2d_override"].shape == (len(cameras), len(frozen), 2)
+        g.attrs["points2d_storage"] = "override"
+        g.create_dataset("points2d_override", data=pts2d[:, 0, frozen, :])
+        g.create_dataset("points2d_override_cols", data=np.asarray(frozen, np.int32))
+
     got2d, _, _ = store.read_points("postprocess")
     np.testing.assert_allclose(got2d, pts2d, rtol=0, atol=1e-4)
 
 
+def test_the_correction_chain_stores_no_2d(cameras, rng, tmp_path):
+    """The invariant: after triangulation a stage's 2D **is** ``project(points3d)``.
+
+    Pinned on ``postprocess`` because that is the stage an op could break: one that
+    started writing its own pixels would land here as a stored ``points`` array, which
+    is a claim to a measurement the stage does not have.
+    """
+    store = StageStore(tmp_path / "results.h5")
+    _write_base(store, cameras, rng)
+    _, pts3d, proj = _stage_arrays(cameras, rng)
+    store.write_points("postprocess", pts2d=proj, pts3d=pts3d, reproj_error=None)
+
+    with h5py.File(store.path, "r") as f:
+        g = f["postprocess"]
+        assert g.attrs["points2d_storage"] == "derived"
+        assert "points" not in g
+        assert "points2d_override" not in g
+
+
 def test_a_2d_that_differs_per_frame_is_stored_whole(cameras, rng, tmp_path):
-    """An override is only for columns held *constant*; per-frame information is not one."""
+    """A 2D that is not the projection is a measurement, and is stored as one."""
     store = StageStore(tmp_path / "results.h5")
     _write_base(store, cameras, rng)
     _, pts3d, proj = _stage_arrays(cameras, rng)

@@ -612,13 +612,15 @@ measurement.
 - Gate: `test_postprocess` and `test_inverse_kinematics`, both unchanged -- which is the
   point.
 
-**Open, and deliberately a decision of its own: "2D after triangulation is always a
-reprojection."** Today `_reduce_pts2d` picks between three storage kinds per write by
-comparing arrays, because the invariant is not declared. Declaring it collapses that to
-a rule -- before triangulation a stage's 2D is a measurement and is stored; after it, 2D
-is `project(points3d)` and is never stored -- deletes the `points2d_override` branch
-with `freeze_2d`, and makes `reproj_error` mean one comparable thing at every stage:
-this stage's 3D against the detections. Two prerequisites, both real:
+**Half settled (2026-08-29): "2D after triangulation is always a reprojection."** The
+`postprocess` half is done -- `freeze_2d` is deleted, `{ op = "static" }` corrects the 3D
+only, and the `points2d_override` write branch is gone (the read stays for old files). The
+measured artifact it had been storing was 1.4 px median on the seven frozen columns. The
+`triangulation` half below is still open, with both prerequisites intact.
+
+**What remains open:** applying the same rule to `triangulation`, which would make
+`reproj_error` mean one comparable thing at every stage -- this stage's 3D against the
+detections. Two prerequisites, both real:
 
 1. Triangulation's stored 2D carries the outlier rejector's decisions in its NaN
    pattern, and a total reprojection cannot express that. The support has to move to an
@@ -629,10 +631,10 @@ this stage's 3D against the detections. Two prerequisites, both real:
    the trap was reintroduced once already. Confirm the inlier mask plus the detections
    can carry that witness before the branch is deleted.
 
-Worth recording either way: `freeze_2d`'s stated reason -- stay a pixel measurement
-rather than absorb the rig's residual -- does not hold with `eks = true`, since the
-smoother's 2D is stored `"derived"` and is therefore already a reprojection. None of
-this blocks the release.
+`freeze_2d`'s stated reason -- stay a pixel measurement rather than absorb the rig's
+residual -- did not hold with `eks = true`, since the smoother's 2D is stored `"derived"`
+and is therefore already a reprojection. That is what settled the `postprocess` half above.
+None of this blocks the release.
 
 ### W8. The configs, the docs, the release
 

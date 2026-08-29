@@ -230,8 +230,9 @@ class StaticPointsParams:
     Some keypoints are not moving. On a *tethered* fly the six thorax-coxa joints and
     the neck sit on the sclerotized thorax, so their position is a constant of the
     recording and everything the estimate does over time is per-frame noise. The op
-    replaces each listed point with a single **temporal center**, computed independently
-    in each space the result carries: once in 3D, and once per view in 2D.
+    replaces each listed point with a single **temporal center** in 3D. The 2D is left
+    alone: after triangulation a stage's 2D is ``project(points3d)``, so the freeze
+    reaches it through the projection rather than beside it.
 
     ``points`` names the skeleton points to hold static. An entry may be a point name or
     a ``*`` pattern (``["neck", "*_thorax_coxa"]`` is the packaged seven). Empty leaves

@@ -20,6 +20,13 @@ single fitted plane) satisfies both properties exactly: a fixed plane maps a con
 a constant. The other order does not -- a per-axis median of two mirrored points is not
 itself mirrored.
 
+**They correct the 3D only.** After triangulation a stage's 2D is ``project(points3d)``
+-- the schema's invariant, and what lets ``results.h5`` store no 2D for this stage at all
+-- so an op that wrote its own pixels would be claiming a measurement it does not have.
+The stage reprojects the corrected 3D once, at the end
+(:func:`~deeperfly.pipeline.stages.stage_postprocess`); the 2D travels through the chain
+so that an op can *read* it.
+
 Each op is a pure ``(pts2d, pts3d) -> (pts2d, pts3d, report)`` function registered in
 :data:`OPS`, and reports what it measurably did so the stage's metadata can say more than
 "it ran". Adding a correction is a new entry here plus a line in a config's ``ops``, not
@@ -219,41 +226,20 @@ def freeze_3d(
     return pts3d
 
 
-def freeze_2d(
-    pts2d: np.ndarray, cols: list[int], *, method: str = "median", trim: float = 0.1
-) -> np.ndarray:
-    """The 2D counterpart: freeze the ``cols`` of ``pts2d`` ``(V, T, P, 2)`` per view.
-
-    Each view gets its *own* temporal center, taken in that view's pixels -- not the
-    reprojection of the frozen 3D. The two are near-identical for a static point (a
-    projection is locally linear, so a center commutes with it to first order), and the
-    per-view one is what stays a *pixel measurement*: reprojecting instead would move
-    these points by the rig's residual, a few px on a solved fly rig, away from where the
-    detector actually sees them. The cost is that the frozen 2D is then not exactly the
-    projection of the frozen 3D.
-
-    A ``(view, point)`` pair the view never observes stays all-NaN, so this does not
-    invent an observation in a camera that cannot see the point; within a view that does
-    see it, the center fills the frames where the detection dropped out, which is the
-    whole premise of calling the point static. Returns a copy.
-    """
-    pts2d = np.array(pts2d, dtype=float)
-    block = pts2d[:, :, cols, :]  # (V, T, R, 2)
-    if method == "geometric_median":
-        center = np.stack(
-            [
-                np.stack([_geometric_median(block[v, :, i]) for i in range(len(cols))])
-                for v in range(block.shape[0])
-            ]
-        )
-    else:
-        center = _temporal_center(block, axis=1, method=method, trim=trim)
-    pts2d[:, :, cols, :] = center[:, None]
-    return pts2d
-
-
 def op_static(pts2d, pts3d, *, skeleton, spec: dict):
     """``{ op = "static" }`` -- collapse the listed points to one position each.
+
+    Corrects the **3D** and returns ``pts2d`` untouched -- the stage reprojects the
+    corrected 3D once the chain is done.
+
+    This op used to freeze the 2D separately as well, taking each view's own temporal
+    center in that view's pixels, on the argument that reprojecting instead would move
+    the point by the rig's residual -- a few px -- away from where the detector sees it.
+    That argument needs the incoming 2D to *be* the detector's pixels, and with
+    ``eks = true`` it is not: the smoother's 2D is already ``project(points3d)``. What
+    the second freeze produced was ``median_t(project(x))`` where the file's rule wants
+    ``project(median_t(x))`` -- 1.4 px median of commutation artifact, stored as the
+    ``points2d_override`` special case the schema no longer needs.
 
     See :class:`~deeperfly.config.StaticPointsParams` for the options and for what each
     ``method`` assumes about the contamination.
@@ -270,25 +256,23 @@ def op_static(pts2d, pts3d, *, skeleton, spec: dict):
     if not p.points:
         return pts2d, pts3d, report
     cols = _columns(p.points, skeleton, where='{ op = "static" }.points')
-    out2d = freeze_2d(pts2d, cols, method=p.method, trim=p.trim)
     out3d = freeze_3d(pts3d, cols, method=p.method, trim=p.trim)
-    report["moved_2d_median_px"], report["moved_2d_p90_px"] = _moved(pts2d, out2d, cols)
     report["moved_3d_median"], report["moved_3d_p90"] = _moved(pts3d, out3d, cols)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         per = np.nanmedian(
-            np.linalg.norm(pts2d[:, :, cols] - out2d[:, :, cols], axis=-1), axis=(0, 1)
+            np.linalg.norm(pts3d[:, cols] - out3d[:, cols], axis=-1), axis=0
         )
-    report["moved_2d_median_px_per_point"] = {
+    report["moved_3d_median_per_point"] = {
         n: float(per[i]) for i, n in enumerate(p.points)
     }
     finite = np.isfinite(per)
     report["worst_point"] = (
-        f"{p.points[int(np.nanargmax(per))]} ({np.nanmax(per):.2f} px)"
+        f"{p.points[int(np.nanargmax(per))]} ({np.nanmax(per):.4f})"
         if finite.any()
         else None
     )
-    return out2d, out3d, report
+    return pts2d, out3d, report
 
 
 # -- op: symmetrize ------------------------------------------------------------

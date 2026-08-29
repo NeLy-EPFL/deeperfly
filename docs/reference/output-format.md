@@ -62,8 +62,6 @@ eks/
     attrs["meta"]           json {method, n_members, n_inflated, n_testable, ...}
 postprocess/
     points3d                (T, P, 3)     3D after the correction chain
-    points2d_override       (V, R, 2)     the 2D the ops froze in pixel space
-    points2d_override_cols  (R,)          which skeleton columns those are
     attrs["meta"]           json {pose_from, ops: [{op, ...what each op measured}]}
 inverse_kinematics/
     angles                  (T, D)        fitted joint angles (radians)
@@ -83,26 +81,36 @@ default run writes all of the above bar `pictorial_structures/` and `candidates/
 
 Every stage used to keep a full `(V, T, P, 2)` 2D array and a full `(V, T, P)` error,
 which on an eight-view 2007-frame recording is 14.6 MB per stage before any of them
-says anything new. Since **v3** a stage stores only what cannot be rebuilt from what
-its neighbors already store, and the classification is *measured* per write rather than
-declared per stage — so a new stage, or an op that starts moving pixels per frame, gets
-the right answer with no schema change. Each points group records which case it was in,
-as `attrs["points2d_storage"]`:
+says anything new. Since **v3** a stage stores only what cannot be rebuilt from what its
+neighbors already store, and one invariant settles which is which:
+
+> **Up to and including triangulation, a stage's 2D is a pixel measurement and is
+> stored. After triangulation, a stage's 2D is `project(points3d)` and is not.**
+
+Each points group records which case it was in, as `attrs["points2d_storage"]`:
 
 | `points2d_storage` | means | what lands on disk |
 | --- | --- | --- |
-| `derived` | the 2D **is** `cameras.project(points3d)` | nothing (the smoother's is exactly that) |
-| `override` | that projection except on a few columns held constant over time | just those constants |
+| `derived` | the 2D **is** `cameras.project(points3d)` | nothing (the smoother's and the correction chain's) |
 | `full` | an independent pixel measurement | the whole array |
 
-The correction chain is the `override` case: its `static` op freezes the neck and the
-six thorax-coxae in *pixel* space, and projection is nonlinear, so those seven columns no
-longer agree with it — 112 numbers on an eight-view rig instead of the 9.8 MB the whole
-array took in v2. The detections, the pictorial candidate selection and triangulation's
-outlier-cleaned observations are `full`. So is a 2D whose `NaN` pattern differs from the
-projection's: "this view did not see it" is not interchangeable with a reprojected
-coordinate, so such an array is kept whole. That is why the smoother's 2D is dropped on a
-dense run, where every cell is observed, but stored whole on a run with gaps.
+The detections, the pictorial candidate selection and triangulation's outlier-cleaned
+observations are `full`. So is a 2D whose `NaN` pattern differs from the projection's:
+"this view did not see it" is not interchangeable with a reprojected coordinate, so such
+an array is kept whole. That is why the smoother's 2D is dropped on a dense run, where
+every cell is observed, but stored whole on a run with gaps.
+
+The classification is *measured* per write rather than looked up per stage — the writer
+compares the arrays. That makes it the invariant's enforcement rather than a second copy
+of it: an op that starts writing its own pixels gets its array stored instead of silently
+dropped, and shows up as a `full` where a `derived` was expected.
+
+There used to be a third kind, `override`, for a projection that differed on a few columns
+held constant over time: the correction chain's `static` op froze the neck and the six
+thorax-coxae in *pixel* space as well as in 3D, which came to 112 numbers on an eight-view
+rig. That second freeze is gone — the ops correct the 3D and the stage reprojects it — so
+nothing writes `override` any more. Files that have it still read back exactly, and
+`deeperfly repack` copies such a group through rather than rebuilding it.
 
 `reproj_error` is dropped only when a recomputation reproduces it **and** the stage's 2D
 was not stored whole. The second half is a safeguard rather than an optimization: the
@@ -256,14 +264,15 @@ The reconstructed 2D keeps `NaN` wherever the detector observed nothing, unless
 
 The `postprocess/` group is the pose after the
 [`[postprocess].ops`](configuration.md#postprocess) chain — the corrections that come from
-knowing the animal rather than the pixels. Its `reproj_error` is taken against the `pose2d`
-observations for the same reason the smoother's is. The `meta` records `pose_from` (the
+knowing the animal rather than the pixels. The ops correct the 3D and the stage reprojects
+it, so the group's 2D is `project(points3d)` and is not stored. Its `reproj_error` is taken
+against the `pose2d` observations for the same reason the smoother's is. The `meta` records `pose_from` (the
 stage the chain was applied to: `eks`, else `triangulation`, else `pictorial_structures`,
 so the un-corrected pose is still on file in its own group) and `ops` — **one entry per op,
 in order**, since the same op may appear twice and what the second measured depends on what
 the first did. Each entry carries that op's own configuration plus what it measurably did:
-for `static`, the median and p90 drift removed in each space, `moved_2d_median_px_per_point`
-and `worst_point`; for `symmetrize`, the fitted `plane_normal` / `plane_offset` and each
+for `static`, the median and p90 drift removed (`moved_3d_median` / `moved_3d_p90`), the
+per-point breakdown `moved_3d_median_per_point` and `worst_point`; for `symmetrize`, the fitted `plane_normal` / `plane_offset` and each
 pair's `asymmetry_before`. Those numbers are the only check on an op's premise — a point
 that had been drifting tens of pixels was moving, and does not belong in a `static` list.
 

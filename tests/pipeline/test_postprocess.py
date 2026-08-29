@@ -10,6 +10,7 @@ a ground truth, and the points that really move are checked to be left alone.
 
 from __future__ import annotations
 
+import h5py
 import numpy as np
 import pytest
 
@@ -232,44 +233,32 @@ def test_the_drift_report_is_measured_against_the_chosen_center(cameras, fly, sc
     _, pts3d, pts2d = scene
     cols = [fly.point_names.index(n) for n in RIGID]
     for method in ("mean", "mode", "geometric_median"):
-        out2d, _, _, (report,) = stages.stage_postprocess(
+        _, out3d, _, (report,) = stages.stage_postprocess(
             _config(RIGID, method=method), cameras, fly, pts2d, pts3d
         )
         expect = float(
-            np.nanmedian(np.linalg.norm(pts2d[:, :, cols] - out2d[:, :, cols], axis=-1))
+            np.nanmedian(np.linalg.norm(pts3d[:, cols] - out3d[:, cols], axis=-1))
         )
-        assert report["moved_2d_median_px"] == pytest.approx(expect)
+        assert report["moved_3d_median"] == pytest.approx(expect)
 
 
-# -- the array helpers ---------------------------------------------------------
+def test_the_stage_returns_its_own_3d_reprojected(cameras, fly, scene):
+    """The invariant the correction chain sits below.
 
-
-def test_the_2d_freeze_uses_each_view_s_own_median(rng):
-    """Every view keeps its own center: a freeze is not one pixel shared across views."""
-    pts2d = rng.normal(size=(3, 20, 4, 2)) + np.arange(3)[:, None, None, None] * 100.0
-    out = pp.freeze_2d(pts2d, [1])
-    for v in range(3):
-        assert np.allclose(out[v, :, 1], np.median(pts2d[v, :, 1], axis=0))
-    assert (out[:, :, 1] == out[:, :1, 1]).all()  # constant over time
-    np.testing.assert_array_equal(out[:, :, [0, 2, 3]], pts2d[:, :, [0, 2, 3]])
-
-
-def test_a_view_that_never_sees_the_point_stays_nan():
-    """The freeze must not invent an observation in a camera that cannot see it.
-
-    The distinction that matters downstream: deeperfly reads NaN as "not observed", so
-    a whole-column fill would hand the next stage a prediction dressed as a
-    measurement. Within a view that *does* see the point, filling the frames where the
-    detection dropped out is the whole premise of calling the point static, so that
-    case is asserted here too rather than left ambiguous.
+    After triangulation a stage's 2D is ``project(points3d)``, which is why
+    ``results.h5`` stores no 2D for this stage at all. ``static`` used to freeze the 2D
+    separately, in each view's own pixels, on the argument that reprojecting would move
+    the point by the rig's residual -- but that needs the incoming 2D to *be* the
+    detector's pixels, and with the smoother enabled it is already a reprojection. What
+    it produced instead was a 2D belonging to the pose one stage back, on the columns the
+    ops had just moved.
     """
-    pts2d = np.zeros((2, 10, 2, 2))
-    pts2d[0, :, 0] = np.nan  # view 0 never sees point 0
-    pts2d[1, :, 0] = 7.0
-    pts2d[1, 3:6, 0] = np.nan  # view 1 sees it, but drops three frames
-    out = pp.freeze_2d(pts2d, [0])
-    assert np.isnan(out[0, :, 0]).all()
-    assert np.allclose(out[1, :, 0], 7.0)  # including the dropped frames
+    _, pts3d, pts2d = scene
+    out2d, out3d, _, _ = stages.stage_postprocess(
+        _config(RIGID), cameras, fly, pts2d, pts3d
+    )
+    assert not np.array_equal(out3d, pts3d)  # the 3D really was corrected
+    np.testing.assert_allclose(out2d, np.asarray(cameras.project(out3d)), atol=1e-9)
 
 
 def test_absent_keypoints_are_not_resurrected(cameras, fly, scene):
@@ -313,25 +302,24 @@ def test_the_freeze_recovers_the_constant_and_spares_the_rest(cameras, fly, scen
     assert out2d.shape == pts2d.shape
     assert reproj.shape == pts2d.shape[:3]
 
-    # Frozen: identical in every frame, in both spaces.
+    # Frozen: identical in every frame.
     assert np.allclose(out3d[:, rigid_cols], out3d[:1, rigid_cols])
-    assert np.allclose(out2d[:, :, rigid_cols], out2d[:, :1, rigid_cols])
     # And closer to the truth than the per-frame estimate was -- averaging out the
     # noise is the point, so this is the assertion that would fail if the stage froze
     # to something other than a central value.
     before = np.linalg.norm(pts3d[:, rigid_cols] - truth[:, rigid_cols], axis=-1)
     after = np.linalg.norm(out3d[:, rigid_cols] - truth[:, rigid_cols], axis=-1)
     assert np.nanmedian(after) < np.nanmedian(before)
-    # A point that really moves is left exactly alone.
+    # A point that really moves is left exactly alone -- in the 3D, which is the space
+    # an op corrects; the 2D is that 3D reprojected, so it moves by the rig's residual.
     np.testing.assert_array_equal(out3d[:, moving_col], pts3d[:, moving_col])
-    np.testing.assert_array_equal(out2d[:, :, moving_col], pts2d[:, :, moving_col])
 
 
 def test_the_report_measures_what_was_frozen(cameras, fly, scene):
     """The log line is the only place the premise is checkable, so it is pinned.
 
-    A point drifting a fraction of a pixel really was static; one drifting tens of
-    pixels was moving and does not belong in the list. The report has to separate them,
+    A point drifting a fraction of a millimeter really was static; one drifting tens of
+    them was moving and does not belong in the list. The report has to separate them,
     which means naming the worst offender rather than only reporting an aggregate.
     """
     _, pts3d, pts2d = scene
@@ -342,12 +330,12 @@ def test_the_report_measures_what_was_frozen(cameras, fly, scene):
     # In POINT order, not as written: the selector resolves to a set of columns.
     assert set(report["points"]) == set(points)
     assert report["points"] == sorted(points, key=fly.point_names.index)
-    per_point = report["moved_2d_median_px_per_point"]
+    per_point = report["moved_3d_median_per_point"]
     assert set(per_point) == set(points)
     # The genuinely moving point drifted furthest, and is the one named.
     assert per_point[MOVING] == max(per_point.values())
     assert report["worst_point"].startswith(MOVING)
-    assert report["moved_2d_p90_px"] >= report["moved_2d_median_px"] > 0.0
+    assert report["moved_3d_p90"] >= report["moved_3d_median"] > 0.0
 
 
 def test_an_empty_list_passes_the_pose_through(cameras, fly, scene):
@@ -361,7 +349,7 @@ def test_an_empty_list_passes_the_pose_through(cameras, fly, scene):
         _config([]), cameras, fly, pts2d, pts3d
     )
     np.testing.assert_array_equal(out3d, pts3d)
-    np.testing.assert_array_equal(out2d, pts2d)
+    np.testing.assert_allclose(out2d, np.asarray(cameras.project(pts3d)), atol=1e-9)
     assert report == {"op": "static", "points": [], "method": "median"}
 
 
@@ -521,7 +509,14 @@ def test_run_recording_freezes_and_then_reuses_the_cache(
     frozen2d, frozen3d, reproj = store.read_points("postprocess")
     cols = [fly.point_names.index(n) for n in RIGID]
     assert np.allclose(frozen3d[:, cols], frozen3d[:1, cols])
-    assert np.allclose(frozen2d[:, :, cols], frozen2d[:, :1, cols])
+    # The stage stores no 2D at all: it is the corrected 3D reprojected, so the reader
+    # rebuilds it. This is the invariant, asserted where it actually reaches a file.
+    np.testing.assert_allclose(
+        frozen2d, np.asarray(cameras.project(frozen3d)), atol=1e-9
+    )
+    with h5py.File(outdir / "results.h5", "r") as f:
+        assert f["postprocess"].attrs["points2d_storage"] == "derived"
+        assert "points" not in f["postprocess"]
     assert reproj.shape == pts2d.shape[:3]
     meta = store.read_point_meta("postprocess")
     assert meta["pose_from"] == "triangulation"
@@ -676,7 +671,7 @@ def test_symmetrize_leaves_the_2d_alone(cameras, fly, scene):
     out2d, out3d, _, (report,) = stages.stage_postprocess(
         cfg, cameras, fly, pts2d, pts3d
     )
-    np.testing.assert_array_equal(out2d, pts2d)
+    np.testing.assert_allclose(out2d, np.asarray(cameras.project(out3d)), atol=1e-9)
     assert not np.allclose(out3d, pts3d)
     assert report["op"] == "symmetrize" and report["fitted"]
 

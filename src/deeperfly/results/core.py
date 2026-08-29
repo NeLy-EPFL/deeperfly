@@ -31,8 +31,6 @@ be re-run later from pristine upstream outputs:
         smooth_param         (P,) the fitted per-keypoint process-noise scale
     postprocess/
         points3d             (T, P, 3) 3D after the correction chain
-        points2d_override    (V, R, 2) the 2D the ops froze in pixel space
-        points2d_override_cols  (R,) which skeleton columns those are
     inverse_kinematics/
         angles               (T, D) fitted joint angles (radians)
         angle_names          (D,) the angle names, in column order
@@ -53,18 +51,23 @@ un-triangulated points and is preserved by the float32 datasets.
 **What a stage stores, and what it reconstructs (v3).** Every stage used to keep a
 full ``(V, T, P, 2)`` 2D array and a full ``(V, T, P)`` error, which on an eight-view
 recording is 14.6 MB per stage before any of them says anything new. A stage now stores
-only what cannot be rebuilt from what its neighbors already store, decided per write by
-:func:`_reduce_pts2d` rather than hardcoded per stage -- so a new stage, or an op that
-starts moving pixels per frame, gets the right answer without editing this module:
+only what cannot be rebuilt from what its neighbors already store, which one pipeline
+invariant settles: **up to and including triangulation a stage's 2D is a pixel
+measurement; after triangulation it is** ``project(points3d)``. So:
 
-* A 2D that *is* ``cameras.project(points3d)`` is not stored at all (the smoother's
-  is, exactly). ``attrs["points2d_storage"] = "derived"``.
-* A 2D that is that projection except on a few columns held constant over time is
-  stored as just those constants -- the correction chain's frozen thorax-coxae come
-  to 112 numbers instead of 9.8 MB. ``attrs["points2d_storage"] = "override"``.
+* A 2D that *is* ``cameras.project(points3d)`` is not stored at all -- the smoother's and
+  the correction chain's. ``attrs["points2d_storage"] = "derived"``.
 * A 2D that is an independent pixel measurement is stored whole: the detections, the
   pictorial candidate selection, and triangulation's outlier-cleaned observations.
   ``attrs["points2d_storage"] = "full"``.
+
+:func:`_reduce_pts2d` decides that per write by *comparing arrays* rather than by looking
+the stage up in a table, which is what makes the classification the invariant's
+enforcement rather than a second copy of it. There used to be a third case, ``override``,
+for a projection that differed on a few columns held constant over time -- the correction
+chain froze its static points in pixel space as well as in 3D. Nothing writes it now
+(that freeze is gone), but :func:`_rebuild_pts2d` still reads it, because files that have
+it hold a pose those columns cannot be reprojected back to.
 
 ``reproj_error`` is dropped only when a recomputation reproduces it *and* the stage's
 2D was not stored whole. The second half is not an optimization but a safeguard: the
@@ -205,11 +208,6 @@ def _same(a, b, *, atol: float = _DERIVE_ATOL) -> bool:
     return bool(m.sum() == 0 or np.allclose(a[m], b[m], rtol=0, atol=atol))
 
 
-def _constant_over_time(x: np.ndarray) -> bool:
-    """Whether ``x`` ``(V, T, ...)`` is the same at every frame (NaN counting as equal)."""
-    return x.shape[1] == 0 or _same(x, np.broadcast_to(x[:, :1], x.shape), atol=0.0)
-
-
 def _reduce_pts2d(pts2d, pts3d, cameras: CameraGroup | None):
     """How much of ``pts2d`` must be stored, given that ``pts3d`` and the rig are.
 
@@ -217,15 +215,16 @@ def _reduce_pts2d(pts2d, pts3d, cameras: CameraGroup | None):
 
     ``("derived", None)``
         ``pts2d`` *is* ``project(pts3d)``; nothing needs storing.
-    ``("override", (cols, values))``
-        it is that projection except on ``cols``, where it is constant over time --
-        a frozen pixel measurement. Only the ``(V, len(cols), 2)`` constants are stored.
     ``("full", pts2d)``
         it is an independent estimate of its own; all of it is stored.
 
-    Measured rather than declared per stage, so the classification cannot drift from
-    what the stages actually produce. A column that differs in only *some* frames is
-    not an override -- it is per-frame information, and falls through to ``full``.
+    Which one a stage gets is settled by the pipeline's invariant -- up to and including
+    triangulation a stage's 2D is a pixel measurement, after it a stage's 2D is
+    ``project(points3d)`` -- so this could be a table keyed by stage name. It stays a
+    *measurement* because that makes it the invariant's enforcement rather than a second
+    copy of it: an op that starts writing its own pixels gets its array stored instead of
+    silently dropped, and the mismatch shows up as a ``full`` where ``derived`` was
+    expected rather than as a wrong pose.
     """
     if pts2d is None:
         return "absent", None
@@ -237,15 +236,6 @@ def _reduce_pts2d(pts2d, pts3d, cameras: CameraGroup | None):
         return "full", pts2d
     if _same(proj, pts2d):
         return "derived", None
-    finite = ~(np.isnan(proj) | np.isnan(pts2d))
-    differs = ~(np.isclose(proj, pts2d, rtol=0, atol=_DERIVE_ATOL) | ~finite).all(-1)
-    cols = np.flatnonzero(differs.any(axis=(0, 1)))
-    if cols.size and cols.size < pts2d.shape[2]:
-        rest = np.ones(pts2d.shape[2], dtype=bool)
-        rest[cols] = False
-        block = pts2d[:, :, cols, :]
-        if _same(proj[:, :, rest], pts2d[:, :, rest]) and _constant_over_time(block):
-            return "override", (cols.astype(np.int32), block[:, 0])
     return "full", pts2d
 
 
@@ -255,6 +245,12 @@ def _rebuild_pts2d(g: h5py.Group, cameras: CameraGroup | None) -> np.ndarray | N
     ``None`` when neither is available -- an unfinished group, or a derived 2D in a file
     whose rig is missing, which is the one case where the reconstruction cannot be done
     and a caller must be told rather than handed a guess.
+
+    ``points2d_override`` is a **legacy read**, kept forever rather than deleted with its
+    writer. Files written while ``{ op = "static" }`` also froze the 2D store a handful of
+    columns that the 3D does not reproject to (1.4 px median, measured); dropping this
+    branch would not fail on those files, it would hand back a subtly different pose than
+    the one they hold. Nothing writes it any more -- see :func:`_reduce_pts2d`.
     """
     if "points" in g:
         return np.asarray(g["points"][()], dtype=float)
@@ -344,10 +340,6 @@ def _write_points_group(
     kind, payload = _reduce_pts2d(pts2d, pts3d, cameras)
     if kind == "full":
         _put(g, "points", payload)
-    elif kind == "override":
-        cols, values = payload
-        _put(g, "points2d_override", values)
-        g.create_dataset("points2d_override_cols", data=cols)
     if pts3d is not None:
         _put(g, "points3d", pts3d)
     if _keep_reproj_error(reproj_error, pts3d, obs2d, cameras, kind=kind):
@@ -1344,10 +1336,19 @@ def repack(path: str | Path, *, dst: str | Path | None = None) -> tuple[int, int
         )
         # The reduced groups are rebuilt wholesale below; everything else is copied, so
         # name their datasets here rather than deciding per dataset during the walk.
+        #
+        # A group holding a legacy ``points2d_override`` is deliberately NOT rebuilt: its
+        # 2D is a projection plus a few columns the 3D cannot reproduce, and nothing
+        # writes that encoding any more, so re-reducing it would store the whole
+        # ``(V, T, P, 2)`` array -- a repack that makes the file *bigger*. Copying it
+        # through keeps both of this function's promises at once: same pose out as in,
+        # and never larger. :func:`_rebuild_pts2d` still reads it.
         rebuilt = {
             s
             for s in _POINT_STAGES
-            if s in f and "points3d" in f[s]  # type: ignore[operator]
+            if s in f
+            and "points3d" in f[s]  # type: ignore[operator]
+            and "points2d_override" not in f[s]  # type: ignore[operator]
         }
         fd, tmp = tempfile.mkstemp(
             dir=str(out.parent), prefix=f".{out.name}.", suffix=".repack"
@@ -1390,13 +1391,10 @@ def repack(path: str | Path, *, dst: str | Path | None = None) -> tuple[int, int
                         continue
                     g_src = f[stage]
                     pts3d = np.asarray(g_src["points3d"][()], dtype=float)  # type: ignore[index]
-                    known = {
-                        "points",
-                        "points3d",
-                        "reproj_error",
-                        "points2d_override",
-                        "points2d_override_cols",
-                    }
+                    # The three the writer decides for itself; anything else in the group
+                    # is somebody's ``extra`` and is passed through. A rebuilt group has
+                    # no ``points2d_override`` -- one that does is not in ``rebuilt``.
+                    known = {"points", "points3d", "reproj_error"}
                     g_out = d.create_group(stage)
                     for k, v in g_src.attrs.items():  # type: ignore[union-attr]
                         g_out.attrs[k] = v

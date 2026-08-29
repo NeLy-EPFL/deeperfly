@@ -581,12 +581,14 @@ def stage_postprocess(
     config
         The run config (the ``[postprocess]`` options).
     cameras
-        The rig, used only to measure the residual.
+        The rig: it measures the residual, and it projects the corrected 3D back into
+        each view to produce this stage's 2D.
     skeleton
         The skeleton, which resolves the configured names to columns.
     pts2d, pts3d
         The upstream stage's pose -- the smoother's when it ran, else the
-        triangulation's (see :func:`select_postprocess_input`).
+        triangulation's (see :func:`select_postprocess_input`). The 2D is what the ops
+        *read*; what comes back is the reprojection of the corrected 3D.
     obs2d
         The pristine ``pose2d`` detections, which ``reproj_error`` is measured against
         (as for :func:`stage_eks`, so the column reads "how far the corrected pose sits
@@ -597,7 +599,7 @@ def stage_postprocess(
     Returns
     -------
     pts2d, pts3d, reproj_error : np.ndarray
-        The corrected 2D, the corrected 3D, and the residual.
+        ``project(corrected 3D)``, the corrected 3D, and the residual.
     reports : list of dict
         One entry per op, in order, recording what it measurably did. The caller
         persists them as the stage's metadata.
@@ -616,16 +618,23 @@ def stage_postprocess(
         # Deliberately still a stage output rather than a skip: a downstream stage's
         # input must not depend on whether the chain happened to be filled in.
         log.info("postprocess: no ops configured; the pose passes through unchanged")
+    in2d = np.asarray(pts2d, dtype=float)
     pts2d, pts3d, reports = apply_ops(
         pts2d, pts3d, ops=ops, skeleton=skeleton, absent=absent
     )
     for report in reports:
         log.info("postprocess: %s", _describe_op(report))
     observed, _ = apply_absent(
-        np.asarray(pts2d if obs2d is None else obs2d, dtype=float), None, absent
+        np.asarray(in2d if obs2d is None else obs2d, dtype=float), None, absent
     )
     reproj = reprojection_error(cameras, pts3d, observed)
-    return pts2d, pts3d, reproj, reports
+    # The stage's 2D is its own 3D reprojected, not the 2D it was handed. The ops move
+    # the 3D, so passing the input through would ship a 2D that belongs to the pose one
+    # stage back -- and `results.h5` then has to store the discrepancy instead of
+    # dropping the array. Both spaces describe one pose, and after triangulation the 3D
+    # is the one that carries it.
+    out2d = np.asarray(cameras.project(pts3d), dtype=float)
+    return out2d, pts3d, reproj, reports
 
 
 def _columns_for(names, skeleton, where: str) -> list[int]:
@@ -639,8 +648,8 @@ def _describe_op(report: dict) -> str:
     """One log line per op: what it did, and the number that says whether it should have.
 
     Every op reports how far it moved the points it touched, because that is the only
-    check on its premise -- a static point that had been drifting a fraction of a pixel
-    really was static, and one drifting tens of pixels was moving.
+    check on its premise -- a static point that had been drifting a fraction of a
+    millimeter really was static, and one drifting tens of them was moving.
     """
     name = report.get("op", "?")
     if name == "static":
@@ -649,9 +658,8 @@ def _describe_op(report: dict) -> str:
         return (
             f"static: froze {len(report['points'])} point(s) to their temporal "
             f"{report['method']}; they had been moving "
-            f"{report['moved_2d_median_px']:.2f} px median / "
-            f"{report['moved_2d_p90_px']:.2f} p90 in 2D "
-            f"({report['moved_3d_median']:.4f} / {report['moved_3d_p90']:.4f} in 3D)"
+            f"{report['moved_3d_median']:.4f} median / "
+            f"{report['moved_3d_p90']:.4f} p90 in 3D"
             + (f", worst {report['worst_point']}" if report.get("worst_point") else "")
         )
     if name == "symmetrize":
