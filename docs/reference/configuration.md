@@ -556,6 +556,7 @@ weights = "mvt_r28_pad48_gray_fly38.pth"
 | `weights` | str | *the packaged checkpoint* | Checkpoint path or a packaged name. Its recorded channel names are checked against the resolved skeleton on every run. |
 | `crops` | table | `{}` | [`[pose2d.crops]`](#crops): per camera, the detection window, always a box. |
 | `auto_crops` | list[str] | `[]` | The cameras whose window is **searched** rather than written ([below](#auto-crop)). |
+| `fit` | str | `"stretch"` | How a window's shape meets the model input's: `"stretch"` resizes per axis, `"pad"` pads to the model's aspect first ([below](#crops)). |
 | `crop_search` | table | `{}` | [`[pose2d.crop_search]`](#pose2d-crop-search): the search's own knobs. |
 
 Everything the retired plan carried is gone and refused by name:
@@ -610,6 +611,30 @@ h = { x = 380, y = 250, width = 840, height = 460 }
 Detections are mapped back into the raw frame by inverting the crop, so a window never
 moves the stored 2D or the reconstructed 3D, and a camera's intrinsics go on describing
 its raw frame.
+
+**Give the window the model's aspect ratio.** The resize into the network is per axis, so a
+window shaped differently from the model input stretches the animal instead of scaling it,
+and the detector was not trained through that stretch. Every window this rig uses is 2:1, or
+the side cameras' 1.875:1 full frame — a 6.7% squeeze, which costs nothing only because it is
+identical in training and at inference. A camera of some other shape dropped in whole is a
+different matter: a 1.6:1 frame is a 25% squeeze, and detection degrades with no other
+symptom, since confidence tracks coverage rather than correctness once the framing is free.
+The `pose2d` stage warns when a window sits more than 10% off the model's aspect. The same
+applies to a **seed** ([below](#auto-crop)): the search locks its aspect to the seed's, so a
+badly shaped seed is never corrected — leave the seed out and the search adopts the model's
+own aspect.
+
+`fit = "pad"` removes the problem instead of reporting it: every camera's window is padded
+out to the model's aspect before the resize, so the resize is a pure scale whatever the
+window's shape, and a camera already at 2:1 is untouched. It pads rather than crops, so it
+can never clip a leg the way trimming a 1.6:1 frame to 2:1 would. The border is filled with
+the model's `mean`, which is exactly zero once the model subtracts it — black would be a
+hard edge the network can read as anatomy.
+
+It defaults to `"stretch"` because it is a **rendering contract, not a preference**: the
+border is something the detector has to be trained through, and dfpose carries the matching
+`AugConfig.fit` with a cross-repo test pinning the two to the same picture. Switch both, in
+a training round, or neither.
 
 <a id="autocrop"></a>
 ### The searched crop: `auto_crops` { #auto-crop }

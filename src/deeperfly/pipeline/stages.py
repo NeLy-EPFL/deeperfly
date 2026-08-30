@@ -23,6 +23,7 @@ import numpy as np
 
 from ..config import STAGES, Config
 from ..pose2d import autocrop
+from ..pose2d.pathways import check_render_aspect
 from ..pose2d.stream import _null_progress, detect_2d, load_models, resolve_fps
 from ..recordings import source_image_sizes
 from ..results import PoseResult, StageStore
@@ -161,6 +162,11 @@ def stage_pose2d(
         next(iter(models.values())).device(),
         resolved_precision,
     )
+
+    # Before the search, not after: a searched window is aspect-locked to the model by
+    # construction, so what is worth checking is what the config asks for -- a full frame
+    # or a fixed window of the wrong shape, or a seed that would lock the search to one.
+    check_render_aspect(plan, models, source_sizes)
 
     # After the models are on the device (the search forwards through them) and before any
     # frame is detected: an automatic crop decides what the detector even sees.

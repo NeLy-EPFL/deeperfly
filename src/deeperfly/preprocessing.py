@@ -46,6 +46,7 @@ __all__ = [
     "AutoCrop",
     "UnresolvedAutoCrop",
     "Resize",
+    "PadToAspect",
     "FrameTransform",
 ]
 
@@ -261,6 +262,92 @@ class AutoCrop:
             x, y, w, h = self.seed
             out.update(x=x, y=y, width=w, height=h)
         return out
+
+
+@dataclass(frozen=True)
+class PadToAspect:
+    """Widen or heighten a frame to ``aspect`` (width/height) by padding, never cropping.
+
+    The op that makes "a crop must not stretch the animal" enforceable. A camera does not
+    stretch anything; every stretch in this pipeline is manufactured by resizing a window
+    of one shape into a network input of another, per axis. Padding the window out to the
+    network's aspect first makes that resize a pure scale, which is the only thing the
+    detector was trained to undo.
+
+    Padding rather than cropping to the aspect, and the difference matters more the worse
+    the mismatch is. Cropping a 960x512 frame to 2:1 costs 32 rows, which on this rig is
+    survivable; cropping a 1280x800 one costs 160, which can take a leg with it. Padding
+    cannot clip anything, at the price of a border the network must be trained through --
+    which is why this is not on by default, and why turning it on is a training-round
+    decision rather than a config tweak.
+
+    ``value`` is in raw frame units (0-255 for a decoded frame). It defaults to 0, but the
+    caller that knows the model should pass the corpus mean: a border at the mean is
+    exactly zero once the model subtracts its mean, where black is a hard edge the network
+    can read as anatomy. Same argument as ``dfpose``'s patch masking, which masks to the
+    corpus mean deliberately rather than to black.
+
+    The padding is split evenly, with the odd pixel going right/bottom, so the content stays
+    centred to within half a pixel and :meth:`affine` is an exact translation.
+    """
+
+    aspect: float
+    value: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.aspect > 0:
+            raise ValueError(f"pad aspect must be positive, got {self.aspect}")
+
+    def _insets(self, size: tuple[int, int]) -> tuple[int, int, int, int]:
+        """``(left, top, right, bottom)`` in pixels for a ``(height, width)`` frame."""
+        h, w = int(size[0]), int(size[1])
+        if w < h * self.aspect:  # too tall/narrow -> widen
+            extra = int(round(h * self.aspect)) - w
+            left = extra // 2
+            return (left, 0, extra - left, 0)
+        if h < w / self.aspect:  # too wide/short -> heighten
+            extra = int(round(w / self.aspect)) - h
+            top = extra // 2
+            return (0, top, 0, extra - top)
+        return (0, 0, 0, 0)
+
+    def is_identity(self) -> bool:
+        return False  # without the frame size, whether anything is added is unknown
+
+    def output_size(self, size: tuple[int, int]) -> tuple[int, int]:
+        left, top, right, bottom = self._insets(size)
+        return (int(size[0]) + top + bottom, int(size[1]) + left + right)
+
+    def affine(self, size: tuple[int, int]) -> Float[np.ndarray, "3 3"]:
+        left, top, _, _ = self._insets(size)
+        return np.array(
+            [[1.0, 0.0, float(left)], [0.0, 1.0, float(top)], [0.0, 0.0, 1.0]]
+        )
+
+    def apply(self, frames: Shaped[Any, "*B H W C"]) -> Shaped[Any, "*B H2 W2 C"]:
+        left, top, right, bottom = self._insets((frames.shape[-3], frames.shape[-2]))
+        if not (left or top or right or bottom):
+            return frames
+        if _is_torch(frames):
+            import torch.nn.functional as F
+
+            # F.pad's last-axis-first pad order, over (..., H, W, C): the channel axis
+            # takes no padding, then W, then H.
+            return F.pad(
+                frames,
+                (0, 0, left, right, top, bottom),
+                mode="constant",
+                value=self.value,
+            )
+        pad_width = [(0, 0)] * frames.ndim
+        pad_width[-3] = (top, bottom)
+        pad_width[-2] = (left, right)
+        return np.pad(
+            to_numpy(frames), pad_width, mode="constant", constant_values=self.value
+        )
+
+    def to_json(self) -> dict:
+        return {"op": "pad", "aspect": self.aspect, "value": self.value}
 
 
 def _nearest_indices(out_dim: int, in_dim: int) -> np.ndarray:

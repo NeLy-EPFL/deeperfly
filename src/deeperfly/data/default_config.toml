@@ -183,6 +183,20 @@ auto_crops = ["f", "h"]
 # detection collapses (255 px). So those two get a box, and it is MEASURED per recording
 # rather than copied -- searching reaches 2.9 px blind, against 3.4 px hand-tuned.
 #
+# A box also fixes the window's SHAPE, which matters for a reason scale does not cover. The
+# resize into the network is per axis, so a window whose aspect differs from the model input's
+# stretches the animal rather than scaling it. Every window this rig uses is 2:1 or the side
+# cameras' 1.875:1, a 6.7% squeeze that is the same in training and at inference and therefore
+# free; a camera of some other shape dropped in whole is not. The run warns when a window (or
+# an automatic crop's SEED, whose aspect the search locks to) sits more than 10% off the
+# model's -- heed it, because detection degrades without any other symptom.
+#
+# `fit = "pad"` removes the problem rather than reporting it: every window is padded out
+# to the model's aspect first, so the resize is a pure scale and nothing can be clipped.
+# It defaults to "stretch" because the border is something the detector has to be TRAINED
+# through -- dfpose carries the matching AugConfig.fit, and the two move together or not
+# at all.
+#
 # It improves once the rig is solved, and is worth having before that. The search is a grid
 # over (centre, width) scored by detector CONFIDENCE, which needs nothing; what needs a rig
 # is the accept GATE, which is reprojection agreement with the other cameras' 3D -- because

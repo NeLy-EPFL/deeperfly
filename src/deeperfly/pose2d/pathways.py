@@ -265,7 +265,7 @@ class DetectionPlan:
         ``[pose2d.crops]`` or ``auto_crops`` entry naming a camera that does not exist.
         """
         from ..pose2d.models import class_defaults
-        from ..preprocessing import AutoCrop, Crop, FrameTransform
+        from ..preprocessing import AutoCrop, Crop, FrameTransform, PadToAspect
 
         pose2d = config.data.get("pose2d", {})
         cameras = list(config.camera_table()[1])
@@ -297,22 +297,41 @@ class DetectionPlan:
 
         crops = _parse_crops(pose2d.get("crops"), cameras)
         searched = _parse_auto_crops(pose2d.get("auto_crops"), cameras)
+        fit = _parse_fit(pose2d.get("fit"))
         patterns = config.source_patterns()
+
+        # `fit = "pad"` appends one op to EVERY camera's chain, windowed or not, so that
+        # whatever the chain produces reaches the network at the network's own aspect and
+        # the resize into it is a pure scale. Appended last on purpose: it pads what the
+        # window actually yields, which is the frame the resize will see. A camera already
+        # at the model's aspect gets a no-op pad (zero insets), so this changes nothing for
+        # the axial windows and everything for a full-frame side camera.
+        pad = (
+            PadToAspect(
+                aspect=model.input_size[1] / model.input_size[0],
+                # The border is exactly zero once the model subtracts its mean, where black
+                # would be a hard edge the network can read as anatomy.
+                value=model.mean * 255.0,
+            )
+            if fit == "pad"
+            else None
+        )
 
         preprocessors: dict[str, FrameTransform] = {}
         for name in cameras:
             box = crops.get(name)
+            ops: tuple = ()
             if name in searched:
                 # A camera in `auto_crops` WITH a box searches from that box -- which is
                 # what a separate `crop_seed` form would have been. There is no third way
                 # to say it.
-                preprocessors[name] = FrameTransform(
-                    (AutoCrop(seed=box, where=f"[pose2d] auto_crops {name!r}"),)
-                )
+                ops = (AutoCrop(seed=box, where=f"[pose2d] auto_crops {name!r}"),)
             elif box is not None:
-                preprocessors[name] = FrameTransform(
-                    (Crop(x=box[0], y=box[1], width=box[2], height=box[3]),)
-                )
+                ops = (Crop(x=box[0], y=box[1], width=box[2], height=box[3]),)
+            if pad is not None:
+                ops = (*ops, pad)
+            if ops:
+                preprocessors[name] = FrameTransform(ops)
 
         identity = np.stack(
             [
@@ -347,6 +366,26 @@ class DetectionPlan:
 
 
 # -- the two things a config can still get wrong ------------------------------
+
+
+def _parse_fit(raw) -> str:
+    """``[pose2d] fit`` -- how a window's shape is reconciled with the model input's.
+
+    ``"stretch"`` (the default) resizes per axis, which is what every shipped checkpoint
+    was trained through: on this rig the axial windows are already 2:1 and the side
+    cameras' full frame is 1.875:1, a 6.7% squeeze present identically in training and at
+    inference. ``"pad"`` pads the window out to the model's aspect first, so the resize is
+    a pure scale and no window can stretch the animal whatever its shape.
+
+    Defaulting to ``"stretch"`` is not a preference for it. ``"pad"`` puts a border in the
+    image, and a detector that was never trained through one has no idea what it is; the
+    two have to change together, so switching this is a training-round decision.
+    """
+    if raw is None:
+        return "stretch"
+    if raw not in ("stretch", "pad"):
+        raise ValueError(f'[pose2d] fit must be "stretch" or "pad", got {raw!r}')
+    return str(raw)
 
 
 def _parse_crops(raw, cameras: list[str]) -> dict[str, tuple[int, int, int, int]]:
@@ -394,3 +433,88 @@ def _parse_auto_crops(raw, cameras: list[str]) -> tuple[str, ...]:
             )
         out.append(str(name))
     return tuple(out)
+
+
+#: How far a pathway's rendering aspect may sit from its model's before
+#: :func:`check_render_aspect` warns, as a fraction.
+#:
+#: The resize into the network is per-axis, so a window whose aspect differs from the
+#: model input's does not scale the animal -- it STRETCHES it, and no augmentation the
+#: detector has seen undoes a stretch it was never trained through.
+#:
+#: 0.10 is chosen against the two geometries that exist. Every crop in the corpus is
+#: 2.0000 (the axial windows) or 1.8750 (the side cameras, and the flywheel strips cut to
+#: match them), and 1.875 into a 2:1 network is a 6.7% stretch -- consistent between
+#: training and inference, which is the only reason it costs nothing. A rig at 1.6:1
+#: dropped in whole would be 25%. So the tolerance has to clear the first and catch the
+#: second, and there is a wide gap to put it in.
+RENDER_ASPECT_TOL: float = 0.10
+
+
+def check_render_aspect(
+    plan: DetectionPlan,
+    models: dict,
+    source_sizes: dict[str, tuple[int, int]],
+    *,
+    tol: float = RENDER_ASPECT_TOL,
+) -> list[str]:
+    """Warn about any pathway the model's resize would STRETCH rather than scale.
+
+    A pathway renders its source through its window and the model resizes whatever comes
+    out to ``input_size``, per axis. Equal aspects make that a pure scale; unequal ones
+    make it a stretch the network was not trained through, and nothing downstream will
+    say so -- detector confidence tracks coverage, not correctness, once the framing is
+    free, so the failure looks like a bad recording rather than a bad window.
+
+    Two sources of a stretch, and this checks both:
+
+    * a **fixed or absent window** -- most often absent, since a camera in neither
+      ``[pose2d.crops]`` nor ``auto_crops`` detects on the full frame, whatever its
+      aspect.
+    * an automatic crop's **seed**, which the search locks its aspect to
+      (:mod:`deeperfly.pose2d.autocrop`). A seeded search cannot correct a stretch
+      written into its seed; only an unseeded one takes the model's own aspect, which is
+      why those are skipped here.
+
+    Returns the messages emitted (empty when every pathway is within ``tol``), so a
+    caller can assert on them; each is logged at WARNING as a side effect.
+    """
+    messages = []
+    for pw in plan.pathways:
+        model = models.get(pw.model)
+        size = source_sizes.get(pw.source)
+        if model is None or size is None:
+            continue
+        h_in, w_in = model.input_size
+        auto = pw.transform.auto_crop
+        if auto is not None and not auto.resolved:
+            if auto.seed is None:
+                continue  # a blind search adopts the model's aspect
+            rendered = (auto.seed[3], auto.seed[2])
+            origin = "the seed of its automatic crop"
+        else:
+            rendered = pw.transform.output_size((int(size[0]), int(size[1])))
+            origin = "its window" if pw.preprocessor is not None else "the full frame"
+        stretch = (rendered[1] / rendered[0]) / (w_in / h_in)
+        if abs(stretch - 1.0) <= tol:
+            continue
+        # A window WIDER than the model input (stretch > 1) is scaled down harder in x
+        # than in y, i.e. squeezed horizontally, and vice versa. The percentage quoted is
+        # the aspect delta, matching how the 960x512 side cameras are already described.
+        axis, pct = (
+            ("horizontal", stretch - 1.0)
+            if stretch > 1.0
+            else ("vertical", 1.0 / stretch - 1.0)
+        )
+        messages.append(
+            f"camera {pw.name!r} detects through {origin} at "
+            f"{rendered[1]}x{rendered[0]} (aspect {rendered[1] / rendered[0]:.3f}), "
+            f"which model {pw.model!r} resizes to {w_in}x{h_in} (aspect "
+            f"{w_in / h_in:.3f}) -- a {pct:.0%} {axis} squeeze, not a scale. The "
+            "detector was not trained through this stretch and will degrade silently. "
+            "Give the camera a window at the model's aspect ([pose2d.crops]), or name "
+            "it in [pose2d] auto_crops without a seed to have one searched."
+        )
+    for message in messages:
+        log.warning("%s", message)
+    return messages

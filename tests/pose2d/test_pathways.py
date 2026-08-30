@@ -17,6 +17,7 @@ import pytest
 
 from deeperfly.config import Config
 from deeperfly.pose2d.pathways import (
+    check_render_aspect,
     normalized_peaks_to_original_pixels,
     route_channels_to_points_in_views,
 )
@@ -258,3 +259,115 @@ def test_footage_by_view_is_now_the_identity_but_still_recorded():
     assert _footage_by_view(config, footage) == footage
     assert _footage_by_view(config, None) is None
     assert _footage_by_view(config, {}) is None
+
+
+# -- the rendering aspect check (check_render_aspect) ------------------------
+
+
+class _Model:
+    """The only thing the aspect check reads off a loaded model."""
+
+    def __init__(self, input_size=(256, 512)):
+        self.input_size = input_size
+
+
+def _aspect_messages(sizes, **pose2d):
+    plan = _config(**pose2d).detection_plan()
+    return check_render_aspect(plan, {"mvt": _Model()}, sizes)
+
+
+def test_the_rigs_that_exist_do_not_warn():
+    """The tolerance has to admit today's corpus or the check is noise.
+
+    Every window in ~/fly-pose-data/project is 2.0000 (the axial ones) or 1.8750 (the
+    side cameras, and the flywheel strips cut to match them). 960x512 into a 2:1 network
+    is a 6.7% stretch, and it is the same stretch in training and at inference, which is
+    the only reason it has never cost anything.
+    """
+    assert _aspect_messages({"rh": (512, 960), "lf": (512, 960)}) == []
+    assert _aspect_messages({"rh": (480, 960), "lf": (480, 960)}) == []
+
+
+def test_a_new_rig_dropped_in_whole_warns():
+    """A 1.6:1 frame resized to 2:1 is a 25% squeeze -- four times anything trained on."""
+    (message,) = _aspect_messages({"rh": (800, 1280), "lf": (512, 960)})
+    assert "'rh'" in message and "the full frame" in message
+    assert "25% vertical squeeze" in message
+
+
+def test_a_fixed_window_of_the_wrong_shape_warns():
+    (message,) = _aspect_messages(
+        {"rh": (1008, 1600), "lf": (512, 960)}, crops={"rh": [200, 100, 800, 700]}
+    )
+    assert "its window" in message and "800x700" in message
+
+
+def test_a_window_at_the_models_aspect_does_not_warn():
+    assert (
+        _aspect_messages(
+            {"rh": (1008, 1600), "lf": (512, 960)}, crops={"rh": [291, 313, 1040, 520]}
+        )
+        == []
+    )
+
+
+def test_a_seeded_search_is_checked_and_a_blind_one_is_not():
+    """The search locks its aspect to the seed, so a bad seed is never corrected."""
+    sizes = {"rh": (1008, 1600), "lf": (512, 960)}
+    (message,) = _aspect_messages(
+        sizes, auto_crops=["rh"], crops={"rh": [200, 100, 800, 700]}
+    )
+    assert "the seed of its automatic crop" in message
+    # Blind: the search adopts the model's own aspect, so there is nothing to warn about.
+    assert _aspect_messages(sizes, auto_crops=["rh"]) == []
+
+
+# -- [pose2d] fit: never stretch ---------------------------------------------
+
+
+def test_fit_defaults_to_stretch_so_nothing_moves():
+    """Every shipped checkpoint was trained through the per-axis resize."""
+    plan = _config().detection_plan()
+    assert plan.preprocessors == {}  # no window, no pad, no change
+
+
+def test_fit_pad_puts_every_camera_at_the_models_aspect():
+    """A camera not at 2:1 gains a border; one already at 2:1 gains nothing."""
+    plan = _config(fit="pad", crops={"lf": [291, 313, 1040, 520]}).detection_plan()
+    sizes = {"rh": (512, 960), "lf": (1008, 1600)}
+    for pw in plan.pathways:
+        h, w = pw.transform.output_size(sizes[pw.name])
+        assert w / h == pytest.approx(512 / 256), pw.name
+    # the axial window is untouched, the side camera is padded 960 -> 1024
+    assert plan.preprocessors["lf"].output_size((1008, 1600)) == (520, 1040)
+    assert plan.preprocessors["rh"].output_size((512, 960)) == (512, 1024)
+
+
+def test_fit_pad_silences_the_aspect_warning_it_exists_to_answer():
+    """The guard and `fit` are one policy from two ends, so pinning them together.
+
+    A 1.6:1 rig dropped in whole is the 25% squeeze `check_render_aspect` was written to
+    catch; under `fit = "pad"` there is nothing left to catch.
+    """
+    sizes = {"rh": (800, 1280), "lf": (512, 960)}
+    assert len(_aspect_messages(sizes)) == 1
+    plan = _config(fit="pad").detection_plan()
+    assert check_render_aspect(plan, {"mvt": _Model()}, sizes) == []
+
+
+def test_fit_pad_still_lets_a_searched_window_be_resolved():
+    """The pad is appended AFTER the automatic crop, so the search is untouched."""
+    plan = _config(fit="pad", auto_crops=["rh"]).detection_plan()
+    rh = plan.preprocessors["rh"]
+    assert rh.needs_auto_crop and rh.auto_crop.seed is None
+    resolved = rh.resolve_auto_crop((100, 50, 600, 300))
+    assert resolved.output_size((512, 960)) == (
+        300,
+        600,
+    )  # 2:1 already, pad adds nothing
+
+
+@pytest.mark.parametrize("bad", ["letterbox", "", 2])
+def test_fit_rejects_anything_it_does_not_implement(bad):
+    with pytest.raises(ValueError, match="fit must be"):
+        _config(fit=bad).detection_plan()

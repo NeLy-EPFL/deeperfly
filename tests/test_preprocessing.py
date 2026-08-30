@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deeperfly.preprocessing import Crop, FrameTransform, Resize
+from deeperfly.preprocessing import Crop, FrameTransform, PadToAspect, Resize
 
 
 def _clip(rng, t=2, h=4, w=6):
@@ -183,3 +183,71 @@ def test_raw_window_rejects_a_crop_that_does_not_fit():
 
 
 # -- handedness ---------------------------------------------------------------
+
+
+# -- PadToAspect: the op that makes a resize a pure scale ---------------------
+
+
+def test_pad_to_aspect_widens_the_side_cameras_and_leaves_an_axial_window_alone():
+    """The whole point, on the two geometries that exist.
+
+    960x512 is 1.875:1 and takes a 6.7% vertical squeeze into a 2:1 network; the axial
+    windows are already 2:1 and must come back untouched, or every recording that is
+    already correct would move.
+    """
+    pad = PadToAspect(aspect=2.0)
+    assert pad.output_size((512, 960)) == (512, 1024)  # 32 px of border, 16 a side
+    assert pad.output_size((520, 1040)) == (520, 1040)  # already 2:1 -> nothing added
+    # and a frame that is too WIDE gains rows rather than losing columns
+    assert pad.output_size((256, 1024)) == (512, 1024)
+
+
+def test_pad_to_aspect_makes_the_resize_into_the_model_uniform():
+    """Why this exists at all: after the pad, x and y are scaled by the same number."""
+    t = FrameTransform((PadToAspect(aspect=2.0), Resize(width=512, height=256)))
+    assert t.output_size((512, 960)) == (256, 512)
+    a = t.affine((512, 960))
+    assert a[0, 0] == pytest.approx(
+        a[1, 1]
+    )  # sx == sy, which is what "no stretch" means
+
+
+def test_pad_to_aspect_affine_agrees_with_what_apply_does():
+    """The FrameOp pairing. Break it and points land wrong rather than raising."""
+    pad = PadToAspect(aspect=2.0, value=7)
+    frame = np.zeros((512, 960, 1), np.uint8)
+    frame[50, 100] = 255  # a marker whose new position the affine must predict
+    out = pad.apply(frame)
+    assert out.shape == (512, 1024, 1)
+    (y,), (x,), _ = np.where(out == 255)
+    moved = pad.affine((512, 960)) @ np.array([100.0, 50.0, 1.0])
+    assert (moved[0], moved[1]) == (x, y)
+    assert out[0, 0, 0] == 7 and out[0, -1, 0] == 7  # the border took the fill value
+
+
+def test_pad_to_aspect_round_trips_a_point_back_to_raw_pixels():
+    """A detection through a padded chain has to come back where it started."""
+    t = FrameTransform(
+        (
+            Crop(x=10, y=20, width=900, height=480),
+            PadToAspect(aspect=2.0),
+            Resize(width=512, height=256),
+        )
+    )
+    pts = np.array([[100.0, 50.0], [800.0, 400.0]])
+    fwd = (t.affine((512, 960)) @ np.c_[pts, np.ones(2)].T).T[:, :2]
+    np.testing.assert_allclose(t.unmap_points(fwd, (512, 960)), pts, atol=1e-9)
+
+
+def test_pad_to_aspect_torch_matches_numpy():
+    torch = pytest.importorskip("torch")
+    pad = PadToAspect(aspect=2.0, value=3)
+    frame = np.random.default_rng(0).integers(0, 255, (2, 512, 960, 1), dtype=np.uint8)
+    np.testing.assert_array_equal(
+        pad.apply(frame), pad.apply(torch.from_numpy(frame)).numpy()
+    )
+
+
+def test_pad_to_aspect_rejects_a_nonsense_aspect():
+    with pytest.raises(ValueError, match="aspect must be positive"):
+        PadToAspect(aspect=0.0)
