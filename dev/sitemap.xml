@@ -2,66 +2,66 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/changelog/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/getting-started/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/examples/bundle_adjustment/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/examples/pipeline_walkthrough/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/explanation/conventions/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/explanation/detectors/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/explanation/keypoints/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/explanation/pipeline/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/guides/cli/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/guides/configuration/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/guides/gui/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/guides/library/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/reference/api/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/reference/configuration/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://nely-epfl.github.io/deeperfly/dev/reference/output-format/</loc>
-         <lastmod>2026-08-25</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
 </urlset>

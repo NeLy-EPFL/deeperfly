@@ -1053,10 +1053,35 @@ API. A version that says so is more useful than one that flatters.</p>
   <em>right</em> place. Pin <code>weights = "mvt_alt8_r27_gray_fly38.pth"</code> to stay on the previous
   detector.</p>
 <ul>
+<li><strong>The top-K candidate path (<code>pictorial_structures = true</code>) decodes through the model's own
+  cell geometry.</strong> <code>inference.detect_candidates_sequence</code> briefly <em>refused</em> a model with a
+  padded field rather than decode it through a normalization that assumes the field spans the
+  input; <code>LoadedModel.cells_to_normalized</code> replaces that refusal with a dispatch, so both
+  shipped classes work. The shared <code>(c + 0.5) / W_field</code> convention is right only when the
+  field spans the reported frame, which neither shipped class does — the dense HRNet pads its
+  head's output by 25% a side, the MVT pads the network's input by 48 model px — so it was off
+  by both the margin and the <code>(w + 2m) / w</code> scale, ~46 model px at the frame's edge on r28.
+  That is three times the 15 px a candidate may sit from its hypothesis
+  (<code>pictorial.DEFAULT_INLIER_PX</code>), so every edge candidate was silently discarded. This path
+  was already wrong this way for the dense HRNet before r28 existed.</li>
+</ul>
+<p>The same path's <em>arg-max</em> also now comes from the model's own readout rather than the shared
+  decode, so it matches what <code>detect_sequence</code> writes. For the MVT the two genuinely differ —
+  its readout is a global soft-argmax over the 16×-upsampled field where the shared decode is a
+  windowed centroid over the raw cells — so enabling <code>pictorial_structures</code> used to move every
+  point before recovery had considered anything. Both come from <strong>one</strong> forward
+  (<code>predict_points_and_heatmaps</code>) rather than two.</p>
+<ul>
 <li>
-<p><code>inference.detect_candidates_sequence</code> (the top-K path, <code>pictorial_structures = true</code>) now
-  <strong>refuses</strong> a model with a padded field instead of decoding it through a normalization that
-  assumes the field spans the input. That path was already silently wrong for the dense HRNet.</p>
+<p><strong><code>pictorial_structures</code> no longer un-densifies a dense run.</strong> Where recovery commits nothing
+  — no hypothesis had a candidate within <code>DEFAULT_INLIER_PX</code> — the detector's arg-max is kept
+  instead of <code>NaN</code>. Unconditional, with no config knob: measured, an abstention touches
+  1.5–2.2% of labeled cells and filling them is <em>3D-neutral</em> on this eight-camera rig (a finite
+  3D came back for 95/95 and 146/146 (frame, joint) pairs either way), because an abstention
+  drops one view's observation and eight views outvote its absence. So it decides only whether
+  the stored 2D may be sparser than the detector that produced it, and a <em>correction</em> stage
+  that deletes data is surprising. On a less redundant rig the same fill stops being free and
+  starts being protective.</p>
 </li>
 <li>
 <p><code>pose2d.models.LoadedModel.prepare</code> passes a margin through to a class that declares one, and
@@ -1085,6 +1110,27 @@ API. A version that says so is more useful than one that flatters.</p>
 </ul>
 <h3 id="added">Added<a class="headerlink" href="#added" title="Permanent link">&para;</a></h3>
 <ul>
+<li>
+<p><strong><code>[pictorial_structures].peak_threshold_rel</code></strong>, a scale-free peak gate. The existing
+  <code>peak_threshold</code> is absolute, so it is a claim about one detector's output scale — it was set
+  on heatmaps peaking near 1.0, and the MVT's peak near 0.08. At the shipped <code>0.05</code> an r28 field
+  offers a second candidate in <strong>0.04%</strong> of cells, so recovery chooses from a set of one almost
+  everywhere and can only return its own input (measured end to end: 0 of 983 labeled cells
+  re-elected, −0.02 px [−0.08, +0.05]) — the stage was disabled in all but name. The relative
+  gate judges each channel against its <em>own</em> peak; the effective threshold is the larger of the
+  two, so the default <code>0.0</code> is exactly the previous behavior. Both keys join the <code>pose2d</code>
+  fingerprint's <code>candidates</code> entry, because the gate prunes during <em>extraction</em> and nothing
+  downstream can recover from a set pruned too hard.</p>
+</li>
+<li>
+<p><code>pictorial.elect_frame</code>, a per-<code>(view, joint)</code> election: hold a view out, triangulate the
+  others' arg-max, reproject, and take that view's nearest candidate. Deliberately <strong>not</strong>
+  reachable from a config — it is the research baseline the recovery numbers were measured
+  against, and over 12 held-out (detector, recording) pairs it swings 14.0–68.8% of the
+  available gain where <code>solve_frame</code> holds 53.3–66.2%, so it is the higher-variance estimator
+  rather than a cheaper equivalent one. It is ~5.8× cheaper and flat in <code>K</code>, and it never
+  abstains.</p>
+</li>
 <li>
 <p><strong>A confidence floor, off unless the artifact asks for it.</strong> <code>mvt.predict_points</code> reads
   <code>arch.conf_floor</code> and reports a point below it as <code>NaN</code> — which is what <code>deeperfly.triangulation</code>

@@ -1534,13 +1534,23 @@ same way when the optional solver is not installed, rather than costing a run th
 already paid for detection.</p>
 <div class="admonition note">
 <p class="admonition-title">Why <code>pictorial_structures</code> stays off</p>
-<p>Not for symmetry with the others. It recovers a joint from the top-K peaks of a
-detector that predicted <strong>one body side</strong>; a dense detector already predicts every
-point in every view. Switching it on rewires <code>triangulation</code> <em>and</em> the smoother onto
-its committed 2D, which is <code>NaN</code> in every view with no candidate within 15 px
-(<code>pictorial.DEFAULT_INLIER_PX</code>) — so it would silently <em>un-densify</em> a dense run — and
-it adds a <code>candidates</code> key to the <code>pose2d</code> fingerprint, re-detecting every cached tree
-in existence.</p>
+<p>Not for symmetry with the others, and not because it is wrong. Switching it on rewires
+<code>triangulation</code> <em>and</em> the smoother onto its committed 2D, and it adds a <code>candidates</code>
+key to the <code>pose2d</code> fingerprint, re-detecting every cached tree in existence. It no
+longer <em>un-densifies</em> a dense run — where recovery commits nothing the detector's
+arg-max is kept rather than a <code>NaN</code> — so that is no longer among the reasons.</p>
+<p>What it is worth was measured (r28 multiview transformer, 7,838 hand-labeled cells
+over four recordings of two animals): <strong>−0.58 px of mean hand-label error on the final
+pose</strong>, which is a <em>gross-error repair</em> and not a general accuracy gain. Cells over
+20 px fall 3.55% → 2.31%; the median barely moves; and the 62% of cells the detector
+already placed within 5 px get 0.08 px <strong>worse</strong>. Whether that trade is worth taking
+depends on whether the analysis downstream is hurt more by rare large errors or by
+small systematic ones, which is why this is a switch and not a default.</p>
+<p>Two caveats on those numbers. The r28 export trained on all 55 corpus recordings with
+no holdout, so every labeled frame scored here is <em>in-sample</em> and none of it is
+evidence the effect transfers to a new animal. And labeled frames over-sample fast
+motion, which is where the gain lives — reweighting to each recording's own
+motion-speed law halves it to −0.32 px.</p>
 </div>
 <h2 id="data-flow">Data flow<a class="headerlink" href="#data-flow" title="Permanent link">&para;</a></h2>
 <p>The two diagrams below show what happens when we run deeperfly on the example dataset with
@@ -1928,9 +1938,13 @@ dynamic programming along each limb under bone-length priors (plus an optional t
 term). It can <em>recover</em> a joint when the arg-max landed on the wrong heatmap peak —
 something the triangulators can only <em>veto</em>. It needs the full-heatmap detect path (slower);
 its committed per-view 2D then feeds the chosen <code>triangulation</code> (a plain <code>dlt</code> pass keeps the
-PS estimate), and the smoother too. On a dense run that is a downgrade, not a no-op: a
-<code>(view, point)</code> with no candidate within 15 px comes out <code>NaN</code>, and a dense detector had a
-prediction there.</p>
+PS estimate), and the smoother too. Where recovery commits nothing — no hypothesis had a
+candidate within 15 px (<code>pictorial.DEFAULT_INLIER_PX</code>) — the detector's arg-max is kept, so
+a dense run stays dense. That fill is unconditional and not a knob: measured, an abstention
+touches 1.5–2.2% of labeled cells, and on this eight-camera rig filling them is
+<em>3D-neutral</em>, because an abstention drops one view's observation and eight views trivially
+outvote its absence. It decides only whether the stored 2D layer may be sparser than the
+detector that produced it.</p>
 <h2 id="where-the-compute-goes">Where the compute goes<a class="headerlink" href="#where-the-compute-goes" title="Permanent link">&para;</a></h2>
 <p>Two detector classes ship, both dense: <code>"hrnet"</code> (per-view, and the loader that also runs the
 HGNetV2 checkpoint) and <code>"mvt"</code> (the multiview transformer, which encodes a frame's views
